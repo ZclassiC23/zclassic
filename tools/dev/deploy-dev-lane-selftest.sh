@@ -13,6 +13,7 @@ RUNNING="$SANDBOX/running-exe"
 COMMAND_LOG="$SANDBOX/commands.log"
 OUTPUT="$SANDBOX/output.log"
 OLD_GENERATION="legacy-aaaa"
+SOURCE_ID="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 CAPABILITY_FILE="$SANDBOX/.deploy-dev-lane-selftest-capability"
 CAPABILITY_TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 [[ "$CAPABILITY_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
@@ -49,7 +50,8 @@ prepare_case() {
         "$HOME_DIR/.zclassic-c23-dev" "$HOME_DIR/.local/bin"
     printf '#!/bin/sh\nprintf "old\\n"\n' > "$GEN_ROOT/$OLD_GENERATION/zclassic23-dev"
     chmod 755 "$GEN_ROOT/$OLD_GENERATION/zclassic23-dev"
-    printf '{"build_commit":"test-old"}\n' > "$GEN_ROOT/$OLD_GENERATION/manifest.json"
+    printf '{"source_id_sha256":"%s","build_commit":"test-old"}\n' \
+        "$SOURCE_ID" > "$GEN_ROOT/$OLD_GENERATION/manifest.json"
     ln -s "$OLD_GENERATION" "$GEN_ROOT/current"
     ln -s "$OLD_GENERATION" "$GEN_ROOT/last-good"
     printf '#!/bin/sh\nprintf "candidate\\n"\n' > "$ARTIFACT"
@@ -85,6 +87,7 @@ run_deploy() {
         ZCL_DEV_SKIP_BUILD=1 \
         ZCL_DEV_BUILD_ARTIFACT="$ARTIFACT" \
         ZCL_DEV_BUILD_COMMIT_OVERRIDE=test-build \
+        ZCL_DEV_SOURCE_ID="$SOURCE_ID" \
         ZCL_DEV_PREFLIGHT_COMMAND="$preflight" \
         ZCL_DEV_STOP_COMMAND="$stop_command" \
         ZCL_DEV_START_COMMAND='readlink -f "$ZCL_DEV_GENERATION_ROOT/current/zclassic23-dev" > "$ZCL_TEST_RUNNING"; printf "start\n" >> "$ZCL_TEST_LOG"' \
@@ -210,6 +213,13 @@ test_success_promotes_candidate() {
         "success did not run exact immutable executable"
     assert_file_contains "$HOME_DIR/.zclassic-c23-dev/agent-deploy.json" \
         '"activation_status": "active"' "success state missing"
+    assert_file_contains "$HOME_DIR/.zclassic-c23-dev/agent-deploy.json" \
+        "\"source_id_sha256\": \"$SOURCE_ID\"" \
+        "deploy state omitted authoritative source identity"
+    assert_file_contains \
+        "$HOME_DIR/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf" \
+        "ZCL_AGENT_EXPECT_SOURCE_ID=$SOURCE_ID" \
+        "runtime drop-in omitted authoritative source identity"
     printf '[dev-activation-selftest] PASS: success promotes exact candidate\n'
 }
 

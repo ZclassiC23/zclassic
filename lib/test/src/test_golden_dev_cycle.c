@@ -395,6 +395,8 @@ static int t_strict_timing(void)
         treq.repo_root = home_abs;
         treq.artifact_path = artifact;
         treq.build_commit = "timingcommit";
+        treq.source_identity =
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
         treq.build_type = "fast";
         treq.gen_root = gen_root;
         treq.datadir = datadir;

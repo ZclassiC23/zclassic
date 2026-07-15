@@ -18,6 +18,8 @@
  *      byte-identical to its pre-revert state and leaves no staging temps.
  *  12. content.v2 package manifests: canonical paths/modes/sizes, ordered
  *      1 MiB SHA3 chunks, deterministic roots, and fail-closed parsing.
+ *  13. content.v2 swarm codec: bounded announce/want/data/cancel frames and
+ *      manifest/chunk verification tied to the exact package root.
  *
  * All work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -29,6 +31,7 @@
 #include "vcs/vcs_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_swarm.h"
 #include "vcs/vcs_seal.h"
 
 #include "crypto/sha3.h"
@@ -1190,6 +1193,254 @@ static int t_commit_record(void)
     return failures;
 }
 
+/* ── test: bounded content.v2 source-swarm wire contract ────────── */
+static int t_package_swarm(void)
+{
+    int failures = 0;
+    static const uint8_t source[] =
+        "int main(void) { return 23; }\n";
+    static const uint8_t want_chunk_hash[32] = {
+        0xe4,0x19,0x94,0x1e,0x7c,0xe1,0xae,0xc1,
+        0xf0,0x90,0x56,0xb3,0x3b,0xa2,0xa8,0x72,
+        0xe6,0x52,0xe2,0xca,0x05,0xc9,0x57,0x02,
+        0xac,0x60,0xfd,0x18,0x68,0x2c,0xe5,0x49,
+    };
+    static const uint8_t want_file_hash[32] = {
+        0xd1,0x72,0x7c,0xa3,0x1d,0xa5,0x7a,0x79,
+        0xf3,0xd8,0x5b,0x9f,0x27,0xf2,0x71,0x35,
+        0x7c,0x07,0xdb,0x3e,0x6b,0x89,0x0b,0x7c,
+        0x61,0x58,0xcc,0x1c,0x01,0x7c,0x19,0x67,
+    };
+    static const uint8_t want_package_root[32] = {
+        0x5f,0x6f,0x10,0x19,0xc0,0x75,0x39,0xf6,
+        0xb2,0xa4,0x5f,0xe1,0xd8,0x8c,0x1b,0x7c,
+        0x7b,0x82,0x0c,0x86,0x9e,0x6b,0x84,0x77,
+        0x6b,0xe8,0x1c,0x48,0x87,0x66,0x15,0xb8,
+    };
+    uint8_t chunk_hash[32];
+    VC_CHECK("swarm chunk hash",
+             vcs_package_chunk_hash(source, sizeof(source) - 1, chunk_hash));
+    VC_CHECK("swarm raw chunk hash KAT",
+             memcmp(chunk_hash, want_chunk_hash, 32) == 0);
+
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    VC_CHECK("swarm manifest add",
+             vcs_package_manifest_add(&manifest, "src/main.c",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      sizeof(source) - 1, chunk_hash, 1));
+    uint8_t root[32];
+    VC_CHECK("swarm package root",
+             vcs_package_manifest_root(&manifest, root));
+    uint8_t file_hash[32];
+    VC_CHECK("swarm file hash KAT",
+             manifest.count == 1 &&
+             vcs_package_file_hash(&manifest.files[0], file_hash) &&
+             memcmp(file_hash, want_file_hash, 32) == 0);
+    VC_CHECK("swarm package root KAT",
+             memcmp(root, want_package_root, 32) == 0);
+    uint8_t *manifest_wire = NULL;
+    size_t manifest_wire_len = 0;
+    VC_CHECK("swarm manifest serialize",
+             vcs_package_manifest_serialize(&manifest, &manifest_wire,
+                                            &manifest_wire_len));
+
+    uint8_t wire[2048];
+    size_t wire_len = 0;
+    struct vcs_package_swarm_message message = {
+        .type = VCS_PACKAGE_SWARM_ANNOUNCE,
+    };
+    memcpy(message.body.announce.package_root, root, 32);
+    message.body.announce.manifest_bytes = (uint32_t)manifest_wire_len;
+    message.body.announce.file_count = 1;
+    message.body.announce.total_bytes = sizeof(source) - 1;
+    message.body.announce.total_chunks = 1;
+    VC_CHECK("swarm announce serialize",
+             vcs_package_swarm_serialize(&message, wire, sizeof(wire),
+                                         &wire_len));
+    struct vcs_package_swarm_message parsed;
+    VC_CHECK("swarm announce parse",
+             vcs_package_swarm_parse(wire, wire_len, &parsed));
+    VC_CHECK("swarm announce round-trip",
+             parsed.type == VCS_PACKAGE_SWARM_ANNOUNCE &&
+             parsed.body.announce.total_bytes == sizeof(source) - 1 &&
+             memcmp(parsed.body.announce.package_root, root, 32) == 0);
+
+    memset(&message, 0, sizeof(message));
+    message.type = VCS_PACKAGE_SWARM_WANT;
+    message.body.want.request_id = 23;
+    memcpy(message.body.want.package_root, root, 32);
+    message.body.want.object_kind = VCS_PACKAGE_SWARM_OBJECT_MANIFEST;
+    message.body.want.file_index = UINT32_MAX;
+    message.body.want.chunk_index = UINT32_MAX;
+    VC_CHECK("swarm manifest want round-trip",
+             vcs_package_swarm_serialize(&message, wire, sizeof(wire),
+                                         &wire_len) &&
+             vcs_package_swarm_parse(wire, wire_len, &parsed) &&
+             parsed.body.want.request_id == 23 &&
+             parsed.body.want.object_kind ==
+                 VCS_PACKAGE_SWARM_OBJECT_MANIFEST);
+    struct vcs_package_swarm_object manifest_request = parsed.body.want;
+
+    memset(&message, 0, sizeof(message));
+    message.type = VCS_PACKAGE_SWARM_DATA;
+    message.body.data.object = parsed.body.want;
+    message.body.data.bytes = manifest_wire;
+    message.body.data.bytes_len = (uint32_t)manifest_wire_len;
+    VC_CHECK("swarm manifest data round-trip",
+             vcs_package_swarm_serialize(&message, wire, sizeof(wire),
+                                         &wire_len) &&
+             vcs_package_swarm_parse(wire, wire_len, &parsed));
+    VC_CHECK("swarm manifest root verification",
+             vcs_package_swarm_verify_data(NULL, &manifest_request,
+                                           &parsed.body.data));
+
+    struct vcs_package_swarm_object chunk_request = {0};
+    chunk_request.request_id = 24;
+    memcpy(chunk_request.package_root, root, 32);
+    chunk_request.object_kind = VCS_PACKAGE_SWARM_OBJECT_CHUNK;
+    chunk_request.file_index = 0;
+    chunk_request.chunk_index = 0;
+    memcpy(chunk_request.expected_hash, chunk_hash, 32);
+    memset(&message, 0, sizeof(message));
+    message.type = VCS_PACKAGE_SWARM_DATA;
+    message.body.data.object = chunk_request;
+    message.body.data.bytes = source;
+    message.body.data.bytes_len = sizeof(source) - 1;
+    VC_CHECK("swarm chunk data round-trip",
+             vcs_package_swarm_serialize(&message, wire, sizeof(wire),
+                                         &wire_len) &&
+             vcs_package_swarm_parse(wire, wire_len, &parsed));
+    VC_CHECK("swarm chunk manifest verification",
+             vcs_package_swarm_verify_data(&manifest, &chunk_request,
+                                           &parsed.body.data));
+
+    /* file_index is canonical path order, not insertion order. Equivalent
+     * manifests must accept the same WANT coordinates. */
+    static const uint8_t earlier_source[] = "first\n";
+    uint8_t earlier_hash[32];
+    VC_CHECK("swarm canonical-index second hash",
+             vcs_package_chunk_hash(earlier_source,
+                                    sizeof(earlier_source) - 1,
+                                    earlier_hash));
+    struct vcs_package_manifest reverse_two;
+    vcs_package_manifest_init(&reverse_two);
+    VC_CHECK("swarm reverse manifest adds later path first",
+             vcs_package_manifest_add(&reverse_two, "z-last.c",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      sizeof(source) - 1, chunk_hash, 1) &&
+             vcs_package_manifest_add(&reverse_two, "a-first.c",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      sizeof(earlier_source) - 1,
+                                      earlier_hash, 1));
+    uint8_t reverse_root[32];
+    VC_CHECK("swarm reverse manifest canonical storage",
+             reverse_two.count == 2 &&
+             strcmp(reverse_two.files[0].path, "a-first.c") == 0 &&
+             vcs_package_manifest_root(&reverse_two, reverse_root));
+    struct vcs_package_swarm_object canonical_request = {0};
+    canonical_request.request_id = 25;
+    memcpy(canonical_request.package_root, reverse_root, 32);
+    canonical_request.object_kind = VCS_PACKAGE_SWARM_OBJECT_CHUNK;
+    canonical_request.file_index = 0;
+    canonical_request.chunk_index = 0;
+    memcpy(canonical_request.expected_hash, earlier_hash, 32);
+    struct vcs_package_swarm_data canonical_data = {
+        .object = canonical_request,
+        .bytes = earlier_source,
+        .bytes_len = sizeof(earlier_source) - 1,
+    };
+    VC_CHECK("swarm reverse insertion verifies canonical file index",
+             vcs_package_swarm_verify_data(&reverse_two,
+                                           &canonical_request,
+                                           &canonical_data));
+    struct vcs_package_manifest forward_two;
+    vcs_package_manifest_init(&forward_two);
+    VC_CHECK("swarm forward equivalent manifest",
+             vcs_package_manifest_add(&forward_two, "a-first.c",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      sizeof(earlier_source) - 1,
+                                      earlier_hash, 1) &&
+             vcs_package_manifest_add(&forward_two, "z-last.c",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      sizeof(source) - 1, chunk_hash, 1));
+    uint8_t forward_root[32];
+    VC_CHECK("swarm canonical coordinates ignore insertion order",
+             vcs_package_manifest_root(&forward_two, forward_root) &&
+             memcmp(forward_root, reverse_root, 32) == 0 &&
+             vcs_package_swarm_verify_data(&forward_two,
+                                           &canonical_request,
+                                           &canonical_data));
+
+    struct vcs_package_swarm_object wrong_request = chunk_request;
+    wrong_request.request_id++;
+    VC_CHECK("swarm wrong request id rejected",
+             !vcs_package_swarm_verify_data(&manifest, &wrong_request,
+                                            &parsed.body.data));
+    wrong_request = chunk_request;
+    wrong_request.chunk_index++;
+    VC_CHECK("swarm wrong coordinates rejected",
+             !vcs_package_swarm_verify_data(&manifest, &wrong_request,
+                                            &parsed.body.data));
+
+    uint8_t tampered[sizeof(source) - 1];
+    memcpy(tampered, source, sizeof(tampered));
+    tampered[0] ^= 1;
+    struct vcs_package_swarm_data bad_data = message.body.data;
+    bad_data.bytes = tampered;
+    VC_CHECK("swarm tampered chunk rejected",
+             !vcs_package_swarm_verify_data(&manifest, &chunk_request,
+                                            &bad_data));
+    bad_data = message.body.data;
+    bad_data.object.package_root[0] ^= 1;
+    VC_CHECK("swarm foreign package root rejected",
+             !vcs_package_swarm_verify_data(&manifest, &chunk_request,
+                                            &bad_data));
+
+    memset(&message, 0, sizeof(message));
+    message.type = VCS_PACKAGE_SWARM_ANNOUNCE;
+    memcpy(message.body.announce.package_root, root, 32);
+    message.body.announce.manifest_bytes =
+        VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES;
+    message.body.announce.total_bytes = 1;
+    VC_CHECK("swarm impossible announce rejected",
+             vcs_package_swarm_wire_size(&message) == 0);
+
+    message.body.announce.file_count = 1;
+    message.body.announce.total_bytes = 0;
+    message.body.announce.manifest_bytes =
+        VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES + 18u +
+        VCS_PACKAGE_PATH_MAX + 1u;
+    VC_CHECK("swarm overlong one-file manifest rejected",
+             vcs_package_swarm_wire_size(&message) == 0);
+
+    VC_CHECK("swarm trailing bytes rejected",
+             wire_len + 1 < sizeof(wire));
+    wire[wire_len] = 0;
+    VC_CHECK("swarm exact frame length",
+             !vcs_package_swarm_parse(wire, wire_len + 1, &parsed));
+
+    memset(&message, 0, sizeof(message));
+    message.type = VCS_PACKAGE_SWARM_CANCEL;
+    message.body.cancel.request_id = 24;
+    memcpy(message.body.cancel.package_root, root, 32);
+    VC_CHECK("swarm cancel round-trip",
+             vcs_package_swarm_serialize(&message, wire, sizeof(wire),
+                                         &wire_len) &&
+             vcs_package_swarm_parse(wire, wire_len, &parsed) &&
+             parsed.body.cancel.request_id == 24);
+
+    message.body.cancel.request_id = 0;
+    VC_CHECK("swarm zero request rejected",
+             vcs_package_swarm_wire_size(&message) == 0);
+
+    vcs_package_manifest_free(&forward_two);
+    vcs_package_manifest_free(&reverse_two);
+    free(manifest_wire);
+    vcs_package_manifest_free(&manifest);
+    return failures;
+}
+
 int test_vcs_core(void)
 {
     printf("\n=== vcs_core: ZVCS v1 foundation ===\n");
@@ -1197,6 +1448,7 @@ int test_vcs_core(void)
 
     failures += t_manifest_fixedpoint();
     failures += t_package_manifest();
+    failures += t_package_swarm();
     failures += t_commit_record();
 
     char dir[512];

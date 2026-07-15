@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+# Verify one compile profile, acquire a live-Make lease, and prune old epochs.
+
+set -euo pipefail
+
+EXPECTED=""
+tmp_session=""
+tmp_lease=""
+cleanup()
+{
+    [ -z "$EXPECTED" ] || rm -f -- "$EXPECTED"
+    [ -z "$tmp_session" ] || rm -f -- "$tmp_session"
+    [ -z "$tmp_lease" ] || rm -f -- "$tmp_lease"
+}
+trap cleanup EXIT
+trap 'exit 2' HUP INT TERM
+
+fail()
+{
+    printf 'build-epoch-session: %s\n' "$*" >&2
+    exit 2
+}
+
+is_sha256()
+{
+    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
+[ "$#" -ge 17 ] && [ "$#" -le 18 ] ||
+    fail 'usage: build-epoch-session.sh MODE SESSION LEASE OBJECT_ROOT CANDIDATE_ROOT KEEP SOURCE COMPLETE MUTATION COMPILER EPOCH PROFILE COMPILE_FLAGS LINK_FLAGS CC CXX OWNER_PID [VERIFY_TOOL]'
+
+MODE="$1"
+SESSION="$2"
+LEASE="$3"
+OBJECT_ROOT="$4"
+CANDIDATE_ROOT="$5"
+KEEP="$6"
+SOURCE_ID="$7"
+COMPLETE="$8"
+MUTATION="$9"
+COMPILER_ID="${10}"
+EPOCH="${11}"
+PROFILE="${12}"
+COMPILE_FLAGS="${13}"
+LINK_FLAGS="${14}"
+CC_COMMAND="${15}"
+CXX_COMMAND="${16}"
+OWNER_PID="${17}"
+VERIFY_TOOL="${18:-tools/dev/source-identity.sh}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KEY_TOOL="$SELF_DIR/build-epoch-key.sh"
+
+case "$MODE" in acquire|check|verify) ;; *) fail "unknown mode: $MODE" ;; esac
+for value in "$SOURCE_ID" "$MUTATION" "$COMPILER_ID" "$EPOCH"; do
+    is_sha256 "$value" || fail 'authority field is not lowercase SHA-256'
+done
+[ "$COMPLETE" = 1 ] || fail 'source capture is incomplete'
+[[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || fail 'epoch retention must be positive'
+[[ "$OWNER_PID" =~ ^[1-9][0-9]*$ ]] || fail 'owner pid must be positive'
+[ -n "$PROFILE" ] || fail 'profile is empty'
+[ -x "$KEY_TOOL" ] && [ -x "$VERIFY_TOOL" ] || fail 'authority helper is unavailable'
+case "$SESSION" in "$OBJECT_ROOT"/epochs/"$EPOCH"/*) ;; *) fail 'session path is outside epoch' ;; esac
+case "$LEASE" in "$OBJECT_ROOT"/epochs/"$EPOCH"/.leases/*) ;; *) fail 'lease path is outside epoch' ;; esac
+
+FLAGS_SHA="$(printf '%s\0%s' "$COMPILE_FLAGS" "$LINK_FLAGS" | sha256sum | awk '{print $1}')"
+EXPECTED="$(mktemp "${TMPDIR:-/tmp}/zcl-build-session.expected.XXXXXX")"
+printf '%s\n' \
+    'schema=zcl.build_epoch_session.v1' \
+    "source_id=$SOURCE_ID" \
+    "complete=$COMPLETE" \
+    "mutation=$MUTATION" \
+    "compiler_id=$COMPILER_ID" \
+    "epoch=$EPOCH" \
+    "profile=$PROFILE" \
+    "flags_sha256=$FLAGS_SHA" > "$EXPECTED"
+
+check_stamp()
+{
+    [ -f "$SESSION" ] && cmp -s "$EXPECTED" "$SESSION" ||
+        fail 'compile-session stamp does not match the requested epoch'
+}
+
+verify_authority()
+{
+    local actual_compiler actual_epoch
+    actual_compiler="$("$KEY_TOOL" compiler-id "$CC_COMMAND" "$CXX_COMMAND")" ||
+        fail 'compiler fingerprint revalidation failed'
+    [ "$actual_compiler" = "$COMPILER_ID" ] ||
+        fail "compiler/toolchain changed during build expected=$COMPILER_ID actual=$actual_compiler"
+    actual_epoch="$("$KEY_TOOL" key "$SOURCE_ID" "$COMPLETE" "$MUTATION" \
+        "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS")" ||
+        fail 'compile epoch recomputation failed'
+    [ "$actual_epoch" = "$EPOCH" ] || fail 'profile/flags do not derive the requested epoch'
+    "$VERIFY_TOOL" verify-record "$SOURCE_ID" "$COMPLETE" "$MUTATION" >/dev/null
+}
+
+if [ "$MODE" = check ]; then
+    check_stamp
+    exit 0
+fi
+
+verify_authority
+[ "$MODE" = verify ] && { check_stamp; exit 0; }
+
+command -v flock >/dev/null 2>&1 || fail 'flock is required for epoch leases'
+OWNER_START="$(awk '{print $22}' "/proc/$OWNER_PID/stat" 2>/dev/null)" ||
+    fail 'could not identify live Make owner process'
+[[ "$OWNER_START" =~ ^[0-9]+$ ]] || fail 'invalid Make owner start time'
+
+mkdir -p "$OBJECT_ROOT/epochs/$EPOCH/.leases"
+exec 9> "$OBJECT_ROOT/.epoch-gc.lock"
+flock -x 9
+
+tmp_session="$(mktemp "$(dirname "$SESSION")/.build-session.XXXXXX")"
+cp -- "$EXPECTED" "$tmp_session"
+mv -f -- "$tmp_session" "$SESSION"
+tmp_session=""
+tmp_lease="$(mktemp "$(dirname "$LEASE")/.lease.XXXXXX")"
+printf 'pid=%s\nstart=%s\n' "$OWNER_PID" "$OWNER_START" > "$tmp_lease"
+mv -f -- "$tmp_lease" "$LEASE"
+tmp_lease=""
+
+lease_is_live()
+{
+    local lease="$1" pid start actual
+    pid="$(sed -n 's/^pid=//p' "$lease" 2>/dev/null)"
+    start="$(sed -n 's/^start=//p' "$lease" 2>/dev/null)"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [[ "$start" =~ ^[0-9]+$ ]] || return 1
+    actual="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || return 1
+    [ "$actual" = "$start" ]
+}
+
+# Keep the current epoch plus the newest KEEP-1 inactive epochs. A directory
+# with any live Make lease is never removed. Dead leases are self-healing.
+mapfile -t epochs < <(
+    find "$OBJECT_ROOT/epochs" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' 2>/dev/null |
+        LC_ALL=C sort -rn | awk '{print $2}'
+)
+kept=1
+for old in "${epochs[@]}"; do
+    [ "$old" = "$EPOCH" ] && continue
+    old_dir="$OBJECT_ROOT/epochs/$old"
+    live=0
+    if [ -d "$old_dir/.leases" ]; then
+        while IFS= read -r -d '' old_lease; do
+            if lease_is_live "$old_lease"; then
+                live=1
+            else
+                rm -f -- "$old_lease"
+            fi
+        done < <(find "$old_dir/.leases" -maxdepth 1 -type f -print0 2>/dev/null)
+    fi
+    if [ "$live" -eq 1 ]; then
+        continue
+    fi
+    if [ "$kept" -lt "$KEEP" ]; then
+        kept=$((kept + 1))
+        continue
+    fi
+    rm -rf -- "$old_dir"
+    [ "$CANDIDATE_ROOT" = - ] || rm -rf -- "$CANDIDATE_ROOT/epochs/$old"
+done
+
+printf 'build-epoch-session: acquired profile=%s epoch=%s lease=%s\n' \
+    "$PROFILE" "$EPOCH" "$LEASE"

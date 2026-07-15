@@ -23,9 +23,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define CAS_SUBSYS "consensus_publication_cas"
@@ -39,8 +41,23 @@
 
 /* ── latest-decision snapshot for dumpstate ──────────────────────────── */
 static pthread_mutex_t g_latest_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_persist_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_latest_present;
 static struct consensus_state_publication_decision_record g_latest;
+static _Atomic uint64_t g_temp_nonce;
+
+#ifdef ZCL_TESTING
+static consensus_state_publication_cas_after_temp_open_hook
+    g_after_temp_open_hook;
+static void *g_after_temp_open_hook_ctx;
+
+void consensus_state_publication_cas_test_set_after_temp_open_hook(
+    consensus_state_publication_cas_after_temp_open_hook hook, void *ctx)
+{
+    g_after_temp_open_hook = hook;
+    g_after_temp_open_hook_ctx = ctx;
+}
+#endif
 
 const char *consensus_state_publication_decision_name(
     enum consensus_state_publication_decision decision)
@@ -101,24 +118,12 @@ static bool digest_nonzero(const uint8_t d[32])
     return any != 0;
 }
 
-static bool valid_full_commit(const char commit[41])
-{
-    if (strnlen(commit, 41) != 40)
-        return false;
-    for (size_t i = 0; i < 40; i++) {
-        char c = commit[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            return false;
-    }
-    return true;
-}
-
 /* Re-derive the manifest's own artifact digest and assert the complete/self-
  * bound shape the chain binder and exporter both require. Pure. */
 static bool manifest_complete_self_bound(
     const struct consensus_state_bundle_manifest *m)
 {
-    if (!m || m->height < 0 || !m->history_complete ||
+    if (!m || m->height < 0 || !m->history_complete || !m->source_clean ||
         m->activation_boundary != 0 || m->sprout_source_cursor != 0 ||
         m->sapling_source_cursor != 0 || m->nullifier_source_cursor != 0 ||
         m->source_fold_cursor != (int64_t)m->height + 1 ||
@@ -137,18 +142,25 @@ static bool manifest_complete_self_bound(
     return memcmp(computed, m->artifact_digest, 32) == 0;
 }
 
-/* Self-consistency of the producer source receipt: recomputed epoch + receipt
- * digests, a serving profile, and the fold cursor bound to H+1. Pure. */
+/* Publication-safe producer receipt: completed source capture, recomputed
+ * epoch + receipt digests, a serving profile, and fold cursor bound to H+1.
+ * Pure. */
 static bool source_receipt_self_consistent(
     const struct consensus_state_source_receipt *r, int32_t bundle_height)
 {
-    if (!digest_nonzero(r->source_epoch_digest) ||
+    /* V1 remains decodable for historical inspection, but its Git-SHA-1-
+     * derived claim is never publication authority. */
+    if (r->schema_version != CONSENSUS_STATE_SOURCE_RECEIPT_V2 ||
+        !r->source_clean ||
+        !digest_nonzero(r->source_epoch_digest) ||
         !digest_nonzero(r->source_tree_root) ||
         !digest_nonzero(r->toolchain_digest) ||
         !digest_nonzero(r->build_inputs_digest) ||
         !digest_nonzero(r->chain_corpus_digest) ||
         !digest_nonzero(r->receipt_digest) ||
-        !valid_full_commit(r->producer_commit) ||
+        !consensus_state_source_receipt_commit_valid(
+            r->schema_version, r->producer_commit,
+            strnlen(r->producer_commit, sizeof(r->producer_commit))) ||
         r->validation_profile != CONSENSUS_STATE_VALIDATION_FULL ||
         r->fold_cursor != (int64_t)bundle_height + 1)
         return false;
@@ -322,8 +334,8 @@ void consensus_state_publication_cas_decide(
                                         in->manifest.height)) {
         finish(out, CONSENSUS_PUBLICATION_REFUSED,
                CONSENSUS_PUBLICATION_REFUSAL_SOURCE_RECEIPT_MALFORMED,
-               "producer source receipt is malformed, non-serving, or its "
-               "fold cursor is not bound to H+1");
+               "producer source receipt is malformed, capture-incomplete, "
+               "non-serving, or its fold cursor is not bound to H+1");
         return;
     }
     /* same source epoch: the receipt embedded in the artifact (manifest
@@ -459,6 +471,33 @@ static bool write_all(int fd, const uint8_t *buf, size_t n)
     return true;
 }
 
+static bool verify_exact_wire_at(int dir_fd, const char *name,
+                                 const uint8_t expected[CAS_WIRE_SIZE])
+{
+    int fd = openat(dir_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    struct stat st;
+    bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+              st.st_size == (off_t)CAS_WIRE_SIZE;
+    uint8_t actual[CAS_WIRE_SIZE];
+    size_t off = 0;
+    while (ok && off < sizeof(actual)) {
+        ssize_t n = read(fd, actual + off, sizeof(actual) - off);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        ok = false;
+    }
+    if (close(fd) != 0)
+        ok = false;
+    return ok && off == sizeof(actual) &&
+           memcmp(actual, expected, sizeof(actual)) == 0;
+}
+
 static struct zcl_result persist_record(
     int dir_fd, const char *name,
     const struct consensus_state_publication_decision_record *record)
@@ -469,20 +508,35 @@ static struct zcl_result persist_record(
         return ZCL_ERR(-41,
                        "cas persist: output_name must be one normalized "
                        "path component");
-    char tmp[224];
-    int n = snprintf(tmp, sizeof(tmp), "%s.tmp", name);
-    if (n <= 0 || (size_t)n >= sizeof(tmp))
-        return ZCL_ERR(-42, "cas persist: temp name overflow");
-
     uint8_t wire[CAS_WIRE_SIZE];
     encode_record(record, wire);
 
-    int fd = openat(dir_fd, tmp,
-                    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW,
+    /* A shared <name>.tmp lets concurrent writers truncate/write the same
+     * inode. Give every attempt an exclusive directory-local temp instead. */
+    char tmp[256];
+    int fd = -1;
+    for (unsigned attempt = 0; attempt < 1024; attempt++) {
+        uint64_t nonce = atomic_fetch_add_explicit(
+            &g_temp_nonce, 1, memory_order_relaxed);
+        int n = snprintf(tmp, sizeof(tmp), "%s.tmp.%ld.%016llx", name,
+                         (long)getpid(), (unsigned long long)nonce);
+        if (n <= 0 || (size_t)n >= sizeof(tmp))
+            return ZCL_ERR(-42, "cas persist: temp name overflow");
+        fd = openat(dir_fd, tmp,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
                     0400);
+        if (fd >= 0)
+            break;
+        if (errno != EEXIST)
+            break;
+    }
     if (fd < 0)
         return ZCL_ERR(-43, "cas persist: openat temp failed: %s",
                        strerror(errno));
+#ifdef ZCL_TESTING
+    if (g_after_temp_open_hook)
+        g_after_temp_open_hook(record, g_after_temp_open_hook_ctx);
+#endif
     bool ok = write_all(fd, wire, sizeof(wire));
     if (ok && fdatasync(fd) != 0) {
         ok = false;
@@ -504,15 +558,36 @@ static struct zcl_result persist_record(
         ok = false;
         LOG_WARN(CAS_SUBSYS, "directory fsync failed: %s", strerror(errno));
     }
+    if (ok && !verify_exact_wire_at(dir_fd, name, wire)) {
+        ok = false;
+        LOG_WARN(CAS_SUBSYS, "published record verification failed");
+    }
     if (!ok) {
-        /* On a failure AFTER the rename committed (e.g. the directory fsync),
-         * the temp name no longer exists — unlink the TARGET so a failed run
-         * leaves NO record rather than a committed-but-unreported one. */
-        (void)unlinkat(dir_fd, renamed ? name : tmp, 0);
+        if (!renamed) {
+            (void)unlinkat(dir_fd, tmp, 0);
+            (void)fsync(dir_fd);
+        }
+        /* After rename, durability may be indeterminate. Never unlink by name:
+         * a concurrent writer may already own it. Retain the self-verifying
+         * record and require the caller to inspect/retry. */
+        if (renamed)
+            return ZCL_ERR(-45, "cas persist: record may be committed; "
+                                "durability/identity verification failed");
         return ZCL_ERR(-44, "cas persist: durable write failed");
     }
     return ZCL_OK;
 }
+
+#ifdef ZCL_TESTING
+struct zcl_result consensus_state_publication_cas_persist_for_test(
+    int dir_fd, const char *name,
+    const struct consensus_state_publication_decision_record *record)
+{
+    if (!record)
+        return ZCL_ERR(-46, "cas persist test: null record");
+    return persist_record(dir_fd, name, record);
+}
+#endif
 
 struct zcl_result consensus_state_publication_cas_load(
     int dir_fd, const char *name,
@@ -652,11 +727,18 @@ struct zcl_result consensus_state_publication_cas_run(
         return ZCL_ERR(-66,
                        "cas run: artifact changed during decision capture");
 
+    /* Order persistence and the process-local latest projection together. A
+     * slower writer must not publish an older in-memory snapshot after a newer
+     * record has reached disk. Cross-process writers remain ordered by their
+     * atomic renames and exact reopen verification. */
+    pthread_mutex_lock(&g_persist_lock);
     struct zcl_result persisted =
         persist_record(request->output_dir_fd, request->output_name, rec);
+    if (persisted.ok)
+        store_latest(rec);
+    pthread_mutex_unlock(&g_persist_lock);
     if (!persisted.ok)
         return persisted;
-    store_latest(rec);
     return ZCL_OK;
 }
 

@@ -16,15 +16,25 @@ git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make zclassic23     # auto-runs `make vendor` if vendor/lib/ archives are absent
 ```
 
-`make zclassic23` declares the vendor archives as order-only prerequisites, so
-the first build transparently invokes `tools/scripts/build_vendor.sh` to produce
-any that are missing. To build them explicitly:
+`make zclassic23` first crosses a Make restart barrier when vendor archives are
+missing. The first parse invokes `tools/scripts/build_vendor.sh`; the restarted
+parse then captures source identity from the final archive bytes. Link targets
+also retain the archives as order-only prerequisites. This prevents a fresh
+clone from baking an identity that omitted inputs generated later in the same
+build. To build them explicitly:
 
 ```bash
 make vendor         # build every missing vendor/lib/*.a (idempotent — no-op if present)
 make vendor-force   # rebuild all of them from scratch
 tools/scripts/build_vendor.sh libz.a libsqlite3.a   # a subset
 ```
+
+The exact source identity also recursively covers generated headers under
+`vendor/include/`, including ignored SQLite, OpenSSL, and zlib headers used by
+the global include path. Unsupported file types and symlinks there fail closed.
+The generated wallet-template and explorer-CSS headers use the same ordering
+rule: an included-Makefile barrier regenerates stale view outputs and restarts
+parsing before the source record is captured.
 
 `make build-only` (compile every `.o`, no link) does not need the archives and
 is the fastest way to confirm a clean checkout compiles.
@@ -81,7 +91,10 @@ machinery only inside a mode-0700 `/tmp` fixture. The deploy script requires a
 mode-0600 sentinel through a bound inherited file descriptor, exact
 fixture-local paths, an inert candidate, and allowlisted fake service commands.
 No public environment variable can enable this mode or target the real dev
-HOME/unit.
+HOME/unit. The retained generation manifest, candidate preflight, post-restart
+probe, recovery plan, and systemd intent all bind the baked 64-hex
+`source_id_sha256`; `build_commit` is optional GitHub trace metadata and never
+a freshness or activation decision.
 
 `make agent-dev-recover` is likewise read-only planning. Public `ARGS=--apply`
 and direct `recover-dev-lane.sh --apply` refuse before generation relinking,
@@ -126,6 +139,13 @@ scripts hard-refuse unconditionally. A caller-supplied source identity cannot
 re-enable them. `dev.vcs.revert` remains source-only with
 `relink_generation=false`; `true` refuses before the source revert. This does
 not relax release, consensus, or full-suite gates.
+
+The native cycle no longer derives proof authority from a HEAD-relative Git
+dirty set. Its exact SHA-256 source epoch supplies supersession CAS; until a
+signed prior epoch can authenticate a content diff, every nonempty save event
+is conservatively routed through the reload/parity verification lane. This may
+cost more local CPU, but a path hint cannot downgrade the proof or authorize
+publication.
 
 `make agent-loop` remains the manual one-shot loop. It runs the cache-aware fast
 checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary.
@@ -213,8 +233,11 @@ sequence; `zclassic23 dumpstate hotswap` reports
 `artifact_inode_pinned=true` for every accepted generation.
 
 `make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
-writes cached per-file objects under `build/dev-obj/`, links without LTO, keeps
-symbols, and emits `build/bin/zclassic23-dev`. It defaults most code to
+writes per-file objects under
+`build/dev-obj/epochs/<compile-epoch>/`, links the exact candidate under
+`build/bin/dev/epochs/<compile-epoch>/`, then atomically refreshes the familiar
+`build/bin/zclassic23-dev` alias. It links without LTO, keeps symbols, and
+defaults most code to
 `ZCL_DEV_OPT=-Og` while compiling consensus/crypto/script/validation hot paths
 at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link step auto-selects
 `mold` or `ld.lld` through `ZCL_DEV_LINKER` when available; set
@@ -223,9 +246,21 @@ Makefile automatically wraps `CC` with it for rebuild speed; set
 `ZCL_USE_CCACHE=0` to opt out.
 
 For the absolute cheapest edit check, run `make fast-changed-compile`. It
-compiles only changed node `.c` files into `build/dev-obj/` when that is safe,
-and automatically falls back to `make fast-compile` for header, template,
-Makefile, removed-source, or broad edits.
+uses changed paths only as classification hints and always resolves the complete
+current dev source inventory through `make fast-compile`. Any source mutation
+selects a new compile epoch; `ccache`/`sccache` recovers unchanged translation
+units without reusing an object from a different source epoch.
+
+The host-local compile-epoch key binds the exact source SHA-256 and capture
+completeness, mutation token, compiler/toolchain fingerprint, profile, and
+effective compile/link flags. Per-TU object and depfile publication, candidate
+linking, and stable-alias publication are atomic. Final publication re-verifies
+the complete source/compiler/session record, so concurrent builds and an
+A→B→A edit/revert cannot publish a candidate from the wrong epoch.
+Epoch retention is bounded by `BUILD_EPOCH_KEEP` (default `3`). Lease
+acquisition prunes older inactive object trees and their matching candidates,
+but a lease is live only when both its `/proc` PID and process start tick still
+match; a concurrent Make epoch is therefore never garbage-collected.
 
 This binary is for local AI/operator iteration only. `make zclassic23`,
 `make deploy`, reproducible builds, and releases continue to use
@@ -234,18 +269,19 @@ This binary is for local AI/operator iteration only. `make zclassic23`,
 ## Cached full test suite (`test_parallel`)
 
 `build/bin/test_parallel` — the binary `make t`, `make test`, and `make ci`
-run — is built from a **cached per-TU object tree** (`build/test-rel-obj/`),
-not one whole-program `cc`. Each of the
-~1,300 node + test `.c` files compiles to its own `.o` with `-MMD -MP`
-depfiles, and the binary is one plain link over those objects. Consequences:
+run — is built from a **cached per-TU object tree**
+(`build/test-rel-obj/epochs/<compile-epoch>/`),
+not one whole-program `cc`. Each source is addressed under
+`build/test-rel-obj/epochs/<compile-epoch>/` with `-MD -MP` depfiles, and the
+exact candidate is linked under `build/bin/test-strict/epochs/`. Consequences:
 
-- **One-file edit → one recompile + one link** (≈2 s here), not a full
-  ~1,300-TU rebuild (≈90 s). Repeated full-suite gate runs with no edits
-  re-link nothing (`make test_parallel` is a no-op when up to date).
-- **Header/`.def` edits are tracked.** The retired whole-program rule listed
-  only `.c` files as prerequisites, so a header-only edit did **not** rebuild
-  `test_parallel` at all (a false green). The per-TU depfiles now recompile
-  exactly the dependents of any changed header.
+- **Every edit gets a fresh immutable epoch.** Make resolves every current
+  source in that epoch; compiler-cache hits recover unchanged TU work before
+  one plain link. A no-edit invocation reuses the exact verified epoch.
+- **Header/`.def` and system-header inputs are tracked.** The retired
+  whole-program rule listed only `.c` files as prerequisites, so a header-only
+  edit did **not** rebuild `test_parallel` at all. Complete depfiles plus the
+  epoch key close that false-green path.
 - **`ccache` makes it cacheable.** A giant multi-source `cc` invocation cannot
   be cached; per-TU `.o` compiles hit the cache, so a clean object tree with a
   warm cache rebuilds in a few seconds. `ccache` stays optional (auto-detected
@@ -273,9 +309,9 @@ if a test ever behaves differently between the two (it should not). `test_zcl`
 (the serial runner) also remains a whole-program build.
 
 **Fast inner-loop variant.** `make t-fast ONLY=<group>` uses the separate
-`build/bin/test_parallel_fast` object tree (`build/test-obj/`, `-O1`, non-
-`-Werror`) for the tightest edit loop; run strict `make t` / `make test` before
-commit.
+exact candidate and object tree (`build/bin/test-fast/epochs/<compile-epoch>/`
+and `build/test-obj/epochs/<compile-epoch>/`, `-O1`, non-`-Werror`) for the
+tightest edit loop; run strict `make t` / `make test` before commit.
 
 ## Prerequisites
 
@@ -362,8 +398,17 @@ make test           # full parallel suite via the cached per-TU test_parallel
 make test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
 make lint           # 40 defensive-coding gates
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
-make deploy         # force-fresh rebuild + restart the live service + verify build_commit
+make deploy         # rebuild + restart; verify exact source ID and running executable SHA-256
 ```
+
+`make deploy` pins its outer `BUILD_SOURCE_RECORD` into every recursive Make,
+then freezes one candidate before any install or restart. Candidate-local
+`agentbuild`, the current source record, the installed executable digest, and
+the post-restart digest must all identify that same source/artifact pair. The
+post-restart verifier ignores inherited `ZCL_DATADIR`, `ZCL_RPCPORT`, and
+`ZCL_RPCCONNECT`: it derives the loopback RPC endpoint from the canonical
+systemd service's captured `MainPID`/`ExecStart`/process argv, confirms that PID
+owns the RPC listener, and rejects a PID or executable change during the proof.
 
 Default target is `-march=x86-64-v3` (portable AVX2/FMA/BMI2); pass `ZCL_NATIVE=1`
 to build for the host CPU only.

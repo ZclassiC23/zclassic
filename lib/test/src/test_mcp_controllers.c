@@ -1091,16 +1091,20 @@ static char *mock_causal_blocker_dump(void)
 static char *mock_operator_healthy_rpc(const char *method,
                                        const char *params_json);
 
+#define TEST_NATIVE_SOURCE_ID_SHA256                                      \
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 /* ISO C caps a single string constant at 4095 chars, and the full node
  * build compiles tests with -pedantic -Werror(-Woverlength-strings) — the
  * ~5.6KB fixture is stored as two halves and joined at runtime via
  * native_operator_snapshot_json_dup(). */
 static const char k_native_operator_snapshot_json_p1[] =
-    "{\"schema\":\"zcl.operator_snapshot.v1\",\"schema_version\":1,"
-    "\"api_version\":\"v1\",\"execution_locus\":\"target_node\","
+    "{\"schema\":\"zcl.operator_snapshot.v2\",\"schema_version\":2,"
+    "\"api_version\":\"v2\",\"execution_locus\":\"target_node\","
     "\"producer\":\"event_operator_snapshot_controller\","
     "\"authority\":\"target_node_internal_state\","
     "\"trust\":\"target_owned_evidence\","
+    "\"source_id_sha256\":\"" TEST_NATIVE_SOURCE_ID_SHA256 "\","
     "\"build_commit\":\"nativecafe1\",\"network\":\"main\","
     "\"process_id\":42,\"node_instance_id\":\"fixture-node-a1\","
     "\"identity_initialized_at_unix_us\":999000,"
@@ -1187,11 +1191,14 @@ static const char k_native_operator_snapshot_json_p1[] =
     "\"peer_direction_sum\":{\"status\":\"pass\","
     "\"detail\":\"directions sum to total\"}},";
 static const char k_native_operator_snapshot_json_p2[] =
-    "\"summary\":{\"schema\":\"zcl.operator_summary.v1\","
-    "\"schema_version\":1,\"api_version\":\"v1\","
+    "\"summary\":{\"schema\":\"zcl.operator_summary.v2\","
+    "\"schema_version\":2,\"api_version\":\"v2\","
     "\"execution_locus\":\"target_node\","
     "\"source_rpc\":\"operatorsnapshot\",\"captured_at\":1,"
-    "\"build_commit\":\"nativecafe1\",\"network\":\"main\","
+    "\"source_id_sha256\":\"" TEST_NATIVE_SOURCE_ID_SHA256 "\","
+    /* Deliberately differs from the root: Git trace metadata cannot affect
+     * acceptance when the exact source identity agrees. */
+    "\"build_commit\":\"othertrace2\",\"network\":\"main\","
     "\"process_id\":42,"
     "\"node_instance_id\":\"fixture-node-a1\","
     "\"identity_initialized_at_unix_us\":999000,"
@@ -1256,14 +1263,80 @@ static char *mock_native_operator_rpc(const char *method,
     return mock_operator_healthy_rpc(method, params_json);
 }
 
+static char *mock_native_operator_without_build_rpc(
+    const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") == 0) {
+        static const char needle[] = "\"build_commit\":";
+        g_native_operator_snapshot_calls++;
+        char *snapshot = native_operator_snapshot_json_dup();
+        if (!snapshot)
+            return NULL;
+        char *root_build = strstr(snapshot, needle);
+        char *summary_build = root_build
+            ? strstr(root_build + sizeof(needle) - 1u, needle) : NULL;
+        if (root_build)
+            root_build[1] = 'x';
+        if (summary_build)
+            summary_build[1] = 'x';
+        return snapshot;
+    }
+    g_native_operator_legacy_calls++;
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
 enum mock_native_operator_failure_mode {
     MOCK_NATIVE_INVALID_JSON,
     MOCK_NATIVE_INTERNAL_ERROR,
     MOCK_NATIVE_MIXED_METHOD_NOT_FOUND,
+    MOCK_NATIVE_LEGACY_V1,
     MOCK_NATIVE_WRONG_VERSION,
+    MOCK_NATIVE_ROOT_SOURCE_ID_MISSING,
+    MOCK_NATIVE_SUMMARY_SOURCE_ID_MISSING,
+    MOCK_NATIVE_SOURCE_ID_SHORT,
+    MOCK_NATIVE_SOURCE_ID_UPPERCASE,
+    MOCK_NATIVE_SOURCE_ID_MISMATCH,
 };
 
 static enum mock_native_operator_failure_mode g_native_operator_failure_mode;
+
+static char *native_operator_snapshot_bad_source_dup(
+    enum mock_native_operator_failure_mode mode)
+{
+    static const char needle[] = "\"source_id_sha256\":\"";
+    char *snapshot = native_operator_snapshot_json_dup();
+    if (!snapshot)
+        return NULL;
+    char *root_source = strstr(snapshot, needle);
+    char *summary_source = root_source
+        ? strstr(root_source + sizeof(needle) - 1u, needle) : NULL;
+    if (!root_source || !summary_source)
+        return snapshot;
+    size_t value_offset = sizeof(needle) - 1u;
+    switch (mode) {
+    case MOCK_NATIVE_ROOT_SOURCE_ID_MISSING:
+        root_source[1] = 'x';
+        break;
+    case MOCK_NATIVE_SUMMARY_SOURCE_ID_MISSING:
+        summary_source[1] = 'x';
+        break;
+    case MOCK_NATIVE_SOURCE_ID_SHORT:
+        memmove(root_source + value_offset + 63u,
+                root_source + value_offset + 64u,
+                strlen(root_source + value_offset + 64u) + 1u);
+        break;
+    case MOCK_NATIVE_SOURCE_ID_UPPERCASE:
+        root_source[value_offset] = 'A';
+        break;
+    case MOCK_NATIVE_SOURCE_ID_MISMATCH:
+        summary_source[value_offset] = '1';
+        break;
+    default:
+        break;
+    }
+    return snapshot;
+}
 
 static char *mock_native_operator_failure_rpc(const char *method,
                                               const char *params_json)
@@ -1283,11 +1356,22 @@ static char *mock_native_operator_failure_rpc(const char *method,
     case MOCK_NATIVE_MIXED_METHOD_NOT_FOUND:
         return strdup("{\"error\":{\"code\":-32601,"
                       "\"message\":\"Method not found\"},"
-                      "\"schema\":\"zcl.operator_snapshot.v1\"}");
-    case MOCK_NATIVE_WRONG_VERSION:
+                      "\"schema\":\"zcl.operator_snapshot.v2\"}");
+    case MOCK_NATIVE_LEGACY_V1:
         return strdup("{\"schema\":\"zcl.operator_snapshot.v1\","
-                      "\"schema_version\":2,"
+                      "\"schema_version\":1,\"api_version\":\"v1\","
                       "\"execution_locus\":\"target_node\"}");
+    case MOCK_NATIVE_WRONG_VERSION:
+        return strdup("{\"schema\":\"zcl.operator_snapshot.v2\","
+                      "\"schema_version\":1,"
+                      "\"execution_locus\":\"target_node\"}");
+    case MOCK_NATIVE_ROOT_SOURCE_ID_MISSING:
+    case MOCK_NATIVE_SUMMARY_SOURCE_ID_MISSING:
+    case MOCK_NATIVE_SOURCE_ID_SHORT:
+    case MOCK_NATIVE_SOURCE_ID_UPPERCASE:
+    case MOCK_NATIVE_SOURCE_ID_MISMATCH:
+        return native_operator_snapshot_bad_source_dup(
+            g_native_operator_failure_mode);
     }
     return strdup("null");
 }
@@ -2482,9 +2566,13 @@ static int test_native_operator_snapshot_single_rpc(void)
         struct json_value summary;
         ASSERT(json_read(&summary, summary_body, strlen(summary_body)));
         ASSERT_STR_EQ(json_get_str(json_get(&summary, "schema")),
-                      "zcl.operator_summary.v1");
+                      "zcl.operator_summary.v2");
         ASSERT_STR_EQ(json_get_str(json_get(&summary, "execution_locus")),
                       "target_node");
+        ASSERT_STR_EQ(json_get_str(json_get(&summary, "source_id_sha256")),
+                      TEST_NATIVE_SOURCE_ID_SHA256);
+        ASSERT_STR_EQ(json_get_str(json_get(&summary, "build_commit")),
+                      "othertrace2");
         ASSERT(!json_get_bool(json_get(&summary, "compatibility_fallback")));
         ASSERT(json_get_bool(json_get(json_get(&summary, "future_field"),
                                       "kept")));
@@ -2503,7 +2591,35 @@ static int test_native_operator_snapshot_single_rpc(void)
         ASSERT_STR_EQ(snapshot_body, snapshot_expect);
         free(snapshot_expect);
 
+        struct json_value snapshot;
+        ASSERT(json_read(&snapshot, snapshot_body, strlen(snapshot_body)));
+        const struct json_value *snapshot_summary =
+            json_get(&snapshot, "summary");
+        ASSERT_STR_EQ(json_get_str(json_get(&snapshot,
+                                            "source_id_sha256")),
+                      TEST_NATIVE_SOURCE_ID_SHA256);
+        ASSERT_STR_EQ(json_get_str(json_get(snapshot_summary,
+                                            "source_id_sha256")),
+                      TEST_NATIVE_SOURCE_ID_SHA256);
+        ASSERT(strcmp(json_get_str(json_get(&snapshot, "build_commit")),
+                      json_get_str(json_get(snapshot_summary,
+                                            "build_commit"))) != 0);
+        json_free(&snapshot);
+
         free(snapshot_body);
+
+        /* Even absent Git trace metadata cannot demote a source-bound
+         * snapshot.  The native producer still emits it for display. */
+        g_native_operator_snapshot_calls = 0;
+        g_native_operator_legacy_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_native_operator_without_build_rpc);
+        char *no_build_body =
+            mcp_router_dispatch("zcl_operator_snapshot", &args);
+        ASSERT(no_build_body != NULL);
+        ASSERT(g_native_operator_snapshot_calls == 1);
+        ASSERT(g_native_operator_legacy_calls == 0);
+        free(no_build_body);
+
         json_free(&args);
         mcp_rpc_client_set_test_hook(NULL);
         PASS();
@@ -2521,7 +2637,7 @@ static int test_native_operator_snapshot_failure_never_falls_back(void)
         json_init(&args);
         json_set_object(&args);
         for (int mode = MOCK_NATIVE_INVALID_JSON;
-             mode <= MOCK_NATIVE_WRONG_VERSION; mode++) {
+             mode <= MOCK_NATIVE_SOURCE_ID_MISMATCH; mode++) {
             g_native_operator_failure_mode =
                 (enum mock_native_operator_failure_mode)mode;
             g_native_operator_snapshot_calls = 0;
@@ -2532,6 +2648,11 @@ static int test_native_operator_snapshot_failure_never_falls_back(void)
             ASSERT(g_native_operator_snapshot_calls == 1);
             ASSERT(g_native_operator_legacy_calls == 0);
             ASSERT(strstr(body, "operatorsnapshot rejected") != NULL);
+            if (mode == MOCK_NATIVE_LEGACY_V1) {
+                ASSERT(strstr(body, "legacy zcl.operator_snapshot.v1") !=
+                       NULL);
+                ASSERT(strstr(body, "untrusted") != NULL);
+            }
             free(body);
         }
         json_free(&args);

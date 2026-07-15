@@ -167,13 +167,17 @@ static void agent_liveness_push_availability_compact(
     struct json_value *out, const struct json_value *full)
 {
     static const char *const keys[] = {
-        "schema", "schema_version", "producer_build_commit",
+        "schema", "schema_version", "source_identity_authority",
+        "producer_source_id_sha256", "producer_build_commit",
         "operator_lane_name", "operator_lane_source",
         "operator_lane_declared", "operator_lane_inferred",
         "producer_datadir", "producer_rpcport", "availability_scope",
         "probe_source", "probe_status", "target_rpc_attempted",
         "target_rpc_reachable", "target_datadir", "target_rpcport",
-        "target_build_commit", "producer_target_build_relation",
+        "target_source_id_sha256", "target_build_commit",
+        "producer_target_source_relation",
+        "producer_target_build_relation",
+        "producer_target_build_relation_authority",
         "supported_count", "unsupported_count", "error_count",
         "unknown_count", "safe_next_action",
     };
@@ -410,6 +414,8 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     agent_push_contract_identity_fields_json(result, "agentliveness");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
+    json_push_kv_str(result, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "detail_mode",
                      agent_liveness_detail_mode_name(detail_mode));

@@ -144,6 +144,8 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(result, "schema", "zcl.agent_interface.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
+    json_push_kv_str(result, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "preferred_transport", "mcp");
     json_push_kv_str(result, "preferred_payload", "json");
@@ -204,12 +206,14 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_init(&runtime);
     json_set_object(&runtime);
     json_push_kv_str(&runtime, "schema", "zcl.agent_runtime_identity.v1");
+    json_push_kv_str(&runtime, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(&runtime, "build_commit", zcl_build_commit());
     json_push_kv_str(&runtime, "binary", "zclassic23");
     json_push_kv_str(&runtime, "generated_by",
                      "app/controllers/src/agent_interface_controller.c");
     json_push_kv_str(&runtime, "identity_rule",
-                     "Treat this as the runtime binary that produced the interface contract.");
+                     "source_id_sha256 identifies the runtime source tree; build_commit is display-only GitHub trace metadata.");
     json_push_kv(result, "runtime_identity", &runtime);
     json_free(&runtime);
     agent_push_runtime_availability_json(result, "runtime_availability");

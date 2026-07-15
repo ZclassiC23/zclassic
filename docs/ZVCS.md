@@ -3,11 +3,13 @@
 ZVCS is zclassic23's own content-addressed version-control system,
 implemented in `lib/vcs/` (Apache-2.0, `Copyright 2026 Rhett Creighton`). It
 is not a git wrapper and does not shell out to git: `git` stays outside the
-binary entirely, as the sha1-based GitHub publish bridge that lives under
-`tools/scripts/` (source-tree publishing, PR review, the human-facing history
-this repo already has). ZVCS is the layer *inside* the binary that turns "the
-agent edited files and the dev loop went green" into a durable, self-hashing
-commit — without ever invoking a subprocess.
+binary entirely as an external GitHub publish/trace bridge (source-tree
+publishing, PR review, and the human-facing history this repo already has).
+Git object ids, including SHA-1 ids, may be retained as optional external trace
+metadata, but are never ZVCS, source-identity, or producer-receipt authority.
+ZVCS is the layer *inside* the binary that turns "the agent edited files and
+the dev loop went green" into a durable, self-hashing commit — without ever
+invoking a subprocess.
 
 This document is the canonical description of what ZVCS is, what it stores,
 and what actually calls it today. See also
@@ -41,6 +43,15 @@ references the word `git`, or calls `exec*`, `execve`, `system(`, `popen(`,
 or `fork(`. `lib/vcs/` is sovereign by construction, not by convention — a
 regression that adds a `system("git ...")` call anywhere in that directory
 turns the build red.
+
+`tools/scripts/check_vcs_no_sha1.sh` is the separate source-authority gate. It
+keeps SHA-1 primitives out of `lib/vcs/`, prevents the dev source identity from
+hashing Git HEAD/object data, and requires producer-receipt writers to use the
+baked SHA-256 source id. Its scope is deliberately **not** all cryptographic
+code: ZClassic consensus still implements `OP_SHA1`, exactly as `zclassicd`
+does, and removing or changing that opcode would violate consensus parity.
+This source-identity/receipt migration changes no block, transaction, script,
+PoW, or activation rule.
 
 ## The model: a flat, path-sorted manifest — not git's blob/tree DAG
 
@@ -97,6 +108,100 @@ Every object read **recomputes** the hash and rejects a mismatch
 (`vcs_object_get()`); ZVCS never trusts a stored hash without re-deriving it.
 The same "recompute, never trust" discipline used elsewhere in this codebase
 (`seal_kv`, the sealed `core/MANIFEST.sha3`).
+
+## Source identity v2 — current bytes, not Git history
+
+Do not conflate the ZVCS `tree_hash` above with the dev-loop supersession id.
+They are separate, versioned contracts:
+
+- A ZVCS manifest/tree/object id is domain-separated SHA3-256 over the ZVCS
+  object formats.
+- `tools/dev/source-identity.sh capture` emits
+  `zcl.dev_source_identity.v2`: a 64-hex SHA-256 identity over a canonical
+  inventory of the current worktree. Git is used only to enumerate paths and
+  inspect index modes/hidden flags. The preimage binds paths, canonical regular
+  file modes and current file-byte SHA-256 digests, symlink targets, explicit
+  tracked deletions, recursively inventoried initialized gitlink/submodule
+  bytes, missing-gitlink markers, and the exact linked static archives selected
+  by the build even when those archives are Git-ignored. It does not consume
+  Git HEAD, commit, tree, blob, index, or gitlink object ids.
+- `source-identity.sh paths` remains an explicitly non-authoritative,
+  HEAD-relative manual diagnostic only. The dev watcher no longer invokes it
+  for classification, proof routing, or publication; wake paths are hints and
+  every nonempty event takes the conservative reload/Core/parity boundary.
+  The `capture`, `capture-record`, and verification modes do not execute the
+  HEAD comparison. They hash the complete v2 inventory directly. Therefore an
+  empty/history-only Git commit leaves the source id unchanged, while a visible
+  byte, path, mode, symlink, deletion, or non-ignored untracked-file change
+  supersedes it.
+
+The Makefile obtains the source id, a v2 capture-completeness bit, and a
+host-local mutation token from one `capture-record`. The legacy-named `clean`
+slot is always true after a successful exact capture; it is not Git cleanliness
+and never compares HEAD or gitlink object ids. Dirty worktrees need no special
+authority bit because their exact current bytes are already in the source id.
+Cached build paths are selected by a host-local compile epoch that binds the
+source id and completeness bit, mutation token, compiler/tool/search-root
+fingerprint, build profile, and effective compile/link flags. A source mutation
+therefore selects a new full object tree; `ccache`/`sccache` may recover
+unchanged TU work, but Make never admits an object from a different epoch.
+Per-TU object/depfile writes, candidate links, and stable-alias refreshes use
+private staging paths plus atomic renames. Candidate and alias publication both
+re-verify the complete source/compiler/session record. The mutation token binds
+enumerated-input inode, size, mode, and nanosecond mtime/ctime metadata, while
+an independently refreshed inventory catches stable path-set changes. This
+closes ordinary edit/revert ABA for captured inputs. It is a short-lived race
+guard, never a source or release identifier or a claim of an immutable
+filesystem snapshot; hermetic publication still requires the Phase-3
+publication epoch and independent rebuild receipts.
+
+This v2 id is a **dev supersession identity**, used to detect source drift and
+bind a build to the bytes the developer could see. It is not the future
+immutable publication epoch and not complete reproducible-build provenance:
+ignored files beneath the actual C23 source/include/template roots, generated
+vendor headers, and linked archives are covered, but generated inputs outside
+those roots remain outside this narrow source-id contract. The host-local
+compile epoch additionally fingerprints admitted compiler/toolchain,
+environment, dependency-search, and effective-build inputs for cache isolation;
+that operational fingerprint is still not an independently reproducible
+publication receipt. Phase-3 publication and independent rebuild receipts
+remain required.
+
+The earlier v1 identity hashed Git HEAD plus only the visible dirty overlay.
+Its documented 128-path/0.07–0.08 second measurements describe that retired
+preimage and must not be quoted for v2. The fast/portable v2 implementations
+are byte-equivalence tested, including the history-only-commit invariant.
+The full `capture-record` now includes recursive gitlink bytes, selected linked
+archives, and two mutation-token passes. Its latency is machine/worktree
+dependent and is treated as a correctness cost, not a portable performance
+promise.
+
+## Producer source receipt v2
+
+The current producer-receipt implementation consumes the baked v2
+source id through `zcl_build_source_id_sha256()`; it no longer derives new
+authority from `zcl_build_commit_full()`. Git commit text is not baked into the
+sovereign executable either, because its exact-byte digest is receipt authority;
+GitHub publication may attach commit trace in an external sidecar. A newly
+created producer session uses
+`zcl.consensus_state_producer_session.v2`, and its finalized receipt uses
+`zcl.consensus_state_source_receipt.v2`. The 32-byte `source_tree_root` is the
+decoded SHA-256 source id. Versioned SHA3-256 epoch/receipt digests then bind
+that claim with the toolchain/build-input claims, legacy-named capture-
+completeness field, exact running binary, validation profile, chain corpus,
+and fold cursor as applicable.
+
+V2 requires `producer_commit` to be empty. Its legacy-named `source_clean`
+column means the exact v2 inventory capture completed and is always true for a
+production v2 writer; it is not a Git HEAD cleanliness claim. GitHub/external
+trace metadata lives outside the authoritative receipt. Receipt/session v1
+remains a read-only compatibility identity/codec for already-durable legacy
+evidence. It can be inspected, but no current producer may resume or finalize
+it, no external v1 receipt may validate for installation, and the publication
+CAS never admits it. Current builds neither originate a new v1 claim nor
+silently rewrite one as v2. The producer claims are still not independent
+reproducible-build proof, and a receipt does not authorize bundle publication
+or runtime activation by itself.
 
 ## The three stores
 
@@ -179,11 +284,13 @@ the source snapshot still lands, honestly labeled as build-less.
 
 `lib/vcs/src/vcs_devloop.c` is the one piece of glue between the dev loop
 and ZVCS: `vcs_devloop_anchor_cycle()`, called from
-`tools/dev/devloop_cycle.c:finish_cycle()` after every `zcl.dev_cycle.v1`
-verdict — whether that cycle resolved to a Tier-1 hot-swap
-(`resident_commit`), a native reload (`transactional_reload`), or a
-docs-only `check`. No "remember to commit" step exists; a passing cycle
-*is* a ZVCS snapshot.
+`tools/dev/devloop_cycle.c:finish_cycle()` after a passing
+`zcl.dev_cycle.v1` verdict. It records the verdict's phase and any generation
+digest the verified cycle actually produced. A historical/reserved phase name
+such as `resident_commit` or `transactional_reload` is not, by itself, proof
+that a runtime generation was published. During current Phase-0 containment,
+the public watcher and change surfaces verify/check only; apply, hot-swap,
+reload, stage, generation relinking, and deploy-dev entry points fail closed.
 
 This call site is **fail-open by design**, stated directly in the header
 comment: a ZVCS failure here must never fail the dev cycle or crash the
@@ -193,12 +300,11 @@ without ZVCS; the verdict JSON gains one extra field —
 on failure. The one status that is surfaced loudly (not just logged) is
 `VCS_DEVLOOP_ANCHOR_REFUSED` — a sealed-path snapshot refusal — which adds
 `"vcs_sealed_refusal":true`. As of this wave that refusal is **advisory
-only** at this integration point: by the time `finish_cycle` runs, the
-cycle's own hot-swap/reload publish has already happened, so a refused
-anchor means "this cycle's source snapshot did not land," not "the running
-binary was blocked." The pre-publish refusal that actually blocks the
-running binary lives earlier in the pipeline — see ADR-0002 and
-`docs/work/HOTSWAP.md` §"Core refusal."
+only** to the verification verdict at this integration point: it means the
+cycle's ZVCS source snapshot did not land, not that source authority was
+granted. Any future reopening of runtime publication must enforce the sealed
+preflight and proof/CAS transaction before mutation; the current contained
+surface does not publish a running generation.
 
 The very first call on a fresh `.zvcs/` walks the whole tracked worktree
 once (logged via `LOG_INFO`); every call after that tracks only the change
@@ -243,12 +349,12 @@ It:
    stamped `revert:<first 16 hex chars of the target commit id>` — so the
    append-only log gains one more entry rather than losing any.
 
-`relink_generation` (rebinding the *running binary* to the reverted
-generation, not just the source tree) is **not wired in v1** (tracked for
-Wave 3.3): passing `true` still performs the source revert and forward
-commit, then returns `VCS_ENOTIMPL` to signal that the relink half did not
-run. Callers that only need the source-tree revert can ignore the
-`ENOTIMPL` and treat the commit as landed.
+The native dev command exposes this source-only operation as
+`dev.vcs.revert` with `relink_generation=false`. Passing
+`relink_generation=true` is contained and refuses **before** source mutation;
+it does not rebuild, relink, deploy, or activate a generation. The lower-level
+`vcs_revert()` relink callback remains an internal seam for a future durable
+transaction, not public activation authority.
 
 ## Module map (`lib/vcs/`)
 
@@ -269,18 +375,11 @@ index, and seal guard in isolation; `make t ONLY=vcs_devloop` covers the
 dev-loop glue (`vcs_devloop_anchor_cycle`, hex decoding, and the
 sealed-refusal path). Both are registered in `lib/test/src/test_parallel.c`.
 
-## The `dev vcs` / MCP surface — planned, not built
+## The current `dev vcs` surface
 
-**As of this writing there is no command-line or MCP surface for ZVCS.**
-`config/commands/*.def` (the native command registry — see
-[`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md)) declares
-no `vcs` branch or leaf in `root.def`, `core.def`, `apps.def`, `ops.def`, or
-`dev.def`, and no controller under `tools/mcp/controllers/` exposes a
-`zcl_vcs_*` tool. The only caller of `lib/vcs/` today is the internal
-`vcs_devloop_anchor_cycle()` glue described above — there is no way for an
-operator or agent to run `vcs status`, `vcs log`, or `vcs revert` directly
-yet; those verbs exist in the façade (`vcs.h`) but are not wired to any
-transport. Adding that surface (a `dev vcs` registry branch and/or a
-`zcl_vcs_status` / `zcl_vcs_log` MCP tool) is future work, not a documented
-current capability — do not assume it exists when writing runbooks or other
-docs.
+The native dev registry exposes `dev.vcs.revert` for append-only source-tree
+reverts. It requires a dev build and a 64-hex ZVCS commit id; use
+`relink_generation=false` under current containment. There is still no native
+`dev.vcs.status` or `dev.vcs.log` leaf and no supported MCP `zcl_vcs_*`
+surface. Do not infer additional ZVCS or runtime-publication authority from the
+existence of the façade functions in `vcs.h`.

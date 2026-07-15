@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #define PRODUCER_RECEIPT_SUBSYS "consensus_producer_receipt"
@@ -23,7 +22,8 @@
 /* Singleton start-of-fold ownership marker in the producer's progress.kv.
  * Distinct from the exporter-read consensus_state_source_receipt: this records
  * WHO started the fold; the receipt is written only when the fold completes. */
-#define PRODUCER_SESSION_SCHEMA "zcl.consensus_state_producer_session.v1"
+#define PRODUCER_SESSION_SCHEMA_V1 "zcl.consensus_state_producer_session.v1"
+#define PRODUCER_SESSION_SCHEMA_V2 "zcl.consensus_state_producer_session.v2"
 
 static const char k_session_schema_sql[] =
     "CREATE TABLE IF NOT EXISTS consensus_state_producer_session("
@@ -47,19 +47,23 @@ static const char k_receipt_schema_sql[] =
 
 #ifdef ZCL_TESTING
 static bool g_override_active;
-static char g_override_commit[41];
+static char g_override_source_id[65];
 static bool g_override_clean;
 
-void consensus_state_producer_receipt_test_set_identity(const char *commit,
+void consensus_state_producer_receipt_test_set_identity(const char *source_id,
                                                         bool source_clean)
 {
-    if (!commit) {
+    if (!source_id) {
         g_override_active = false;
-        g_override_commit[0] = '\0';
+        g_override_source_id[0] = '\0';
         return;
     }
     g_override_active = true;
-    snprintf(g_override_commit, sizeof(g_override_commit), "%s", commit);
+    if (strnlen(source_id, sizeof(g_override_source_id) + 1u) != 64u) {
+        g_override_source_id[0] = '\0';
+    } else {
+        memcpy(g_override_source_id, source_id, 65u);
+    }
     g_override_clean = source_clean;
 }
 #endif
@@ -71,14 +75,25 @@ static bool set_err(char *err, size_t err_size, const char *msg)
     return false; /* raw-return-ok:bounded policy reason returned to caller */
 }
 
-static bool valid_full_commit(const char *commit)
+static int lowercase_hex_nibble(char c)
 {
-    if (strnlen(commit, 41) != 40)
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    return -1;
+}
+
+static bool decode_sha256_identity(const char *hex, uint8_t out[32])
+{
+    if (!hex || strnlen(hex, 65) != 64)
         return false;
-    for (size_t i = 0; i < 40; i++) {
-        char c = commit[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+    for (size_t i = 0; i < 32; i++) {
+        int high = lowercase_hex_nibble(hex[i * 2]);
+        int low = lowercase_hex_nibble(hex[i * 2 + 1]);
+        if (high < 0 || low < 0)
             return false;
+        out[i] = (uint8_t)((high << 4) | low);
     }
     return true;
 }
@@ -130,35 +145,30 @@ static void claim_digest(const char *domain, const uint8_t *extra,
     sha3_256_finalize(&ctx, out);
 }
 
-/* Fill the honest source-identity CLAIM fields (producer_commit, source_clean,
- * source_tree_root, toolchain_digest, build_inputs_digest). These are producer
- * assertions whose authority is the running executable that recorded them; they
- * are derived deterministically from the binary's baked build identity (or, in
- * tests, a hermetic override). Returns false if no exact 40-hex commit is
- * available — an unstamped build honestly cannot earn a serving receipt. */
+/* Fill a v2 source-identity claim. source_tree_root is the exact 32-byte value
+ * baked from tools/dev/source-identity.sh; no Git object ID participates in
+ * durable authority. producer_commit remains empty; GitHub trace metadata
+ * lives outside the v2 receipt. */
 static bool fill_source_identity_claim(struct consensus_state_source_receipt *r)
 {
-    const char *commit = zcl_build_commit_full();
-    bool clean = zcl_build_source_clean();
+    const char *source_id = zcl_build_source_id_sha256();
+    /* V2's legacy-named source_clean column means the exact current inventory
+     * was captured successfully. It is deliberately not Git cleanliness:
+     * HEAD/gitlink comparisons would make SHA-1 object ids receipt authority.
+     * Dirty source is already bound exactly by source_tree_root. */
+    bool clean = true;
 #ifdef ZCL_TESTING
     if (g_override_active) {
-        commit = g_override_commit;
+        source_id = g_override_source_id;
         clean = g_override_clean;
     }
 #endif
-    if (!commit || !valid_full_commit(commit))
+    if (!decode_sha256_identity(source_id, r->source_tree_root))
         return false; /* raw-return-ok:unstamped build cannot earn a receipt */
 
-    memcpy(r->producer_commit, commit, 40);
-    r->producer_commit[40] = '\0';
+    r->schema_version = CONSENSUS_STATE_SOURCE_RECEIPT_V2;
+    r->producer_commit[0] = '\0';
     r->source_clean = clean;
-
-    uint8_t clean_byte = clean ? 1u : 0u;
-    uint8_t tree_preimage[41];
-    memcpy(tree_preimage, r->producer_commit, 40);
-    tree_preimage[40] = clean_byte;
-    claim_digest("zcl.producer_source_tree.v1", tree_preimage,
-                 sizeof(tree_preimage), r->source_tree_root);
 
     const char *toolchain =
 #ifdef __VERSION__
@@ -166,15 +176,15 @@ static bool fill_source_identity_claim(struct consensus_state_source_receipt *r)
 #else
         "unknown-toolchain";
 #endif
-    claim_digest("zcl.producer_toolchain.v1", (const uint8_t *)toolchain,
+    claim_digest("zcl.producer_toolchain.v2", (const uint8_t *)toolchain,
                  strlen(toolchain), r->toolchain_digest);
 
-    uint8_t build_inputs_preimage[44];
+    uint8_t build_inputs_preimage[36];
     uint32_t version = (uint32_t)CLIENT_VERSION;
     for (size_t i = 0; i < 4; i++)
         build_inputs_preimage[i] = (uint8_t)(version >> (8u * i));
-    memcpy(build_inputs_preimage + 4, r->producer_commit, 40);
-    claim_digest("zcl.producer_build_inputs.v1", build_inputs_preimage,
+    memcpy(build_inputs_preimage + 4, r->source_tree_root, 32);
+    claim_digest("zcl.producer_build_inputs.v2", build_inputs_preimage,
                  sizeof(build_inputs_preimage), r->build_inputs_digest);
     return true;
 }
@@ -270,12 +280,84 @@ static bool read_session_blob(sqlite3_stmt *st, int col, uint8_t out[32])
     return true;
 }
 
+static const char *producer_session_schema(uint8_t receipt_version)
+{
+    /* V1 sessions remain parseable below for historical status/diagnostics,
+     * but no producer may create new v1 authority. */
+    if (receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2)
+        return PRODUCER_SESSION_SCHEMA_V2;
+    return NULL;
+}
+
+static bool producer_session_schema_version(sqlite3_stmt *st, int column,
+                                            uint8_t *out_version)
+{
+    if (!out_version || sqlite3_column_type(st, column) != SQLITE_TEXT)
+        return false;
+    const unsigned char *schema = sqlite3_column_text(st, column);
+    int schema_len = sqlite3_column_bytes(st, column);
+    if (!schema || schema_len < 0)
+        return false;
+    if ((size_t)schema_len == strlen(PRODUCER_SESSION_SCHEMA_V1) &&
+        memcmp(schema, PRODUCER_SESSION_SCHEMA_V1, (size_t)schema_len) == 0) {
+        *out_version = CONSENSUS_STATE_SOURCE_RECEIPT_V1;
+        return true;
+    }
+    if ((size_t)schema_len == strlen(PRODUCER_SESSION_SCHEMA_V2) &&
+        memcmp(schema, PRODUCER_SESSION_SCHEMA_V2, (size_t)schema_len) == 0) {
+        *out_version = CONSENSUS_STATE_SOURCE_RECEIPT_V2;
+        return true;
+    }
+    return false;
+}
+
 struct producer_session {
     uint8_t running_binary_digest[32];
     uint8_t source_epoch_digest[32];
     struct consensus_state_source_receipt claim; /* claim fields only */
     bool present;
 };
+
+/* Resume authority is derived from this running build, never from the row it
+ * is deciding whether to trust. In particular, recomputing an epoch from a
+ * stored claim would admit a preseeded/tampered claim whose attacker updated
+ * source_epoch_digest consistently. */
+static bool current_v2_claim(
+    uint8_t validation_profile,
+    struct consensus_state_source_receipt *out,
+    uint8_t source_epoch[32])
+{
+    memset(out, 0, sizeof(*out));
+    out->validation_profile = validation_profile;
+    if (!fill_source_identity_claim(out))
+        return false;
+    consensus_state_source_epoch_digest(out, source_epoch);
+    memcpy(out->source_epoch_digest, source_epoch, 32);
+    return true;
+}
+
+static bool session_matches_current(
+    const struct producer_session *stored,
+    const struct consensus_state_source_receipt *current,
+    const uint8_t current_epoch[32],
+    const uint8_t running_binary[32])
+{
+    return stored && current && stored->present &&
+           stored->claim.schema_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2 &&
+           current->schema_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2 &&
+           memcmp(stored->running_binary_digest, running_binary, 32) == 0 &&
+           memcmp(stored->claim.source_tree_root,
+                  current->source_tree_root, 32) == 0 &&
+           memcmp(stored->claim.toolchain_digest,
+                  current->toolchain_digest, 32) == 0 &&
+           memcmp(stored->claim.build_inputs_digest,
+                  current->build_inputs_digest, 32) == 0 &&
+           memcmp(stored->source_epoch_digest, current_epoch, 32) == 0 &&
+           stored->claim.source_clean == current->source_clean &&
+           stored->claim.validation_profile == current->validation_profile &&
+           strcmp(stored->claim.producer_commit,
+                  current->producer_commit) == 0;
+}
 
 /* Load the singleton start session. Returns false only on a store error;
  * `out->present` reports whether a row exists. */
@@ -284,7 +366,7 @@ static bool load_session(sqlite3 *db, struct producer_session *out)
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT running_binary_digest,source_tree_root,toolchain_digest,"
+            "SELECT schema,running_binary_digest,source_tree_root,toolchain_digest,"
             "build_inputs_digest,source_epoch_digest,source_clean,"
             "validation_profile,producer_commit "
             "FROM consensus_state_producer_session WHERE singleton=1", -1,
@@ -295,22 +377,33 @@ static bool load_session(sqlite3 *db, struct producer_session *out)
     int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
     bool ok = true;
     if (rc == SQLITE_ROW) {
-        const unsigned char *commit = sqlite3_column_type(st, 7) == SQLITE_TEXT
-            ? sqlite3_column_text(st, 7) : NULL;
-        ok = read_session_blob(st, 0, out->running_binary_digest) &&
-             read_session_blob(st, 1, out->claim.source_tree_root) &&
-             read_session_blob(st, 2, out->claim.toolchain_digest) &&
-             read_session_blob(st, 3, out->claim.build_inputs_digest) &&
-             read_session_blob(st, 4, out->source_epoch_digest) &&
-             sqlite3_column_type(st, 5) == SQLITE_INTEGER &&
+        uint8_t version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+        const unsigned char *commit = sqlite3_column_type(st, 8) == SQLITE_TEXT
+            ? sqlite3_column_text(st, 8) : NULL;
+        int commit_len = commit ? sqlite3_column_bytes(st, 8) : -1;
+        ok = producer_session_schema_version(st, 0, &version) &&
+             read_session_blob(st, 1, out->running_binary_digest) &&
+             read_session_blob(st, 2, out->claim.source_tree_root) &&
+             read_session_blob(st, 3, out->claim.toolchain_digest) &&
+             read_session_blob(st, 4, out->claim.build_inputs_digest) &&
+             read_session_blob(st, 5, out->source_epoch_digest) &&
              sqlite3_column_type(st, 6) == SQLITE_INTEGER &&
-             commit && sqlite3_column_bytes(st, 7) == 40;
+             (sqlite3_column_int(st, 6) == 0 ||
+              sqlite3_column_int(st, 6) == 1) &&
+             sqlite3_column_type(st, 7) == SQLITE_INTEGER &&
+             (sqlite3_column_int(st, 7) == CONSENSUS_STATE_VALIDATION_FULL ||
+              sqlite3_column_int(st, 7) ==
+                  CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
+             commit && commit_len >= 0 &&
+             consensus_state_source_receipt_commit_valid(
+                 version, (const char *)commit, (size_t)commit_len);
         if (ok) {
-            out->claim.source_clean = sqlite3_column_int(st, 5) == 1;
+            out->claim.schema_version = version;
+            out->claim.source_clean = sqlite3_column_int(st, 6) == 1;
             out->claim.validation_profile =
-                (uint8_t)sqlite3_column_int(st, 6);
-            memcpy(out->claim.producer_commit, commit, 40);
-            out->claim.producer_commit[40] = '\0';
+                (uint8_t)sqlite3_column_int(st, 7);
+            memcpy(out->claim.producer_commit, commit, (size_t)commit_len);
+            out->claim.producer_commit[commit_len] = '\0';
             out->present = true;
         }
     } else if (rc != SQLITE_DONE) {
@@ -325,6 +418,13 @@ static bool insert_session(sqlite3 *db,
                            const uint8_t running_binary[32],
                            const char *datadir, int64_t start_us)
 {
+    const char *schema = producer_session_schema(r->schema_version);
+    size_t commit_len = strnlen(r->producer_commit,
+                                sizeof(r->producer_commit));
+    if (r->schema_version != CONSENSUS_STATE_SOURCE_RECEIPT_V2 || !schema ||
+        !consensus_state_source_receipt_commit_valid(
+            r->schema_version, r->producer_commit, commit_len))
+        return false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO consensus_state_producer_session("
@@ -335,8 +435,8 @@ static bool insert_session(sqlite3 *db,
             NULL) != SQLITE_OK)
         return false;
     int i = 1;
-    bool ok = sqlite3_bind_text(st, i++, PRODUCER_SESSION_SCHEMA, -1,
-                                SQLITE_STATIC) == SQLITE_OK &&
+    bool ok = sqlite3_bind_text(st, i++, schema, -1, SQLITE_STATIC) ==
+                  SQLITE_OK &&
               sqlite3_bind_blob(st, i++, running_binary, 32, SQLITE_STATIC) ==
                   SQLITE_OK &&
               sqlite3_bind_blob(st, i++, r->source_tree_root, 32,
@@ -349,7 +449,7 @@ static bool insert_session(sqlite3 *db,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int(st, i++, r->source_clean ? 1 : 0) == SQLITE_OK &&
               sqlite3_bind_int(st, i++, r->validation_profile) == SQLITE_OK &&
-              sqlite3_bind_text(st, i++, r->producer_commit, 40,
+              sqlite3_bind_text(st, i++, r->producer_commit, (int)commit_len,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_text(st, i++, datadir ? datadir : "", -1,
                                 SQLITE_TRANSIENT) == SQLITE_OK &&
@@ -362,6 +462,14 @@ static bool insert_session(sqlite3 *db,
 static bool write_final_receipt(
     sqlite3 *db, const struct consensus_state_source_receipt *r)
 {
+    const char *schema =
+        consensus_state_source_receipt_schema(r->schema_version);
+    size_t commit_len = strnlen(r->producer_commit,
+                                sizeof(r->producer_commit));
+    if (r->schema_version != CONSENSUS_STATE_SOURCE_RECEIPT_V2 || !schema ||
+        !consensus_state_source_receipt_commit_valid(
+            r->schema_version, r->producer_commit, commit_len))
+        return false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT INTO consensus_state_source_receipt("
@@ -372,8 +480,8 @@ static bool write_final_receipt(
             "VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
         return false;
     int i = 1;
-    bool ok = sqlite3_bind_text(st, i++, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA,
-                                -1, SQLITE_STATIC) == SQLITE_OK &&
+    bool ok = sqlite3_bind_text(st, i++, schema, -1, SQLITE_STATIC) ==
+                  SQLITE_OK &&
               sqlite3_bind_blob(st, i++, r->source_epoch_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, r->source_tree_root, 32,
@@ -388,7 +496,7 @@ static bool write_final_receipt(
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int(st, i++, r->source_clean ? 1 : 0) == SQLITE_OK &&
               sqlite3_bind_int(st, i++, r->validation_profile) == SQLITE_OK &&
-              sqlite3_bind_text(st, i++, r->producer_commit, 40,
+              sqlite3_bind_text(st, i++, r->producer_commit, (int)commit_len,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, r->fold_cursor) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, r->receipt_digest, 32,
@@ -446,9 +554,16 @@ static enum final_receipt_state final_receipt_state(
         sqlite3_finalize(st);
         return FINAL_RECEIPT_READ_ERROR;
     }
+    const char *schema =
+        consensus_state_source_receipt_schema(expected->schema_version);
+    size_t commit_len = strnlen(expected->producer_commit,
+                                sizeof(expected->producer_commit));
     bool identical =
-        receipt_text_equal(st, 0, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA,
-                           strlen(CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA)) &&
+        expected->schema_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2 &&
+        schema &&
+        consensus_state_source_receipt_commit_valid(
+            expected->schema_version, expected->producer_commit, commit_len) &&
+        receipt_text_equal(st, 0, schema, strlen(schema)) &&
         receipt_blob_equal(st, 1, expected->source_epoch_digest) &&
         receipt_blob_equal(st, 2, expected->source_tree_root) &&
         receipt_blob_equal(st, 3, expected->running_binary_digest) &&
@@ -459,7 +574,7 @@ static enum final_receipt_state final_receipt_state(
         sqlite3_column_int(st, 7) == (expected->source_clean ? 1 : 0) &&
         sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
         sqlite3_column_int(st, 8) == expected->validation_profile &&
-        receipt_text_equal(st, 9, expected->producer_commit, 40) &&
+        receipt_text_equal(st, 9, expected->producer_commit, commit_len) &&
         sqlite3_column_type(st, 10) == SQLITE_INTEGER &&
         sqlite3_column_int64(st, 10) == expected->fold_cursor &&
         receipt_blob_equal(st, 11, expected->receipt_digest);
@@ -494,22 +609,22 @@ bool consensus_state_producer_receipt_begin(sqlite3 *pdb,
         return set_err(err, err_size,
                        "producer receipt begin: invalid validation profile");
 
-    struct consensus_state_source_receipt claim;
-    memset(&claim, 0, sizeof(claim));
-    claim.validation_profile = validation_profile;
-    if (!fill_source_identity_claim(&claim))
-        return set_err(err, err_size,
-                       "producer receipt begin: build has no exact 40-hex "
-                       "commit; an unstamped build cannot earn a receipt");
-    uint8_t source_epoch[32];
-    consensus_state_source_epoch_digest(&claim, source_epoch);
-    memcpy(claim.source_epoch_digest, source_epoch, 32);
-
     uint8_t running_binary[32];
     if (!running_binary_digest(running_binary))
         return set_err(err, err_size,
                        "producer receipt begin: running executable digest "
                        "failed");
+
+    /* Compute every current-build authority input before consulting durable
+     * session state. A stored row is evidence to compare, never an input to
+     * the claim/epoch we expect from this executable. */
+    struct consensus_state_source_receipt claim;
+    uint8_t source_epoch[32];
+    if (!current_v2_claim(validation_profile, &claim, source_epoch))
+        return set_err(
+            err, err_size,
+            "producer receipt begin: build has no exact 64-hex SHA-256 "
+            "source identity; an unstamped build cannot earn a receipt");
 
     char datadir[576] = {0};
     (void)progress_store_path(datadir, sizeof(datadir));
@@ -528,16 +643,27 @@ bool consensus_state_producer_receipt_begin(sqlite3 *pdb,
     if (ok)
         ok = load_session(pdb, &existing);
     if (ok && existing.present) {
-        /* Resume: only the SAME running binary, epoch, and profile may adopt an
-         * existing session. Anything else is a foreign generation. */
-        if (memcmp(existing.running_binary_digest, running_binary, 32) != 0 ||
-            memcmp(existing.source_epoch_digest, source_epoch, 32) != 0 ||
-            existing.claim.validation_profile != validation_profile) {
+        /* V1 remains parseable for historical inspection, but cannot be
+         * resumed into current producer authority. */
+        if (existing.claim.schema_version !=
+            CONSENSUS_STATE_SOURCE_RECEIPT_V2) {
             (void)exec_checked(pdb, "ROLLBACK");
             progress_store_tx_unlock();
             return set_err(err, err_size,
-                           "producer receipt begin: datadir bound to a "
-                           "different running binary / source epoch / profile");
+                           "producer receipt begin: legacy v1 session is "
+                           "inspection-only and cannot resume");
+        }
+        /* Exact equality with the independently derived current claim is the
+         * only resume capability. A self-consistent foreign stored
+         * claim+epoch is still foreign and must never be adopted. */
+        if (!session_matches_current(&existing, &claim, source_epoch,
+                                     running_binary)) {
+            (void)exec_checked(pdb, "ROLLBACK");
+            progress_store_tx_unlock();
+            return set_err(err, err_size,
+                           "producer receipt begin: datadir session does not "
+                           "exactly match current running binary / source "
+                           "claim / source epoch / profile");
         }
     } else if (ok) {
         ok = insert_session(pdb, &claim, running_binary, datadir, start_us);
@@ -594,37 +720,41 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                        "producer receipt finalize: no start session — this "
                        "producer was not begun by a receipt-owning binary");
     }
-    if (ok &&
-        memcmp(session.running_binary_digest, running_binary, 32) != 0) {
+    if (ok && session.claim.schema_version !=
+                  CONSENSUS_STATE_SOURCE_RECEIPT_V2) {
         (void)exec_checked(pdb, "ROLLBACK");
         progress_store_tx_unlock();
         return set_err(err, err_size,
-                       "producer receipt finalize: running executable does not "
-                       "own the start session");
+                       "producer receipt finalize: legacy v1 session is "
+                       "inspection-only and cannot finalize");
+    }
+    struct consensus_state_source_receipt current_claim;
+    uint8_t current_epoch[32];
+    if (ok && !current_v2_claim(session.claim.validation_profile,
+                                &current_claim, current_epoch)) {
+        (void)exec_checked(pdb, "ROLLBACK");
+        progress_store_tx_unlock();
+        return set_err(
+            err, err_size,
+            "producer receipt finalize: build has no exact 64-hex SHA-256 "
+            "source identity; an unstamped build cannot finalize a receipt");
+    }
+    if (ok && !session_matches_current(&session, &current_claim,
+                                       current_epoch, running_binary)) {
+        (void)exec_checked(pdb, "ROLLBACK");
+        progress_store_tx_unlock();
+        return set_err(err, err_size,
+                       "producer receipt finalize: running executable/current "
+                       "build does not own the start session");
     }
 
-    /* Rebuild the full receipt from the start-session claim, verify epoch
-     * integrity, then bind chain corpus + fold cursor to the completed fold. */
+    /* Build the receipt from the independently derived current claim after
+     * exact session equality, never from durable fields under evaluation.
+     * Then bind chain corpus + fold cursor to the completed fold. */
     struct consensus_state_source_receipt receipt;
     memset(&receipt, 0, sizeof(receipt));
     if (ok) {
-        memcpy(receipt.source_tree_root, session.claim.source_tree_root, 32);
-        memcpy(receipt.toolchain_digest, session.claim.toolchain_digest, 32);
-        memcpy(receipt.build_inputs_digest, session.claim.build_inputs_digest,
-               32);
-        memcpy(receipt.producer_commit, session.claim.producer_commit, 41);
-        receipt.source_clean = session.claim.source_clean;
-        receipt.validation_profile = session.claim.validation_profile;
-        uint8_t recomputed_epoch[32];
-        consensus_state_source_epoch_digest(&receipt, recomputed_epoch);
-        if (memcmp(recomputed_epoch, session.source_epoch_digest, 32) != 0) {
-            (void)exec_checked(pdb, "ROLLBACK");
-            progress_store_tx_unlock();
-            return set_err(err, err_size,
-                           "producer receipt finalize: session claim does not "
-                           "reproduce its recorded source epoch");
-        }
-        memcpy(receipt.source_epoch_digest, recomputed_epoch, 32);
+        receipt = current_claim;
         memcpy(receipt.running_binary_digest, running_binary, 32);
     }
 
@@ -676,125 +806,5 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
         return set_err(err, err_size,
                        "producer receipt finalize: durable receipt write "
                        "failed");
-    return true;
-}
-
-/* ── Read-only producer status (node-free operator surface) ────────── */
-
-/* Query one integer column from `sql` (optionally binding one text arg). On a
- * missing table (prepare fails) or no row, returns false and leaves *out. */
-static bool pkv_query_i64(sqlite3 *db, const char *sql, const char *bind_text,
-                          int64_t *out)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
-        return false;
-    if (bind_text)
-        sqlite3_bind_text(st, 1, bind_text, -1, SQLITE_TRANSIENT);
-    bool present = false;
-    int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
-        *out = sqlite3_column_int64(st, 0);
-        present = true;
-    }
-    sqlite3_finalize(st);
-    return present;
-}
-
-/* Read producer_commit text (40-hex) from the receipt then the session row. */
-static void pkv_read_producer_commit(sqlite3 *db, char *out, size_t cap)
-{
-    if (cap == 0) return;
-    out[0] = '\0';
-    static const char *const sqls[] = {
-        "SELECT producer_commit FROM consensus_state_source_receipt "
-        "WHERE singleton=1",
-        "SELECT producer_commit FROM consensus_state_producer_session "
-        "WHERE singleton=1",
-    };
-    for (size_t i = 0; i < sizeof(sqls) / sizeof(sqls[0]); i++) {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db, sqls[i], -1, &st, NULL) != SQLITE_OK)
-            continue;
-        int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-        if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) == SQLITE_TEXT) {
-            const unsigned char *t = sqlite3_column_text(st, 0);
-            if (t && t[0]) {
-                snprintf(out, cap, "%s", (const char *)t);
-                sqlite3_finalize(st);
-                return;
-            }
-        }
-        sqlite3_finalize(st);
-    }
-}
-
-bool consensus_state_producer_status_read(const char *datadir,
-                                          struct producer_status_read *out,
-                                          char *err, size_t err_size)
-{
-    if (!out)
-        return set_err(err, err_size, "producer status: null out");
-    memset(out, 0, sizeof(*out));
-    out->utxo_apply_cursor = -1;
-    out->tip_finalize_cursor = -1;
-    out->fold_cursor = -1;
-    out->validation_profile = -1;
-    if (!datadir || !datadir[0])
-        return set_err(err, err_size, "producer status: empty datadir");
-
-    char path[1100];
-    snprintf(path, sizeof(path), "%s/progress.kv", datadir);
-    struct stat stbuf;
-    if (stat(path, &stbuf) != 0 || !S_ISREG(stbuf.st_mode)) {
-        /* No progress.kv: a producer that has not started. Not an error. */
-        out->progress_kv_present = false;
-        return true;
-    }
-
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        const char *m = db ? sqlite3_errmsg(db) : "open failed";
-        char why[256];
-        snprintf(why, sizeof(why), "producer status: open %s: %s", path, m);
-        if (db) sqlite3_close(db);
-        return set_err(err, err_size, why);
-    }
-    out->progress_kv_present = true;
-
-    int64_t v = 0;
-    if (pkv_query_i64(db,
-            "SELECT cursor FROM stage_cursor WHERE name='utxo_apply'", NULL,
-            &v))
-        out->utxo_apply_cursor = v;
-    if (pkv_query_i64(db,
-            "SELECT cursor FROM stage_cursor WHERE name='tip_finalize'", NULL,
-            &v))
-        out->tip_finalize_cursor = v;
-
-    /* session presence + start time + validation profile */
-    if (pkv_query_i64(db,
-            "SELECT start_time_us FROM consensus_state_producer_session "
-            "WHERE singleton=1", NULL, &v)) {
-        out->session_open = true;
-        out->start_time_us = v;
-    }
-    if (pkv_query_i64(db,
-            "SELECT validation_profile FROM consensus_state_producer_session "
-            "WHERE singleton=1", NULL, &v))
-        out->validation_profile = (int)v;
-
-    /* receipt presence (fold complete) + fold cursor */
-    if (pkv_query_i64(db,
-            "SELECT fold_cursor FROM consensus_state_source_receipt "
-            "WHERE singleton=1", NULL, &v)) {
-        out->receipt_finalized = true;
-        out->fold_cursor = v;
-    }
-
-    pkv_read_producer_commit(db, out->producer_commit,
-                             sizeof(out->producer_commit));
-
-    sqlite3_close(db);
     return true;
 }

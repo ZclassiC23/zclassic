@@ -3307,9 +3307,14 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "local_consensus_validation") != NULL);
         ASSERT(strstr(buf, "ZCL_DATADIR=$RPC_DATADIR") != NULL);
         ASSERT(strstr(buf, "ZCL_RPCPORT=$RPCPORT") != NULL);
-        ASSERT(strstr(buf, "ZCL_DEPLOY_NODE_LOG") != NULL);
+        ASSERT(strstr(buf, "NODE_LOG=\"$RPC_DATADIR/node.log\"") != NULL);
+        ASSERT(strstr(buf, "${ZCL_DEPLOY_NODE_LOG") == NULL);
+        ASSERT(strstr(buf, "ZCL_DEPLOY_EXPECT_SOURCE_ID") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256") != NULL);
+        ASSERT(strstr(buf, "/proc/$SERVICE_MAIN_PID/exe") != NULL);
+        ASSERT(strstr(buf, "norm_commit") == NULL);
         ASSERT(strstr(buf, "pre-RPC recovery: reindex-chainstate") != NULL);
-        ASSERT(strstr(buf, "zclassic-cli|zcl-rpc") == NULL);
+        ASSERT(strstr(buf, "zclassic-cli|zcl-rpc") != NULL);
         ASSERT(strstr(buf, "json_rpc_result") != NULL);
         ASSERT(strstr(buf, "checks.get(\"log_head\")") != NULL);
         ASSERT(strstr(buf, "checks_ca.get(\"local_height\")") != NULL);
@@ -3327,6 +3332,83 @@ static int t_tools_z_operator_diagnostics_contract(void)
         PASS();
     } _test_next:;
     free(buf);
+    return failures;
+}
+
+static int t_canonical_deploy_proof_binding_contract(void)
+{
+    int failures = 0;
+    char *make_buf = NULL;
+    char *verify_buf = NULL;
+    TEST("canonical deploy freezes one source/artifact/process proof") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &make_buf) == 0);
+
+        const char *deploy_recipe = strstr(make_buf, "\ndeploy: vendor-ready");
+        const char *seed_target = deploy_recipe
+            ? strstr(deploy_recipe, "\nseed-anchor-snapshot:") : NULL;
+        ASSERT(deploy_recipe != NULL);
+        ASSERT(seed_target != NULL);
+        const char *pinned_build = strstr(
+            deploy_recipe,
+            "$(MAKE) BUILD_SOURCE_RECORD=\"$(BUILD_SOURCE_RECORD)\" zclassic23");
+        const char *frozen_candidate = pinned_build
+            ? strstr(pinned_build, "candidate=\"$$(mktemp") : NULL;
+        const char *agentbuild = frozen_candidate
+            ? strstr(frozen_candidate,
+                     "candidate_agentbuild=\"$$(timeout 30 \"$$candidate\" agentbuild")
+            : NULL;
+        const char *source_compare = agentbuild
+            ? strstr(agentbuild,
+                     "[ \"$$candidate_source_id\" = \"$(BUILD_SOURCE_ID)\" ]")
+            : NULL;
+        const char *record_verify = source_compare
+            ? strstr(source_compare, "tools/dev/source-identity.sh verify-record")
+            : NULL;
+        const char *candidate_install = record_verify
+            ? strstr(record_verify,
+                     "install -m 755 \"$$candidate\" \"$$SERVICE_BIN\"")
+            : NULL;
+        const char *restart = candidate_install
+            ? strstr(candidate_install, "systemctl --user restart zclassic23")
+            : NULL;
+        const char *proof = restart
+            ? strstr(restart, "./tools/deploy_verify.sh") : NULL;
+        ASSERT(pinned_build != NULL && pinned_build < seed_target);
+        ASSERT(frozen_candidate != NULL && frozen_candidate < seed_target);
+        ASSERT(agentbuild != NULL && agentbuild < seed_target);
+        ASSERT(source_compare != NULL && source_compare < seed_target);
+        ASSERT(record_verify != NULL && record_verify < seed_target);
+        ASSERT(candidate_install != NULL && candidate_install < seed_target);
+        ASSERT(restart != NULL && restart < seed_target);
+        ASSERT(proof != NULL && proof < seed_target);
+        const char *nested_after_freeze = strstr(frozen_candidate, "$(MAKE)");
+        ASSERT(nested_after_freeze == NULL || nested_after_freeze >= seed_target);
+        ASSERT(strstr(candidate_install,
+                      "[ \"$$installed_sha256\" = \"$$artifact_sha256\" ]")
+               != NULL);
+
+        ASSERT(repo_path(path, sizeof(path), "tools/deploy_verify.sh") == 0);
+        ASSERT(read_entire_file(path, &verify_buf) == 0);
+        ASSERT(strstr(verify_buf, "SERVICE_MAIN_PID") != NULL);
+        ASSERT(strstr(verify_buf, "/proc/$SERVICE_MAIN_PID/cmdline") != NULL);
+        ASSERT(strstr(verify_buf, "SERVICE_START_TICKS") != NULL);
+        ASSERT(strstr(verify_buf, "service_pid_is_stable") != NULL);
+        ASSERT(strstr(verify_buf, "mainpid_owns_rpc_listener") != NULL);
+        ASSERT(strstr(verify_buf, "RPC_CONNECT=\"127.0.0.1\"") != NULL);
+        ASSERT(strstr(verify_buf,
+                      "unset ZCL_DATADIR ZCL_RPCPORT ZCL_RPCCONNECT") != NULL);
+        ASSERT(strstr(verify_buf, "${ZCL_DATADIR:-") == NULL);
+        ASSERT(strstr(verify_buf, "${ZCL_RPCPORT:-") == NULL);
+        ASSERT(strstr(verify_buf, "${ZCL_RPCCONNECT:-") == NULL);
+        ASSERT(strstr(verify_buf, "ZCL_DEPLOY_VERIFY_SELFTEST") != NULL);
+        ASSERT(run_gate_script_with_env("tools/deploy_verify.sh",
+                                        "ZCL_DEPLOY_VERIFY_SELFTEST", "1") == 0);
+        PASS();
+    } _test_next:;
+    free(make_buf);
+    free(verify_buf);
     return failures;
 }
 
@@ -3747,7 +3829,22 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "command -v sccache") != NULL);
         ASSERT(strstr(buf, "DEV_OBJ_COMPLETE") != NULL);
         ASSERT(strstr(buf, ".complete") != NULL);
-        ASSERT(strstr(buf, "direct depfile") != NULL);
+        ASSERT(strstr(buf, "DEV_COMPILE_EPOCH") != NULL);
+        ASSERT(strstr(buf, "BUILD_MUTATION") != NULL);
+        ASSERT(strstr(buf, "BUILD_COMPILER_ID") != NULL);
+        ASSERT(strstr(buf, "compile-epoch-object.sh") != NULL);
+        ASSERT(strstr(buf, "publish-build-alias.sh") != NULL);
+        ASSERT(strstr(buf, "build-epoch-selftest.sh") != NULL);
+        ASSERT(strstr(buf, "check-build-epoch-integrity") != NULL);
+        ASSERT(strstr(buf, "COV_CFLAGS = $(filter-out -flto -flto=%")
+               != NULL);
+        ASSERT(strstr(buf, "coverage-locked: coverage-clean") == NULL);
+        ASSERT(strstr(buf,
+                      "coverage-locked:\n\t@test \"$(ZCL_COVERAGE_LOCKED)\" = 1")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "test-zcl-cov-locked:\n\t@test \"$(ZCL_COVERAGE_LOCKED)\" = 1")
+               != NULL);
         ASSERT(strstr(buf, "not for release/deploy") != NULL);
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
@@ -3883,7 +3980,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "zcl.agent_fast_ci.v1") != NULL);
         ASSERT(strstr(buf, "zcl.agent_fast_plan.v1") != NULL);
-        ASSERT(strstr(buf, "zcl.agent_changed_compile_plan.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.agent_changed_compile_plan.v2") != NULL);
         ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
         ASSERT(strstr(buf, "emit_plan_json") != NULL);
         ASSERT(strstr(buf, "recommended_command") != NULL);
@@ -3913,23 +4010,22 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_COMPILE") != NULL);
-        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_COMPILE_LIMIT") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
         ASSERT(strstr(buf, "FAST_COMPILE=\"${ZCL_FAST_COMPILE:-changed}\"")
                != NULL);
         ASSERT(strstr(buf, "compile_changed_gate") != NULL);
         ASSERT(strstr(buf, "compute_changed_compile_plan") != NULL);
         ASSERT(strstr(buf, "is_graph_wide_compile_change") != NULL);
-        ASSERT(strstr(buf, "is_direct_dependency_compile_change") != NULL);
-        ASSERT(strstr(buf, "dev_depfiles_available") != NULL);
-        ASSERT(strstr(buf, "add_dependent_dev_objects") != NULL);
-        ASSERT(strstr(buf, "build/dev-obj/.complete") != NULL);
-        ASSERT(strstr(buf, "DIRECT_DEV_OBJECT_COUNT") != NULL);
+        ASSERT(strstr(buf, "is_direct_dependency_compile_change") == NULL);
+        ASSERT(strstr(buf, "dev_depfiles_available") == NULL);
+        ASSERT(strstr(buf, "add_dependent_dev_objects") == NULL);
+        ASSERT(strstr(buf, "full_source_inventory") != NULL);
+        ASSERT(strstr(buf, "proof_scope") != NULL);
         ASSERT(strstr(buf, "is_node_c_source") != NULL);
-        ASSERT(strstr(buf, "DIRECT_DEV_OBJECTS") != NULL);
-        ASSERT(strstr(buf, "fast-changed-compile: direct dev object compile")
+        ASSERT(strstr(buf, "classification_only") != NULL);
+        ASSERT(strstr(buf, "fast-changed-compile: source-wide fast-compile")
                != NULL);
-        ASSERT(strstr(buf, "fallback to fast-compile") != NULL);
+        ASSERT(strstr(buf, "path lists are classification hints only") != NULL);
         ASSERT(strstr(buf, "run_compile_gate") != NULL);
         ASSERT(strstr(buf, "changed|changed-dev|auto") != NULL);
         ASSERT(strstr(buf, "target=\"fast-compile\"") != NULL);
@@ -3937,15 +4033,16 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "make_fast \"$target\"") != NULL);
         ASSERT(strstr(buf, "fast_compile") != NULL);
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
-        ASSERT(strstr(buf, "no focused test mapping for code changes")
+        ASSERT(strstr(buf, "classification hints without focused mappings")
                != NULL);
+        ASSERT(strstr(buf, "source-wide proof scope is unchanged") != NULL);
+        ASSERT(strstr(buf, "fail_on_unmapped_code_changes") == NULL);
         ASSERT(strstr(buf, "IMPACT_RULES_FILE") != NULL);
         ASSERT(strstr(buf, "agent_impact_rules.def") != NULL);
         ASSERT(strstr(buf, "match_shared_impact_rules") != NULL);
-        ASSERT(strstr(buf, "extend $IMPACT_RULES_FILE") != NULL);
-        ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
+        ASSERT(strstr(buf, "target=\"test-parallel-fast-active\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
-        ASSERT(strstr(buf, "make_fast \"$target\" ONLY") != NULL);
+        ASSERT(strstr(buf, "make_fast \"$target\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_DEV_NODE_BIN") != NULL);
@@ -3977,7 +4074,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf,
-                      "skipping lint-fast/compile-gate/focused tests")
+                      "skipping previously proven source-wide lint/compile/test scope")
                != NULL);
         ASSERT(strstr(buf, "record_fast_cache_pass") != NULL);
         ASSERT(strstr(buf, "not full release CI") != NULL);
@@ -4123,11 +4220,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "`make fast-compile`") != NULL);
         ASSERT(strstr(buf, "`make dev-bin`") != NULL);
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
-        ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "build/bin/test-fast/epochs/") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
-        ASSERT(strstr(buf, "direct `.h`/`.def` depfile dependents")
-               != NULL);
-        ASSERT(strstr(buf, "build/dev-obj/.complete") != NULL);
+        ASSERT(strstr(buf, "classification hints only") != NULL);
+        ASSERT(strstr(buf, "build/dev-obj/epochs/") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_OPT=-Og") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
@@ -4135,7 +4231,6 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_COMPILE=strict") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_COMPILE=changed") != NULL);
-        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_COMPILE_LIMIT") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
@@ -4220,6 +4315,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "git diff --name-only \"$rsha\" \"$lsha\"")
                != NULL);
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
+        ASSERT(run_gate_script("tools/dev/build-epoch-selftest.sh", NULL)
+               == 0);
         PASS();
     } _test_next:;
     free(buf);
@@ -5110,7 +5207,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "agent_contract_at(i)")
                != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
-                      "zcl.agent_runtime_availability.v1") != NULL);
+                      "zcl.agent_runtime_availability.v2") != NULL);
         ASSERT(strstr(agent_registry_buf, "schema_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "schema_registry_source") != NULL);
         ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v1") != NULL);
@@ -5215,7 +5312,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_runtime_buf,
                       "zcl.agent_runtime_services.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
-                      "zcl.agent_runtime_availability.v1") != NULL);
+                      "zcl.agent_runtime_availability.v2") != NULL);
         ASSERT(strstr(agent_runtime_buf, "controllers/agent_contracts.def")
                != NULL);
         ASSERT(strstr(agent_runtime_buf, "agent_contract_count()") != NULL);
@@ -5555,7 +5652,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_diagnose") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_diagnose.v1") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "zcl.agent_runtime_availability.v1") != NULL);
+                      "zcl.agent_runtime_availability.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "effective_runtime_reachable") != NULL);
         ASSERT(strstr(agent_doc_buf, "effective_runtime_scope") != NULL);
         ASSERT(strstr(agent_doc_buf,
@@ -5673,7 +5770,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.background_quality_lane.v1") != NULL);
-        ASSERT(strstr(agent_doc_buf, "commit_freshness") != NULL);
+        ASSERT(strstr(agent_doc_buf, "source_id_freshness") != NULL);
         ASSERT(strstr(agent_doc_buf, "background_quality_stale") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
                != NULL);
@@ -7637,6 +7734,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_canonical_deploy_proof_binding_contract();
     failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();
     failures += t_zero_mcp_operator_docs_contract();

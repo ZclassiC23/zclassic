@@ -11,21 +11,22 @@
  *   - Sentinels: replay_canary_<kind>.json (<kind> = anchor | genesis | ...),
  *     each atomically replaced (tmp + rename) by every run — file content IS
  *     the latest verdict for that kind. Fields read: verdict, from, ts,
- *     started_ts, reason, build_commit.
+ *     started_ts, reason, source_id_sha256, artifact_sha256, build_commit.
  *
- * Cross-build staleness (load-bearing): the verdict dir is SHARED across
- * lanes and restarts. A sentinel whose build_commit differs from the running
- * binary's (zcl_build_commit()) is NOT evidence about this binary — a prior
- * build's FAIL must never latch the pager on a freshly-deployed node. Such a
- * FAIL is recorded for display (stale_build=true in the dump) but does not
- * raise; only a SAME-build (or no-build_commit legacy) FAIL pages. The drop
- * is logged once per mtime (never a silent swallow).
+ * Cross-binary staleness (load-bearing): the verdict dir is SHARED across
+ * lanes and restarts. A sentinel whose exact SHA-256 source identity or exact
+ * executable SHA-256 differs from the running binary is NOT evidence about
+ * this binary. Such a verdict is recorded for display (stale_build=true) but
+ * cannot set or clear this process's latch. A legacy/malformed FAIL may
+ * conservatively raise; a clear requires exact source + artifact identities
+ * and a current run. build_commit is display-only GitHub trace metadata and
+ * never freshness authority. Every ignored mutation is logged once per mtime.
  *
  * Pre-start staleness (load-bearing): a sentinel whose started_ts predates
  * this process is likewise not evidence about this process. It is recorded
  * for display (stale_run=true in the dump) but does not raise. Sentinels
- * missing started_ts retain legacy behavior rather than being silently
- * discarded.
+ * missing started_ts may conservatively raise on FAIL but cannot clear a
+ * source-bound latch.
  *
  * Absence/staleness policy (explicit, load-bearing): a sentinel can be
  * legitimately ABSENT — every canary run deletes its sentinel first, so a
@@ -34,8 +35,10 @@
  *   - no dir / no files / unreadable dir → quiet no-op (fresh installs that
  *     never ran the canary stay silent — no log spam, no paging);
  *   - a kind that reported FAIL stays latched FAIL until a sentinel for that
- *     SAME kind reports PASS (a re-running canary deleting its FAIL sentinel
- *     must not un-page the node before a positive PASS lands).
+ *     SAME kind reports PASS with the running binary's exact source ID, exact
+ *     executable SHA-256, and a started_ts at/after this process start (a
+ *     re-running canary deleting its FAIL sentinel must not un-page the node
+ *     before positive current proof lands).
  * Corrupt/torn JSON is skipped (logged once per file mtime) and never raises
  * on its own — only an explicit verdict=="FAIL" field pages.
  *

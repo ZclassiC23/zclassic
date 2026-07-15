@@ -24,6 +24,10 @@ SOURCE_SUPERSEDED=0
 PREREQUISITE_FAILED=0
 CAMPAIGN_SOURCE_FINGERPRINT=""
 FINAL_SOURCE_FINGERPRINT=""
+CAMPAIGN_SOURCE_MUTATION=""
+FINAL_SOURCE_MUTATION=""
+CAMPAIGN_SOURCE_RECORD=""
+FINAL_SOURCE_RECORD=""
 BENCHMARK_CONTRACT_FINGERPRINT=""
 
 declare -A CASE_COMMAND CASE_STATUS CASE_CONFIGURED CASE_REQUIRES_ACTIVATION
@@ -105,53 +109,30 @@ clock_ns()
     fi
 }
 
-# Bind every sample to the complete visible source overlay, not merely to the
-# set of dirty path names. The tracked overlay is Git's binary diff from HEAD;
-# the untracked overlay is a canonical, metadata-bounded tar stream. Including
-# the complete index-tag stream also makes hidden-bit changes visible. This is
-# a benchmark supersession guard, not publication authority.
-capture_source_fingerprint()
+# Bind every sample to the exact v2 source-identity record used by the build:
+# current source bytes plus the host-local mutation token. Git history/object
+# ids are absent, and an edit/revert ABA still supersedes the campaign.
+capture_source_record()
 {
-    local fingerprint untracked rc
-    untracked="$(mktemp "${TMPDIR:-/tmp}/zcl-dev-bench-paths.XXXXXX")" ||
-        return 2
-    fingerprint="$(
-        (
-            cd "$ROOT" || exit 2
-            git ls-files --others --exclude-standard -z |
-                LC_ALL=C sort -z > "$untracked" || exit 2
-            {
-                printf 'zcl.dev_bench_source.v1\0H\0' &&
-                git rev-parse --verify HEAD &&
-                printf '\0I\0' &&
-                git ls-files -v -z &&
-                printf '\0D\0' &&
-                git diff --binary --no-ext-diff --no-renames HEAD -- &&
-                printf '\0U\0' &&
-                {
-                    [ ! -s "$untracked" ] ||
-                        tar --no-recursion --format=posix --sort=name \
-                            --mtime=@0 --owner=0 --group=0 --numeric-owner \
-                            --pax-option=delete=atime,delete=ctime \
-                            --null --files-from="$untracked" -cf -
-                }
-            } | sha256sum | awk '{print $1}'
-        )
-    )"
-    rc=$?
-    rm -f "$untracked"
-    [ "$rc" -eq 0 ] || return 2
-    [[ "$fingerprint" =~ ^[0-9a-fA-F]{64}$ ]] || return 2
-    printf '%s' "${fingerprint,,}"
+    local tool="$ROOT/tools/dev/source-identity.sh"
+    local record source_id clean mutation extra
+    [ -x "$tool" ] || return 2
+    record="$(cd "$ROOT" && "$tool" capture-record 2>/dev/null)" || return 2
+    read -r source_id clean mutation extra <<< "$record"
+    [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] &&
+        [ "$clean" = "1" ] &&
+        [[ "$mutation" =~ ^[0-9a-f]{64}$ ]] &&
+        [ -z "${extra:-}" ] || return 2
+    printf '%s %s %s\n' "$source_id" "$clean" "$mutation"
 }
 
 source_fingerprint_matches_campaign()
 {
     local current
-    current="$(capture_source_fingerprint)" || return 2
-    if [ "$current" != "$CAMPAIGN_SOURCE_FINGERPRINT" ]; then
-        printf '[dev-loop-bench] source superseded expected=%s actual=%s\n' \
-            "$CAMPAIGN_SOURCE_FINGERPRINT" "$current" >&2
+    current="$(capture_source_record)" || return 2
+    if [ "$current" != "$CAMPAIGN_SOURCE_RECORD" ]; then
+        printf '[dev-loop-bench] source superseded expected_record=%s actual_record=%s\n' \
+            "$CAMPAIGN_SOURCE_RECORD" "$current" >&2
         return 3
     fi
 }
@@ -397,7 +378,7 @@ slo_case_status()
 emit_artifact()
 {
     local destination="$1" tmp generated_at epoch hostname kernel cpu_count
-    local commit dirty=false worktree_status_fingerprint
+    local commit dirty=false worktree_status_fingerprint final_clean
     local hot_status reload_status source_stable=false
     local overall_evaluable=false next_action sep="" name status
     mkdir -p "$(dirname "$destination")"
@@ -416,9 +397,11 @@ emit_artifact()
     worktree_status_fingerprint="$(
         git -C "$ROOT" status --porcelain=v1 --untracked-files=normal 2>/dev/null |
         sha256sum | awk '{print $1}')" || worktree_status_fingerprint=unavailable
-    FINAL_SOURCE_FINGERPRINT="$(capture_source_fingerprint 2>/dev/null)" ||
-        FINAL_SOURCE_FINGERPRINT=unavailable
-    if [ "$FINAL_SOURCE_FINGERPRINT" = "$CAMPAIGN_SOURCE_FINGERPRINT" ]; then
+    FINAL_SOURCE_RECORD="$(capture_source_record 2>/dev/null)" ||
+        FINAL_SOURCE_RECORD="unavailable 0 unavailable"
+    read -r FINAL_SOURCE_FINGERPRINT final_clean FINAL_SOURCE_MUTATION \
+        <<< "$FINAL_SOURCE_RECORD"
+    if [ "$FINAL_SOURCE_RECORD" = "$CAMPAIGN_SOURCE_RECORD" ]; then
         source_stable=true
     fi
     hot_status="$(slo_case_status hot_swap "$HOTSWAP_TARGET_MS")"
@@ -457,11 +440,15 @@ emit_artifact()
         printf '  "artifact":"%s",\n' "$(json_escape "$destination")"
         printf '  "host":{"hostname":"%s","kernel":"%s","cpu_count":%s},\n' \
             "$(json_escape "$hostname")" "$(json_escape "$kernel")" "$cpu_count"
-        printf '  "source":{"build_commit":"%s","dirty":%s,' \
+        printf '  "source":{"identity_schema":"zcl.dev_source_identity.v2",'
+        printf '"freshness_authority":"source_id_sha256_plus_mutation_token",'
+        printf '"build_commit":"%s","build_commit_semantics":"display_only_github_trace_metadata","dirty":%s,' \
             "$(json_escape "$commit")" "$dirty"
         printf '"worktree_status_sha256":"%s",' "$worktree_status_fingerprint"
         printf '"campaign_source_sha256":"%s","final_source_sha256":"%s",' \
             "$CAMPAIGN_SOURCE_FINGERPRINT" "$FINAL_SOURCE_FINGERPRINT"
+        printf '"campaign_mutation_token":"%s","final_mutation_token":"%s",' \
+            "$CAMPAIGN_SOURCE_MUTATION" "$FINAL_SOURCE_MUTATION"
         printf '"source_stable":%s},\n' "$source_stable"
         printf '  "configuration":{"iterations":%s,"warmup":%s,' \
             "$ITERATIONS" "$WARMUP"
@@ -501,7 +488,7 @@ emit_artifact()
 
 run_benchmark()
 {
-    local name status
+    local name status campaign_clean
     [ -d "$ROOT" ] || fail "repository root does not exist: $ROOT"
     is_uint "$ITERATIONS" && [ "$ITERATIONS" -gt 0 ] ||
         fail 'ZCL_DEV_BENCH_ITERATIONS must be a positive integer'
@@ -513,11 +500,15 @@ run_benchmark()
     SOURCE_SUPERSEDED=0
     PREREQUISITE_FAILED=0
     FINAL_SOURCE_FINGERPRINT=""
+    FINAL_SOURCE_MUTATION=""
+    FINAL_SOURCE_RECORD=""
     BENCHMARK_CONTRACT_FINGERPRINT="$(
         capture_benchmark_contract_fingerprint)" ||
         fail 'could not fingerprint benchmark contract'
-    CAMPAIGN_SOURCE_FINGERPRINT="$(capture_source_fingerprint)" ||
-        fail 'could not capture complete source fingerprint'
+    CAMPAIGN_SOURCE_RECORD="$(capture_source_record)" ||
+        fail 'could not capture exact source-identity v2 record'
+    read -r CAMPAIGN_SOURCE_FINGERPRINT campaign_clean CAMPAIGN_SOURCE_MUTATION \
+        <<< "$CAMPAIGN_SOURCE_RECORD"
 
     TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-loop-bench.XXXXXX")" ||
         fail 'could not create temporary workspace'
@@ -545,19 +536,72 @@ self_test()
 {
     local sandbox first second third fourth fifth marker rc
     local failure_runs failure_marker fresh_status stale_status legacy_status
+    local source_tool source_backup record_before record_after record_aba
+    local source_before source_after source_aba clean_before clean_after clean_aba
+    local mutation_before mutation_after mutation_aba
+    source_tool="$SCRIPT_DIR/source-identity.sh"
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-loop-selftest.XXXXXX")" ||
         return 1
     ROOT="$sandbox/repo"
-    mkdir -p "$ROOT"
+    mkdir -p "$ROOT/tools/dev"
+    cp "$source_tool" "$ROOT/tools/dev/source-identity.sh" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    chmod 755 "$ROOT/tools/dev/source-identity.sh"
     git -C "$ROOT" init -q || { rm -rf "$sandbox"; return 1; }
     git -C "$ROOT" config user.name zcl-dev-loop-selftest
     git -C "$ROOT" config user.email dev-loop-selftest@invalid
     printf 'baseline\n' > "$ROOT/source.txt"
-    git -C "$ROOT" add source.txt &&
+    git -C "$ROOT" add source.txt tools/dev/source-identity.sh &&
         git -C "$ROOT" commit -qm baseline || {
             rm -rf "$sandbox"
             return 1
         }
+
+    # Git history is display metadata, not benchmark supersession authority.
+    # Conversely, the v2 mutation token must reject an edit/revert ABA even
+    # when the exact source bytes (and therefore source ID) are restored.
+    record_before="$(capture_source_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    git -C "$ROOT" commit --allow-empty -qm history-only || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    record_after="$(capture_source_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    [ "$record_before" = "$record_after" ] || {
+        printf '[dev-loop-bench-selftest] FAIL: Git history superseded benchmark source authority\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    source_backup="$sandbox/source.backup"
+    cp "$ROOT/source.txt" "$source_backup"
+    printf 'transient edit\n' >> "$ROOT/source.txt"
+    cp "$source_backup" "$ROOT/source.txt"
+    chmod 600 "$ROOT/source.txt"
+    chmod 644 "$ROOT/source.txt"
+    record_aba="$(capture_source_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    read -r source_before clean_before mutation_before <<< "$record_before"
+    read -r source_after clean_after mutation_after <<< "$record_after"
+    read -r source_aba clean_aba mutation_aba <<< "$record_aba"
+    [ "$source_before" = "$source_after" ] &&
+    [ "$source_before" = "$source_aba" ] &&
+    [ "$clean_before" = 1 ] && [ "$clean_after" = 1 ] &&
+    [ "$clean_aba" = 1 ] &&
+    [ "$mutation_before" = "$mutation_after" ] &&
+    [ "$mutation_before" != "$mutation_aba" ] || {
+        printf '[dev-loop-bench-selftest] FAIL: exact source authority was not history-independent and ABA-safe\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
     ITERATIONS=3
     WARMUP=1
     ACTIVATE=0
@@ -747,24 +791,31 @@ self_test()
     }
     rm -rf "$sandbox"
     TMP_DIR=""
-    printf '[dev-loop-bench-selftest] PASS: valid JSON, content-bound epoch, fail-fast failure/supersession, safe skips, samples, percentiles\n'
+    printf '[dev-loop-bench-selftest] PASS: source-ID v2 authority is history-independent and ABA-safe; valid JSON, fail-fast supersession, safe skips, samples, percentiles\n'
 }
 
 emit_status_problem()
 {
     local status="$1" reason="$2" artifact_status="$3"
     local age="$4" stored_source="$5" current_source="$6"
-    local stored_contract="$7" current_contract="$8"
+    local stored_mutation="$7" current_mutation="$8"
+    local stored_contract="$9" current_contract="${10}"
     printf '{"schema":"zcl.dev_loop_bench.v1","status":"%s",' \
         "$(json_escape "$status")"
     printf '"artifact_status":"%s","reason":"%s",' \
         "$(json_escape "$artifact_status")" "$(json_escape "$reason")"
     printf '"artifact":"%s","artifact_age_seconds":%s,' \
         "$(json_escape "$OUTPUT")" "$age"
-    printf '"source":{"artifact_final_source_sha256":"%s",' \
+    printf '"source":{"identity_schema":"zcl.dev_source_identity.v2",'
+    printf '"freshness_authority":"source_id_sha256_plus_mutation_token",'
+    printf '"artifact_final_source_sha256":"%s",' \
         "$(json_escape "$stored_source")"
-    printf '"current_source_sha256":"%s","source_stable":false},' \
+    printf '"current_source_sha256":"%s",' \
         "$(json_escape "$current_source")"
+    printf '"artifact_final_mutation_token":"%s",' \
+        "$(json_escape "$stored_mutation")"
+    printf '"current_mutation_token":"%s","source_stable":false},' \
+        "$(json_escape "$current_mutation")"
     printf '"configuration":{"artifact_benchmark_contract_sha256":"%s",' \
         "$(json_escape "$stored_contract")"
     printf '"current_benchmark_contract_sha256":"%s"},' \
@@ -781,12 +832,14 @@ emit_status()
 {
     if [ -r "$OUTPUT" ]; then
         local artifact_status generated age now reason=""
-        local stored_source current_source stored_contract current_contract
+        local stored_source current_source stored_mutation current_mutation
+        local stored_contract current_contract current_record current_clean
         if command -v jq >/dev/null 2>&1 &&
            ! jq -e '.schema == "zcl.dev_loop_bench.v1"' "$OUTPUT" \
                 >/dev/null 2>&1; then
             emit_status_problem invalid invalid_artifact_json unknown null \
-                unavailable unavailable unavailable unavailable
+                unavailable unavailable unavailable unavailable \
+                unavailable unavailable
             return 0
         fi
         artifact_status="$(sed -n \
@@ -797,6 +850,9 @@ emit_status()
             "$OUTPUT" | head -1)"
         stored_source="$(sed -n \
             's/.*"final_source_sha256":"\([0-9a-fA-F]*\)".*/\1/p' \
+            "$OUTPUT" | head -1)"
+        stored_mutation="$(sed -n \
+            's/.*"final_mutation_token":"\([0-9a-fA-F]*\)".*/\1/p' \
             "$OUTPUT" | head -1)"
         stored_contract="$(sed -n \
             's/.*"benchmark_contract_sha256":"\([0-9a-fA-F]*\)".*/\1/p' \
@@ -810,18 +866,24 @@ emit_status()
         fi
         current_contract="$(capture_benchmark_contract_fingerprint)" ||
             current_contract=unavailable
-        current_source="$(capture_source_fingerprint 2>/dev/null)" ||
-            current_source=unavailable
+        current_record="$(capture_source_record 2>/dev/null)" ||
+            current_record="unavailable 0 unavailable"
+        read -r current_source current_clean current_mutation \
+            <<< "$current_record"
         if [[ ! "$stored_source" =~ ^[0-9a-fA-F]{64}$ ]] ||
+           [[ ! "$stored_mutation" =~ ^[0-9a-fA-F]{64}$ ]] ||
            [[ ! "$stored_contract" =~ ^[0-9a-fA-F]{64}$ ]]; then
             reason=artifact_missing_source_binding
         elif [ "$current_contract" = unavailable ] ||
-             [ "$current_source" = unavailable ]; then
+             [ "$current_source" = unavailable ] ||
+             [ "$current_mutation" = unavailable ]; then
             reason=current_source_fingerprint_unavailable
         elif [ "${stored_contract,,}" != "$current_contract" ]; then
             reason=benchmark_contract_changed
         elif [ "${stored_source,,}" != "$current_source" ]; then
             reason=artifact_source_superseded
+        elif [ "${stored_mutation,,}" != "$current_mutation" ]; then
+            reason=artifact_source_mutation_superseded
         fi
         if [ -z "$reason" ]; then
             sed -n '1,$p' "$OUTPUT"
@@ -829,6 +891,7 @@ emit_status()
         fi
         emit_status_problem stale "$reason" "$artifact_status" "$age" \
             "${stored_source:-unavailable}" "$current_source" \
+            "${stored_mutation:-unavailable}" "$current_mutation" \
             "${stored_contract:-unavailable}" "$current_contract"
         return 0
     fi

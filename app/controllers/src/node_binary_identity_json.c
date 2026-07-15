@@ -32,6 +32,8 @@ void node_binary_identity_push_json(struct json_value *obj, const char *key,
     json_push_kv_str(target, "advertised_subver", msg_version_user_agent());
     if (include_protocolversion)
         json_push_kv_int(target, "protocolversion", PROTOCOL_VERSION);
+    json_push_kv_str(target, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(target, "build_commit", zcl_build_commit());
 
     if (key) {

@@ -1,5 +1,16 @@
 # Fast-Fold Sync Plan — get the node fully synced (2026-07-14)
 
+> **2026-07-15 correction — historical plan, failed terminal parity gate.**
+> `zclassic23-mint-receipt` reached h=3,056,758 but produced 1,354,769 UTXOs
+> instead of 1,354,771 and the wrong SHA3 root. It correctly emitted no trusted
+> cure. Its deterministic crash loop was stopped after 187 retries with the
+> failed datadir preserved. Treat all `[running]`, `EXPORT-READY`, rate, and ETA claims below as
+> historical. Preserve the failed datadir, diagnose on a copy, and start a new
+> v2 receipt-owning producer only after the parity defect is understood. Live
+> node truth and current next actions are in `docs/HANDOFF.md`. Production
+> bundle activation is also contained until an independently replay-bound
+> receipt outside the self-describing artifact is implemented.
+
 **Owner directive (2026-07-14 night):** "keep going until the node is fully synced,
 don't wait on me... use workflows of subagents, get it done the right way, long term,
 in parallel... make sure what you need to run is running in a linger service so you
@@ -108,8 +119,9 @@ design and needs no approval.
   wedge). Self-checkpoint trust, no owner approval needed. **Anchor-only is sufficient** (the
   install resets the reducer to the anchor with complete state, then normal boot re-folds to
   tip from local bodies). So the SOLE critical path is: get a producer to the anchor fast.
-- [PRECONDITION found] Export only fires from a **COMMITTED build with an active source-receipt
-  session** (uncommitted worktree binary → no receipt → export refuses), and the binary must
+- [PRECONDITION found — legacy protected-v1 producer] Export only fires from a
+  **COMMITTED build with an active source-receipt session** (the protected v1
+  binary requires its exact Git commit), and the binary must
   NOT be swapped between fold-start and anchor. ⇒ the fast-fold winner must be COMMITTED (merged
   to a branch/main) and the fold run on that committed build, not a raw worktree binary.
 - [LINCHPIN RESOLVED — decisive] agent `abe76e5b`: **a `-mint-anchor-FAST` bundle CANNOT cure
@@ -123,7 +135,9 @@ design and needs no approval.
   lookahead — all preserve FULL profile) and fixing the structural ceiling (pprev/IO). Do NOT use
   `-mint-anchor-fast` or the vh-SKIP lane for the production fold — skipping crypto stamps
   CHECKPOINT_FOLD and forecloses BOTH export and install.**
-  ⇒ **Binary MUST be a committed build** (exact 40-hex git commit; `producer_receipt.c:428-431`),
+  ⇒ **The protected v1 binary MUST be its exact committed build** (legacy
+  40-hex Git claim; current v2 writers instead require the baked SHA-256 source
+  identity),
   run end-to-end so the receipt opens at fold-start (`boot_mint_anchor.c:505`) and finalizes at
   the anchor (`:743`). No binary swap mid-fold.
 - [running] Workflow `wf_1c1df811-ee0` — fast-fold binary (3 lanes + synth). Notifies on completion.
@@ -229,14 +243,19 @@ only runs the two verbs and copy-proves.
   (`:357` — `history_complete`, `activation_boundary==0`, all source cursors `0`,
   `source_fold_cursor==height+1`; a coins-only or mixed-provenance bundle can
   never install and reinstate the gap). It captures a **physically restorable
-  prior generation** via `VACUUM INTO` a sibling file under the datadir *before*
-  any write (`:371`, path returned in `result->prior_generation_path`), then
+  prior generation** via capability-relative `VACUUM INTO` from the already-
+  open singleton under the process transaction lock (path returned in
+  `result->prior_generation_path`). It immediately takes `BEGIN IMMEDIATE` and
+  requires an unchanged SQLite data-version, total-change counter, and file
+  identity before any cutover write; then it independently reopens/quick-checks
+  the sidecar-free image and fsyncs the file and directory. It then
   installs coins + anchors + nullifiers + the 8 stage cursors in **ONE
-  `BEGIN IMMEDIATE` transaction** (`:405-419`), re-verifying the coins
-  commitment/count against the manifest before `COMMIT` and rolling back on any
-  mismatch. It sets cursors to the bundle height, `coins_applied_height =
-  height+1`, **shielded activation cursor = 0**, and seeds `tip_finalize` at the
-  anchor.
+  `BEGIN IMMEDIATE` transaction**, rechecks the durable ADMIT's exact H*/hash,
+  clears stale replay/backfill/refold generation markers, re-verifies every
+  destination commitment, seeds `tip_finalize`, and requires exact
+  `H*=served=height` plus `coins_applied_height=height+1` before `COMMIT`.
+  **Shielded activation cursor = 0.** A commit error with an unprovable outcome
+  is named `COMMIT_OUTCOME_UNKNOWN`; it never falsely claims rollback.
 
 ### Why this clears the wedge (the gap-close, cited)
 
@@ -319,7 +338,8 @@ cp -a ~/.zclassic-c23.pre-cutover ~/.zclassic-c23     # install into a working c
 ZCL_DEPLOY_ALLOW_CANONICAL=1 \
   build/bin/zclassic23 -datadir=~/.zclassic-c23 -install-consensus-bundle="$BUNDLE"
 #    Expect the "INSTALLED ... reboot normally" terminal. Note the printed
-#    prior_generation_path (a VACUUM INTO copy captured before the write).
+#    prior_generation_path (a VACUUM INTO image fenced to the immediately
+#    following cutover transaction).
 
 systemctl --user start zclassic23     # normal boot; reducer re-folds anchor -> tip
 # Watch H* climb past 3,176,325 to network tip, gap blocker cleared, over the
@@ -333,10 +353,11 @@ systemctl --user start zclassic23     # normal boot; reducer re-folds anchor -> 
    the live store byte-for-state identical (`consensus_state_snapshot_install_activate.c:420`).
    Nothing half-installs.
 2. **Prior-generation swap (post-commit, surgical).** The install captured a
-   `VACUUM INTO` copy of the progress store *before* the write; swap it back:
+   `VACUUM INTO` image of the progress store, fenced by SQLite data-version and
+   total-change checks to the immediately following transaction; swap it back:
    ```bash
    systemctl --user stop zclassic23
-   cp -f <result.prior_generation_path> ~/.zclassic-c23/progress.kv   # exact prior bytes
+   cp -f <result.prior_generation_path> ~/.zclassic-c23/progress.kv   # prior logical generation
    systemctl --user start zclassic23
    ```
 3. **Whole-datadir revert (belt-and-suspenders).** Restore the untouched
@@ -374,9 +395,9 @@ producer **reaches the anchor `h=3,056,758`**. The floor producer
 table above). **The cutover cannot run until the fold reaches the anchor and the
 export succeeds.** Two secondary preconditions to verify before the export can
 even fire: (i) the producer must have an **active source-receipt session**
-(`consensus_state_producer_receipt_begin` runs at fold start; a build without an
-exact 40-hex commit earns no receipt and the export REFUSES — verify the
-producer binary is a clean committed build); (ii) the export runs in-process at
+(`consensus_state_producer_receipt_begin` runs at fold start; this protected
+legacy-v1 producer requires its exact 40-hex commit — a current v2 producer
+instead requires its baked SHA-256 source identity); (ii) the export runs in-process at
 finalize by the *exact* folding binary, so the producer unit must not be swapped
 to a different binary between fold and anchor. Accelerating the fold to the
 anchor (the `fast-fold-ceiling` workflow above) is therefore the gating task; the

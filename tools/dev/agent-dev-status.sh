@@ -33,6 +33,10 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+is_source_id_sha256() {
+    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
 artifact_json() {
     local path="$1" schema="$2"
     if [ -r "$path" ] &&
@@ -84,30 +88,38 @@ watcher_status_json() {
 }
 
 quality_freshness_json() {
-    local expected="$1" lane file commit status freshness
+    local expected_source_id="$1" expected_commit_display="$2"
+    local lane file source_id commit status freshness source_id_valid
     local present=0 current=0 stale=0 unknown=0 sep=""
-    printf '{"schema":"zcl.background_quality_freshness.v1","state_dir":"%s","expected_commit":"%s","lanes":[' \
-        "$(json_escape "$QUALITY_STATE_DIR")" "$(json_escape "$expected")"
+    printf '{"schema":"zcl.background_quality_freshness.v1","state_dir":"%s","freshness_authority":"source_id_sha256","expected_source_id_sha256":"%s","expected_commit":"%s","build_commit_semantics":"display_only_github_trace_metadata","lanes":[' \
+        "$(json_escape "$QUALITY_STATE_DIR")" \
+        "$(json_escape "$expected_source_id")" \
+        "$(json_escape "$expected_commit_display")"
     for lane in fuzz coverage tests; do
         file="$QUALITY_STATE_DIR/status/$lane.json"
-        commit=""; status="missing"; freshness="no_verdict"
+        source_id=""; commit=""; status="missing"; freshness="no_verdict"
+        source_id_valid=false
         if [ -r "$file" ]; then
             present=$((present + 1))
+            source_id="$(sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
             commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
             status="$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
             [ -n "$status" ] || status="invalid"
-            if [ -z "$commit" ] || [ -z "$expected" ]; then
+            if is_source_id_sha256 "$source_id"; then
+                source_id_valid=true
+            fi
+            if ! is_source_id_sha256 "$expected_source_id" ||
+               [ "$source_id_valid" != true ]; then
                 freshness="unknown"; unknown=$((unknown + 1))
-            elif [ "$commit" = "$expected" ] ||
-                 [ "${expected#"$commit"}" != "$expected" ] ||
-                 [ "${commit#"$expected"}" != "$commit" ]; then
+            elif [ "$source_id" = "$expected_source_id" ]; then
                 freshness="current"; current=$((current + 1))
             else
                 freshness="stale"; stale=$((stale + 1))
             fi
         fi
-        printf '%s{"lane":"%s","status":"%s","commit":"%s","freshness":"%s","path":"%s"}' \
+        printf '%s{"lane":"%s","status":"%s","source_id_sha256":"%s","source_id_valid":%s,"commit":"%s","freshness":"%s","path":"%s"}' \
             "$sep" "$lane" "$(json_escape "$status")" \
+            "$(json_escape "$source_id")" "$source_id_valid" \
             "$(json_escape "$commit")" "$freshness" "$(json_escape "$file")"
         sep=","
     done
@@ -122,19 +134,59 @@ quality_freshness_json() {
         "$([ "$freshness" = current ] && printf 'background verdicts match this build' || printf 'make quality-linger-status')"
 }
 
+quality_freshness_selftest() {
+    local tmp expected different output
+    expected="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    different="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/zcl-quality-freshness.XXXXXX")"
+    mkdir -p "$tmp/status"
+    printf '{"status":"passed","source_id_sha256":"%s","commit":"deadbeef"}\n' \
+        "$expected" > "$tmp/status/fuzz.json"
+    printf '{"status":"passed","source_id_sha256":"%s","commit":"deadbeef"}\n' \
+        "$different" > "$tmp/status/coverage.json"
+    printf '{"status":"passed","source_id_sha256":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","commit":"deadbeef"}\n' \
+        > "$tmp/status/tests.json"
+    QUALITY_STATE_DIR="$tmp"
+    output="$(quality_freshness_json "$expected" deadbeef)"
+    if ! printf '%s\n' "$output" |
+         grep -q '"freshness_authority":"source_id_sha256"' ||
+       ! printf '%s\n' "$output" |
+         grep -q '"counts":{"present":3,"current":1,"stale":1,"unknown":1}' ||
+       ! printf '%s\n' "$output" |
+         grep -q '"lane":"coverage".*"commit":"deadbeef","freshness":"stale"'; then
+        rm -rf "$tmp"
+        echo "agent-dev-status selftest: source-ID freshness decision failed" >&2
+        return 1
+    fi
+    rm -rf "$tmp"
+    printf '%s\n' 'agent-dev-status: source-ID freshness selftest PASS'
+}
+
+if [ "${ZCL_AGENT_DEV_STATUS_SELFTEST:-0}" = "1" ]; then
+    quality_freshness_selftest
+    exit $?
+fi
+
 file_state_json() {
-    local path="$1" executable="false" size="" mtime="" build_commit=""
+    local path="$1" executable="false" size="" mtime="" source_id=""
+    local build_commit="" identity="" source_id_valid=false
     if [ -x "$path" ]; then
         executable="true"
         size="$(stat -c '%s' "$path" 2>/dev/null || true)"
         mtime="$(stat -c '%y' "$path" 2>/dev/null || true)"
-        build_commit="$("$path" agentbuild 2>/dev/null |
+        identity="$("$path" agentbuild 2>/dev/null || true)"
+        source_id="$(printf '%s\n' "$identity" |
+            sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+            head -1 || true)"
+        build_commit="$(printf '%s\n' "$identity" |
             sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
             head -1 || true)"
+        is_source_id_sha256 "$source_id" && source_id_valid=true
     fi
-    printf '{"path":"%s","executable":%s,"size":"%s","mtime":"%s","build_commit":"%s"}' \
+    printf '{"path":"%s","executable":%s,"size":"%s","mtime":"%s","source_id_sha256":"%s","source_id_valid":%s,"build_commit":"%s","build_commit_semantics":"display_only_github_trace_metadata"}' \
         "$(json_escape "$path")" "$executable" \
         "$(json_escape "$size")" "$(json_escape "$mtime")" \
+        "$(json_escape "$source_id")" "$source_id_valid" \
         "$(json_escape "$build_commit")"
 }
 
@@ -296,12 +348,13 @@ rpc_json() {
 }
 
 deploy_state_summary_json() {
-    local verify_status="" verify_detail="" build_commit="" deployed_at=""
+    local verify_status="" verify_detail="" source_id="" build_commit="" deployed_at=""
     local candidate="" current="" running="" last_good="" activation_status=""
     local rollback_status="" rollback_available="false" failure_capsule=""
     if [ -r "$DEPLOY_STATE" ] && command -v jq >/dev/null 2>&1; then
         verify_status="$(jq -r '.verify_status // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         verify_detail="$(jq -r '.verify_detail // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        source_id="$(jq -r '.source_id_sha256 // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         build_commit="$(jq -r '.build_commit // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         deployed_at="$(jq -r '.deployed_at_utc // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         candidate="$(jq -r '.candidate_generation // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
@@ -314,9 +367,10 @@ deploy_state_summary_json() {
         failure_capsule="$(jq -r '.failure_capsule // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
     fi
     case "$rollback_available" in true|false) ;; *) rollback_available="false" ;; esac
-    printf '{"path":"%s","present":%s,"build_commit":"%s","deployed_at_utc":"%s","verify_status":"%s","verify_detail":"%s","candidate_generation":"%s","current_generation":"%s","running_generation":"%s","last_good_generation":"%s","activation_status":"%s","rollback_status":"%s","rollback_available":%s,"failure_capsule":"%s"}' \
+    printf '{"path":"%s","present":%s,"source_id_sha256":"%s","build_commit":"%s","build_commit_semantics":"display_only_github_trace_metadata","deployed_at_utc":"%s","verify_status":"%s","verify_detail":"%s","candidate_generation":"%s","current_generation":"%s","running_generation":"%s","last_good_generation":"%s","activation_status":"%s","rollback_status":"%s","rollback_available":%s,"failure_capsule":"%s"}' \
         "$(json_escape "$DEPLOY_STATE")" \
         "$([ -r "$DEPLOY_STATE" ] && printf true || printf false)" \
+        "$(json_escape "$source_id")" \
         "$(json_escape "$build_commit")" "$(json_escape "$deployed_at")" \
         "$(json_escape "$verify_status")" "$(json_escape "$verify_detail")" \
         "$(json_escape "$candidate")" "$(json_escape "$current")" \
@@ -429,7 +483,7 @@ emit_json() {
     local rpc_height auto_anchor auto_count agent_probe agent_ready agent_reason
     local deploy_blocker="false"
     local deploy_blocker_reason="" stale_candidate="false" staged="false" action
-    local source_commit cycle watcher index_status latency_status quality_status
+    local source_id source_commit_display cycle watcher index_status latency_status quality_status
     src="$(file_state_json "$SRC_BIN")"
     installed="$(file_state_json "$DEV_BIN")"
     service="$(service_json)"
@@ -438,13 +492,15 @@ emit_json() {
     auto="$(auto_reindex_json)"
     worker="$(worker_lane_json)"
     generations="$(generation_state_json)"
-    source_commit="$(printf '%s\n' "$src" |
+    source_commit_display="$(printf '%s\n' "$src" |
         sed -n 's/.*"build_commit":"\([^"]*\)".*/\1/p')"
+    source_id="$(printf '%s\n' "$src" |
+        sed -n 's/.*"source_id_sha256":"\([^"]*\)".*/\1/p')"
     cycle="$(artifact_json "$LATEST_CYCLE" zcl.dev_cycle.v1)"
     watcher="$(watcher_status_json)"
     index_status="$(command_json 'bash tools/dev/generate-compdb.sh --status' zcl.agent_index_runtime.v1)"
     latency_status="$(command_json 'bash tools/dev/dev-loop-bench.sh --status' zcl.dev_loop_bench.v1)"
-    quality_status="$(quality_freshness_json "$source_commit")"
+    quality_status="$(quality_freshness_json "$source_id" "$source_commit_display")"
     staged_matches && staged="true"
     active_state="$(printf '%s\n' "$service" |
         sed -n 's/.*"active_state":"\([^"]*\)".*/\1/p')"
@@ -519,8 +575,10 @@ emit_text() {
             " guard=" + .worker_lane.canonical_guard,
             "[agent-dev-status] source_bin=" + .source_binary.path +
             " installed_bin=" + .installed_binary.path +
-            " source_commit=" + .source_binary.build_commit +
-            " installed_commit=" + .installed_binary.build_commit +
+            " source_id=" + .source_binary.source_id_sha256 +
+            " installed_source_id=" + .installed_binary.source_id_sha256 +
+            " source_commit_display=" + .source_binary.build_commit +
+            " installed_commit_display=" + .installed_binary.build_commit +
             " staged_matches_source=" + (.installed_matches_source|tostring),
             "[agent-dev-status] memory current=" + .service.memory_current_bytes +
             " high=" + .service.memory_high_bytes +

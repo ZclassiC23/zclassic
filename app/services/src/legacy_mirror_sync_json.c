@@ -17,6 +17,8 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
         return false;
     struct legacy_mirror_sync_stats s;
     legacy_mirror_sync_stats_snapshot(&s);
+    json_push_kv_str(out, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(out, "build_commit", zcl_build_commit());
     json_push_kv_bool(out, "mirror_enabled", s.enabled);
     json_push_kv_str(out, "state", s.state);

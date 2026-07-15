@@ -24,20 +24,28 @@
 
 extern const char CLIENT_NAME[];
 
-/* Defined ONLY in clientversion.c. Must not be a static inline: each TU
- * would freeze the ZCL_BUILD_COMMIT macro at its own last recompile, and
- * version reporters inside one binary then disagree about which commit is
- * running. The Makefile keeps clientversion.o fresh via a commit stamp. */
+/* Defined ONLY in clientversion.c. Must not be a static inline: each TU would
+ * freeze the baked metadata at its own last recompile, and version reporters
+ * inside one binary could then disagree. The Makefile keeps clientversion.o
+ * fresh through the source/build identity stamp. */
 const char *zcl_build_commit(void);
 
-/* Exact 40-hex lowercase Git commit of the build tree, or "unknown" when the
- * build was not stamped (e.g. no git). Distinct from zcl_build_commit() (the
- * short, possibly `-dirty` display form). Baked into clientversion.o only —
- * same freshness stamp as zcl_build_commit(). The producer source receipt
- * (config/consensus_state_producer_receipt.c) uses this as producer_commit. */
+/* Compatibility getters for display fields. They return "external": Git
+ * commit ids are deliberately not baked into the sovereign executable because
+ * its exact bytes are receipt authority. GitHub publication may carry commit
+ * trace metadata in an external sidecar. */
 const char *zcl_build_commit_full(void);
 
-/* True iff the build tree had no uncommitted modifications at compile time. */
+/* Exact 64-hex lowercase SHA-256 emitted by
+ * tools/dev/source-identity.sh capture (zcl.dev_source_identity.v2), or
+ * "unknown" when the build was not source-stamped. This is the authoritative
+ * source-tree input for producer receipt v2; Git/GitHub commit metadata is not
+ * part of that receipt's digests. */
+const char *zcl_build_source_id_sha256(void);
+
+/* Legacy-named v2 capture-completeness bit. True after an exact successful
+ * source inventory capture; it is not Git HEAD cleanliness. Dirty worktree
+ * bytes are bound directly by zcl_build_source_id_sha256(). */
 bool zcl_build_source_clean(void);
 
 void FormatVersion(int nVersion, char *out, size_t out_size);

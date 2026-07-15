@@ -202,6 +202,7 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
         "zclassic23 healthcheck full");
 
     healthcheck_copy_key(result, &agent, "build_commit");
+    healthcheck_copy_key(result, &agent, "source_id_sha256");
     healthcheck_copy_key(result, &agent, "runtime_build");
     healthcheck_copy_key(result, &agent, "sync_state");
     healthcheck_copy_key(result, &agent, "readiness_status");
@@ -337,6 +338,8 @@ static bool rpc_healthcheck_full(const struct json_value *params,
         agent_security_posture_allows_public_serving(&posture);
     bool public_healthy = health.healthy && public_serving;
     json_push_kv_str(result, "status", public_healthy ? "ok" : "blocked");
+    json_push_kv_str(result, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 

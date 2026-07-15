@@ -200,33 +200,6 @@ static bool lowercase_sha256_hex(const char *value)
     return true;
 }
 
-/* An eligible source edit necessarily makes the checkout dirty while the
- * resident host may have been built from the immediately preceding clean
- * tree. `-dirty` is provenance, not an ABI revision. Compare the common base
- * commit while the explicit host ABI version/struct/capability checks above
- * continue to guard binary compatibility. Exact input_digest remains the
- * identity of the edited generation itself. */
-static size_t build_identity_base_len(const char *identity)
-{
-    size_t len = identity ? strlen(identity) : 0;
-    static const char suffix[] = "-dirty";
-    if (len > sizeof(suffix) - 1 &&
-        memcmp(identity + len - (sizeof(suffix) - 1), suffix,
-               sizeof(suffix) - 1) == 0)
-        len -= sizeof(suffix) - 1;
-    return len;
-}
-
-static bool build_identity_compatible(const char *generation,
-                                      const char *host)
-{
-    size_t generation_len = build_identity_base_len(generation);
-    size_t host_len = build_identity_base_len(host);
-    return generation && host && generation_len > 0 &&
-           generation_len == host_len &&
-           memcmp(generation, host, generation_len) == 0;
-}
-
 bool hotswap_manifest_v2_validate(
     const struct zcl_hotswap_manifest_v2 *manifest,
     char *why,
@@ -276,12 +249,14 @@ bool hotswap_manifest_v2_validate(
         MANIFEST_REJECT("missing/unsupported host capabilities: 0x%llx",
                         (unsigned long long)
                             manifest->required_host_capabilities);
-    if (!manifest_text_present(manifest->build_identity) ||
-        !build_identity_compatible(manifest->build_identity,
-                                   zcl_build_commit()))
-        MANIFEST_REJECT("build identity mismatch: generation=%s host=%s",
-                        manifest->build_identity ? manifest->build_identity : "",
-                        zcl_build_commit());
+    const char *host_source_id = zcl_build_source_id_sha256();
+    if (!lowercase_sha256_hex(manifest->build_identity) ||
+        !lowercase_sha256_hex(host_source_id) ||
+        strcmp(manifest->build_identity, host_source_id) != 0)
+        MANIFEST_REJECT(
+            "build source identity mismatch: generation=%s host=%s",
+            manifest->build_identity ? manifest->build_identity : "",
+            host_source_id ? host_source_id : "");
     const char *required_probe = manifest_text_present(manifest->source_identity)
         ? eligible_probe(manifest->source_identity) : NULL;
     if (!required_probe)

@@ -8,14 +8,15 @@
  * built three different ways: rpc_getinfo (version/protocolversion only),
  * rpc_getnetworkinfo (version/subversion/advertised_subver/protocolversion),
  * and rpc_bootstrapstatus (a nested "binary" object with
- * version/client_name/advertised_subver/build_commit). Only bootstrapstatus
- * carried build_commit before this consolidation. */
+ * version/client_name/advertised_subver/source_id_sha256/build_commit). Only
+ * bootstrapstatus carried build_commit before this consolidation. */
 
 #include <stdbool.h>
 
 struct json_value;
 
-/* Pushes version/subversion/advertised_subver/[protocolversion]/build_commit.
+/* Pushes version/subversion/advertised_subver/[protocolversion], the
+ * authoritative source_id_sha256, and display-only build_commit metadata.
  *
  * key == NULL: fields are pushed directly into obj (the getinfo /
  * getnetworkinfo shape — flat, top level).

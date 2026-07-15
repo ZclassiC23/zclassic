@@ -42,6 +42,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1121,8 +1122,12 @@ void zcl_native_handle_ops_profile(const struct zcl_command_request *request,
 static void nc_read_log_tail(const char *datadir, char *out, size_t cap)
 {
     if (cap) out[0] = '\0';
-    char path[1100];
-    (void)snprintf(path, sizeof(path), "%s/mint-progress.log", datadir);
+    char path[CONSENSUS_STATE_PRODUCER_DATADIR_MAX +
+              sizeof("/mint-progress.log")];
+    int path_len = snprintf(path, sizeof(path), "%s/mint-progress.log",
+                            datadir);
+    if (path_len < 0 || (size_t)path_len >= sizeof(path))
+        return;
     FILE *f = fopen(path, "re");
     if (!f)
         return;
@@ -1141,6 +1146,28 @@ static void nc_read_log_tail(const char *datadir, char *out, size_t cap)
     char *nl = strrchr(buf, '\n');
     const char *line = nl ? nl + 1 : buf;
     (void)snprintf(out, cap, "%s", line);
+}
+
+/* Append without ever advancing beyond the last writable byte. snprintf()
+ * returns the length it wanted to write, so adding that value after truncation
+ * would make the next pointer/capacity pair invalid. */
+static void nc_text_append(char *out, size_t cap, size_t *len,
+                           const char *format, ...)
+{
+    if (!out || cap == 0 || !len || *len >= cap)
+        return;
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(out + *len, cap - *len, format, args);
+    va_end(args);
+    if (n < 0)
+        return;
+    size_t available = cap - *len;
+    if ((size_t)n >= available) {
+        *len = cap - 1;
+        return;
+    }
+    *len += (size_t)n;
 }
 
 void zcl_native_handle_ops_producer_status(
@@ -1163,6 +1190,14 @@ void zcl_native_handle_ops_producer_status(
             "name the producer datadir to inspect");
         return;
     }
+    if (strlen(datadir) >= CONSENSUS_STATE_PRODUCER_DATADIR_MAX) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                               "normalize", false, false,
+                               "producer datadir must be at most 1023 bytes",
+                               "ops.debug.producer");
+        return;
+    }
 
     struct producer_status_read st;
     char why[256];
@@ -1181,44 +1216,50 @@ void zcl_native_handle_ops_producer_status(
 
     const char *receipt_state = st.receipt_finalized ? "finalized"
                               : st.session_open ? "open" : "absent";
-    int64_t height = st.utxo_apply_cursor >= 0 ? st.utxo_apply_cursor
+    /* utxo_apply names the NEXT height to process; tip_finalize owns its
+     * already-served height. Keep both raw cursors and preserve that semantic
+     * difference when utxo telemetry is absent. */
+    int64_t height = st.utxo_apply_cursor > 0 ? st.utxo_apply_cursor - 1
+                   : st.utxo_apply_cursor == 0 ? -1
                    : st.tip_finalize_cursor;
 
-    char t[1400];
+    char t[4096];
     size_t len = 0;
-    int n;
-    n = snprintf(t + len, sizeof(t) - len, "producer status — %s\n", datadir);
-    if (n > 0) len += (size_t)n;
+    nc_text_append(t, sizeof(t), &len, "producer status — %s\n", datadir);
     if (!st.progress_kv_present) {
-        n = snprintf(t + len, sizeof(t) - len,
-                     "  progress.kv: ABSENT (producer not started)\n");
-        if (n > 0) len += (size_t)n;
+        nc_text_append(t, sizeof(t), &len,
+                       "  progress.kv: ABSENT (producer not started)\n");
     } else {
-        n = snprintf(t + len, sizeof(t) - len,
-                     "  receipt state: %s\n", receipt_state);
-        if (n > 0) len += (size_t)n;
-        n = snprintf(t + len, sizeof(t) - len,
-                     "  fold height (utxo_apply cursor): %lld\n",
-                     (long long)height);
-        if (n > 0) len += (size_t)n;
-        n = snprintf(t + len, sizeof(t) - len,
-                     "  tip_finalize cursor: %lld  fold_cursor: %lld\n",
-                     (long long)st.tip_finalize_cursor,
-                     (long long)st.fold_cursor);
-        if (n > 0) len += (size_t)n;
-        n = snprintf(t + len, sizeof(t) - len,
-                     "  producer commit: %s  profile: %d\n",
-                     st.producer_commit[0] ? st.producer_commit : "unknown",
-                     st.validation_profile);
-        if (n > 0) len += (size_t)n;
-        n = snprintf(t + len, sizeof(t) - len, "  last log: %s\n",
-                     log_tail[0] ? log_tail : "(no mint-progress.log)");
-        if (n > 0) len += (size_t)n;
+        nc_text_append(t, sizeof(t), &len, "  receipt state: %s\n",
+                       receipt_state);
+        nc_text_append(t, sizeof(t), &len,
+                       "  fold applied-through height: %lld\n",
+                       (long long)height);
+        nc_text_append(t, sizeof(t), &len,
+                       "  utxo_apply next-height cursor: %lld\n",
+                       (long long)st.utxo_apply_cursor);
+        nc_text_append(t, sizeof(t), &len,
+                       "  tip_finalize cursor: %lld  fold_cursor: %lld\n",
+                       (long long)st.tip_finalize_cursor,
+                       (long long)st.fold_cursor);
+        nc_text_append(t, sizeof(t), &len,
+                       "  source receipt: %s  profile: %d\n",
+                       st.receipt_schema[0] ? st.receipt_schema : "unknown",
+                       st.validation_profile);
+        nc_text_append(
+            t, sizeof(t), &len, "  source root: %s\n  source epoch: %s\n",
+            st.source_tree_root[0] ? st.source_tree_root : "unknown",
+            st.source_epoch_digest[0] ? st.source_epoch_digest : "unknown");
+        nc_text_append(t, sizeof(t), &len,
+                       "  legacy producer commit: %s\n",
+                       st.producer_commit[0] ? st.producer_commit : "unknown");
+        nc_text_append(t, sizeof(t), &len, "  last log: %s\n",
+                       log_tail[0] ? log_tail : "(no mint-progress.log)");
     }
-    n = snprintf(t + len, sizeof(t) - len,
-                 "  note: rate/ETA and network target require the running node "
-                 "(`ops profile`)");
-    if (n > 0) len += (size_t)n;
+    nc_text_append(
+        t, sizeof(t), &len,
+        "  note: rate/ETA and network target require the running node "
+        "(`ops profile`)");
 
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     (void)json_push_kv_bool(&reply->data, "progress_kv_present",
@@ -1233,6 +1274,12 @@ void zcl_native_handle_ops_producer_status(
     (void)json_push_kv_int(&reply->data, "tip_finalize_cursor",
                            st.tip_finalize_cursor);
     (void)json_push_kv_int(&reply->data, "fold_cursor", st.fold_cursor);
+    (void)json_push_kv_str(&reply->data, "receipt_schema",
+                           st.receipt_schema);
+    (void)json_push_kv_str(&reply->data, "source_tree_root",
+                           st.source_tree_root);
+    (void)json_push_kv_str(&reply->data, "source_epoch_digest",
+                           st.source_epoch_digest);
     (void)json_push_kv_str(&reply->data, "producer_commit",
                            st.producer_commit);
     (void)json_push_kv_int(&reply->data, "validation_profile",

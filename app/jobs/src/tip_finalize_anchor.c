@@ -417,8 +417,14 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
         return false;
     }
 
-    /* Publish immediately, not only after the next boot. */
-    tip_finalize_publish_last_advance(height, hash);
+    /* Publish immediately only when this function owns a committed context.
+     * Snapshot activation intentionally calls us inside a larger cutover
+     * transaction; publishing before that transaction commits would expose a
+     * runtime authority pair that a later failure rolls back on disk. The
+     * terminal installer exits after commit and normal boot reconstructs the
+     * runtime projection from this durable row. */
+    if (sqlite3_get_autocommit(db) != 0)
+        tip_finalize_publish_last_advance(height, hash);
     progress_store_tx_unlock();
     return true;
 }

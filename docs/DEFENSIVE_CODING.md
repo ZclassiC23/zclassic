@@ -470,6 +470,7 @@ add/remove a gate.
 <!-- LINT-GATES-BEGIN -->
 - `check-blob-read-bounds`
 - `check-before-save-hooks`
+- `check-build-epoch-integrity`
 - `check-coins-lookup-nullcheck`
 - `check-condition-cooldown`
 - `check-consensus-parity`
@@ -543,6 +544,7 @@ add/remove a gate.
 - `check-hotswap-swappable-shape`
 - `check-release-no-dev-symbols`
 - `check-vcs-no-git`
+- `check-vcs-no-sha1`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

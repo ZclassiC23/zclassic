@@ -225,6 +225,8 @@ static void base_request(struct dev_activation_request *req, struct sandbox *sb,
     req->repo_root = sb->home;
     req->artifact_path = artifact;
     req->build_commit = "goldencommit";
+    req->source_identity =
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     req->build_type = "fast";
     req->gen_root = sb->gen_root;
     req->datadir = sb->datadir;

@@ -199,16 +199,18 @@ void soak_attestation_tick(void)
         reason_esc[out_pos] = '\0';
     }
 
+    const char *source_id = zcl_build_source_id_sha256();
     const char *commit = zcl_build_commit();
 
     /* Format the JSON line.  Keep it compact (one line, no trailing space). */
-    char line[512];
+    char line[640];
     int line_len = snprintf(line, sizeof(line),
         "{\"ts\":%lld,\"height\":%d,\"healthy\":%s,"
         "\"degraded_reason\":\"%s\","
         "\"security_review_required\":%s,"
         "\"security_posture_ok\":%s,\"window_eligible\":%s,"
-        "\"build_commit\":\"%s\",\"uptime_s\":%lld}\n",
+        "\"source_id_sha256\":\"%s\",\"build_commit\":\"%s\","
+        "\"uptime_s\":%lld}\n",
         (long long)ts_now,
         height,
         healthy ? "true" : "false",
@@ -216,6 +218,7 @@ void soak_attestation_tick(void)
         security_posture.review_required ? "true" : "false",
         security_ok ? "true" : "false",
         window_eligible ? "true" : "false",
+        source_id ? source_id : "unknown",
         commit ? commit : "unknown",
         (long long)uptime);
 

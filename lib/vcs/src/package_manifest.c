@@ -17,8 +17,8 @@
 static const uint8_t package_magic[8] = {
     'Z', 'C', 'L', 'P', 'K', 'G', '\r', '\n'
 };
-static const uint8_t file_hash_domain[] = "zcl.package_file.v1";
-static const uint8_t root_hash_domain[] = "zcl.package_manifest.v1";
+static const uint8_t file_hash_domain[] = VCS_PACKAGE_FILE_HASH_DOMAIN;
+static const uint8_t root_hash_domain[] = VCS_PACKAGE_ROOT_HASH_DOMAIN;
 
 static bool package_mode_valid(uint32_t mode)
 {
@@ -165,10 +165,13 @@ bool vcs_package_manifest_add(struct vcs_package_manifest *manifest,
         chunk_count > VCS_PACKAGE_MAX_TOTAL_CHUNKS - total_chunks)
         LOG_FAIL("vcs.package", "package aggregate limit exceeded");
 
-    for (size_t i = 0; i < manifest->count; i++) {
-        if (strcmp(manifest->files[i].path, path) == 0)
-            LOG_FAIL("vcs.package", "duplicate package path %s", path);
-    }
+    size_t insert_at = 0;
+    while (insert_at < manifest->count &&
+           strcmp(manifest->files[insert_at].path, path) < 0)
+        insert_at++;
+    if (insert_at < manifest->count &&
+        strcmp(manifest->files[insert_at].path, path) == 0)
+        LOG_FAIL("vcs.package", "duplicate package path %s", path);
 
     if (manifest->count == manifest->cap) {
         size_t new_cap = manifest->cap ? manifest->cap * 2 : 16;
@@ -199,12 +202,18 @@ bool vcs_package_manifest_add(struct vcs_package_manifest *manifest,
         memcpy(hash_copy, chunk_hashes, hash_bytes);
     }
 
-    struct vcs_package_file *file = &manifest->files[manifest->count++];
+    if (insert_at < manifest->count) {
+        memmove(&manifest->files[insert_at + 1],
+                &manifest->files[insert_at],
+                (manifest->count - insert_at) * sizeof(*manifest->files));
+    }
+    struct vcs_package_file *file = &manifest->files[insert_at];
     file->path = path_copy;
     file->mode = mode;
     file->size = size;
     file->chunk_count = chunk_count;
     file->chunk_hashes = hash_copy;
+    manifest->count++;
     return true;
 }
 

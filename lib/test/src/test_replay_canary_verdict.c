@@ -44,6 +44,12 @@
  * Makefile AND the canary harness, so the shell-out hits the right file
  * regardless of the cwd the suite runs in. Bounded walk. ─────────── */
 #define CANARY_REL "tools/scripts/replay_canary.sh"
+#define CANARY_SOURCE_A \
+    "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" \
+    "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa"
+#define CANARY_SOURCE_B \
+    "bbbbbbbbbbbbbbbb" "bbbbbbbbbbbbbbbb" \
+    "bbbbbbbbbbbbbbbb" "bbbbbbbbbbbbbbbb"
 
 static const char *repo_root(void)
 {
@@ -100,6 +106,49 @@ static bool read_file(const char *path, char *buf, size_t bufsz)
     return r > 0;
 }
 
+static bool sha256_file_hex(const char *path, char out[65])
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    struct sha256_ctx ctx;
+    sha256_init(&ctx);
+    unsigned char buf[4096];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        sha256_write(&ctx, buf, n);
+    bool ok = !ferror(f) && fclose(f) == 0;
+    if (!ok) return false;
+
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    static const char hex[] = "0123456789abcdef";
+    sha256_finalize(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[64] = '\0';
+    return true;
+}
+
+static bool write_identity_fixture_binary(const char *dir, char *out,
+                                          size_t outsz)
+{
+    if (snprintf(out, outsz, "%s/identity-fixture", dir) >= (int)outsz)
+        return false;
+    char script[512];
+    snprintf(script, sizeof(script),
+             "#!/usr/bin/env bash\n"
+             "if [ \"${1:-}\" = agentbuild ]; then\n"
+             "  printf '%%s\\n' '{\"source_id_sha256\":\"%s\","
+             "\"build_commit\":\"fixture-trace\"}'\n"
+             "  exit 0\n"
+             "fi\n"
+             "exit 2\n", CANARY_SOURCE_A);
+    write_file(dir, "identity-fixture", script);
+    return chmod(out, 0700) == 0;
+}
+
 /* Write the five baseline PASS fixtures into a fresh fixture dir, then
  * apply a per-mode mutation that flips exactly one assertion. */
 static void seed_fixtures(const char *fx, const char *mode)
@@ -143,6 +192,14 @@ static void seed_fixtures(const char *fx, const char *mode)
             "{\"sha3_hash\":\"00000000000000000000000000000000"
             "00000000000000000000000000000bad\","
             "\"height\":3056758,\"utxo_count\":1354771}\n");
+    } else if (strcmp(mode, "fail-sha3-missing") == 0) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/getutxocommitment.json", fx);
+        unlink(path);
+    } else if (strcmp(mode, "fail-sha3-malformed") == 0) {
+        write_file(fx, "getutxocommitment.json",
+            "{\"sha3_hash\":\"azzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\",\"height\":3145329}\n");
     } else if (strcmp(mode, "fail-crossnode") == 0) {
         /* zclassicd txouts disagree with the node => "crossnode_txouts". */
         write_file(fx, "zd_gettxoutsetinfo.json",
@@ -182,18 +239,27 @@ static int run_canary_selftest(const char *mode, const char *from,
     const char *root = repo_root();
     if (!root) return -999;
 
-    char fx[PATH_MAX], vd[PATH_MAX];
+    char fx[PATH_MAX], vd[PATH_MAX], identity_bin[PATH_MAX];
     snprintf(fx, sizeof(fx), "/tmp/test_canary_fx_%d_%s", (int)getpid(), mode);
     snprintf(vd, sizeof(vd), "/tmp/test_canary_vd_%d_%s", (int)getpid(), mode);
     mkdir(fx, 0755);
     mkdir(vd, 0755);
     seed_fixtures(fx, mode);
+    if (!write_identity_fixture_binary(fx, identity_bin,
+                                       sizeof(identity_bin))) {
+        char rm_failed[PATH_MAX * 2 + 32];
+        snprintf(rm_failed, sizeof(rm_failed),
+                 "rm -rf '%s' '%s'", fx, vd);
+        if (system(rm_failed) != 0) { /* best-effort */ }
+        return -998;
+    }
 
-    char cmd[PATH_MAX * 3];
+    char cmd[PATH_MAX * 4];
     snprintf(cmd, sizeof(cmd),
         "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
+        "ZCL_CANARY_SELFTEST_NODE_BIN='%s' "
         "bash '%s/%s' --from=%s --self-test=%s >/dev/null 2>&1",
-        fx, vd, root, CANARY_REL, from, mode);
+        fx, vd, identity_bin, root, CANARY_REL, from, mode);
 
     int rc = system(cmd);
     int exit_code = (rc == -1) ? -1 : WEXITSTATUS(rc);
@@ -270,6 +336,38 @@ static int test_fail_sha3_fires(void)
         ASSERT(ec != 0);
         ASSERT_STR_EQ(verdict, "FAIL");
         ASSERT_STR_EQ(reason, "sha3_mismatch");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_missing_sha3_fires(void)
+{
+    int failures = 0;
+    TEST("replay-canary: missing commitment RPC => FAIL") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-sha3-missing", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "rpc_unreachable_getutxocommitment");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_malformed_sha3_fires(void)
+{
+    int failures = 0;
+    TEST("replay-canary: 64-byte nonhex commitment => FAIL") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-sha3-malformed", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "sha3_malformed");
         PASS();
     } _test_next:;
     return failures;
@@ -399,6 +497,7 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
         if (!root) { printf("SKIP (repo root not found)\n"); break; }
 
         char fx[PATH_MAX], vd[PATH_MAX], fifo[PATH_MAX];
+        char identity_bin[PATH_MAX];
         snprintf(fx, sizeof(fx), "/tmp/test_canary_kill_fx_%d", (int)getpid());
         snprintf(vd, sizeof(vd), "/tmp/test_canary_kill_vd_%d", (int)getpid());
         snprintf(fifo, sizeof(fifo), "/tmp/test_canary_kill_fifo_%d", (int)getpid());
@@ -406,6 +505,11 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
         mkdir(vd, 0755);
         /* Valid fixtures: an UNINTERRUPTED run would write a fresh PASS. */
         seed_fixtures(fx, "pass");
+        if (!write_identity_fixture_binary(fx, identity_bin,
+                                           sizeof(identity_bin))) {
+            printf("FAIL (could not create identity fixture)\n");
+            failures++; goto _kill_cleanup;
+        }
         /* A stale PASS leftover from a previous successful run. */
         long stale_ts = seed_stale_pass(vd, "anchor");
         if (stale_ts == 0) {
@@ -429,12 +533,13 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
              * blocks on the never-fed FIFO BEFORE evaluating/writing — so the
              * kill lands inside a genuine run, mid-harness. */
             setsid();
-            char cmd[PATH_MAX * 4];
+            char cmd[PATH_MAX * 5];
             snprintf(cmd, sizeof(cmd),
                 "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
                 "ZCL_CANARY_SELFTEST_BLOCK_FIFO='%s' "
+                "ZCL_CANARY_SELFTEST_NODE_BIN='%s' "
                 "exec bash '%s/%s' --from=anchor --self-test=pass",
-                fx, vd, fifo, root, CANARY_REL);
+                fx, vd, fifo, identity_bin, root, CANARY_REL);
             execlp("sh", "sh", "-c", cmd, (char *)NULL);
             _exit(127);
         }
@@ -499,20 +604,23 @@ static int test_pass_replaces_stale_sentinel(void)
         const char *root = repo_root();
         if (!root) { printf("SKIP (repo root not found)\n"); break; }
 
-        char fx[PATH_MAX], vd[PATH_MAX];
+        char fx[PATH_MAX], vd[PATH_MAX], identity_bin[PATH_MAX];
         snprintf(fx, sizeof(fx), "/tmp/test_canary_stale_fx_%d", (int)getpid());
         snprintf(vd, sizeof(vd), "/tmp/test_canary_stale_vd_%d", (int)getpid());
         mkdir(fx, 0755);
         mkdir(vd, 0755);
         seed_fixtures(fx, "pass");
+        ASSERT(write_identity_fixture_binary(fx, identity_bin,
+                                              sizeof(identity_bin)));
         long stale_ts = seed_stale_pass(vd, "anchor");
         ASSERT(stale_ts != 0);
 
-        char cmd[PATH_MAX * 3];
+        char cmd[PATH_MAX * 4];
         snprintf(cmd, sizeof(cmd),
             "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
+            "ZCL_CANARY_SELFTEST_NODE_BIN='%s' "
             "bash '%s/%s' --from=anchor --self-test=pass >/dev/null 2>&1",
-            fx, vd, root, CANARY_REL);
+            fx, vd, identity_bin, root, CANARY_REL);
         int rc = system(cmd);
         ASSERT_EQ((rc == -1) ? -1 : WEXITSTATUS(rc), 0);
 
@@ -522,6 +630,8 @@ static int test_pass_replaces_stale_sentinel(void)
         ASSERT(read_file(sentinel, buf, sizeof(buf)));
         /* Verdict still PASS, but started_ts is the CURRENT run, not stale. */
         ASSERT(strstr(buf, "\"verdict\":\"PASS\"") != NULL);
+        ASSERT(strstr(buf, "\"source_id_sha256\":") != NULL);
+        ASSERT(strstr(buf, "\"artifact_sha256\":") != NULL);
         const char *s = strstr(buf, "\"started_ts\":");
         ASSERT(s != NULL);
         long got = atol(s + strlen("\"started_ts\":"));
@@ -536,6 +646,133 @@ static int test_pass_replaces_stale_sentinel(void)
         char rm[PATH_MAX + 32];
         snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
         if (system(rm) != 0) { /* best-effort */ }
+    } _test_next:;
+    return failures;
+}
+
+/* A replay can run for hours while build/bin is replaced. The harness must
+ * bind its verdict to identity captured before the run, not re-query a mutable
+ * executable pathname when it writes PASS. This fixture blocks after capture,
+ * swaps the fake executable from source A to source B, then completes. */
+static int test_identity_is_captured_once_before_replay(void)
+{
+    int failures = 0;
+    TEST("replay-canary: verdict identity survives executable-path replacement") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        char fx[PATH_MAX], vd[PATH_MAX], fifo[PATH_MAX], fake[PATH_MAX];
+        snprintf(fx, sizeof(fx), "/tmp/test_canary_id_fx_%d", (int)getpid());
+        snprintf(vd, sizeof(vd), "/tmp/test_canary_id_vd_%d", (int)getpid());
+        snprintf(fifo, sizeof(fifo), "/tmp/test_canary_id_fifo_%d", (int)getpid());
+        snprintf(fake, sizeof(fake), "/tmp/test_canary_id_bin_%d", (int)getpid());
+        mkdir(fx, 0755);
+        mkdir(vd, 0755);
+        seed_fixtures(fx, "pass");
+
+        char script_a[512];
+        snprintf(script_a, sizeof(script_a),
+                 "#!/usr/bin/env bash\n"
+                 "if [ \"${1:-}\" = agentbuild ]; then\n"
+                 "  printf '%%s\\n' '{\"source_id_sha256\":\"%s\","
+                 "\"build_commit\":\"trace-a\"}'\n"
+                 "  exit 0\n"
+                 "fi\n"
+                 "exit 2\n", CANARY_SOURCE_A);
+        write_file("/tmp", strrchr(fake, '/') + 1, script_a);
+        bool fake_ready = chmod(fake, 0700) == 0;
+        char expected_artifact[65] = {0};
+        fake_ready = fake_ready && sha256_file_hex(fake, expected_artifact);
+
+        unlink(fifo);
+        bool fifo_ready = mkfifo(fifo, 0600) == 0;
+        pid_t pid = -1;
+        if (fake_ready && fifo_ready) pid = fork();
+        if (pid == 0) {
+            setsid();
+            char cmd[PATH_MAX * 5];
+            snprintf(cmd, sizeof(cmd),
+                     "ZCL_CANARY_SELFTEST_DIR='%s' "
+                     "ZCL_CANARY_VERDICT_DIR='%s' "
+                     "ZCL_CANARY_SELFTEST_BLOCK_FIFO='%s' "
+                     "ZCL_CANARY_SELFTEST_NODE_BIN='%s' "
+                     "exec bash '%s/%s' --from=anchor --self-test=pass",
+                     fx, vd, fifo, fake, root, CANARY_REL);
+            execlp("sh", "sh", "-c", cmd, (char *)NULL);
+            _exit(127);
+        }
+
+        int writer = -1;
+        if (pid > 0) {
+            for (int i = 0; i < 500 && writer < 0; i++) {
+                writer = open(fifo, O_WRONLY | O_NONBLOCK);
+                if (writer < 0 && errno != ENXIO && errno != ENOENT) break;
+                if (writer < 0) {
+                    struct timespec ts = { .tv_sec = 0,
+                                           .tv_nsec = 10 * 1000 * 1000 };
+                    nanosleep(&ts, NULL);
+                }
+            }
+        }
+
+        bool swapped = false;
+        if (writer >= 0) {
+            char script_b[512];
+            snprintf(script_b, sizeof(script_b),
+                     "#!/usr/bin/env bash\n"
+                     "if [ \"${1:-}\" = agentbuild ]; then\n"
+                     "  printf '%%s\\n' '{\"source_id_sha256\":\"%s\","
+                     "\"build_commit\":\"trace-b\"}'\n"
+                     "  exit 0\n"
+                     "fi\n"
+                     "exit 2\n", CANARY_SOURCE_B);
+            write_file("/tmp", strrchr(fake, '/') + 1, script_b);
+            swapped = chmod(fake, 0700) == 0;
+            if (write(writer, "continue\n", 9) != 9) swapped = false;
+            close(writer);
+        }
+
+        int wstatus = 0;
+        if (pid > 0) {
+            if (writer < 0) {
+                kill(-pid, SIGKILL);
+                kill(pid, SIGKILL);
+            }
+            waitpid(pid, &wstatus, 0);
+        }
+
+        char sentinel[PATH_MAX], body[4096] = {0};
+        snprintf(sentinel, sizeof(sentinel),
+                 "%s/replay_canary_anchor.json", vd);
+        bool sentinel_ok = read_file(sentinel, body, sizeof(body));
+        char expected_source[128], rejected_source[128], expected_binary[128];
+        snprintf(expected_source, sizeof(expected_source),
+                 "\"source_id_sha256\":\"%s\"", CANARY_SOURCE_A);
+        snprintf(rejected_source, sizeof(rejected_source),
+                 "\"source_id_sha256\":\"%s\"", CANARY_SOURCE_B);
+        snprintf(expected_binary, sizeof(expected_binary),
+                 "\"artifact_sha256\":\"%s\"", expected_artifact);
+        bool child_ok = pid > 0 && WIFEXITED(wstatus) &&
+                        WEXITSTATUS(wstatus) == 0;
+        bool source_ok = sentinel_ok && strstr(body, expected_source) != NULL &&
+                         strstr(body, rejected_source) == NULL;
+        bool artifact_ok = sentinel_ok &&
+                           strstr(body, expected_binary) != NULL;
+
+        unlink(fifo);
+        unlink(fake);
+        char rm[PATH_MAX * 2 + 32];
+        snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
+        if (system(rm) != 0) { /* best-effort */ }
+
+        ASSERT(fake_ready);
+        ASSERT(fifo_ready);
+        ASSERT(writer >= 0);
+        ASSERT(swapped);
+        ASSERT(child_ok);
+        ASSERT(source_ok);
+        ASSERT(artifact_ok);
+        PASS();
     } _test_next:;
     return failures;
 }
@@ -567,12 +804,15 @@ int test_replay_canary_verdict(void)
     failures += test_pass_writes_pass_sentinel();
     failures += test_fail_rejects_fires();
     failures += test_fail_sha3_fires();
+    failures += test_missing_sha3_fires();
+    failures += test_malformed_sha3_fires();
     failures += test_fail_crossnode_fires();
     failures += test_fail_timeout_fires();
     failures += test_fail_elapsed_too_fast_fires();
     failures += test_fail_elapsed_too_slow_fires();
     failures += test_sigkill_midrun_clears_stale_no_fresh_pass();
     failures += test_pass_replaces_stale_sentinel();
+    failures += test_identity_is_captured_once_before_replay();
     failures += test_from_genesis_sentinel_name();
     return failures;
 }

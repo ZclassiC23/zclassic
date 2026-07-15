@@ -107,6 +107,7 @@ static int test_line_format(void)
                   has_json_key(buf, "security_review_required") &&
                   has_json_key(buf, "security_posture_ok") &&
                   has_json_key(buf, "window_eligible") &&
+                  has_json_key(buf, "source_id_sha256") &&
                   has_json_key(buf, "build_commit")    &&
                   has_json_key(buf, "uptime_s");
         if (!ok) {

@@ -221,8 +221,9 @@ static bool cse_binary_digest(uint8_t out[32])
     return ok;
 }
 
-static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
-                             uint8_t validation_profile, bool corrupt)
+static bool cse_seed_receipt_version(sqlite3 *db, uint8_t hash[2][32],
+                                     uint8_t validation_profile, bool corrupt,
+                                     uint8_t receipt_version)
 {
     if (!cse_exec(db,
             "CREATE TABLE IF NOT EXISTS consensus_state_source_receipt("
@@ -236,6 +237,7 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
         return false;
     struct consensus_state_source_receipt receipt;
     memset(&receipt, 0, sizeof(receipt));
+    receipt.schema_version = receipt_version;
     for (size_t i = 0; i < 32; i++) {
         receipt.source_tree_root[i] = (uint8_t)(0x31u + i);
         receipt.toolchain_digest[i] = (uint8_t)(0x71u + i);
@@ -244,8 +246,10 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
     if (!cse_binary_digest(receipt.running_binary_digest))
         return false;
     cse_chain_corpus_digest(hash, receipt.chain_corpus_digest);
-    snprintf(receipt.producer_commit, sizeof(receipt.producer_commit),
-             "0123456789abcdef0123456789abcdef01234567");
+    if (receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V1) {
+        snprintf(receipt.producer_commit, sizeof(receipt.producer_commit),
+                 "0123456789abcdef0123456789abcdef01234567");
+    }
     receipt.source_clean = true;
     receipt.validation_profile = validation_profile;
     receipt.fold_cursor = 2;
@@ -260,8 +264,12 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
             "(1,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
         return false;
     int i = 1;
-    bool ok = sqlite3_bind_text(st, i++,
-                                CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA, -1,
+    const char *receipt_schema =
+        consensus_state_source_receipt_schema(receipt.schema_version);
+    size_t commit_len = strnlen(receipt.producer_commit,
+                                sizeof(receipt.producer_commit));
+    bool ok = receipt_schema &&
+              sqlite3_bind_text(st, i++, receipt_schema, -1,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt.source_epoch_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
@@ -279,7 +287,8 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
                   SQLITE_OK &&
               sqlite3_bind_int(st, i++, receipt.validation_profile) ==
                   SQLITE_OK &&
-              sqlite3_bind_text(st, i++, receipt.producer_commit, 40,
+              sqlite3_bind_text(st, i++, receipt.producer_commit,
+                                (int)commit_len,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, receipt.fold_cursor) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt.receipt_digest, 32,
@@ -290,6 +299,14 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
         ok = progress_meta_set(db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
                                receipt.source_epoch_digest, 32);
     return ok;
+}
+
+static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
+                             uint8_t validation_profile, bool corrupt)
+{
+    return cse_seed_receipt_version(
+        db, hash, validation_profile, corrupt,
+        CONSENSUS_STATE_SOURCE_RECEIPT_V2);
 }
 
 static bool cse_insert_tip(sqlite3 *db, int height, const char *status,
@@ -438,6 +455,7 @@ int test_consensus_state_snapshot_export(void)
 
     char output[512];
     char checkpoint_output[512];
+    char legacy_v1_output[512];
     char legacy_backfill_output[512];
     char embedded_status_output[512];
     char embedded_receipt_schema_output[512];
@@ -454,6 +472,8 @@ int test_consensus_state_snapshot_export(void)
     snprintf(output, sizeof(output), "%s/complete.bundle.db", export_dir);
     snprintf(checkpoint_output, sizeof(checkpoint_output),
              "%s/checkpoint.bundle.db", export_dir);
+    snprintf(legacy_v1_output, sizeof(legacy_v1_output),
+             "%s/legacy-v1.bundle.db", export_dir);
     snprintf(legacy_backfill_output, sizeof(legacy_backfill_output),
              "%s/legacy-backfill.bundle.db", export_dir);
     snprintf(embedded_status_output, sizeof(embedded_status_output),
@@ -561,6 +581,21 @@ int test_consensus_state_snapshot_export(void)
               access(wired_bundle, F_OK) == 0);
     (void)unlink(wired_bundle);
 
+    CSE_CHECK("seed self-consistent legacy v1 inspection receipt",
+              cse_seed_receipt_version(
+                  db, hash, CONSENSUS_STATE_VALIDATION_FULL, false,
+                  CONSENSUS_STATE_SOURCE_RECEIPT_V1));
+    request.output_name = "legacy-v1.bundle.db";
+    struct consensus_state_export_result legacy_v1_result;
+    CSE_CHECK("legacy v1 receipt is inspection-only and publishes nothing",
+              !consensus_state_snapshot_export(db, &request,
+                                               &legacy_v1_result) &&
+              legacy_v1_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(legacy_v1_output, F_OK) != 0);
+    CSE_CHECK("restore authoritative v2 source receipt",
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, false));
+
     struct consensus_state_export_result typed_result;
     CSE_CHECK("numeric-prefix TEXT coin fixture writes",
               cse_exec(db,
@@ -643,7 +678,7 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("restore canonical receipt schema",
               cse_exec(db,
                   "UPDATE consensus_state_source_receipt SET schema='"
-                  CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA "'"));
+                  CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2 "'"));
 
     CSE_CHECK("relabel only UTXO evidence as checkpoint-only",
               cse_exec(db,
@@ -934,6 +969,7 @@ int test_consensus_state_snapshot_export(void)
         close(output_dir_fd);
     (void)unlink(output);
     (void)unlink(checkpoint_output);
+    (void)unlink(legacy_v1_output);
     (void)unlink(legacy_backfill_output);
     (void)unlink(embedded_status_output);
     (void)unlink(embedded_receipt_schema_output);

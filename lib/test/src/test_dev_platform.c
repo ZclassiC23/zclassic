@@ -290,44 +290,6 @@ static int test_watcher_publication_containment(void)
         ASSERT(!zcl_devloop_publish_mode_applies(
             zcl_devloop_default_watch_publish_mode()));
 
-        const char *dirty[] = {
-            "app/services/src/node_health_service.c",
-            "core/consensus/src/check_block.c",
-        };
-        char why[256];
-        const char *omit_sealed[] = {
-            "app/services/src/node_health_service.c",
-        };
-        ASSERT(!zcl_devloop_changed_set_exact(omit_sealed, 1, dirty, 2,
-                                              why, sizeof(why)));
-        ASSERT(strstr(why, "omitted_dirty_file=core/consensus/") != NULL);
-        const char *omit_nonsealed[] = {
-            "core/consensus/src/check_block.c",
-        };
-        ASSERT(!zcl_devloop_changed_set_exact(omit_nonsealed, 1, dirty, 2,
-                                              why, sizeof(why)));
-        ASSERT(strstr(why, "omitted_dirty_file=app/services/") != NULL);
-        ASSERT(zcl_devloop_changed_set_exact(dirty, 2, dirty, 2,
-                                             why, sizeof(why)));
-        const char *duplicate[] = {
-            "app/services/src/node_health_service.c",
-            "app/services/src/node_health_service.c",
-        };
-        ASSERT(!zcl_devloop_changed_set_exact(duplicate, 2, dirty, 2,
-                                              why, sizeof(why)));
-        ASSERT(strstr(why, "requested_path_duplicate=") != NULL);
-
-        /* Event paths only wake the loop.  Classification is derived from
-         * the complete Git-visible source set, so a docs event cannot hide a
-         * simultaneous sealed consensus edit in verify-only mode. */
-        const char *docs_event[] = { "docs/HANDOFF.md" };
-        const char *complete_dirty[] = {
-            "docs/HANDOFF.md", "core/consensus/src/check_block.c",
-        };
-        ASSERT(zcl_devloop_plan_discovered_changes(
-            docs_event, 1, complete_dirty, 2, &plan));
-        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
-        ASSERT(plan.consensus_risk && plan.sealed_core && !plan.docs_only);
         PASS();
     } _test_next:;
     return failures;

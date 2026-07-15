@@ -51,18 +51,25 @@ fast_plan_json() {
 }
 
 build_json() {
-    local executable="false" build_commit="" mtime="" size=""
+    local executable="false" source_id="" build_commit="" mtime="" size=""
+    local identity="" source_id_valid="false"
     if [ -x "$SRC_BIN" ]; then
         executable="true"
         mtime="$(stat -c '%y' "$SRC_BIN" 2>/dev/null || true)"
         size="$(stat -c '%s' "$SRC_BIN" 2>/dev/null || true)"
-        build_commit="$("$SRC_BIN" agentbuild 2>/dev/null |
+        identity="$("$SRC_BIN" agentbuild 2>/dev/null || true)"
+        source_id="$(printf '%s\n' "$identity" |
+            sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+            head -1 || true)"
+        build_commit="$(printf '%s\n' "$identity" |
             sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
             head -1 || true)"
+        [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] && source_id_valid="true"
     fi
-    printf '{"binary":"%s","executable":%s,"size":"%s","mtime":"%s","build_commit":"%s"}' \
+    printf '{"binary":"%s","executable":%s,"size":"%s","mtime":"%s","source_id_sha256":"%s","source_id_valid":%s,"build_commit":"%s","build_commit_semantics":"display_only_github_trace_metadata"}' \
         "$(json_escape "$SRC_BIN")" "$executable" "$(json_escape "$size")" \
-        "$(json_escape "$mtime")" "$(json_escape "$build_commit")"
+        "$(json_escape "$mtime")" "$(json_escape "$source_id")" \
+        "$source_id_valid" "$(json_escape "$build_commit")"
 }
 
 changed_files_count() {
@@ -159,7 +166,8 @@ emit_text() {
         printf '%s\n' "$json" | jq -r '
             "[agent-doctor] build=" + .build.binary +
             " executable=" + (.build.executable|tostring) +
-            " commit=" + .build.build_commit,
+            " source_id=" + .build.source_id_sha256 +
+            " commit_display=" + .build.build_commit,
             "[agent-doctor] dev=" + (.dev_status.service.active_state // "unknown") +
             " rpc=" + (.dev_status.rpc.status // "unknown") +
             " staged_matches_source=" + ((.dev_status.installed_matches_source // false)|tostring) +

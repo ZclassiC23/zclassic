@@ -134,11 +134,21 @@ bool dev_activation_link_generation(const struct dev_activation_txn *txn,
 /* Refresh the ~/.local/bin/zclassic23-dev compat symlink to current. */
 bool dev_activation_refresh_compat_link(const struct dev_activation_txn *txn);
 
-/* Write the ZCL_AGENT_EXPECT_BUILD_COMMIT drop-in for `generation`. */
-void dev_activation_write_build_identity(const struct dev_activation_txn *txn,
+/* Write authoritative ZCL_AGENT_EXPECT_SOURCE_ID plus optional display-only
+ * Git trace metadata for `generation`. */
+bool dev_activation_write_build_identity(const struct dev_activation_txn *txn,
                                          const char *generation);
 
-/* Read the manifest build_commit of `generation` into out (out[0]=0 if none). */
+/* True iff `s` is an exact lowercase 64-hex SHA-256 identity. */
+bool dev_activation_source_id_valid(const char *s);
+
+/* Read the authoritative manifest source_id_sha256 of `generation` into out
+ * (out[0]=0 if absent or malformed). */
+void dev_activation_generation_source_id(
+    const struct dev_activation_txn *txn, const char *generation,
+    char out[65]);
+
+/* Read optional display-only manifest build_commit metadata. */
 void dev_activation_generation_commit(const struct dev_activation_txn *txn,
                                       const char *generation,
                                       char *out, size_t out_sz);
@@ -155,8 +165,8 @@ void dev_activation_clear_in_progress(const struct dev_activation_txn *txn);
 
 /* Bounded post-restart verification of `expected` generation: service active,
  * /proc exe identity matches the generation binary, and activation_probe
- * passes with the expected build commit. Sets result->running_generation on
- * success. Returns true on success. */
+ * passes with the expected authoritative source ID. Sets
+ * result->running_generation on success. Returns true on success. */
 bool dev_activation_verify_running(struct dev_activation_txn *txn,
                                    const char *expected);
 

@@ -255,8 +255,8 @@ static long sha256_file_hex(const char *path, char hex_out[65])
 /* Emit the publish sidecars next to the bundle files:
  *   - SHA256SUMS  — standard "<hex>  <name>" lines (basenames) so a user can run
  *                   `cd <bundle_dir> && sha256sum -c SHA256SUMS`.
- *   - manifest.json — machine-readable provenance (heights, hashes, sizes, the
- *                   build commit). See the field list in the file header.
+ *   - manifest.json — machine-readable provenance (heights, hashes, sizes,
+ *                   authoritative source SHA-256, optional Git trace).
  * Reuses sha256_file_hex (the linked crypto lib) so the digests match stock
  * `sha256sum`. Returns true on success; logs + returns false on any I/O error.
  * `snap_sha3_hex` is the body-SHA3 the writer already computed+printed (forward
@@ -330,6 +330,8 @@ static bool write_bundle_sidecars(const char *bundle_dir, const char *snap_name,
             "  \"snapshot_file\": \"%s\",\n"
             "  \"snapshot_size\": %ld,\n"
             "  \"snapshot_sha256\": \"%s\",\n"
+            "  \"source_identity_schema\": \"zcl.dev_source_identity.v2\",\n"
+            "  \"source_id_sha256\": \"%s\",\n"
             "  \"build_commit\": \"%s\"\n"
             "}\n",
             seed_h, anchor_disp, snap_sha3_hex,
@@ -337,6 +339,7 @@ static bool write_bundle_sidecars(const char *bundle_dir, const char *snap_name,
             zwhole, zfrac,
             bi_size, bi_sha,
             snap_name, snap_size, snap_sha,
+            zcl_build_source_id_sha256(),
             zcl_build_commit());
     if (ferror(mf) || fclose(mf) != 0) {
         fprintf(stderr, "[bundle] sidecar: write %s failed\n", man_path);
@@ -817,7 +820,7 @@ int main(int argc, char **argv)
                 "  block_index.bin              (contiguous genesis..%d)\n"
                 "  %s        (v2: UTXO+frontier, count=%llu)\n"
                 "  SHA256SUMS                   (run: cd %s && sha256sum -c SHA256SUMS)\n"
-                "  manifest.json                (provenance: heights, hashes, sizes)\n"
+                "  manifest.json                (provenance: heights, hashes, source SHA-256)\n"
                 "\nFresh-node usage (zero flags — boot autodetects a dropped-in bundle):\n"
                 "  cp %s/block_index.bin   <DATADIR>/\n"
                 "  cp %s/%s   <DATADIR>/\n"

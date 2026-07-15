@@ -335,7 +335,14 @@ bool stage_anchor_upstream_cursors_to(sqlite3 *db, uint64_t target,
                      reason ? reason : "");
             return false;
         }
-        if (!stage_set_named_cursor_if_behind(db, upstream[i].stage,
+        /* Avoid entering the transaction-owning cursor setter for a proven
+         * no-op. Snapshot activation pre-stamps every upstream cursor inside
+         * its larger cutover transaction before asking the seed helper to add
+         * log/meta witnesses; calling the setter at from==to would otherwise
+         * attempt a nested BEGIN. Production seed/authority callers already
+         * hold the recursive progress-store lock across this decision. */
+        if (before < stage_target &&
+            !stage_set_named_cursor_if_behind(db, upstream[i].stage,
                                               stage_target)) {
             LOG_WARN(tag,
                      "[%s] anchor upstream cursor failed "

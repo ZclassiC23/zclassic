@@ -74,6 +74,7 @@ struct canonical_table {
     const struct canonical_column *columns;
     size_t column_count;
     const char *required_sql_token;
+    const char *required_sql_token_2;
 };
 
 #define COL(n, t, pk) { (n), (t), (pk) }
@@ -134,21 +135,22 @@ static const struct canonical_column k_nullifiers_columns[] = {
 static const struct canonical_table k_canonical_tables[] = {
     {"anchors", k_anchors_columns,
      sizeof(k_anchors_columns) / sizeof(k_anchors_columns[0]),
-     "CHECK(pool IN(0,1))"},
+     "CHECK(pool IN(0,1))", "UNIQUE(pool,height)"},
     {"bundle_meta", k_bundle_meta_columns,
      sizeof(k_bundle_meta_columns) / sizeof(k_bundle_meta_columns[0]),
-     "CHECK(singleton=1)"},
+     "CHECK(singleton=1)", NULL},
     {"bundle_proof", k_bundle_proof_columns,
      sizeof(k_bundle_proof_columns) / sizeof(k_bundle_proof_columns[0]),
-     "UNIQUE"},
+     "UNIQUE", NULL},
     {"coins", k_coins_columns,
-     sizeof(k_coins_columns) / sizeof(k_coins_columns[0]), "WITHOUT ROWID"},
+     sizeof(k_coins_columns) / sizeof(k_coins_columns[0]), "WITHOUT ROWID",
+     NULL},
     {"nullifiers", k_nullifiers_columns,
      sizeof(k_nullifiers_columns) / sizeof(k_nullifiers_columns[0]),
-     "CHECK(pool IN(0,1))"},
+     "CHECK(pool IN(0,1))", NULL},
     {"source_receipt", k_source_receipt_columns,
      sizeof(k_source_receipt_columns) / sizeof(k_source_receipt_columns[0]),
-     "CHECK(singleton=1)"},
+     "CHECK(singleton=1)", NULL},
 };
 
 static bool canonical_table_columns(sqlite3 *db,
@@ -208,6 +210,8 @@ static bool canonical_schema(sqlite3 *db,
             !definition ||
             sqlite3_column_bytes(st, 2) != (int)strlen(definition) ||
             !strstr(definition, want->required_sql_token) ||
+            (want->required_sql_token_2 &&
+             !strstr(definition, want->required_sql_token_2)) ||
             ((strcmp(want->name, "anchors") == 0 ||
               strcmp(want->name, "nullifiers") == 0) &&
              !strstr(definition, "WITHOUT ROWID")) ||
@@ -321,7 +325,7 @@ static bool read_manifest(sqlite3 *db,
              (validation_profile == CONSENSUS_STATE_VALIDATION_FULL ||
               validation_profile ==
                   CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
-             counts[0] >= 0 &&
+             counts[0] > 0 &&
              counts[1] >= 0 && counts[2] >= 0 &&
              sprout_frontier_height >= 0 &&
              sprout_frontier_height <= height &&
@@ -374,18 +378,6 @@ static bool read_manifest(sqlite3 *db,
     return true;
 }
 
-static bool lowercase_full_commit(const char commit[41])
-{
-    if (strnlen(commit, 41) != 40)
-        return false;
-    for (size_t i = 0; i < 40; i++) {
-        char c = commit[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            return false;
-    }
-    return true;
-}
-
 static bool validate_source_receipt(
     sqlite3 *db, const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_source_receipt *receipt_out,
@@ -407,11 +399,21 @@ static bool validate_source_receipt(
                                        : SQLITE_NULL;
     const unsigned char *commit = commit_type == SQLITE_TEXT
                                       ? sqlite3_column_text(st, 10) : NULL;
+    int commit_len = commit ? sqlite3_column_bytes(st, 10) : -1;
+    const unsigned char *schema =
+        rc == SQLITE_ROW && sqlite3_column_type(st, 1) == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+    int schema_len = schema ? sqlite3_column_bytes(st, 1) : -1;
+    uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    bool schema_ok = schema && schema_len >= 0 &&
+        consensus_state_source_receipt_schema_version(
+            (const char *)schema, (size_t)schema_len, &receipt_version);
+    bool legacy_v1 = schema_ok &&
+        receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V1;
     bool ok = rc == SQLITE_ROW && commit &&
               sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
               sqlite3_column_int(st, 0) == 1 &&
-              consensus_state_sqlite_text_equal(
-                  st, 1, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA) &&
+              schema_ok &&
               copy_blob32(st, 2, receipt.source_epoch_digest) &&
               copy_blob32(st, 3, receipt.source_tree_root) &&
               copy_blob32(st, 4, receipt.running_binary_digest) &&
@@ -426,12 +428,16 @@ static bool validate_source_receipt(
                sqlite3_column_int(st, 9) ==
                    CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
               commit_type == SQLITE_TEXT &&
-              sqlite3_column_bytes(st, 10) == 40 &&
+              commit_len >= 0 &&
+              consensus_state_source_receipt_commit_valid(
+                  receipt_version, (const char *)commit,
+                  (size_t)commit_len) &&
               sqlite3_column_type(st, 11) == SQLITE_INTEGER &&
               copy_blob32(st, 12, receipt.receipt_digest);
     if (ok) {
-        memcpy(receipt.producer_commit, commit, 40);
-        receipt.producer_commit[40] = '\0';
+        receipt.schema_version = receipt_version;
+        memcpy(receipt.producer_commit, commit, (size_t)commit_len);
+        receipt.producer_commit[commit_len] = '\0';
         receipt.source_clean = sqlite3_column_int(st, 8) == 1;
         receipt.validation_profile = (uint8_t)sqlite3_column_int(st, 9);
         receipt.fold_cursor = sqlite3_column_int64(st, 11);
@@ -439,6 +445,12 @@ static bool validate_source_receipt(
         ok = rc == SQLITE_DONE;
     }
     sqlite3_finalize(st);
+    /* The v1 codec remains readable for historical tooling, but its Git-SHA-1-
+     * derived source claim is never sufficient authority for installation. */
+    if (legacy_v1)
+        return validation_fail(
+            result, CONSENSUS_INSTALL_REFUSED,
+            "legacy v1 source receipt is inspection-only and cannot install");
     uint8_t recomputed[32];
     uint8_t source_epoch[32];
     if (ok) {
@@ -450,7 +462,10 @@ static bool validate_source_receipt(
              digest_nonzero(receipt.toolchain_digest) &&
              digest_nonzero(receipt.build_inputs_digest) &&
              digest_nonzero(receipt.chain_corpus_digest) &&
-             lowercase_full_commit(receipt.producer_commit) &&
+             consensus_state_source_receipt_commit_valid(
+                 receipt.schema_version, receipt.producer_commit,
+                 strnlen(receipt.producer_commit,
+                         sizeof(receipt.producer_commit))) &&
              receipt.fold_cursor == manifest->source_fold_cursor &&
              receipt.source_clean == manifest->source_clean &&
              receipt.validation_profile == manifest->validation_profile &&

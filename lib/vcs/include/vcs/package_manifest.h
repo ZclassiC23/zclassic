@@ -16,7 +16,11 @@
  * hashes. The domains, version, fixed chunk size, modes, sizes, paths, and
  * ordered chunk lists are all committed. A package root proves byte identity
  * only; publisher trust, signatures, build receipts, sandbox approval, and
- * chain anchors are deliberately separate future facts. */
+ * chain anchors are deliberately separate future facts.
+ *
+ * Hash-domain encoding is exact and frozen: each ASCII domain below is hashed
+ * WITH its single trailing 0x00 byte (sizeof the string literal), before the
+ * binary fields described by the implementation/KAT. */
 
 #ifndef ZCL_VCS_PACKAGE_MANIFEST_H
 #define ZCL_VCS_PACKAGE_MANIFEST_H
@@ -26,6 +30,8 @@
 #include <stdint.h>
 
 #define VCS_PACKAGE_MANIFEST_VERSION 1u
+#define VCS_PACKAGE_FILE_HASH_DOMAIN "zcl.package_file.v1"
+#define VCS_PACKAGE_ROOT_HASH_DOMAIN "zcl.package_manifest.v1"
 #define VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES 18u
 #define VCS_PACKAGE_CHUNK_BYTES (1024u * 1024u)
 #define VCS_PACKAGE_PATH_MAX 1024u
@@ -52,6 +58,8 @@ struct vcs_package_file {
 };
 
 struct vcs_package_manifest {
+    /* Always stored in strictly ascending canonical path-byte order. This
+     * makes network file_index coordinates independent of insertion order. */
     struct vcs_package_file *files;
     size_t count;
     size_t cap;
@@ -66,9 +74,10 @@ void vcs_package_manifest_free(struct vcs_package_manifest *manifest);
  * [A-Za-z0-9._+@-]. */
 bool vcs_package_path_valid(const char *path);
 
-/* Append a file while copying path and chunk_hashes. Insertion order is not
- * significant. Duplicate paths, non-canonical paths/modes, inconsistent
- * size/chunk_count, and manifest limit overflow are rejected. */
+/* Insert a file in canonical path order while copying path and chunk_hashes.
+ * Insertion order is not significant. Duplicate paths, non-canonical
+ * paths/modes, inconsistent size/chunk_count, and manifest limit overflow are
+ * rejected. */
 bool vcs_package_manifest_add(struct vcs_package_manifest *manifest,
                               const char *path, uint32_t mode, uint64_t size,
                               const uint8_t *chunk_hashes,

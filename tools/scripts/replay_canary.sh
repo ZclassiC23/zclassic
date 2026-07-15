@@ -3,7 +3,7 @@
 #
 # replay_canary.sh — the standing full-history replay canary.
 #
-# Replays the REAL chain through the HEAD binary's reducer in an
+# Replays the REAL chain through one frozen, content-bound binary's reducer in an
 # isolated scratch datadir on isolated ports, then asserts:
 #   (a) zero consensus rejects (bg_validation reaches COMPLETE, never
 #       FAILED, and getsyncdiag headers.total_rejected == 0),
@@ -104,8 +104,59 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VERDICT_DIR="${ZCL_CANARY_VERDICT_DIR:-${HOME:-/root}/.local/state/zclassic23-canary}"
 mkdir -p "$VERDICT_DIR"
 
-build_commit() {
-    git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown"
+# Verdict identity is captured ONCE from the exact immutable executable used
+# by this run. It is never re-read from build/bin at verdict time: that path
+# may be atomically replaced during a 90-minute/8-hour replay.
+CANARY_SOURCE_ID_SHA256=""
+CANARY_ARTIFACT_SHA256=""
+CANARY_BUILD_COMMIT="unknown"       # optional GitHub trace, display only
+
+capture_binary_identity() {
+    local binary="$1" before after identity_json source_id trace
+    [ -x "$binary" ] || return 1
+    before="$(sha256sum -- "$binary" 2>/dev/null | awk '{print $1}')"
+    [[ "$before" =~ ^[0-9a-f]{64}$ ]] || return 1
+    identity_json="$("$binary" agentbuild 2>/dev/null)" || return 1
+    after="$(sha256sum -- "$binary" 2>/dev/null | awk '{print $1}')"
+    [ "$before" = "$after" ] || return 1
+    source_id="$(printf '%s\n' "$identity_json" |
+        sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' |
+        head -1)"
+    [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] || return 1
+    trace="$(printf '%s\n' "$identity_json" |
+        sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+        head -1)"
+    CANARY_SOURCE_ID_SHA256="$source_id"
+    CANARY_ARTIFACT_SHA256="$before"
+    CANARY_BUILD_COMMIT="${trace:-unknown}"
+}
+
+freeze_live_binaries() {
+    local source="$REPO_ROOT/build/bin/zclassic23"
+    local frozen="$ISO_DD/zclassic23-replay-canary"
+    local tmp="$frozen.tmp.$$"
+    local rpc_source="$REPO_ROOT/build/bin/zcl-rpc"
+    local rpc_frozen="$ISO_DD/zcl-rpc-replay-canary"
+    local rpc_tmp="$rpc_frozen.tmp.$$"
+    local rpc_before rpc_after rpc_frozen_hash
+    rm -f -- "$tmp" "$frozen"
+    cp -- "$source" "$tmp" || return 1
+    chmod 0500 "$tmp" || { rm -f -- "$tmp"; return 1; }
+    mv -- "$tmp" "$frozen" || { rm -f -- "$tmp"; return 1; }
+    capture_binary_identity "$frozen" || return 1
+
+    rpc_before="$(sha256sum -- "$rpc_source" 2>/dev/null | awk '{print $1}')"
+    [[ "$rpc_before" =~ ^[0-9a-f]{64}$ ]] || return 1
+    rm -f -- "$rpc_tmp" "$rpc_frozen"
+    cp -- "$rpc_source" "$rpc_tmp" || return 1
+    chmod 0500 "$rpc_tmp" || { rm -f -- "$rpc_tmp"; return 1; }
+    mv -- "$rpc_tmp" "$rpc_frozen" || { rm -f -- "$rpc_tmp"; return 1; }
+    rpc_after="$(sha256sum -- "$rpc_source" 2>/dev/null | awk '{print $1}')"
+    rpc_frozen_hash="$(sha256sum -- "$rpc_frozen" 2>/dev/null | awk '{print $1}')"
+    [ "$rpc_before" = "$rpc_after" ] &&
+        [ "$rpc_before" = "$rpc_frozen_hash" ] || return 1
+    ISO_NODE_BIN="$frozen"
+    ISO_RPC_BIN="$rpc_frozen"
 }
 
 # START_TS is fixed at the very top of the process so reset_verdict,
@@ -145,8 +196,12 @@ write_verdict() {
     local tmp="$f.tmp.$$"
     local now; now="$(date +%s)"
     {
-        printf '{"verdict":"%s","from":"%s","ts":%s,"started_ts":%s,"build_commit":"%s",' \
-            "$verdict" "$FROM" "$now" "${STARTED_TS:-$now}" "$(build_commit)"
+        printf '{"verdict":"%s","from":"%s","ts":%s,"started_ts":%s,' \
+            "$verdict" "$FROM" "$now" "${STARTED_TS:-$now}"
+        printf '"source_id_sha256":"%s","artifact_sha256":"%s",' \
+            "${CANARY_SOURCE_ID_SHA256:-unknown}" \
+            "${CANARY_ARTIFACT_SHA256:-unknown}"
+        printf '"build_commit":"%s",' "${CANARY_BUILD_COMMIT:-unknown}"
         printf '"tip":%s,"verified_height":%s,"bg_state":"%s",' \
             "${R_TIP:-0}" "${R_VERIFIED:-0}" "${R_BGSTATE:-unknown}"
         printf '"consensus_rejects":%s,"local_sha3":"%s","expected_sha3":"%s",' \
@@ -249,6 +304,7 @@ evaluate_verdict() {
     # rpc_unreachable: any required blob empty => FAIL (never a silent pass).
     [ -n "$SD" ]   || fail "rpc_unreachable_getsyncdetail"
     [ -n "$DIAG" ] || fail "rpc_unreachable_getsyncdiag"
+    [ -n "$UC" ]   || fail "rpc_unreachable_getutxocommitment"
     [ -n "$TX" ]   || fail "rpc_unreachable_gettxoutsetinfo"
     [ -n "$ZD" ]   || fail "rpc_unreachable_zd_gettxoutsetinfo"
 
@@ -296,18 +352,14 @@ evaluate_verdict() {
     #     checkpoint-sha3 proof. For from=genesis the replay crosses the
     #     anchor and the same boot gate proves the checkpoint; if the UC
     #     blob carries the anchor-height commitment it must equal EXPECTED.
-    if [ -n "$UC" ]; then
-        R_LOCAL_SHA3="$(json_str "$UC" sha3_hash)"
-        local uc_h; uc_h="$(json_num "$UC" height)"; : "${uc_h:=0}"
-        case "$R_LOCAL_SHA3" in
-            [0-9a-f]*) [ "${#R_LOCAL_SHA3}" -eq 64 ] || fail "sha3_malformed" ;;
-            *) fail "sha3_unreadable" ;;
-        esac
-        # If the commitment was taken exactly at the anchor height, it must
-        # equal the compiled checkpoint hash exactly.
-        if [ "$uc_h" = "$ANCHOR_HEIGHT" ] && [ "$R_LOCAL_SHA3" != "$EXPECTED_SHA3" ]; then
-            fail "sha3_mismatch"
-        fi
+    R_LOCAL_SHA3="$(json_str "$UC" sha3_hash)"
+    local uc_h; uc_h="$(json_num "$UC" height)"; : "${uc_h:=0}"
+    [ -n "$R_LOCAL_SHA3" ] || fail "sha3_unreadable"
+    [[ "$R_LOCAL_SHA3" =~ ^[0-9a-f]{64}$ ]] || fail "sha3_malformed"
+    # If the commitment was taken exactly at the anchor height, it must
+    # equal the compiled checkpoint hash exactly.
+    if [ "$uc_h" = "$ANCHOR_HEIGHT" ] && [ "$R_LOCAL_SHA3" != "$EXPECTED_SHA3" ]; then
+        fail "sha3_mismatch"
     fi
 
     # (b cont.) from=genesis must verify EVERY script (no post-snapshot
@@ -336,6 +388,11 @@ run_self_test() {
     # contract: any prior sentinel for this --from is removed before we
     # decide, and the run-start stamp is laid down.
     reset_verdict
+    local selftest_binary="${ZCL_CANARY_SELFTEST_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+    if ! capture_binary_identity "$selftest_binary"; then
+        ELAPSED=0
+        fail "source_identity_capture_failed"
+    fi
     # Test-only mid-run pause: if ZCL_CANARY_SELFTEST_BLOCK_FIFO is set, block
     # on a read of that FIFO AFTER reset_verdict (so the stale sentinel is
     # already gone) but BEFORE evaluate_verdict (so no fresh sentinel is yet
@@ -383,16 +440,6 @@ run_live() {
     elif [ "$FROM" = "genesis" ]; then budget=28800
     else budget=5400; fi
 
-    # Disk preflight: the scratch chainstate + index copy is tens of GB.
-    # Refuse loudly if /tmp lacks headroom (not under /tmp would be a port
-    # of the spec — kept on /tmp per the iso_* discipline; the orchestrator
-    # note about $HOME scratch applies if /tmp is tmpfs-small, see README).
-    local avail_kb; avail_kb="$(df -Pk /tmp | awk 'NR==2{print $4}')"
-    if [ "${avail_kb:-0}" -lt 83886080 ]; then   # < 80 GiB
-        echo "replay-canary: REFUSE — /tmp has $((avail_kb/1024/1024)) GiB free, need >= 80 GiB" >&2
-        ELAPSED=0; fail "insufficient_disk"
-    fi
-
     # Distinct port bases so a nightly + a (rare) overlapping weekly cannot
     # collide. anchor=39050, genesis=39060. crash-soak (item 7) reserves 39070.
     if [ "$FROM" = "genesis" ]; then export ISO_PORT_BASE=39060
@@ -402,6 +449,18 @@ run_live() {
     # shellcheck source=tools/scripts/isolated_mainnet_env.sh
     . tools/scripts/isolated_mainnet_env.sh
     iso_init
+    if ! freeze_live_binaries; then
+        ELAPSED=$(( $(date +%s) - START_TS ))
+        fail "source_identity_capture_failed"
+    fi
+
+    # Disk preflight follows the tiny immutable executable capture so every
+    # verdict, including this refusal, remains bound to exact executed bytes.
+    local avail_kb; avail_kb="$(df -Pk /tmp | awk 'NR==2{print $4}')"
+    if [ "${avail_kb:-0}" -lt 83886080 ]; then   # < 80 GiB
+        echo "replay-canary: REFUSE — /tmp has $((avail_kb/1024/1024)) GiB free, need >= 80 GiB" >&2
+        ELAPSED=0; fail "insufficient_disk"
+    fi
 
     if [ "$FROM" = "anchor" ]; then
         echo "replay-canary: importing headers from $SRC_DATADIR (read-only)"
@@ -467,7 +526,7 @@ run_live() {
             R_BGSTATE="timeout"
             SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
             DIAG="$(iso_rpc getsyncdiag)"; TX="$(iso_rpc gettxoutsetinfo)"
-            ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" build/bin/zcl-rpc gettxoutsetinfo 2>/dev/null || true)"
+            ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
             evaluate_verdict
         fi
         sleep 30
@@ -482,7 +541,7 @@ run_live() {
     UC="$(iso_rpc getutxocommitment)"
     TX="$(iso_rpc gettxoutsetinfo)"
     # zclassicd is read-only: gettxoutsetinfo only, never stop/generate.
-    ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" build/bin/zcl-rpc gettxoutsetinfo 2>/dev/null || true)"
+    ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
 
     evaluate_verdict
 }

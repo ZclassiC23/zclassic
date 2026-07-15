@@ -147,11 +147,19 @@ static bool bind_source_column(sqlite3_stmt *destination, int destination_col,
                                      source, source_col),
                                  sqlite3_column_bytes(source, source_col),
                                  SQLITE_TRANSIENT) == SQLITE_OK;
-    case SQLITE_BLOB:
-        return sqlite3_bind_blob(destination, destination_col,
-                                 sqlite3_column_blob(source, source_col),
-                                 sqlite3_column_bytes(source, source_col),
+    case SQLITE_BLOB: {
+        int bytes = sqlite3_column_bytes(source, source_col);
+        /* sqlite3_column_blob() may return NULL for a zero-length BLOB.  A
+         * NULL pointer passed to sqlite3_bind_blob() binds SQL NULL, which
+         * changes the value's type and violates NOT NULL script columns. */
+        if (bytes == 0)
+            return sqlite3_bind_zeroblob(destination, destination_col, 0) ==
+                   SQLITE_OK;
+        const void *blob = sqlite3_column_blob(source, source_col);
+        return blob &&
+               sqlite3_bind_blob(destination, destination_col, blob, bytes,
                                  SQLITE_TRANSIENT) == SQLITE_OK;
+    }
     case SQLITE_NULL:
         return sqlite3_bind_null(destination, destination_col) == SQLITE_OK;
     default:

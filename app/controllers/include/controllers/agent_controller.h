@@ -139,6 +139,8 @@ void agent_runtime_availability_record_method(const char *method,
                                               const char *error_message);
 void agent_runtime_availability_set_target_build_commit(
     const char *build_commit);
+void agent_runtime_availability_set_target_source_id_sha256(
+    const char *source_id_sha256);
 size_t agent_runtime_probe_method_count(void);
 const char *agent_runtime_probe_method_name(size_t index);
 void agent_push_runtime_availability_json(struct json_value *out,

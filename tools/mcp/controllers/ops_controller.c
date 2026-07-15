@@ -1331,6 +1331,23 @@ static bool status_native_invariant_is(
            strcmp(status, expected_status) == 0 && detail && detail[0];
 }
 
+/* Snapshot trust is content-addressed.  Git object IDs are optional trace
+ * metadata and therefore deliberately absent from this acceptance predicate. */
+static bool status_native_source_id_valid(const struct json_value *value)
+{
+    if (!value || value->type != JSON_STR)
+        return false;
+    const char *source_id = json_get_str(value);
+    if (!source_id || strlen(source_id) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!((source_id[i] >= '0' && source_id[i] <= '9') ||
+              (source_id[i] >= 'a' && source_id[i] <= 'f')))
+            return false;
+    }
+    return true;
+}
+
 static bool status_validate_native_operator_snapshot(
     const char *raw, struct json_value *root_out, const char **reason_out)
 {
@@ -1351,7 +1368,8 @@ static bool status_validate_native_operator_snapshot(
     const struct json_value *producer = json_get(root_out, "producer");
     const struct json_value *authority = json_get(root_out, "authority");
     const struct json_value *trust = json_get(root_out, "trust");
-    const struct json_value *build = json_get(root_out, "build_commit");
+    const struct json_value *source_id = json_get(root_out,
+                                                  "source_id_sha256");
     const struct json_value *network = json_get(root_out, "network");
     const struct json_value *pid = json_get(root_out, "process_id");
     const struct json_value *instance = json_get(root_out, "node_instance_id");
@@ -1363,10 +1381,17 @@ static bool status_validate_native_operator_snapshot(
     const struct json_value *complete = json_get(root_out, "verdict_complete");
     const struct json_value *primary = json_get(root_out, "primary_blocker");
     const struct json_value *next = json_get(root_out, "next_action");
+    if (schema && schema->type == JSON_STR &&
+        strcmp(json_get_str(schema), "zcl.operator_snapshot.v1") == 0 &&
+        version && version->type == JSON_INT && version->val.i == 1) {
+        reason = "legacy zcl.operator_snapshot.v1 is untrusted; upgrade the "
+                 "target for the v2 exact source-identity contract";
+        goto fail;
+    }
     if (!schema || schema->type != JSON_STR ||
-        strcmp(json_get_str(schema), "zcl.operator_snapshot.v1") != 0 ||
-        !version || version->type != JSON_INT || version->val.i != 1 ||
-        !api || api->type != JSON_STR || strcmp(json_get_str(api), "v1") != 0 ||
+        strcmp(json_get_str(schema), "zcl.operator_snapshot.v2") != 0 ||
+        !version || version->type != JSON_INT || version->val.i != 2 ||
+        !api || api->type != JSON_STR || strcmp(json_get_str(api), "v2") != 0 ||
         !locus || locus->type != JSON_STR ||
         strcmp(json_get_str(locus), "target_node") != 0 ||
         !producer || producer->type != JSON_STR ||
@@ -1376,7 +1401,7 @@ static bool status_validate_native_operator_snapshot(
         strcmp(json_get_str(authority), "target_node_internal_state") != 0 ||
         !trust || trust->type != JSON_STR ||
         strcmp(json_get_str(trust), "target_owned_evidence") != 0 ||
-        !build || build->type != JSON_STR || !json_get_str(build)[0] ||
+        !status_native_source_id_valid(source_id) ||
         !network || network->type != JSON_STR || !json_get_str(network)[0] ||
         !pid || pid->type != JSON_INT || pid->val.i <= 0 ||
         !instance || instance->type != JSON_STR || !json_get_str(instance)[0] ||
@@ -1434,9 +1459,11 @@ static bool status_validate_native_operator_snapshot(
     const struct json_value *summary = json_get(root_out, "summary");
     const struct json_value *summary_schema = json_get(summary, "schema");
     const struct json_value *summary_version = json_get(summary, "schema_version");
+    const struct json_value *summary_api = json_get(summary, "api_version");
     const struct json_value *summary_locus = json_get(summary, "execution_locus");
     const struct json_value *summary_source = json_get(summary, "source_rpc");
-    const struct json_value *summary_build = json_get(summary, "build_commit");
+    const struct json_value *summary_source_id = json_get(
+        summary, "source_id_sha256");
     const struct json_value *summary_network = json_get(summary, "network");
     const struct json_value *summary_status = json_get(summary, "status");
     const struct json_value *summary_healthy = json_get(summary, "healthy");
@@ -1447,15 +1474,17 @@ static bool status_validate_native_operator_snapshot(
         summary, "compatibility_fallback");
     if (!summary || summary->type != JSON_OBJ ||
         !summary_schema || summary_schema->type != JSON_STR ||
-        strcmp(json_get_str(summary_schema), "zcl.operator_summary.v1") != 0 ||
+        strcmp(json_get_str(summary_schema), "zcl.operator_summary.v2") != 0 ||
         !summary_version || summary_version->type != JSON_INT ||
-        summary_version->val.i != 1 ||
+        summary_version->val.i != 2 ||
+        !summary_api || summary_api->type != JSON_STR ||
+        strcmp(json_get_str(summary_api), "v2") != 0 ||
         !summary_locus || summary_locus->type != JSON_STR ||
         strcmp(json_get_str(summary_locus), "target_node") != 0 ||
         !summary_source || summary_source->type != JSON_STR ||
         strcmp(json_get_str(summary_source), "operatorsnapshot") != 0 ||
-        !summary_build || summary_build->type != JSON_STR ||
-        strcmp(json_get_str(summary_build), json_get_str(build)) != 0 ||
+        !status_native_source_id_valid(summary_source_id) ||
+        strcmp(json_get_str(summary_source_id), json_get_str(source_id)) != 0 ||
         !summary_network || summary_network->type != JSON_STR ||
         strcmp(json_get_str(summary_network), json_get_str(network)) != 0 ||
         !summary_status || summary_status->type != JSON_STR ||
@@ -1578,6 +1607,7 @@ static int status_native_snapshot_error(struct mcp_response *res,
              reason ? reason : "invalid target response");
     LOG_ERR("mcp.ops", "operatorsnapshot rejected: %s",
             reason ? reason : "invalid target response");
+    return 0;
 }
 
 static int h_zcl_operator_snapshot(const struct mcp_request *req,
@@ -2281,7 +2311,7 @@ static const struct mcp_tool_route k_routes[] = {
       "never-healthy multi-RPC compatibility path.",
       NULL, 0, h_zcl_operator_summary, 0, NULL },
     { "zcl_operator_snapshot", "ops",
-      "Exact native zcl.operator_snapshot.v1 payload: bounded target-owned "
+      "Exact native zcl.operator_snapshot.v2 payload: bounded target-owned "
       "component snapshots, capture coherence, height/hash/work evidence, "
       "typed blockers, invariants, and the native summary projection.",
       NULL, 0, h_zcl_operator_snapshot, 0, NULL },

@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RECOVER="$SCRIPT_DIR/recover-dev-lane.sh"
+SOURCE_ID="fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 SANDBOX="$(mktemp -d /tmp/zcl-dev-recovery-selftest.XXXXXX)"
 chmod 700 "$SANDBOX"
 CAPABILITY_FILE="$SANDBOX/.recover-dev-lane-selftest-capability"
@@ -34,8 +35,10 @@ make_generation()
     mkdir -p "$root/$generation" "$root/rejected"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$root/$generation/zclassic23-dev"
     chmod 0555 "$root/$generation/zclassic23-dev"
-    printf '{"schema":"zcl.dev_binary_generation.v1","generation":"%s","build_commit":"selftest"}\n' \
+    printf '{"schema":"zcl.dev_binary_generation.v1","generation":"%s",' \
         "$generation" > "$root/$generation/manifest.json"
+    printf '"source_id_sha256":"%s","build_commit":"selftest"}\n' \
+        "$SOURCE_ID" >> "$root/$generation/manifest.json"
     ln -sfn "$generation" "$root/current"
 }
 
@@ -203,6 +206,12 @@ test_success_archives_and_commits()
         grep -q . || fail "superseded rejection was deleted instead of archived"
     grep -q '"activation_status": "recovery_ready"' "$dd/agent-deploy.json" ||
         fail "coherent post-recovery deploy state missing"
+    grep -q "\"source_id_sha256\": \"$SOURCE_ID\"" \
+        "$dd/agent-deploy.json" ||
+        fail "coherent deploy state omitted source identity"
+    grep -q "ZCL_AGENT_EXPECT_SOURCE_ID=$SOURCE_ID" \
+        "$home/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf" ||
+        fail "recovery drop-in omitted source identity"
     grep -q -- '-nolegacyimport -load-snapshot-at-own-height=' \
         "$home/.config/systemd/user/zcl23-dev.service.d/80-snapshot-loader.conf" ||
         fail "recovered lane can still merge legacy block coordinates"
@@ -267,6 +276,20 @@ test_plan_is_read_only_and_canonical_refused()
         fail "read-only recovery plan failed"
     archive_count="$(find "$home" -maxdepth 1 -name '.zclassic-c23-dev.recovery-*' | wc -l)"
     [ "$archive_count" -eq 0 ] || fail "plan mode mutated the datadir"
+
+    # A Git trace alone is never generation identity authority.
+    printf '{"build_commit":"deadbeef"}\n' > \
+        "$home/.local/lib/zclassic23-dev/$generation/manifest.json"
+    if HOME="$home" \
+       ZCL_DEV_RECOVERY_BUNDLE_DIR="$home/.zclassic-c23-dev" \
+       ZCL_DEV_RECOVERY_MIN_PAYLOAD_BYTES=1 \
+       ZCL_DEV_RECOVERY_TXN_ID=plan-no-source \
+       "$RECOVER" --plan >/dev/null 2>&1; then
+        fail "commit-only generation was accepted as recovery authority"
+    fi
+    printf '{"source_id_sha256":"%s","build_commit":"selftest"}\n' \
+        "$SOURCE_ID" > \
+        "$home/.local/lib/zclassic23-dev/$generation/manifest.json"
 
     if HOME="$home" \
        ZCL_DEV_RECOVERY_BUNDLE_DIR="$home/.zclassic-c23-dev" \

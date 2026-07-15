@@ -7,6 +7,60 @@
 
 #include <string.h>
 
+static bool lowercase_hex(const char *text, size_t len)
+{
+    if (!text)
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+bool consensus_state_source_receipt_schema_version(
+    const char *schema, size_t schema_len, uint8_t *out_version)
+{
+    if (out_version)
+        *out_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    if (!schema || !out_version)
+        return false;
+    if (schema_len == strlen(CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V1) &&
+        memcmp(schema, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V1,
+               schema_len) == 0) {
+        *out_version = CONSENSUS_STATE_SOURCE_RECEIPT_V1;
+        return true;
+    }
+    if (schema_len == strlen(CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2) &&
+        memcmp(schema, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2,
+               schema_len) == 0) {
+        *out_version = CONSENSUS_STATE_SOURCE_RECEIPT_V2;
+        return true;
+    }
+    return false;
+}
+
+const char *consensus_state_source_receipt_schema(uint8_t version)
+{
+    if (version == CONSENSUS_STATE_SOURCE_RECEIPT_V1)
+        return CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V1;
+    if (version == CONSENSUS_STATE_SOURCE_RECEIPT_V2)
+        return CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2;
+    return NULL;
+}
+
+bool consensus_state_source_receipt_commit_valid(uint8_t version,
+                                                 const char *commit,
+                                                 size_t commit_len)
+{
+    if (version == CONSENSUS_STATE_SOURCE_RECEIPT_V1)
+        return commit_len == 40 && lowercase_hex(commit, commit_len);
+    if (version == CONSENSUS_STATE_SOURCE_RECEIPT_V2)
+        return commit_len == 0;
+    return false;
+}
+
 static void digest_u32(struct sha3_256_ctx *ctx, uint32_t value)
 {
     uint8_t encoded[4];
@@ -96,11 +150,25 @@ void consensus_state_bundle_artifact_digest(
 void consensus_state_source_receipt_digest(
     const struct consensus_state_source_receipt *receipt, uint8_t out[32])
 {
+    if (!receipt || !out)
+        return;
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
-    static const char domain[] =
+    static const char domain_v1[] =
         "zcl.consensus_state_source_receipt.v1/receipt";
-    sha3_256_write(&ctx, (const uint8_t *)domain, sizeof(domain));
+    static const char domain_v2[] =
+        "zcl.consensus_state_source_receipt.v2/receipt";
+    const char *domain = receipt->schema_version ==
+                             CONSENSUS_STATE_SOURCE_RECEIPT_V1
+                         ? domain_v1
+                         : receipt->schema_version ==
+                                   CONSENSUS_STATE_SOURCE_RECEIPT_V2
+                               ? domain_v2 : NULL;
+    if (!domain) {
+        memset(out, 0, 32);
+        return;
+    }
+    sha3_256_write(&ctx, (const uint8_t *)domain, strlen(domain) + 1u);
     sha3_256_write(&ctx, receipt->source_epoch_digest, 32);
     sha3_256_write(&ctx, receipt->source_tree_root, 32);
     sha3_256_write(&ctx, receipt->running_binary_digest, 32);
@@ -110,8 +178,10 @@ void consensus_state_source_receipt_digest(
     uint8_t source_clean = receipt->source_clean ? 1 : 0;
     sha3_256_write(&ctx, &source_clean, 1);
     sha3_256_write(&ctx, &receipt->validation_profile, 1);
-    digest_u64(&ctx, 40);
-    sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
+    if (receipt->schema_version == CONSENSUS_STATE_SOURCE_RECEIPT_V1) {
+        digest_u64(&ctx, 40);
+        sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
+    }
     digest_u64(&ctx, (uint64_t)receipt->fold_cursor);
     sha3_256_finalize(&ctx, out);
 }
@@ -119,18 +189,34 @@ void consensus_state_source_receipt_digest(
 void consensus_state_source_epoch_digest(
     const struct consensus_state_source_receipt *receipt, uint8_t out[32])
 {
+    if (!receipt || !out)
+        return;
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
-    static const char domain[] =
+    static const char domain_v1[] =
         "zcl.consensus_state_source_epoch.v1/identity";
-    sha3_256_write(&ctx, (const uint8_t *)domain, sizeof(domain));
+    static const char domain_v2[] =
+        "zcl.consensus_state_source_epoch.v2/sha256-tree-identity";
+    const char *domain = receipt->schema_version ==
+                             CONSENSUS_STATE_SOURCE_RECEIPT_V1
+                         ? domain_v1
+                         : receipt->schema_version ==
+                                   CONSENSUS_STATE_SOURCE_RECEIPT_V2
+                               ? domain_v2 : NULL;
+    if (!domain) {
+        memset(out, 0, 32);
+        return;
+    }
+    sha3_256_write(&ctx, (const uint8_t *)domain, strlen(domain) + 1u);
     sha3_256_write(&ctx, receipt->source_tree_root, 32);
     sha3_256_write(&ctx, receipt->toolchain_digest, 32);
     sha3_256_write(&ctx, receipt->build_inputs_digest, 32);
     uint8_t source_clean = receipt->source_clean ? 1 : 0;
     sha3_256_write(&ctx, &source_clean, 1);
-    digest_u64(&ctx, 40);
-    sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
+    if (receipt->schema_version == CONSENSUS_STATE_SOURCE_RECEIPT_V1) {
+        digest_u64(&ctx, 40);
+        sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
+    }
     sha3_256_finalize(&ctx, out);
 }
 

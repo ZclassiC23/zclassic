@@ -257,13 +257,17 @@ static void operator_build_summary(struct json_value *summary,
                                    const struct operator_verdict *verdict)
 {
     json_set_object(summary);
-    json_push_kv_str(summary, "schema", "zcl.operator_summary.v1");
-    json_push_kv_int(summary, "schema_version", 1);
-    json_push_kv_str(summary, "api_version", "v1");
+    json_push_kv_str(summary, "schema", "zcl.operator_summary.v2");
+    json_push_kv_int(summary, "schema_version", 2);
+    json_push_kv_str(summary, "api_version", "v2");
     json_push_kv_str(summary, "execution_locus", "target_node");
     json_push_kv_str(summary, "source_rpc", "operatorsnapshot");
     json_push_kv_int(summary, "captured_at",
                      capture->completed_wall_us / 1000000);
+    json_push_kv_str(summary, "source_id_sha256",
+                     zcl_build_source_id_sha256());
+    /* Git metadata is trace/display only.  Snapshot identity and acceptance
+     * are bound to source_id_sha256. */
     json_push_kv_str(summary, "build_commit", zcl_build_commit());
     const struct chain_params *params = chain_params_get();
     json_push_kv_str(summary, "network",
@@ -424,14 +428,17 @@ static void operator_build_snapshot(struct json_value *result,
 {
     struct operator_verdict verdict = operator_snapshot_classify(capture);
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.operator_snapshot.v1");
-    json_push_kv_int(result, "schema_version", 1);
-    json_push_kv_str(result, "api_version", "v1");
+    json_push_kv_str(result, "schema", "zcl.operator_snapshot.v2");
+    json_push_kv_int(result, "schema_version", 2);
+    json_push_kv_str(result, "api_version", "v2");
     json_push_kv_str(result, "execution_locus", "target_node");
     json_push_kv_str(result, "producer",
                      "event_operator_snapshot_controller");
     json_push_kv_str(result, "authority", "target_node_internal_state");
     json_push_kv_str(result, "trust", "target_owned_evidence");
+    json_push_kv_str(result, "source_id_sha256",
+                     zcl_build_source_id_sha256());
+    /* Optional GitHub trace metadata; never snapshot trust authority. */
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     const struct chain_params *params = chain_params_get();
     json_push_kv_str(result, "network",
@@ -669,7 +676,8 @@ bool rpc_operator_snapshot(const struct json_value *params, bool help,
         "The response names its bounded component-snapshot coherence model;\n"
         "it never claims global transaction linearizability and never emits\n"
         "healthy when verdict-critical evidence is partial or unstable.\n"
-        "\nResult: { schema:\"zcl.operator_snapshot.v1\", capture:{...}, "
+        "\nResult: { schema:\"zcl.operator_snapshot.v2\", "
+        "source_id_sha256:\"...\", capture:{...}, "
         "chain:{...}, blockers:{...}, summary:{...} }\n");
 
     struct operator_capture capture;

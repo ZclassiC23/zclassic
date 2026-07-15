@@ -7,7 +7,10 @@ suffix is allowed only for an incompatible encoding change. There is one
 canonical codec; the implementation may have only one canonical writer and one
 canonical reader for the current schema.
 
-ZClassic consensus is unchanged. `USS v1`, `USS v2`, and `USS v3` are frozen
+ZClassic consensus is unchanged. ZClassic23 remains bit-for-bit
+consensus-compatible with `zclassicd`; bundle and receipt schema evolution is
+local storage/provenance plumbing and changes no block, transaction, script,
+activation, or proof-validity rule. `USS v1`, `USS v2`, and `USS v3` are frozen
 legacy import encodings. They remain readable so existing recovery artifacts do
 not become useless, but no new feature is added to them and no producer may
 publish them as complete sovereign state. In particular, legacy USS v3 contains
@@ -27,12 +30,14 @@ committed components:
 - complete Sprout anchor history and current frontier;
 - complete pool-qualified nullifier history;
 - anchor height, exact local-chain block hash, and chainwork;
-- producer commit, complete source-tree SHA3, source fold cursor, chain-corpus
-  digest, proof-manifest digest, and artifact digest;
+- a versioned source receipt, the v2 SHA-256 current-source identity claim,
+  running-binary/toolchain/build-input claims, source fold cursor, chain-corpus
+  digest, proof-manifest digest, and artifact digest; these are partial producer
+  provenance, not complete reproducible-build proof;
 - trust posture (`sovereign` or explicitly assisted), signature set, target
   lane, acceptance receipt, and rollback generation.
 
-## Implementation status — 2026-07-13
+## Implementation status — 2026-07-15
 
 `consensus_state_snapshot_install()` is a deliberately contained, read-only
 admission validator. The name reserves the single future installation service;
@@ -68,10 +73,22 @@ all coins, historical anchors, and pool-qualified nullifiers; recomputes every
 component commitment; emits the canonical eight-row `bundle_proof`; preserves
 the source receipt; and verifies the result through the independent contained
 reader before an exact-inode, no-replace link. When H is the compiled checkpoint
-it also requires exact compiled hash/root/count/supply. The receipt's source-tree
-root, toolchain digest, complete build-input digest, clean/dirty bit, and commit
-form one recomputable source epoch. Those values remain producer claims bound to
-the known executable—not an independent rebuild proof.
+it also requires exact compiled hash/root/count/supply. For receipt v2,
+`source_tree_root` is the decoded 32-byte SHA-256
+`zcl.dev_source_identity.v2` claim over the current build-source
+inventory, and `producer_commit` must be empty. The versioned SHA3 epoch and
+receipt digests bind that claim to the running executable, validation profile,
+chain corpus, fold cursor, and the recorded toolchain/build-input claims. The
+legacy-named `source_clean` column is a v2 capture-completeness assertion,
+always true for a production v2 writer; it is not Git HEAD cleanliness and
+does not consume Git or gitlink object ids. Dirty bytes are already bound by
+the source root. The
+source identity recursively inventories initialized Gitlinks/submodules without
+consuming their Git object ids and includes the exact selected linked archives
+even when ignored. It still excludes other ignored/generated inputs, the
+complete toolchain/configuration/dependency closure, and independent rebuild
+evidence. The receipt is therefore partial producer provenance bound to a known
+executable, not a complete or independently reproduced build proof.
 
 The still-unpublished v1 contract distinguishes `full` validation from
 `checkpoint_fold`. Script, proof, and UTXO rows written by the fast mint say
@@ -84,29 +101,42 @@ designed before checkpoint-fold state could be emitted by any future diagnostic
 writer. Serving H* and tip finalization must never be weakened to make such an
 export possible.
 
-The profile and source-clean bit remain bound by the source receipt, bundle
-manifest, and artifact digest, and the contained reader and candidate reader
+The profile and legacy-named source capture-completeness bit remain bound by
+the source receipt, bundle manifest, and artifact digest, and the contained
+reader and candidate reader
 reject any mismatch or unknown value. A checkpoint fold proves exact
 transparent-state agreement at the compiled checkpoint only. It does not prove
 the signatures or shielded proofs that the fast producer explicitly skipped,
 does not establish complete history, and is never reported or published as full
 replay evidence.
 
-Each new script/proof row also carries the source epoch already prepared in
+Each new script/proof row also carries the source epoch prepared in
 `progress_meta`; missing/foreign epochs refuse export. This is a fail-closed
 legacy-row floor: old fast rows that said `verified` acquire a NULL column and
-cannot be authorized by inserting a receipt later. It is not yet the complete
-producer-generation receipt. Before any producer becomes callable, reset must
-atomically prepare and resume-check a generation digest binding the source
-epoch, running binary, validation profile, checkpoint tuple, toolchain/config,
-and a durable nonce; every row must carry that generation. Until that lands,
-there is intentionally no production setter/caller for the receipt or exporter.
+cannot be authorized by inserting a receipt later. Producer receipt ownership
+is now wired into `boot_mint_anchor_run()`: `begin()` records the running binary,
+validation profile, and source epoch before the fold; `finalize()` requires that
+same executable and binds the completed height/hash/fold cursor; and a successful
+full-validation finalization immediately invokes the contained exporter.
+Checkpoint-fold minting remains non-serving and skips bundle export. A missing
+or foreign session, unstamped build, incomplete corpus, or failed finalization
+leaves the producer non-exportable.
 
-This correction does not introduce a bundle v2: no v1 producer is callable and
-no v1 artifact has been published. The first canonical writer and reader now
-agree on this one closed v1 encoding. A future schema suffix is reserved for an
-incompatible encoding change after v1 artifacts exist, not for implementation
-milestones or trust profiles.
+This wiring does not introduce a bundle v2. The canonical bundle remains the
+closed `zcl.consensus_state_bundle.v1` encoding, while its embedded source
+receipt is versioned independently. Readers retain exact v1 receipt
+parse/inspection compatibility and accept current v2 receipts under their
+distinct digest domains. Current builds originate
+`zcl.consensus_state_producer_session.v2` and finalize
+`zcl.consensus_state_source_receipt.v2`; they never originate or relabel a v1
+claim. No binary may resume or finalize a v1 session, or publish/install state
+from a v1 receipt. The frozen codec still requires its lowercase 40-hex Git
+commit to inspect the historical digest because that field was part of the
+legacy format; it never makes the evidence admissible. V2 binds the SHA-256
+source identity instead and requires `producer_commit` to remain empty; optional
+GitHub trace metadata belongs outside receipt authority. A future
+bundle suffix is reserved for an incompatible bundle encoding change, not for
+receipt migration, implementation milestones, or trust profiles.
 
 Both reducer consumers and export proof are hash-bound. Script and proof stage
 receipts carry the exact selected header hash; a missing, malformed, or foreign
@@ -114,8 +144,10 @@ hash is a named revalidation dependency and is never accepted as legacy
 authority for a body read or coin write. The exporter counts proof rows only
 when they join the admitted header hash at the same height.
 
-The exporter has no boot/manual/refold command caller and cannot publish node
-state. Its output contract is a duplicated directory descriptor plus one
+The exporter now has one production call site: the receipt-owning full-profile
+`-mint-anchor` path invokes it immediately after successful finalization. It has
+no manual/refold caller and remains an artifact writer, not a node-state
+publisher. Its output contract is a duplicated directory descriptor plus one
 normalized filename component. It writes an anonymous `O_TMPFILE` through an
 exporter-private fd-only SQLite VFS, validates the exact retained inode, then
 uses an exact-inode, no-replace hard link and directory fsync. No staging
@@ -171,7 +203,8 @@ implemented and proven together:
 1. A full-history producer exports every transparent coin, Sapling/Sprout anchor
    row, and pool-qualified nullifier with exact component counts and digests.
    A canonical sovereign candidate additionally requires `source_clean=true`
-   and validation profile `full`; checkpoint-fold or dirty evidence must remain
+   (the v2 exact-capture completeness assertion) and validation profile `full`;
+   checkpoint-fold, incomplete, or legacy-v1 dirty evidence must remain
    explicitly assisted/contained and can never be silently promoted.
 2. One single-use protected candidate must combine the artifact receipt and
    selected-chain evidence with sovereign trust posture, signed/expiring owner
@@ -220,7 +253,7 @@ accepts no other anchor. It copies:
 | every `sprout_anchors` row | `anchors(pool=0,...)` |
 | every `sapling_anchors` row | `anchors(pool=1,...)` |
 | every `nullifiers` row | `nullifiers`, pool-qualified |
-| exact source receipt | `source_receipt` producer claims and executable/corpus binding |
+| exact versioned source receipt | `source_receipt` v1-compatible/v2-current partial producer claims and executable/corpus binding |
 | `stage_cursor` and eight reducer logs | canonical ordered `bundle_proof` summaries |
 
 The latest frontier for each pool is the unique greatest stored height at or

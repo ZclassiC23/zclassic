@@ -1321,6 +1321,8 @@ int main(int argc, char **argv)
     failures += test_workpool();
     failures += test_app_context();
     failures += test_service_kernel();
+    failures += test_service_manifest();
+    failures += test_app_checkpoint_manifest();
     { extern int test_thread_registry(void);
       failures += test_thread_registry(); }
     failures += test_bip113_bip65();

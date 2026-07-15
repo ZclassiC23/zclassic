@@ -235,6 +235,19 @@ int test_stage_anchor(void)
         SA_CHECK("re-anchor to same target left cursors unchanged",
                  unchanged);
 
+        /* A larger atomic cutover may already own the SQLite transaction. An
+         * idempotent re-anchor must remain a pure read/no-op and must not try to
+         * nest the standalone cursor writer's BEGIN. */
+        bool outer_open = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL,
+                                       NULL) == SQLITE_OK;
+        ok = outer_open && stage_anchor_upstream_cursors_to(
+            db, 4242, "test", "outer-transaction-noop", true);
+        bool outer_still_open = sqlite3_get_autocommit(db) == 0;
+        bool outer_rolled_back = sqlite3_exec(db, "ROLLBACK", NULL, NULL,
+                                              NULL) == SQLITE_OK;
+        SA_CHECK("same-target re-anchor joins outer transaction as no-op",
+                 ok && outer_still_open && outer_rolled_back);
+
         sqlite3_close(db);
         unlink(path);
     }

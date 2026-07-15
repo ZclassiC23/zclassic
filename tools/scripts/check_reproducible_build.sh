@@ -191,8 +191,9 @@ cat >&2 <<HINTS
      already does for .a archives).
   4. build-id — should already be dropped by -Wl,--build-id=none in REL_LDFLAGS;
      if it appears, the flag did not reach the final link.
-  5. git-derived content — ZCL_BUILD_COMMIT is embedded via -D; a dirty tree
-     appends '-dirty'. Confirm 'git diff-index --quiet HEAD' is clean.
+  5. generated inputs or toolchain drift outside the captured source inventory.
+     Git commit ids are intentionally not embedded in the sovereign binary;
+     GitHub trace metadata belongs in an external publication sidecar.
 
 [repro] KEEP=1 retains the two build dirs under $WORK for byte-level forensics.
 HINTS

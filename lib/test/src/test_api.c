@@ -3,6 +3,7 @@
  * and supply calculation correctness. */
 
 #include "test/test_helpers.h"
+#include "controllers/agent_background_quality.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_security_posture.h"
 #include "controllers/api_controller.h"
@@ -4510,8 +4511,8 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("api: getinfo/getnetworkinfo gain build_commit; bootstrapstatus "
-           "keeps client_name (node_binary_identity consolidation)... ");
+    printf("api: node identity exposes source SHA-256 + Git trace; "
+           "bootstrapstatus keeps client_name... ");
     {
         /* Invoke the registered actor directly (bypassing
          * rpc_table_execute()'s RPC-server warmup gate, same pattern as
@@ -4539,6 +4540,9 @@ int test_api(void)
                           CLIENT_NAME) == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
                           zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "source_id_sha256")),
+                          zcl_build_source_id_sha256()) == 0;
         ok = ok && json_get_int(json_get(&result, "protocolversion")) ==
                        PROTOCOL_VERSION;
         json_free(&result);
@@ -4550,6 +4554,9 @@ int test_api(void)
                           CLIENT_NAME) == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
                           zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "source_id_sha256")),
+                          zcl_build_source_id_sha256()) == 0;
         json_free(&result);
 
         json_init(&result);
@@ -4567,6 +4574,9 @@ int test_api(void)
                           CLIENT_NAME) == 0;
         ok = ok && strcmp(json_get_str(json_get(binary, "build_commit")),
                           zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(binary,
+                                                "source_id_sha256")),
+                          zcl_build_source_id_sha256()) == 0;
         json_free(&result);
 
         json_free(&params);
@@ -6237,6 +6247,63 @@ int test_api(void)
         size_t n = api_handle_request("GET", "/api/wallet", NULL, 0,
                                        resp, sizeof(resp));
         bool ok = (n > 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: background quality rejects unknown source identities... ");
+    {
+        char tmp[] = "/tmp/zcl_quality_unknown_XXXXXX";
+        char status_dir[512] = {0};
+        char paths[3][640] = {{0}};
+        const char *lanes[3] = {"fuzz", "coverage", "tests"};
+        const char *old = getenv("ZCL_QUALITY_STATE_DIR");
+        char old_copy[4096] = {0};
+        bool old_set = old != NULL;
+        bool ok = !old_set ||
+            snprintf(old_copy, sizeof(old_copy), "%s", old) <
+                (int)sizeof(old_copy);
+        char *root = ok ? mkdtemp(tmp) : NULL;
+        ok = ok && root != NULL &&
+            snprintf(status_dir, sizeof(status_dir), "%s/status", root) <
+                (int)sizeof(status_dir) && mkdir(status_dir, 0700) == 0;
+        for (size_t i = 0; ok && i < 3; i++) {
+            ok = snprintf(paths[i], sizeof(paths[i]), "%s/%s.json",
+                          status_dir, lanes[i]) < (int)sizeof(paths[i]);
+            FILE *f = ok ? fopen(paths[i], "wb") : NULL;
+            ok = f != NULL;
+            if (f) {
+                fprintf(f,
+                        "{\"schema\":\"zcl.background_quality_lane.v1\","
+                        "\"lane\":\"%s\",\"status\":\"passed\","
+                        "\"commit\":\"external\"}\n", lanes[i]);
+                ok = fclose(f) == 0;
+            }
+        }
+        ok = ok && setenv("ZCL_QUALITY_STATE_DIR", root, 1) == 0;
+        struct json_value quality;
+        json_init(&quality);
+        if (ok)
+            agent_build_background_quality_status(&quality);
+        ok = ok && strcmp(json_get_str(json_get(&quality, "summary")),
+                          "background_quality_identity_unknown") == 0;
+        ok = ok && json_get_int(json_get(&quality,
+                                          "status_files_valid")) == 3;
+        ok = ok && json_get_int(json_get(&quality,
+                                          "unknown_source_id_count")) == 3;
+        ok = ok && json_get_int(json_get(&quality,
+                                          "current_source_id_count")) == 0;
+        json_free(&quality);
+        if (old_set)
+            setenv("ZCL_QUALITY_STATE_DIR", old_copy, 1);
+        else
+            unsetenv("ZCL_QUALITY_STATE_DIR");
+        if (root) {
+            for (size_t i = 0; i < 3; i++)
+                if (paths[i][0]) unlink(paths[i]);
+            rmdir(status_dir);
+            rmdir(root);
+        }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

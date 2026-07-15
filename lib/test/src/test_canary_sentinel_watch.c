@@ -14,13 +14,15 @@
  *   (e) idempotency    → two ticks on the same FAIL = ONE raise/remedy,
  *   (f) mixed kinds    → anchor=FAIL + genesis=PASS pages naming only the
  *                        failing kind; all-green clears.
- *   (g) cross-build    → a FAIL written by a DIFFERENT build than the one
+ *   (g) cross-source   → a FAIL written from DIFFERENT source bytes than the
  *                        running is ignored (shared dir + fresh deploy); a
- *                        same-build FAIL still pages.
- *   (h) -dirty norm    → a bare-hash FAIL from the same SOURCE still pages even
- *                        when the binary is a dirty build (dev-lane default).
+ *                        same-source FAIL still pages.
+ *   (h) Git trace only → differing build_commit metadata cannot demote a
+ *                        same-source FAIL.
  *   (i) pre-start run  → a FAIL from a run started before this process is
  *                        ignored; a fresh same-build FAIL still pages.
+ *   (j) fail-closed clear → stale/cross-source/malformed/unknown verdicts
+ *                        cannot clear a current exact-source FAIL latch.
  * Plus the documented absence policy: a FAIL stays latched when its
  * sentinel disappears (a re-running canary must not un-page the node). */
 
@@ -32,6 +34,8 @@
 #include "conditions/replay_canary_failed.h"
 #include "util/clientversion.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,45 +62,98 @@ static bool write_file(const char *dir, const char *name, const char *body)
     return ok;
 }
 
-/* Mirror the harness's sentinel shape (extra fields prove tolerance), with an
- * explicit build_commit so a test can exercise the cross-build staleness drop
- * (a FAIL written by a DIFFERENT build than the one running must not page). */
-static bool write_sentinel_commit(const char *dir, const char *kind,
-                                  const char *verdict, const char *reason,
-                                  long long ts, const char *build_commit)
+/* Mirror the harness's sentinel shape (extra fields prove tolerance). Source
+ * ID is the sole cross-build authority; build_commit is display-only. */
+static bool test_running_artifact_sha256(char out[65])
+{
+    int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    struct sha256_ctx ctx;
+    sha256_init(&ctx);
+    uint8_t buf[32768];
+    bool ok = true;
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            sha256_write(&ctx, buf, (size_t)n);
+            continue;
+        }
+        if (n == 0)
+            break;
+        if (errno == EINTR)
+            continue;
+        ok = false;
+        break;
+    }
+    if (close(fd) != 0)
+        ok = false;
+    if (!ok)
+        return false;
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    sha256_finalize(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[64] = '\0';
+    return true;
+}
+
+static bool write_sentinel_full_identity(
+    const char *dir, const char *kind, const char *verdict,
+    const char *reason, long long ts, const char *source_id,
+    const char *artifact_sha256, const char *build_commit)
 {
     char name[128];
-    char body[512];
+    char body[768];
     snprintf(name, sizeof(name), "replay_canary_%s.json", kind);
     snprintf(body, sizeof(body),
              "{\"verdict\":\"%s\",\"from\":\"%s\",\"ts\":%lld,"
-             "\"started_ts\":%lld,\"build_commit\":\"%s\","
+             "\"started_ts\":%lld,\"source_id_sha256\":\"%s\","
+             "\"artifact_sha256\":\"%s\","
+             "\"build_commit\":\"%s\","
              "\"tip\":3145000,\"verified_height\":3145000,"
              "\"bg_state\":\"complete\",\"consensus_rejects\":0,"
              "\"reason\":\"%s\",\"elapsed_sec\":1234}\n",
-             verdict, kind, ts, ts - 1200,
+             verdict, kind, ts, ts - 1200, source_id ? source_id : "",
+             artifact_sha256 ? artifact_sha256 : "",
              build_commit ? build_commit : "", reason);
     return write_file(dir, name, body);
 }
 
-/* The common case: a sentinel written by the RUNNING build, so a FAIL latches
- * (same-build verdicts are genuine evidence about this binary). */
+static bool write_sentinel_identity(const char *dir, const char *kind,
+                                    const char *verdict, const char *reason,
+                                    long long ts, const char *source_id,
+                                    const char *build_commit)
+{
+    char artifact_sha256[65];
+    return test_running_artifact_sha256(artifact_sha256) &&
+           write_sentinel_full_identity(
+               dir, kind, verdict, reason, ts, source_id, artifact_sha256,
+               build_commit);
+}
+
+/* The common case: a sentinel written from the RUNNING source tree, so a FAIL
+ * latches (same-source verdicts are genuine evidence about this binary). */
 static bool write_sentinel(const char *dir, const char *kind,
                            const char *verdict, const char *reason,
                            long long ts)
 {
-    return write_sentinel_commit(dir, kind, verdict, reason, ts,
-                                 zcl_build_commit());
+    return write_sentinel_identity(dir, kind, verdict, reason, ts,
+                                   zcl_build_source_id_sha256(),
+                                   zcl_build_commit());
 }
 
-/* Strip a trailing "-dirty" — the canary harness writes the bare short hash
- * while a dirty-built binary's zcl_build_commit() carries the suffix. */
-static void strip_dirty(const char *in, char *out, size_t cap)
+static bool different_source_id(char out[65])
 {
-    snprintf(out, cap, "%s", in ? in : "");
-    char *d = strstr(out, "-dirty");
-    if (d)
-        *d = '\0';
+    const char *running = zcl_build_source_id_sha256();
+    if (!running || strlen(running) != 64)
+        return false;
+    snprintf(out, 65, "%s", running);
+    out[0] = out[0] == '0' ? '1' : '0';
+    return true;
 }
 
 static void rm_in_dir(const char *dir, const char *name)
@@ -324,17 +381,19 @@ int test_canary_sentinel_watch(void)
         watch_test_teardown(dir);
     }
 
-    /* (g) Cross-build staleness: a FAIL written by a DIFFERENT binary than the
-     * one running is not evidence about THIS build (shared verdict dir + a
-     * freshly-deployed binary) — it must NOT latch the pager. A SAME-build
+    /* (g) Cross-source staleness: a FAIL written from DIFFERENT source bytes
+     * than the one running is not evidence about THIS build (shared dir + a
+     * freshly-deployed binary) — it must NOT latch the pager. A SAME-source
      * FAIL alongside it still pages, proving we did not disable FAIL paging
      * wholesale; the stale one is excluded from the page detail. */
     {
         watch_test_setup(dir);
-        /* Stale cross-build FAIL alone → recorded but never raises. */
-        bool ok = write_sentinel_commit(dir, "anchor", "FAIL",
-                                        "rpc_unreachable", 1718000500LL,
-                                        "deadbee_oldbuild");
+        /* Stale cross-source FAIL alone → recorded but never raises. */
+        char other_source_id[65];
+        bool ok = different_source_id(other_source_id);
+        ok = ok && write_sentinel_identity(
+            dir, "anchor", "FAIL", "rpc_unreachable", 1718000500LL,
+            other_source_id, "deadbee_oldbuild");
         canary_sentinel_watch_tick_once();
         ok = ok && !canary_sentinel_watch_fail_active();
         ok = ok && dump_bool("fail_latched") == false;
@@ -342,7 +401,7 @@ int test_canary_sentinel_watch(void)
         ok = ok && condition_engine_get_active_count() == 0;
         ok = ok && replay_canary_failed_test_remedy_calls() == 0;
 
-        /* A same-build FAIL on another kind DOES page. */
+        /* A same-source FAIL on another kind DOES page. */
         ok = ok && write_sentinel(dir, "genesis", "FAIL", "sha3_mismatch",
                                   1718000501LL);
         canary_sentinel_watch_tick_once();
@@ -352,31 +411,127 @@ int test_canary_sentinel_watch(void)
         ok = ok && fails == 1;                            /* only the genuine one */
         ok = ok && strstr(detail, "kind=genesis") != NULL;
         ok = ok && strstr(detail, "kind=anchor") == NULL; /* stale one excluded */
-        CSW_CHECK("cross-build FAIL ignored; same-build FAIL still pages", ok);
+        CSW_CHECK("cross-source FAIL ignored; same-source FAIL still pages",
+                  ok);
         watch_test_teardown(dir);
     }
 
-    /* (h) -dirty normalization: the canary harness writes the BARE short hash
-     * while a dirty-built binary's zcl_build_commit() carries "-dirty". A
-     * same-SOURCE FAIL must STILL page — never be demoted as cross-build (the
-     * dev-lane default deploy is a dirty build). */
+    /* (h) Git trace metadata is never staleness authority. A deliberately
+     * different build_commit with the same source ID must still page. */
     {
         watch_test_setup(dir);
-        char bare[64];
-        strip_dirty(zcl_build_commit(), bare, sizeof(bare));
-        bool ok = write_sentinel_commit(dir, "anchor", "FAIL", "sha3_mismatch",
-                                        1718000600LL, bare);
+        bool ok = write_sentinel_identity(
+            dir, "anchor", "FAIL", "sha3_mismatch", 1718000600LL,
+            zcl_build_source_id_sha256(), "different-github-trace");
         canary_sentinel_watch_tick_once();
         ok = ok && canary_sentinel_watch_fail_active();
-        CSW_CHECK("same-source FAIL pages even when binary is -dirty "
-                  "(bare-hash sentinel)", ok);
+        CSW_CHECK("build_commit mismatch cannot demote same-source FAIL", ok);
+        watch_test_teardown(dir);
+    }
+
+    /* (j) A genuine current FAIL may be cleared only by an exact-source PASS
+     * from a run started during this process. Every stale or malformed clear
+     * attempt preserves both the latch and the original failure detail. */
+    {
+        watch_test_setup(dir);
+        bool ok = write_sentinel(dir, "anchor", "FAIL", "live_failure",
+                                 1718001000LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        /* Syntactically valid JSON can still omit every typed sentinel field.
+         * It is an untrusted unknown verdict: never crash and never clear the
+         * exact current FAIL already latched above. */
+        ok = ok && write_file(dir, "replay_canary_anchor.json", "{}\n");
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        char running_artifact[65];
+        ok = ok && test_running_artifact_sha256(running_artifact);
+        char body[768];
+        snprintf(body, sizeof(body),
+                 "{\"from\":\"anchor\",\"ts\":1718001025,"
+                 "\"started_ts\":1718001000,"
+                 "\"source_id_sha256\":\"%s\","
+                 "\"artifact_sha256\":\"%s\","
+                 "\"reason\":\"missing_verdict\"}\n",
+                 zcl_build_source_id_sha256(), running_artifact);
+        ok = ok && write_file(dir, "replay_canary_anchor.json", body);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        char other_source_id[65];
+        char other_artifact[65];
+        ok = ok && different_source_id(other_source_id);
+        snprintf(other_artifact, sizeof(other_artifact), "%s",
+                 running_artifact);
+        other_artifact[0] = other_artifact[0] == '0' ? '1' : '0';
+        ok = ok && write_sentinel_full_identity(
+            dir, "anchor", "PASS", "cross_artifact_pass", 1718001050LL,
+            zcl_build_source_id_sha256(), other_artifact, "trace-artifact");
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        ok = ok && write_sentinel_identity(
+            dir, "anchor", "FAIL", "cross_fail", 1718001100LL,
+            other_source_id, "trace-a");
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        ok = ok && write_sentinel_identity(
+            dir, "anchor", "PASS", "cross_pass", 1718001200LL,
+            other_source_id, "trace-b");
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        canary_sentinel_watch_test_set_process_start(1719000000LL);
+        ok = ok && write_sentinel(dir, "anchor", "FAIL", "prestart_fail",
+                                  1718002000LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        ok = ok && write_sentinel(dir, "anchor", "PASS", "prestart_pass",
+                                  1718002100LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        snprintf(body, sizeof(body),
+                 "{\"verdict\":\"PASS\",\"from\":\"anchor\","
+                 "\"ts\":1720001000,\"started_ts\":1720000000,"
+                 "\"reason\":\"missing_source\"}\n");
+        ok = ok && write_file(dir, "replay_canary_anchor.json", body);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        snprintf(body, sizeof(body),
+                 "{\"verdict\":\"PASS\",\"from\":\"anchor\","
+                 "\"ts\":1720002000,\"source_id_sha256\":\"%s\","
+                 "\"artifact_sha256\":\"%s\","
+                 "\"reason\":\"missing_started_ts\"}\n",
+                 zcl_build_source_id_sha256(), running_artifact);
+        ok = ok && write_file(dir, "replay_canary_anchor.json", body);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        ok = ok && write_sentinel(dir, "anchor", "UNKNOWN", "bad_enum",
+                                  1720003000LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        ok = ok && dump_bool("fail_latched");
+
+        char detail[256];
+        int fails = canary_sentinel_watch_fail_detail(detail, sizeof(detail));
+        ok = ok && fails == 1 && strstr(detail, "live_failure") != NULL;
+
+        ok = ok && write_sentinel(dir, "anchor", "PASS", "",
+                                  1721002000LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && !canary_sentinel_watch_fail_active();
+        CSW_CHECK("only current exact-source PASS clears a latched FAIL", ok);
         watch_test_teardown(dir);
     }
 
     /* (i) Run-start staleness: the shared verdict dir can contain a FAIL from
-     * this same build, but from a canary run that started before this node
+     * this same source build, but from a canary run started before this node
      * process. It is not evidence about the running process, so it must not
-     * page. A fresh same-build FAIL still pages. */
+     * page. A fresh same-source FAIL still pages. */
     {
         watch_test_setup(dir);
         canary_sentinel_watch_test_set_process_start(1718000000LL);
@@ -398,7 +553,7 @@ int test_canary_sentinel_watch(void)
         ok = ok && fails == 1;
         ok = ok && strstr(detail, "kind=genesis") != NULL;
         ok = ok && strstr(detail, "kind=anchor") == NULL;
-        CSW_CHECK("pre-start FAIL ignored; fresh same-build FAIL still pages",
+        CSW_CHECK("pre-start FAIL ignored; fresh same-source FAIL still pages",
                   ok);
         watch_test_teardown(dir);
     }

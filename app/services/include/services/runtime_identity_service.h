@@ -15,8 +15,9 @@ struct runtime_identity_snapshot {
 };
 
 /* Stable for the process lifetime. Thread-safe and initialized before the
- * caller's first capture window starts. The random nonce prevents PID reuse
- * from aliasing a restarted node. */
+ * caller's first capture window starts. The ID is namespaced by the baked
+ * SHA-256 source identity; the random nonce prevents PID reuse from aliasing
+ * a restarted node. Git commit metadata is not identity authority. */
 void runtime_identity_get(struct runtime_identity_snapshot *out);
 
 #endif

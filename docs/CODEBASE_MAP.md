@@ -46,6 +46,13 @@ Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `validation`, `chain`, `consensus`, `keys`, `metrics`, `health`, JSON, kernel
 utils. Boot stage enum: `lib/util/include/util/boot_phase.h`.
 
+`lib/vcs/` owns ZVCS plus the pure `content.v2` package-manifest and source
+swarm codecs. Read [`ZVCS.md`](ZVCS.md) for internal source/version identity
+and [`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md) for the source-hosting
+trust boundary and remaining transport/CAS work. The current swarm layer is a
+codec only; it has no socket, install, execution, wallet, or publication
+authority.
+
 ### Hexagonal seam — `ports/` + `adapters/` (39 files)
 
 Outbound-only by design: 12 port interfaces in `ports/include/ports/*_port.h`
@@ -60,7 +67,7 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 619
+test_groups: 621
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 39
@@ -565,11 +572,11 @@ Confirm the target before acting.
 | Command | Effect |
 |---------|--------|
 | `make -j$(nproc)` | Build `zclassic23`, `test_zcl`, `zclassic-cli`. `-j` only overlaps the 2–3 binaries + LTO link, not per-binary front-end. |
-| `make fast-changed-compile` | Cheapest guarded edit check; compiles changed node `.c` files directly into `build/dev-obj/`, with safe fallback to `fast-compile`. |
-| `make fast-compile` | Fastest no-link dev compile check; cached non-LTO `build/dev-obj` objects. |
-| `make build-only` | Strict release-flag `cc -c` with depfile header tracking; use before push/release. |
+| `make fast-changed-compile` | Compatibility name for the source-wide dev compile proof; changed paths are classification hints only. |
+| `make fast-compile` | Fastest no-link dev compile check; exact non-LTO objects under `build/dev-obj/epochs/<compile-epoch>/`, with compiler-cache recovery. |
+| `make build-only` | Strict release-flag source-wide `cc -c` proof under `build/obj/epochs/<compile-epoch>/`; use before push/release. |
 | `make fast-rebuild` | Fast local node binary alias for `make dev-bin`; cached per-file objects, no LTO, uses `ccache` automatically when installed. |
-| `make dev-bin` | Build `build/bin/zclassic23-dev` from cached per-file objects, non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
+| `make dev-bin` | Link an exact epoch candidate, then atomically refresh `build/bin/zclassic23-dev`; non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
 | `make dev-watch [MODE=verify\|check]` | Unified save loop. Both public modes prove and record without runtime activation. `auto`/`apply`/`hotswap`/`reload`/`stage` are recognized only to return a containment refusal. |
 | `build/bin/zclassic23-dev dev loop ensure/status/wait/stop` | Native C23 verify-watcher lifecycle. `ensure` is singleton/idempotent and accepts verify mode; publication modes refuse. `status` reports mode and containment posture, `wait` is bounded, and `stop` requires the exact watcher ID. |
 | `build/bin/zclassic23-dev dev change apply --input='{"files":[...]}'` | Contained compatibility entry point: returns `publication_contained` before runtime mutation. Use `dev change plan`, verify/check watch, and focused proofs. |
@@ -583,7 +590,7 @@ Confirm the target before acting.
 | `make agent-clear-stale-dev-reindex` | Clears a proven-stale dev-lane `auto_reindex_request` by archiving it after the dev RPC is up and served height is at or above the marker anchor. Never touches canonical or soak. |
 | `make agent-stage-dev` | Phase-0 contained: always refuses before build/stage mutation. A caller-supplied source ID cannot authorize it. |
 | `make agent-loop` | Manual one-shot AI/operator verification loop. Runs `fast-ci`; `ZCL_AGENT_LOOP_BIN=1` may also build `build/bin/zclassic23-dev`. Runtime deployment remains contained. |
-| `make fast-ci` | Cache-aware edit loop: `lint-fast`, changed compile gate, focused mapped tests, and native live probe. Use `ZCL_FAST_TESTS=...`, `ZCL_FAST_LIVE=0`, `ZCL_FAST_CACHE=0`, `ZCL_FAST_CACHE_RESET=1` as needed. |
+| `make fast-ci` | Cache-aware edit loop: `lint-fast`, exact source-wide compile/test proofs, and native live probe. Changed-path/test mappings are hints only. Use `ZCL_FAST_TESTS=...`, `ZCL_FAST_LIVE=0`, `ZCL_FAST_CACHE=0`, `ZCL_FAST_CACHE_RESET=1` as needed. |
 | `make test` | Runs `test_parallel` (isolated per-process runner). **Use this**, not test_zcl. Green = regression floor, NOT a liveness proof. |
 | `make t ONLY=simnet` | Runs the deterministic simulator harness and the current action coverage matrix documented in `docs/SIMULATOR.md`. |
 | `make hotswap-sim` | Focused deterministic simulated-network proof for the dev hot-swap transaction. Use after loader/router/provider changes. |
@@ -593,7 +600,7 @@ Confirm the target before acting.
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
 | `make ci` | lint + bench-regress + build + `test_parallel` (retry-once for flakes) + symbol-floor. Pre-push hook runs this. |
-| `make deploy` | `rm` stale binary, rebuild fresh, WAL checkpoint, `systemctl restart`, verify running `build_commit` (`deploy_verify.sh`). If RPC stays closed during crash-only recovery, the verifier reports the pre-RPC `reindex-chainstate` progress from `node.log`. |
+| `make deploy` | Pin the outer source record through recursive Make, freeze and preflight one candidate, install those exact bytes, WAL checkpoint, restart, then verify exact source/artifact identity over the canonical systemd `MainPID`'s forced loopback RPC endpoint (`deploy_verify.sh`). Inherited lane selectors cannot redirect the proof. If RPC stays closed during crash-only recovery, the verifier reports `reindex-chainstate` progress from that service's datadir log. |
 | `make deploy-dev` | Phase-0 contained: always refuses before stopping a service or moving a generation link. |
 | `make deploy-dev-fast` / `make agent-deploy-fast` | Phase-0 contained: always refuses; there is no public runtime-activation entry point. |
 | `zcl_state subsystem=hotswap` | Read `zcl.hotswap_generation.v2`: active/retired/rejected in-process generations, source/build/input/artifact provenance, mapped tests/probes, pinned-artifact identity, and last rejection. These generations are ephemeral and currently admit only stateless MCP routes; all other providers are `reload_required`. |

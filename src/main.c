@@ -1360,21 +1360,24 @@ static void cli_probe_capture_target_build(const struct json_value *result)
     if (!result || result->type != JSON_OBJ)
         return;
 
-    const char *build = json_get_str(json_get(result, "build_commit"));
-    if (build[0]) {
-        agent_runtime_availability_set_target_build_commit(build);
-        return;
-    }
-
     const struct json_value *runtime = json_get(result, "runtime_identity");
-    build = json_get_str(json_get(runtime, "build_commit"));
-    if (build[0]) {
-        agent_runtime_availability_set_target_build_commit(build);
-        return;
-    }
-
     const struct json_value *runtime_build = json_get(result, "runtime_build");
-    build = json_get_str(json_get(runtime_build, "running_build_commit"));
+    const char *source_id =
+        json_get_str(json_get(result, "source_id_sha256"));
+    if (!source_id[0])
+        source_id = json_get_str(json_get(runtime, "source_id_sha256"));
+    if (!source_id[0])
+        source_id = json_get_str(json_get(
+            runtime_build, "running_source_id_sha256"));
+    if (source_id[0])
+        agent_runtime_availability_set_target_source_id_sha256(source_id);
+
+    const char *build = json_get_str(json_get(result, "build_commit"));
+    if (!build[0])
+        build = json_get_str(json_get(runtime, "build_commit"));
+    if (!build[0])
+        build = json_get_str(json_get(runtime_build,
+                                      "running_build_commit"));
     if (build[0])
         agent_runtime_availability_set_target_build_commit(build);
 }
@@ -3530,9 +3533,10 @@ int main(int argc, char **argv)
             /* Print version + exit. Without this, `zclassic23 --version` (a
              * judge's reflex) falls through as an unknown flag and silently
              * boots a full node against the default datadir. */
-            printf("zclassic23 v%d.%d.%d (build %s)\n",
+            printf("zclassic23 v%d.%d.%d (source %.12s)\n",
                    CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR,
-                   CLIENT_VERSION_REVISION, zcl_build_commit());
+                   CLIENT_VERSION_REVISION,
+                   zcl_build_source_id_sha256());
             return 0;
         }
     }

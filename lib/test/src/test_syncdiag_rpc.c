@@ -3350,7 +3350,18 @@ syncdiag_net_split_done:
             "ok=1 prefix h=3056758 but cursor=3171120 first_hole_h=3056759 "
             "repair_owner=reducer_frontier_reconcile_light";
         event_emitf(EV_OPERATOR_NEEDED, 0, "%s", long_blocker);
+        char expected_source_id[65] = {0};
+        const char *running_source_id = zcl_build_source_id_sha256();
+        bool expected_source_fixture_ok =
+            running_source_id && strlen(running_source_id) == 64;
+        if (expected_source_fixture_ok) {
+            snprintf(expected_source_id, sizeof(expected_source_id), "%s",
+                     running_source_id);
+            expected_source_id[0] =
+                expected_source_id[0] == '0' ? '1' : '0';
+        }
         setenv("ZCL_AGENT_EXPECT_BUILD_COMMIT", "expected-agent-test", 1);
+        setenv("ZCL_AGENT_EXPECT_SOURCE_ID", expected_source_id, 1);
         setenv("ZCL_AGENT_EXPECT_BUILD_SOURCE", "unit-test", 1);
         rpc_agent_set_boot_context("dev", "full", "/tmp/zcl-agent-dev",
                                    18252, 8053, 8443, 18034);
@@ -3363,7 +3374,8 @@ syncdiag_net_split_done:
         json_init(&result);
 
         bool executed = rpc_table_execute(&tbl, "agent", &params, &result);
-        bool ok = blocker_ready && executed && result.type == JSON_OBJ;
+        bool ok = blocker_ready && expected_source_fixture_ok && executed &&
+            result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.public_status.v1") == 0;
         const struct json_value *first_call =
@@ -3380,19 +3392,31 @@ syncdiag_net_split_done:
         ok = ok && json_get(first_call, "elapsed_ms") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
                           zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "source_id_sha256")),
+                          zcl_build_source_id_sha256()) == 0;
         const struct json_value *runtime_build =
             json_get(&result, "runtime_build");
         ok = ok && runtime_build && runtime_build->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(runtime_build, "schema")),
-                          "zcl.runtime_build.v1") == 0;
+                          "zcl.runtime_build.v2") == 0;
         ok = ok && json_get_int(json_get(runtime_build,
-                                         "schema_version")) == 1;
+                                         "schema_version")) == 2;
         ok = ok && strcmp(json_get_str(json_get(runtime_build,
                                                 "running_build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(runtime_build,
                                                 "expected_build_commit")),
                           "expected-agent-test") == 0;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "freshness_authority")),
+                          "source_id_sha256") == 0;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "running_source_id_sha256")),
+                          zcl_build_source_id_sha256()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "expected_source_id_sha256")),
+                          expected_source_id) == 0;
         ok = ok && strcmp(json_get_str(json_get(runtime_build,
                                                 "expected_source")),
                           "unit-test") == 0;
@@ -3404,7 +3428,11 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(runtime_build,
                                                 "freshness")),
                           "stale") == 0;
-        ok = ok && json_get(runtime_build, "dirty_build") != NULL;
+        ok = ok && !json_get_bool(json_get(runtime_build,
+                                            "dirty_build_known"));
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "dirty_build_state")),
+                          "unknown") == 0;
         ok = ok && json_get(runtime_build, "semantics") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
                           "blocked") == 0;
@@ -3665,6 +3693,7 @@ syncdiag_net_split_done:
         json_free(&params);
         json_free(&result);
         unsetenv("ZCL_AGENT_EXPECT_BUILD_COMMIT");
+        unsetenv("ZCL_AGENT_EXPECT_SOURCE_ID");
         unsetenv("ZCL_AGENT_EXPECT_BUILD_SOURCE");
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         alerts_shutdown();
@@ -3853,11 +3882,16 @@ syncdiag_net_split_done:
         const struct json_value *invariants = json_get(&result, "invariants");
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.operator_snapshot.v1") == 0;
-        ok = ok && json_get_int(json_get(&result, "schema_version")) == 1;
+                          "zcl.operator_snapshot.v2") == 0;
+        ok = ok && json_get_int(json_get(&result, "schema_version")) == 2;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "execution_locus")),
                           "target_node") == 0;
+        const char *snapshot_source_id = json_get_str(json_get(
+            &result, "source_id_sha256"));
+        ok = ok && snapshot_source_id && strlen(snapshot_source_id) == 64;
+        ok = ok && strcmp(snapshot_source_id,
+                          zcl_build_source_id_sha256()) == 0;
         ok = ok && capture && capture->type == JSON_OBJ;
         ok = ok && !json_get_bool(json_get(capture,
                                            "globally_linearizable"));
@@ -3882,6 +3916,9 @@ syncdiag_net_split_done:
         ok = ok && json_get_int(json_get(blockers, "active_count")) == 0;
         ok = ok && json_get(blockers, "generation") != NULL;
         ok = ok && summary && summary->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(summary,
+                                                "source_id_sha256")),
+                          snapshot_source_id) == 0;
         ok = ok && json_get_int(json_get(summary, "target_height")) ==
                        served_height;
         ok = ok && json_get_int(json_get(summary, "gap")) == 0;
@@ -6038,9 +6075,9 @@ syncdiag_net_split_done:
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_readiness.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
-                                        "zcl.runtime_build.v1") != NULL;
+                                        "zcl.runtime_build.v2") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
-                                        "zcl.agent_runtime_availability.v1")
+                                        "zcl.agent_runtime_availability.v2")
             != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.operator_latch.v1") != NULL;
@@ -6371,7 +6408,7 @@ syncdiag_net_split_done:
                 == 0;
         ok = ok && ops_availability &&
             strcmp(json_get_str(json_get(ops_availability, "schema")),
-                   "zcl.agent_runtime_availability.v1") == 0;
+                   "zcl.agent_runtime_availability.v2") == 0;
         ok = ok && ops_method_agentops &&
             strcmp(json_get_str(json_get(ops_method_agentops,
                                          "target_runtime_support")),
@@ -6817,7 +6854,7 @@ syncdiag_net_split_done:
                    "zcl.agent_runtime_services.v1") == 0;
         ok = ok && runtime_availability &&
             strcmp(json_get_str(json_get(runtime_availability, "schema")),
-                   "zcl.agent_runtime_availability.v1") == 0;
+                   "zcl.agent_runtime_availability.v2") == 0;
         ok = ok && runtime_availability &&
             strcmp(json_get_str(json_get(runtime_availability,
                                          "availability_scope")),
@@ -6896,14 +6933,17 @@ syncdiag_net_split_done:
             FILE *f = fopen(quality_fuzz_file, "wb");
             quality_fixture_ok = f != NULL;
             if (f) {
-                fputs("{\"schema\":\"zcl.background_quality_lane.v1\","
-                      "\"lane\":\"fuzz\",\"status\":\"passed\","
-                      "\"started_at\":\"2026-07-05T00:00:00Z\","
-                      "\"finished_at\":\"2026-07-05T00:01:00Z\","
-                      "\"elapsed_seconds\":60,\"exit_code\":0,"
-                      "\"commit\":\"deadbeef1234\",\"log\":\"/tmp/fuzz.log\","
-                      "\"artifacts\":\"/tmp/artifacts\","
-                      "\"detail\":\"fixture\"}\n", f);
+                fprintf(f,
+                        "{\"schema\":\"zcl.background_quality_lane.v1\","
+                        "\"lane\":\"fuzz\",\"status\":\"passed\","
+                        "\"started_at\":\"2026-07-05T00:00:00Z\","
+                        "\"finished_at\":\"2026-07-05T00:01:00Z\","
+                        "\"elapsed_seconds\":60,\"exit_code\":0,"
+                        "\"source_id_sha256\":\"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\","
+                        "\"commit\":\"%s\",\"log\":\"/tmp/fuzz.log\","
+                        "\"artifacts\":\"/tmp/artifacts\","
+                        "\"detail\":\"fixture\"}\n",
+                        zcl_build_commit());
                 quality_fixture_ok = fclose(f) == 0;
             }
         }
@@ -6988,9 +7028,9 @@ syncdiag_net_split_done:
                           "make fast-compile") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "fast_ci_compile_default")),
-                          "ZCL_FAST_COMPILE=changed -> make fast-changed-compile with safe fallback") == 0;
+                          "ZCL_FAST_COMPILE=changed -> source-wide make fast-compile in an exact compile epoch") == 0;
         ok = ok && strstr(json_get_str(json_get(loop, "rule")),
-                          ".h/.def edits") != NULL;
+                          "classification hints only") != NULL;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "immutable_history_canaries")),
                           "make immutable-history-canaries") == 0;
@@ -7003,10 +7043,10 @@ syncdiag_net_split_done:
                                                 "changed_compile_check")),
                           "make fast-changed-compile") == 0;
         ok = ok && strstr(json_get_str(json_get(incremental, "behavior")),
-                          "build/dev-obj/.complete") != NULL;
+                          "build/dev-obj/epochs/<compile_epoch>") != NULL;
         ok = ok && strstr(json_get_str(json_get(incremental,
                                                 "changed_compile_fallbacks")),
-                          "unwarmed depfiles") != NULL;
+                          "path hints never reduce") != NULL;
         ok = ok && strcmp(json_get_str(json_get(incremental,
                                                 "fast_compile_check")),
                           "make fast-compile") == 0;
@@ -7138,8 +7178,11 @@ syncdiag_net_split_done:
                           "background_quality_stale") == 0;
         ok = ok && strcmp(json_get_str(json_get(quality_status,
                                                 "agent_next_action")),
-                          "restart_or_wait_for_current_commit_quality_lanes")
+                          "restart_or_wait_for_current_source_quality_lanes")
             == 0;
+        ok = ok && strcmp(json_get_str(json_get(quality_status,
+                                                "freshness_authority")),
+                          "source_id_sha256") == 0;
         ok = ok && json_get_int(json_get(quality_status,
                                          "status_files_present")) == 1;
         ok = ok && json_get_int(json_get(quality_status,
@@ -7164,10 +7207,10 @@ syncdiag_net_split_done:
         ok = ok && latest_fuzz && latest_fuzz->type == JSON_OBJ;
         ok = ok && latest_fuzz &&
             strcmp(json_get_str(json_get(latest_fuzz, "commit")),
-                   "deadbeef1234") == 0;
+                   zcl_build_commit()) == 0;
         ok = ok && fuzz_lane &&
             strcmp(json_get_str(json_get(fuzz_lane, "latest_commit")),
-                   "deadbeef1234") == 0;
+                   zcl_build_commit()) == 0;
         ok = ok && fuzz_lane &&
             strcmp(json_get_str(json_get(fuzz_lane, "expected_commit")),
                    zcl_build_commit()) == 0;
@@ -7175,6 +7218,13 @@ syncdiag_net_split_done:
             json_get_bool(json_get(fuzz_lane, "commit_present"));
         ok = ok && fuzz_lane &&
             !json_get_bool(json_get(fuzz_lane, "commit_matches_expected"));
+        ok = ok && fuzz_lane &&
+            !json_get_bool(json_get(fuzz_lane,
+                                    "source_id_matches_expected"));
+        ok = ok && fuzz_lane &&
+            strcmp(json_get_str(json_get(fuzz_lane,
+                                         "source_id_freshness")),
+                   "stale") == 0;
         ok = ok && fuzz_lane &&
             strcmp(json_get_str(json_get(fuzz_lane, "commit_freshness")),
                    "stale") == 0;
@@ -7329,7 +7379,7 @@ syncdiag_net_split_done:
                    "zcl.agent_runtime_services.v1") == 0;
         ok = ok && live_availability &&
             strcmp(json_get_str(json_get(live_availability, "schema")),
-                   "zcl.agent_runtime_availability.v1") == 0;
+                   "zcl.agent_runtime_availability.v2") == 0;
         ok = ok && live_availability &&
             strcmp(json_get_str(json_get(live_availability,
                                          "object_completeness")),
@@ -7467,6 +7517,8 @@ syncdiag_net_split_done:
         agent_runtime_availability_begin_probe("test_target_rpc",
                                                "/tmp/zcl-canonical",
                                                18232, "ok");
+        agent_runtime_availability_set_target_source_id_sha256(
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         agent_runtime_availability_set_target_build_commit("oldbuild");
         agent_runtime_availability_record_method("agent", "supported", 0, "");
         agent_runtime_availability_record_method(
@@ -7694,7 +7746,9 @@ syncdiag_net_split_done:
                    "zclassic23") == 0;
         ok = ok && availability &&
             strcmp(json_get_str(json_get(availability, "schema")),
-                   "zcl.agent_runtime_availability.v1") == 0;
+                   "zcl.agent_runtime_availability.v2") == 0;
+        ok = ok && availability &&
+            json_get_int(json_get(availability, "schema_version")) == 2;
         ok = ok && availability &&
             strcmp(json_get_str(json_get(availability,
                                          "availability_scope")),
@@ -7704,8 +7758,25 @@ syncdiag_net_split_done:
                    "ok") == 0;
         ok = ok && availability &&
             strcmp(json_get_str(json_get(availability,
+                                         "target_source_id_sha256")),
+                   "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(availability,
                                          "target_build_commit")),
                    "oldbuild") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(
+                       availability, "producer_target_source_relation")),
+                   "different") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(
+                       availability, "producer_target_build_relation")),
+                   "unknown") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(
+                       availability,
+                       "producer_target_build_relation_authority")),
+                   "unavailable_artifact_and_build_epoch_identity") == 0;
         ok = ok && availability &&
             json_get_int(json_get(availability, "unsupported_count")) >= 1;
         ok = ok && availability &&

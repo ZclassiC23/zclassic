@@ -55,6 +55,12 @@ sqlite3 *progress_store_db(void);
  * its whole duration (which would stall the reducer drive on that lock). */
 bool progress_store_path(char *out, size_t cap);
 
+/* Prove that `db` is the process singleton opened through the exact directory
+ * capability `dir_fd`.  The store retains its own directory descriptor for
+ * the lifetime of the SQLite handle, so this comparison is by device/inode,
+ * never by a path spelling that may have been swapped after boot. */
+bool progress_store_directory_matches_fd(sqlite3 *db, int dir_fd);
+
 /* Serialize operations on the singleton progress.kv handle. SQLite
  * connections cannot run more than one statement/transaction safely across
  * threads unless the caller serializes them. This lock is recursive so a

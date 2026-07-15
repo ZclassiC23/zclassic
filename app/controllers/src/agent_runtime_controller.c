@@ -70,6 +70,7 @@ struct agent_runtime_availability_state {
     char datadir[1024];
     int rpc_port;
     char probe_status[64];
+    char target_source_id_sha256[65];
     char target_build_commit[128];
     struct agent_runtime_method_probe methods[AGENT_RUNTIME_METHOD_CAPACITY];
 };
@@ -80,6 +81,7 @@ static struct agent_runtime_availability_state g_agent_availability = {
     .datadir = "",
     .rpc_port = 0,
     .probe_status = "self_declared_current_runtime",
+    .target_source_id_sha256 = "",
     .target_build_commit = "",
 };
 
@@ -230,6 +232,30 @@ void agent_runtime_availability_set_target_build_commit(
              build_commit);
 }
 
+static bool agent_source_id_valid(const char *source_id);
+
+void agent_runtime_availability_set_target_source_id_sha256(
+    const char *source_id_sha256)
+{
+    if (!agent_source_id_valid(source_id_sha256))
+        return;
+    snprintf(g_agent_availability.target_source_id_sha256,
+             sizeof(g_agent_availability.target_source_id_sha256), "%s",
+             source_id_sha256);
+}
+
+static bool agent_source_id_valid(const char *source_id)
+{
+    if (!source_id || strlen(source_id) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!((source_id[i] >= '0' && source_id[i] <= '9') ||
+              (source_id[i] >= 'a' && source_id[i] <= 'f')))
+            return false;
+    }
+    return true;
+}
+
 static bool agent_availability_probe_attempted(void)
 {
     if (!g_agent_availability.probe_started)
@@ -279,15 +305,27 @@ static const char *agent_availability_scope(void)
                                               : "producer_runtime";
 }
 
-static const char *agent_availability_build_relation(void)
+static const char *agent_availability_source_relation(void)
 {
+    const char *producer_source_id = zcl_build_source_id_sha256();
+
     if (!g_agent_availability.probe_started)
         return "producer_runtime";
-    if (!g_agent_availability.target_build_commit[0])
+    if (!agent_source_id_valid(producer_source_id) ||
+        !agent_source_id_valid(
+            g_agent_availability.target_source_id_sha256))
         return "unknown";
-    return strcmp(zcl_build_commit(),
-                  g_agent_availability.target_build_commit) == 0
+    return strcmp(producer_source_id,
+                  g_agent_availability.target_source_id_sha256) == 0
         ? "same" : "different";
+}
+
+/* Source equality says nothing about compiler/toolchain flags or exact linked
+ * bytes.  Until the target probe carries an artifact/build-epoch receipt, the
+ * producer-to-target build relation is deliberately unknown. */
+static const char *agent_availability_build_relation(void)
+{
+    return "unknown";
 }
 
 static const char *agent_availability_next_action(int64_t unsupported_count,
@@ -303,8 +341,8 @@ static const char *agent_availability_next_action(int64_t unsupported_count,
         return "do not call unsupported methods on this target lane; deploy/smoke dev first or use methods marked supported";
     if (error_count > 0)
         return "target methods exist but some probe calls returned errors; use each method contract before automation";
-    if (strcmp(agent_availability_build_relation(), "different") == 0)
-        return "target runtime build differs from producer; rely on target_runtime_support before calling methods";
+    if (strcmp(agent_availability_source_relation(), "different") == 0)
+        return "target runtime source identity differs from producer; rely on target_runtime_support before calling methods";
     return "target runtime supports the probed first-call agent methods";
 }
 
@@ -336,8 +374,12 @@ void agent_push_runtime_availability_json(struct json_value *out,
     json_init(&obj);
     json_set_object(&obj);
     json_push_kv_str(&obj, "schema",
-                     "zcl.agent_runtime_availability.v1");
-    json_push_kv_int(&obj, "schema_version", 1);
+                     "zcl.agent_runtime_availability.v2");
+    json_push_kv_int(&obj, "schema_version", 2);
+    json_push_kv_str(&obj, "source_identity_authority",
+                     "sha256_source_tree_v2");
+    json_push_kv_str(&obj, "producer_source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(&obj, "producer_build_commit", zcl_build_commit());
     json_push_kv_str(&obj, "operator_lane_name",
                      g_agent_runtime.operator_lane[0]
@@ -364,10 +406,16 @@ void agent_push_runtime_availability_json(struct json_value *out,
                      g_agent_availability.datadir);
     json_push_kv_int(&obj, "target_rpcport",
                      g_agent_availability.rpc_port);
+    json_push_kv_str(&obj, "target_source_id_sha256",
+                     g_agent_availability.target_source_id_sha256);
     json_push_kv_str(&obj, "target_build_commit",
                      g_agent_availability.target_build_commit);
+    json_push_kv_str(&obj, "producer_target_source_relation",
+                     agent_availability_source_relation());
     json_push_kv_str(&obj, "producer_target_build_relation",
                      agent_availability_build_relation());
+    json_push_kv_str(&obj, "producer_target_build_relation_authority",
+                     "unavailable_artifact_and_build_epoch_identity");
     json_push_kv_int(&obj, "supported_count", supported_count);
     json_push_kv_int(&obj, "unsupported_count", unsupported_count);
     json_push_kv_int(&obj, "error_count", error_count);
@@ -472,33 +520,53 @@ void agent_push_runtime_build_json(struct json_value *out,
     if (!out)
         return;
 
-    const char *running = zcl_build_commit();
-    const char *expected =
+    const char *running_source_id = zcl_build_source_id_sha256();
+    const char *expected_source_id =
+        agent_env_or_empty("ZCL_AGENT_EXPECT_SOURCE_ID");
+    const char *running_commit = zcl_build_commit();
+    const char *expected_commit =
         agent_env_or_empty("ZCL_AGENT_EXPECT_BUILD_COMMIT");
     const char *source =
         agent_env_or_empty("ZCL_AGENT_EXPECT_BUILD_SOURCE");
-    bool expected_present = expected[0] != '\0';
-    bool matches = expected_present && strcmp(running, expected) == 0;
-    const char *freshness = expected_present
-        ? (matches ? "current" : "stale") : "unknown";
+    bool expected_present = expected_source_id[0] != '\0';
+    bool expected_valid = agent_source_id_valid(expected_source_id);
+    bool running_valid = agent_source_id_valid(running_source_id);
+    bool matches = expected_valid && running_valid &&
+        strcmp(running_source_id, expected_source_id) == 0;
+    const char *freshness = !expected_present ? "unknown"
+        : !expected_valid ? "invalid_expected_source_id"
+        : !running_valid ? "running_source_id_unavailable"
+        : matches ? "current" : "stale";
     struct json_value obj;
 
     json_init(&obj);
     json_set_object(&obj);
-    json_push_kv_str(&obj, "schema", "zcl.runtime_build.v1");
-    json_push_kv_int(&obj, "schema_version", 1);
-    json_push_kv_str(&obj, "running_build_commit", running);
-    json_push_kv_str(&obj, "expected_build_commit", expected);
+    json_push_kv_str(&obj, "schema", "zcl.runtime_build.v2");
+    json_push_kv_int(&obj, "schema_version", 2);
+    json_push_kv_str(&obj, "freshness_authority",
+                     "source_id_sha256");
+    json_push_kv_str(&obj, "running_source_id_sha256", running_source_id);
+    json_push_kv_str(&obj, "expected_source_id_sha256",
+                     expected_source_id);
+    json_push_kv_bool(&obj, "running_source_id_valid", running_valid);
+    json_push_kv_bool(&obj, "expected_source_id_valid", expected_valid);
+    json_push_kv_str(&obj, "running_build_commit", running_commit);
+    json_push_kv_str(&obj, "expected_build_commit", expected_commit);
+    json_push_kv_str(&obj, "build_commit_semantics",
+                     "display_only_github_trace_metadata");
     json_push_kv_str(&obj, "expected_source",
                      source[0] ? source : "unset");
     json_push_kv_bool(&obj, "expected_present", expected_present);
     json_push_kv_bool(&obj, "matches_expected", matches);
     json_push_kv_bool(&obj, "stale", expected_present && !matches);
-    json_push_kv_bool(&obj, "dirty_build",
-                      strstr(running, "-dirty") != NULL);
+    /* Git state is intentionally not baked into the executable.  Reporting
+     * `false` here would manufacture a clean-tree claim from the constant
+     * display value "external". */
+    json_push_kv_bool(&obj, "dirty_build_known", false);
+    json_push_kv_str(&obj, "dirty_build_state", "unknown");
     json_push_kv_str(&obj, "freshness", freshness);
     json_push_kv_str(&obj, "semantics",
-                     "expected_build_commit is deploy-installed runtime intent; stale=true means this process is not the expected deployed binary");
+                     "expected_source_id_sha256 is deploy-installed runtime intent; exact SHA-256 mismatch means this process is not the expected source build; build_commit is display-only; source equality does not prove identical linked artifacts or toolchains");
     json_push_kv(out, key && key[0] ? key : "runtime_build", &obj);
     json_free(&obj);
 }

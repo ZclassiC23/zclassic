@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SCHEMA="zcl.agent_fast_ci.v1"
@@ -14,16 +14,16 @@ PLAN_SCHEMA="zcl.agent_fast_plan.v1"
 CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
 FAST_CC="${ZCL_FAST_CC:-}"
 FAST_COMPILE="${ZCL_FAST_COMPILE:-changed}"
-FAST_CHANGED_COMPILE_LIMIT="${ZCL_FAST_CHANGED_COMPILE_LIMIT:-24}"
 CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
 CACHE_KEY=""
 CACHE_RECORD=""
 CACHE_AVAILABLE=0
+CACHE_SOURCE_ID=""
+CACHE_SOURCE_MUTATION=""
 CACHE_TOOL="none"
+PROOF_SCOPE="full_source_inventory"
 TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
-DIRECT_DEV_OBJECTS=""
-DIRECT_DEV_OBJECT_COUNT=0
 COMPILE_PLAN_KIND=""
 COMPILE_PLAN_TARGET=""
 COMPILE_PLAN_DETAIL=""
@@ -137,11 +137,14 @@ validate_changed_files_only() {
     if fast_changed_files_only &&
        [ -z "${ZCL_FAST_CHANGED_FILES_FILE:-}" ] &&
        [ -z "${ZCL_FAST_CHANGED_FILES:-}" ]; then
-        fail "ZCL_FAST_CHANGED_FILES_ONLY requires ZCL_FAST_CHANGED_FILES_FILE or ZCL_FAST_CHANGED_FILES"
+        fail "ZCL_FAST_CHANGED_FILES_ONLY requires explicit changed-file hints"
     fi
 }
 
-changed_files() {
+# These paths are classification/UX hints only. Git history and caller-supplied
+# lists cannot prove a complete source delta and therefore never reduce the
+# compile or test proof below PROOF_SCOPE=full_source_inventory.
+changed_file_hints() {
     if [ -n "${ZCL_FAST_CHANGED_FILES_FILE:-}" ]; then
         [ -f "$ZCL_FAST_CHANGED_FILES_FILE" ] ||
             fail "ZCL_FAST_CHANGED_FILES_FILE does not exist: $ZCL_FAST_CHANGED_FILES_FILE"
@@ -182,11 +185,10 @@ add_unmapped_code_change() {
 # the gate scripts (E1-E13, raw-malloc, observability, ...), then deletes
 # them before the test returns. A changed-file scan that samples the tree
 # mid-test (this script's own `-changed`/`compile-changed` gates, or a
-# concurrently running `dev-watch`/`pre-push-ci`) can observe one of these
-# as a transient "changed" .c file with no impact-rules mapping and fail
-# with "no focused test mapping for code changes" even though the actual
-# push is clean. Treat it as never a real source change everywhere the
-# changed-file set feeds a classification decision. Kept in sync with
+# concurrently running `dev-watch`/`pre-push-ci`) can observe one of these as
+# a transient changed-path hint and pollute the mapping diagnostic even though
+# the actual push is clean. Treat it as never a real source change everywhere
+# the changed-file set feeds a classification decision. Kept in sync with
 # zcl_devloop_path_is_relevant() in tools/dev/devloop_plan.c (real, tracked
 # fixture sources live under lib/test/fixtures/ and have no leading '_').
 is_transient_lint_fixture() {
@@ -251,54 +253,6 @@ is_node_c_source() {
     esac
 }
 
-add_dev_object_path() {
-    local obj="$1"
-    case " $DIRECT_DEV_OBJECTS " in
-        *" $obj "*) ;;
-        *)
-            DIRECT_DEV_OBJECTS="${DIRECT_DEV_OBJECTS:+$DIRECT_DEV_OBJECTS }$obj"
-            DIRECT_DEV_OBJECT_COUNT=$((DIRECT_DEV_OBJECT_COUNT + 1))
-            ;;
-    esac
-}
-
-add_direct_dev_object() {
-    local file="$1"
-    add_dev_object_path "build/dev-obj/${file%.c}.o"
-}
-
-is_direct_dependency_compile_change() {
-    local file="$1"
-    case "$file" in
-        *.h|*.def|*.inc)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-dev_depfiles_available() {
-    [ -f build/dev-obj/.complete ] || return 1
-    find build/dev-obj -type f -name '*.d' -print -quit 2>/dev/null |
-        grep -q .
-}
-
-add_dependent_dev_objects() {
-    local file="$1" dep obj
-
-    dev_depfiles_available || return 1
-
-    while IFS= read -r dep; do
-        [ -n "$dep" ] || continue
-        obj="${dep%.d}.o"
-        add_dev_object_path "$obj"
-    done < <(find build/dev-obj -type f -name '*.d' -exec grep -F -l -- "$file" {} + 2>/dev/null || true)
-
-    return 0
-}
-
 match_shared_impact_rules() {
     local file="$1" line patterns groups pattern group matched rule_re
     [ -f "$IMPACT_RULES_FILE" ] ||
@@ -347,13 +301,13 @@ select_test_groups() {
             add_unmapped_code_change "$file"
         fi
     done <<EOF
-$(changed_files | sort -u)
+$(changed_file_hints | sort -u)
 EOF
 }
 
-fail_on_unmapped_code_changes() {
+note_unmapped_code_changes() {
     if [ -n "$UNMAPPED_CODE_CHANGES" ]; then
-        fail "no focused test mapping for code changes: $UNMAPPED_CODE_CHANGES; set ZCL_FAST_TESTS=<group[,group]> or extend $IMPACT_RULES_FILE"
+        log "classification hints without focused mappings: $UNMAPPED_CODE_CHANGES (source-wide proof scope is unchanged)"
     fi
 }
 
@@ -380,6 +334,21 @@ hash_file() {
     sha256sum "$1" | awk '{print $1}'
 }
 
+is_sha256_hex() {
+    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
+capture_source_identity_record() {
+    local tool="$ROOT/tools/dev/source-identity.sh"
+    local record source_id clean mutation extra
+    [ -x "$tool" ] || return 2
+    record="$(cd "$ROOT" && "$tool" capture-record 2>/dev/null)" || return 2
+    read -r source_id clean mutation extra <<< "$record"
+    is_sha256_hex "$source_id" && [ "$clean" = "1" ] &&
+        is_sha256_hex "$mutation" && [ -z "${extra:-}" ] || return 2
+    printf '%s %s %s\n' "$source_id" "$clean" "$mutation"
+}
+
 cache_manifest_file() {
     local label="$1" path="$2"
     if [ -f "$path" ]; then
@@ -392,16 +361,20 @@ cache_manifest_file() {
 }
 
 cache_manifest() {
-    local file status_line node_stat cc_version
+    local file status_line node_stat cc_version source_record clean
+    source_record="$(capture_source_identity_record)" || return 2
+    read -r CACHE_SOURCE_ID clean CACHE_SOURCE_MUTATION <<< "$source_record"
     printf 'cache_schema\t%s\n' "$CACHE_SCHEMA"
     printf 'fast_schema\t%s\n' "$SCHEMA"
-    printf 'git_head\t%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'proof_scope\t%s\n' "$PROOF_SCOPE"
+    printf 'source_identity_schema\tzcl.dev_source_identity.v2\n'
+    printf 'source_id_sha256\t%s\n' "$CACHE_SOURCE_ID"
+    printf 'source_mutation_token\t%s\n' "$CACHE_SOURCE_MUTATION"
     printf 'fast_base\t%s\n' "${ZCL_FAST_BASE:-}"
     printf 'fast_cc\t%s\n' "$FAST_CC"
     printf 'cache_tool\t%s\n' "$CACHE_TOOL"
     printf 'fast_jobs\t%s\n' "$FAST_JOBS"
     printf 'fast_compile\t%s\n' "$FAST_COMPILE"
-    printf 'fast_changed_compile_limit\t%s\n' "$FAST_CHANGED_COMPILE_LIMIT"
     printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
     printf 'fast_changed_files_only\t%s\n' "${ZCL_FAST_CHANGED_FILES_ONLY:-0}"
     printf 'fast_changed_files_file\t%s\n' "${ZCL_FAST_CHANGED_FILES_FILE:-}"
@@ -451,11 +424,82 @@ cache_manifest() {
         cache_manifest_file "$file" "$file"
     done
 
-    changed_files | sort -u |
+    changed_file_hints | sort -u |
         while IFS= read -r file; do
             [ -n "$file" ] || continue
             cache_manifest_file "changed:$file" "$file"
         done
+}
+
+cache_authority_selftest() {
+    local original_root="$ROOT" sandbox first second third
+    local first_source third_source first_mutation third_mutation backup
+    sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-fast-cache-selftest.XXXXXX")" ||
+        return 1
+    ROOT="$sandbox/repo"
+    backup="$sandbox/source.backup"
+    mkdir -p "$ROOT/tools/dev"
+    cp "$original_root/tools/dev/source-identity.sh" \
+        "$ROOT/tools/dev/source-identity.sh"
+    chmod 755 "$ROOT/tools/dev/source-identity.sh"
+    printf 'baseline\n' > "$ROOT/source.txt"
+    git -C "$ROOT" init -q
+    git -C "$ROOT" config user.name zcl-fast-cache-selftest
+    git -C "$ROOT" config user.email fast-cache-selftest@invalid
+    git -C "$ROOT" add source.txt tools/dev/source-identity.sh
+    git -C "$ROOT" commit -qm baseline
+    cd "$ROOT"
+    CACHE_ROOT="$ROOT/.cache/zcl-agent-fast-ci"
+    NODE_BIN="build/bin/zclassic23"
+    IMPACT_RULES_FILE="app/controllers/include/controllers/agent_impact_rules.def"
+    FAST_CC=cc
+    CACHE_TOOL=none
+    FAST_JOBS=1
+
+    first="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    git commit --allow-empty -qm history-only
+    second="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    if [ "$first" != "$second" ]; then
+        printf '%s\n' '[agent-fast-ci-selftest] FAIL: Git history changed cache authority' >&2
+        rm -rf "$sandbox"
+        return 1
+    fi
+
+    cp source.txt "$backup"
+    printf 'transient edit\n' >> source.txt
+    cp "$backup" source.txt
+    chmod 600 source.txt
+    chmod 644 source.txt
+    third="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    first_source="$(printf '%s\n' "$first" | sed -n 's/^source_id_sha256[[:space:]]*//p')"
+    third_source="$(printf '%s\n' "$third" | sed -n 's/^source_id_sha256[[:space:]]*//p')"
+    first_mutation="$(printf '%s\n' "$first" | sed -n 's/^source_mutation_token[[:space:]]*//p')"
+    third_mutation="$(printf '%s\n' "$third" | sed -n 's/^source_mutation_token[[:space:]]*//p')"
+    if [ "$first_source" != "$third_source" ] ||
+       [ "$first_mutation" = "$third_mutation" ] ||
+       [ "$first" = "$third" ]; then
+        printf '%s\n' '[agent-fast-ci-selftest] FAIL: edit/revert ABA did not supersede cache authority' >&2
+        rm -rf "$sandbox"
+        return 1
+    fi
+    compute_changed_compile_plan
+    if [ "$COMPILE_PLAN_KIND" != full_source_inventory ] ||
+       [ "$COMPILE_PLAN_TARGET" != fast-compile ]; then
+        printf '%s\n' '[agent-fast-ci-selftest] FAIL: path hints reduced compile proof scope' >&2
+        rm -rf "$sandbox"
+        return 1
+    fi
+    rm -rf "$sandbox"
+    printf '%s\n' '[agent-fast-ci-selftest] PASS: exact cache authority is history-independent and ABA-safe; path hints cannot reduce source-wide compile scope'
 }
 
 compute_cache_key() {
@@ -463,6 +507,8 @@ compute_cache_key() {
     CACHE_AVAILABLE=0
     CACHE_KEY=""
     CACHE_RECORD=""
+    CACHE_SOURCE_ID=""
+    CACHE_SOURCE_MUTATION=""
 
     if ! fast_cache_enabled; then
         log "fast result cache disabled by ZCL_FAST_CACHE=${ZCL_FAST_CACHE:-0}"
@@ -495,7 +541,7 @@ maybe_fast_cache_hit() {
         rm -f "$CACHE_RECORD"
         return 1
     fi
-    log "fast result cache hit key=$CACHE_KEY; skipping lint-fast/compile-gate/focused tests"
+    log "fast result cache hit key=$CACHE_KEY; skipping previously proven source-wide lint/compile/test scope"
     return 0
 }
 
@@ -534,6 +580,8 @@ compute_plan_cache_status() {
     PLAN_CACHE_REASON=""
     CACHE_KEY=""
     CACHE_RECORD=""
+    CACHE_SOURCE_ID=""
+    CACHE_SOURCE_MUTATION=""
 
     case "${ZCL_FAST_CACHE:-1}" in
         1|true|yes|on|"") ;;
@@ -586,7 +634,7 @@ compute_plan_cache_status() {
 }
 
 changed_file_count() {
-    changed_files | sort -u | sed '/^$/d' | wc -l | tr -d ' '
+    changed_file_hints | sort -u | sed '/^$/d' | wc -l | tr -d ' '
 }
 
 recommended_plan_command() {
@@ -618,13 +666,15 @@ emit_plan_json() {
     printf '{\n'
     printf '  "schema": "%s",\n' "$PLAN_SCHEMA"
     printf '  "status": "ok",\n'
+    printf '  "proof_scope": "%s",\n' "$PROOF_SCOPE"
+    printf '  "changed_files_semantics": "hint_only_non_authoritative",\n'
     printf '  "compiler": "%s",\n' "$(json_escape "$FAST_CC")"
     printf '  "cache_tool": "%s",\n' "$(json_escape "$CACHE_TOOL")"
     printf '  "jobs": "%s",\n' "$(json_escape "$FAST_JOBS")"
     printf '  "fast_compile_mode": "%s",\n' "$(json_escape "$FAST_COMPILE")"
     printf '  "changed_file_count": %s,\n' "$changed_count"
     printf '  "changed_files": '
-    changed_files | sort -u | json_array_stdin
+    changed_file_hints | sort -u | json_array_stdin
     printf ',\n'
     printf '  "test_groups": '
     json_array_words $TEST_GROUPS
@@ -633,18 +683,21 @@ emit_plan_json() {
     json_array_words $UNMAPPED_CODE_CHANGES
     printf ',\n'
     printf '  "compile_plan": {\n'
-    printf '    "schema": "zcl.agent_changed_compile_plan.v1",\n'
+    printf '    "schema": "zcl.agent_changed_compile_plan.v2",\n'
     printf '    "kind": "%s",\n' "$(json_escape "$COMPILE_PLAN_KIND")"
     printf '    "target": "%s",\n' "$(json_escape "$COMPILE_PLAN_TARGET")"
     printf '    "detail": "%s",\n' "$(json_escape "$COMPILE_PLAN_DETAIL")"
     printf '    "fallback_reason": "%s",\n' "$(json_escape "$COMPILE_PLAN_FALLBACK_REASON")"
-    printf '    "direct_object_count": %s,\n' "$DIRECT_DEV_OBJECT_COUNT"
-    printf '    "direct_objects": '
-    json_array_words $DIRECT_DEV_OBJECTS
-    printf '\n'
+    printf '    "proof_scope": "%s",\n' "$PROOF_SCOPE"
+    printf '    "path_hint_role": "classification_only"\n'
     printf '  },\n'
     printf '  "green_input_cache": {\n'
     printf '    "schema": "%s",\n' "$CACHE_SCHEMA"
+    printf '    "authority": "source_id_sha256_plus_mutation_token",\n'
+    printf '    "source_id_sha256": "%s",\n' \
+        "$(json_escape "$CACHE_SOURCE_ID")"
+    printf '    "source_mutation_token": "%s",\n' \
+        "$(json_escape "$CACHE_SOURCE_MUTATION")"
     printf '    "enabled": %s,\n' "$PLAN_CACHE_ENABLED"
     printf '    "available": %s,\n' "$PLAN_CACHE_AVAILABLE"
     printf '    "hit": %s,\n' "$PLAN_CACHE_HIT"
@@ -691,132 +744,31 @@ run_shell_checks() {
     done
 }
 
-run_focused_tests() {
-    local group target
-    if [ -z "$TEST_GROUPS" ]; then
-        log "focused tests: none selected from changed files; set ZCL_FAST_TESTS=<group[,group]> to force"
-        return
-    fi
-
-    target="t-fast"
+run_test_proof() {
+    local target
+    target="test-parallel-fast-active"
     case "${ZCL_FAST_STRICT_TESTS:-0}" in
-        1|true|yes|strict) target="t" ;;
+        1|true|yes|strict)
+            target="test-parallel-active"
+            ;;
         0|false|no|"") ;;
         *) fail "unknown ZCL_FAST_STRICT_TESTS=${ZCL_FAST_STRICT_TESTS}" ;;
     esac
-    log "focused test target=$target jobs=${FAST_JOBS:-auto}"
-
-    for group in $TEST_GROUPS; do
-        log "focused test: $group"
-        make_fast "$target" ONLY="$group"
-    done
+    log "source-wide test proof target=$target jobs=${FAST_JOBS:-auto} classification_hints=${TEST_GROUPS:-none}"
+    make_fast "$target"
 }
 
 compute_changed_compile_plan() {
-    local file fallback_reason
-    DIRECT_DEV_OBJECTS=""
-    DIRECT_DEV_OBJECT_COUNT=0
-    COMPILE_PLAN_KIND=""
-    COMPILE_PLAN_TARGET=""
-    COMPILE_PLAN_DETAIL=""
-    COMPILE_PLAN_FALLBACK_REASON=""
-    fallback_reason=""
-
-    case "$FAST_CHANGED_COMPILE_LIMIT" in
-        ''|*[!0-9]*)
-            fail "ZCL_FAST_CHANGED_COMPILE_LIMIT must be a non-negative integer (got ${FAST_CHANGED_COMPILE_LIMIT:-empty})"
-            ;;
-    esac
-
-    while IFS= read -r file; do
-        [ -n "$file" ] || continue
-
-        if is_direct_dependency_compile_change "$file"; then
-            if [ ! -f "$file" ]; then
-                fallback_reason="removed or moved dependency: $file"
-                break
-            fi
-            if ! add_dependent_dev_objects "$file"; then
-                fallback_reason="dependency depfiles unavailable for: $file"
-                break
-            fi
-            continue
-        fi
-
-        if is_graph_wide_compile_change "$file"; then
-            fallback_reason="graph-wide change: $file"
-            break
-        fi
-
-        case "$file" in
-            *.c)
-                if [ ! -f "$file" ]; then
-                    fallback_reason="removed or moved C source: $file"
-                    break
-                fi
-                if is_node_c_source "$file"; then
-                    add_direct_dev_object "$file"
-                fi
-                ;;
-            *)
-                if is_code_like_change "$file"; then
-                    fallback_reason="non-C code/config change: $file"
-                    break
-                fi
-                ;;
-        esac
-    done <<EOF
-$(changed_files | sort -u)
-EOF
-
-    if [ -n "$fallback_reason" ]; then
-        COMPILE_PLAN_KIND="fast_compile_fallback"
-        COMPILE_PLAN_TARGET="fast-compile"
-        COMPILE_PLAN_DETAIL="fallback to fast-compile"
-        COMPILE_PLAN_FALLBACK_REASON="$fallback_reason"
-        return
-    fi
-
-    if [ "$FAST_CHANGED_COMPILE_LIMIT" -gt 0 ] &&
-       [ "$DIRECT_DEV_OBJECT_COUNT" -gt "$FAST_CHANGED_COMPILE_LIMIT" ]; then
-        COMPILE_PLAN_KIND="fast_compile_fallback"
-        COMPILE_PLAN_TARGET="fast-compile"
-        COMPILE_PLAN_DETAIL="fallback to fast-compile"
-        COMPILE_PLAN_FALLBACK_REASON="$DIRECT_DEV_OBJECT_COUNT direct dev objects > limit $FAST_CHANGED_COMPILE_LIMIT"
-        return
-    fi
-
-    if [ -z "$DIRECT_DEV_OBJECTS" ]; then
-        COMPILE_PLAN_KIND="already_satisfied"
-        COMPILE_PLAN_TARGET="none"
-        COMPILE_PLAN_DETAIL="no changed node C sources"
-        return
-    fi
-
-    COMPILE_PLAN_KIND="direct_dev_objects"
-    COMPILE_PLAN_TARGET="$DIRECT_DEV_OBJECTS"
-    COMPILE_PLAN_DETAIL="direct dev object compile"
+    COMPILE_PLAN_KIND="full_source_inventory"
+    COMPILE_PLAN_TARGET="fast-compile"
+    COMPILE_PLAN_DETAIL="compile every current dev source input"
+    COMPILE_PLAN_FALLBACK_REASON="changed-file lists are hint-only and cannot reduce proof scope"
 }
 
 compile_changed_gate() {
     compute_changed_compile_plan
-
-    case "$COMPILE_PLAN_KIND" in
-        fast_compile_fallback)
-            log "fast-changed-compile: fallback to fast-compile ($COMPILE_PLAN_FALLBACK_REASON)"
-            make_fast fast-compile
-            ;;
-        already_satisfied)
-            log "fast-changed-compile: no changed node C sources; compile gate is already satisfied"
-            ;;
-        direct_dev_objects)
-            log "fast-changed-compile: direct dev object compile count=$DIRECT_DEV_OBJECT_COUNT"
-            make_fast $DIRECT_DEV_OBJECTS
-            ;;
-        *)
-            fail "internal error: unknown changed compile plan ${COMPILE_PLAN_KIND:-empty}"
-            ;;
-    esac
+    log "fast-changed-compile: source-wide fast-compile (path lists are classification hints only)"
+    make_fast fast-compile
 }
 
 run_compile_gate() {
@@ -1007,6 +959,10 @@ run_rung() {
 main() {
     local mode="${1:-run}"
     case "$mode" in
+        cache-selftest|--cache-selftest)
+            cache_authority_selftest
+            return
+            ;;
         plan|plan-json|doctor-json)
             emit_plan_json
             return
@@ -1023,50 +979,38 @@ main() {
         run|"") ;;
         compile-changed|changed-compile|fast-changed-compile)
             compile_changed_gate
-            log "PASS: changed compile gate complete"
+            log "PASS: source-wide compile gate complete"
             return
             ;;
         test-changed|t-changed|focused-tests)
-            # Leanest changed-aware loop: resolve the focused group(s) for the
-            # working-tree diff via the impact rules and run ONLY those through
-            # the cached non-LTO harness (t-fast). No lint/compile/probe layer,
-            # no group name to remember. The compile still happens — t-fast
-            # rebuilds the changed TUs before running — so a broken change
-            # fails here too.
+            # Path mappings are useful diagnostics, but cannot prove a complete
+            # delta. Always run the source-wide fast harness.
             select_test_groups
-            fail_on_unmapped_code_changes
-            if [ -z "$TEST_GROUPS" ]; then
-                log "no focused test groups for current diff (docs/tooling only)"
-                return
-            fi
-            run_focused_tests
-            log "PASS: focused tests for changed files ($TEST_GROUPS)"
+            note_unmapped_code_changes
+            run_test_proof
+            log "PASS: source-wide test proof (classification hints: ${TEST_GROUPS:-none})"
             return
             ;;
         ff)
             # Fail-fast ladder for the edit loop: cost-ordered, short-circuiting,
             # no live probe, no full/LTO build. Order is load-bearing — compile is
             # the cheapest rung and a broken compile poisons test + lint output, so
-            # it runs first; focused tests before lint keeps the failure that most
-            # often matters at the front.
-            log "ff ladder: compile -> focused-tests -> lint-fast (fail-fast; not release CI)"
+            # it runs first; the source-wide test proof before lint keeps runtime
+            # failures at the front.
+            log "ff ladder: compile -> source-wide-tests -> lint-fast (fail-fast; not release CI)"
 
-            # rung 1: compile ONLY the changed TUs (non-LTO, no link).
+            # rung 1: compile the complete current source inventory.
             run_rung compile compile_changed_gate
 
-            # rung 2: focused test group(s) for the working-tree diff.
+            # rung 2: run the source-wide fast harness. Mapped paths are hints.
             select_test_groups
-            fail_on_unmapped_code_changes
-            if [ -n "$TEST_GROUPS" ]; then
-                run_rung focused-tests run_focused_tests
-            else
-                log "no focused test groups (docs/tooling only)"
-            fi
+            note_unmapped_code_changes
+            run_rung source-wide-tests run_test_proof
 
             # rung 3: fast lint gates.
             run_rung lint-fast make_fast lint-fast
 
-            log "PASS: ff ladder green (compile -> focused-tests -> lint-fast); not release CI"
+            log "PASS: ff ladder green (compile -> source-wide-tests -> lint-fast); not release CI"
             return
             ;;
         rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)
@@ -1080,7 +1024,7 @@ main() {
 
     maybe_reset_fast_cache
     select_test_groups
-    fail_on_unmapped_code_changes
+    note_unmapped_code_changes
 
     if maybe_fast_cache_hit; then
         maybe_live_probe
@@ -1097,7 +1041,7 @@ main() {
     run_compile_gate
     log "lint-fast"
     make_fast lint-fast
-    run_focused_tests
+    run_test_proof
     maybe_live_probe
 
     record_fast_cache_pass

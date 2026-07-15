@@ -10,6 +10,49 @@ ifeq ($(filter sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
 endif
 endif
+
+# Standalone cleanup must never bootstrap vendor archives, generated views, or
+# a compiler merely to delete artifacts. Mixed goals remain ordinary builds.
+ZCL_STANDALONE_CLEAN := $(if $(filter clean coverage-clean,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
+ZCL_ZERO_SHA256 = 0000000000000000000000000000000000000000000000000000000000000000
+
+# Linked vendor archives are part of the exact source identity. On a fresh
+# clone they do not exist until the vendor builder runs, so Make must cross a
+# parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
+# first parse would omit the archives, create them later, and correctly refuse
+# its own post-link identity check. The same boundary protects entry points
+# whose `vendor-ready` prerequisite may repair stale archives.
+VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
+	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
+	libz.a librustzcash.a libtor_stub.a
+VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
+VENDOR_BOOTSTRAP_MK := build/identity/vendor-inputs-ready.mk
+VENDOR_MISSING_INPUTS := $(filter-out $(wildcard $(VENDOR_LIBS)),$(VENDOR_LIBS))
+VENDOR_REPAIR_GOALS := vendor-ready deploy install
+VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
+ifneq ($(ZCL_STANDALONE_CLEAN),1)
+ifneq ($(strip $(VENDOR_MISSING_INPUTS) $(VENDOR_REPAIR_REQUESTED)),)
+ifeq ($(strip $(MAKE_RESTARTS)),)
+-include $(VENDOR_BOOTSTRAP_MK)
+endif
+endif
+endif
+
+# Generated view headers are compiler inputs and therefore part of the exact
+# source identity. Make must establish them before BUILD_SOURCE_RECORD is
+# captured: after a template edit, building a stale header later in the same
+# parse would correctly trip post-link verification. Remaking this included
+# marker forces a parse restart whenever either generated header is missing or
+# stale, so the authoritative capture always observes the bytes actually used.
+VIEW_GEN_HEADERS_EARLY := app/views/include/views/wallet_templates_gen.h \
+	app/views/include/views/explorer_css.h
+VIEW_BOOTSTRAP_MK := build/identity/view-inputs-ready.mk
+ifneq ($(ZCL_STANDALONE_CLEAN),1)
+ifeq ($(strip $(MAKE_RESTARTS)),)
+-include $(VIEW_BOOTSTRAP_MK)
+endif
+endif
+
 # <short-hash>[-dirty] — the -dirty suffix means the binary contains
 # uncommitted tracked changes, so the hash alone does NOT identify the code
 # (a binary built minutes before its fix was committed reports the parent
@@ -19,27 +62,63 @@ endif
 # tree until the index is refreshed. Refreshing compares content and clears the
 # false positive, while a genuinely modified tree still reports -dirty.
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
-# Exact 40-hex commit + clean flag for the producer source receipt. Baked into
-# clientversion.o only; the BUILD_COMMIT stamp below already forces that TU
-# stale whenever HEAD or the tree's clean-ness changes (BUILD_COMMIT carries the
-# -dirty suffix), so these two derived values ride the same refresh.
-BUILD_COMMIT_FULL := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-BUILD_CLEAN := $(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null && echo 1 || echo 0)
+ifeq ($(ZCL_STANDALONE_CLEAN),1)
+BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
+else
+BUILD_SOURCE_RECORD := $(shell tools/dev/source-identity.sh capture-record 2>/dev/null || echo unknown 0 unknown)
+endif
+BUILD_SOURCE_ID := $(word 1,$(BUILD_SOURCE_RECORD))
+BUILD_CLEAN := $(word 2,$(BUILD_SOURCE_RECORD))
+BUILD_MUTATION := $(word 3,$(BUILD_SOURCE_RECORD))
+# Keep standalone cleanup usable on a host whose compiler/toolchain has already
+# been removed. Every target that can create an artifact remains fail-closed.
+BUILD_EPOCH_CLEAN_ONLY := $(ZCL_STANDALONE_CLEAN)
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+BUILD_SOURCE_RECORD_VALID := yes
+else
+BUILD_SOURCE_RECORD_VALID := $(shell printf '%s\n' '$(BUILD_SOURCE_ID) $(BUILD_CLEAN) $(BUILD_MUTATION)' | awk 'BEGIN { ok=0 } $$1 ~ /^[0-9a-f]{64}$$/ && $$2 == "1" && $$3 ~ /^[0-9a-f]{64}$$/ && NF == 3 { ok=1 } END { if (ok) print "yes" }')
+ifneq ($(BUILD_SOURCE_RECORD_VALID),yes)
+$(error exact source capture failed; refusing to select a compile epoch)
+endif
+endif
 BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
-OBJ_DIR = $(BUILD_DIR)/obj
-DEV_OBJ_DIR = $(BUILD_DIR)/dev-obj
+OBJ_ROOT = $(BUILD_DIR)/obj
+DEV_OBJ_ROOT = $(BUILD_DIR)/dev-obj
+OBJ_DIR = $(OBJ_ROOT)/epochs/$(BUILD_ONLY_COMPILE_EPOCH)
+DEV_OBJ_DIR = $(DEV_OBJ_ROOT)/epochs/$(DEV_COMPILE_EPOCH)
 
-# ZCL_BUILD_COMMIT is a -D macro, so a new commit never dirties any .o; a TU
-# reports whatever HEAD was when IT last recompiled. With the getter inlined
-# in every caller, version reporters inside one binary disagreed about which
-# commit was running (zcl_status top-level vs health, 2026-06-12). The getter
-# now lives only in lib/util/src/clientversion.c, and this stamp file —
-# rewritten only when BUILD_COMMIT changes — forces that one object stale.
-BUILD_COMMIT_STAMP := $(BUILD_DIR)/build_commit.stamp
-$(shell mkdir -p $(BUILD_DIR); \
-  [ "`cat $(BUILD_COMMIT_STAMP) 2>/dev/null`" = "$(BUILD_COMMIT)" ] || \
-  printf '%s' "$(BUILD_COMMIT)" > $(BUILD_COMMIT_STAMP))
+# Only ZCL_BUILD_SOURCE_ID is baked into the sovereign binary. Git commit ids
+# remain external GitHub trace/publish metadata: embedding them would make the
+# exact executable digest (and therefore producer receipts) change with a
+# history-only commit. The identity-keyed stamp refreshes clientversion.c only
+# when authoritative source bytes change. Concurrent builds of different source
+# epochs use different targets, and same-epoch writers publish identical stamp
+# contents by atomic rename.
+BUILD_MUTATION_STAMP := $(BUILD_DIR)/identity/mutation.$(BUILD_MUTATION).stamp
+$(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	tmp="$$(mktemp "$(dir $@).stamp.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s\n' 'mutation=$(BUILD_MUTATION)' > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).stamp
+$(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	tmp="$$(mktemp "$(dir $@).stamp.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s\n' \
+	  'source=$(BUILD_SOURCE_ID)' \
+	  'clean=$(BUILD_CLEAN)' \
+	  'mutation=$(BUILD_MUTATION)' > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
 ZCLASSIC23_DEV_BIN = $(BIN_DIR)/zclassic23-dev
@@ -205,28 +284,25 @@ WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 #   -Wl,-z,noexecstack        non-executable stack (NX)
 HARDEN_CFLAGS = -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fcf-protection=full -fPIE
 HARDEN_LDFLAGS = -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fcf-protection=full
+BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUILD_CLEAN=$(BUILD_CLEAN)
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DZCL_BUILD_COMMIT_FULL=\"$(BUILD_COMMIT_FULL)\" -DZCL_BUILD_CLEAN=$(BUILD_CLEAN) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
+CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
+BUILD_ONLY_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
 ZCL_DEV_OPT ?= -Og
 ZCL_DEV_HOT_OPT ?= -O2
 ZCL_DEV_LINKER ?= $(shell if command -v mold >/dev/null 2>&1; then printf '%s' '-fuse-ld=mold'; elif command -v ld.lld >/dev/null 2>&1; then printf '%s' '-fuse-ld=lld'; fi)
-DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CFLAGS)) $(ZCL_DEV_OPT) -g3 -DZCL_DEV_BUILD \
+DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) $(ZCL_DEV_OPT) -g3 -DZCL_DEV_BUILD \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 DEV_HOT_CFLAGS = $(filter-out $(ZCL_DEV_OPT),$(DEV_CFLAGS)) $(ZCL_DEV_HOT_OPT)
 DEV_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
 
-# Header-dependency tracking for the per-object / build-only and dev-bin inner
-# loops. Without this a header edit is invisible to make and the fast paths can
-# false-green against stale objects. The .d files are emitted by -MMD -MP in the
-# %.o rules below; the release monolith still recompiles all TUs regardless.
--include $(ALL_OBJS:.o=.d)
--include $(DEV_OBJS:.o=.d)
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
@@ -242,7 +318,11 @@ TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+CXX_STDLIB_FILE :=
+else
 CXX_STDLIB_FILE := $(shell $(CXX) -print-file-name=libstdc++.a 2>/dev/null)
+endif
 CXX_STDLIB_DIR := $(if $(filter /%,$(CXX_STDLIB_FILE)),$(dir $(CXX_STDLIB_FILE)),)
 CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
@@ -250,15 +330,87 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz -lrustzcash -ldl -lpthread -lm
 
+# ── Host-local compile epochs ─────────────────────────────────────────────
+# Source bytes remain the portable authority. Cached objects/candidates add a
+# host-local mutation token, compiler/tool/search-root fingerprint, profile,
+# effective compile flags, and effective link inputs. Different Make sessions
+# therefore never share mutable object paths unless every admitted input is the
+# same; ccache/sccache still recover unchanged TU speed across new epochs.
+BUILD_EPOCH_KEY_TOOL = tools/dev/build-epoch-key.sh
+BUILD_EPOCH_OBJECT_TOOL = tools/dev/compile-epoch-object.sh
+BUILD_EPOCH_PUBLISH_TOOL = tools/dev/publish-build-alias.sh
+BUILD_EPOCH_SESSION_TOOL = tools/dev/build-epoch-session.sh
+BUILD_EPOCH_KEEP ?= 3
+BUILD_EPOCH_OBJECT_FORCE = $(if $(ZCL_COMPDB_FORCE),FORCE,)
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+BUILD_COMPILER_ID := $(ZCL_ZERO_SHA256)
+else
+BUILD_COMPILER_ID := $(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" 2>/dev/null))
+BUILD_COMPILER_ID_VALID := $(shell printf '%s\n' '$(BUILD_COMPILER_ID)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(BUILD_COMPILER_ID_VALID),yes)
+$(error compiler/toolchain fingerprint failed; refusing to select a compile epoch)
+endif
+endif
+
+define zcl_compile_epoch
+$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" 2>/dev/null))
+endef
+
+BUILD_ONLY_EPOCH_COMPILE_FLAGS := $(strip $(BUILD_ONLY_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+BUILD_ONLY_EPOCH_LINK_FLAGS := no-link
+DEV_EPOCH_COMPILE_FLAGS := $(strip normal=$(DEV_CFLAGS) hot=$(DEV_HOT_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+DEV_EPOCH_LINK_FLAGS := $(strip $(DEV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+BUILD_ONLY_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+DEV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+BUILD_ONLY_COMPILE_EPOCH := $(call zcl_compile_epoch,build-only-v2,BUILD_ONLY_EPOCH_COMPILE_FLAGS,BUILD_ONLY_EPOCH_LINK_FLAGS)
+DEV_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-v2,DEV_EPOCH_COMPILE_FLAGS,DEV_EPOCH_LINK_FLAGS)
+BUILD_CORE_EPOCHS_VALID := $(shell printf '%s\n' '$(BUILD_ONLY_COMPILE_EPOCH)' '$(DEV_COMPILE_EPOCH)' | awk 'BEGIN { ok=1; n=0 } { n++; if ($$0 !~ /^[0-9a-f]{64}$$/) ok=0 } END { if (ok && n == 2) print "yes" }')
+ifneq ($(BUILD_CORE_EPOCHS_VALID),yes)
+$(error build-only/dev compile-epoch derivation failed)
+endif
+endif
+
+DEV_CANDIDATE_BIN = $(BIN_DIR)/dev/epochs/$(DEV_COMPILE_EPOCH)/zclassic23-dev
+DEV_ACTIVE_BIN = $(DEV_CANDIDATE_BIN)
+BUILD_INVOCATION_PID := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell printf '%s' $$PPID)))
+BUILD_INVOCATION_START := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell awk '{print $$22}' /proc/$(BUILD_INVOCATION_PID)/stat 2>/dev/null)))
+BUILD_INVOCATION_ID := $(if $(BUILD_EPOCH_CLEAN_ONLY),clean,$(strip $(shell printf '%s\0%s' '$(BUILD_INVOCATION_PID)' '$(BUILD_INVOCATION_START)' | sha256sum | awk '{print $$1}')))
+
+BUILD_ONLY_PROFILE = build-only-v2
+DEV_PROFILE = dev-v2
+BUILD_ONLY_SESSION = $(OBJ_DIR)/.build-session
+DEV_SESSION = $(DEV_OBJ_DIR)/.build-session
+BUILD_ONLY_LEASE = $(OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+DEV_LEASE = $(DEV_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+
+$(BUILD_ONLY_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(BUILD_ONLY_SESSION)" "$@" \
+	  "$(OBJ_ROOT)" - "$(BUILD_EPOCH_KEEP)" "$(BUILD_SOURCE_ID)" \
+	  "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(BUILD_ONLY_COMPILE_EPOCH)" "$(BUILD_ONLY_PROFILE)" \
+	  "$(BUILD_ONLY_EPOCH_COMPILE_FLAGS)" "$(BUILD_ONLY_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
+$(DEV_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(DEV_SESSION)" "$@" \
+	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(DEV_COMPILE_EPOCH)" "$(DEV_PROFILE)" \
+	  "$(DEV_EPOCH_COMPILE_FLAGS)" "$(DEV_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
+# Header dependencies use -MD (including system headers) and live inside their
+# exact epoch. There is no mutable "current object directory" symlink.
+-include $(ALL_OBJS:.o=.d)
+-include $(DEV_OBJS:.o=.d)
+
 # Vendored static archives the final link needs.  Only libsecp256k1.a is
 # committed to git; `make vendor` builds the rest from source (pinned URL +
 # SHA256), so `git clone && make zclassic23` links in one shot.  See
 # docs/BUILD.md and tools/scripts/build_vendor.sh.
-VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
-	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
-	libz.a librustzcash.a libtor_stub.a
-VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
-
 .PHONY: vendor vendor-force vendor-provenance vendor-ready check-vendor-provenance
 # Build every missing OR provenance-stale vendor/lib/*.a from its pinned,
 # SHA256-verified source. `make vendor-force` rebuilds all of them.
@@ -273,6 +425,18 @@ vendor-provenance:
 vendor-ready:
 	@tools/scripts/build_vendor.sh
 	@tools/dep_audit.sh
+
+# Included only on the first parse when inputs are missing or a requested
+# front door can repair them. Remaking an included makefile forces GNU Make to
+# restart parsing; the second parse captures the final linked archive bytes.
+$(VENDOR_BOOTSTRAP_MK): vendor-ready
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tmp="$$(mktemp "$(dir $@).vendor-ready.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s\n' '# generated: vendor inputs established before source identity capture' > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
 
@@ -288,7 +452,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-replay-canary replay-canary-linger-status \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-crypto-verify bench-regress \
-        lint check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-raw-malloc check-stable-publish-contained \
+	lint check-build-epoch-integrity check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -320,13 +484,24 @@ CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 # one binary. test_parallel_zcl uses the latter + the same test/spec
 # helpers as sequential test_zcl.
 TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.c, $(TEST_SRCS)) $(TEST_DEV_EXECUTOR_SRCS)
-TEST_FAST_OBJ_DIR = $(BUILD_DIR)/test-obj
+TEST_FAST_OBJ_ROOT = $(BUILD_DIR)/test-obj
 TEST_PARALLEL_FAST_BIN = $(BIN_DIR)/test_parallel_fast
 TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
-TEST_PARALLEL_FAST_OBJS = $(patsubst %.c,$(TEST_FAST_OBJ_DIR)/%.o,$(TEST_PARALLEL_FAST_SRCS))
-TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CFLAGS)) -O1 -g -DZCL_TESTING \
+TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g -DZCL_TESTING \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_FAST_EPOCH_LINK_FLAGS := $(strip $(TEST_FAST_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+TEST_FAST_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+TEST_FAST_COMPILE_EPOCH := $(call zcl_compile_epoch,test-fast-v2,TEST_FAST_EPOCH_COMPILE_FLAGS,TEST_FAST_EPOCH_LINK_FLAGS)
+endif
+TEST_FAST_OBJ_DIR = $(TEST_FAST_OBJ_ROOT)/epochs/$(TEST_FAST_COMPILE_EPOCH)
+TEST_PARALLEL_FAST_OBJS = $(patsubst %.c,$(TEST_FAST_OBJ_DIR)/%.o,$(TEST_PARALLEL_FAST_SRCS))
+TEST_PARALLEL_FAST_LINK_RSP = $(TEST_FAST_OBJ_DIR)/link-inputs.rsp
+TEST_PARALLEL_FAST_CANDIDATE = $(BIN_DIR)/test-fast/epochs/$(TEST_FAST_COMPILE_EPOCH)/test_parallel_fast
+TEST_PARALLEL_FAST_ACTIVE = $(TEST_PARALLEL_FAST_CANDIDATE)
 
 -include $(TEST_PARALLEL_FAST_OBJS:.o=.d)
 
@@ -336,19 +511,20 @@ TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
 # paid a full recompile (~90s here) even for a one-line edit — and, worse, the
 # monolith rule listed only .c files as prerequisites, so a header-only edit did
 # not rebuild at all (false green). Both are fixed by compiling into a dedicated
-# per-TU object tree with -MMD -MP depfiles and linking the cached objects.
+# per-TU object tree with -MD -MP depfiles and linking the cached objects.
 #
 # Flags are IDENTICAL to the old whole-program test_parallel rule with ONE
 # deliberate delta: `-flto=auto` is dropped. LTO is a *link-time* whole-program
 # optimization — caching per-TU GIMPLE objects would still force the expensive
 # whole-program optimize+codegen at every link, defeating the cache. Dropping it
-# makes each TU independently compiled AND code-generated (so ccache hits and a
-# one-file edit costs one -O3 recompile + one plain link). This cannot change
+# makes each TU independently compiled AND code-generated. A source mutation
+# selects a fresh immutable object epoch; ccache/sccache recovers unchanged TU
+# work before one plain link. This cannot change
 # test semantics: -O3, -Werror, -pedantic, the hardening flags and -DZCL_TESTING
 # are all preserved byte-for-byte; LTO only alters cross-TU inlining, never
 # observable behavior. The whole-program LTO build remains as `test_parallel_wpo`
 # (below) for the rare case of chasing an optimizer/LTO-dependent divergence.
-TEST_REL_OBJ_DIR = $(BUILD_DIR)/test-rel-obj
+TEST_REL_OBJ_ROOT = $(BUILD_DIR)/test-rel-obj
 # Second (documented) delta: the -O3 + _FORTIFY_SOURCE heuristic-warning family
 # (-Wformat-truncation/-Wformat-overflow, -Warray-bounds, -Wstringop-truncation,
 # -Wstringop-overread, -Wrestrict, -Wnonnull, -Wmaybe-uninitialized) is off. These
@@ -363,13 +539,53 @@ TEST_REL_OBJ_DIR = $(BUILD_DIR)/test-rel-obj
 # Each is a conservative worst-case estimate on intentionally-bounded snprintf /
 # memcpy / guarded locals (verified: the flagged sites are all safe), not a real
 # defect. -Werror and -pedantic remain in force for every other warning.
-TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CFLAGS)) -DZCL_TESTING \
+TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CACHED_CFLAGS)) -DZCL_TESTING \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-format-overflow \
 	-Wno-array-bounds -Wno-stringop-truncation -Wno-stringop-overread \
 	-Wno-restrict -Wno-nonnull -Wno-maybe-uninitialized
 TEST_REL_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+TEST_REL_EPOCH_COMPILE_FLAGS := $(strip $(TEST_REL_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_REL_EPOCH_LINK_FLAGS := $(strip $(TEST_REL_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+TEST_REL_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+TEST_REL_COMPILE_EPOCH := $(call zcl_compile_epoch,test-strict-v2,TEST_REL_EPOCH_COMPILE_FLAGS,TEST_REL_EPOCH_LINK_FLAGS)
+endif
+TEST_REL_OBJ_DIR = $(TEST_REL_OBJ_ROOT)/epochs/$(TEST_REL_COMPILE_EPOCH)
 TEST_PARALLEL_REL_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
 TEST_PARALLEL_REL_OBJS = $(patsubst %.c,$(TEST_REL_OBJ_DIR)/%.o,$(TEST_PARALLEL_REL_SRCS))
+TEST_PARALLEL_REL_LINK_RSP = $(TEST_REL_OBJ_DIR)/link-inputs.rsp
+TEST_PARALLEL_REL_CANDIDATE = $(BIN_DIR)/test-strict/epochs/$(TEST_REL_COMPILE_EPOCH)/test_parallel
+TEST_PARALLEL_REL_ACTIVE = $(TEST_PARALLEL_REL_CANDIDATE)
+TEST_FAST_PROFILE = test-fast-v2
+TEST_REL_PROFILE = test-strict-v2
+TEST_FAST_SESSION = $(TEST_FAST_OBJ_DIR)/.build-session
+TEST_REL_SESSION = $(TEST_REL_OBJ_DIR)/.build-session
+TEST_FAST_LEASE = $(TEST_FAST_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+TEST_REL_LEASE = $(TEST_REL_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+
+$(TEST_FAST_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(TEST_FAST_SESSION)" "$@" \
+	  "$(TEST_FAST_OBJ_ROOT)" "$(BIN_DIR)/test-fast" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(TEST_FAST_COMPILE_EPOCH)" "$(TEST_FAST_PROFILE)" \
+	  "$(TEST_FAST_EPOCH_COMPILE_FLAGS)" "$(TEST_FAST_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
+$(TEST_REL_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(TEST_REL_SESSION)" "$@" \
+	  "$(TEST_REL_OBJ_ROOT)" "$(BIN_DIR)/test-strict" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(TEST_REL_COMPILE_EPOCH)" "$(TEST_REL_PROFILE)" \
+	  "$(TEST_REL_EPOCH_COMPILE_FLAGS)" "$(TEST_REL_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
+ifneq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+BUILD_TEST_EPOCHS_VALID := $(shell printf '%s\n' '$(TEST_FAST_COMPILE_EPOCH)' '$(TEST_REL_COMPILE_EPOCH)' | awk 'BEGIN { ok=1; n=0 } { n++; if ($$0 !~ /^[0-9a-f]{64}$$/) ok=0 } END { if (ok && n == 2) print "yes" }')
+ifneq ($(BUILD_TEST_EPOCHS_VALID),yes)
+$(error test compile-epoch derivation failed)
+endif
+endif
 
 -include $(TEST_PARALLEL_REL_OBJS:.o=.d)
 
@@ -379,7 +595,7 @@ TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.cc
 TMPL_TOOL = $(BIN_DIR)/gen_templates
 EXPLORER_CSS_GEN = app/views/include/views/explorer_css.h
 EXPLORER_CSS_SRC = app/views/src/explorer_css.css
-VIEW_GEN_HEADERS = $(TMPL_GEN) $(EXPLORER_CSS_GEN)
+VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
 $(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
 	@mkdir -p $(dir $@)
@@ -394,6 +610,17 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 
 $(EXPLORER_CSS_GEN): $(EXPLORER_CSS_SRC) $(TMPL_TOOL)
 	$(TMPL_TOOL) --single-css $< $@ explorer_css EXPLORER_CSS_H
+
+# Included near the top of this file. Updating it after its generated-header
+# prerequisites makes GNU Make restart before any ordinary target recipe runs.
+$(VIEW_BOOTSTRAP_MK): $(VIEW_GEN_HEADERS)
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tmp="$$(mktemp "$(dir $@).views-ready.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s\n' '# generated: view inputs established before source identity capture' > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 .PHONY: templates
 templates: $(VIEW_GEN_HEADERS)
@@ -416,9 +643,15 @@ tools/inspect_html: $(BIN_DIR)/inspect_html
 define BUILD_NODE_TOOL
 .PHONY: $(1)
 $(1): $$(BIN_DIR)/$(1)
-$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
+$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $(2) $$(ALL_SRCS) | $$(VENDOR_LIBS)
 	@mkdir -p $$(dir $$@)
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_COMMIT_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
+	@set -eu; \
+	tmp="$$$$(mktemp "$$@.link.XXXXXX")"; \
+	trap 'rm -f "$$$$tmp"' EXIT HUP INT TERM; \
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
+	tools/dev/source-identity.sh verify-record "$$(BUILD_SOURCE_ID)" "$$(BUILD_CLEAN)" "$$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$$$tmp" "$$@"; \
+	trap - EXIT HUP INT TERM
 endef
 
 $(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
@@ -428,24 +661,77 @@ $(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c 
 # produces the original monolithic binary at build/bin/test_parallel_wpo.
 $(eval $(call BUILD_NODE_TOOL,test_parallel_wpo,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
 
-# test_parallel is now built from the cached per-TU objects + one plain link.
-.PHONY: test_parallel
+# test_parallel is built as an immutable epoch candidate. The familiar
+# build/bin alias is a locked atomic copy and is FORCE-driven so A -> B -> A
+# cannot be skipped by stable-path mtimes. Internal commands execute the exact
+# candidate, never the concurrently replaceable alias.
+.PHONY: FORCE test_parallel test_parallel_fast test-parallel-active test-parallel-fast-active
+FORCE:
+
 test_parallel: $(TEST_PARALLEL_BIN)
 
-$(TEST_PARALLEL_BIN): $(VIEW_GEN_HEADERS) $(TEST_PARALLEL_REL_OBJS) | $(VENDOR_LIBS)
-	@mkdir -p $(dir $@)
-	$(CC) $(TEST_REL_CFLAGS) $(TEST_REL_LDFLAGS) -o $@ $(TEST_PARALLEL_REL_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(TEST_PARALLEL_BIN): $(TEST_PARALLEL_REL_CANDIDATE) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(TEST_PARALLEL_REL_CANDIDATE)" "$@" "$(TEST_REL_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_REL_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_REL_PROFILE)" \
+	  "$(TEST_REL_EPOCH_COMPILE_FLAGS)" "$(TEST_REL_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
 
-.PHONY: test_parallel_fast
+$(TEST_PARALLEL_REL_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_PARALLEL_REL_OBJS) $(TEST_PARALLEL_REL_LINK_RSP) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(TEST_REL_CFLAGS) $(TEST_REL_LDFLAGS) -o "$$tmp" "@$(TEST_PARALLEL_REL_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(TEST_REL_SESSION)" "$(TEST_REL_LEASE)" \
+	  "$(TEST_REL_OBJ_ROOT)" "$(BIN_DIR)/test-strict" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(TEST_REL_COMPILE_EPOCH)" "$(TEST_REL_PROFILE)" "$(TEST_REL_EPOCH_COMPILE_FLAGS)" \
+	  "$(TEST_REL_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
 test_parallel_fast: $(TEST_PARALLEL_FAST_BIN)
 
-$(TEST_PARALLEL_FAST_BIN): $(VIEW_GEN_HEADERS) $(TEST_PARALLEL_FAST_OBJS)
+$(TEST_PARALLEL_FAST_BIN): $(TEST_PARALLEL_FAST_CANDIDATE) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(TEST_PARALLEL_FAST_CANDIDATE)" "$@" "$(TEST_FAST_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_FAST_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_FAST_PROFILE)" \
+	  "$(TEST_FAST_EPOCH_COMPILE_FLAGS)" "$(TEST_FAST_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
+
+$(TEST_PARALLEL_FAST_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_PARALLEL_FAST_OBJS) $(TEST_PARALLEL_FAST_LINK_RSP) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
-	$(CC) $(TEST_FAST_CFLAGS) $(TEST_FAST_LDFLAGS) -o $@ $(TEST_PARALLEL_FAST_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(TEST_FAST_CFLAGS) $(TEST_FAST_LDFLAGS) -o "$$tmp" "@$(TEST_PARALLEL_FAST_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(TEST_FAST_SESSION)" "$(TEST_FAST_LEASE)" \
+	  "$(TEST_FAST_OBJ_ROOT)" "$(BIN_DIR)/test-fast" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(TEST_FAST_COMPILE_EPOCH)" "$(TEST_FAST_PROFILE)" "$(TEST_FAST_EPOCH_COMPILE_FLAGS)" \
+	  "$(TEST_FAST_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+# Expanding the complete object list inside a recipe makes the recipe itself
+# one oversized `/bin/sh -c` argument on Linux.  GNU Make writes the exact,
+# epoch-scoped prerequisite order directly; the compiler consumes it through a
+# response file, keeping the shell command bounded without rediscovering or
+# reordering objects from the filesystem.
+$(TEST_PARALLEL_REL_LINK_RSP): $(TEST_PARALLEL_REL_OBJS)
+	@$(file >$@,$(TEST_PARALLEL_REL_OBJS)) test -s "$@"
+
+$(TEST_PARALLEL_FAST_LINK_RSP): $(TEST_PARALLEL_FAST_OBJS)
+	@$(file >$@,$(TEST_PARALLEL_FAST_OBJS)) test -s "$@"
+
+test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE)
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
+
+test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
+	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
-test-parallel: test_parallel
-	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
+test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
@@ -459,58 +745,68 @@ test-parallel: test_parallel
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
-t: test_parallel
+t: $(TEST_PARALLEL_REL_CANDIDATE)
 	@if [ -z "$(ONLY)" ]; then \
 	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
 	  exit 2; fi
-	ulimit -s unlimited && $(TEST_PARALLEL_BIN) --only=$(ONLY)
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)
 
-# Hot-path variant for edit loops. It compiles changed files into cached
-# per-file test objects and links a non-LTO harness; use strict `make t`
+# Hot-path variant for edit loops. It resolves the complete source inventory in
+# a cached, mutation-keyed per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
-t-fast: test_parallel_fast
+t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@if [ -z "$(ONLY)" ]; then \
 	  echo "usage: make t-fast ONLY=<group-substr>   (e.g. make t-fast ONLY=node_health_service)"; \
 	  exit 2; fi
-	ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=$(ONLY)
+	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)
 
-# The leanest changed-aware inner loop: no ONLY= to remember. It resolves the
-# focused test group(s) for the current working-tree diff from the impact
-# rules (app/controllers/include/controllers/agent_impact_rules.def — the same
-# map pre-push-ci uses) and runs ONLY those through the cached non-LTO harness.
-# Edit .c -> `make t-changed` -> ~seconds. Fails loud if a changed code file
-# has no focused-test mapping (add one). Use `make t ONLY=<g>` for the strict
-# LTO harness and `make pre-push-ci` as the pre-push gate.
+# The leanest changed-aware spelling: no ONLY= to remember. Impact mappings
+# classify the current working-tree hints, but never reduce proof scope; this
+# runs the exact source-wide fast candidate. Use `make t-fast ONLY=<g>` for a
+# manual focused run and `make pre-push-ci` as the pre-push gate.
 t-changed:
 	@tools/agent_fast_ci.sh test-changed
 
-# Incremental compile-check of the whole node (no link). Only changed TUs
-# recompile — the fastest "does my change still build" signal. The
+# Exact compile-check of the whole node (no link). Every source is resolved in
+# the current immutable epoch; ccache/sccache recovers unchanged TU work. The
 # -Wno-deprecated-declarations matches the real node/test build (zclassic23,
 # test_parallel) so these targets don't false-fail on pre-existing deprecations.
-build-only: CFLAGS += -Wno-deprecated-declarations
 build-only: $(VIEW_GEN_HEADERS) $(ALL_OBJS)
-	@echo "build-only: all node objects compiled"
+	@$(BUILD_EPOCH_SESSION_TOOL) verify "$(BUILD_ONLY_SESSION)" "$(BUILD_ONLY_LEASE)" \
+	  "$(OBJ_ROOT)" - "$(BUILD_EPOCH_KEEP)" "$(BUILD_SOURCE_ID)" \
+	  "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(BUILD_ONLY_COMPILE_EPOCH)" "$(BUILD_ONLY_PROFILE)" \
+	  "$(BUILD_ONLY_EPOCH_COMPILE_FLAGS)" "$(BUILD_ONLY_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID" >/dev/null
+	@echo "build-only: all node objects compiled epoch=$(BUILD_ONLY_COMPILE_EPOCH)"
 
-# Fastest no-link compile-check for local edit loops. This uses the same
-# non-LTO dev object tree as zclassic23-dev, so changed files compile quickly
-# and no final executable link is paid.
+# Fastest no-link compile-check for local edit loops. This resolves the complete
+# current source inventory in the same non-LTO epoch as zclassic23-dev; compiler
+# caches recover unchanged TU work and no final executable link is paid.
 fast-compile dev-build-only: $(DEV_OBJ_COMPLETE)
 	@echo "fast-compile: all dev node objects compiled (non-LTO, no link)"
 
 $(DEV_OBJ_COMPLETE): $(VIEW_GEN_HEADERS) $(DEV_OBJS)
-	@mkdir -p $(dir $@)
-	@touch $@
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_SESSION)" "$(DEV_LEASE)" \
+	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(DEV_COMPILE_EPOCH)" "$(DEV_PROFILE)" "$(DEV_EPOCH_COMPILE_FLAGS)" \
+	  "$(DEV_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	tmp="$$(mktemp "$(dir $@).complete.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s\n' 'epoch=$(DEV_COMPILE_EPOCH)' > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
-# Cheapest guarded compile-check for common edit loops. It compiles changed
-# node translation units directly into build/dev-obj, compiles direct depfile
-# dependents for narrow `.h` / `.def` edits, and falls back to depfile-safe
-# `fast-compile` for templates, Makefile changes, removed sources, or broad
-# edits where the graph cannot be proven cheaply.
+# Compatibility name for the common edit-loop compile gate. Changed paths are
+# classification hints only: the proof always resolves every current dev source
+# in a mutation-keyed epoch via `fast-compile`.
 fast-changed-compile:
 	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh compile-changed
 
-# Fail-fast edit-loop ladder: compile -> focused-tests -> lint-fast, cost-ordered
+# Fail-fast edit-loop ladder: compile -> source-wide-tests -> lint-fast, cost-ordered
 # and short-circuiting, with a dense FIRST-ERROR[<rung>] line on the first break.
 # No live probe, no full/LTO build. `make ff` after an edit; strict gate before
 # push is still `make lint && make build-only && relevant tests` / `make pre-push-ci`.
@@ -525,11 +821,32 @@ dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
 fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild:
 	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
 
-$(ZCLASSIC23_DEV_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_DEV_BIN): $(DEV_CANDIDATE_BIN) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_CANDIDATE_BIN)" "$@" "$(DEV_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(DEV_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(DEV_PROFILE)" \
+	  "$(DEV_EPOCH_COMPILE_FLAGS)" "$(DEV_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
+	@echo "dev-bin: $@ <= $(DEV_CANDIDATE_BIN) (non-LTO, unstripped; not for release/deploy)"
+
+$(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMPLETE) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
-	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o $@ $(DEV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
-	@touch $(DEV_OBJ_COMPLETE)
-	@echo "dev-bin: $@ (non-LTO, unstripped; not for release/deploy)"
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o "$$tmp" "@$(DEV_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_SESSION)" "$(DEV_LEASE)" \
+	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(DEV_COMPILE_EPOCH)" "$(DEV_PROFILE)" "$(DEV_EPOCH_COMPILE_FLAGS)" \
+	  "$(DEV_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
+$(DEV_LINK_RSP): $(DEV_OBJS)
+	@$(file >$@,$(DEV_OBJS)) test -s "$@"
+
+$(DEV_CANDIDATE_BIN): $(DEV_LINK_RSP)
 
 # ── Tier-1 in-process hot-swap (DEV-ONLY) ──────────────────────────────
 # Compile named app-layer MCP controller TUs into a "generation" .so and
@@ -549,7 +866,7 @@ HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
 # included/generated header).  It is embedded in zcl_hotswap_manifest_v2 and
 # the .so path is the LAST line printed.  Multiple providers remain
 # reload_required until they share one generated aggregate manifest/entrypoint.
-hotswap-so: $(VIEW_GEN_HEADERS)
+hotswap-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	@if [ -z "$(FILES)" ]; then \
 	  echo "usage: make hotswap-so FILES=\"tools/mcp/controllers/app_controller.c\"" >&2; \
 	  exit 2; fi
@@ -570,7 +887,14 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	inputs="$$(mktemp "$(HOTSWAP_SO_DIR)/.inputs.XXXXXX")"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.generation.XXXXXX.o")"; \
 	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.generation.XXXXXX.so")"; \
-	trap 'rm -f "$$inputs" "$$tmp_o" "$$tmp_so"' EXIT HUP INT TERM; \
+	tmp_json="$$(mktemp "$(HOTSWAP_SO_DIR)/.generation.XXXXXX.json")"; \
+	trap 'rm -f "$$inputs" "$$tmp_o" "$$tmp_so" "$$tmp_json"' EXIT HUP INT TERM; \
+	publish_exact() { \
+	  src="$$1"; dst="$$2"; \
+	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
+	  [ -f "$$dst" ] && [ ! -L "$$dst" ] && cmp -s "$$src" "$$dst" || return 1; \
+	  rm -f "$$src"; \
+	}; \
 	{ \
 	  printf '%s\n' 'schema=zcl.hotswap_inputs.v2'; \
 	  printf 'compiler='; $(CC) --version 2>/dev/null | head -1; \
@@ -578,7 +902,7 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	  printf 'source=%s\n' "$$selected"; \
 	  printf 'probe=%s\n' "$$probe"; \
 	  $(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
-	    -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
+	    -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_SOURCE_ID)\" \
 	    -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
 	    -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" \
 	    -DZCL_HOTSWAP_PROBE_LEAF=\"$$probe\" -E -P "$$selected"; \
@@ -588,26 +912,26 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	o="$(HOTSWAP_OBJ_DIR)/gen-$$digest.o"; \
 	so="$(HOTSWAP_SO_DIR)/gen-$$digest.so"; \
 	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
-	  -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
+	  -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_SOURCE_ID)\" \
 	  -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
 	  -DZCL_HOTSWAP_INPUT_DIGEST=\"$$digest\" \
 	  -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" \
 	  -DZCL_HOTSWAP_PROBE_LEAF=\"$$probe\" \
-	  -MMD -MP -MF "$(HOTSWAP_OBJ_DIR)/gen-$$digest.d" \
 	  -c -o "$$tmp_o" "$$selected" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
 	artifact_digest="$$(sha256sum "$$tmp_so" | awk '{print $$1}')"; \
-	if [ -e "$$o" ] && ! cmp -s "$$tmp_o" "$$o"; then \
-	  echo "hotswap-so: REFUSING mismatched existing object $$o" >&2; exit 3; fi; \
-	if [ -e "$$so" ] && ! cmp -s "$$tmp_so" "$$so"; then \
-	  echo "hotswap-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; fi; \
-	if [ ! -e "$$o" ]; then mv "$$tmp_o" "$$o"; else rm -f "$$tmp_o"; fi; \
-	if [ ! -e "$$so" ]; then mv "$$tmp_so" "$$so"; else rm -f "$$tmp_so"; fi; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	publish_exact "$$tmp_o" "$$o" || { \
+	  echo "hotswap-so: REFUSING mismatched existing object $$o" >&2; exit 3; }; \
+	publish_exact "$$tmp_so" "$$so" || { \
+	  echo "hotswap-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; }; \
 	chmod a-w "$$o" "$$so"; \
+	json="$(HOTSWAP_SO_DIR)/gen-$$digest.json"; \
 	printf '{"schema":"zcl.hotswap_build.v2","input_digest":"%s","artifact_sha256":"%s","source":"%s","artifact":"%s","publishable":false}\n' \
-	  "$$digest" "$$artifact_digest" "$$selected" "$$so" > "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp"; \
-	mv -f "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp" "$(HOTSWAP_SO_DIR)/gen-$$digest.json"; \
+	  "$$digest" "$$artifact_digest" "$$selected" "$$so" > "$$tmp_json"; \
+	publish_exact "$$tmp_json" "$$json" || { \
+	  echo "hotswap-so: REFUSING mismatched existing manifest $$json" >&2; exit 3; }; \
 	echo "hotswap-so: linked read-only, unpublishable candidate $$so" >&2; \
 	echo "$$so"
 
@@ -632,7 +956,7 @@ hotswap: $(VIEW_GEN_HEADERS)
 # bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
 # line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
 # docs/work/HOTSWAP.md "Real module ABI".
-hotswap-module-so: $(VIEW_GEN_HEADERS)
+hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	@if [ -z "$(HANDLER)" ]; then \
 	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
 	@set -eu; \
@@ -641,11 +965,27 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
 	safe="$$(printf '%s' "$(HANDLER)" | tr -c 'A-Za-z0-9_.-' '_')"; \
-	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_COMMIT).o"; \
-	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_COMMIT).so"; \
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -c -o "$$o" "$$src" >&2; \
+	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
+	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
+	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
+	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.module.XXXXXX.so")"; \
+	trap 'rm -f "$$tmp_o" "$$tmp_so"' EXIT HUP INT TERM; \
+	publish_exact() { \
+	  src="$$1"; dst="$$2"; \
+	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
+	  [ -f "$$dst" ] && [ ! -L "$$dst" ] && cmp -s "$$src" "$$dst" || return 1; \
+	  rm -f "$$src"; \
+	}; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -c -o "$$tmp_o" "$$src" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
-	  -Wl,-z,noexecstack -o "$$so" "$$o" >&2; \
+	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	publish_exact "$$tmp_o" "$$o" || { \
+	  echo "hotswap-module-so: REFUSING mismatched existing object $$o" >&2; exit 3; }; \
+	publish_exact "$$tmp_so" "$$so" || { \
+	  echo "hotswap-module-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; }; \
+	chmod a-w "$$o" "$$so"; \
+	trap - EXIT HUP INT TERM; \
 	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
 	echo "$$so"
 
@@ -734,8 +1074,8 @@ dev-loop-bench-selftest:
 # Fast deterministic network/generation proof. The focused group models
 # multiple peers plus an in-flight old-generation call; sim-fast remains the
 # broader seeded P2P suite.
-hotswap-sim: test_parallel_fast
-	@ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=hotswap_simnet
+hotswap-sim: $(TEST_PARALLEL_FAST_CANDIDATE)
+	@ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE) --only=hotswap_simnet
 
 native-dev-loop-wait-selftest: dev-bin
 	@tools/dev/native-dev-loop-wait-selftest.sh
@@ -929,16 +1269,28 @@ bootstrap-publish:
 	@echo "  Local bundle production remains available via 'make bootstrap'." >&2
 	@exit 2
 
-$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
+$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 session: $(BIN_DIR)/session
 	$(BIN_DIR)/session
 
-$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/bot.c $(ALL_SRCS)
+$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 bot: $(BIN_DIR)/bot
 	$(BIN_DIR)/bot
@@ -967,16 +1319,28 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
-$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
-	strip -s $@
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	strip -s "$$tmp"; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 .PHONY: zclassic-cli
 zclassic-cli: $(ZCLASSIC_CLI_BIN)
-$(ZCLASSIC_CLI_BIN): src/cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
+$(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(CFLAGS) $(LDFLAGS) -o "$$tmp" $(filter-out $(BUILD_IDENTITY_STAMP),$^) -lm; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 # In-tree WAL checkpoint tool used by `deploy`.  Replaces a dependency on
 # the sqlite3(1) CLI that isn't installed by default on stock Ubuntu/Debian
@@ -1081,8 +1445,8 @@ $(BIN_DIR)/zcl-blog: tools/zcl-blog
 # Default `make test` = the fast fork-based parallel suite (~1min, 282 groups).
 # The slow single-process binary is still available as `make test-full`.
 # Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
-test: test_parallel
-	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
+test: $(TEST_PARALLEL_REL_CANDIDATE)
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
 test-full: test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)
@@ -1103,10 +1467,10 @@ chaos: zclassic23-chaos
 	echo "==> All chaos scenarios PASSED"
 
 .PHONY: sim-fast
-sim-fast: test_parallel zclassic23-chaos
+sim-fast: $(TEST_PARALLEL_REL_CANDIDATE) zclassic23-chaos
 	@set -eu; \
 	echo "==> chaos harness unit slice"; \
-	ulimit -s unlimited && $(TEST_PARALLEL_BIN) --only=chaos_harness; \
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) --only=chaos_harness; \
 	echo "==> checked-in chaos scenarios"; \
 	$(MAKE) --no-print-directory chaos; \
 	echo "==> bounded chaos seed sweep ($(CHAOS_SEEDS) seeds via $(CHAOS_SWEEP_SCENARIO))"; \
@@ -1227,7 +1591,7 @@ DETECTIVE_SCENARIOS = \
 UTXO_LADDER_LEAF_STORE ?= $(HOME)/.zclassic-c23/mmb_leaves.bin
 
 .PHONY: simnet-nightly
-simnet-nightly:
+simnet-nightly: $(TEST_PARALLEL_REL_CANDIDATE)
 	@echo "══ simnet-nightly: step 1/6 — full .scenario corpus (make chaos) ══"
 	@if $(MAKE) --no-print-directory chaos; then \
 	    step1=PASS; \
@@ -1247,23 +1611,22 @@ simnet-nightly:
 	    step3=FAIL; \
 	fi; \
 	echo "══ simnet-nightly: step 4/6 — byzantine detective cluster sweep ══"; \
-	if $(MAKE) --no-print-directory zclassic23-chaos test_parallel >/dev/null; then \
+	if $(MAKE) --no-print-directory zclassic23-chaos >/dev/null; then \
 	    step4=PASS; \
 	    for s in $(DETECTIVE_SCENARIOS); do \
 	        echo "  ==> $$s"; \
 	        if ! $(ZCLASSIC23_CHAOS_BIN) --scenario="$$s"; then step4=FAIL; fi; \
 	    done; \
 	    echo "  ==> ZCL_SIMNET_PERF=1 mixed smoke (simnet_fuzz + simnet_byzantine_cluster)"; \
-	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_BIN) --only=simnet_fuzz; then step4=FAIL; fi; \
-	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_BIN) --only=simnet_byzantine_cluster; then step4=FAIL; fi; \
+	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_REL_ACTIVE) --only=simnet_fuzz; then step4=FAIL; fi; \
+	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_REL_ACTIVE) --only=simnet_byzantine_cluster; then step4=FAIL; fi; \
 	else \
 	    step4=FAIL; \
 	fi; \
 	echo "══ simnet-nightly: step 5/6 — ZCL_UTXO_LADDER_HEAVY dense-MMB recompute ══"; \
 	if [ -f "$(UTXO_LADDER_LEAF_STORE)" ]; then \
-	    if $(MAKE) --no-print-directory test_parallel >/dev/null && \
-	        ZCL_UTXO_LADDER_HEAVY=1 ZCL_UTXO_LADDER_LEAF_STORE="$(UTXO_LADDER_LEAF_STORE)" \
-	        $(TEST_PARALLEL_BIN) --only=utxo_root_ladder; then \
+	    if ZCL_UTXO_LADDER_HEAVY=1 ZCL_UTXO_LADDER_LEAF_STORE="$(UTXO_LADDER_LEAF_STORE)" \
+	        $(TEST_PARALLEL_REL_ACTIVE) --only=utxo_root_ladder; then \
 	        step5=PASS; \
 	    else \
 	        step5=FAIL; \
@@ -2266,7 +2629,7 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c
 	$(CC) -O2 -o $@ $<
 
 bench: zclassic23
-	@$(ZCLASSIC23_BIN) -bench
+	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench
 
 # Consensus-verify microbenchmark: times the two dominant per-block verify
 # primitives (BLS12-381 Groth16 pairing + Equihash 200,9 solution check) and
@@ -2275,7 +2638,7 @@ bench: zclassic23
 # Groth16 row is skipped if ~/.zcash-params is absent (VK not vendored).
 .PHONY: bench-crypto-verify
 bench-crypto-verify: zclassic23
-	@$(ZCLASSIC23_BIN) -bench-crypto-verify
+	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench-crypto-verify
 
 # Crypto-vs-Rust microbenchmark: times EVERY consensus-path C crypto primitive
 # (Equihash verify, Groth16/BLS12-381 output verify, BLS12-381 pairing + Fp mul,
@@ -2284,7 +2647,7 @@ bench-crypto-verify: zclassic23
 # APPENDS the medians to docs/bench-history.csv.
 .PHONY: bench-crypto-vs-rust
 bench-crypto-vs-rust: zclassic23
-	@$(ZCLASSIC23_BIN) -bench-crypto-vs-rust
+	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench-crypto-vs-rust
 
 # The STANDING crypto-perf gate (docs/CRYPTO_PERF.md): measure C live and
 # enforce (a) the RATCHET — no C primitive may regress beyond the flake margin;
@@ -2295,10 +2658,11 @@ bench-crypto-vs-rust: zclassic23
 # load) — run it in a quiet context. Passes on current main = today's numbers.
 .PHONY: check-crypto-perf
 check-crypto-perf: zclassic23
-	@ZCL_CRYPTO_PERF_BIN=$(ZCLASSIC23_BIN) tools/scripts/check_crypto_perf.sh
+	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" \
+	  ZCL_CRYPTO_PERF_BIN=$(ZCLASSIC23_BIN) tools/scripts/check_crypto_perf.sh
 
 bench-regress: zclassic23
-	@$(ZCLASSIC23_BIN) -bench-regress
+	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench-regress
 
 # CI guard: fresh datadir, must reach tip-10 in <600s against a local
 # peer. Fails the build if sync regresses to the 9-hour stall the
@@ -2324,12 +2688,16 @@ ci-sync-smoke: zclassic23
 	@$(ZCLASSIC23_BIN) -bench-mtbf
 	@echo "[ci-sync-smoke] OK"
 
-$(OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+BUILD_ONLY_OBJECT_CFLAGS = $(BUILD_ONLY_CFLAGS)
+$(OBJ_DIR)/lib/util/src/clientversion.o: BUILD_ONLY_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(BUILD_ONLY_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_ONLY_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(BUILD_ONLY_SESSION)" -- \
+	  $(CC) $(BUILD_ONLY_OBJECT_CFLAGS)
 
-# The one TU that bakes in ZCL_BUILD_COMMIT — see the stamp comment up top.
-$(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+# The one TU that bakes display + source identity — see the stamp above.
+$(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
 # Dev-bin keeps most TUs at -Og for quick debug compiles, but leaves the
 # consensus/crypto/script/validation hot paths at a configurable optimized
@@ -2345,30 +2713,40 @@ $(DEV_OBJ_DIR)/lib/sapling/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/script/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/validation/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 
-$(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) $(DEV_COMPILE_CFLAGS) -MMD -MP -c -o $@ $<
+$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: DEV_COMPILE_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) $(BUILD_EPOCH_OBJECT_FORCE) | $(DEV_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(DEV_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(DEV_SESSION)" -- \
+	  $(CC) $(DEV_COMPILE_CFLAGS)
 
-# The dev object tree also needs the commit TU refreshed when HEAD changes.
-$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+# The dev object tree also needs the identity TU refreshed when its stamp changes.
+$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
-$(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) $(TEST_FAST_CFLAGS) -MMD -MP -c -o $@ $<
+TEST_FAST_OBJECT_CFLAGS = $(TEST_FAST_CFLAGS)
+$(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: TEST_FAST_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_FAST_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_FAST_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_FAST_SESSION)" -- \
+	  $(CC) $(TEST_FAST_OBJECT_CFLAGS)
 
-# The fast test harness has its own object tree and also needs the commit TU
-# refreshed when HEAD changes.
-$(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+# The fast test harness has its own object tree and identity stamp.
+$(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
 # Strict cached test_parallel object tree: same flags as the old whole-program
-# test_parallel minus -flto=auto (see the TEST_REL_* comment above). -MMD -MP so
-# a header/.def edit recompiles exactly its dependents — no false green.
-$(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) $(TEST_REL_CFLAGS) -MMD -MP -c -o $@ $<
+# test_parallel minus -flto=auto (see the TEST_REL_* comment above). -MD -MP
+# records the complete include closure inside the exact epoch — no false green.
+TEST_REL_OBJECT_CFLAGS = $(TEST_REL_CFLAGS)
+$(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: TEST_REL_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_REL_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_REL_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_REL_SESSION)" -- \
+	  $(CC) $(TEST_REL_OBJECT_CFLAGS)
 
-# The strict test tree also needs the commit TU refreshed when HEAD changes.
-$(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+# The strict test tree also needs the identity TU refreshed with its stamp.
+$(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
 #
@@ -2379,7 +2757,8 @@ $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 #   2. `wal_checkpoint` — truncate WAL before SIGTERM so SQLite doesn't
 #      recover a half-checkpointed journal on boot.
 #   3. `tools/deploy_verify.sh` — poll `zclassic-cli getblockcount` until the
-#      node answers and diagnostics are ready, with a startup-sized deadline.
+#      node answers and diagnostics are ready, with a startup-sized deadline;
+#      freshness is exact source SHA-256 plus the running executable SHA-256.
 #
 # The wal_checkpoint step calls the in-tree tools/wal_checkpoint binary
 # (P12.4 — was an inline `sqlite3(1)` CLI invocation before, which failed
@@ -2412,47 +2791,104 @@ install: vendor-ready zclassic23 zcl-rpc
 
 deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy
+	@# Option 2 (DEPLOY-WRITE) bridge: stage a verified anchor snapshot into the
+	@# datadir so this install carries a reachable snapshot from boot one
+	@# (covers the cold-start case the in-fold self-mint cannot). Best-effort:
+	@# a missing source does NOT fail deploy; the node SHA3-verifies before trust.
+	@# Run every recursive Make before freezing the candidate, and pin it to the
+	@# outer parse's source record so it cannot silently authorize a newer epoch.
+	$(MAKE) BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" seed-anchor-snapshot
 	@# Force a fresh production binary. The $(ZCLASSIC23_BIN) rule is a single
 	@# whole-program cc over $(ALL_SRCS) with NO depfile tracking, so a
 	@# header-only edit leaves every .c mtime unchanged and `make` would skip
 	@# the relink and ship a STALE binary — the exact footgun behind a
 	@# multi-day stale-binary outage. Removing the binary forces the rebuild;
-	@# deploy_verify.sh below then confirms the running build_commit matches.
+	@# deploy_verify.sh below confirms the running source id and executable bytes.
 	rm -f $(ZCLASSIC23_BIN)
-	$(MAKE) zclassic23
-	@SERVICE_BIN=$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null \
-	    | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1); \
-	if [ -z "$$SERVICE_BIN" ]; then SERVICE_BIN="$(abspath $(ZCLASSIC23_BIN))"; fi; \
-	if [ -n "$$SERVICE_BIN" ] && [ "$$SERVICE_BIN" != "$(abspath $(ZCLASSIC23_BIN))" ]; then \
-	    install -m 755 $(ZCLASSIC23_BIN) "$$SERVICE_BIN"; \
-	    echo "deploy: installed $(ZCLASSIC23_BIN) -> $$SERVICE_BIN (service ExecStart)"; \
+	$(MAKE) BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" zclassic23
+	@# From here through verification there are no recursive Make parses. Freeze
+	@# one candidate, prove its baked source identity against the outer record,
+	@# install those exact bytes, and pass that same artifact hash to the verifier.
+	@set -eu; \
+	command -v timeout >/dev/null 2>&1 || { \
+	    echo "deploy: timeout is required for candidate preflight" >&2; exit 1; }; \
+	candidate="$$(mktemp "$(dir $(ZCLASSIC23_BIN)).zclassic23.deploy.XXXXXX")"; \
+	dropin_tmp=""; \
+	trap 'rm -f "$$candidate" "$$dropin_tmp"' EXIT HUP INT TERM; \
+	install -m 755 "$(ZCLASSIC23_BIN)" "$$candidate"; \
+	artifact_sha256="$$(sha256sum < "$$candidate" | awk '{print $$1}')"; \
+	[ "$${#artifact_sha256}" -eq 64 ] || { \
+	    echo "deploy: invalid frozen candidate SHA-256" >&2; exit 1; }; \
+	case "$$artifact_sha256" in *[!0-9a-f]*) \
+	    echo "deploy: invalid frozen candidate SHA-256" >&2; exit 1;; esac; \
+	candidate_agentbuild="$$(timeout 30 "$$candidate" agentbuild 2>&1)" || { \
+	    echo "deploy: frozen candidate agentbuild preflight failed" >&2; exit 1; }; \
+	printf '%s\n' "$$candidate_agentbuild" | \
+	    grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v1"' || { \
+	    echo "deploy: frozen candidate has no agentbuild v1 contract" >&2; exit 1; }; \
+	candidate_source_id="$$(printf '%s\n' "$$candidate_agentbuild" | \
+	    grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+	    head -1 | sed -E 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"; \
+	[ "$${#candidate_source_id}" -eq 64 ] || { \
+	    echo "deploy: frozen candidate omitted exact source_id_sha256" >&2; exit 1; }; \
+	case "$$candidate_source_id" in *[!0-9a-f]*) \
+	    echo "deploy: frozen candidate source_id_sha256 is malformed" >&2; exit 1;; esac; \
+	[ "$$candidate_source_id" = "$(BUILD_SOURCE_ID)" ] || { \
+	    echo "deploy: frozen candidate source id $$candidate_source_id != outer $(BUILD_SOURCE_ID)" >&2; exit 1; }; \
+	tools/dev/source-identity.sh verify-record \
+	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	if [ -f "$(HOME)/.zclassic-c23/node.db" ]; then \
+	    $(WAL_CHECKPOINT_BIN) "$(HOME)/.zclassic-c23/node.db" || { \
+	        echo "WAL checkpoint failed" >&2; exit 1; }; \
 	fi; \
-	install -d "$(HOME)/.local/bin"; \
-	ln -sfn "$$SERVICE_BIN" "$(HOME)/.local/bin/zclassic23"; \
-	echo "deploy: linked owner command $(HOME)/.local/bin/zclassic23 -> $$SERVICE_BIN"; \
-	if [ -e "$(HOME)/bin/zclassic23" ] || [ -L "$(HOME)/bin/zclassic23" ]; then \
-	    ln -sfn "$$SERVICE_BIN" "$(HOME)/bin/zclassic23"; \
-	    echo "deploy: refreshed PATH shadow $(HOME)/bin/zclassic23 -> $$SERVICE_BIN"; \
-	fi
-	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
-	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \
-	        || { echo "WAL checkpoint failed"; exit 1; }; \
-	fi
-	@# Option 2 (DEPLOY-WRITE) bridge: stage a verified anchor snapshot into the
-	@# datadir so this install carries a reachable snapshot from boot one
-	@# (covers the cold-start case the in-fold self-mint cannot). Best-effort:
-	@# a missing source does NOT fail deploy; the node SHA3-verifies before trust.
-	$(MAKE) seed-anchor-snapshot
-	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
-	@install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"
-	@{ \
+	install -d "$(HOME)/.config/systemd/user"; \
+	install -m 644 deploy/zclassic23.service \
+	    "$(HOME)/.config/systemd/user/zclassic23.service"; \
+	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
+	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
+	dropin_tmp="$$(mktemp "$$dropin.tmp.XXXXXX")"; \
+	{ \
 	    printf '[Service]\n'; \
+	    printf 'Environment="ZCL_AGENT_EXPECT_SOURCE_ID=%s"\n' "$(BUILD_SOURCE_ID)"; \
 	    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$(BUILD_COMMIT)"; \
 	    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=make-deploy"\n'; \
-	} > "$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"
-	@systemctl --user daemon-reload
-	systemctl --user restart zclassic23
-	@ZCL_DEPLOY_EXPECT_COMMIT="$(BUILD_COMMIT)" ./tools/deploy_verify.sh
+	} > "$$dropin_tmp"; \
+	install -m 644 "$$dropin_tmp" "$$dropin"; \
+	rm -f "$$dropin_tmp"; dropin_tmp=""; \
+	systemctl --user daemon-reload; \
+	service_paths="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null | \
+	    tr ' ' '\n' | sed -n 's/^path=//p')"; \
+	service_path_count="$$(printf '%s\n' "$$service_paths" | \
+	    awk 'NF { count++ } END { print count + 0 }')"; \
+	[ "$$service_path_count" -eq 1 ] || { \
+	    echo "deploy: canonical service ExecStart path is missing or ambiguous" >&2; exit 1; }; \
+	SERVICE_BIN="$$(printf '%s\n' "$$service_paths" | awk 'NF { print; exit }')"; \
+	case "$$SERVICE_BIN" in /*) ;; *) \
+	    echo "deploy: canonical service ExecStart path is not absolute" >&2; exit 1;; esac; \
+	tools/dev/source-identity.sh verify-record \
+	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	install -m 755 "$$candidate" "$$SERVICE_BIN"; \
+	installed_sha256="$$(sha256sum < "$$SERVICE_BIN" | awk '{print $$1}')"; \
+	[ "$$installed_sha256" = "$$artifact_sha256" ] || { \
+	    echo "deploy: installed service executable differs from frozen candidate" >&2; exit 1; }; \
+	echo "deploy: installed frozen candidate -> $$SERVICE_BIN (service ExecStart)"; \
+	install -d "$(HOME)/.local/bin"; \
+	if [ "$$SERVICE_BIN" != "$(HOME)/.local/bin/zclassic23" ]; then \
+	    ln -sfn "$$SERVICE_BIN" "$(HOME)/.local/bin/zclassic23"; \
+	fi; \
+	echo "deploy: linked owner command $(HOME)/.local/bin/zclassic23 -> $$SERVICE_BIN"; \
+	if [ -e "$(HOME)/bin/zclassic23" ] || [ -L "$(HOME)/bin/zclassic23" ]; then \
+	    if [ "$$SERVICE_BIN" != "$(HOME)/bin/zclassic23" ]; then \
+	        ln -sfn "$$SERVICE_BIN" "$(HOME)/bin/zclassic23"; \
+	    fi; \
+	    echo "deploy: refreshed PATH shadow $(HOME)/bin/zclassic23 -> $$SERVICE_BIN"; \
+	fi; \
+	systemctl --user restart zclassic23; \
+	ZCL_DEPLOY_EXPECT_SOURCE_ID="$(BUILD_SOURCE_ID)" \
+	ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$artifact_sha256" \
+	    ./tools/deploy_verify.sh; \
+	rm -f "$$candidate"; candidate=""; \
+	trap - EXIT HUP INT TERM
 
 # Option 2 (DEPLOY-WRITE) snapshot reachability bridge: stage a verified anchor
 # UTXO snapshot into the datadir at <datadir>/utxo-anchor.snapshot (the path the
@@ -2747,39 +3183,116 @@ clean:
 #    `lib/rpc/src/protocol.c` share a basename and collide at .gcda
 #    write time ("overwriting an existing profile data with a
 #    different checksum").  For the coverage build we therefore
-#    compile each source into its own `build/cov/<same/path>/file.o`
+#    compile each source into its own
+#    `build/cov/epochs/<compile-epoch>/<same/path>/file.o`
 #    FIRST, then link — this way each .gcda lives next to its .o and
 #    the directory structure guarantees uniqueness.  Slower than the
 #    single-command build, but sound.
-COV_BUILD_DIR = $(BUILD_DIR)/cov
-COV_CFLAGS = $(filter-out -flto -O3 -march=native -Werror,$(CFLAGS)) \
+COV_BUILD_ROOT = $(BUILD_DIR)/cov
+COV_CFLAGS = $(filter-out -flto -flto=% -O3 -march=native -Werror,$(CACHED_CFLAGS)) \
              --coverage -O1 -g -DCOVERAGE_BUILD -DZCL_TESTING
-COV_LDFLAGS = $(filter-out -flto,$(LDFLAGS)) --coverage
+COV_LDFLAGS = $(filter-out -flto -flto=%,$(LDFLAGS)) --coverage
 COV_TEST_BIN = $(BIN_DIR)/test_zcl_cov
+COV_EPOCH_COMPILE_FLAGS := $(strip $(COV_CFLAGS) -Wno-deprecated-declarations identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP coverage-staging=v1)
+COV_EPOCH_LINK_FLAGS := $(strip $(COV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+COV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+COV_COMPILE_EPOCH := $(call zcl_compile_epoch,coverage-v2,COV_EPOCH_COMPILE_FLAGS,COV_EPOCH_LINK_FLAGS)
+COV_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(COV_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(COV_COMPILE_EPOCH_VALID),yes)
+$(error coverage compile-epoch derivation failed)
+endif
+endif
+COV_BUILD_DIR = $(COV_BUILD_ROOT)/epochs/$(COV_COMPILE_EPOCH)
+COV_TEST_CANDIDATE = $(BIN_DIR)/coverage/epochs/$(COV_COMPILE_EPOCH)/test_zcl_cov
+COV_TEST_ACTIVE = $(COV_TEST_CANDIDATE)
+COV_PROFILE = coverage-v2
+COV_SESSION = $(COV_BUILD_DIR)/.build-session
+COV_LEASE = $(COV_BUILD_DIR)/.leases/$(BUILD_INVOCATION_ID)
 COV_INFO = $(BUILD_DIR)/coverage.info
 COV_HTML = $(BUILD_DIR)/coverage_html
 
+$(COV_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(COV_SESSION)" "$@" \
+	  "$(COV_BUILD_ROOT)" "$(BIN_DIR)/coverage" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(COV_COMPILE_EPOCH)" "$(COV_PROFILE)" \
+	  "$(COV_EPOCH_COMPILE_FLAGS)" "$(COV_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
 COV_TEST_SRCS := $(filter-out lib/test/src/test_parallel.c, $(TEST_SRCS)) $(TEST_DEV_EXECUTOR_SRCS)
 COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(COV_TEST_SRCS) $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS))
+COV_LINK_RSP = $(COV_BUILD_DIR)/link-inputs.rsp
 
-$(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)
+COV_OBJECT_CFLAGS = $(COV_CFLAGS) -Wno-deprecated-declarations
+$(COV_BUILD_DIR)/lib/util/src/clientversion.o: COV_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(COV_BUILD_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(COV_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) coverage "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(COV_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(COV_SESSION)" -- \
+	  $(CC) $(COV_OBJECT_CFLAGS)
+
+$(COV_BUILD_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
+
+-include $(COV_OBJS:.o=.d)
+
+.PHONY: test_zcl_cov test-zcl-cov-locked
+test_zcl_cov:
+	@mkdir -p $(BUILD_DIR)
+	@flock -x $(BUILD_DIR)/coverage.lock \
+	  $(MAKE) --no-print-directory ZCL_COVERAGE_LOCKED=1 test-zcl-cov-locked
+test-zcl-cov-locked:
+	@test "$(ZCL_COVERAGE_LOCKED)" = 1 || { echo "test-zcl-cov-locked: use make test_zcl_cov" >&2; exit 2; }
+	@$(MAKE) --no-print-directory "$(COV_TEST_BIN)"
+$(COV_TEST_BIN): $(COV_TEST_CANDIDATE) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(COV_TEST_CANDIDATE)" "$@" "$(COV_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(COV_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(COV_PROFILE)" \
+	  "$(COV_EPOCH_COMPILE_FLAGS)" "$(COV_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
+
+$(COV_TEST_CANDIDATE): $(BUILD_IDENTITY_STAMP) $(COV_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(COV_CFLAGS) -Wno-deprecated-declarations -c -o $@ $<
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(COV_CFLAGS) $(COV_LDFLAGS) -o "$$tmp" "@$(COV_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(COV_SESSION)" "$(COV_LEASE)" \
+	  "$(COV_BUILD_ROOT)" "$(BIN_DIR)/coverage" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(COV_COMPILE_EPOCH)" "$(COV_PROFILE)" "$(COV_EPOCH_COMPILE_FLAGS)" \
+	  "$(COV_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
-.PHONY: test_zcl_cov
-test_zcl_cov: $(COV_TEST_BIN)
-$(COV_TEST_BIN): $(COV_OBJS)
-	@mkdir -p $(dir $@)
-	$(CC) $(COV_CFLAGS) $(COV_LDFLAGS) -o $@ $(COV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(COV_LINK_RSP): $(COV_OBJS)
+	@$(file >$@,$(COV_OBJS)) test -s "$@"
 
-coverage: coverage-clean test_zcl_cov
+$(COV_TEST_CANDIDATE): $(COV_LINK_RSP)
+
+.PHONY: coverage-locked
+coverage:
+	@mkdir -p $(BUILD_DIR)
+	@flock -x $(BUILD_DIR)/coverage.lock \
+	  $(MAKE) --no-print-directory ZCL_COVERAGE_LOCKED=1 coverage-locked
+
+coverage-locked:
+	@test "$(ZCL_COVERAGE_LOCKED)" = 1 || { echo "coverage-locked: use make coverage" >&2; exit 2; }
+	@$(MAKE) --no-print-directory ZCL_COVERAGE_LOCKED=1 coverage-clean
+	@$(MAKE) --no-print-directory "$(COV_TEST_CANDIDATE)"
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(COV_SESSION)" "$(COV_LEASE)" \
+	  "$(COV_BUILD_ROOT)" "$(BIN_DIR)/coverage" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(COV_COMPILE_EPOCH)" "$(COV_PROFILE)" \
+	  "$(COV_EPOCH_COMPILE_FLAGS)" "$(COV_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID" >/dev/null
 	@echo "== Resetting gcov counters =="
 	@find $(COV_BUILD_DIR) -name '*.gcda' -delete 2>/dev/null || true
 	@echo "== Running test_zcl_cov =="
 	@# Match the `test` target — some json/recursion tests need
 	@# unlimited stack.  If the binary fails or crashes we still render
 	@# partial coverage data first, then propagate the failure below.
-	@set +e; ulimit -s unlimited && $(COV_TEST_BIN); rc=$$?; \
+	@set +e; ulimit -s unlimited && $(COV_TEST_ACTIVE); rc=$$?; \
 		echo $$rc > $(COV_BUILD_DIR)/test_zcl_cov.exit; \
 		if [ "$$rc" != "0" ]; then \
 			echo "coverage: test_zcl_cov exited $$rc; rendering partial report before failing"; \
@@ -2844,8 +3357,14 @@ coverage: coverage-clean test_zcl_cov
 	fi
 
 coverage-clean:
-	@rm -rf $(COV_BUILD_DIR) $(COV_INFO) $(COV_HTML) $(COV_TEST_BIN)
-	@find . \( -name '*.gcda' -o -name '*.gcno' \) -delete 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)
+	@if [ "$(ZCL_COVERAGE_LOCKED)" = 1 ]; then \
+		rm -rf $(COV_BUILD_ROOT) $(BIN_DIR)/coverage $(COV_INFO) $(COV_HTML) $(COV_TEST_BIN); \
+	else \
+		flock -x $(BUILD_DIR)/coverage.lock sh -c \
+		  'rm -rf "$$1" "$$2" "$$3" "$$4" "$$5"' sh \
+		  "$(COV_BUILD_ROOT)" "$(BIN_DIR)/coverage" "$(COV_INFO)" "$(COV_HTML)" "$(COV_TEST_BIN)"; \
+	fi
 	@echo "Coverage artifacts removed."
 
 # ── docs-mcp ───────────────────────────────────────────────────
@@ -2935,6 +3454,11 @@ check-raw-sqlite:
 check-vcs-no-git:
 	@echo "══ LINT: lib/vcs is git-free + spawns no processes ══"
 	@tools/scripts/check_vcs_no_git.sh
+
+check-vcs-no-sha1:
+	@echo "══ LINT: ZVCS/producer-source authority does not inherit Git SHA-1 ══"
+	@tools/scripts/check_vcs_no_sha1.sh
+	@tools/dev/source-identity-selftest.sh
 
 # Release purity for the Tier-1 hot-swap loader (HARD). Two invariants:
 #   (1) no dlopen/dlsym/dlclose CALL in any .c outside lib/hotswap/ + vendor/;
@@ -3644,6 +4168,10 @@ check-honest-witness:
 # invocation and the `lint:` umbrella uniformly.
 check-%: export ZCL_LINT_PRODUCTION_SCAN := 1
 
+check-build-epoch-integrity:
+	@echo "══ LINT: mutation-keyed compile epochs + atomic publication ══"
+	@tools/dev/build-epoch-selftest.sh
+
 # wf/dx-scanner-immunity — runs FIRST: names any untracked stray .c/.h file
 # under a scanned source dir as "untracked stray file (not a code
 # violation)" before any OTHER gate has a chance to report its content as
@@ -3662,7 +4190,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-build-epoch-integrity check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
@@ -3720,7 +4248,7 @@ ci-symbol-floor: zclassic23
 ci-reproducible:
 	@bash tools/scripts/check_reproducible_build.sh
 
-ci: vendor-ready lint bench-regress zclassic23 test_parallel
+ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@echo "══ CI: portability symbol-floor (C1) ══"
 	$(MAKE) ci-symbol-floor
 	@echo "══ CI: test (per-process isolated runner) ══"
@@ -3730,9 +4258,9 @@ ci: vendor-ready lint bench-regress zclassic23 test_parallel
 	@# flake passes on retry and is logged LOUDLY here so it stays visible and
 	@# tracked, never silently swallowed. Deep root-cause of the flake is a
 	@# separate follow-up; this keeps the gate trustworthy + armable now.
-	@ulimit -s unlimited; if $(TEST_PARALLEL_BIN); then :; else \
+	@ulimit -s unlimited; if $(TEST_PARALLEL_REL_ACTIVE); then :; else \
 		echo "[ci] !! test_parallel FAILED first pass — retrying ONCE (load-contention flake-tolerance; a real regression fails BOTH) !!"; \
-		ulimit -s unlimited; $(TEST_PARALLEL_BIN); \
+		ulimit -s unlimited; $(TEST_PARALLEL_REL_ACTIVE); \
 	fi
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"

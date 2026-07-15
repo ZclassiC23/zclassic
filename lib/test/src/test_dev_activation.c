@@ -28,6 +28,9 @@
 #define PATH_MAX 4096
 #endif
 
+#define TEST_SOURCE_ID \
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 /* ── fake ops ────────────────────────────────────────────────────────── */
 
 struct fake_ctx {
@@ -37,9 +40,15 @@ struct fake_ctx {
     char fail_probe_gen[80];  /* activation probe fails for this generation */
     int preflight_result;     /* 0 => preflight passes */
     int source_cas_result;    /* 0 => source epoch still matches */
+    bool block_marker_on_stop;
+    bool block_current_flip_on_stop;
+    bool protect_identity_on_failed_start;
+    char identity_path[PATH_MAX];
     bool service_up;
     int stop_calls, start_calls, reload_calls, probe_calls, preflight_calls;
     int source_cas_calls;
+    char preflight_source_id[65];
+    char probe_source_id[65];
 };
 
 /* Read the generation id the `current` link points at into out. */
@@ -61,6 +70,14 @@ static int fk_stop(void *ctx)
     struct fake_ctx *c = ctx;
     c->stop_calls++;
     c->service_up = false;
+    if (c->block_marker_on_stop)
+        (void)chmod(c->gen_root, 0555);
+    if (c->block_current_flip_on_stop) {
+        char blocker[PATH_MAX];
+        snprintf(blocker, sizeof(blocker), "%s/.current.%ld", c->gen_root,
+                 (long)getpid());
+        (void)mkdir(blocker, 0700);
+    }
     return 0;
 }
 
@@ -70,8 +87,11 @@ static int fk_start(void *ctx)
     c->start_calls++;
     char gen[80];
     if (c->fail_start_gen[0] && fake_current_gen(c, gen, sizeof(gen)) &&
-        strcmp(gen, c->fail_start_gen) == 0)
+        strcmp(gen, c->fail_start_gen) == 0) {
+        if (c->protect_identity_on_failed_start && c->identity_path[0])
+            (void)chmod(c->identity_path, 0444);
         return 1;
+    }
     c->service_up = true;
     return 0;
 }
@@ -113,19 +133,23 @@ static int fk_running_exe(void *ctx, long pid, char *out, size_t out_sz)
     return 0;
 }
 
-static int fk_preflight(void *ctx, const char *cand_bin, const char *commit)
+static int fk_preflight(void *ctx, const char *cand_bin,
+                        const char *source_id_sha256)
 {
     struct fake_ctx *c = ctx;
     (void)cand_bin;
-    (void)commit;
+    snprintf(c->preflight_source_id, sizeof(c->preflight_source_id), "%s",
+             source_id_sha256 ? source_id_sha256 : "");
     c->preflight_calls++;
     return c->preflight_result;
 }
 
-static int fk_probe(void *ctx, const char *gen_id, const char *commit)
+static int fk_probe(void *ctx, const char *gen_id,
+                    const char *source_id_sha256)
 {
     struct fake_ctx *c = ctx;
-    (void)commit;
+    snprintf(c->probe_source_id, sizeof(c->probe_source_id), "%s",
+             source_id_sha256 ? source_id_sha256 : "");
     c->probe_calls++;
     if (c->fail_probe_gen[0] && strcmp(gen_id, c->fail_probe_gen) == 0)
         return 1;
@@ -206,6 +230,21 @@ static bool write_fake_binary(const char *path, char fill)
     return chmod(path, 0755) == 0;
 }
 
+struct replace_artifact_hook {
+    const char *path;
+    bool ran;
+    bool replaced;
+};
+
+static void replace_artifact_after_hash(void *opaque)
+{
+    struct replace_artifact_hook *hook = opaque;
+    if (!hook)
+        return;
+    hook->ran = true;
+    hook->replaced = write_fake_binary(hook->path, 'B');
+}
+
 static void base_request(struct dev_activation_request *req, struct sandbox *sb,
                          const char *artifact)
 {
@@ -213,6 +252,7 @@ static void base_request(struct dev_activation_request *req, struct sandbox *sb,
     req->repo_root = sb->home;
     req->artifact_path = artifact;
     req->build_commit = "testcommit";
+    req->source_identity = TEST_SOURCE_ID;
     req->build_type = "fast";
     req->gen_root = sb->gen_root;
     req->datadir = sb->datadir;
@@ -341,6 +381,8 @@ static int test_happy_activation(void)
         snprintf(expect_gen, sizeof(expect_gen), "gen-%s", r.candidate_sha256);
         ASSERT_STR_EQ(r.candidate_generation, expect_gen);
         ASSERT_STR_EQ(r.running_generation, expect_gen);
+        ASSERT_STR_EQ(c.preflight_source_id, TEST_SOURCE_ID);
+        ASSERT_STR_EQ(c.probe_source_id, TEST_SOURCE_ID);
 
         /* current symlink resolves to the candidate generation */
         char cur[PATH_MAX], link[PATH_MAX];
@@ -372,8 +414,79 @@ static int test_happy_activation(void)
                       expect_gen);
         ASSERT_STR_EQ(json_get_str(json_get(&v, "activation_status")), "active");
         ASSERT_STR_EQ(json_get_str(json_get(&v, "build_commit")), "testcommit");
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "source_id_sha256")),
+                      TEST_SOURCE_ID);
         ASSERT(json_get_bool(json_get(&v, "rollback_available")));
         json_free(&v);
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stage_rejects_hash_copy_race(void)
+{
+    int failures = 0;
+    TEST("dev_activation: staging rejects artifact replacement after hash") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "stage_hash_copy_race");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'A'));
+
+        struct replace_artifact_hook hook = { .path = artifact };
+        dev_activation_stage_test_set_after_hash_hook(
+            replace_artifact_after_hash, &hook);
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        req.mode = DEV_ACTIVATION_MODE_STAGE_ONLY;
+        struct dev_activation_result r;
+
+        int rc = dev_activation_run(&req, &ops, &r);
+        dev_activation_stage_test_set_after_hash_hook(NULL, NULL);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_STAGE);
+        ASSERT(hook.ran && hook.replaced);
+        ASSERT_EQ(c.stop_calls, 0);
+        char generation_dir[PATH_MAX];
+        snprintf(generation_dir, sizeof(generation_dir), "%s/%s",
+                 sb.gen_root, r.candidate_generation);
+        ASSERT(!file_exists(generation_dir));
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_source_id_required(void)
+{
+    int failures = 0;
+    TEST("dev_activation: malformed source ID refuses before preflight/service") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "source_id_required");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'S'));
+
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        req.source_identity = "DEADBEEF";
+        struct dev_activation_result r;
+
+        ASSERT_EQ(dev_activation_run(&req, &ops, &r), DEV_ACTIVATION_E_STAGE);
+        ASSERT_STR_EQ(r.verify_status, "source_identity_invalid");
+        ASSERT_EQ(c.preflight_calls, 0);
+        ASSERT_EQ(c.stop_calls, 0);
+        ASSERT_EQ(c.start_calls, 0);
 
         sandbox_exit(&sb);
         PASS();
@@ -628,6 +741,137 @@ static int test_start_fail_rolls_back(void)
         snprintf(reject, sizeof(reject), "%s/rejected/%s.json", sb.gen_root,
                  r.candidate_generation);
         ASSERT(file_exists(reject));
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rollback_identity_failure_restarts_previous(void)
+{
+    int failures = 0;
+    TEST("dev_activation: rollback identity failure still restarts previous") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "rollback_identity_fail");
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA,
+                                  sizeof(genA)), DEV_ACTIVATION_OK);
+
+        char artB[PATH_MAX];
+        snprintf(artB, sizeof(artB), "%s/cand_B", sb.home);
+        ASSERT(write_fake_binary(artB, 'B'));
+        struct fake_ctx c = { .protect_identity_on_failed_start = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        snprintf(c.identity_path, sizeof(c.identity_path),
+                 "%s/.config/systemd/user/zcl23-dev.service.d/"
+                 "90-build-identity.conf", sb.home);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artB);
+        struct dev_activation_result r;
+
+        {
+            extern bool dev_activation_sha256_file(const char *, char[65]);
+            char hex[65];
+            ASSERT(dev_activation_sha256_file(artB, hex));
+            snprintf(c.fail_start_gen, sizeof(c.fail_start_gen), "gen-%s", hex);
+        }
+
+        int rc = dev_activation_run(&req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_ACTIVATE);
+        ASSERT_STR_EQ(r.rollback_status, "identity_failed");
+        ASSERT_EQ(c.start_calls, 2); /* failed B, best-effort restart of A */
+        ASSERT(c.service_up);
+        ASSERT(!in_progress_marker_exists(&sb));
+
+        char cur[PATH_MAX], link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        ASSERT(read_link_str(link, cur, sizeof(cur)));
+        ASSERT_STR_EQ(cur, genA);
+
+        (void)chmod(c.identity_path, 0644);
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pre_flip_failures_restart_previous(void)
+{
+    int failures = 0;
+    TEST("dev_activation: durable-marker failure restarts untouched service") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "markerfail");
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA,
+                                  sizeof(genA)), DEV_ACTIVATION_OK);
+        char artB[PATH_MAX];
+        snprintf(artB, sizeof(artB), "%s/cand_B", sb.home);
+        ASSERT(write_fake_binary(artB, 'B'));
+
+        struct fake_ctx c = { .block_marker_on_stop = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artB);
+        struct dev_activation_result r;
+        int rc = dev_activation_run(&req, &ops, &r);
+        (void)chmod(sb.gen_root, 0755);
+
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_ACTIVATE);
+        ASSERT_EQ(c.stop_calls, 1);
+        ASSERT_EQ(c.start_calls, 1);
+        ASSERT(c.service_up);
+        ASSERT(!in_progress_marker_exists(&sb));
+        char current[PATH_MAX], link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        ASSERT(read_link_str(link, current, sizeof(current)));
+        ASSERT_STR_EQ(current, genA);
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_current_link_flip_failure_restarts_previous(void)
+{
+    int failures = 0;
+    TEST("dev_activation: current-link flip failure restarts previous") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "flipfail");
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA,
+                                  sizeof(genA)), DEV_ACTIVATION_OK);
+        char artB[PATH_MAX];
+        snprintf(artB, sizeof(artB), "%s/cand_B", sb.home);
+        ASSERT(write_fake_binary(artB, 'B'));
+
+        struct fake_ctx c = { .block_current_flip_on_stop = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artB);
+        struct dev_activation_result r;
+        int rc = dev_activation_run(&req, &ops, &r);
+
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_ACTIVATE);
+        ASSERT_EQ(c.stop_calls, 1);
+        ASSERT_EQ(c.start_calls, 1);
+        ASSERT(c.service_up);
+        ASSERT(!in_progress_marker_exists(&sb));
+        char current[PATH_MAX], link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        ASSERT(read_link_str(link, current, sizeof(current)));
+        ASSERT_STR_EQ(current, genA);
+        char blocker[PATH_MAX];
+        snprintf(blocker, sizeof(blocker), "%s/.current.%ld", sb.gen_root,
+                 (long)getpid());
+        (void)rmdir(blocker);
 
         sandbox_exit(&sb);
         PASS();
@@ -953,11 +1197,16 @@ int test_dev_activation(void)
 {
     int failures = 0;
     failures += test_happy_activation();
+    failures += test_stage_rejects_hash_copy_race();
+    failures += test_source_id_required();
     failures += test_source_epoch_cas_refuses_before_stop();
     failures += test_confinement_refusals();
     failures += test_lock_busy();
     failures += test_preflight_fail_untouched();
     failures += test_start_fail_rolls_back();
+    failures += test_rollback_identity_failure_restarts_previous();
+    failures += test_pre_flip_failures_restart_previous();
+    failures += test_current_link_flip_failure_restarts_previous();
     failures += test_verify_fail_quarantines();
     failures += test_mid_transaction_abort();
     failures += test_activate_generation_by_sha();

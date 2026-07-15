@@ -114,7 +114,7 @@ static int dev_op_running_exe(void *ctx, long pid, char *out, size_t out_sz)
 }
 
 static int dev_op_preflight(void *ctx, const char *cand_bin,
-                            const char *build_commit)
+                            const char *source_id_sha256)
 {
     const struct dev_activation_request *req = ctx;
     struct zcl_devloop_process_result res = {0};
@@ -123,11 +123,13 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
         return -1;
     if (!strstr(res.output, "zcl.agent_build.v1"))
         return -1;
-    char observed[128];
-    if (!dev_activation_json_first_string(res.output, "build_commit", observed,
-                               sizeof(observed)))
+    char observed[65];
+    if (!dev_activation_json_first_string(res.output, "source_id_sha256",
+                                          observed, sizeof(observed)) ||
+        !dev_activation_source_id_valid(observed))
         return -1;
-    if (build_commit && build_commit[0] && strcmp(observed, build_commit) != 0)
+    if (!source_id_sha256 ||
+        strcmp(observed, source_id_sha256) != 0)
         return -1;
     /* Native registry self-test replaces the old `mcpcall zcl_self_test`
      * preflight seam: a deterministic, node-free well-formedness sweep of the
@@ -149,9 +151,7 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
 static int dev_op_source_epoch_cas(void *ctx)
 {
     const struct dev_activation_request *req = ctx;
-    if (!req->source_identity ||
-        strlen(req->source_identity) != 64 ||
-        strspn(req->source_identity, "0123456789abcdefABCDEF") != 64)
+    if (!dev_activation_source_id_valid(req->source_identity))
         return -1;
     char tool[PATH_MAX];
     int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
@@ -164,7 +164,7 @@ static int dev_op_source_epoch_cas(void *ctx)
 }
 
 static int dev_op_activation_probe(void *ctx, const char *gen_id,
-                                   const char *expected_commit)
+                                   const char *expected_source_id_sha256)
 {
     const struct dev_activation_request *req = ctx;
     char cli[PATH_MAX];
@@ -182,13 +182,13 @@ static int dev_op_activation_probe(void *ctx, const char *gen_id,
         return -1;
     if (!strstr(res.output, "zcl.public_status.v1"))
         return -1;
-    char observed[128];
-    if (expected_commit && expected_commit[0]) {
-        if (!dev_activation_json_first_string(res.output, "build_commit", observed,
-                                   sizeof(observed)) ||
-            strcmp(observed, expected_commit) != 0)
-            return -1;
-    }
+    char observed[65];
+    if (!dev_activation_source_id_valid(expected_source_id_sha256) ||
+        !dev_activation_json_first_string(res.output, "source_id_sha256",
+                                          observed, sizeof(observed)) ||
+        !dev_activation_source_id_valid(observed) ||
+        strcmp(observed, expected_source_id_sha256) != 0)
+        return -1;
     (void)gen_id;
     return 0;
 }

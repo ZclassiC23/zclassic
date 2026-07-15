@@ -51,7 +51,9 @@
 #                     --full so the snapshot-loader path is reachable, replicates
 #                     the service Environment=/EnvironmentFile vars (net-identity
 #                     stripped, live-datadir paths rewritten onto the COPY,
-#                     ZCL_AGENT_EXPECT_BUILD_COMMIT set to the candidate), and
+#                     ZCL_AGENT_EXPECT_SOURCE_ID set to the candidate binary's
+#                     exact baked source SHA-256; build_commit is copied only
+#                     as optional GitHub/display trace metadata), and
 #                     makes ~/.zcash-params and ~/.zclassic (zclassicd chainstate
 #                     for the tier-1b Sapling-frontier borrow) reachable in the
 #                     isolated HOME. The generic default mode is NOT sufficient
@@ -140,6 +142,14 @@ bool_json() {
     if [ "$1" = "1" ]; then printf 'true'; else printf 'false'; fi
 }
 
+is_sha256_hex() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # atomic_write PATH — reads stdin, writes PATH.tmp then renames onto PATH
 # so a concurrent poller never observes a partial file.
 atomic_write() {
@@ -201,6 +211,8 @@ LIKE_LIVE=0
 LIKE_LIVE_FLAGS=""
 LIKE_LIVE_ENV=""
 LIKE_LIVE_SNAP=""
+LIKE_LIVE_SOURCE_ID=""
+LIKE_LIVE_BUILD_COMMIT=""
 INSTALL_BUNDLE=""
 
 while [ $# -gt 0 ]; do
@@ -341,7 +353,8 @@ process_env_kv() {
     [ -n "$_key" ] || return 0
     case "$_key" in
         ZCL_EXTERNALIP_FLAG|ZCL_ADDNODE_FLAGS) return 0 ;;           # net identity
-        ZCL_AGENT_EXPECT_BUILD_COMMIT|ZCL_AGENT_EXPECT_BUILD_SOURCE) return 0 ;;  # set to candidate below
+        ZCL_AGENT_EXPECT_SOURCE_ID|ZCL_AGENT_EXPECT_BUILD_COMMIT|ZCL_AGENT_EXPECT_BUILD_SOURCE)
+            return 0 ;;                                              # set to candidate below
         HOME|ZCL_MIRROR_SYNC) return 0 ;;                            # owned by the harness
     esac
     case "$_val" in *[!-A-Za-z0-9_/.:=]*) return 0 ;; esac           # single safe token only
@@ -391,8 +404,25 @@ if [ "$LIKE_LIVE" = "1" ]; then
             process_env_kv "$_line"
         done < "$_envfile"
     fi
-    _cand="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)"
-    LIKE_LIVE_ENV="$LIKE_LIVE_ENV ZCL_AGENT_EXPECT_BUILD_COMMIT=$_cand ZCL_AGENT_EXPECT_BUILD_SOURCE=like-live"
+    if command -v timeout >/dev/null 2>&1; then
+        _identity="$(timeout 10 "$NODE_BIN" agentbuild 2>/dev/null || true)"
+    else
+        _identity="$("$NODE_BIN" agentbuild 2>/dev/null || true)"
+    fi
+    LIKE_LIVE_SOURCE_ID="$(printf '%s\n' "$_identity" |
+        sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' |
+        head -1)"
+    is_sha256_hex "$LIKE_LIVE_SOURCE_ID" || {
+        echo "repro_on_copy: --like-live: candidate agentbuild omitted a valid source_id_sha256" >&2
+        exit 1
+    }
+    LIKE_LIVE_BUILD_COMMIT="$(printf '%s\n' "$_identity" |
+        sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+        head -1)"
+    case "$LIKE_LIVE_BUILD_COMMIT" in
+        ''|*[!A-Za-z0-9._-]*) LIKE_LIVE_BUILD_COMMIT="unknown" ;;
+    esac
+    LIKE_LIVE_ENV="$LIKE_LIVE_ENV ZCL_AGENT_EXPECT_SOURCE_ID=$LIKE_LIVE_SOURCE_ID ZCL_AGENT_EXPECT_BUILD_COMMIT=$LIKE_LIVE_BUILD_COMMIT ZCL_AGENT_EXPECT_BUILD_SOURCE=like-live"
     LIKE_LIVE_ENV="${LIKE_LIVE_ENV# }"
     # Rewrite the snapshot loader onto the COPY, then assemble PASS: live flags
     # first, then any explicit `-- <args>` the caller added last (override wins).
@@ -472,7 +502,10 @@ fi
     echo "mode:        $([ "$LIGHT" = 1 ] && echo light || echo full)"
     echo "like_live:   $([ "$LIKE_LIVE" = 1 ] && echo yes || echo no)"
     [ "$LIKE_LIVE" = 1 ] && echo "like_live_env: $LIKE_LIVE_ENV"
+    echo "candidate_source_id_sha256: ${LIKE_LIVE_SOURCE_ID:-none}"
+    echo "candidate_build_commit_display: ${LIKE_LIVE_BUILD_COMMIT:-none}"
     echo "git_head:    $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "git_head_semantics: display_only_github_trace_metadata"
     echo "node_args:   $PASS"
     echo "rpcport:     $RPCPORT"
     echo "p2p_port:    $P2PPORT"

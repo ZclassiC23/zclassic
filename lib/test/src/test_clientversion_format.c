@@ -45,9 +45,28 @@ static int cvf_make_version(int major, int minor, int rev, int build)
     return 1000000 * major + 10000 * minor + 100 * rev + build;
 }
 
+static bool cvf_source_id_shape_valid(const char *source_id)
+{
+    if (!source_id)
+        return false;
+    if (strnlen(source_id, 65) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        char c = source_id[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
 int test_clientversion_format(void)
 {
     int failures = 0;
+
+    CVF_CHECK("canonical build bakes exact lowercase SHA-256 source authority",
+              cvf_source_id_shape_valid(zcl_build_source_id_sha256()));
+    CVF_CHECK("unstamped standalone fallback is not canonical authority",
+              !cvf_source_id_shape_valid("unknown"));
 
     /* ===================================================================
      * Part 1 -- beta branch (build < 25). Offset is build+1, so the

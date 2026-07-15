@@ -274,7 +274,7 @@ sole agent interface going forward (zero-MCP track); the `make agent-mcp-call*`
 family and `zclassic23 mcpcall <tool>` are the legacy typed-MCP path and are
 being removed in zero-MCP W3.
 Use `make agent-plan` before a build when you need the exact no-build fast-lane
-decision: changed files, selected focused tests, changed-compile plan, cache
+decision: changed-path/test classification hints, source-wide compile plan, cache
 hit/miss, dev-lane stage/deploy commands, and MCP shortcuts.
 `build/bin/zcl-rpc getblockcount` and an explicit
 `build/bin/zclassic-cli -rpcport=18232 getblockcount` are legacy/debug checks,
@@ -288,8 +288,9 @@ tools).
 
 The transport can vary, but the payload should not: AI-facing status surfaces
 return stable JSON objects with a `schema` or an explicit command contract, and
-they must identify the running node binary with `build_commit` whenever deploy
-drift would change the interpretation of state. `getmirrorstatus` follows this
+they must identify the running node source with `source_id_sha256` whenever
+deploy drift would change the interpretation of state. `build_commit` remains
+additive display-only GitHub trace metadata. `getmirrorstatus` follows this
 rule so an operator can distinguish a stale runtime binary from current source
 or a freshly deployed dev lane.
 
@@ -489,11 +490,13 @@ MCP, and native CLI help. Alias rows set `registry_alias=true` and name their
 schema/tool strings in `agent_interface_controller.c`.
 
 `agentinterface`, `agentops`, `agentlanes`, and full-mode `agentliveness` also include
-`runtime_availability` (`zcl.agent_runtime_availability.v1`). Native static
+`runtime_availability` (`zcl.agent_runtime_availability.v2`). Native static
 first-call commands are
 produced by the binary you just ran, but that producer may be newer than the
 target lane still serving RPC. The availability block separates those facts:
-`producer_build_commit` names the local producer, `availability_scope` says
+`producer_source_id_sha256` names the local producer for equality decisions,
+`producer_build_commit` is display-only Git trace metadata, and
+`availability_scope` says
 whether the answer is producer-only or a target RPC probe, and each
 `methods[]` entry reports `target_runtime_support` plus the
 `probe_params_json` used by the bounded availability probe. If a target returns
@@ -501,11 +504,16 @@ whether the answer is producer-only or a target RPC probe, and each
 smoke the dev lane first or use methods marked `supported`. If the probe says
 `no_cookie` or `connect_failed`, treat target support as unknown instead of
 inferring it from source files or local CLI output.
+`producer_target_source_relation` compares the two source identities.
+`producer_target_build_relation` remains `unknown` until both sides expose
+exact artifact and build-epoch identities; equal source bytes alone do not
+prove equal compiler inputs or linked executable bytes.
 
 When a native first-call method from the C-owned registry is sent to a target
 lane that returns JSON-RPC `-32601`, the CLI prints
 `zcl.cli_rpc_diagnostic.v1` instead of a bare "Method not found" line. That
-diagnostic includes `producer_build_commit`, `target_datadir`,
+diagnostic includes `producer_source_id_sha256`, `producer_build_commit`,
+`target_datadir`,
 `target_rpcport`, `probable_cause`, and the same `runtime_availability` block,
 so agents can distinguish a stale runtime lane from a missing source route.
 This is expected during dev/canonical skew; it is not evidence that the new
@@ -582,10 +590,27 @@ fields remain present, while lower-priority detail such as `resources` and
 (`zclassic23 healthcheck`) when the omitted detail matters.
 `zcl_operator_summary` remains a longer MCP compatibility aggregate with raw
 drill-down payloads, not the canonical bounded status contract.
-`runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
-commit against the deploy-installed expected commit
-(`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` or by historical
-pre-containment `make deploy-dev` runs).
+The native `zcl.operator_snapshot.v2` payload binds both its root and embedded
+`zcl.operator_summary.v2`
+to the same exact lowercase 64-hex `source_id_sha256`. The MCP projection
+fails closed when either identity is absent, malformed, or unequal. Its
+`build_commit` fields are optional display-only GitHub trace metadata; they do
+not participate in snapshot trust or acceptance.
+Legacy native `zcl.operator_snapshot.v1` responses are classified explicitly
+as untrusted and rejected; they are never silently reinterpreted as v2. A
+target with no `operatorsnapshot` method may still use the marked, non-atomic,
+never-healthy multi-RPC compatibility projection.
+The first-call packet also includes `runtime_build` (`zcl.runtime_build.v2`),
+which exact-compares the running
+binary's SHA-256 source identity against deploy-installed intent
+(`ZCL_AGENT_EXPECT_SOURCE_ID`). `running_build_commit` and
+`expected_build_commit` remain display-only GitHub trace metadata and never
+participate in the freshness decision. Canonical post-restart verification
+also compares `ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256` with the SHA-256 of the
+running service's `/proc/<MainPID>/exe`, closing the same-source/different-
+artifact gap. Because Git state is not embedded, `dirty_build_known=false` and
+`dirty_build_state="unknown"`; the API never manufactures a clean-tree claim
+from display-only Git metadata.
 It also includes `operator_latch` (`zcl.operator_latch.v1`), `conditions`
 (`zcl.condition_engine_summary.v1`), and `mirror_contract`
 (`zcl.mirror_status.v1`). `operator_latch.active` names whether an
@@ -662,7 +687,7 @@ make milestone/health disagree about a node that is effectively at tip.
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical
-restart. If no expected commit is installed, `runtime_build.freshness` is
+restart. If no expected source ID is installed, `runtime_build.freshness` is
 `unknown`, not a proof that the binary is current. The same packet includes
 reducer frontier telemetry, download queue/in-flight/throughput counters,
 recent error state, and precise download age fields:
@@ -949,8 +974,9 @@ import and snapshot-loader details in the plan are proposed steps only; the
 planner is not activation authority.
 
 When lane RPC is reachable, `make lane-health --json` also consumes the native
-`agent` contract and exposes `agent_rpc_state`, `agent_build_commit`,
-`agent_contract_trusted`, `agent_status`, `agent_operator_needed`,
+`agent` contract and exposes `agent_rpc_state`, `agent_source_id_sha256`,
+`agent_build_commit`, `agent_contract_trusted`,
+`agent_contract_trust_reason`, `agent_status`, `agent_operator_needed`,
 `agent_primary_blocker`, `agent_next`, `agent_validation_pack_ok`, and
 `agent_validation_pack_detail`. Agent calls use
 `ZCL_LANE_AGENT_TIMEOUT` (default 10 seconds), separate from the cheap generic
@@ -958,14 +984,16 @@ RPC timeout. `agent_rpc_state` is `ok`, `timeout`, `error`, `empty`, or
 `not_called`; a timeout becomes `status=warn` with `reason=agent_timeout`
 unless a stronger condition-engine operator page is already active. A current
 native `agent` contract
-(`agent_contract_trusted=true`, which requires `build_commit`) with `blocked`
+(`agent_contract_trusted=true`, which requires a valid lowercase 64-hex
+`source_id_sha256`) with `blocked`
 or `operator_needed=true` makes the lane `status=fail` and clears role
 readiness, even if basic peer/height/listener checks still look fine. Older
 compact agent responses are still printed but do not override lane status by
 themselves; lane health falls back to `condition_engine` operator-needed pages
 for those runtimes. This keeps the shell lane summary subordinate to the
 C-native API without letting stale wrapper-era responses hide or invent a
-validation-pack hold.
+validation-pack hold. `build_commit` remains display-only GitHub trace
+metadata and never grants trust or freshness.
 
 Runtime generation publication is Phase-0 contained. Native
 `dev.change.apply`, `dev.hotswap.apply`, auto/apply watcher modes, Make
@@ -1073,8 +1101,8 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/bin/zclassic23-dev`. `ZCL_AGENT_LOOP_DEPLOY=stage|dev` cannot bypass
   containment; the downstream stage/deploy entry point refuses.
 - `make agent-plan` is the read-only fast-lane decision packet
-  (`zcl.agent_fast_plan.v1`). It reports changed files, selected focused tests,
-  unmapped code changes, the changed-compile plan, green-input cache hit/miss,
+  (`zcl.agent_fast_plan.v1`). It reports changed-path/test classification hints,
+  unmapped code changes, the source-wide compile plan, green-input cache hit/miss,
   dev-lane stage/deploy commands, and the MCP one-shot shortcuts.
 - `make immutable-history-canaries` runs the fast real-chain consensus KATs:
   the h=478544 125,811-byte canonical transaction fixture
@@ -1082,22 +1110,24 @@ This is a C23 project, so the edit loop should compile only what changed.
   bounded consensus predicate changes before paying the heavier
   `make replay-canary-anchor` / `make replay-canary-genesis` gates.
 - `make build-only` compiles all node objects without linking. It uses
-  `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
-  unchanged translation units keep their existing `.o` files and changed
-  headers recompile their dependents.
-- `make fast-changed-compile` is the cheapest guarded edit check. It compiles
-  changed node `.c` files directly into `build/dev-obj/`, and after the dev
-  object graph is warmed it compiles direct depfile dependents for narrow
-  `.h`/`.def` edits. It falls back to `make fast-compile` for templates,
-  Makefile changes, removed files, unwarmed depfiles, or broad edits.
+  `build/obj/epochs/<compile-epoch>/` plus complete depfiles (`-MD -MP` and
+  included `.d` files). A source mutation selects a fresh object tree;
+  `ccache`/`sccache` recovers unchanged translation-unit work.
+- `make fast-changed-compile` is a compatibility name for the source-wide dev
+  compile proof. Changed paths are classification hints only; every current dev
+  source resolves through `make fast-compile` in the exact compile epoch.
 - `make fast-compile` is the cheapest no-link edit-loop compile check. It uses
-  the non-LTO dev object tree (`build/dev-obj`) and skips the final executable
-  link, so it is the right first command for "did this C change compile?".
+  the exact non-LTO dev object tree
+  (`build/dev-obj/epochs/<compile-epoch>/`) and skips the final executable link,
+  so it is the right first command for "does the current C source compile?".
 - `make fast-rebuild` builds the local non-LTO node binary and is the preferred
   edit-loop rebuild target. It is an alias for `make dev-bin`, with a clearer
   name for agents and operators.
 - `make dev-bin` builds `build/bin/zclassic23-dev` from cached objects under
-  `build/dev-obj`. It links without LTO, keeps symbols, defaults most code to
+  `build/dev-obj/epochs/<compile-epoch>/`. It first links an exact immutable
+  candidate under `build/bin/dev/epochs/<compile-epoch>/`, then atomically
+  refreshes the stable alias after final source/compiler/session verification.
+  It links without LTO, keeps symbols, defaults most code to
   `ZCL_DEV_OPT=-Og`, and keeps hot consensus/crypto/script/validation buckets
   at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` auto-selects `mold` or `ld.lld`
   when present and can be set empty to force the platform linker. This binary
@@ -1172,14 +1202,15 @@ This is a C23 project, so the edit loop should compile only what changed.
   `ZCL_AGENT_MCP_BUILD=0`,
   `ZCL_AGENT_BIN=...`, or `ZCL_AGENT_MCP_ARGS='-datadir=... -rpcport=...'`
   for custom no-build terminal probes.
-- `make t-fast ONLY=<group>` uses `build/test-obj` and
-  `build/bin/test_parallel_fast`, a cached non-LTO test harness for hot-path
-  focused tests.
+- `make t-fast ONLY=<group>` uses
+  `build/test-obj/epochs/<compile-epoch>/` and the exact candidate under
+  `build/bin/test-fast/epochs/<compile-epoch>/`, a cached non-LTO test harness
+  for hot-path focused tests.
 - `make fast-ci` runs `git diff --check`, shell syntax checks, `lint-fast`,
-  the changed compile gate, focused tests inferred from changed files, and a
+  the source-wide compile gate, the exact source-wide fast test candidate, and a
   native linger-service probe when the service is available. Repeated identical
-  green inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated
-  lint/build/focused tests while still refreshing the live probe. The live probe trusts the
+  green inputs hit `.cache/zcl-agent-fast-ci/` and skip the repeated proven
+  source-wide lint/build/test scope while still refreshing the live probe. The live probe trusts the
   native `zcl.public_status.v1` health contract instead of duplicating height
   gap policy in shell, and prints compact status JSON when it fails.
 - Focused test routing is DRY: both native `zclassic23 agentimpact` and
@@ -1189,8 +1220,8 @@ This is a C23 project, so the edit loop should compile only what changed.
 - `make fast-ci` auto-selects `sccache cc`, then `ccache cc`, then `cc`.
   Override with `ZCL_FAST_CC='ccache cc'`. Use `ZCL_FAST_JOBS=N`,
   `ZCL_FAST_COMPILE=dev` to force full `fast-compile`,
-  `ZCL_FAST_COMPILE=strict` to replace the changed compile gate with strict
-  `build-only`, `ZCL_FAST_CHANGED_COMPILE_LIMIT=N`,
+  `ZCL_FAST_COMPILE=strict` to replace the dev source-wide gate with strict
+  `build-only`,
   `ZCL_FAST_CHANGED_FILES_ONLY=1` when an explicit changed-file list is exact,
   `ZCL_FAST_TESTS=group[,group]`,
   `ZCL_FAST_STRICT_TESTS=1`, and `ZCL_FAST_LIVE=0` as needed.
@@ -1230,10 +1261,14 @@ reader for those status files. It reports the resolved state/status directory,
 one entry each for `fuzz`, `coverage`, and `tests`, whether each lane verdict
 file exists, whether it parsed as JSON, and the latest parsed
 `zcl.background_quality_lane.v1` payload when present. Each lane also carries
-`expected_commit`, `latest_commit`, `commit_matches_expected`, and
-`commit_freshness` (`current`, `stale`, `unknown`, or `no_verdict`). Treat
+`expected_source_id_sha256`, `latest_source_id_sha256`,
+`source_id_matches_expected`, and `source_id_freshness` (`current`, `stale`,
+`unknown`, or `no_verdict`). Legacy commit-named fields remain compatibility
+aliases whose values are derived from the source-ID decision; the commit
+strings themselves are display-only trace metadata. Treat
 `background_quality_stale` as proof debt: a passed fuzz/test/coverage verdict
-from an older commit is useful history, not evidence for the running build.
+from different source bytes is useful history, not evidence for the running
+build.
 Agents should read that field first and use `make quality-linger-status` when
 they need systemd timer logs or human-formatted service output.
 

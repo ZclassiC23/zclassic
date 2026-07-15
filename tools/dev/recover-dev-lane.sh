@@ -106,6 +106,7 @@ SWAPPED=0
 DROPIN_EXISTED=0
 BUILD_ID_DROPIN_EXISTED=0
 CURRENT_GENERATION=""
+CURRENT_SOURCE_ID=""
 TARGET_GENERATION=""
 PREVIOUS_CURRENT=""
 PREVIOUS_LAST_GOOD=""
@@ -123,6 +124,17 @@ json_escape()
     printf '%s' "${1:-}" | sed \
         -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
         -e ':a;N;$!ba;s/\n/\\n/g' -e 's/\r/\\r/g' -e 's/\t/\\t/g'
+}
+
+json_first_string_field()
+{
+    local body="$1" key="$2" token
+    token="$(printf '%s\n' "$body" \
+        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" 2>/dev/null \
+        | head -1 || true)"
+    [ -n "$token" ] || return 0
+    printf '%s\n' "$token" \
+        | sed -n "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"$/\1/p"
 }
 
 die()
@@ -219,6 +231,16 @@ read_generation_link()
     printf '%s\n' "$target"
 }
 
+generation_source_id()
+{
+    local manifest="$GEN_ROOT/$1/manifest.json" source_id
+    [ -r "$manifest" ] || return 0
+    source_id="$(sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$manifest" | head -1)"
+    [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] || return 0
+    printf '%s\n' "$source_id"
+}
+
 generation_name_valid()
 {
     local generation="$1" suffix
@@ -241,6 +263,9 @@ resolve_target_generation()
     generation_name_valid "$TARGET_GENERATION" ||
         die "requested generation is absent or invalid: $TARGET_GENERATION"
     CURRENT_GENERATION="$TARGET_GENERATION"
+    CURRENT_SOURCE_ID="$(generation_source_id "$CURRENT_GENERATION")"
+    [ -n "$CURRENT_SOURCE_ID" ] ||
+        die "target generation has no authoritative source_id_sha256: $CURRENT_GENERATION"
 }
 
 atomic_generation_link()
@@ -534,6 +559,7 @@ write_recovery_record()
             "$SNAPSHOT_SHA256"
         printf '"block_index_sha256":"%s","generation":"%s",' \
             "$INDEX_SHA256" "$(json_escape "$CURRENT_GENERATION")"
+        printf '"source_id_sha256":"%s",' "$CURRENT_SOURCE_ID"
         printf '"block_index_tip_height":%s,' "$INDEX_TIP_HEIGHT"
         printf '"canonical_mutated":false,"soak_mutated":false,'
         printf '"captured_at_utc":"%s"}\n' "$(date -u +%FT%TZ)"
@@ -564,7 +590,8 @@ prepare_fresh_datadir()
 
 verify_recovery_default()
 {
-    local deadline now pid exe height agent expected_bin proof_sha proof_frontier proof_seed
+    local deadline now pid exe height agent observed_source_id expected_bin
+    local proof_sha proof_frontier proof_seed
     expected_bin="$GEN_ROOT/$CURRENT_GENERATION/zclassic23-dev"
     deadline=$(( $(date +%s) + VERIFY_TIMEOUT ))
     while :; do
@@ -582,8 +609,11 @@ verify_recovery_default()
                 -rpcport="$DEV_RPCPORT" getblockcount 2>/dev/null || true)"
             agent="$(timeout 10 "$CLI" -datadir="$DEV_DATADIR" \
                 -rpcport="$DEV_RPCPORT" agent 2>/dev/null || true)"
+            observed_source_id="$(json_first_string_field \
+                "$agent" source_id_sha256)"
             if is_uint "$height" && [ "$height" -ge "$SNAPSHOT_HEIGHT" ] &&
-               printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"'; then
+               printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"' &&
+               [ "$observed_source_id" = "$CURRENT_SOURCE_ID" ]; then
                 return 0
             fi
         fi
@@ -665,12 +695,17 @@ generation_build_commit()
 write_build_identity_dropin()
 {
     local commit tmp
+    [ -n "$CURRENT_SOURCE_ID" ] ||
+        die "target generation has no source_id_sha256 manifest"
     commit="$(generation_build_commit "$CURRENT_GENERATION")"
-    [ -n "$commit" ] || die "target generation has no build_commit manifest"
+    [ -n "$commit" ] || commit="unknown"
     mkdir -p "$(dirname "$BUILD_ID_DROPIN")"
     tmp="${BUILD_ID_DROPIN}.recovery.$$"
     {
         printf '[Service]\n'
+        printf 'Environment="ZCL_AGENT_EXPECT_SOURCE_ID=%s"\n' \
+            "$CURRENT_SOURCE_ID"
+        # Compatibility/display metadata only; freshness is source-ID.
         printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$commit"
         printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=dev-recovery"\n'
     } > "$tmp"
@@ -704,6 +739,7 @@ write_coherent_deploy_state()
         printf '{\n'
         printf '  "schema": "zcl.agent_dev_deploy.v1",\n'
         printf '  "deployed_at_utc": "%s",\n' "$(date -u +%FT%TZ)"
+        printf '  "source_id_sha256": "%s",\n' "$CURRENT_SOURCE_ID"
         printf '  "build_commit": "%s",\n' "$(json_escape "$commit")"
         printf '  "build_type": "recovery-proven-existing-generation",\n'
         printf '  "build_artifact": "%s/%s/zclassic23-dev",\n' "$GEN_ROOT" "$CURRENT_GENERATION"
@@ -764,6 +800,7 @@ emit_plan()
     printf '"generation":"%s","generation_switch":%s,' \
         "$(json_escape "$CURRENT_GENERATION")" \
         "$([ -n "$REQUESTED_GENERATION" ] && printf true || printf false)"
+    printf '"source_id_sha256":"%s",' "$CURRENT_SOURCE_ID"
     printf '"auto_reindex_inherited":false,"legacy_import":false,"canonical_mutated":false,'
     printf '"soak_mutated":false,"apply":%s}\n' \
         "$([ "$MODE" = apply ] && printf true || printf false)"

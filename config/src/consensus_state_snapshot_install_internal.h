@@ -28,6 +28,14 @@ bool consensus_state_candidate_validate_reopened(
     const uint8_t expected_admission_receipt[32],
     struct consensus_state_candidate_result *result);
 
+/* Canonical destination readback shared by candidate validation and live
+ * activation. These recompute the logical bundle digests/frontiers from the
+ * destination tables; row counts alone are never state authority. */
+bool consensus_state_snapshot_destination_anchors_valid(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *expected);
+bool consensus_state_snapshot_destination_nullifiers_valid(
+    sqlite3 *db, const struct consensus_state_bundle_manifest *expected);
+
 bool consensus_state_candidate_fail(
     struct consensus_state_candidate_result *result,
     enum consensus_state_candidate_status status,

@@ -64,6 +64,15 @@ struct sqlite3;
 #define NULLIFIER_POOL_SPROUT  0
 #define NULLIFIER_POOL_SAPLING 1
 
+/* Durable bounded-replay session keys. They are public so an atomic state
+ * generation replacement can cancel a superseded session in the same txn. */
+#define SHIELDED_REPLAY_TARGET_KEY "shielded_history.full_replay.target"
+#define SHIELDED_REPLAY_NEXT_KEY "shielded_history.full_replay.next"
+#define SHIELDED_REPLAY_SPROUT_STARTED_KEY \
+    "shielded_history.full_replay.sprout_started"
+#define SHIELDED_REPLAY_SAPLING_STARTED_KEY \
+    "shielded_history.full_replay.sapling_started"
+
 /* CREATE TABLE IF NOT EXISTS nullifiers(...) + height index. Idempotent. */
 bool nullifier_kv_ensure_schema(struct sqlite3 *db);
 
@@ -87,6 +96,10 @@ bool nullifier_kv_activation_cursor(struct sqlite3 *db,
  * stale explicit zero and make an empty set look complete. */
 bool nullifier_kv_reset_in_tx(struct sqlite3 *db,
                               int64_t activation_cursor);
+
+/* Delete every bounded full-replay session marker in the caller's open
+ * transaction. Missing keys are success. */
+bool shielded_history_cancel_full_replay_in_tx(struct sqlite3 *db);
 
 /* Start a bounded genesis-through-target replay.  Owns one transaction that
  * clears both anchor tables and the nullifier set, writes the same positive

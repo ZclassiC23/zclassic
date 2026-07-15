@@ -57,7 +57,7 @@ static const char k_bundle_schema_sql[] =
     "CREATE TABLE anchors("
     "pool INTEGER NOT NULL CHECK(pool IN(0,1)),anchor BLOB NOT NULL,"
     "height INTEGER NOT NULL,tree BLOB NOT NULL,"
-    "PRIMARY KEY(pool,anchor)) WITHOUT ROWID;"
+    "PRIMARY KEY(pool,anchor),UNIQUE(pool,height)) WITHOUT ROWID;"
     "CREATE TABLE nullifiers("
     "pool INTEGER NOT NULL CHECK(pool IN(0,1)),nf BLOB NOT NULL,"
     "height INTEGER NOT NULL,PRIMARY KEY(pool,nf)) WITHOUT ROWID;";
@@ -393,6 +393,14 @@ static bool write_manifest(sqlite3 *db,
 static bool write_source_receipt(
     sqlite3 *db, const struct consensus_state_source_receipt *receipt)
 {
+    const char *schema =
+        consensus_state_source_receipt_schema(receipt->schema_version);
+    size_t commit_len = strnlen(receipt->producer_commit,
+                                sizeof(receipt->producer_commit));
+    if (!schema ||
+        !consensus_state_source_receipt_commit_valid(
+            receipt->schema_version, receipt->producer_commit, commit_len))
+        return false;
     static const char sql[] =
         "INSERT INTO source_receipt("
         "singleton,schema,source_epoch_digest,source_tree_root,"
@@ -403,9 +411,8 @@ static bool write_source_receipt(
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
     int i = 1;
-    bool ok = sqlite3_bind_text(st, i++,
-                                CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA, -1,
-                                SQLITE_STATIC) == SQLITE_OK &&
+    bool ok = sqlite3_bind_text(st, i++, schema, -1, SQLITE_STATIC) ==
+                  SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->source_epoch_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->source_tree_root, 32,
@@ -422,7 +429,8 @@ static bool write_source_receipt(
                   SQLITE_OK &&
               sqlite3_bind_int(st, i++, receipt->validation_profile) ==
                   SQLITE_OK &&
-              sqlite3_bind_text(st, i++, receipt->producer_commit, 40,
+              sqlite3_bind_text(st, i++, receipt->producer_commit,
+                                (int)commit_len,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, receipt->fold_cursor) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->receipt_digest, 32,

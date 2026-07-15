@@ -61,11 +61,11 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 
 | command | what |
 |---|---|
-| `make t ONLY=<group>` | run ONE test group, rebuilding the harness first (closes the stale-`test_parallel` rebuild trap). The harness is now a cached per-TU build (`build/test-rel-obj/`, strict `-O3 -Werror -pedantic -DZCL_TESTING`, non-LTO), so this rebuild is one changed-TU recompile + one link (~2 s), not a ~1,300-TU whole-program recompile (~90 s) — and header/`.def` edits are depfile-tracked, so they can no longer false-green |
-| `make t-fast ONLY=<group>` | hot-path ONE test group via cached per-file test objects and a non-LTO, non-`-Werror`, `-O1` harness (`build/test-obj/`); loosest/fastest loop |
+| `make t ONLY=<group>` | run ONE test group from the exact strict candidate. Sources resolve under `build/test-rel-obj/epochs/<compile-epoch>/` (`-O3 -Werror -pedantic -DZCL_TESTING`, non-LTO); a mutation selects a fresh tree and compiler-cache hits recover unchanged TU work. `-MD -MP` depfiles close the old header false-green trap |
+| `make t-fast ONLY=<group>` | hot-path ONE test group from the exact non-LTO, non-`-Werror`, `-O1` candidate under `build/bin/test-fast/epochs/<compile-epoch>/`; loosest/fastest loop |
 | `make test_parallel_wpo` | rebuild the original whole-program LTO test binary at `build/bin/test_parallel_wpo` — only to debug a suspected per-TU-vs-LTO divergence |
-| `make fast-changed-compile` | cheapest guarded compile check: direct changed `.c` dev-object compile, direct `.h`/`.def` depfile dependents after warm-up, safe fallback for graph-wide edits |
-| `make fast-compile` | fastest no-link dev compile check using cached non-LTO `build/dev-obj` objects |
+| `make fast-changed-compile` | compatibility name for the source-wide dev compile proof; changed paths are classification hints only |
+| `make fast-compile` | fastest no-link dev compile check; resolves every current source under `build/dev-obj/epochs/<compile-epoch>/`, with compiler-cache recovery |
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
 | `make dev-bin` | incremental non-LTO node executable at `build/bin/zclassic23-dev`; local AI/operator iteration only, not for release/deploy |
 | `make agent-doctor` | no-build combined build/dev-lane/recent-test-failure status with one next safe command |
@@ -74,9 +74,9 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
-| `make agent-plan` | no-build JSON decision packet: changed files, selected focused tests, changed-compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and MCP shortcuts |
+| `make agent-plan` | no-build JSON decision packet: changed-path/test classification hints, source-wide compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and MCP shortcuts |
 | `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
-| `make fast-ci` | cache-aware agent loop: `lint-fast` + changed compile gate + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
+| `make fast-ci` | cache-aware agent loop: `lint-fast` + exact source-wide compile/test proofs + native linger-service probe; identical green inputs skip repeated proven scope |
 | `make immutable-history-canaries` | fast real-chain consensus KATs: h=478544 oversized canonical transaction plus consensus parity pins |
 | `zclassic23 status` / `zclassic23 dumpstate <subsystem>` | native node reads (registry replaces MCP; `make agent-mcp-call-hot` is the legacy MCP path, removed in W3) |
 | `zclassic23-dev status` | dev-lane native read (legacy: `make agent-mcp-call-dev TOOL=<tool>`) |
@@ -87,8 +87,8 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
 `make agent-plan` is the read-only preview of the loop: it emits
-`zcl.agent_fast_plan.v1` with the changed-file set, focused test groups,
-changed-compile decision, green-input cache verdict, dev-lane stage/deploy
+`zcl.agent_fast_plan.v1` with changed-file classification hints, mapped test
+hints, the source-wide compile decision, green-input cache verdict, dev-lane stage/deploy
 commands, and the no-build MCP shortcuts. `make agent-doctor` embeds that same
 plan alongside dev-lane health and recent focused-test failures.
 
@@ -105,30 +105,28 @@ runnable dev binary with `ZCL_AGENT_LOOP_BIN=1`, stages the dev-lane binary
 without restarting with `ZCL_AGENT_LOOP_DEPLOY=stage`, or hot-swaps the dev lane
 with `ZCL_AGENT_LOOP_DEPLOY=dev`. `make fast-ci` remains the underlying cache-aware
 gate and auto-selects `sccache cc` or `ccache cc` when present; override with
-`ZCL_FAST_CC='ccache cc'`. It runs focused tests through `make t-fast`, which
-uses `build/bin/test_parallel_fast`: a cached per-file, non-LTO test harness
-that rebuilds only changed test/node objects after the first warm-up. It is
+`ZCL_FAST_CC='ccache cc'`. Its automated proof runs the exact source-wide fast
+test candidate under `build/bin/test-fast/epochs/<compile-epoch>/`; path-to-test
+mappings are diagnostics and never reduce proof scope. The harness is cached
+per-file, non-LTO, and compiler caches recover unchanged source work. It is
 non-`-Werror`; compile warning enforcement stays in `make build-only`, strict
-`make t`, and full CI. By default it uses `ZCL_FAST_COMPILE=changed`, which
-runs `make fast-changed-compile`: changed node `.c` files compile directly into
-`build/dev-obj/`, and once `build/dev-obj/.complete` exists, narrow `.h`/`.def`
-edits compile only the dev objects whose depfiles mention that dependency.
-Template/Makefile/removed-file/unwarmed-depfile/broad edits fall back to
-`make fast-compile`. Use `ZCL_FAST_COMPILE=dev` to force the full
-dev-object compile, or `ZCL_FAST_COMPILE=strict` when you want `make build-only`; `make pre-push-ci`
-sets that automatically. Force focused test groups with
-`ZCL_FAST_TESTS=make_lint_gates,mcp_controllers`; use `ZCL_FAST_STRICT_TESTS=1`
-to pay the strict `make t` whole-harness rebuild. Set parallelism with
-`ZCL_FAST_JOBS=N` (default caps at 16). Set
-`ZCL_FAST_CHANGED_COMPILE_LIMIT=N` to control when many direct dev objects fall
-back to `fast-compile` (`0` disables the limit). Set
+`make t`, and full CI. By default it uses `ZCL_FAST_COMPILE=changed`, a
+compatibility spelling that runs the same source-wide `make fast-compile`
+proof. Changed paths are classification hints only. Use
+`ZCL_FAST_COMPILE=dev` for that same dev profile, or
+`ZCL_FAST_COMPILE=strict` when you want `make build-only`; `make pre-push-ci`
+sets that automatically. Provide mapped test hints with
+`ZCL_FAST_TESTS=make_lint_gates,mcp_controllers` for routing diagnostics;
+the automated proof remains source-wide. Use `ZCL_FAST_STRICT_TESTS=1` to pay
+the strict exact-candidate proof. Set parallelism with `ZCL_FAST_JOBS=N`
+(default caps at 16). Set
 `ZCL_FAST_CHANGED_FILES_ONLY=1` when `ZCL_FAST_CHANGED_FILES[_FILE]` is already
 the exact semantic input, as the pre-push hook does. Successful runs write a content
 fingerprint under `.cache/zcl-agent-fast-ci/` covering changed-file contents,
 selected test groups, compiler/cache choice, strict/live knobs, core scripts,
 the Makefile, and the native probe binary mtime. A repeat with the same
 fingerprint logs `fast result cache hit` and skips `lint-fast`, the selected
-compile gate, and focused tests; it still refreshes the live service probe unless
+compile gate, and source-wide test proof; it still refreshes the live service probe unless
 `ZCL_FAST_LIVE=0` is set. Disable this with `ZCL_FAST_CACHE=0`, reset it with
 `ZCL_FAST_CACHE_RESET=1`, or move it with `ZCL_FAST_CACHE_DIR=...`. The live
 check uses the C binary first (`build/bin/zclassic23 agent` +

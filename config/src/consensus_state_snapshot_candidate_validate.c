@@ -220,11 +220,21 @@ static bool candidate_source_receipt(
                                        : SQLITE_NULL;
     const char *commit = commit_type == SQLITE_TEXT
         ? (const char *)sqlite3_column_text(stmt, 9) : NULL;
+    int commit_len = commit ? sqlite3_column_bytes(stmt, 9) : -1;
+    const char *schema =
+        rc == SQLITE_ROW && sqlite3_column_type(stmt, 0) == SQLITE_TEXT
+            ? (const char *)sqlite3_column_text(stmt, 0) : NULL;
+    int schema_len = schema ? sqlite3_column_bytes(stmt, 0) : -1;
+    uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    bool schema_ok = schema && schema_len >= 0 &&
+        consensus_state_source_receipt_schema_version(
+            schema, (size_t)schema_len, &receipt_version);
     bool ok = rc == SQLITE_ROW && commit &&
-        consensus_state_sqlite_text_equal(
-            stmt, 0, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA) &&
+        schema_ok &&
         commit_type == SQLITE_TEXT &&
-        sqlite3_column_bytes(stmt, 9) == 40 &&
+        commit_len >= 0 &&
+        consensus_state_source_receipt_commit_valid(
+            receipt_version, commit, (size_t)commit_len) &&
         blob32_copy(stmt, 1, receipt->source_epoch_digest) &&
         blob32_copy(stmt, 2, receipt->source_tree_root) &&
         blob32_copy(stmt, 3, receipt->running_binary_digest) &&
@@ -241,8 +251,9 @@ static bool candidate_source_receipt(
         blob32_copy(stmt, 11, receipt->receipt_digest) &&
         sqlite3_column_type(stmt, 10) == SQLITE_INTEGER;
     if (ok) {
-        memcpy(receipt->producer_commit, commit, 40);
-        receipt->producer_commit[40] = '\0';
+        receipt->schema_version = receipt_version;
+        memcpy(receipt->producer_commit, commit, (size_t)commit_len);
+        receipt->producer_commit[commit_len] = '\0';
         receipt->source_clean = sqlite3_column_int(stmt, 7) == 1;
         receipt->validation_profile = (uint8_t)sqlite3_column_int(stmt, 8);
         receipt->fold_cursor = sqlite3_column_int64(stmt, 10);
@@ -398,7 +409,7 @@ static bool candidate_coins(
            memcmp(root, m->utxo_root, 32) == 0;
 }
 
-static bool candidate_anchors(
+bool consensus_state_snapshot_destination_anchors_valid(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m)
 {
     sqlite3_stmt *stmt = NULL;
@@ -475,7 +486,7 @@ static bool candidate_anchors(
         memcmp(digest, m->anchor_digest, 32) == 0;
 }
 
-static bool candidate_nullifiers(
+bool consensus_state_snapshot_destination_nullifiers_valid(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m)
 {
     sqlite3_stmt *stmt = NULL;
@@ -702,9 +713,11 @@ bool consensus_state_candidate_validate_reopened(
         return candidate_invalid(result, "source proof provenance mismatch");
     if (!candidate_coins(candidate, expected))
         return candidate_invalid(result, "UTXO root/count/supply mismatch");
-    if (!candidate_anchors(candidate, expected))
+    if (!consensus_state_snapshot_destination_anchors_valid(candidate,
+                                                            expected))
         return candidate_invalid(result, "anchor digest/frontier mismatch");
-    if (!candidate_nullifiers(candidate, expected))
+    if (!consensus_state_snapshot_destination_nullifiers_valid(candidate,
+                                                               expected))
         return candidate_invalid(result, "nullifier digest/count mismatch");
     if (!candidate_reducer_state(candidate, expected))
         return candidate_invalid(result, "reducer cursor/log/base mismatch");

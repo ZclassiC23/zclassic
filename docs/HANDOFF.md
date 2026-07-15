@@ -8,36 +8,36 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate canonical cure below.
 
-# HANDOFF — current state (2026-07-14)
+# HANDOFF — current state (2026-07-15)
 
 ## 0-NEW. Incoming-developer handoff (current state)
 
-**Protected producer — DO NOT stop, pause, restart, replace, renice, or move its
-datadir.** At 2026-07-14 17:19 UTC, PID 845172 was actively advancing
-`~/.zclassic-c23-mint-receipt` through h=1,689,999 / 3,056,758. Recent
-2,000-block windows were mostly 25–35 blocks/s (latest 34.8), with an
-approximately 11-hour instantaneous ETA. Treat the log as authoritative:
+**The receipt producer is no longer advancing.** At 2026-07-15 04:55 UTC it
+reached h=3,056,758, then correctly refused publication because its folded
+transparent state disagreed with the compiled checkpoint: 1,354,769 UTXOs vs
+the required 1,354,771 and SHA3
+`5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85`
+vs required
+`00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0`.
+This is failed parity evidence, not a publishable cure artifact. Preserve the
+entire `~/.zclassic-c23-mint-receipt` datadir and logs without rewriting them.
+
+The `Restart=on-failure` drop-in became counterproductive: by 2026-07-15 05:10
+UTC the service had restarted 187 times and was repeating a ~43-second
+boot/fail cycle with a 15-second delay. The owner then authorized the fix; the
+unit was stopped and reset to `inactive/dead`, with no producer PID. The
+canonical zclassic23 and zclassicd services were not restarted. Do not start
+this failed producer again; treat the preserved failure log as authoritative:
 
 ```bash
 systemctl --user status zclassic23-mint-receipt.service
 tail -n 5 ~/.zclassic-c23-mint-receipt/mint-progress.log
 ```
 
-The exact executable SHA3-256 is
+The failed producer's exact executable SHA3-256 is
 `34d78c9519c67d5c529a3cd354e7528a6b077f83db5df74764e2f38902c3fe2c`.
-The live transient unit now has `Restart=on-failure`; an identical persistent
-unit is enabled for the linger user so a host reboot does not silently lose the
-producer. Preserve the completed datadir and receipt even after the process
-finishes.
-
-**Performance conclusion for this run:** the process consumes approximately
-one CPU continuously, reports work in the serial `vh`/`pv`/`ua` stages, has
-negligible I/O wait, and was observed while the NVMe device was mostly idle.
-The host still had about 65 GiB available RAM. More RAM, more generic CPU
-allocation, or moving SQLite onto a RAM disk would not make this already
-running binary use more cores and would add crash-loss risk. Performance work
-must happen on a datadir **copy** or a new isolated fixture while this producer
-continues untouched.
+The prior rate/ETA observations remain historical performance evidence only;
+they no longer describe a running producer.
 
 **Server posture:** approximately 100 GB of abandoned logs, recursion debris,
 and obsolete scratch output was reclaimed; `/` had about 738 GB free (58% used),
@@ -48,18 +48,38 @@ active. Their committed service definitions now fail closed through
 bulk-delete the remaining `/tmp`: it contains active QED work and preserved
 ZClassic proof/cure evidence.
 
-**Performance follow-up, parallel only:** benchmark current `main` against a
-copy at a comparable height, record stage and parity receipts, and promote any
-restart/replacement proposal to the owner only after the protected producer
-finishes or the owner explicitly changes this instruction. A1 parallel
-validation is already on main (`c6c56a3b9`); the old
-`wf/parallel-validation` branch is drifted and must not be reused.
+**Producer follow-up, copy only:** diagnose the two-output checkpoint mismatch
+from a preserved datadir copy. Do not relabel, patch, or inject a receipt into
+the failed generation. Any replacement producer must start as a new isolated
+generation with the current v2 source/toolchain receipt contract and pass the
+same checkpoint gate honestly.
 
 **Codebase review:** the dated, non-authoritative consolidation receipt is
 [`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md).
 It does not displace the cure or [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md).
 
-**Live node:** public canonical remains wedged at H\*=3,176,325 on `utxo_apply.anchor_backfill_gap`; the sovereign cure (above) unwedges it. Verify live before trusting this file: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
+**Live node (read-only observation 2026-07-15 05:08 UTC):** public canonical
+remains wedged: H\*=3,176,325, local projection 3,176,326, zclassicd
+3,181,871, lag 5,545. The hashes agree exactly at comparison height
+3,176,326, so this is not evidence of a fork. The coordinator has no selectable
+source: native P2P has 2 healthy peers vs the required floor of 3, and the
+advisory mirror is blocked on `rpc-unreachable`. The imported index also
+references historical `blk00049.dat` under the legacy block corpus while the
+canonical C23 block directory contains only `blk00000.dat`; repair must be
+proved on a datadir copy, never by live symlink/surgery. The complete shielded-
+state sovereign cure remains required. Verify live before trusting this file:
+`./tools/z mirror --json`, then `./tools/z state reducer_frontier` and
+`./tools/z advance`.
+
+**Bundle activation containment (2026-07-15):** red-team review proved the
+current bundle provenance is self-asserted: an artifact can recompute its own
+producer/source/proof-summary digests, while selected-chain height/hash and the
+current Sapling frontier do not authenticate UTXOs, Sprout history, historical
+Sapling anchors, or nullifiers. The transactional ACTIVATE engine remains
+exercised under `ZCL_TESTING`, but production calls now return
+`VERIFIED_CONTAINED` before touching `progress.kv`. Do not remove this latch
+until a complete-state receipt independently derived by local replay and stored
+outside the bundle is implemented and adversarially proved.
 
 **Repo hygiene (2026-07-14):** four worktrees remain: main, the fuzz and test
 quality checkouts, and one dirty protected performance worktree. Obsolete clean
@@ -196,8 +216,33 @@ through an exporter-private fd-only SQLite VFS, validates that exact inode,
 then atomically hard-links the inode into the pinned directory and fsyncs the
 directory. There is no mutable staging pathname to swap or clean up; parent
 rename/symlink replacement and late final-name creation cannot redirect or
-replace the artifact. There is still no producer-end caller or node state
+replace the artifact. Producer start/end receipt ownership is wired in
+`boot_mint_anchor.c` for a receipt-owning binary; there is still no node-state
 publisher.
+
+**2026-07-15 mainline migration (not deployed):** new producer sessions and
+receipts are v2 and bind `source_tree_root` to the 64-hex SHA-256 emitted by
+`zcl.dev_source_identity.v2` over the current build-source inventory. Git is used
+only for path/mode discovery; Git HEAD/object ids are absent from the source-id
+preimage. New receipt digests use versioned SHA3 domains and exclude
+`producer_commit`; v2 requires that field to remain empty. GitHub/external
+trace metadata lives outside the receipt and is never internal authority.
+Receipt v1 remains a frozen parse/inspection-only compatibility identity/codec
+for already-durable evidence. No binary may resume, finalize, publish, or
+install from a v1 session or receipt; it cannot be adopted or relabeled. This
+migration is source/provenance plumbing only:
+consensus parity is untouched and consensus `OP_SHA1` remains implemented.
+V2's legacy-named `source_clean` field means the exact current inventory was
+captured and is always true for the production v2 writer; it is not derived
+from Git HEAD or gitlink object ids. Dirty bytes are already bound by the
+source root.
+The v2 source id is a dev supersession identity, not complete reproducible
+provenance. Initialized gitlinks are recursively inventoried without consuming
+their Git object ids, and exact linked static archives plus recursively included
+generated vendor headers are included even when ignored. Other ignored or
+generated inputs outside that build include tree, the full toolchain/config,
+and independent rebuild proof remain outside it.
+
 Both already-running producers predate this receipt/export contract, so neither
 can honestly pass it as-is. Never inject a receipt into their live databases.
 Either prove a protected offline ratification against the preserved mapped
@@ -238,11 +283,17 @@ controlled compiler failure fell from 185.94 seconds/18 repeated failures to
 Source drift supersedes the campaign instead of mislabelling it. `--status`
 now refuses stale pre-binding artifacts in about 0.09 seconds with an explicit
 non-evaluable reason instead of replaying old failures as current.
-The source-identity collector now batches metadata and hashing in bounded
-128-path chunks while preserving the exact v1 preimage and a portable fallback:
-on the current 219-path overlay it fell from 0.76–0.78 seconds to 0.07–0.08
-seconds. A 162-path boundary fixture proves fast/portable byte identity,
-supersession, deletion/mode/symlink handling, and hidden-index-bit refusal.
+The source-identity collector now emits the v2 SHA-256 supersession identity
+over the complete current source inventory, not v1's Git-HEAD plus dirty-overlay
+preimage. Fast and portable collectors are byte-equivalence tested for
+history-only commits, recursive submodule bytes without gitlink object ids,
+selected ignored linked archives, source supersession, deletion, mode,
+pathological filenames, symlinks, and hidden-index-bit refusal. A separate
+host-local mutation token makes edit/revert ABA fail closed; cached objects bind
+that token, and identity-bearing links publish only by verified atomic rename.
+The token is never release identity. The old 219-path overlay and 0.07–0.08
+second measurements were v1-only; v2 latency is machine/worktree dependent and
+is not a portable performance promise.
 
 Canonical was not restarted, deployed, or mutated and remains at
 H\*=3,176,325. The PIDs and transient services described earlier in this
@@ -250,9 +301,10 @@ section are dated forensic observations, not current process instructions.
 Their datadirs remain evidence. The only active cure producer observed in the
 2026-07-14 server audit is the protected receipt producer in §0.
 
-**Next cure implementation job (without touching the producer):** add
-producer-start/end ownership for the durable source receipt and exporter, plus
-a separately reviewed offline ratification path for preserved immutable input.
+**Next cure implementation job (without touching the producer):** independently
+review and prove the v2 producer-start/end receipt ownership and exporter on a
+new receipt-owning producer, plus a separately reviewed offline ratification
+path for preserved immutable input.
 Combine contained artifact validation with selected-chain/
 trust/authority evidence under one publication CAS. Then finish a boot-only,
 `FULL`-durability candidate-store
@@ -340,7 +392,8 @@ self-healing success. `zclassicd`
 Ports/runbook: `docs/SYNC.md`; re-pull live state (`zcl_status`) before acting.
 
 **Standing method:** `make deploy` rm's the binary first (a stale binary was
-a real multi-day outage; `deploy_verify.sh` confirms `build_commit`).
+a real multi-day outage; `deploy_verify.sh` confirms the exact source SHA-256
+and running executable SHA-256; Git `build_commit` is display-only).
 Copy-prove every recovery path on a COPY before live, never live surgery;
 gate on **H\* CLIMB**, not "booted without FATAL." Never weaken a
 safety/operator gate. Gate every change: `make` + `make lint` +

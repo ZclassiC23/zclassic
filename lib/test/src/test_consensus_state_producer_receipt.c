@@ -28,9 +28,11 @@
 
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
-/* A deterministic hermetic 40-hex commit so the test does not depend on the
- * build's baked git identity. */
-#define PR_TEST_COMMIT "0123456789abcdef0123456789abcdef01234567"
+/* A deterministic hermetic SHA-256 source identity so the test does not
+ * depend on the build's baked worktree identity. */
+#define PR_TEST_SOURCE_ID \
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#define PR_TEST_LEGACY_COMMIT "0123456789abcdef0123456789abcdef01234567"
 
 #define PR_CHECK(label, expr) do {                                        \
     printf("producer_receipt: %s... ", (label));                         \
@@ -45,6 +47,162 @@ static bool pr_exec(sqlite3 *db, const char *sql)
     if (error)
         sqlite3_free(error);
     return ok;
+}
+
+static bool pr_scalar_true(sqlite3 *db, const char *sql)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int rc = sqlite3_step(st); // raw-sql-ok:test-read-only-assertion
+    bool ok = rc == SQLITE_ROW &&
+              sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+              sqlite3_column_int(st, 0) == 1 &&
+              sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-read-only-assertion
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool pr_read_session_claim(
+    sqlite3 *db, struct consensus_state_source_receipt *claim,
+    uint8_t source_epoch[32])
+{
+    sqlite3_stmt *st = NULL;
+    memset(claim, 0, sizeof(*claim));
+    memset(source_epoch, 0, 32);
+    if (sqlite3_prepare_v2(db,
+            "SELECT source_tree_root,toolchain_digest,build_inputs_digest,"
+            "source_epoch_digest,source_clean,validation_profile,"
+            "producer_commit FROM consensus_state_producer_session "
+            "WHERE singleton=1", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int rc = sqlite3_step(st); // raw-sql-ok:test-read-only-assertion
+    bool ok = rc == SQLITE_ROW;
+    for (int column = 0; ok && column < 4; column++) {
+        ok = sqlite3_column_type(st, column) == SQLITE_BLOB &&
+             sqlite3_column_bytes(st, column) == 32;
+    }
+    if (ok) {
+        memcpy(claim->source_tree_root, sqlite3_column_blob(st, 0), 32);
+        memcpy(claim->toolchain_digest, sqlite3_column_blob(st, 1), 32);
+        memcpy(claim->build_inputs_digest, sqlite3_column_blob(st, 2), 32);
+        memcpy(source_epoch, sqlite3_column_blob(st, 3), 32);
+        ok = sqlite3_column_type(st, 4) == SQLITE_INTEGER &&
+             (sqlite3_column_int(st, 4) == 0 ||
+              sqlite3_column_int(st, 4) == 1) &&
+             sqlite3_column_type(st, 5) == SQLITE_INTEGER &&
+             sqlite3_column_int(st, 5) == CONSENSUS_STATE_VALIDATION_FULL &&
+             sqlite3_column_type(st, 6) == SQLITE_TEXT &&
+             sqlite3_column_bytes(st, 6) == 0;
+    }
+    if (ok) {
+        claim->schema_version = CONSENSUS_STATE_SOURCE_RECEIPT_V2;
+        claim->source_clean = sqlite3_column_int(st, 4) == 1;
+        claim->validation_profile = (uint8_t)sqlite3_column_int(st, 5);
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool pr_write_session_claim(
+    sqlite3 *db, const struct consensus_state_source_receipt *claim,
+    const uint8_t source_epoch[32])
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE consensus_state_producer_session SET "
+            "source_tree_root=?,toolchain_digest=?,build_inputs_digest=?,"
+            "source_epoch_digest=?,source_clean=?,validation_profile=?,"
+            "producer_commit='' WHERE singleton=1", -1, &st, NULL) !=
+        SQLITE_OK)
+        return false;
+    int i = 1;
+    bool ok = sqlite3_bind_blob(st, i++, claim->source_tree_root, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, claim->toolchain_digest, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, claim->build_inputs_digest, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, source_epoch, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_int(st, i++, claim->source_clean ? 1 : 0) ==
+                  SQLITE_OK &&
+              sqlite3_bind_int(st, i++, claim->validation_profile) ==
+                  SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-tamper
+    sqlite3_finalize(st);
+    return ok;
+}
+
+enum pr_claim_mutation {
+    PR_MUTATE_SOURCE_ROOT = 0,
+    PR_MUTATE_TOOLCHAIN,
+    PR_MUTATE_BUILD_INPUTS,
+};
+
+static void pr_mutate_claim(struct consensus_state_source_receipt *claim,
+                            enum pr_claim_mutation mutation)
+{
+    if (mutation == PR_MUTATE_SOURCE_ROOT)
+        claim->source_tree_root[0] ^= 0x01u;
+    else if (mutation == PR_MUTATE_TOOLCHAIN)
+        claim->toolchain_digest[0] ^= 0x02u;
+    else
+        claim->build_inputs_digest[0] ^= 0x04u;
+}
+
+static bool pr_self_consistent_claim_tamper_refuses(
+    sqlite3 *db, const struct consensus_state_source_receipt *original,
+    const uint8_t original_epoch[32], enum pr_claim_mutation mutation,
+    char *err, size_t err_size)
+{
+    struct consensus_state_source_receipt tampered = *original;
+    pr_mutate_claim(&tampered, mutation);
+    uint8_t tampered_epoch[32];
+    consensus_state_source_epoch_digest(&tampered, tampered_epoch);
+    if (!pr_write_session_claim(db, &tampered, tampered_epoch))
+        return false;
+
+    bool refused =
+        !consensus_state_producer_receipt_begin(
+            db, CONSENSUS_STATE_VALIDATION_FULL, err, err_size) &&
+        strstr(err, "does not exactly match current") != NULL;
+
+    /* Restore the exact fixture regardless of the assertion result, then
+     * resume once so progress_meta is also restored if vulnerable code had
+     * incorrectly published the attacker-derived epoch. */
+    bool restored = pr_write_session_claim(db, original, original_epoch) &&
+                    consensus_state_producer_receipt_begin(
+                        db, CONSENSUS_STATE_VALIDATION_FULL, err, err_size);
+    return refused && restored;
+}
+
+static bool pr_self_consistent_claim_tamper_finalize_refuses(
+    sqlite3 *db, const struct consensus_state_source_receipt *original,
+    const uint8_t original_epoch[32], enum pr_claim_mutation mutation,
+    const uint8_t block_hash[32], char *err, size_t err_size)
+{
+    struct consensus_state_source_receipt tampered = *original;
+    pr_mutate_claim(&tampered, mutation);
+    uint8_t tampered_epoch[32];
+    consensus_state_source_epoch_digest(&tampered, tampered_epoch);
+    if (!pr_write_session_claim(db, &tampered, tampered_epoch))
+        return false;
+
+    bool refused =
+        !consensus_state_producer_receipt_finalize(
+            db, 1, block_hash, err, err_size) &&
+        strstr(err, "does not own the start session") != NULL;
+
+    /* Vulnerable code may have finalized the attacker claim. Remove that
+     * fixture-only evidence, restore the exact session, and republish the
+     * genuine epoch so later assertions remain isolated. */
+    bool cleaned = pr_exec(
+        db, "DROP TABLE IF EXISTS consensus_state_source_receipt");
+    bool restored = pr_write_session_claim(db, original, original_epoch) &&
+                    consensus_state_producer_receipt_begin(
+                        db, CONSENSUS_STATE_VALIDATION_FULL, err, err_size);
+    return refused && cleaned && restored;
 }
 
 static bool pr_insert_hash_row(sqlite3 *db, const char *sql, int height,
@@ -234,7 +392,8 @@ static bool pr_run_export(sqlite3 *db, int output_dir_fd, const char *name,
 int test_consensus_state_producer_receipt(void)
 {
     int failures = 0;
-    consensus_state_producer_receipt_test_set_identity(PR_TEST_COMMIT, true);
+    consensus_state_producer_receipt_test_set_identity(PR_TEST_SOURCE_ID,
+                                                        true);
 
     char dir_template[] = "/tmp/zcl-pr-XXXXXX";
     char *dir = mkdtemp(dir_template);
@@ -264,27 +423,155 @@ int test_consensus_state_producer_receipt(void)
              strstr(err, "no start session") != NULL);
 
     /* Producer START ownership. */
+    char overlong_source_id[66];
+    memset(overlong_source_id, 'a', sizeof(overlong_source_id) - 1u);
+    overlong_source_id[sizeof(overlong_source_id) - 1u] = '\0';
+    consensus_state_producer_receipt_test_set_identity(overlong_source_id,
+                                                        true);
+    PR_CHECK("overlong source identity cannot truncate into authority",
+             !consensus_state_producer_receipt_begin(
+                 db, CONSENSUS_STATE_VALIDATION_FULL, err, sizeof(err)) &&
+             strstr(err, "no exact 64-hex") != NULL);
+    consensus_state_producer_receipt_test_set_identity(PR_TEST_SOURCE_ID,
+                                                        true);
     PR_CHECK("producer begin writes the durable session",
              consensus_state_producer_receipt_begin(
                  db, CONSENSUS_STATE_VALIDATION_FULL, err, sizeof(err)));
+    PR_CHECK("new producer session uses source-identity v2 with no Git authority",
+             pr_scalar_true(db,
+                 "SELECT schema='zcl.consensus_state_producer_session.v2' "
+                 "AND typeof(producer_commit)='text' "
+                 "AND length(producer_commit)=0 "
+                 "FROM consensus_state_producer_session WHERE singleton=1"));
     /* Idempotent resume by the same binary + claim is a no-op success. */
     PR_CHECK("producer begin is idempotent for the same binary",
              consensus_state_producer_receipt_begin(
                  db, CONSENSUS_STATE_VALIDATION_FULL, err, sizeof(err)));
+
+    /* A row can be internally self-consistent yet still be foreign. The old
+     * resume path derived its expected epoch from these stored fields and
+     * therefore adopted each of these attacker-rewritten claims. */
+    struct consensus_state_source_receipt original_claim;
+    uint8_t original_epoch[32];
+    PR_CHECK("capture exact current v2 session claim",
+             pr_read_session_claim(db, &original_claim, original_epoch));
+    PR_CHECK("self-consistent stored source-root tamper cannot resume",
+             pr_self_consistent_claim_tamper_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_SOURCE_ROOT,
+                 err, sizeof(err)));
+    PR_CHECK("self-consistent stored toolchain tamper cannot resume",
+             pr_self_consistent_claim_tamper_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_TOOLCHAIN,
+                 err, sizeof(err)));
+    PR_CHECK("self-consistent stored build-input tamper cannot resume",
+             pr_self_consistent_claim_tamper_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_BUILD_INPUTS,
+                 err, sizeof(err)));
+
     /* A different validation profile on the same datadir refuses. */
     PR_CHECK("producer begin refuses a conflicting profile",
              !consensus_state_producer_receipt_begin(
                  db, CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD, err,
                  sizeof(err)));
 
+    /* A structurally valid legacy row is still readable by diagnostics, but
+     * can neither resume a fold nor finalize a new authoritative receipt. */
+    PR_CHECK("fixture relabels the durable session as legacy v1",
+             pr_exec(db,
+                 "UPDATE consensus_state_producer_session "
+                 "SET schema='zcl.consensus_state_producer_session.v1',"
+                 "producer_commit='" PR_TEST_LEGACY_COMMIT "'"));
+    PR_CHECK("legacy v1 producer session cannot resume",
+             !consensus_state_producer_receipt_begin(
+                 db, CONSENSUS_STATE_VALIDATION_FULL, err, sizeof(err)) &&
+             strstr(err, "legacy v1 session") != NULL);
+    PR_CHECK("legacy v1 producer session cannot finalize",
+             !consensus_state_producer_receipt_finalize(
+                 db, 1, hash[1], err, sizeof(err)) &&
+             strstr(err, "legacy v1 session") != NULL);
+    PR_CHECK("legacy v1 refusal writes no final receipt",
+             pr_scalar_true(db,
+                 "SELECT count(*)=0 FROM sqlite_master "
+                 "WHERE type='table' "
+                 "AND name='consensus_state_source_receipt'"));
+    PR_CHECK("fixture restores the current v2 session",
+             pr_exec(db,
+                 "UPDATE consensus_state_producer_session "
+                 "SET schema='zcl.consensus_state_producer_session.v2',"
+                 "producer_commit=''"));
+
     /* The fold runs; its crypto rows are stamped with the published epoch. */
     PR_CHECK("fold rows seed with the published source epoch",
              pr_seed_fold_rows(db, hash, nf));
+
+    PR_CHECK("finalize refuses self-consistent stored source-root tamper",
+             pr_self_consistent_claim_tamper_finalize_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_SOURCE_ROOT,
+                 hash[1], err, sizeof(err)));
+    PR_CHECK("finalize refuses self-consistent stored toolchain tamper",
+             pr_self_consistent_claim_tamper_finalize_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_TOOLCHAIN,
+                 hash[1], err, sizeof(err)));
+    PR_CHECK("finalize refuses self-consistent stored build-input tamper",
+             pr_self_consistent_claim_tamper_finalize_refuses(
+                 db, &original_claim, original_epoch, PR_MUTATE_BUILD_INPUTS,
+                 hash[1], err, sizeof(err)));
 
     /* Producer END ownership: finalize binds the receipt to the fold. */
     PR_CHECK("producer finalize writes the source receipt",
              consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
                                                         sizeof(err)));
+    PR_CHECK("new final receipt uses source-identity v2 with no Git authority",
+             pr_scalar_true(db,
+                 "SELECT schema='zcl.consensus_state_source_receipt.v2' "
+                 "AND typeof(producer_commit)='text' "
+                 "AND length(producer_commit)=0 "
+                 "FROM consensus_state_source_receipt WHERE singleton=1"));
+    struct producer_status_read producer_status;
+    char status_err[256] = {0};
+    PR_CHECK("v2 producer status exposes source telemetry",
+             consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             producer_status.receipt_finalized &&
+             strcmp(producer_status.receipt_schema,
+                    CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2) == 0 &&
+             strcmp(producer_status.source_tree_root,
+                    PR_TEST_SOURCE_ID) == 0 &&
+             strlen(producer_status.source_epoch_digest) == 64 &&
+             producer_status.producer_commit[0] == '\0');
+    PR_CHECK("producer status rejects zero toolchain/build-input authority",
+             pr_exec(db,
+                 "UPDATE consensus_state_source_receipt "
+                 "SET toolchain_digest=zeroblob(32),"
+                 "build_inputs_digest=zeroblob(32)") &&
+             !consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             !producer_status.receipt_finalized &&
+             strstr(status_err, "finalized receipt") != NULL);
+    PR_CHECK("producer status fixture restores exact build claims",
+             pr_exec(db,
+                 "UPDATE consensus_state_source_receipt SET "
+                 "toolchain_digest=(SELECT toolchain_digest FROM "
+                 "consensus_state_producer_session WHERE singleton=1),"
+                 "build_inputs_digest=(SELECT build_inputs_digest FROM "
+                 "consensus_state_producer_session WHERE singleton=1)") &&
+             consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             producer_status.receipt_finalized);
+    PR_CHECK("producer status rejects an impossible finalized fold cursor",
+             pr_exec(db,
+                 "UPDATE consensus_state_source_receipt SET fold_cursor=0") &&
+             !consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             !producer_status.receipt_finalized &&
+             strstr(status_err, "finalized receipt") != NULL);
+    PR_CHECK("producer status fixture restores the finalized fold cursor",
+             pr_exec(db,
+                 "UPDATE consensus_state_source_receipt SET fold_cursor=2") &&
+             consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             producer_status.receipt_finalized &&
+             producer_status.fold_cursor == 2);
     PR_CHECK("producer finalize exact retry is idempotent",
              consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
                                                         sizeof(err)));
@@ -323,6 +610,12 @@ int test_consensus_state_producer_receipt(void)
              pr_exec(db,
                  "UPDATE consensus_state_source_receipt "
                  "SET receipt_digest=zeroblob(32)"));
+    memset(status_err, 0, sizeof(status_err));
+    PR_CHECK("producer status never labels a corrupt receipt finalized",
+             !consensus_state_producer_status_read(
+                 dir, &producer_status, status_err, sizeof(status_err)) &&
+             !producer_status.receipt_finalized &&
+             strstr(status_err, "digest verification") != NULL);
     PR_CHECK("finalize refuses to overwrite conflicting durable evidence",
              !consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
                                                          sizeof(err)) &&

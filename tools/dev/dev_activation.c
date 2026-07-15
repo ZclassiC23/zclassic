@@ -337,9 +337,52 @@ void dev_activation_generation_commit(const struct dev_activation_txn *txn,
     (void)dev_activation_json_first_string(buf, "build_commit", out, out_sz);
 }
 
-void dev_activation_write_build_identity(const struct dev_activation_txn *txn,
+bool dev_activation_source_id_valid(const char *s)
+{
+    if (!s || strlen(s) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!((s[i] >= '0' && s[i] <= '9') ||
+              (s[i] >= 'a' && s[i] <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+void dev_activation_generation_source_id(
+    const struct dev_activation_txn *txn, const char *generation,
+    char out[65])
+{
+    out[0] = 0;
+    char manifest[PATH_MAX];
+    int n = snprintf(manifest, sizeof(manifest), "%s/%s/manifest.json",
+                     txn->gen_root, generation);
+    if (n <= 0 || (size_t)n >= sizeof(manifest))
+        return;
+    FILE *f = fopen(manifest, "rb");
+    if (!f)
+        return;
+    char buf[4096];
+    size_t rn = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[rn] = 0;
+    if (!dev_activation_json_first_string(buf, "source_id_sha256", out, 65) ||
+        !dev_activation_source_id_valid(out))
+        out[0] = 0;
+}
+
+bool dev_activation_write_build_identity(const struct dev_activation_txn *txn,
                                          const char *generation)
 {
+    char source_id[65];
+    dev_activation_generation_source_id(txn, generation, source_id);
+    if (!source_id[0]) {
+        fprintf(stderr,
+                "[dev-activation] generation %s has no valid source_id_sha256; "
+                "not writing runtime identity intent\n",
+                generation ? generation : "(null)");
+        return false;
+    }
     char commit[128];
     dev_activation_generation_commit(txn, generation, commit, sizeof(commit));
     if (commit[0] == 0)
@@ -350,20 +393,31 @@ void dev_activation_write_build_identity(const struct dev_activation_txn *txn,
     if (slash) {
         *slash = 0;
         if (!dev_activation_mkdir_p(dir))
-            return;
+            return false;
     }
     FILE *f = fopen(txn->build_id_dropin, "w");
     if (!f) {
         fprintf(stderr, "[dev-activation] build-identity drop-in open: %s\n",
                 strerror(errno));
-        return;
+        return false;
     }
-    char esc[256];
+    char esc[256], esc_source_id[80];
     dev_activation_json_escape(commit, esc, sizeof(esc));
+    dev_activation_json_escape(source_id, esc_source_id,
+                               sizeof(esc_source_id));
     fprintf(f, "[Service]\n");
+    fprintf(f, "Environment=\"ZCL_AGENT_EXPECT_SOURCE_ID=%s\"\n",
+            esc_source_id);
+    /* Compatibility/display metadata only. Runtime freshness decisions bind
+     * exclusively to ZCL_AGENT_EXPECT_SOURCE_ID. */
     fprintf(f, "Environment=\"ZCL_AGENT_EXPECT_BUILD_COMMIT=%s\"\n", esc);
     fprintf(f, "Environment=\"ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev\"\n");
-    fclose(f);
+    if (fclose(f) != 0) {
+        fprintf(stderr, "[dev-activation] build-identity drop-in close: %s\n",
+                strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 /* ── confinement + path derivation ───────────────────────────────────── */
@@ -587,23 +641,31 @@ static int dev_guard_pending_auto_reindex(struct dev_activation_txn *txn)
  * The shell activator arms `trap emergency_rollback EXIT` while
  * ACTIVATION_IN_PROGRESS=1 so an unexpected exit mid-flip restores the previous
  * generation. A native in-process bool cannot survive a crash of this very
- * process, so instead we persist a durable on-disk marker at the point the
- * transaction becomes non-trivially reversible (the service is stopped and the
- * `current` link has been flipped to the candidate) and clear it on completion
- * OR rollback. The NEXT activation — which necessarily holds the activation
+ * process, so instead we persist a durable on-disk marker after the service is
+ * stopped but BEFORE the `current` link is flipped to the candidate, and clear
+ * it on completion OR rollback. The NEXT activation — which necessarily holds the activation
  * flock, so no live run is racing us — detects a leftover marker as a crashed
  * prior transaction and refuses, pointing the operator at `make
  * agent-dev-recover`. We deliberately do NOT auto-roll-back another run's
  * half-finished state. */
-static void dev_write_in_progress(struct dev_activation_txn *txn)
+static bool dev_write_all(int fd, const char *bytes, size_t len)
 {
-    int fd = open(txn->inprogress_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
-                  0644);
-    if (fd < 0) {
-        LOG_WARN("dev-activation", "in-progress marker open %s: %s",
-                 txn->inprogress_path, strerror(errno));
-        return;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t written = write(fd, bytes + off, len - off);
+        if (written > 0) {
+            off += (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR)
+            continue;
+        return false;
     }
+    return true;
+}
+
+static bool dev_write_in_progress(struct dev_activation_txn *txn)
+{
     char now[32];
     dev_activation_iso_utc_now(now);
     char esc[96];
@@ -614,16 +676,50 @@ static void dev_write_in_progress(struct dev_activation_txn *txn)
                      "\"pid\":%ld,\"candidate_generation\":\"%s\","
                      "\"started_at_utc\":\"%s\"}\n",
                      (long)getpid(), esc, now);
-    if (n > 0 && (size_t)n < sizeof(line))
-        (void)!write(fd, line, (size_t)n);
-    (void)fsync(fd); /* the marker MUST survive a crash to be useful */
-    close(fd);
+    if (n <= 0 || (size_t)n >= sizeof(line))
+        LOG_FAIL("dev-activation", "in-progress marker payload overflow");
+    size_t line_len = (size_t)n;
+
+    char tmp[PATH_MAX];
+    n = snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", txn->inprogress_path);
+    if (n <= 0 || (size_t)n >= sizeof(tmp))
+        LOG_FAIL("dev-activation", "in-progress marker temp path overflow");
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        LOG_WARN("dev-activation", "in-progress marker create %s: %s",
+                 tmp, strerror(errno));
+        return false;
+    }
+    bool ok = fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 &&
+              fchmod(fd, 0644) == 0 &&
+              dev_write_all(fd, line, line_len) &&
+              fsync(fd) == 0;
+    if (close(fd) != 0)
+        ok = false;
+    if (ok && rename(tmp, txn->inprogress_path) != 0)
+        ok = false;
+    if (!ok) {
+        LOG_WARN("dev-activation", "in-progress marker publish %s: %s",
+                 txn->inprogress_path, strerror(errno));
+        (void)unlink(tmp);
+        (void)unlink(txn->inprogress_path);
+        return false;
+    }
+
     int dfd = open(txn->gen_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        close(dfd);
+    bool dir_ok = dfd >= 0;
+    if (dir_ok && fsync(dfd) != 0)
+        dir_ok = false;
+    if (dfd >= 0 && close(dfd) != 0)
+        dir_ok = false;
+    if (!dir_ok) {
+        LOG_WARN("dev-activation", "in-progress marker directory fsync: %s",
+                 strerror(errno));
+        (void)unlink(txn->inprogress_path);
+        return false;
     }
     txn->activation_in_progress = true;
+    return true;
 }
 
 void dev_activation_clear_in_progress(const struct dev_activation_txn *txn)
@@ -702,19 +798,40 @@ static int dev_activate_candidate(struct dev_activation_txn *txn)
         return DEV_ACTIVATION_E_ACTIVATE;
     }
 
+    /* Arm crash recovery before the first namespace mutation. If durable
+     * intent cannot be recorded, restart the untouched prior generation. */
+    if (!dev_write_in_progress(txn)) {
+        int restart_rc = ops->service_start(ops->ctx);
+        dev_set_status(r, "failed", "activation_failed",
+                       "could not durably record activation intent");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "activation marker write failed; prior service restart %s",
+                 restart_rc == 0 ? "succeeded" : "failed");
+        return DEV_ACTIVATION_E_ACTIVATE;
+    }
+
     if (!dev_activation_link_generation(txn, "current",
                                         txn->candidate_generation)) {
+        int restart_rc = ops->service_start(ops->ctx);
+        txn->activation_in_progress = false;
+        dev_activation_clear_in_progress(txn);
         dev_set_status(r, "failed", "activation_failed",
                        "could not flip the current generation symlink");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "current generation flip failed; prior service restart %s",
+                 restart_rc == 0 ? "succeeded" : "failed");
         return DEV_ACTIVATION_E_ACTIVATE;
     }
     (void)dev_activation_refresh_compat_link(txn);
-    dev_activation_write_build_identity(txn, txn->candidate_generation);
-    /* Point of no trivial return: the old service is stopped and `current` now
-     * points at the candidate. Persist the crash-recovery marker so a crash
-     * before we finish is detectable by the next run. */
-    dev_write_in_progress(txn);
-
+    if (!dev_activation_write_build_identity(
+            txn, txn->candidate_generation)) {
+        snprintf(reason, sizeof(reason),
+                 "could not bind candidate source identity intent");
+        (void)dev_activation_rollback_previous(txn, reason);
+        dev_mark_failed(r);
+        dev_set_status(r, NULL, "activation_failed", reason);
+        return DEV_ACTIVATION_E_ACTIVATE;
+    }
     if (ops->service_daemon_reload(ops->ctx) != 0) {
         snprintf(reason, sizeof(reason), "daemon-reload failed mid-activation");
         dev_activation_quarantine(txn, reason);
@@ -784,12 +901,19 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
                    "candidate staged; running process untouched");
     (void)dev_activation_write_deploy_state(txn);
 
-    char commit[128];
-    dev_activation_generation_commit(txn, txn->candidate_generation, commit,
-                                     sizeof(commit));
-    if (commit[0] == 0)
-        snprintf(commit, sizeof(commit), "%s", txn->req->build_commit);
-    if (ops->preflight(ops->ctx, txn->candidate_bin, commit) != 0) {
+    char source_id[65];
+    dev_activation_generation_source_id(
+        txn, txn->candidate_generation, source_id);
+    if (!source_id[0] || strcmp(source_id, txn->req->source_identity) != 0) {
+        dev_set_status(r, "preflight_failed", "source_identity_mismatch",
+                       "generation source_id_sha256 does not match the "
+                       "requested source epoch");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "generation source_id_sha256 mismatch");
+        (void)dev_activation_write_deploy_state(txn);
+        return DEV_ACTIVATION_E_PREFLIGHT;
+    }
+    if (ops->preflight(ops->ctx, txn->candidate_bin, source_id) != 0) {
         dev_set_status(r, "preflight_failed", "preflight_failed",
                        "candidate preflight failed");
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
@@ -870,6 +994,14 @@ static int dev_prepare(struct dev_activation_txn *txn,
         snprintf(result->failure_capsule, sizeof(result->failure_capsule),
                  "confinement refusal");
         return DEV_ACTIVATION_E_CONFINEMENT;
+    }
+    if (!dev_activation_source_id_valid(req->source_identity)) {
+        dev_set_status(result, "refused", "source_identity_invalid",
+                       "activation requires an exact lowercase 64-hex "
+                       "source_id_sha256");
+        snprintf(result->failure_capsule, sizeof(result->failure_capsule),
+                 "missing or malformed source_id_sha256");
+        return DEV_ACTIVATION_E_STAGE;
     }
     if (!dev_activation_mkdir_p(req->datadir) || !dev_activation_mkdir_p(txn->gen_root) ||
         !dev_activation_mkdir_p(txn->rejected_dir))

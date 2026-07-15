@@ -25,9 +25,11 @@ generation if bounded probes fail. Canonical and soak lanes are never touched.
 
 ## What already exists
 
-- `make fast-changed-compile`: changed `.c` files plus depfile dependents.
-- `make fast-rebuild` / `make dev-bin`: cached non-LTO `-Og` objects under
-  `build/dev-obj`, with `ccache` support.
+- `make fast-changed-compile`: source-wide exact-epoch compile proof; changed
+  paths are classification hints only.
+- `make fast-rebuild` / `make dev-bin`: non-LTO `-Og` objects under
+  `build/dev-obj/epochs/<compile-epoch>/`, with `ccache`/`sccache` recovery and
+  atomic exact-candidate publication.
 - `make t-fast`, `make fast-ci`, and `make agent-loop`: focused test routing and
   cached green inputs through `tools/agent_fast_ci.sh`.
 - `deploy/zcl23-dev.service`: isolated datadir `~/.zclassic-c23-dev` and ports
@@ -59,23 +61,23 @@ make dev-loop-bench
 
 `tools/dev/watch-dev-lane.sh` uses `inotifywait` when installed and otherwise
 polls a SHA-256 digest over a sorted path/mtime/size manifest, including the
-sealed `core/` tree. It debounces and
-coalesces editor saves, forwards only the changed paths through
-`ZCL_FAST_CHANGED_FILES_FILE` + `ZCL_FAST_CHANGED_FILES_ONLY=1`, runs the
-existing fast focused gate, classifies against `config/hotswap_eligible.def`,
-and runs verification only. A failed check or rebuild never invokes activation,
-and the watcher remains alive for the next save. Publication modes are
-recognized only to return a refusal. Before publication can be re-enabled,
-every request must require its requested/event
-paths to equal the complete tracked-modified/deleted plus non-ignored untracked
-Git set. Any assume-unchanged or skip-worktree bit refuses. A content identity
-over HEAD, paths, modes, file bytes, symlink targets, and deletions is captured
-before proofs and compared again immediately before resident commit, staging,
-or transactional activation. Changes arriving during any phase supersede the
-epoch and publish nothing. The self-test covers omitted Core edits, hidden
-index bits, and a same-path concurrent mutation in the final CAS window.
-`--once` and injectable commands give the shell self-test a deterministic,
-node-free path.
+sealed `core/` tree. It debounces and coalesces editor saves. Wake paths are
+diagnostic/focused-check hints only: because they cannot prove a complete
+SHA-1-free changed set, every nonempty event is conservatively classified
+`reload_required`. The watcher always runs `check-core-seal` and
+`check-consensus-parity` before the mapped fast check. An initial/once run with
+no explicit hint checks every watched input instead of consulting Git HEAD.
+
+Before verification, the watcher captures one `source-identity.sh
+capture-record` (exact SHA-256 source id, completeness bit, and host-local
+mutation token); after checks and again at the final boundary it requires an
+exact `verify-record`. History-only Git commits do not change this authority,
+while byte/path/mode/inventory drift and edit/restore ABA supersede the cycle.
+Assume-unchanged or skip-worktree bits fail closed in source inventory capture.
+Publication modes are recognized only to return a Phase-0 refusal before
+checks, build, RPC, or mutation. The self-test covers mandatory Core/parity
+gates, history independence, hidden index bits, ABA refusal, and both public
+and in-process containment.
 
 Every attempted cycle atomically writes `zcl.dev_cycle.v1` below
 `~/.local/state/zclassic23-dev/cycles/`, refreshes `latest-cycle.json`, and
@@ -133,7 +135,8 @@ following behavior:
 - Debounce saves. Exactly one build runs; a change during it schedules one
   immediate follow-up from the newest tree.
 - Forward event paths through `ZCL_FAST_CHANGED_FILES_FILE` and
-  `ZCL_FAST_CHANGED_FILES_ONLY=1` so a large dirty tree does not test everything.
+  `ZCL_FAST_CHANGED_FILES_ONLY=1` only as focused-check hints; exact source
+  identity plus the global Core/parity gates carry authority.
 - Run focused fast CI without live probes and record the verdict. The
   activation branch now stops at the Phase-0 refusal.
 - Keep watching after failures and print one actionable summary.

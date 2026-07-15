@@ -22,7 +22,7 @@
 
 lib/codeindex/src/codeindex_scan.c 953
 lib/event/src/event.c 1037
-lib/hotswap/src/hotswap_loader.c 972
+lib/hotswap/src/hotswap_loader.c 952
 lib/kernel/src/command_registry.c 1432
 lib/metrics/src/prometheus_metrics.c 1413
 lib/net/src/addrman.c 1268

@@ -83,7 +83,8 @@ DEV_DEPLOY_BUILD="${ZCL_DEV_DEPLOY_BUILD:-fast}"
 # old `current` generation before the activator flips the link.
 DEV_SYSTEMCTL_TIMEOUT="${ZCL_DEV_SYSTEMCTL_TIMEOUT:-120}"
 
-BUILD_COMMIT=""
+BUILD_SOURCE_ID=""
+BUILD_COMMIT="" # optional display/GitHub trace metadata only
 BUILD_ARTIFACT="${ZCL_DEV_BUILD_ARTIFACT:-}"
 CANDIDATE_GENERATION=""
 CANDIDATE_SHA256=""
@@ -265,6 +266,8 @@ validate_internal_selftest_capability() {
 
     require_selftest_env_exact ZCL_DEV_SKIP_BUILD 1
     require_selftest_env_exact ZCL_DEV_BUILD_COMMIT_OVERRIDE test-build
+    require_selftest_env_exact ZCL_DEV_SOURCE_ID \
+        0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     require_selftest_env_exact ZCL_DEV_STOP_COMMAND \
         'printf "stop\n" >> "$ZCL_TEST_LOG"; rm -f "$ZCL_TEST_RUNNING"'
     require_selftest_env_exact ZCL_DEV_START_COMMAND \
@@ -381,13 +384,30 @@ generation_build_commit() {
     sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1
 }
 
+generation_source_id() {
+    local generation="$1" manifest source_id
+    manifest="$GEN_ROOT/$generation/manifest.json"
+    [ -r "$manifest" ] || return 0
+    source_id="$(sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$manifest" | head -1)"
+    [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] || return 0
+    printf '%s\n' "$source_id"
+}
+
 write_build_identity_for_generation() {
-    local generation="$1" commit
+    local generation="$1" source_id commit
+    source_id="$(generation_source_id "$generation")"
+    [ -n "$source_id" ] || {
+        echo "[dev-lane] FATAL: generation has no valid source_id_sha256: $generation" >&2
+        return 1
+    }
     commit="$(generation_build_commit "$generation")"
     [ -n "$commit" ] || commit="unknown"
     mkdir -p "$(dirname "$BUILD_ID_DROPIN")"
     {
         printf '[Service]\n'
+        printf 'Environment="ZCL_AGENT_EXPECT_SOURCE_ID=%s"\n' "$source_id"
+        # Compatibility/display metadata only; runtime freshness is source-ID.
         printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$commit"
         printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev"\n'
     } > "$BUILD_ID_DROPIN"
@@ -431,6 +451,7 @@ write_deploy_state() {
         printf '{\n'
         printf '  "schema": "zcl.agent_dev_deploy.v1",\n'
         printf '  "deployed_at_utc": "%s",\n' "$(json_escape "$now")"
+        printf '  "source_id_sha256": "%s",\n' "$(json_escape "$BUILD_SOURCE_ID")"
         printf '  "build_commit": "%s",\n' "$(json_escape "$BUILD_COMMIT")"
         printf '  "build_type": "%s",\n' "$(json_escape "$DEV_DEPLOY_BUILD")"
         printf '  "build_artifact": "%s",\n' "$(json_escape "$BUILD_ARTIFACT")"
@@ -478,6 +499,13 @@ acquire_activation_lock() {
 }
 
 build_candidate() {
+    BUILD_SOURCE_ID="${ZCL_DEV_SOURCE_ID,,}"
+    [[ "$BUILD_SOURCE_ID" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "[dev-lane] FATAL: invalid authoritative source_id_sha256" >&2
+        exit 2
+    }
+    # Git is retained only as optional publication/display metadata. Failure to
+    # derive it never changes candidate selection, preflight, or activation.
     git update-index -q --refresh >/dev/null 2>&1 || true
     if [ -n "${ZCL_DEV_BUILD_COMMIT_OVERRIDE:-}" ]; then
         BUILD_COMMIT="$ZCL_DEV_BUILD_COMMIT_OVERRIDE"
@@ -518,12 +546,12 @@ build_candidate() {
 
     case "$DEV_DEPLOY_BUILD" in
         fast)
-            echo "[dev-lane] building fast dev binary (stamp = $BUILD_COMMIT)..."
+            echo "[dev-lane] building fast dev binary (source = $BUILD_SOURCE_ID)..."
             make fast-rebuild >/dev/null
             BUILD_ARTIFACT="$REPO/build/bin/zclassic23-dev"
             ;;
         strict)
-            echo "[dev-lane] building strict node binary (stamp = $BUILD_COMMIT)..."
+            echo "[dev-lane] building strict node binary (source = $BUILD_SOURCE_ID)..."
             make build/bin/zclassic23 -j"$(nproc)" >/dev/null
             BUILD_ARTIFACT="$REPO/build/bin/zclassic23"
             ;;
@@ -541,6 +569,7 @@ write_generation_manifest() {
         printf '  "schema": "zcl.dev_binary_generation.v1",\n'
         printf '  "generation": "%s",\n' "$generation"
         printf '  "sha256": "%s",\n' "$sha"
+        printf '  "source_id_sha256": "%s",\n' "$BUILD_SOURCE_ID"
         printf '  "build_commit": "%s",\n' "$(json_escape "$BUILD_COMMIT")"
         printf '  "build_type": "%s",\n' "$(json_escape "$DEV_DEPLOY_BUILD")"
         printf '  "source_artifact": "%s",\n' "$(json_escape "$source")"
@@ -565,7 +594,8 @@ stage_candidate_generation() {
     fi
     if [ -d "$CANDIDATE_DIR" ]; then
         [ -x "$CANDIDATE_BIN" ] &&
-        [ "$(sha256_file "$CANDIDATE_BIN")" = "$CANDIDATE_SHA256" ] || {
+        [ "$(sha256_file "$CANDIDATE_BIN")" = "$CANDIDATE_SHA256" ] &&
+        [ "$(generation_source_id "$CANDIDATE_GENERATION")" = "$BUILD_SOURCE_ID" ] || {
             echo "[dev-lane] FATAL: immutable generation collision: $CANDIDATE_DIR" >&2
             return 1
         }
@@ -582,10 +612,14 @@ stage_candidate_generation() {
         rm -rf "$tmp"
         [ -x "$CANDIDATE_BIN" ] || return 1
     fi
+    [ "$(generation_source_id "$CANDIDATE_GENERATION")" = "$BUILD_SOURCE_ID" ] || {
+        echo "[dev-lane] FATAL: published generation source identity mismatch" >&2
+        return 1
+    }
 }
 
 import_existing_binary_as_generation() {
-    local existing="$1" sha generation dir tmp commit
+    local existing="$1" sha generation dir tmp agentbuild source_id commit
     [ -x "$existing" ] || return 1
     sha="$(sha256_file "$existing")"
     generation="legacy-${sha,,}"
@@ -593,13 +627,22 @@ import_existing_binary_as_generation() {
     if [ ! -d "$dir" ]; then
         tmp="$(mktemp -d "$GEN_ROOT/.legacy.XXXXXX")"
         install -m 555 "$existing" "$tmp/zclassic23-dev"
-        commit="$($existing agentbuild 2>/dev/null || true)"
-        commit="$(json_first_string_field "$commit" build_commit)"
+        agentbuild="$($existing agentbuild 2>/dev/null || true)"
+        source_id="$(json_first_string_field "$agentbuild" source_id_sha256)"
+        [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] || {
+            chmod 755 "$tmp" 2>/dev/null || true
+            rm -rf "$tmp"
+            echo "[dev-lane] refusing legacy rollback binary without source_id_sha256" >&2
+            return 1
+        }
+        commit="$(json_first_string_field "$agentbuild" build_commit)"
         [ -n "$commit" ] || commit="unknown"
         {
             printf '{"schema":"zcl.dev_binary_generation.v1","generation":"%s",' "$generation"
-            printf '"sha256":"%s","build_commit":"%s","build_type":"legacy-import"}\n' \
-                "$sha" "$(json_escape "$commit")"
+            printf '"sha256":"%s","source_id_sha256":"%s",' \
+                "$sha" "$source_id"
+            printf '"build_commit":"%s","build_type":"legacy-import"}\n' \
+                "$(json_escape "$commit")"
         } > "$tmp/manifest.json"
         chmod 444 "$tmp/manifest.json"
         chmod 555 "$tmp"
@@ -632,13 +675,13 @@ preflight_candidate_default() {
     local timeout_s="${ZCL_DEV_PREFLIGHT_TIMEOUT:-30}" agentbuild tools selftest observed
     agentbuild="$(timeout "$timeout_s" "$CANDIDATE_BIN" agentbuild 2>&1)" || return 1
     printf '%s' "$agentbuild" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v1"' || return 1
-    observed="$(json_first_string_field "$agentbuild" build_commit)"
+    observed="$(json_first_string_field "$agentbuild" source_id_sha256)"
     if [ -z "$observed" ]; then
-        echo "candidate agentbuild omitted build_commit" >&2
+        echo "candidate agentbuild omitted source_id_sha256" >&2
         return 1
     fi
-    if [ "$observed" != "$BUILD_COMMIT" ]; then
-        echo "candidate build identity mismatch: expected=$BUILD_COMMIT observed=$observed" >&2
+    if [ "$observed" != "$BUILD_SOURCE_ID" ]; then
+        echo "candidate source identity mismatch: expected=$BUILD_SOURCE_ID observed=$observed" >&2
         return 1
     fi
     # Native discovery replaces `mcpcall zcl_tools_list`: the registry menu is
@@ -668,25 +711,17 @@ preflight_candidate() {
 }
 
 validate_source_epoch_authority() {
-    local complete_paths
+    [[ "${ZCL_DEV_SOURCE_ID:-}" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "[dev-lane] REFUSING: activation requires a lowercase 64-hex ZCL_DEV_SOURCE_ID from an exact dev.change.apply source epoch" >&2
+        exit 3
+    }
     if [ "$ACTIVATION_SELFTEST" -eq 1 ]; then
         return 0
     fi
-    [[ "${ZCL_DEV_SOURCE_ID:-}" =~ ^[0-9a-fA-F]{64}$ ]] || {
-        echo "[dev-lane] REFUSING: activation requires ZCL_DEV_SOURCE_ID from an exact dev.change.apply source epoch" >&2
-        echo "[dev-lane] use the native apply command; direct deploy helpers are internal activation backends" >&2
-        exit 3
-    }
-    complete_paths="$("$REPO/tools/dev/source-identity.sh" paths)" || {
-        echo "[dev-lane] REFUSING: complete dirty-set discovery failed" >&2
-        exit 3
-    }
-    if grep -q '^core/' <<< "$complete_paths" &&
-       { [ ! -f "$REPO/.core-unseal-token" ] ||
-         [ -L "$REPO/.core-unseal-token" ]; }; then
-        echo "[dev-lane] REFUSING: sealed Core source requires the owner unseal ritual" >&2
-        exit 3
-    fi
+    # Public publication is hard-contained above. Do not derive future
+    # activation authority from a HEAD-relative Git dirty set here: the exact
+    # source ID is the only supersession CAS. Reopening publication also
+    # requires the separately signed/verified Core-seal transaction.
 }
 
 verify_source_epoch_cas() {
@@ -768,10 +803,10 @@ running_executable() {
 activation_probe_default() {
     local expected="$1" cli="$REPO/build/bin/zclassic-cli"
     local timeout_s="${ZCL_DEV_PROBE_TIMEOUT:-${ZCL_DEV_AGENT_TIMEOUT:-10}}"
-    local height agent operator_snapshot catalog selftest expected_commit observed_commit expected_bin
+    local height agent operator_snapshot catalog selftest expected_source_id observed_source_id expected_bin
     expected_bin="$GEN_ROOT/$expected/zclassic23-dev"
-    expected_commit="$(generation_build_commit "$expected")"
-    [ -n "$expected_commit" ] || return 1
+    expected_source_id="$(generation_source_id "$expected")"
+    [ -n "$expected_source_id" ] || return 1
     [ -x "$cli" ] || return 1
     height="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" getblockcount 2>/dev/null)" || return 1
@@ -779,11 +814,12 @@ activation_probe_default() {
     agent="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" agent 2>/dev/null)" || return 1
     printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"' || return 1
-    observed_commit="$(json_first_string_field "$agent" build_commit)"
-    [ -n "$observed_commit" ] && [ "$observed_commit" = "$expected_commit" ] || return 1
+    observed_source_id="$(json_first_string_field "$agent" source_id_sha256)"
+    [ -n "$observed_source_id" ] &&
+        [ "$observed_source_id" = "$expected_source_id" ] || return 1
     operator_snapshot="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" operatorsnapshot 2>/dev/null)" || return 1
-    printf '%s' "$operator_snapshot" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_snapshot.v1"' || return 1
+    printf '%s' "$operator_snapshot" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_snapshot.v2"' || return 1
     catalog="$(timeout "$timeout_s" "$expected_bin" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" discover help 2>/dev/null)" || return 1
     printf '%s' "$catalog" | grep -q '"children"[[:space:]]*:' || return 1

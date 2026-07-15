@@ -20,7 +20,10 @@
 #include "util/log_macros.h"
 #include "validation/main_state.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <pwd.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -46,23 +49,113 @@ static _Noreturn void icb_refuse(const char *fmt, ...)
     _exit(EXIT_FAILURE);
 }
 
-/* The canonical daily-driver datadir (agent_lane_runtime.c topology). A live
- * cutover there is owner-gated behind ZCL_DEPLOY_ALLOW_CANONICAL; dev/copy
- * datadirs proceed. */
-static bool icb_is_canonical_datadir(const char *datadir)
+static bool icb_same_directory(int target_fd, const char *candidate,
+                               bool *same)
 {
-    if (!datadir || !datadir[0])
-        return false;
-    const char *home = getenv("HOME");
-    if (!home || !home[0])
-        return false;
-    char canonical[1024];
-    int n = snprintf(canonical, sizeof(canonical), "%s/.zclassic-c23", home);
-    if (n <= 0 || (size_t)n >= sizeof(canonical))
-        return false;
-    return strcmp(datadir, canonical) == 0 ||
-           strcmp(datadir, "~/.zclassic-c23") == 0;
+    *same = false;
+    int candidate_fd = open(candidate, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (candidate_fd < 0)
+        return errno == ENOENT;
+    struct stat target_st;
+    struct stat candidate_st;
+    bool ok = fstat(target_fd, &target_st) == 0 &&
+              fstat(candidate_fd, &candidate_st) == 0;
+    if (ok)
+        *same = target_st.st_dev == candidate_st.st_dev &&
+                target_st.st_ino == candidate_st.st_ino;
+    (void)close(candidate_fd);
+    return ok;
 }
+
+static bool icb_canonical_candidate(int target_fd, const char *home,
+                                    bool *canonical)
+{
+    if (!home || !home[0])
+        return true;
+    char candidate[PATH_MAX];
+    int n = snprintf(candidate, sizeof(candidate), "%s/.zclassic-c23", home);
+    if (n <= 0 || (size_t)n >= sizeof(candidate))
+        return false;
+    bool same = false;
+    if (!icb_same_directory(target_fd, candidate, &same))
+        return false;
+    *canonical = *canonical || same;
+    return true;
+}
+
+/* Open the target once and compare directory identities, not spelling. Both
+ * the account home and HOME are considered: an altered/unset HOME must not
+ * turn the real daily-driver into a copy-proof lane, while test/service homes
+ * still receive the same conservative gate. The returned descriptor is also
+ * the capability used for the CAS decision record. */
+static struct zcl_result icb_datadir_open_classify(const char *datadir,
+                                                   int *out_fd,
+                                                   bool *out_canonical)
+{
+    if (out_fd)
+        *out_fd = -1;
+    if (out_canonical)
+        *out_canonical = false;
+    if (!datadir || !datadir[0] || !out_fd || !out_canonical)
+        return ZCL_ERR(-1, "datadir classification arguments are missing");
+
+    int target_fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (target_fd < 0)
+        return ZCL_ERR(-2, "could not open datadir: %s", strerror(errno));
+
+    bool canonical = false;
+    bool have_home = false;
+    char pwbuf[16384];
+    struct passwd pwd;
+    struct passwd *pw = NULL;
+    if (getpwuid_r(geteuid(), &pwd, pwbuf, sizeof(pwbuf), &pw) == 0 &&
+        pw && pw->pw_dir && pw->pw_dir[0]) {
+        have_home = true;
+        if (!icb_canonical_candidate(target_fd, pw->pw_dir, &canonical)) {
+            (void)close(target_fd);
+            return ZCL_ERR(-3, "could not resolve account canonical datadir");
+        }
+    }
+
+    const char *env_home = getenv("HOME");
+    if (env_home && env_home[0]) {
+        have_home = true;
+        if (!icb_canonical_candidate(target_fd, env_home, &canonical)) {
+            (void)close(target_fd);
+            return ZCL_ERR(-4, "could not resolve HOME canonical datadir");
+        }
+    }
+    if (!have_home) {
+        (void)close(target_fd);
+        return ZCL_ERR(-5, "no account or HOME directory for lane authority");
+    }
+
+    *out_fd = target_fd;
+    *out_canonical = canonical;
+    return ZCL_OK;
+}
+
+static bool icb_canonical_authorized(const char *authorization)
+{
+    return authorization && strcmp(authorization, "1") == 0;
+}
+
+#ifdef ZCL_TESTING
+bool boot_install_consensus_bundle_gate_allows_for_test(
+    const char *datadir, const char *authorization, bool *out_canonical)
+{
+    int dir_fd = -1;
+    bool canonical = false;
+    struct zcl_result classified =
+        icb_datadir_open_classify(datadir, &dir_fd, &canonical);
+    if (!classified.ok)
+        return false;
+    (void)close(dir_fd);
+    if (out_canonical)
+        *out_canonical = canonical;
+    return !canonical || icb_canonical_authorized(authorization);
+}
+#endif
 
 /* Read the producer source receipt from the pinned, already-validated bundle
  * handle. The CAS re-checks the receipt's self-consistency and its binding to
@@ -71,7 +164,7 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
                                     struct consensus_state_source_receipt *out)
 {
     static const char sql[] =
-        "SELECT source_epoch_digest,source_tree_root,running_binary_digest,"
+        "SELECT schema,source_epoch_digest,source_tree_root,running_binary_digest,"
         "toolchain_digest,build_inputs_digest,chain_corpus_digest,source_clean,"
         "validation_profile,producer_commit,fold_cursor,receipt_digest "
         "FROM source_receipt WHERE singleton=1";
@@ -81,10 +174,10 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
     memset(out, 0, sizeof(*out));
     bool ok = sqlite3_step(st) == SQLITE_ROW; // raw-sql-ok:read-only-introspection
     const struct { int col; uint8_t *dst; } blobs[] = {
-        {0, out->source_epoch_digest}, {1, out->source_tree_root},
-        {2, out->running_binary_digest}, {3, out->toolchain_digest},
-        {4, out->build_inputs_digest}, {5, out->chain_corpus_digest},
-        {10, out->receipt_digest},
+        {1, out->source_epoch_digest}, {2, out->source_tree_root},
+        {3, out->running_binary_digest}, {4, out->toolchain_digest},
+        {5, out->build_inputs_digest}, {6, out->chain_corpus_digest},
+        {11, out->receipt_digest},
     };
     for (size_t i = 0; ok && i < sizeof(blobs) / sizeof(blobs[0]); i++) {
         ok = sqlite3_column_type(st, blobs[i].col) == SQLITE_BLOB &&
@@ -93,14 +186,38 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
             memcpy(blobs[i].dst, sqlite3_column_blob(st, blobs[i].col), 32);
     }
     if (ok) {
-        const unsigned char *commit = sqlite3_column_text(st, 8);
-        ok = commit && sqlite3_column_bytes(st, 8) == 40;
+        const unsigned char *schema =
+            sqlite3_column_type(st, 0) == SQLITE_TEXT
+                ? sqlite3_column_text(st, 0) : NULL;
+        int schema_len = schema ? sqlite3_column_bytes(st, 0) : -1;
+        const unsigned char *commit =
+            sqlite3_column_type(st, 9) == SQLITE_TEXT
+                ? sqlite3_column_text(st, 9) : NULL;
+        int commit_len = commit ? sqlite3_column_bytes(st, 9) : -1;
+        uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+        ok = schema && schema_len >= 0 &&
+             consensus_state_source_receipt_schema_version(
+                 (const char *)schema, (size_t)schema_len,
+                 &receipt_version) &&
+             commit && commit_len >= 0 &&
+             consensus_state_source_receipt_commit_valid(
+                 receipt_version, (const char *)commit,
+                 (size_t)commit_len) &&
+             sqlite3_column_type(st, 7) == SQLITE_INTEGER &&
+             (sqlite3_column_int(st, 7) == 0 ||
+              sqlite3_column_int(st, 7) == 1) &&
+             sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
+             (sqlite3_column_int(st, 8) == CONSENSUS_STATE_VALIDATION_FULL ||
+              sqlite3_column_int(st, 8) ==
+                  CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
+             sqlite3_column_type(st, 10) == SQLITE_INTEGER;
         if (ok) {
-            memcpy(out->producer_commit, commit, 40);
-            out->producer_commit[40] = '\0';
-            out->source_clean = sqlite3_column_int(st, 6) == 1;
-            out->validation_profile = (uint8_t)sqlite3_column_int(st, 7);
-            out->fold_cursor = sqlite3_column_int64(st, 9);
+            out->schema_version = receipt_version;
+            memcpy(out->producer_commit, commit, (size_t)commit_len);
+            out->producer_commit[commit_len] = '\0';
+            out->source_clean = sqlite3_column_int(st, 7) == 1;
+            out->validation_profile = (uint8_t)sqlite3_column_int(st, 8);
+            out->fold_cursor = sqlite3_column_int64(st, 10);
         }
     }
     sqlite3_finalize(st);
@@ -114,16 +231,23 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     if (!bundle_path || !bundle_path[0] || !datadir || !datadir[0])
         icb_refuse("empty bundle path or datadir");
 
-    /* (1) Containment: the canonical daily-driver is owner-gated. */
-    if (icb_is_canonical_datadir(datadir) &&
-        !(getenv("ZCL_DEPLOY_ALLOW_CANONICAL") &&
-          getenv("ZCL_DEPLOY_ALLOW_CANONICAL")[0]))
+    /* (1) Containment: descriptor-classify the target once, then retain that
+     * exact directory capability through the CAS decision write. */
+    int dir_fd = -1;
+    bool canonical_datadir = false;
+    struct zcl_result classified =
+        icb_datadir_open_classify(datadir, &dir_fd, &canonical_datadir);
+    if (!classified.ok)
+        icb_refuse("datadir lane classification failed: %s",
+                   classified.message);
+    if (canonical_datadir && !icb_canonical_authorized(
+            getenv("ZCL_DEPLOY_ALLOW_CANONICAL")))
         icb_refuse("datadir %s is the canonical lane; set "
                    "ZCL_DEPLOY_ALLOW_CANONICAL=1 to cut over the daily-driver, "
                    "or run the install on a dev/copy datadir first", datadir);
 
     enum consensus_state_target_lane lane =
-        icb_is_canonical_datadir(datadir)
+        canonical_datadir
             ? CONSENSUS_STATE_TARGET_LANE_CANONICAL
             : CONSENSUS_STATE_TARGET_LANE_COPY_PROOF;
 
@@ -163,13 +287,6 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
      * == request->main); at this boot stage the singleton is not yet wired to
      * the reducer, so set it for the duration of the decision and restore it.
      * Single-threaded boot — no reducer thread observes the transient value. */
-    int dir_fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dir_fd < 0) {
-        consensus_state_artifact_evidence_free(artifact);
-        icb_refuse("could not open datadir for the decision record: %s",
-                   datadir);
-    }
-
     struct main_state *prev_singleton = condition_engine_main_state();
     condition_engine_set_main_state(ms);
 
@@ -196,7 +313,6 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     condition_engine_set_main_state(prev_singleton);
     if (chain_evidence)
         consensus_state_chain_evidence_free(chain_evidence);
-    (void)close(dir_fd);
 
     if (!chain_built.ok) {
         consensus_state_artifact_evidence_free(artifact);
@@ -214,23 +330,40 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
                    consensus_state_publication_refusal_name(decision.refusal),
                    decision.reason);
     }
+    struct consensus_state_publication_decision_record durable_decision;
+    struct zcl_result loaded = consensus_state_publication_cas_load(
+        dir_fd, ICB_DECISION_RECORD_NAME, &durable_decision);
+    if (!loaded.ok) {
+        consensus_state_artifact_evidence_free(artifact);
+        icb_refuse("durable publication ADMIT could not be reloaded exactly: "
+                   "%s", loaded.message);
+    }
+    if (memcmp(durable_decision.decision_digest, decision.decision_digest,
+               32) != 0) {
+        consensus_state_artifact_evidence_free(artifact);
+        icb_refuse("durable publication ADMIT changed between write and load");
+    }
 
-    /* The artifact handle is done; the activate step re-opens + re-validates the
-     * immutable file itself. */
+    /* The activate step re-opens and must reproduce the exact artifact receipt
+     * bound into the ADMIT record; height/hash alone carry no state authority. */
     consensus_state_artifact_evidence_free(artifact);
 
     /* (5) ADMIT — atomically install the complete state. */
     struct consensus_state_activate_request areq;
     memset(&areq, 0, sizeof(areq));
     areq.bundle_path = bundle_path;
+    memcpy(areq.expected_artifact_receipt_digest,
+           durable_decision.artifact_receipt_digest, 32);
     areq.expected_height = manifest.height;
     memcpy(areq.expected_block_hash, manifest.block_hash, 32);
-    areq.datadir = datadir;
+    areq.publication_decision = &durable_decision;
+    areq.datadir_fd = dir_fd;
+    areq.datadir_display = datadir;
     struct consensus_state_activate_result ares;
     if (!consensus_state_snapshot_install_activate(progress_store_db(), &areq,
                                                    &ares))
-        icb_refuse("activation install failed after ADMIT (nothing committed): "
-                   "%s", ares.reason);
+        icb_refuse("activation install failed after ADMIT: %s", ares.reason);
+    (void)close(dir_fd);
 
     fprintf(stderr,
             "INSTALLED: -install-consensus-bundle: %s\n"

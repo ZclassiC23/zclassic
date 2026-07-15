@@ -222,9 +222,11 @@ Goal: useful third-party C23 Apps without giving them node authority.
   lifecycle/health, shadow migrations, leases, rollback floor, and signed event
   authority.
 - Keep operator dev hot swap on an isolated lane. Run every fetched/published
-  third-party App out of process through a minimal broker and same-binary worker
-  mode with rootless namespaces, Landlock, seccomp, W^X, rlimits, inherited
-  capability IPC only, blue/green replacement, and bounded restart budgets.
+  third-party App as its own verified static PIE artifact through a minimal
+  broker: private-CAS descriptor pinning, one `execveat`, rootless namespaces,
+  Landlock, seccomp, W^X, rlimits, inherited capability IPC only, blue/green
+  replacement, and bounded restart budgets. Never self-exec Core as an App
+  worker or map fetched App code into the node process.
 - Bind authenticated roles to local capability grants. Integrate Noise/AEAD
   below message parsing without breaking byte-identical zclassicd v1 peers.
 - Build Social and Games reference Apps proving signed replay/convergence,

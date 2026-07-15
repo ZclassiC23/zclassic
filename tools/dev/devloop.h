@@ -128,18 +128,6 @@ bool zcl_devloop_publish_mode_applies(
 const char *zcl_devloop_publish_mode_name(
     enum zcl_devloop_publish_mode publish_mode);
 enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
-bool zcl_devloop_changed_set_exact(const char *const *requested,
-                                   size_t requested_count,
-                                   const char *const *discovered,
-                                   size_t discovered_count,
-                                   char *why, size_t why_len);
-/* Validate the observed event paths as bounded wake hints, then derive the
- * authoritative plan exclusively from the complete Git-visible dirty set.
- * A docs-only event therefore cannot hide a dirty consensus/Core path. */
-bool zcl_devloop_plan_discovered_changes(
-    const char *const *observed, size_t observed_count,
-    const char *const *discovered, size_t discovered_count,
-    struct zcl_devloop_plan *out);
 /* Pure path builder shared by the native watcher's flock acquisition and its
  * regression tests.  repo_root must already identify the worktree whose lane
  * is being watched; distinct worktrees consequently receive distinct locks. */
@@ -213,11 +201,12 @@ struct dev_activation_cycle_request {
  * zcl23-dev.service, DEV_RPCPORT 18252, build_type "fast") plus the
  * fast-lane artifact at <repo_root>/build/bin/zclassic23-dev. Pure: reads
  * only HOME and ZCL_DEV_GENERATION_ROOT, never touches disk beyond that and
- * never spawns a process. `repo_root` and `build_commit` are stored by
- * pointer (not copied) and must outlive `out`; `build_commit` may be ""
- * (dev_activation's preflight skips the build-commit comparison when
- * empty) but not NULL. Returns false, leaving *out unusable, iff HOME is
- * unset/empty or an argument is NULL/oversized. */
+ * never spawns a process. `repo_root` and display-only `build_commit` are
+ * stored by pointer (not copied) and must outlive `out`; `build_commit` may
+ * be "" but not NULL. It is never a preflight or activation decision input.
+ * The caller binds req.source_identity separately before activation. Returns
+ * false, leaving *out unusable, iff HOME is unset/empty or an argument is
+ * NULL/oversized. */
 bool dev_activation_request_from_cycle(const char *repo_root,
                                        const char *build_commit,
                                        struct dev_activation_cycle_request *out);

@@ -9,8 +9,12 @@
 #include <stdint.h>
 
 #define CONSENSUS_STATE_BUNDLE_SCHEMA "zcl.consensus_state_bundle.v1"
-#define CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA \
+#define CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V1 \
     "zcl.consensus_state_source_receipt.v1"
+#define CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2 \
+    "zcl.consensus_state_source_receipt.v2"
+#define CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA \
+    CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA_V2
 #define CONSENSUS_STATE_SOURCE_EPOCH_META_KEY \
     "consensus_state.source_epoch_digest"
 #define CONSENSUS_STATE_BUNDLE_PROOF_COUNT 8u
@@ -25,6 +29,12 @@ enum consensus_state_validation_profile {
     CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD = 2,
 };
 
+enum consensus_state_source_receipt_version {
+    CONSENSUS_STATE_SOURCE_RECEIPT_INVALID = 0,
+    CONSENSUS_STATE_SOURCE_RECEIPT_V1 = 1,
+    CONSENSUS_STATE_SOURCE_RECEIPT_V2 = 2,
+};
+
 struct sha3_256_ctx;
 
 /* Producer claims bound to an exact running executable and chain corpus. The
@@ -33,7 +43,11 @@ struct sha3_256_ctx;
  * independent rebuild proof; their authority comes from the known executable
  * that emitted and durably recorded this receipt. */
 struct consensus_state_source_receipt {
+    uint8_t schema_version;
     uint8_t source_epoch_digest[32];
+    /* v1: legacy SHA3 claim derived from a Git SHA-1 + clean bit.
+     * v2: exact zcl.dev_source_identity.v2 SHA-256 over canonical current
+     * source-tree paths, modes, file bytes, and symlink targets. */
     uint8_t source_tree_root[32];
     uint8_t running_binary_digest[32];
     uint8_t toolchain_digest[32];
@@ -41,10 +55,21 @@ struct consensus_state_source_receipt {
     uint8_t chain_corpus_digest[32];
     bool source_clean;
     uint8_t validation_profile;
-    char producer_commit[41]; /* exact lowercase full Git SHA-1 */
+    /* v1 authority input. V2 reserves this field as empty; GitHub trace
+     * metadata belongs outside the authoritative receipt. */
+    char producer_commit[41];
     int64_t fold_cursor;
     uint8_t receipt_digest[32];
 };
+
+/* Exact schema parsing and legacy-field shape. V1 requires a lowercase 40-hex
+ * Git commit because it is part of that legacy digest. V2 requires empty. */
+bool consensus_state_source_receipt_schema_version(
+    const char *schema, size_t schema_len, uint8_t *out_version);
+const char *consensus_state_source_receipt_schema(uint8_t version);
+bool consensus_state_source_receipt_commit_valid(uint8_t version,
+                                                 const char *commit,
+                                                 size_t commit_len);
 
 /* Canonical summaries of producer evidence: header chain plus seven reducer
  * stages. component_digest commits the complete source rows inspected by the

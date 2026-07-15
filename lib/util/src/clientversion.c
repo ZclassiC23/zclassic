@@ -8,15 +8,12 @@
 
 const char CLIENT_NAME[] = "ZClassic23";
 
-#ifndef ZCL_BUILD_COMMIT
-#define ZCL_BUILD_COMMIT "unknown"
-#endif
-
-/* Exact 40-hex commit + clean flag, baked as -D macros by the Makefile and
- * refreshed here through the same commit stamp that keeps ZCL_BUILD_COMMIT
- * current. See the header for why this getter is not a static inline. */
-#ifndef ZCL_BUILD_COMMIT_FULL
-#define ZCL_BUILD_COMMIT_FULL "unknown"
+/* Git commit ids intentionally stay outside the sovereign executable. If they
+ * were baked as display text, the exact executable digest used by producer
+ * receipts would still change with Git's SHA-1 history despite identical source
+ * bytes. GitHub publication may attach that trace in an external sidecar. */
+#ifndef ZCL_BUILD_SOURCE_ID
+#define ZCL_BUILD_SOURCE_ID "unknown"
 #endif
 #ifndef ZCL_BUILD_CLEAN
 #define ZCL_BUILD_CLEAN 0
@@ -24,12 +21,17 @@ const char CLIENT_NAME[] = "ZClassic23";
 
 const char *zcl_build_commit(void)
 {
-    return ZCL_BUILD_COMMIT;
+    return "external";
 }
 
 const char *zcl_build_commit_full(void)
 {
-    return ZCL_BUILD_COMMIT_FULL;
+    return "external";
+}
+
+const char *zcl_build_source_id_sha256(void)
+{
+    return ZCL_BUILD_SOURCE_ID;
 }
 
 bool zcl_build_source_clean(void)

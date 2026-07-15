@@ -18,13 +18,6 @@
 #include <stdio.h>
 
 #define NF_ACTIVATION_KEY "nullifier_kv.activation_cursor"
-#define SHIELDED_REPLAY_TARGET_KEY "shielded_history.full_replay.target"
-#define SHIELDED_REPLAY_NEXT_KEY "shielded_history.full_replay.next"
-#define SHIELDED_REPLAY_SPROUT_STARTED_KEY \
-    "shielded_history.full_replay.sprout_started"
-#define SHIELDED_REPLAY_SAPLING_STARTED_KEY \
-    "shielded_history.full_replay.sapling_started"
-
 static bool marker_set_i64_in_tx(sqlite3 *db, const char *key, int64_t value)
 {
     if (!db || !key || !key[0] || value < 0 ||
@@ -211,6 +204,21 @@ bool nullifier_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
         return false;
     }
     return true;
+}
+
+bool shielded_history_cancel_full_replay_in_tx(sqlite3 *db)
+{
+    if (!db || sqlite3_get_autocommit(db) != 0) {
+        LOG_WARN("nullifier_kv",
+                 "[shielded_history] replay cancel requires transaction");
+        return false;
+    }
+    return progress_meta_delete_in_tx(db, SHIELDED_REPLAY_TARGET_KEY) &&
+           progress_meta_delete_in_tx(db, SHIELDED_REPLAY_NEXT_KEY) &&
+           progress_meta_delete_in_tx(
+               db, SHIELDED_REPLAY_SPROUT_STARTED_KEY) &&
+           progress_meta_delete_in_tx(
+               db, SHIELDED_REPLAY_SAPLING_STARTED_KEY);
 }
 
 static const char *replay_started_key(int pool)
@@ -442,12 +450,7 @@ bool shielded_history_reset_to_boundary(sqlite3 *db,
     /* Any assisted/general reset cancels a prior full-replay session in the
      * same transaction. The positive component markers remain the authority;
      * orphan session cursors must never authorize a later completion. */
-    if (ok && (!progress_meta_delete_in_tx(db, SHIELDED_REPLAY_TARGET_KEY) ||
-               !progress_meta_delete_in_tx(db, SHIELDED_REPLAY_NEXT_KEY) ||
-               !progress_meta_delete_in_tx(
-                   db, SHIELDED_REPLAY_SPROUT_STARTED_KEY) ||
-               !progress_meta_delete_in_tx(
-                   db, SHIELDED_REPLAY_SAPLING_STARTED_KEY)))
+    if (ok && !shielded_history_cancel_full_replay_in_tx(db))
         ok = false;
 
     const char *finish = ok ? "COMMIT" : "ROLLBACK";

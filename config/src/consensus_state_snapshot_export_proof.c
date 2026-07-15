@@ -58,18 +58,6 @@ static bool digest_nonzero(const uint8_t digest[32])
     return any != 0;
 }
 
-static bool lowercase_full_commit(const char commit[41])
-{
-    if (strnlen(commit, 41) != 40)
-        return false;
-    for (size_t i = 0; i < 40; i++) {
-        char c = commit[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            return false;
-    }
-    return true;
-}
-
 static bool running_binary_digest(uint8_t out[32])
 {
     int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
@@ -136,11 +124,20 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                                        : SQLITE_NULL;
     const unsigned char *commit = commit_type == SQLITE_TEXT
                                       ? sqlite3_column_text(st, 10) : NULL;
+    int commit_len = commit ? sqlite3_column_bytes(st, 10) : -1;
+    const unsigned char *schema =
+        rc == SQLITE_ROW && sqlite3_column_type(st, 1) == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+    int schema_len = schema ? sqlite3_column_bytes(st, 1) : -1;
+    uint8_t receipt_version = CONSENSUS_STATE_SOURCE_RECEIPT_INVALID;
+    bool schema_ok = schema && schema_len >= 0 &&
+        consensus_state_source_receipt_schema_version(
+            (const char *)schema, (size_t)schema_len, &receipt_version) &&
+        receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V2;
     bool ok = rc == SQLITE_ROW && commit &&
               sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
               sqlite3_column_int(st, 0) == 1 &&
-              consensus_state_sqlite_text_equal(
-                  st, 1, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA) &&
+              schema_ok &&
               copy_receipt_blob(st, 2, receipt->source_epoch_digest) &&
               copy_receipt_blob(st, 3, receipt->source_tree_root) &&
               copy_receipt_blob(st, 4, receipt->running_binary_digest) &&
@@ -155,13 +152,17 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                sqlite3_column_int(st, 9) ==
                    CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
               commit_type == SQLITE_TEXT &&
-              sqlite3_column_bytes(st, 10) == 40 &&
+              commit_len >= 0 &&
+              consensus_state_source_receipt_commit_valid(
+                  receipt_version, (const char *)commit,
+                  (size_t)commit_len) &&
               sqlite3_column_type(st, 11) == SQLITE_INTEGER &&
               sqlite3_column_int64(st, 11) == fold_cursor &&
               copy_receipt_blob(st, 12, receipt->receipt_digest);
     if (ok) {
-        memcpy(receipt->producer_commit, commit, 40);
-        receipt->producer_commit[40] = '\0';
+        receipt->schema_version = receipt_version;
+        memcpy(receipt->producer_commit, commit, (size_t)commit_len);
+        receipt->producer_commit[commit_len] = '\0';
         receipt->source_clean = sqlite3_column_int(st, 8) == 1;
         receipt->validation_profile =
             (uint8_t)sqlite3_column_int(st, 9);
@@ -178,7 +179,10 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
              digest_nonzero(receipt->source_tree_root) &&
              digest_nonzero(receipt->toolchain_digest) &&
              digest_nonzero(receipt->build_inputs_digest) &&
-             lowercase_full_commit(receipt->producer_commit) &&
+             consensus_state_source_receipt_commit_valid(
+                 receipt->schema_version, receipt->producer_commit,
+                 strnlen(receipt->producer_commit,
+                         sizeof(receipt->producer_commit))) &&
              memcmp(receipt->chain_corpus_digest, chain_corpus_digest, 32) == 0 &&
              running_binary_digest(executable) &&
              memcmp(receipt->running_binary_digest, executable, 32) == 0;
@@ -191,7 +195,8 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
     }
     if (!ok) {
         LOG_WARN(EXPORT_PROOF_SUBSYS,
-                 "source provenance receipt missing, malformed, or stale");
+                 "source provenance receipt missing, malformed, stale, or "
+                 "legacy inspection-only v1");
         return false;
     }
     memcpy(source_digest, recomputed, 32);

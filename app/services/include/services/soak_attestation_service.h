@@ -9,7 +9,8 @@
  *    "degraded_reason":"<string-or-empty>",
  *    "security_review_required":<bool>,"security_posture_ok":<bool>,
  *    "window_eligible":<bool>,
- *    "build_commit":"<hash>","uptime_s":<N>}
+ *    "source_id_sha256":"<sha256>","build_commit":"<git-trace>",
+ *    "uptime_s":<N>}
  *
  * The line log is bounded (rotate at 50 MB to a single .1 suffix) and
  * fsynced every 10 lines so a crash-only-safe OS event is never lost.

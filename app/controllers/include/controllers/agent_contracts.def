@@ -17,7 +17,7 @@ AGENT_CONTRACT("agent", "runtime_status", "zcl.public_status.v1",
                "serving state, heights, peers, blockers, lane, readiness",
                "bounded live status: build, lane safety, heights, peers, blocker, and next action")
 AGENT_CONTRACT("operatorsnapshot", "authoritative_operator_snapshot",
-               "zcl.operator_snapshot.v1",
+               "zcl.operator_snapshot.v2",
                "zclassic23 operatorsnapshot", "zcl_operator_snapshot", "",
                "", "",
                "direct", 4, "operator_snapshot",

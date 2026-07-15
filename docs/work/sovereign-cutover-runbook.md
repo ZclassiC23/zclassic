@@ -1,6 +1,16 @@
 # Sovereign cutover runbook — install the consensus-state bundle, cure the wedge
 
-**Status 2026-07-14.** This supersedes the pre-bundle `-refold-from-anchor` /
+**Status 2026-07-15 — transaction engine copy-testable, production activation
+contained, no admissible artifact yet.** The
+`zclassic23-mint-receipt` producer reached the checkpoint and failed the
+compiled UTXO count/root gate (short by two outputs); it did **not** emit an
+installable bundle. Its restart policy repeated the same deterministic failure
+187 times before the owner-authorized stop; it is now inactive/dead. Preserve
+that datadir as evidence and do not run any command in this document against
+production until a new producer passes parity, the complete bundle passes copy
+proof, and an independently replay-bound receipt outside the bundle replaces
+the current self-asserted provenance. Production ACTIVATE currently returns
+`VERIFIED_CONTAINED` before any write. This runbook supersedes the pre-bundle `-refold-from-anchor` /
 `utxo-anchor.snapshot` recipe that lived in this file through 2026-07-08 (that
 mechanism only ever carried transparent coins; it produced the exact
 `utxo_apply.anchor_backfill_gap` wedge the live node is stuck on today —
@@ -26,13 +36,13 @@ acting — heights, commits, and producer state rot fast in this repo.
   (`config/src/boot_mint_anchor.c:boot_mint_anchor_export_bundle`,
   `config/include/config/boot.h:420-430`). The export is proof-bound to the
   exact running binary (`running_binary_digest == SHA3(/proc/self/exe)`) and
-  refuses while the in-RAM fold overlay is live. The currently-running source
-  producer is the `zclassic23-mint-receipt` systemd --user unit, datadir
-  `$HOME/.zclassic-c23-mint-receipt` — confirm live status with
-  `systemctl --user status zclassic23-mint-receipt` and current fold cursor
-  via `zclassic23 anchorstatus` / `docs/HANDOFF.md`; do not assume the export
-  has happened without checking for the file.
-- **Consumer side** (this doc): `-install-consensus-bundle=PATH`
+  refuses while the in-RAM fold overlay is live. The failed source producer is
+  the `zclassic23-mint-receipt` systemd --user unit, datadir
+  `$HOME/.zclassic-c23-mint-receipt`; the unit is stopped and the datadir is
+  evidence, not an artifact source.
+  Current truth and the exact mismatch are in `docs/HANDOFF.md`.
+- **Consumer side** (this doc, currently contained in production):
+  `-install-consensus-bundle=PATH`
   (`config/src/boot_install_consensus_bundle.c`, wired in `config/src/boot.c`
   right after snapshot autodetect, contract in `config/include/config/boot.h`).
   Steps, all fail-closed:
@@ -48,7 +58,10 @@ acting — heights, commits, and producer state rot fast in this repo.
      binding, durable frontier not behind the bundle). A decision record
      (`consensus_state_publication_decision.v1`) is written to the datadir
      regardless of outcome.
-  4. On `ADMIT`, atomically installs via
+  4. Today, production refuses after contained admission because the bundle's
+     receipt is not independent authority. The following transaction is
+     exercised under `ZCL_TESTING` only. Once a real external replay receipt
+     exists, an authorized `ADMIT` can atomically install via
      `consensus_state_snapshot_install_activate`: one `BEGIN IMMEDIATE`
      transaction that clears the reducer-derived logs/deltas, replaces
      `coins`, resets both anchor tables + the nullifier set to activation
@@ -59,19 +72,26 @@ acting — heights, commits, and producer state rot fast in this repo.
      sets `COINS_KV_MIGRATION_COMPLETE_KEY` + `COINS_KV_SELF_FOLDED_KEY`
      (same provenance markers `coins_kv_is_proven_authority()` /
      `coins_kv_contains_refold_marker()` read — G-SOV part 3 is satisfied the
-     same way a from-anchor refold satisfies it), clears any stale
-     `REDUCER_TRUSTED_BASE_*` declaration, and re-verifies the installed
-     UTXO root/count against the manifest **before** `COMMIT` (a mismatch
-     rolls the whole install back — nothing partially applies). Before the
-     transaction opens, it captures a **physically restorable prior
-     generation** of the progress store via `VACUUM main INTO
-     <datadir>/progress.kv.preinstall.<epoch>.<pid>` — see Rollback below.
+     same way a from-anchor refold satisfies it), clears superseded shielded
+     replay/backfill/refold sessions, seeds the tip anchor inside the same
+     transaction, and requires exact destination commitments plus
+     `H*=served=height` and `coins_applied=height+1` **before** `COMMIT`.
+     The durable ADMIT's expected H*/hash is rechecked under that same lock.
+     While holding the process transaction lock, it captures a **physically
+     restorable prior generation** from the already-open singleton through the
+     classified datadir capability with `VACUUM INTO`. It then immediately
+     takes `BEGIN IMMEDIATE` and requires the SQLite data-version, total-change
+     counter, and file identity to be unchanged before the first cutover write.
+     The result is independently reopened/quick-checked and sidecar-checked,
+     then the file and parent directory are fsynced — see Rollback below.
   5. **TERMINAL either way** — the process `_exit()`s after printing
      `INSTALLED: -install-consensus-bundle: ...` (exit 0) or a typed
      `REFUSED: -install-consensus-bundle: ...` (exit non-zero). It never
      starts P2P/RPC/frontend services. A subsequent **normal** boot (no
      `-install-consensus-bundle` flag) is required to actually fold forward
      from the installed anchor to tip.
+     A rare `COMMIT_OUTCOME_UNKNOWN` refusal does not claim the old or new
+     generation won; stop and inspect/restore the named durable prior copy.
   6. `ACTIVATE` refuses a bundle that is not a complete genesis-derived
      history (`history_complete=false`, `activation_boundary!=0`, or any
      nonzero shielded/nullifier source cursor) — mixed provenance (bundle
@@ -80,7 +100,8 @@ acting — heights, commits, and producer state rot fast in this repo.
 
 ## Preconditions (do not start the cutover before all of these hold)
 
-1. **The bundle artifact exists and is admissible.** Confirm
+1. **The bundle artifact exists and is admissible.** This precondition is
+   currently **NOT MET**. Confirm
    `<producer-datadir>/consensus-state-bundle-<anchor>.sqlite` is present
    (currently expected at
    `$HOME/.zclassic-c23-mint-receipt/consensus-state-bundle-3056758.sqlite`)
@@ -246,10 +267,12 @@ of this sequence; the only unavailable window is between step 2 and step 5.
 ## Rollback
 
 The install captured a physically restorable prior generation of the progress
-store **before** the transaction opened, named in the `INSTALLED:` banner and
-recorded in the decision record: `<datadir>/progress.kv.preinstall.<epoch>.<pid>`
-(a standalone `VACUUM main INTO` copy of the committed state as it stood
-immediately before the install). To roll back after a committed install that
+store **under the process transaction lock immediately before the cutover
+transaction**, named in the `INSTALLED:` banner and
+recorded in the decision record:
+`<datadir>/progress.kv.preinstall.<epoch>.<pid>.<sequence>`
+(a standalone `VACUUM INTO` image whose data-version/change fence matches the
+cutover transaction). To roll back after a committed install that
 turns out to be bad (e.g. the post-install forward fold surfaces a new
 consensus-parity divergence, not caught by copy-prove):
 
@@ -263,12 +286,12 @@ consensus-parity divergence, not caught by copy-prove):
    cp -a $HOME/.zclassic-c23/progress.kv \
      $HOME/.zclassic-c23/progress.kv.failed-install-$(date +%Y%m%d-%H%M%S)
    ```
-3. **Swap the prior-generation bytes back** (the exact file the install
+3. **Swap the prior logical generation back** (the exact file the install
    printed as `prior_generation_path`, not a guess at the naming pattern —
    confirm it with `ls $HOME/.zclassic-c23/progress.kv.preinstall.*` if the
    banner output was not preserved):
    ```bash
-   cp -a $HOME/.zclassic-c23/progress.kv.preinstall.<epoch>.<pid> \
+   cp -a $HOME/.zclassic-c23/progress.kv.preinstall.<epoch>.<pid>.<sequence> \
      $HOME/.zclassic-c23/progress.kv
    rm -f $HOME/.zclassic-c23/progress.kv-wal $HOME/.zclassic-c23/progress.kv-shm
    ```
@@ -279,8 +302,8 @@ consensus-parity divergence, not caught by copy-prove):
    systemctl --user start zclassic23
    ```
 5. This is a genuine rollback of the progress store only — it does not touch
-   `coins`/anchor/nullifier data living in other files, and `VACUUM INTO`
-   backups are not deleted automatically. Clean up old
+   `coins`/anchor/nullifier data living in other files, and preinstall
+   generations are not deleted automatically. Clean up old
    `progress.kv.preinstall.*` files by hand once an install is confirmed
    good and stable at tip; they are not tracked or pruned by any code path.
 

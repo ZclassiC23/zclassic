@@ -107,7 +107,7 @@ static struct zcl_hotswap_manifest_v2 valid_manifest(void)
         .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,
         .required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
         .provider_id = "mcp.routes",
-        .build_identity = zcl_build_commit(),
+        .build_identity = zcl_build_source_id_sha256(),
         .source_identity = "tools/mcp/controllers/app_controller.c",
         .input_digest =
             "0123456789abcdef0123456789abcdef"
@@ -136,7 +136,7 @@ static struct zcl_hotswap_manifest_v2 valid_leaf_manifest(void)
         .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,
         .required_host_capabilities = ZCL_HOTSWAP_V3_HOST_CAPABILITIES,
         .provider_id = "native.leaves",
-        .build_identity = zcl_build_commit(),
+        .build_identity = zcl_build_source_id_sha256(),
         .source_identity = "app/controllers/src/status_native_handlers.c",
         .input_digest =
             "abcdef0123456789abcdef0123456789"
@@ -209,24 +209,22 @@ static int test_hotswap_manifest_v2_contract(void)
         manifest = valid_manifest();
         manifest.build_identity = "wrong-build";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "build source identity mismatch") != NULL);
         manifest = valid_manifest();
-        char alternate_dirty_identity[128];
-        const char *host_identity = zcl_build_commit();
-        size_t host_identity_len = strlen(host_identity);
-        if (host_identity_len > strlen("-dirty") &&
-            strcmp(host_identity + host_identity_len - strlen("-dirty"),
-                   "-dirty") == 0) {
-            snprintf(alternate_dirty_identity,
-                     sizeof(alternate_dirty_identity), "%.*s",
-                     (int)(host_identity_len - strlen("-dirty")),
-                     host_identity);
-        } else {
-            snprintf(alternate_dirty_identity,
-                     sizeof(alternate_dirty_identity), "%s-dirty",
-                     host_identity);
-        }
-        manifest.build_identity = alternate_dirty_identity;
-        ASSERT(hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        char dirty_suffix_identity[72];
+        snprintf(dirty_suffix_identity, sizeof(dirty_suffix_identity),
+                 "%s-dirty", zcl_build_source_id_sha256());
+        manifest.build_identity = dirty_suffix_identity;
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "build source identity mismatch") != NULL);
+        manifest = valid_manifest();
+        char different_source_id[65];
+        snprintf(different_source_id, sizeof(different_source_id), "%s",
+                 zcl_build_source_id_sha256());
+        different_source_id[0] = different_source_id[0] == '0' ? '1' : '0';
+        manifest.build_identity = different_source_id;
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "build source identity mismatch") != NULL);
         manifest = valid_manifest();
         manifest.source_identity = "app/controllers/src/api_controller_routes.c";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));

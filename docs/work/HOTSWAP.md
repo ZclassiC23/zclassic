@@ -31,7 +31,7 @@ dlclose'd after in-flight dispatch drains.
 | Epoch/refcount drain + `zcl_command_registry_all_retired_quiesced()` | `lib/kernel/src/command_registry.c` |
 | Swappable allowlist (THE HARD LINE) | `config/hotswap_swappable.def` |
 | Hard-line lint gate + selftest | `tools/lint/check_hotswap_swappable_shape.sh`, `lib/test/src/test_make_lint_gates.c` |
-| Per-handler `.so` build path | `make hotswap-module-so HANDLER=core.status` → `build/hotswap/<handler>-<gitsha>.so` |
+| Per-handler `.so` build path | `make hotswap-module-so HANDLER=core.status` → `build/hotswap/<handler>-<source-id>.so` |
 | Resident RPC + CLI verify/apply | `tools/command/native_dev_hotswap.c` (`dev.hotswap.probe`/`apply`, `dev_hotswap_native`) |
 | Activation flag `-hotswap-activate` | `src/main.c` |
 | Tests | `lib/test/src/test_hotswap_module.c` |
@@ -162,9 +162,13 @@ A swap-eligible controller invokes `ZCL_HOTSWAP_EXPORT_ROUTES(k_routes,
 PARAM_COUNT(k_routes))` once at file scope (no trailing semicolon). Under a
 generation build (`-DZCL_HOTSWAP_GEN`) that macro emits both
 `zcl_hotswap_manifest_v2` and `zcl_hotswap_gen_init`. The manifest binds schema
-and host ABI sizes, capabilities, source/build identity, an exact input digest,
-stateless state schema, mapped tests, probe tools, self-test, and quiescence.
-The loader validates it before calling generation code.
+and host ABI sizes, capabilities, the exact 64-hex SHA-256 source-tree identity,
+an exact generation-input digest, stateless state schema, mapped tests, probe
+tools, self-test, and quiescence. The loader requires byte-for-byte equality
+between the manifest's `build_identity` field and the resident binary's
+`zcl_build_source_id_sha256()` before calling generation code. There is no
+`-dirty` compatibility rule and no Git commit participates in this authority;
+Git commit ids may remain separate display/trace metadata only.
 
 `gen_init` calls the host's staging callback. Staging cannot mutate the live
 router. Only after every route and the generation self-test pass does the
@@ -567,13 +571,13 @@ failure. What differs is HOW:
   `tools/dev/deploy-dev-lane.sh` hard-codes (`GEN_ROOT`, `DEV_DATADIR`,
   `UNIT`, `DEV_RPCPORT`) — no `deploy-dev-lane.sh` invocation, no
   `agent-deploy.json` re-read: the engine's own `result.candidate_sha256`
-  feeds the ZVCS generation binding directly. `build_commit` is recomputed
-  via a fixed-argv `git rev-parse --short HEAD` (+ `-dirty` suffix), the
-  same algorithm `deploy-dev-lane.sh:build_candidate()` uses, honoring
-  `ZCL_DEV_BUILD_COMMIT_OVERRIDE` too. If a precondition only the shell path
-  can currently satisfy is missing (e.g. `HOME` unset, `git` unavailable),
-  the reload site logs a warning and falls back to the shell path for that
-  one cycle.
+  feeds the ZVCS generation binding directly. The generation manifest and
+  preflight bind the exact 64-hex `source_id_sha256`; optional `build_commit`
+  is display-only GitHub trace metadata and cannot select a backend or change
+  an activation verdict. If a non-identity precondition only the shell path
+  can currently satisfy is missing (for example `HOME` unset), the reload
+  site logs a warning and falls back to the contained shell seam for that one
+  cycle, carrying the same exact source identity.
 
   The retained `dev.vcs.revert` relink seam can exercise
   `dev_activation_activate_generation()` in hermetic tests. The public command

@@ -29,11 +29,11 @@ static void runtime_identity_init_once(void)
     nonce_hex[32] = '\0';
     if (have_nonce) {
         snprintf(g_identity.instance_id, sizeof(g_identity.instance_id),
-                 "%s:%lld:%s", zcl_build_commit(),
+                 "%s:%lld:%s", zcl_build_source_id_sha256(),
                  (long long)g_identity.process_id, nonce_hex);
     } else {
         snprintf(g_identity.instance_id, sizeof(g_identity.instance_id),
-                 "%s:%lld:%lld:%lld", zcl_build_commit(),
+                 "%s:%lld:%lld:%lld", zcl_build_source_id_sha256(),
                  (long long)g_identity.process_id,
                  (long long)g_identity.initialized_at_unix_us,
                  (long long)g_identity.initialized_at_monotonic_us);

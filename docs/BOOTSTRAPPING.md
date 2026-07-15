@@ -32,7 +32,7 @@ assisted-state posture. Each legacy release contains four files produced by
 | `block_index.bin` | Contiguous block index (genesis → seed height): the height-sorted PoW header graph, loaded from `<DATADIR>/block_index.bin`. |
 | `utxo-seed-<height>.snapshot` | A v2 UTXO + Sapling-frontier snapshot at the seed height. |
 | `SHA256SUMS` | `sha256sum -c`-compatible checksums of the two payload files. |
-| `manifest.json` | Machine-readable provenance: seed height, anchor block hash, body SHA3, UTXO count, total supply (sat + ZCL), per-file SHA-256 + sizes, `schema_version`, and the `build_commit` that minted it. |
+| `manifest.json` | Machine-readable provenance: seed height, anchor block hash, body SHA3, UTXO count, total supply (sat + ZCL), per-file SHA-256 + sizes, `schema_version`, the authoritative `source_identity_schema` + `source_id_sha256` that minted it, and optional display-only `build_commit` trace metadata. |
 
 Do **not** hand-copy a checksum table here — it goes stale the moment a newer
 starter pack is cut. The authoritative checksums travel **inside the release**

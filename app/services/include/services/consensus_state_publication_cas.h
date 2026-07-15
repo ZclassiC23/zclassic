@@ -145,6 +145,20 @@ struct zcl_result consensus_state_publication_cas_load(
     int dir_fd, const char *name,
     struct consensus_state_publication_decision_record *out_record);
 
+#ifdef ZCL_TESTING
+/* Hermetic durable-I/O race seam. Production callers use cas_run(); tests may
+ * persist an already-decided record and pause one writer immediately after its
+ * unique temp inode is opened. */
+typedef void (*consensus_state_publication_cas_after_temp_open_hook)(
+    const struct consensus_state_publication_decision_record *record,
+    void *ctx);
+void consensus_state_publication_cas_test_set_after_temp_open_hook(
+    consensus_state_publication_cas_after_temp_open_hook hook, void *ctx);
+struct zcl_result consensus_state_publication_cas_persist_for_test(
+    int dir_fd, const char *name,
+    const struct consensus_state_publication_decision_record *record);
+#endif
+
 const char *consensus_state_publication_decision_name(
     enum consensus_state_publication_decision decision);
 const char *consensus_state_publication_refusal_name(

@@ -357,8 +357,9 @@ bool boot_mint_anchor_run(const char *datadir)
      * + source-identity claim and publish the source-epoch digest BEFORE the
      * fold, so every stamped stage row carries it — the binding the contained
      * full-history exporter's stage-row proof requires. Best-effort: a build
-     * with no exact 40-hex commit cannot earn a receipt, but the mint's primary
-     * artifact (the verified anchor snapshot) is still produced. */
+     * with no exact 64-hex source identity cannot earn a v2 receipt, but the
+     * mint's primary artifact (the verified anchor snapshot) is still
+     * produced. */
     {
         uint8_t profile = mint_skip_crypto_get()
                               ? CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD

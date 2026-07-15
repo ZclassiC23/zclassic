@@ -175,84 +175,6 @@ bool zcl_devloop_distill_first_error(const char *out, size_t len,
 }
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
-bool zcl_devloop_changed_set_exact(const char *const *requested,
-                                   size_t requested_count,
-                                   const char *const *discovered,
-                                   size_t discovered_count,
-                                   char *why, size_t why_len)
-{
-    if (why && why_len > 0)
-        why[0] = 0;
-    if ((requested_count > 0 && !requested) ||
-        (discovered_count > 0 && !discovered) ||
-        requested_count > ZCL_DEVLOOP_MAX_FILES ||
-        discovered_count > ZCL_DEVLOOP_MAX_FILES) {
-        if (why && why_len > 0)
-            (void)snprintf(why, why_len, "changed_set_invalid_or_overflow");
-        return false;
-    }
-
-    for (size_t i = 0; i < requested_count; i++) {
-        if (!requested[i] || !requested[i][0]) {
-            if (why && why_len > 0)
-                (void)snprintf(why, why_len, "requested_path_invalid");
-            return false;
-        }
-        for (size_t j = i + 1; j < requested_count; j++) {
-            if (requested[j] && strcmp(requested[i], requested[j]) == 0) {
-                if (why && why_len > 0)
-                    (void)snprintf(why, why_len,
-                                   "requested_path_duplicate=%s", requested[i]);
-                return false;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < discovered_count; i++) {
-        bool found = false;
-        for (size_t j = 0; j < requested_count; j++) {
-            if (requested[j] && discovered[i] &&
-                strcmp(discovered[i], requested[j]) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            if (why && why_len > 0)
-                (void)snprintf(why, why_len, "omitted_dirty_file=%s",
-                               discovered[i] ? discovered[i] : "<invalid>");
-            return false;
-        }
-    }
-    for (size_t i = 0; i < requested_count; i++) {
-        bool found = false;
-        for (size_t j = 0; j < discovered_count; j++) {
-            if (discovered[j] && strcmp(requested[i], discovered[j]) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            if (why && why_len > 0)
-                (void)snprintf(why, why_len, "requested_file_not_dirty=%s",
-                               requested[i]);
-            return false;
-        }
-    }
-    return true;
-}
-
-bool zcl_devloop_plan_discovered_changes(
-    const char *const *observed, size_t observed_count,
-    const char *const *discovered, size_t discovered_count,
-    struct zcl_devloop_plan *out)
-{
-    struct zcl_devloop_plan observed_plan;
-    if (!zcl_devloop_plan_files(observed, observed_count, &observed_plan))
-        return false;
-    return zcl_devloop_plan_files(discovered, discovered_count, out);
-}
-
 bool zcl_devloop_watch_lock_path(const char *repo_root,
                                  char *out, size_t out_sz)
 {
@@ -322,106 +244,6 @@ static bool repo_root_resolve(const char *requested, char out[PATH_MAX])
            stat(makefile, &st) == 0 && stat(git, &st) == 0;
 }
 
-struct devloop_changed_sources {
-    char paths[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
-    const char *items[ZCL_DEVLOOP_MAX_FILES];
-    size_t count;
-};
-
-static bool changed_sources_add(struct devloop_changed_sources *set,
-                                const char *path, size_t path_len,
-                                char *why, size_t why_len)
-{
-    if (!set || !path || path_len == 0 || path_len >= ZCL_DEVLOOP_PATH_MAX) {
-        (void)snprintf(why, why_len, "changed_path_invalid_or_too_long");
-        return false;
-    }
-    char bounded[ZCL_DEVLOOP_PATH_MAX];
-    memcpy(bounded, path, path_len);
-    bounded[path_len] = 0;
-    for (size_t i = 0; i < set->count; i++) {
-        if (strcmp(set->items[i], bounded) == 0)
-            return true;
-    }
-    if (set->count >= ZCL_DEVLOOP_MAX_FILES) {
-        (void)snprintf(why, why_len, "changed_set_exceeds_%d_files",
-                       ZCL_DEVLOOP_MAX_FILES);
-        return false;
-    }
-    memcpy(set->paths[set->count], bounded, path_len + 1);
-    set->items[set->count] = set->paths[set->count];
-    set->count++;
-    return true;
-}
-
-static bool changed_sources_parse_nul(struct devloop_changed_sources *set,
-                                      const struct zcl_devloop_process_result *r,
-                                      char *why, size_t why_len)
-{
-    if (!r || r->output_truncated) {
-        (void)snprintf(why, why_len, "git_changed_set_output_truncated");
-        return false;
-    }
-    if (r->output_len == 0)
-        return true;
-    if (r->output[r->output_len - 1] != 0) {
-        (void)snprintf(why, why_len, "git_changed_set_missing_nul_boundary");
-        return false;
-    }
-    size_t pos = 0;
-    while (pos < r->output_len) {
-        const char *start = r->output + pos;
-        const char *end = memchr(start, 0, r->output_len - pos);
-        if (!end || end == start ||
-            !changed_sources_add(set, start, (size_t)(end - start),
-                                 why, why_len))
-            return false;
-        pos += (size_t)(end - start) + 1;
-    }
-    return true;
-}
-
-static int changed_source_item_cmp(const void *lhs, const void *rhs)
-{
-    const char *const *a = lhs;
-    const char *const *b = rhs;
-    return strcmp(*a, *b);
-}
-
-static bool discover_changed_sources(const char *root,
-                                     struct devloop_changed_sources *set,
-                                     char *why, size_t why_len)
-{
-    memset(set, 0, sizeof(*set));
-    struct zcl_devloop_process_result tracked = {0};
-    const char *tracked_argv[] = {
-        "git", "diff", "--name-only", "--no-renames", "-z", "HEAD", "--",
-        NULL
-    };
-    if (!zcl_devloop_process_run(root, tracked_argv, 15000, &tracked) ||
-        !result_ok(&tracked)) {
-        (void)snprintf(why, why_len, "git_diff_discovery_failed");
-        return false;
-    }
-    if (!changed_sources_parse_nul(set, &tracked, why, why_len))
-        return false;
-
-    struct zcl_devloop_process_result untracked = {0};
-    const char *untracked_argv[] = {
-        "git", "ls-files", "--others", "--exclude-standard", "-z", "--", NULL
-    };
-    if (!zcl_devloop_process_run(root, untracked_argv, 15000, &untracked) ||
-        !result_ok(&untracked)) {
-        (void)snprintf(why, why_len, "git_untracked_discovery_failed");
-        return false;
-    }
-    if (!changed_sources_parse_nul(set, &untracked, why, why_len))
-        return false;
-    qsort(set->items, set->count, sizeof(set->items[0]),
-          changed_source_item_cmp);
-    return true;
-}
-
 static bool parse_source_identity(const struct zcl_devloop_process_result *r,
                                   char out[65], char *why, size_t why_len)
 {
@@ -451,8 +273,8 @@ static bool parse_source_identity(const struct zcl_devloop_process_result *r,
 
 /* Capture/verify the complete dirty source epoch through the shared bounded
  * gate used by the shell watcher and the final deploy boundary.  The helper
- * hashes tracked modifications/deletions and untracked files, binds HEAD, and
- * refuses assume-unchanged/skip-worktree index bits. */
+ * hashes the canonical current source inventory independently of Git history
+ * identifiers and refuses hidden index state. */
 static bool source_identity_capture(const char *root, char out[65],
                                     char *why, size_t why_len)
 {
@@ -918,56 +740,6 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
  * path and the persistent watcher — both funnel through
  * zcl_devloop_run_cycle(). No subprocess is launched: the caller returns here
  * BEFORE any hotswap/reload publish step. */
-#ifdef ZCL_DEV_BUILD
-/* Recompute the build-commit stamp the exact way
- * tools/dev/deploy-dev-lane.sh:build_candidate() does: refresh the index,
- * take the short HEAD hash, append "-dirty" iff the tracked tree differs
- * from HEAD. ZCL_DEV_BUILD_COMMIT_OVERRIDE takes precedence when set (same
- * override name the shell path honors). Every step is a fixed-argv exec via
- * zcl_devloop_process_run — never a shell string. Returns false when git is
- * unavailable or its output cannot be parsed; the caller falls back to the
- * shell transactional-reload path in that case. */
-static bool resolve_build_commit(const char *root, char out[128])
-{
-    const char *override = getenv("ZCL_DEV_BUILD_COMMIT_OVERRIDE");
-    if (override && override[0]) {
-        int n = snprintf(out, 128, "%s", override);
-        return n > 0 && n < 128;
-    }
-
-    struct zcl_devloop_process_result refresh = {0};
-    const char *refresh_argv[] = {
-        "git", "update-index", "-q", "--refresh", NULL
-    };
-    (void)zcl_devloop_process_run(root, refresh_argv, 15000, &refresh);
-
-    struct zcl_devloop_process_result rev = {0};
-    const char *rev_argv[] = { "git", "rev-parse", "--short", "HEAD", NULL };
-    if (!zcl_devloop_process_run(root, rev_argv, 15000, &rev) ||
-        !result_ok(&rev) || rev.output_len == 0)
-        return false;
-    char hash[64];
-    size_t hn = rev.output_len;
-    while (hn > 0 && (rev.output[hn - 1] == '\n' || rev.output[hn - 1] == '\r'))
-        hn--;
-    if (hn == 0 || hn >= sizeof(hash))
-        return false;
-    memcpy(hash, rev.output, hn);
-    hash[hn] = 0;
-
-    struct zcl_devloop_process_result dirty = {0};
-    const char *dirty_argv[] = {
-        "git", "diff-index", "--quiet", "HEAD", "--", NULL
-    };
-    bool is_dirty = !zcl_devloop_process_run(root, dirty_argv, 15000, &dirty) ||
-                    dirty.timed_out || dirty.term_signal != 0 ||
-                    dirty.exit_code != 0;
-
-    int n = snprintf(out, 128, "%s%s", hash, is_dirty ? "-dirty" : "");
-    return n > 0 && n < 128;
-}
-#endif /* ZCL_DEV_BUILD */
-
 static int emit_refusal(const char *const *files, size_t file_count)
 {
     char body[16384], path[PATH_MAX];
@@ -1025,10 +797,9 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
         return 2;
     }
-    /* The caller's paths are bounded wake hints, never classification
-     * authority.  In a dev build the complete Git-visible dirty set replaces
-     * them before any plan, proof selection, sealed-Core decision, or verdict
-     * is produced. */
+    /* Caller paths are bounded wake hints. They may only add restrictions
+     * (for example, an explicit sealed-Core refusal); they never reduce the
+     * proof selected for a changed source epoch. */
     if (!zcl_devloop_plan_files(files, file_count, &plan)) {
         fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
         return 2;
@@ -1038,33 +809,33 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
     char expected_source_identity[65] = {0};
     if (!repo_root_resolve(repo_root, root))
         return finish_cycle(&plan, files, file_count, "rejected",
-                            "changed_set_discovery", started_us,
+                            "source_identity", started_us,
                             "repository root is not a real Git checkout",
                             NULL, NULL);
-    struct devloop_changed_sources changed;
-    char changed_why[512] = {0};
-    if (!discover_changed_sources(root, &changed, changed_why,
-                                  sizeof(changed_why)))
-        return finish_cycle(&plan, files, file_count, "rejected",
-                            "changed_set_discovery", started_us,
-                            changed_why[0] ? changed_why
-                                           : "changed-set discovery failed",
-                            root, NULL);
-    if (!zcl_devloop_plan_discovered_changes(
-            files, file_count, changed.items, changed.count, &plan))
-        return finish_cycle(&plan, files, file_count, "rejected",
-                            "changed_set_discovery", started_us,
-                            "Git-visible changed set was invalid",
-                            root, NULL);
-    files = changed.items;
-    file_count = changed.count;
+    char source_why[512] = {0};
     if (!source_identity_capture(root, expected_source_identity,
-                                 changed_why, sizeof(changed_why)))
+                                 source_why, sizeof(source_why)))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "source_identity", started_us,
-                            changed_why[0] ? changed_why
-                                           : "source identity capture failed",
+                            source_why[0] ? source_why
+                                          : "source identity capture failed",
                             root, NULL);
+    if (file_count > 0) {
+        /* No HEAD-relative dirty set participates in proof authority. Until a
+         * signed prior source epoch can produce an authenticated content diff,
+         * every changed source epoch takes the conservative reload/parity
+         * lane. Wake hints can never downgrade this decision to docs-only or
+         * hot-swap. APPLY remains hard-contained below. */
+        plan.action = ZCL_DEVLOOP_RELOAD;
+        plan.action_name = "reload";
+        plan.reason = "source_epoch_requires_conservative_full_proof";
+        plan.probe_tool = "";
+        snprintf(plan.proof_group_storage,
+                 sizeof(plan.proof_group_storage), "consensus_parity");
+        plan.proof_group = plan.proof_group_storage;
+        plan.consensus_risk = true;
+        plan.docs_only = false;
+    }
 #endif
     /* Phase-0 containment: no caller-selected mode is publication authority.
      * Keep complete-source classification, builds, proofs, and candidate
@@ -1304,10 +1075,12 @@ transactional_reload:
                                 root, NULL);
         }
 
-        char build_commit[128];
         struct dev_activation_cycle_request creq;
-        if (resolve_build_commit(root, build_commit) &&
-            dev_activation_request_from_cycle(root, build_commit, &creq)) {
+        /* The generation's source_id_sha256 is activation authority. The Git
+         * commit field is intentionally empty here; it is optional trace
+         * metadata and inability to derive it must never select a backend or
+         * alter an activation verdict. */
+        if (dev_activation_request_from_cycle(root, "", &creq)) {
             char source_why[256] = {0};
             if (!source_identity_verify(root, expected_source_identity,
                                         source_why, sizeof(source_why))) {
@@ -1336,11 +1109,8 @@ transactional_reload:
                                     : "native activation failed",
                                 root, NULL);
         }
-        /* A precondition the native engine cannot itself satisfy (HOME
-         * unset, git unavailable/unparsable) — fall through to the proven
-         * shell path below, which re-derives the same inputs its own way
-         * and has its own fast-rebuild call (idempotent after the one just
-         * run above). */
+        /* A non-identity precondition the native engine cannot satisfy (for
+         * example HOME unset) falls through to the compatibility backend. */
         fprintf(stderr,
                 "[devloop] retained native activation preconditions unmet; "
                 "shell backend remains publication-contained\n");
@@ -1358,13 +1128,15 @@ transactional_reload:
                             "source_epoch_cas", started_us,
                             "could not bind source identity to activation",
                             root, NULL);
-    char source_why[256] = {0};
+    char source_verify_why[256] = {0};
     if (!source_identity_verify(root, expected_source_identity,
-                                source_why, sizeof(source_why))) {
+                                source_verify_why,
+                                sizeof(source_verify_why))) {
         return finish_cycle(&plan, files, file_count, "superseded",
                             "source_epoch_cas", started_us,
-                            source_why[0] ? source_why
-                                          : "source epoch changed before activation",
+                            source_verify_why[0]
+                                ? source_verify_why
+                                : "source epoch changed before activation",
                             root, NULL);
     }
     const char *reload_argv[] = {

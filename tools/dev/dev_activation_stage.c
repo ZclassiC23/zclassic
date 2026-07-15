@@ -27,18 +27,47 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef ZCL_TESTING
+static void (*g_stage_after_hash_hook)(void *) = NULL;
+static void *g_stage_after_hash_hook_ctx = NULL;
+
+void dev_activation_stage_test_set_after_hash_hook(void (*hook)(void *),
+                                                   void *ctx)
+{
+    g_stage_after_hash_hook = hook;
+    g_stage_after_hash_hook_ctx = ctx;
+}
+
+static void dev_stage_run_after_hash_hook(void)
+{
+    void (*hook)(void *) = g_stage_after_hash_hook;
+    void *ctx = g_stage_after_hash_hook_ctx;
+    g_stage_after_hash_hook = NULL;
+    g_stage_after_hash_hook_ctx = NULL;
+    if (hook)
+        hook(ctx);
+}
+#else
+static void dev_stage_run_after_hash_hook(void) { }
+#endif
+
 /* ── staging: immutable content-addressed generation ─────────────────── */
 
 static bool dev_write_manifest(const char *path, const char *generation,
                                const char *sha, const char *build_commit,
+                               const char *source_id_sha256,
                                const char *build_type, const char *source)
 {
+    if (!dev_activation_source_id_valid(source_id_sha256))
+        LOG_FAIL("dev-activation", "manifest source_id_sha256 is invalid");
     FILE *f = fopen(path, "w");
     if (!f)
         LOG_FAIL("dev-activation", "manifest open %s: %s", path,
                  strerror(errno));
-    char e_commit[256], e_type[64], e_src[PATH_MAX];
+    char e_commit[256], e_source_id[80], e_type[64], e_src[PATH_MAX];
     dev_activation_json_escape(build_commit, e_commit, sizeof(e_commit));
+    dev_activation_json_escape(source_id_sha256, e_source_id,
+                               sizeof(e_source_id));
     dev_activation_json_escape(build_type, e_type, sizeof(e_type));
     dev_activation_json_escape(source, e_src, sizeof(e_src));
     char now[32];
@@ -47,6 +76,8 @@ static bool dev_write_manifest(const char *path, const char *generation,
     fprintf(f, "  \"schema\": \"zcl.dev_binary_generation.v1\",\n");
     fprintf(f, "  \"generation\": \"%s\",\n", generation);
     fprintf(f, "  \"sha256\": \"%s\",\n", sha);
+    fprintf(f, "  \"source_id_sha256\": \"%s\",\n", e_source_id);
+    /* Optional GitHub trace metadata; never generation authority. */
     fprintf(f, "  \"build_commit\": \"%s\",\n", e_commit);
     fprintf(f, "  \"build_type\": \"%s\",\n", e_type);
     fprintf(f, "  \"source_artifact\": \"%s\",\n", e_src);
@@ -111,6 +142,7 @@ int dev_activation_stage_candidate(struct dev_activation_txn *txn)
     if (!dev_activation_sha256_file(txn->req->artifact_path,
                                     txn->candidate_sha_hex))
         return DEV_ACTIVATION_E_STAGE;
+    dev_stage_run_after_hash_hook();
     snprintf(r->candidate_sha256, sizeof(r->candidate_sha256), "%s",
              txn->candidate_sha_hex);
     int n = snprintf(txn->candidate_generation,
@@ -149,6 +181,16 @@ int dev_activation_stage_candidate(struct dev_activation_txn *txn)
                     txn->candidate_dir);
             return DEV_ACTIVATION_E_STAGE;
         }
+        char staged_source_id[65];
+        dev_activation_generation_source_id(
+            txn, txn->candidate_generation, staged_source_id);
+        if (strcmp(staged_source_id, txn->req->source_identity) != 0) {
+            fprintf(stderr,
+                    "[dev-activation] immutable generation source identity "
+                    "mismatch: %s\n",
+                    txn->candidate_dir);
+            return DEV_ACTIVATION_E_STAGE;
+        }
         return DEV_ACTIVATION_OK; /* already staged, byte-identical */
     }
 
@@ -164,9 +206,13 @@ int dev_activation_stage_candidate(struct dev_activation_txn *txn)
     char tmp_bin[PATH_MAX], tmp_manifest[PATH_MAX];
     snprintf(tmp_bin, sizeof(tmp_bin), "%s/zclassic23-dev", tmpdir);
     snprintf(tmp_manifest, sizeof(tmp_manifest), "%s/manifest.json", tmpdir);
+    char copied_sha[65];
     if (!dev_activation_install_file(txn->req->artifact_path, tmp_bin, 0555) ||
+        !dev_activation_sha256_file(tmp_bin, copied_sha) ||
+        strcmp(copied_sha, txn->candidate_sha_hex) != 0 ||
         !dev_write_manifest(tmp_manifest, txn->candidate_generation,
                             txn->candidate_sha_hex, txn->req->build_commit,
+                            txn->req->source_identity,
                             txn->req->build_type, txn->req->artifact_path)) {
         (void)unlink(tmp_bin);
         (void)unlink(tmp_manifest);
@@ -186,11 +232,30 @@ int dev_activation_stage_candidate(struct dev_activation_txn *txn)
             return DEV_ACTIVATION_E_STAGE;
         }
     }
+    char published_sha[65];
+    if (!dev_activation_sha256_file(txn->candidate_bin, published_sha) ||
+        strcmp(published_sha, txn->candidate_sha_hex) != 0) {
+        LOG_ERR("dev-activation",
+                "published generation artifact digest mismatch: %s",
+                txn->candidate_dir);
+        return DEV_ACTIVATION_E_STAGE;
+    }
+    char published_source_id[65];
+    dev_activation_generation_source_id(
+        txn, txn->candidate_generation, published_source_id);
+    if (strcmp(published_source_id, txn->req->source_identity) != 0) {
+        LOG_ERR("dev-activation",
+                "published generation source identity mismatch: %s",
+                txn->candidate_dir);
+        return DEV_ACTIVATION_E_STAGE;
+    }
     return DEV_ACTIVATION_OK;
 }
 
-/* Import a pre-existing plain binary as a legacy-<sha> rollback generation and
- * point current+last-good at it. */
+/* Reattach a pre-existing plain binary only when an already-imported immutable
+ * generation carries an authoritative source ID. This no-exec staging layer
+ * cannot ask an unbound legacy binary for its baked identity, so it never
+ * mints a new legacy manifest by guessing from the current worktree. */
 static bool dev_import_existing(struct dev_activation_txn *txn,
                                 const char *existing)
 {
@@ -208,30 +273,22 @@ static bool dev_import_existing(struct dev_activation_txn *txn,
         return false;
     struct stat st;
     if (stat(dir, &st) != 0) {
-        char tmpl[PATH_MAX];
-        snprintf(tmpl, sizeof(tmpl), "%s/.legacy.XXXXXX", txn->gen_root);
-        char *tmpdir = mkdtemp(tmpl);
-        if (!tmpdir)
-            LOG_FAIL("dev-activation", "legacy mkdtemp: %s", strerror(errno));
-        char tmp_bin[PATH_MAX], tmp_manifest[PATH_MAX];
-        snprintf(tmp_bin, sizeof(tmp_bin), "%s/zclassic23-dev", tmpdir);
-        snprintf(tmp_manifest, sizeof(tmp_manifest), "%s/manifest.json", tmpdir);
-        if (!dev_activation_install_file(existing, tmp_bin, 0555) ||
-            !dev_write_manifest(tmp_manifest, generation, sha, "unknown",
-                                "legacy-import", existing)) {
-            (void)unlink(tmp_bin);
-            (void)unlink(tmp_manifest);
-            (void)rmdir(tmpdir);
-            return false;
-        }
-        (void)chmod(tmp_manifest, 0444);
-        (void)chmod(tmpdir, 0555);
-        if (rename(tmpdir, dir) != 0 && access(tmp_bin, X_OK) != 0) {
-            (void)chmod(tmpdir, 0755);
-            (void)rmdir(tmpdir);
-            LOG_FAIL("dev-activation", "legacy rename: %s", strerror(errno));
-        }
+        fprintf(stderr,
+                "[dev-activation] refusing unbound legacy rollback binary: "
+                "%s\n", existing);
+        return false;
     }
+    char bound_source_id[65];
+    dev_activation_generation_source_id(txn, generation, bound_source_id);
+    if (!bound_source_id[0])
+        return false;
+    char generation_bin[PATH_MAX], generation_sha[65];
+    n = snprintf(generation_bin, sizeof(generation_bin),
+                 "%s/zclassic23-dev", dir);
+    if (n <= 0 || (size_t)n >= sizeof(generation_bin) ||
+        !dev_activation_sha256_file(generation_bin, generation_sha) ||
+        strcmp(generation_sha, sha) != 0)
+        return false;
     if (!dev_activation_link_generation(txn, "current", generation) ||
         !dev_activation_link_generation(txn, "last-good", generation))
         return false;
@@ -320,11 +377,14 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
 
     char now[32];
     dev_activation_iso_utc_now(now);
-    char e_commit[256], e_type[64], e_artifact[PATH_MAX], e_bin[PATH_MAX];
+    char e_commit[256], e_source_id[80], e_type[64];
+    char e_artifact[PATH_MAX], e_bin[PATH_MAX];
     char e_root[PATH_MAX], e_cand[96], e_cur[96], e_run[96], e_lg[96], e_prev[96];
     char e_act[64], e_rb[64], e_lock[PATH_MAX], e_ddir[PATH_MAX];
     char e_vstat[64], e_vdetail[512], e_capsule[512];
     dev_activation_json_escape(req->build_commit, e_commit, sizeof(e_commit));
+    dev_activation_json_escape(req->source_identity, e_source_id,
+                               sizeof(e_source_id));
     dev_activation_json_escape(req->build_type, e_type, sizeof(e_type));
     dev_activation_json_escape(req->artifact_path, e_artifact, sizeof(e_artifact));
     dev_activation_json_escape(txn->compat_bin, e_bin, sizeof(e_bin));
@@ -345,6 +405,8 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     fprintf(f, "{\n");
     fprintf(f, "  \"schema\": \"zcl.agent_dev_deploy.v1\",\n");
     fprintf(f, "  \"deployed_at_utc\": \"%s\",\n", now);
+    fprintf(f, "  \"source_id_sha256\": \"%s\",\n", e_source_id);
+    /* Optional Git trace metadata only. */
     fprintf(f, "  \"build_commit\": \"%s\",\n", e_commit);
     fprintf(f, "  \"build_type\": \"%s\",\n", e_type);
     fprintf(f, "  \"build_artifact\": \"%s\",\n", e_artifact);

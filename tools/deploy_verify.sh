@@ -18,7 +18,11 @@
 # Exit codes:
 #   0  — RPC live, block count observed, diagnostic contract present
 #   1  — RPC/diagnostic contract did not come up within the deadline
+#   2  — identity inputs or canonical service binding are malformed
 #
+# Deployment acceptance always requires both environment variables:
+#   ZCL_DEPLOY_EXPECT_SOURCE_ID=<64 lowercase hex>
+#   ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256=<64 lowercase hex>
 # Usage: ./tools/deploy_verify.sh [rpc_tool] [timeout_seconds]
 set -eu
 
@@ -26,22 +30,126 @@ RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 RPC_CALL_TIMEOUT="${ZCL_DEPLOY_RPC_TIMEOUT:-20}"
 INTERVAL=2
+RPC_CONNECT="127.0.0.1"
 
-systemd_exec_arg() {
-    key="$1"
-    command -v systemctl >/dev/null 2>&1 || return 1
-    systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null |
+# Parse only the explicit -key=value argv form accepted by the service. Values
+# containing whitespace are deliberately unsupported: guessing across a quoted
+# systemd command line would make endpoint binding ambiguous.
+exec_arg_values_from_text() {
+    parse_key="$1"
+    parse_text="$2"
+    printf '%s\n' "$parse_text" |
         tr ' ' '\n' |
-        sed -n "s/^-${key}=//p" |
-        head -1
+        sed -n "s/^-${parse_key}=//p"
 }
 
-# The build_commit we expect the restarted daemon to be running. `make deploy`
-# passes ZCL_DEPLOY_EXPECT_COMMIT=$(BUILD_COMMIT) (the exact baked value,
-# including any -dirty suffix); a by-hand run inside the repo falls back to
-# HEAD. Empty (e.g. deploying from a tarball with no git) => the staleness
-# assertion is skipped with a warning, never a hard fail.
-EXPECT_COMMIT="${ZCL_DEPLOY_EXPECT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+exec_path_values_from_text() {
+    printf '%s\n' "$1" |
+        tr ' ' '\n' |
+        sed -n 's/^path=//p'
+}
+
+single_value_or_empty() {
+    single_values="$1"
+    single_count=$(printf '%s\n' "$single_values" |
+        awk 'NF { count++ } END { print count + 0 }')
+    [ "$single_count" -le 1 ] || return 1
+    printf '%s\n' "$single_values" | awk 'NF { print; exit }'
+}
+
+select_bound_value() {
+    bound_exec="$1"
+    bound_proc="$2"
+    bound_default="$3"
+    if [ -n "$bound_exec" ] && [ -n "$bound_proc" ] &&
+       [ "$bound_exec" != "$bound_proc" ]; then
+        return 1
+    fi
+    if [ -n "$bound_proc" ]; then
+        printf '%s\n' "$bound_proc"
+    elif [ -n "$bound_exec" ]; then
+        printf '%s\n' "$bound_exec"
+    else
+        printf '%s\n' "$bound_default"
+    fi
+}
+
+proc_start_ticks() {
+    sed 's/^[0-9][0-9]* ([^)]*) //' "/proc/$1/stat" 2>/dev/null |
+        awk 'NF >= 20 { print $20; exit }'
+}
+
+service_pid_is_stable() {
+    stable_pid=$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)
+    [ "$stable_pid" = "$SERVICE_MAIN_PID" ] || return 1
+    stable_ticks=$(proc_start_ticks "$SERVICE_MAIN_PID" || true)
+    [ -n "$stable_ticks" ] && [ "$stable_ticks" = "$SERVICE_START_TICKS" ] || return 1
+    stable_exe=$(readlink -f "/proc/$SERVICE_MAIN_PID/exe" 2>/dev/null || true)
+    [ -n "$stable_exe" ] && [ "$stable_exe" = "$SERVICE_EXE" ]
+}
+
+proc_exec_arg_values() {
+    proc_key="$1"
+    tr '\000' '\n' < "/proc/$SERVICE_MAIN_PID/cmdline" |
+        sed -n "s/^-${proc_key}=//p"
+}
+
+deploy_verify_selftest() {
+    # Hostile inherited lane selectors must have no role in the result.
+    ZCL_DATADIR="/attacker/datadir"
+    ZCL_RPCPORT="1"
+    ZCL_RPCCONNECT="attacker.invalid"
+    fixture_exec='{ path=/canonical/bin/zclassic23 ; argv[]=/canonical/bin/zclassic23 -datadir=/canonical/data -rpcport=18232 ; }'
+    fixture_datadirs=$(exec_arg_values_from_text datadir "$fixture_exec")
+    fixture_ports=$(exec_arg_values_from_text rpcport "$fixture_exec")
+    fixture_datadir=$(single_value_or_empty "$fixture_datadirs") || return 1
+    fixture_port=$(single_value_or_empty "$fixture_ports") || return 1
+    fixture_bound_datadir=$(select_bound_value "$fixture_datadir" "/canonical/data" "/default") || return 1
+    fixture_bound_port=$(select_bound_value "$fixture_port" "18232" "9") || return 1
+    [ "$fixture_bound_datadir" = "/canonical/data" ] || return 1
+    [ "$fixture_bound_port" = "18232" ] || return 1
+    [ "$RPC_CONNECT" = "127.0.0.1" ] || return 1
+    if select_bound_value "/one" "/two" "/default" >/dev/null; then
+        return 1
+    fi
+    duplicate_values=$(printf '/one\n/two\n')
+    if single_value_or_empty "$duplicate_values" >/dev/null; then
+        return 1
+    fi
+    fixture_paths=$(exec_path_values_from_text "$fixture_exec")
+    [ "$(single_value_or_empty "$fixture_paths")" = "/canonical/bin/zclassic23" ] || return 1
+    echo "deploy_verify selftest: PASS"
+}
+
+if [ "${ZCL_DEPLOY_VERIFY_SELFTEST:-0}" = "1" ]; then
+    deploy_verify_selftest || {
+        echo "deploy_verify selftest: FAIL" >&2
+        exit 1
+    }
+    exit 0
+fi
+
+is_sha256_hex() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{64}$'
+}
+
+fatal_binding() {
+    echo "deploy_verify: FATAL — $*" >&2
+    exit 2
+}
+
+# Operational freshness is exact and SHA-1-independent. `make deploy` passes
+# the baked source-tree SHA-256 plus the SHA-256 of the installed executable.
+# build_commit remains optional GitHub trace metadata and is never compared.
+EXPECT_SOURCE_ID="${ZCL_DEPLOY_EXPECT_SOURCE_ID:-}"
+EXPECT_ARTIFACT_SHA256="${ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256:-}"
+
+if ! is_sha256_hex "$EXPECT_SOURCE_ID"; then
+    fatal_binding "ZCL_DEPLOY_EXPECT_SOURCE_ID must be 64 lowercase hex"
+fi
+if ! is_sha256_hex "$EXPECT_ARTIFACT_SHA256"; then
+    fatal_binding "ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256 must be 64 lowercase hex"
+fi
 
 if [ ! -x "$RPC_TOOL" ]; then
     alt="./build/bin/zcl-rpc"
@@ -50,27 +158,75 @@ if [ ! -x "$RPC_TOOL" ]; then
     fi
 fi
 
-DEFAULT_DATADIR="$HOME/.zclassic-c23"
-RPC_DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
-if [ -z "${ZCL_DATADIR:-}" ]; then
-    SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
-    if [ -n "$SERVICE_DATADIR" ]; then
-        RPC_DATADIR="$SERVICE_DATADIR"
-    fi
-fi
+case "$(basename "$RPC_TOOL")" in
+    zclassic-cli|zcl-rpc) ;;
+    *) fatal_binding "RPC tool must be zclassic-cli or zcl-rpc so its endpoint can be forced" ;;
+esac
 
-RPCPORT="${ZCL_RPCPORT:-18232}"
-if [ -z "${ZCL_RPCPORT:-}" ]; then
-    SERVICE_RPCPORT="$(systemd_exec_arg rpcport || true)"
-    if [ -n "$SERVICE_RPCPORT" ]; then
-        RPCPORT="$SERVICE_RPCPORT"
-    fi
-fi
+command -v systemctl >/dev/null 2>&1 ||
+    fatal_binding "systemctl is required to bind proof to the canonical service"
+SERVICE_MAIN_PID=$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)
+case "$SERVICE_MAIN_PID" in
+    ''|*[!0-9]*|0) fatal_binding "canonical zclassic23 service has no MainPID" ;;
+esac
+[ -r "/proc/$SERVICE_MAIN_PID/cmdline" ] &&
+[ -r "/proc/$SERVICE_MAIN_PID/stat" ] &&
+[ -e "/proc/$SERVICE_MAIN_PID/exe" ] ||
+    fatal_binding "canonical MainPID $SERVICE_MAIN_PID is not inspectable"
 
-NODE_LOG="${ZCL_DEPLOY_NODE_LOG:-$HOME/.zclassic-c23/node.log}"
-if [ ! -r "$NODE_LOG" ] && [ -r "$RPC_DATADIR/node.log" ]; then
-    NODE_LOG="$RPC_DATADIR/node.log"
-fi
+SERVICE_START_TICKS=$(proc_start_ticks "$SERVICE_MAIN_PID" || true)
+[ -n "$SERVICE_START_TICKS" ] ||
+    fatal_binding "canonical MainPID $SERVICE_MAIN_PID has no stable start identity"
+SERVICE_EXE=$(readlink -f "/proc/$SERVICE_MAIN_PID/exe" 2>/dev/null || true)
+[ -n "$SERVICE_EXE" ] ||
+    fatal_binding "canonical MainPID $SERVICE_MAIN_PID executable cannot be resolved"
+SERVICE_EXEC_TEXT=$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null || true)
+[ -n "$SERVICE_EXEC_TEXT" ] || fatal_binding "canonical service ExecStart is unavailable"
+SERVICE_EXEC_PATH_VALUES=$(exec_path_values_from_text "$SERVICE_EXEC_TEXT")
+SERVICE_EXEC_PATH=$(single_value_or_empty "$SERVICE_EXEC_PATH_VALUES") ||
+    fatal_binding "canonical service ExecStart has an ambiguous executable path"
+case "$SERVICE_EXEC_PATH" in
+    /*) ;;
+    *) fatal_binding "canonical service ExecStart executable path is not absolute" ;;
+esac
+SERVICE_EXEC_EXE=$(readlink -f "$SERVICE_EXEC_PATH" 2>/dev/null || true)
+[ -n "$SERVICE_EXEC_EXE" ] && [ "$SERVICE_EXEC_EXE" = "$SERVICE_EXE" ] ||
+    fatal_binding "canonical MainPID executable does not match service ExecStart"
+
+EXEC_DATADIR_VALUES=$(exec_arg_values_from_text datadir "$SERVICE_EXEC_TEXT")
+EXEC_RPCPORT_VALUES=$(exec_arg_values_from_text rpcport "$SERVICE_EXEC_TEXT")
+PROC_DATADIR_VALUES=$(proc_exec_arg_values datadir)
+PROC_RPCPORT_VALUES=$(proc_exec_arg_values rpcport)
+EXEC_DATADIR=$(single_value_or_empty "$EXEC_DATADIR_VALUES") ||
+    fatal_binding "canonical service ExecStart has duplicate -datadir values"
+EXEC_RPCPORT=$(single_value_or_empty "$EXEC_RPCPORT_VALUES") ||
+    fatal_binding "canonical service ExecStart has duplicate -rpcport values"
+PROC_DATADIR=$(single_value_or_empty "$PROC_DATADIR_VALUES") ||
+    fatal_binding "canonical MainPID has duplicate -datadir values"
+PROC_RPCPORT=$(single_value_or_empty "$PROC_RPCPORT_VALUES") ||
+    fatal_binding "canonical MainPID has duplicate -rpcport values"
+[ -n "$EXEC_DATADIR" ] && [ -n "$EXEC_RPCPORT" ] ||
+    fatal_binding "canonical service ExecStart must set -datadir and -rpcport"
+[ -n "$PROC_DATADIR" ] && [ -n "$PROC_RPCPORT" ] ||
+    fatal_binding "canonical MainPID argv must set -datadir and -rpcport"
+RPC_DATADIR=$(select_bound_value "$EXEC_DATADIR" "$PROC_DATADIR" "") ||
+    fatal_binding "canonical ExecStart/MainPID -datadir values disagree"
+RPCPORT=$(select_bound_value "$EXEC_RPCPORT" "$PROC_RPCPORT" "") ||
+    fatal_binding "canonical ExecStart/MainPID -rpcport values disagree"
+case "$RPC_DATADIR" in
+    /*) ;;
+    *) fatal_binding "canonical RPC datadir is not absolute" ;;
+esac
+case "$RPCPORT" in
+    ''|*[!0-9]*) fatal_binding "canonical RPC port is not numeric" ;;
+esac
+[ "$RPCPORT" -ge 1 ] && [ "$RPCPORT" -le 65535 ] ||
+    fatal_binding "canonical RPC port is outside 1..65535"
+service_pid_is_stable || fatal_binding "canonical MainPID changed during endpoint capture"
+
+# Never permit an inherited shell lane to redirect any part of this proof.
+unset ZCL_DATADIR ZCL_RPCPORT ZCL_RPCCONNECT ZCL_DEPLOY_NODE_LOG
+NODE_LOG="$RPC_DATADIR/node.log"
 
 rpc_exec() {
     rc=0
@@ -89,24 +245,14 @@ rpc_call() {
     name=$(basename "$RPC_TOOL")
     case "$name" in
         zclassic-cli)
-            if [ -n "${ZCL_RPCCONNECT:-}" ]; then
-                rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
-                    "-rpcconnect=$ZCL_RPCCONNECT" "$@"
-            else
-                rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" "$@"
-            fi
+            rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
+                "-rpcconnect=$RPC_CONNECT" "$@"
             ;;
         zcl-rpc)
-            if [ -n "${ZCL_RPCCONNECT:-}" ]; then
-                rpc_exec env "ZCL_DATADIR=$RPC_DATADIR" "ZCL_RPCPORT=$RPCPORT" \
-                    "ZCL_RPCCONNECT=$ZCL_RPCCONNECT" "$RPC_TOOL" "$@"
-            else
-                rpc_exec env "ZCL_DATADIR=$RPC_DATADIR" "ZCL_RPCPORT=$RPCPORT" "$RPC_TOOL" "$@"
-            fi
+            rpc_exec env "ZCL_DATADIR=$RPC_DATADIR" "ZCL_RPCPORT=$RPCPORT" \
+                "ZCL_RPCCONNECT=$RPC_CONNECT" "$RPC_TOOL" "$@"
             ;;
-        *)
-            rpc_exec "$RPC_TOOL" "$@"
-            ;;
+        *) return 2 ;;
     esac
 }
 
@@ -234,8 +380,65 @@ extract_build_commit() {
         sed -E 's/.*"build_commit"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
 }
 
-# Normalise a build_commit for comparison: lowercase, drop a trailing -dirty.
-norm_commit() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/-dirty$//'; }
+extract_source_id_sha256() {
+    printf '%s\n' "$1" |
+        grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' |
+        head -1 |
+        sed -E 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$1" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | sed -E 's/^.*= //'
+    else
+        return 1
+    fi
+}
+
+mainpid_socket_inodes() {
+    for socket_fd in "/proc/$SERVICE_MAIN_PID/fd/"*; do
+        socket_target=$(readlink "$socket_fd" 2>/dev/null || true)
+        case "$socket_target" in
+            socket:\[*\])
+                printf '%s\n' "$socket_target" |
+                    sed -n 's/^socket:\[\([0-9][0-9]*\)\]$/\1/p'
+                ;;
+        esac
+    done
+}
+
+mainpid_rpc_listener_inodes() {
+    listener_port_hex=$(printf '%04X' "$RPCPORT")
+    for socket_table in /proc/net/tcp /proc/net/tcp6; do
+        [ -r "$socket_table" ] || continue
+        awk -v port="$listener_port_hex" '
+            NR > 1 {
+                split($2, local, ":")
+                if (toupper(local[2]) == port && $4 == "0A")
+                    print $10
+            }
+        ' "$socket_table"
+    done
+}
+
+mainpid_owns_rpc_listener() {
+    owned_inodes=$(mainpid_socket_inodes || true)
+    listener_inodes=$(mainpid_rpc_listener_inodes || true)
+    [ -n "$owned_inodes" ] && [ -n "$listener_inodes" ] || return 1
+    for listener_inode in $listener_inodes; do
+        if printf '%s\n' "$owned_inodes" | grep -Fxq "$listener_inode"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+running_service_artifact_sha256() {
+    service_pid_is_stable || return 1
+    sha256_file "/proc/$SERVICE_MAIN_PID/exe"
+}
 
 pre_rpc_boot_diagnostic() {
     [ -r "$NODE_LOG" ] || return 0
@@ -279,6 +482,11 @@ rpc_dumpstate() {
 
 verify_contract() {
     height="$1"
+
+    service_pid_is_stable ||
+        { last_err="canonical zclassic23 MainPID changed during RPC proof"; return 1; }
+    mainpid_owns_rpc_listener ||
+        { last_err="canonical MainPID does not own RPC listener port $RPCPORT"; return 1; }
 
     ca=$(rpc_dumpstate chain_advance_coordinator initialized)
     json_key_is_true "$ca" initialized ||
@@ -392,30 +600,36 @@ verify_contract() {
             ;;
     esac
 
-    # Staleness guard: the binary actually answering RPC must be the one we just
-    # built. A restart that silently kept the OLD binary (stale unit, a rebuild
-    # that errored, wrong path on $PATH) otherwise reads as a green deploy — the
-    # exact footgun that shipped stale binaries for hours (MEMORY: "live binary
-    # still stale", "23h STALE"). Fail loud on a commit mismatch.
-    running_commit=$(extract_build_commit "$health")
-    if [ -n "$EXPECT_COMMIT" ] && [ -n "$running_commit" ]; then
-        r=$(norm_commit "$running_commit"); e=$(norm_commit "$EXPECT_COMMIT")
-        # Prefix-match either direction so differing short-hash lengths
-        # (7 vs 9 vs 10 hex) compare equal while a real divergence fails.
-        case "$r" in
-            "$e"*) : ;;
-            *) case "$e" in
-                   "$r"*) : ;;
-                   *) last_err="STALE DEPLOY: running build_commit '$running_commit' != expected '$EXPECT_COMMIT' (restart kept an old binary)"; return 1 ;;
-               esac ;;
-        esac
-    elif [ -z "$running_commit" ]; then
-        echo "deploy_verify: WARNING — running daemon exposes no build_commit; cannot assert freshness" >&2
-    elif [ -z "$EXPECT_COMMIT" ]; then
-        echo "deploy_verify: WARNING — no expected commit (not in a git tree); skipping staleness assertion" >&2
+    # Staleness guard: require both the exact SHA-256 source identity reported
+    # by RPC and the exact SHA-256 of /proc/<MainPID>/exe. The second check
+    # distinguishes two compiler outputs built from the same source bytes.
+    # Git commit metadata is deliberately excluded from both decisions.
+    running_source_id=$(extract_source_id_sha256 "$health" || true)
+    running_commit=$(extract_build_commit "$health" || true)
+    if ! is_sha256_hex "$running_source_id"; then
+        last_err="STALE DEPLOY: running daemon exposes no valid source_id_sha256"
+        return 1
+    fi
+    if [ "$running_source_id" != "$EXPECT_SOURCE_ID" ]; then
+        last_err="STALE DEPLOY: running source_id_sha256 '$running_source_id' != expected '$EXPECT_SOURCE_ID'"
+        return 1
     fi
 
-    echo "Deployed + RPC live at block $height (build_commit ${running_commit:-unknown}); canonical diagnostics ready."
+    service_pid_is_stable ||
+        { last_err="canonical zclassic23 MainPID changed after RPC identity proof"; return 1; }
+    mainpid_owns_rpc_listener ||
+        { last_err="canonical MainPID lost ownership of RPC listener port $RPCPORT"; return 1; }
+    running_artifact_sha256=$(running_service_artifact_sha256 || true)
+    if ! is_sha256_hex "$running_artifact_sha256"; then
+        last_err="STALE DEPLOY: could not hash the running zclassic23 MainPID executable"
+        return 1
+    fi
+    if [ "$running_artifact_sha256" != "$EXPECT_ARTIFACT_SHA256" ]; then
+        last_err="STALE DEPLOY: running artifact SHA-256 '$running_artifact_sha256' != expected '$EXPECT_ARTIFACT_SHA256'"
+        return 1
+    fi
+
+    echo "Deployed + RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready."
     return 0
 }
 

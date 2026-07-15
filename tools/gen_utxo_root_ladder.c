@@ -68,6 +68,7 @@
  *       --source-progress-kv=PATH \
  *       [--second-db=PATH] [--second-progress-kv=PATH] [--leaf-store=PATH] \
  *       [--stride=N] [--max-height=N] [--dense-height=N] \
+ *       [--immutable-source] \
  *       [--out-h=PATH] [--out-c=PATH]
  *
  * The operator ALWAYS points this at a COPY (never a live datadir) —
@@ -149,14 +150,41 @@ struct entry {
 
 /* ── sqlite helpers (standalone tool — raw sqlite3_step is sanctioned) ── */
 
-static sqlite3 *open_db_ro(const char *path)
+static bool immutable_path_uri(const char *path, char *out, size_t out_cap)
+{
+    struct stat wal_st;
+    char wal[1024];
+    int n = snprintf(wal, sizeof(wal), "%s-wal", path ? path : "");
+    if (!path || path[0] != '/' || strchr(path, '?') || strchr(path, '#') ||
+        strchr(path, '%') || n <= 0 || (size_t)n >= sizeof(wal) ||
+        (stat(wal, &wal_st) == 0 && wal_st.st_size > 0))
+        return false;
+    n = snprintf(out, out_cap, "file:%s?mode=ro&immutable=1", path);
+    return n > 0 && (size_t)n < out_cap;
+}
+
+static sqlite3 *open_db_ro(const char *path, bool immutable)
 {
     sqlite3 *db = NULL;
     /* Not SQLITE_OPEN_URI immutable=1: our caller's contract is that
      * `path` is always a static COPY (never the live datadir), and a
      * plain read-write open lets sqlite merge any -wal frames the copy
      * carried over instead of silently reading a stale checkpoint. */
-    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL);
+    char uri[1200];
+    const char *locator = path;
+    int flags = SQLITE_OPEN_READWRITE;
+    if (immutable) {
+        if (!immutable_path_uri(path, uri, sizeof(uri))) {
+            fprintf(stderr,
+                    "[gen_utxo_root_ladder] immutable source requires an "
+                    "absolute URI-safe path with no nonempty WAL: %s\n",
+                    path ? path : "(null)");
+            return NULL;
+        }
+        locator = uri;
+        flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI;
+    }
+    int rc = sqlite3_open_v2(locator, &db, flags, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[gen_utxo_root_ladder] open %s failed: %s\n",
                 path, sqlite3_errmsg(db));
@@ -171,18 +199,35 @@ static sqlite3 *open_db_ro(const char *path)
  * node.db connection, so one connection can join `blocks` (node.db) with
  * `progress_meta` (progress.kv). Returns false (and logs) on failure —
  * callers treat that as "no boundary-root source available", not fatal. */
-static bool attach_progress_kv(sqlite3 *db, const char *path)
+static bool attach_progress_kv(sqlite3 *db, const char *path, bool immutable)
 {
     if (!path) return false;
-    char sql[600];
-    snprintf(sql, sizeof(sql), "ATTACH DATABASE '%s' AS pkv", path);
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
+    char uri[1200];
+    const char *locator = path;
+    if (immutable) {
+        if (!immutable_path_uri(path, uri, sizeof(uri))) {
+            fprintf(stderr,
+                    "[gen_utxo_root_ladder] immutable progress source "
+                    "requires an absolute URI-safe path with no nonempty "
+                    "WAL: %s\n", path);
+            return false;
+        }
+        locator = uri;
+    }
+    sqlite3_stmt *stmt = NULL;
+    bool ok = sqlite3_prepare_v2(db, "ATTACH DATABASE ?1 AS pkv", -1,
+                                 &stmt, NULL) == SQLITE_OK &&
+              sqlite3_bind_text(stmt, 1, locator, -1, SQLITE_STATIC) ==
+                  SQLITE_OK &&
+              sqlite3_step(stmt) == SQLITE_DONE; // raw-sql-ok:standalone-dev-tool
+    if (!ok) {
         fprintf(stderr, "[gen_utxo_root_ladder] ATTACH %s failed: %s\n",
-                path, err ? err : "(unknown)");
-        if (err) sqlite3_free(err);
+                path, sqlite3_errmsg(db));
+        if (stmt)
+            sqlite3_finalize(stmt);
         return false;
     }
+    sqlite3_finalize(stmt);
     return true;
 }
 
@@ -275,6 +320,7 @@ struct cli {
     int32_t stride;
     int32_t max_height;      /* -1 = auto */
     int32_t dense_height;    /* -1 = auto, -2 = disabled */
+    bool immutable_source;   /* forensic no-write open; refuses nonempty WAL */
     const char *out_h;
     const char *out_c;
 };
@@ -289,6 +335,7 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
     c->stride = DEFAULT_STRIDE;
     c->max_height = -1;
     c->dense_height = -1;
+    c->immutable_source = false;
     c->out_h = DEFAULT_OUT_H;
     c->out_c = DEFAULT_OUT_C;
 
@@ -303,6 +350,7 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
         else if (strncmp(a, "--stride=", 9) == 0) c->stride = atoi(a + 9);
         else if (strncmp(a, "--max-height=", 13) == 0) c->max_height = atoi(a + 13);
         else if (strncmp(a, "--dense-height=", 15) == 0) c->dense_height = atoi(a + 15);
+        else if (strcmp(a, "--immutable-source") == 0) c->immutable_source = true;
         else if (strncmp(a, "--out-h=", 8) == 0) c->out_h = a + 8;
         else if (strncmp(a, "--out-c=", 8) == 0) c->out_c = a + 8;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -310,7 +358,8 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
                    "--source-progress-kv=PATH "
                    "[--second-db=PATH] [--second-progress-kv=PATH] "
                    "[--leaf-store=PATH] [--stride=N] [--max-height=N] "
-                   "[--dense-height=N] [--out-h=PATH] [--out-c=PATH]\n",
+                   "[--dense-height=N] [--immutable-source] "
+                   "[--out-h=PATH] [--out-c=PATH]\n",
                    argv[0]);
             return false;
         } else if (a[0] == '-') {
@@ -559,9 +608,10 @@ int main(int argc, char **argv)
     struct cli c;
     if (!parse_cli(argc, argv, &c)) return 1;
 
-    sqlite3 *src = open_db_ro(c.source_db);
+    sqlite3 *src = open_db_ro(c.source_db, c.immutable_source);
     if (!src) return 1;
-    bool src_has_pkv = attach_progress_kv(src, c.source_progress_kv);
+    bool src_has_pkv = attach_progress_kv(
+        src, c.source_progress_kv, c.immutable_source);
     if (!src_has_pkv) {
         fprintf(stderr, "[gen_utxo_root_ladder] cannot attach "
                         "--source-progress-kv=%s — stride rungs will all be "
@@ -572,9 +622,10 @@ int main(int argc, char **argv)
     sqlite3 *snd = NULL;
     bool snd_has_pkv = false;
     if (c.second_db) {
-        snd = open_db_ro(c.second_db);
+        snd = open_db_ro(c.second_db, c.immutable_source);
         if (!snd) { sqlite3_close(src); return 1; }
-        snd_has_pkv = attach_progress_kv(snd, c.second_progress_kv);
+        snd_has_pkv = attach_progress_kv(
+            snd, c.second_progress_kv, c.immutable_source);
     }
 
     int32_t src_max = -1;

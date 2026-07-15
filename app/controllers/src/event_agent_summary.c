@@ -684,6 +684,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS, first_call_started_us,
         first_call_budget.partial_result, first_call_budget.partial_reason,
         first_call_budget.partial_result ? "zclassic23 healthcheck" : "");
+    json_push_kv_str(result, "source_id_sha256",
+                     zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     agent_push_runtime_build_json(result, "runtime_build");
     json_push_kv_str(result, "status", status);

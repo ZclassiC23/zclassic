@@ -363,17 +363,25 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
  *       must ADMIT (artifact + selected-chain + producer-source receipts all
  *       present and mutually binding, and the durable frontier not behind the
  *       bundle). A durable decision record is written to the datadir;
- *   (4) on ADMIT, atomically install via consensus_state_snapshot_install_activate.
+ *   (4) reload the exact durable ADMIT, retain the classified datadir
+ *       capability, recapture its expected H-star/hash under the cutover lock,
+ *       and
+ *       atomically install via consensus_state_snapshot_install_activate.
  * `ms` is the live main_state (its selected chain is consulted to build the
- * chain-binding evidence). A non-ADMIT decision or any failure installs NOTHING
- * and exits non-zero; the prior progress store is left intact (and a physically
- * restorable prior generation is captured before any write). */
+ * chain-binding evidence). An ordinary pre-commit refusal installs nothing and
+ * exits non-zero; the prior progress store is left intact. A distinct
+ * COMMIT_OUTCOME_UNKNOWN terminal never guesses and directs the operator to the
+ * independently reopened/fsynced prior generation captured before cutover. */
 void boot_install_consensus_bundle(struct node_db *ndb,
                                    struct main_state *ms,
                                    const char *bundle_path,
                                    const char *datadir);
 
 #ifdef ZCL_TESTING
+/* Unit surface for the exact production lane/owner gate. `authorization` is
+ * accepted only when it is exactly "1". */
+bool boot_install_consensus_bundle_gate_allows_for_test(
+    const char *datadir, const char *authorization, bool *out_canonical);
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
     struct main_state *ms, const char *datadir, int seed_h,
     bool trust_existing_block_files);

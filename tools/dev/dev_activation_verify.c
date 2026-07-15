@@ -45,8 +45,10 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
                               sizeof(expected_canon)))
         return false;
 
-    char commit[128];
-    dev_activation_generation_commit(txn, expected, commit, sizeof(commit));
+    char source_id[65];
+    dev_activation_generation_source_id(txn, expected, source_id);
+    if (!source_id[0])
+        return false;
 
     /* The verify window defaults to DEV_ACTIVATION_VERIFY_TIMEOUT_S; a
      * hermetic-test override (mirroring the shell's ZCL_DEV_ACTIVATION_TIMEOUT)
@@ -73,7 +75,7 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
                 snprintf(txn->result->running_generation,
                          sizeof(txn->result->running_generation), "%s",
                          expected);
-                if (ops->activation_probe(ops->ctx, expected, commit) == 0)
+                if (ops->activation_probe(ops->ctx, expected, source_id) == 0)
                     return true;
             }
         }
@@ -158,7 +160,25 @@ bool dev_activation_rollback_previous(struct dev_activation_txn *txn,
     }
 
     (void)dev_activation_refresh_compat_link(txn);
-    dev_activation_write_build_identity(txn, txn->previous_generation);
+    if (!dev_activation_write_build_identity(txn,
+                                             txn->previous_generation)) {
+        /* The old executable/link is already restored. Even if its identity
+         * drop-in cannot be rewritten, do not silently leave the lane stopped:
+         * make a bounded best-effort restart and report the degraded recovery. */
+        (void)ops->service_daemon_reload(ops->ctx);
+        (void)ops->service_reset_failed(ops->ctx);
+        int restart_rc = ops->service_start(ops->ctx);
+        snprintf(r->rollback_status, sizeof(r->rollback_status),
+                 "identity_failed");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "%s; could not bind last-good source identity intent; "
+                 "restart %s",
+                 reason ? reason : "",
+                 restart_rc == 0 ? "attempted successfully" : "failed");
+        txn->activation_in_progress = false;
+        dev_activation_clear_in_progress(txn);
+        return false;
+    }
     (void)ops->service_daemon_reload(ops->ctx);
     (void)ops->service_reset_failed(ops->ctx);
 

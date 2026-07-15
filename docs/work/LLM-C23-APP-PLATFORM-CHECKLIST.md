@@ -11,6 +11,15 @@ cure remains priority #1 and zero-MCP remains the secondary development track.
 Nothing in this checklist authorizes runtime publication, canonical deployment,
 or mutation of the protected mint producer.
 
+[`ADR-0004`](../adr/0004-capability-service-fabric-and-app-checkpoints.md)
+supersedes this document's earlier “same-binary/self-exec App worker” wording.
+Core remains one immutable executable; fetched Apps are distinct static PIE
+artifacts admitted from the private SHA3 CAS and launched out of process.
+
+The source-distribution implementation checklist and optional non-consensus
+ratio/burn-credit design live in
+[`../P2P_SOURCE_HOSTING.md`](../P2P_SOURCE_HOSTING.md).
+
 This document turns the long-term product direction into checkable work:
 
 > An LLM edits a small amount of ordinary C23. ZClassic23 derives the affected
@@ -69,8 +78,11 @@ roadmap:
 
 ## Architecture decisions — freeze these first
 
-- [ ] Record an ADR for the three authority planes:
-  `consensus`, `development/telemetry`, and `sandboxed App runtime`.
+- [ ] Record and land the four-plane ADR: consensus, platform control,
+  per-instance App state, and CAS/evidence. The decision is accepted in
+  [`ADR-0004`](../adr/0004-capability-service-fabric-and-app-checkpoints.md);
+  landing remains unchecked until it is committed with exact source-epoch
+  evidence.
 - [ ] Freeze the promotion rule for LLM-authored C23/HTML/Markdown:
   `source → validation → proof DAG → content/manifest digest → capability
   grant → publisher signature → optional chain anchor`.
@@ -81,8 +93,8 @@ roadmap:
 - [ ] State explicitly that telemetry is evidence, never consensus authority.
 - [ ] State explicitly that an in-process native C module is trusted code, not a
   capability sandbox.
-- [ ] Keep audited built-ins statically linked; run fetched or third-party C23
-  Apps in a separate same-binary worker process.
+- [ ] Keep only audited built-ins statically linked; run fetched or third-party
+  C23 Apps as separate static PIE artifacts admitted from private CAS.
 - [ ] Use one manifest to generate commands, routes, topics, schemas, telemetry,
   simulations, documentation, and proof mappings.
 - [ ] Use one native command ontology. Extend existing leaves before adding
@@ -93,9 +105,10 @@ roadmap:
   Apps and games. Do not introduce a parallel `.zapp` package format.
 - [ ] Require explicit local approval for new capabilities, publisher changes,
   migrations below the rollback floor, and wallet authority.
-- [ ] Keep signing keys in Core. Apps submit typed intent through an opaque,
-  generation-bound grant; they never choose a raw key, capability bitmask,
-  chain ID, App ID, or topic at the signing boundary.
+- [ ] Keep signing keys in the wallet-owned secret store. Apps submit typed
+  intent to the wallet service through an opaque, generation-bound grant; they
+  never choose a raw key, capability bitmask, chain ID, App ID, or topic at the
+  signing boundary.
 - [ ] Keep dynamic loading on canonical, soak, and release lanes at zero.
 - [ ] Name the existing event stores precisely instead of calling all of them
   "the event log":
@@ -242,10 +255,10 @@ compiler, capability broker, telemetry envelope, and HTTPS/onion dispatcher.
   ReadCursors, and DeviceKeys with explicit relationships and compound indexes
   for conversation/order/event and recipient/state/time.
 - [ ] Ship signed public rooms first and label them plaintext. Then add private
-  store-and-forward envelopes using Core-owned X25519-safe device keys, HKDF,
+  store-and-forward envelopes using wallet-owned X25519-safe device keys, HKDF,
   and ChaCha20-Poly1305; hop Noise alone is not end-to-end encryption.
-- [ ] Apps never receive wallet or encryption private keys. Core signs/encrypts
-  typed intent under exact generation/grant/device policy.
+- [ ] Apps never receive wallet or encryption private keys. The wallet service
+  signs/encrypts typed intent under exact generation/grant/device policy.
 - [ ] Batch high-volume ordering commitments into signed/Merkle roots; do not
   create one blockchain transaction per chat message.
 - [ ] Measure before claiming speed: event encode/verify, AR batch/WAL/fsync,
@@ -644,14 +657,15 @@ catalog edits and no runtime loading.
 
 **Depends on:** E and the Phase-3 immutable publication transaction.
 
-**Produces:** same-binary App worker, minimal capability broker, immutable
+**Produces:** native static-PIE App worker, minimal capability broker, immutable
 generations, blue/green cutover, and exact rollback.
 
 - [ ] Define two execution classes:
   - audited built-ins, statically linked and reviewed;
   - third-party/fetched Apps, never mapped or executed by the node process.
-- [ ] Self-exec the same ZClassic23 binary in an `--app-worker` mode with a fresh
-  address space.
+- [ ] Open and SHA3-verify the exact CAS App executable, then allow one
+  descriptor-pinned `execveat` into a fresh address space after bootstrap
+  confinement. Never map fetched App code into Core.
 - [ ] Enter rootless namespaces and apply Landlock, seccomp, `no_new_privs`, W^X,
   rlimits/cgroups, bounded restart budgets, and closed inherited file
   descriptors before loading App code.

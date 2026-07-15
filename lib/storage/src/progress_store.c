@@ -20,6 +20,7 @@
 #include "util/stage.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -36,7 +37,13 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_tx_lock;
 static pthread_once_t g_tx_lock_once = PTHREAD_ONCE_INIT;
 static _Atomic(sqlite3 *) g_db = NULL;
+/* g_path is the retained-dirfd path SQLite actually opened.  Keeping the
+ * directory descriptor alive also keeps later WAL and independent-reader
+ * opens on the same directory capability even if the caller's path is
+ * renamed or replaced.  g_display_path is observational only. */
 static char g_path[PROGRESS_STORE_PATH_MAX];
+static char g_display_path[PROGRESS_STORE_PATH_MAX];
+static int g_dir_fd = -1;
 static int64_t g_opened_at;
 
 static void progress_store_tx_lock_init(void)
@@ -214,22 +221,39 @@ bool progress_store_open(const char *datadir)
     if (!datadir || !datadir[0]) LOG_FAIL("progress_store",
         "open: empty datadir");
 
-    char path[PROGRESS_STORE_PATH_MAX];
-    int n = snprintf(path, sizeof(path), "%s/%s",
+    char display_path[PROGRESS_STORE_PATH_MAX];
+    int n = snprintf(display_path, sizeof(display_path), "%s/%s",
                      datadir, PROGRESS_STORE_FILENAME);
-    if (n <= 0 || (size_t)n >= sizeof(path))
+    if (n <= 0 || (size_t)n >= sizeof(display_path))
         LOG_FAIL("progress_store", "open: datadir path too long");
+
+    int opened_dir_fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (opened_dir_fd < 0)
+        LOG_FAIL("progress_store", "open: datadir capability failed: %s",
+                 strerror(errno));
+    char path[PROGRESS_STORE_PATH_MAX];
+    n = snprintf(path, sizeof(path), "/proc/self/fd/%d/%s", opened_dir_fd,
+                 PROGRESS_STORE_FILENAME);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        (void)close(opened_dir_fd);
+        LOG_FAIL("progress_store", "open: capability path too long");
+    }
 
     pthread_mutex_lock(&g_lock);
 
     /* Already open with this path → idempotent success. */
     if (atomic_load_explicit(&g_db, memory_order_relaxed) != NULL) {
-        bool same = (strcmp(g_path, path) == 0);
+        struct stat have;
+        struct stat want;
+        bool same = g_dir_fd >= 0 && fstat(g_dir_fd, &have) == 0 &&
+                    fstat(opened_dir_fd, &want) == 0 &&
+                    have.st_dev == want.st_dev && have.st_ino == want.st_ino;
+        (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         if (!same)
             LOG_FAIL("progress_store",
-                "open: already opened at a different path (%s vs %s)",
-                g_path, path);
+                "open: already opened at a different directory (%s vs %s)",
+                g_display_path, display_path);
         return true;
     }
 
@@ -242,6 +266,7 @@ bool progress_store_open(const char *datadir)
                 "[progress_store] sqlite3_open_v2(%s) failed: %s\n",
                 path, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
         if (db) sqlite3_close(db);
+        (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -273,6 +298,7 @@ bool progress_store_open(const char *datadir)
                     "%s — disk/fs fault\n",
                     path, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
             if (db) sqlite3_close(db);
+            (void)close(opened_dir_fd);
             event_emitf(EV_RECOVERY_ACTION, 0,
                         "action=progress_store_reopen_failed reason=disk_fault "
                         "path=%s", path);
@@ -288,6 +314,7 @@ bool progress_store_open(const char *datadir)
                     "[progress_store] FRESH %s still fails quick_check — "
                     "terminal disk/fs fault, refusing to loop\n", path);
             sqlite3_close(db);
+            (void)close(opened_dir_fd);
             event_emitf(EV_RECOVERY_ACTION, 0,
                         "action=progress_store_fresh_corrupt reason=disk_fault "
                         "path=%s", path);
@@ -316,6 +343,7 @@ bool progress_store_open(const char *datadir)
                     "failed for %s\n", path);
         }
         sqlite3_close(db);
+        (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -323,18 +351,21 @@ bool progress_store_open(const char *datadir)
     if (!apply_pragmas(db) || !stage_table_ensure(db) ||
         !progress_meta_table_ensure(db)) {
         sqlite3_close(db);
+        (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         return false;
     }
 
     snprintf(g_path, sizeof(g_path), "%s", path);
+    snprintf(g_display_path, sizeof(g_display_path), "%s", display_path);
+    g_dir_fd = opened_dir_fd;
     g_opened_at = wall_now_s();
     atomic_store_explicit(&g_db, db, memory_order_release);
 
     pthread_mutex_unlock(&g_lock);
 
     fprintf(stderr,  // obs-ok:progress-store-lifecycle
-            "[progress_store] opened %s (WAL)\n", path);
+            "[progress_store] opened %s (WAL)\n", display_path);
     return true;
 }
 
@@ -352,6 +383,22 @@ bool progress_store_path(char *out, size_t cap)
     bool ok = g_path[0] != '\0' && strlen(g_path) < cap;
     if (ok) snprintf(out, cap, "%s", g_path);
     else    out[0] = '\0';
+    pthread_mutex_unlock(&g_lock);
+    return ok;
+}
+
+bool progress_store_directory_matches_fd(sqlite3 *db, int dir_fd)
+{
+    if (!db || dir_fd < 0)
+        return false;
+    pthread_mutex_lock(&g_lock);
+    struct stat have;
+    struct stat want;
+    bool ok = atomic_load_explicit(&g_db, memory_order_acquire) == db &&
+              g_dir_fd >= 0 && fstat(g_dir_fd, &have) == 0 &&
+              fstat(dir_fd, &want) == 0 && S_ISDIR(have.st_mode) &&
+              S_ISDIR(want.st_mode) && have.st_dev == want.st_dev &&
+              have.st_ino == want.st_ino;
     pthread_mutex_unlock(&g_lock);
     return ok;
 }
@@ -457,10 +504,14 @@ void progress_store_close(void)
                 rc, sqlite3_errstr(rc));
     } else {
         fprintf(stderr,  // obs-ok:progress-store-lifecycle
-                "[progress_store] closed %s\n", g_path);
+                "[progress_store] closed %s\n", g_display_path);
     }
 
+    if (g_dir_fd >= 0)
+        (void)close(g_dir_fd);
+    g_dir_fd = -1;
     g_path[0] = '\0';
+    g_display_path[0] = '\0';
     g_opened_at = 0;
     progress_store_tx_unlock();
     pthread_mutex_unlock(&g_lock);
@@ -699,12 +750,13 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key)
 
     sqlite3 *db = progress_store_db();
     json_push_kv_bool(out, "open", db != NULL);
-    /* g_path/g_opened_at are written under g_lock in progress_store_open;
+    /* g_display_path/g_opened_at are written under g_lock in
+     * progress_store_open;
      * snapshot both under the same lock so the dump never reads a torn or
      * mid-update value. (g_lock is not held on this diagnostic path.) */
     pthread_mutex_lock(&g_lock);
     char path_snap[PROGRESS_STORE_PATH_MAX];
-    snprintf(path_snap, sizeof(path_snap), "%s", g_path);
+    snprintf(path_snap, sizeof(path_snap), "%s", g_display_path);
     int64_t opened_at_snap = g_opened_at;
     pthread_mutex_unlock(&g_lock);
     json_push_kv_str (out, "path", path_snap);

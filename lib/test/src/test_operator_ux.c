@@ -18,6 +18,7 @@
 #include "kernel/command_registry.h"
 #include "util/thread_profile.h"
 #include "util/stage.h"
+#include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "platform/time_compat.h"
 #include "json/json.h"
@@ -182,6 +183,8 @@ static int test_profile_samples_threads(void)
 
 /* ── producer.status ───────────────────────────────────────────────── */
 
+static bool producer_status_exec(sqlite3 *db, const char *sql);
+
 static int test_producer_status_synthetic(void)
 {
     int failures = 0;
@@ -208,6 +211,37 @@ static int test_producer_status_synthetic(void)
         ASSERT(!st.session_open);
         ASSERT(!st.receipt_finalized);
 
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "datadir", dir));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.ops_producer_status.v1");
+        zcl_native_handle_ops_producer_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&reply.data, "height")) == 12344);
+        ASSERT(json_get_int(json_get(&reply.data, "utxo_apply_cursor")) ==
+               12345);
+        const char *text = json_get_str(json_get(&reply.data, "text"));
+        ASSERT(text != NULL &&
+               strstr(text, "fold applied-through height: 12344") != NULL);
+        zcl_command_reply_free(&reply);
+
+        ASSERT(progress_store_open(dir));
+        db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(producer_status_exec(
+            db, "DELETE FROM stage_cursor WHERE name='utxo_apply'"));
+        progress_store_close();
+        zcl_command_reply_init(&reply, "zcl.ops_producer_status.v1");
+        zcl_native_handle_ops_producer_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&reply.data, "height")) == 12300);
+        ASSERT(json_get_int(json_get(&reply.data, "utxo_apply_cursor")) == -1);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
         test_cleanup_tmpdir(dir);
         PASS();
     } _test_next:;
@@ -229,7 +263,109 @@ static int test_producer_status_absent(void)
         ASSERT(!st.progress_kv_present);
         ASSERT(st.utxo_apply_cursor == -1);
 
+        char progress_dir[320];
+        snprintf(progress_dir, sizeof(progress_dir), "%s/progress.kv", dir);
+        ASSERT(mkdir(progress_dir, 0700) == 0);
+        ASSERT(!consensus_state_producer_status_read(dir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "not regular") != NULL);
+
         test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool producer_status_exec(sqlite3 *db, const char *sql)
+{
+    char *error = NULL;
+    bool ok = sqlite3_exec(db, sql, NULL, NULL, &error) == SQLITE_OK;
+    sqlite3_free(error);
+    return ok;
+}
+
+static int test_producer_status_rejects_malformed_store(void)
+{
+    int failures = 0;
+    TEST("producer status does not project malformed rows as absent") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "badrow");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
+        ASSERT(producer_status_exec(
+            db, "UPDATE stage_cursor SET cursor='not-an-integer' "
+                "WHERE name='utxo_apply'"));
+        progress_store_close();
+
+        struct producer_status_read st;
+        char err[256] = {0};
+        ASSERT(!consensus_state_producer_status_read(dir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "integer projection is malformed") != NULL);
+
+        ASSERT(progress_store_open(dir));
+        db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(producer_status_exec(
+            db, "UPDATE stage_cursor SET cursor=12345 "
+                "WHERE name='utxo_apply'"));
+        ASSERT(producer_status_exec(
+            db, "CREATE TABLE consensus_state_producer_session("
+                "singleton INTEGER PRIMARY KEY,schema TEXT,"
+                "source_tree_root BLOB,source_epoch_digest BLOB,"
+                "producer_commit TEXT,toolchain_digest BLOB,"
+                "build_inputs_digest BLOB,source_clean INTEGER,"
+                "start_time_us INTEGER,"
+                "validation_profile INTEGER)"));
+        ASSERT(producer_status_exec(
+            db, "INSERT INTO consensus_state_producer_session VALUES("
+                "1,'zcl.consensus_state_producer_session.v2',"
+                "zeroblob(31),zeroblob(32),'',zeroblob(32),"
+                "zeroblob(32),1,123,1)"));
+        progress_store_close();
+
+        memset(err, 0, sizeof(err));
+        ASSERT(!consensus_state_producer_status_read(dir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "source identity is malformed") != NULL);
+
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_rejects_long_datadir(void)
+{
+    int failures = 0;
+    TEST("producer status rejects overlong datadirs before path/render use") {
+        char datadir[CONSENSUS_STATE_PRODUCER_DATADIR_MAX + 1];
+        memset(datadir, 'x', sizeof(datadir) - 1);
+        datadir[sizeof(datadir) - 1] = '\0';
+
+        struct producer_status_read st;
+        char err[256];
+        ASSERT(!consensus_state_producer_status_read(datadir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "exceeds 1023 bytes") != NULL);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "datadir", datadir));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.ops_producer_status.v1");
+        zcl_native_handle_ops_producer_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(strcmp(reply.error.code, "DATADIR_TOO_LONG") == 0);
+        ASSERT(json_get(&reply.data, "text") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
         PASS();
     } _test_next:;
     return failures;
@@ -472,6 +608,8 @@ int test_operator_ux(void)
     failures += test_profile_samples_threads();
     failures += test_producer_status_synthetic();
     failures += test_producer_status_absent();
+    failures += test_producer_status_rejects_malformed_store();
+    failures += test_producer_status_rejects_long_datadir();
     failures += test_brief_status_one_line_contract();
     failures += test_brief_status_unknown_fields_render_unknown();
     failures += test_next_command_prioritizes_blocker_over_gap();

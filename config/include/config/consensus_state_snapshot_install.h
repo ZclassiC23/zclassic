@@ -12,6 +12,7 @@
 
 struct sqlite3;
 struct consensus_state_artifact_evidence;
+struct consensus_state_publication_decision_record;
 
 /* Legacy USS v1-v3 artifacts may be converted by separate import adapters.
  * They are never active schemas and are never passed directly to this API. */
@@ -44,6 +45,10 @@ enum consensus_state_install_status {
      * cursors) was atomically installed into the live progress store and its
      * recomputed UTXO root/count matched the manifest. */
     CONSENSUS_INSTALL_ACTIVATED = 4,
+    /* SQLite returned an error at a commit/rollback boundary and the caller
+     * cannot prove which generation is durable. The preinstall backup is the
+     * recovery authority; callers must terminate and inspect/restore it. */
+    CONSENSUS_INSTALL_COMMIT_OUTCOME_UNKNOWN = 5,
 };
 
 struct consensus_state_install_result {
@@ -160,6 +165,16 @@ bool consensus_state_snapshot_install(
 
 /* ── ACTIVATE mode (the sovereign shielded-state cure — consumer side) ──────
  *
+ * PRODUCTION CONTAINMENT: this transaction engine is currently enabled only
+ * under ZCL_TESTING for hermetic copy-proof. A bundle's producer/source fields
+ * and receipt digests are carried by that same untrusted bundle; selected-chain
+ * H/hash/Sapling-frontier binding does not authenticate UTXOs, Sprout history,
+ * historical Sapling anchors, or nullifiers because ZClassic headers commit
+ * none of those sets. Production calls therefore return
+ * VERIFIED_CONTAINED before touching the store. Remove that containment only
+ * after an independently replay-bound receipt outside the artifact is wired
+ * and adversarially tested.
+ *
  * Atomically install a complete, history-complete bundle's coins + Sprout/
  * Sapling anchors + nullifiers + the 8 reducer stage cursors into the LIVE
  * progress store, mirroring boot_refold_from_anchor_reset's cutover discipline
@@ -167,29 +182,54 @@ bool consensus_state_snapshot_install(
  * tip_finalize seeded AT the height) — BUT installing the complete shielded
  * history with activation cursor 0 instead of the empty-anchor/positive-cursor
  * reset that produced the anchor_backfill_gap wedge. The whole install is ONE
- * BEGIN IMMEDIATE transaction so it lands or rolls back atomically; the coins
- * commitment/count are re-verified against the manifest BEFORE the COMMIT, so a
- * mismatched bundle can never commit. Mixed provenance is forbidden: the bundle
- * is the atomic unit — coins, anchors, and nullifiers are all replaced together,
- * never installed beside a borrowed set.
+ * BEGIN IMMEDIATE transaction so it lands or rolls back atomically. All three
+ * destination commitments, the in-transaction tip seed, and exact terminal
+ * H-star/served/coins frontiers are required BEFORE COMMIT. The durable ADMIT's
+ * frontier is re-captured under that same lock, so a stale CAS cannot apply.
+ * Mixed provenance is forbidden: the bundle is the atomic unit — coins,
+ * anchors, and nullifiers are all replaced together, never installed beside a
+ * borrowed set. Superseded full-replay, nullifier-backfill, and refold session
+ * markers are cleared in the same transaction.
  *
  * A physically restorable prior generation of the progress store is captured
- * (SQLite VACUUM INTO a sibling file under `datadir`) BEFORE the transaction, so
- * an operator who later decides to abort a committed install can swap the exact
- * prior bytes back. (The immutable-generation machinery in
+ * with `VACUUM INTO` from the already-open singleton through the classified
+ * directory capability while holding the process transaction lock. The code
+ * then immediately takes `BEGIN IMMEDIATE` and requires SQLite's data-version,
+ * total-change counter, and file identity to remain unchanged across that
+ * boundary, before the first cutover write. It is independently reopened,
+ * quick-checked, sidecar-checked, file-fsynced, and parent-directory-fsynced
+ * before cutover, so an operator who later decides to abort a committed install
+ * can restore the exact prior logical generation. (The immutable-
+ * generation machinery in
  * consensus_state_snapshot_candidate.c builds a FORWARD generation from a bundle
  * and never snapshots the CURRENT store, so it cannot serve as the prior-gen
- * restore; VACUUM INTO does.) `result->prior_generation_path` names it.
+ * restore.) `result->prior_generation_path` names it.
  *
- * Fail-closed: every refusal sets a typed status + named reason. Returns true
- * ONLY on a fully activated + verified install (status ACTIVATED). */
+ * Fail-closed: every refusal sets a typed status + named reason. A SQLite
+ * commit boundary whose outcome cannot be proven returns the distinct
+ * COMMIT_OUTCOME_UNKNOWN terminal and points at the durable backup; it never
+ * claims rollback. Returns true ONLY on a fully activated + verified install
+ * (status ACTIVATED). */
 struct consensus_state_activate_request {
     const char *bundle_path;
+    /* Mandatory exact artifact receipt from the ADMIT decision. Activation
+     * reopens bundle_path, recomputes this descriptor/file/inode binding, and
+     * refuses unless it is byte-for-byte identical. Height/hash alone cannot
+     * authorize state because ZClassic headers do not commit the state sets. */
+    uint8_t expected_artifact_receipt_digest[32];
     int32_t expected_height;
     uint8_t expected_block_hash[32];
-    /* Datadir the restorable prior-generation copy is written under. Must be
-     * the directory holding the open progress store. */
-    const char *datadir;
+    /* The exact durable ADMIT record. Activation revalidates its digest and
+     * all artifact/height/hash bindings, then checks its expected frontier
+     * inside the same progress-store transaction that performs the cutover. */
+    const struct consensus_state_publication_decision_record
+        *publication_decision;
+    /* Retained directory capability classified by the boot adapter. It must
+     * be the capability through which the singleton progress store was
+     * opened; the rollback generation is created and fsynced relative to it.
+     * datadir_display is never authority and is used only in operator text. */
+    int datadir_fd;
+    const char *datadir_display;
 };
 
 struct consensus_state_activate_result {
@@ -209,5 +249,28 @@ bool consensus_state_snapshot_install_activate(
     struct sqlite3 *progress_db,
     const struct consensus_state_activate_request *request,
     struct consensus_state_activate_result *result);
+
+#ifdef ZCL_TESTING
+/* Production containment remains the default even in the test binary. The
+ * hermetic activation transaction is reachable only while this explicit seam
+ * is enabled by the copy-proof test. */
+void consensus_state_snapshot_install_activate_test_set_independent_authority(
+    bool available);
+/* One-shot race hook after the durable prior-generation copy but immediately
+ * before BEGIN IMMEDIATE. Used to prove the data-version fence catches an
+ * out-of-band SQLite commit in that narrow boundary. */
+void consensus_state_snapshot_install_activate_test_set_after_backup_hook(
+    void (*hook)(void *), void *ctx);
+/* One-shot race hook after the bundle stream and before the source-evidence
+ * revalidation/COMMIT boundary. */
+void consensus_state_snapshot_install_activate_test_set_after_stream_hook(
+    void (*hook)(void *), void *ctx);
+/* One-shot pre-seed failpoint. It fires inside the open cutover transaction
+ * and proves every streamed state/schema/marker write rolls back together. */
+void consensus_state_snapshot_install_activate_test_fail_seed_once(void);
+/* One-shot failure after the seed has written its log/meta witnesses but before
+ * terminal verification/COMMIT. Proves those writes join the cutover rollback. */
+void consensus_state_snapshot_install_activate_test_fail_after_seed_once(void);
+#endif
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_INSTALL_H */

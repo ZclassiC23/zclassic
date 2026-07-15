@@ -14,6 +14,10 @@ STATE_ROOT="${ZCL_QUALITY_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/stat
 STATUS_DIR="$STATE_ROOT/status"
 LOG_DIR="$STATE_ROOT/logs"
 ARTIFACT_DIR="$STATE_ROOT/artifacts"
+QUALITY_TREE="$ROOT"
+QUALITY_SOURCE_ID="unknown"
+QUALITY_SOURCE_MUTATION="unknown"
+QUALITY_SOURCE_RECORD=""
 
 mkdir -p "$STATUS_DIR" "$LOG_DIR" "$ARTIFACT_DIR"
 
@@ -26,14 +30,59 @@ json_escape() {
         | tr '\n' ' '
 }
 
+# Optional GitHub trace metadata only; source_id_sha256 owns freshness.
 git_commit() {
-    git rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown'
+    git -C "$QUALITY_TREE" rev-parse --short=12 HEAD 2>/dev/null ||
+        printf 'unknown'
+}
+
+capture_quality_source_record() {
+    local tree="$1" tool record source_id clean mutation extra
+    tool="$tree/tools/dev/source-identity.sh"
+    [ -x "$tool" ] || return 2
+    record="$(cd "$tree" && "$tool" capture-record 2>/dev/null)" || return 2
+    read -r source_id clean mutation extra <<< "$record"
+    [[ "$source_id" =~ ^[0-9a-f]{64}$ ]] && [ "$clean" = 1 ] &&
+        [[ "$mutation" =~ ^[0-9a-f]{64}$ ]] &&
+        [ -z "${extra:-}" ] || return 2
+    printf '%s %s %s\n' "$source_id" "$clean" "$mutation"
+}
+
+bind_quality_tree() {
+    local tree="$1" clean
+    QUALITY_TREE="$tree"
+    QUALITY_SOURCE_RECORD="$(capture_quality_source_record "$tree")" || {
+        QUALITY_SOURCE_RECORD=""
+        QUALITY_SOURCE_ID="unknown"
+        QUALITY_SOURCE_MUTATION="unknown"
+        return 2
+    }
+    read -r QUALITY_SOURCE_ID clean QUALITY_SOURCE_MUTATION \
+        <<< "$QUALITY_SOURCE_RECORD"
 }
 
 write_status() {
     local lane="$1" status="$2" started="$3" finished="$4" elapsed="$5" rc="$6" log="$7" detail="$8"
+    local observed_record observed_id="unknown" observed_clean=0
+    local observed_mutation="unknown" source_stable=false identity_rc=0
     local tmp="$STATUS_DIR/${lane}.json.tmp"
     local out="$STATUS_DIR/${lane}.json"
+    observed_record="$(capture_quality_source_record "$QUALITY_TREE")" ||
+        observed_record=""
+    if [ -n "$observed_record" ]; then
+        read -r observed_id observed_clean observed_mutation \
+            <<< "$observed_record"
+    fi
+    if [ -n "$QUALITY_SOURCE_RECORD" ] &&
+       [ "$observed_record" = "$QUALITY_SOURCE_RECORD" ]; then
+        source_stable=true
+    else
+        source_stable=false
+        status=failed
+        rc=3
+        detail="source identity unavailable or superseded; prior detail: $detail"
+        identity_rc=3
+    fi
     {
         printf '{'
         printf '"schema":"zcl.background_quality_lane.v1"'
@@ -43,13 +92,22 @@ write_status() {
         printf ',"finished_at":"%s"' "$(json_escape "$finished")"
         printf ',"elapsed_seconds":%s' "$elapsed"
         printf ',"exit_code":%s' "$rc"
+        printf ',"source_identity_schema":"zcl.dev_source_identity.v2"'
+        printf ',"freshness_authority":"source_id_sha256_plus_mutation_token"'
+        printf ',"source_id_sha256":"%s"' "$(json_escape "$QUALITY_SOURCE_ID")"
+        printf ',"source_mutation_token":"%s"' "$(json_escape "$QUALITY_SOURCE_MUTATION")"
+        printf ',"observed_source_id_sha256":"%s"' "$(json_escape "$observed_id")"
+        printf ',"observed_source_mutation_token":"%s"' "$(json_escape "$observed_mutation")"
+        printf ',"source_record_stable":%s' "$source_stable"
         printf ',"commit":"%s"' "$(json_escape "$(git_commit)")"
+        printf ',"commit_semantics":"display_only_github_trace_metadata"'
         printf ',"log":"%s"' "$(json_escape "$log")"
         printf ',"artifacts":"%s"' "$(json_escape "$ARTIFACT_DIR")"
         printf ',"detail":"%s"' "$(json_escape "$detail")"
         printf '}\n'
     } > "$tmp"
     mv "$tmp" "$out"
+    return "$identity_rc"
 }
 
 run_logged() {
@@ -68,31 +126,36 @@ run_logged() {
 # mismatch whose binary fails spuriously at runtime (observed 2026-07-13: a
 # valid block rejected as bad-txns-vout-negative / bad-txnmrklroot in the simnet
 # self-test, while `make test` on the same clean commit was green). Each lane
-# gets its own detached git worktree pinned to $ROOT's HEAD at lane start —
+# gets its own detached git worktree selected from $ROOT's HEAD at lane start —
 # isolated from live edits AND from the other lanes. build/ (ccache-warm) and the
-# untracked prebuilt vendor archives are preserved across runs. Falls back to
-# $ROOT (legacy behaviour) if git worktrees are unavailable, so the lane never
-# hard-fails on the isolation step.
+# untracked prebuilt vendor archives are preserved across runs. Isolation is a
+# hard precondition: any HEAD/worktree/reset/clean failure returns a failed lane
+# without compiling in the shared checkout. Git only locates a checkout; the
+# exact v2 source record bound after selection owns every quality verdict.
 prepare_lane_tree() {
     local lane="$1"
     local iso="$STATE_ROOT/checkout/$lane"
     local head
-    head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)" || { printf '%s' "$ROOT"; return 0; }
+    head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)" || {
+        echo "background_quality: cannot resolve isolated lane HEAD" >&2
+        return 2
+    }
 
     if [ ! -e "$iso/.git" ]; then
-        rm -rf "$iso"
-        mkdir -p "$(dirname "$iso")"
-        git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+        rm -rf "$iso" || return 2
+        mkdir -p "$(dirname "$iso")" || return 2
+        git -C "$ROOT" worktree prune >/dev/null 2>&1 || return 2
         if ! git -C "$ROOT" worktree add --detach "$iso" "$head" >/dev/null 2>&1; then
-            printf '%s' "$ROOT"; return 0
+            echo "background_quality: isolated worktree creation failed for $lane" >&2
+            return 2
         fi
     else
         # Re-point the existing worktree at the current HEAD. reset --hard only
         # touches tracked files; gitignored build/ + vendor/lib survive (fast
         # incremental rebuilds). `clean -fd` (no -x) drops stray untracked source
         # without wiping ignored build artifacts.
-        git -C "$iso" reset --hard "$head" >/dev/null 2>&1 || { printf '%s' "$ROOT"; return 0; }
-        git -C "$iso" clean -fd >/dev/null 2>&1 || true
+        git -C "$iso" reset --hard "$head" >/dev/null 2>&1 || return 2
+        git -C "$iso" clean -fd >/dev/null 2>&1 || return 2
     fi
 
     # Prebuilt vendor archives (vendor/lib/*.a) are untracked; seed them once.
@@ -114,7 +177,20 @@ run_fuzz() {
     leak_detect="${ZCL_FUZZ_DETECT_LEAKS:-0}"
 
     local tree
-    tree="$(prepare_lane_tree fuzz)"
+    if ! tree="$(prepare_lane_tree fuzz)"; then
+        QUALITY_TREE="$ROOT"
+        QUALITY_SOURCE_RECORD=""
+        QUALITY_SOURCE_ID="unknown"
+        QUALITY_SOURCE_MUTATION="unknown"
+        write_status "fuzz" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "isolated lane checkout preparation failed" || true
+        return 2
+    fi
+    bind_quality_tree "$tree" || {
+        write_status "fuzz" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "could not bind exact lane source identity" || true
+        return 2
+    }
 
     write_status "fuzz" "running" "$started" "" 0 0 "$log" "building fuzz targets"
     {
@@ -197,7 +273,20 @@ run_coverage() {
     log="$LOG_DIR/coverage-${started//[:]/}.log"
 
     local tree
-    tree="$(prepare_lane_tree coverage)"
+    if ! tree="$(prepare_lane_tree coverage)"; then
+        QUALITY_TREE="$ROOT"
+        QUALITY_SOURCE_RECORD=""
+        QUALITY_SOURCE_ID="unknown"
+        QUALITY_SOURCE_MUTATION="unknown"
+        write_status "coverage" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "isolated lane checkout preparation failed" || true
+        return 2
+    fi
+    bind_quality_tree "$tree" || {
+        write_status "coverage" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "could not bind exact lane source identity" || true
+        return 2
+    }
 
     write_status "coverage" "running" "$started" "" 0 0 "$log" "running make coverage"
     printf 'background_quality: lane=coverage started=%s commit=%s tree=%s\n' \
@@ -227,7 +316,20 @@ run_tests() {
     log="$LOG_DIR/tests-${started//[:]/}.log"
 
     local tree
-    tree="$(prepare_lane_tree tests)"
+    if ! tree="$(prepare_lane_tree tests)"; then
+        QUALITY_TREE="$ROOT"
+        QUALITY_SOURCE_RECORD=""
+        QUALITY_SOURCE_ID="unknown"
+        QUALITY_SOURCE_MUTATION="unknown"
+        write_status "tests" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "isolated lane checkout preparation failed" || true
+        return 2
+    fi
+    bind_quality_tree "$tree" || {
+        write_status "tests" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "could not bind exact lane source identity" || true
+        return 2
+    }
 
     write_status "tests" "running" "$started" "" 0 0 "$log" "running make test"
     printf 'background_quality: lane=tests started=%s commit=%s tree=%s\n' \

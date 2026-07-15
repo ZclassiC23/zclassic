@@ -92,9 +92,11 @@ struct dev_activation_ops {
      * `out`. Returns 0 on success. */
     int (*running_exe)(void *ctx, long pid, char *out, size_t out_sz);
 
-    /* Preflight the staged candidate binary at `cand_bin`. `build_commit` is
-     * the expected build stamp the candidate must self-report. */
-    int (*preflight)(void *ctx, const char *cand_bin, const char *build_commit);
+    /* Preflight the staged candidate binary at `cand_bin` against the baked
+     * 64-hex SHA-256 source identity. Git build_commit is trace metadata and
+     * is deliberately not an activation decision input. */
+    int (*preflight)(void *ctx, const char *cand_bin,
+                     const char *source_id_sha256);
 
     /* Final source-epoch compare-and-swap after candidate preflight and
      * immediately before staging publication or service stop. Optional for
@@ -103,9 +105,10 @@ struct dev_activation_ops {
     int (*source_epoch_cas)(void *ctx);
 
     /* Post-restart readiness probe for the activated generation `gen_id`.
-     * `expected_commit` is the generation manifest's build_commit. */
+     * `expected_source_id_sha256` is the generation manifest's authoritative
+     * baked source identity. */
     int (*activation_probe)(void *ctx, const char *gen_id,
-                            const char *expected_commit);
+                            const char *expected_source_id_sha256);
 
     void *ctx;
 };
@@ -113,21 +116,29 @@ struct dev_activation_ops {
 /*
  * Activation request. All paths are caller-owned strings that must outlive the
  * call. `artifact_path` is a prebuilt, executable node binary (this engine
- * never builds). `build_commit` is the stamp recorded in the generation
- * manifest and required of the candidate at preflight.
+ * never builds). `source_identity` is the authoritative SHA-256 identity
+ * recorded in the generation manifest and required of the candidate at
+ * preflight. `build_commit` is optional display/GitHub trace metadata only.
  */
 struct dev_activation_request {
     const char *repo_root;      /* absolute repository root */
     const char *artifact_path;  /* prebuilt candidate binary (executable) */
-    const char *build_commit;   /* recorded build stamp */
+    const char *build_commit;   /* optional display-only Git trace */
     const char *build_type;     /* "fast" | "strict" | ... (state file field) */
-    const char *source_identity;/* 64-hex complete dirty source epoch */
+    const char *source_identity;/* authoritative 64-hex SHA-256 source id */
     const char *gen_root;       /* content-addressed generation store root */
     const char *datadir;        /* must resolve to ~/.zclassic-c23-dev */
     const char *unit;           /* must be "zcl23-dev.service" */
     int rpcport;                /* must be 18252 */
     enum dev_activation_mode mode;
 };
+
+#ifdef ZCL_TESTING
+/* One-shot staging race hook after the source artifact is initially hashed and
+ * before it is copied into the immutable generation. */
+void dev_activation_stage_test_set_after_hash_hook(void (*hook)(void *),
+                                                   void *ctx);
+#endif
 
 /*
  * Activation result. All string fields are NUL-terminated. `status` mirrors
