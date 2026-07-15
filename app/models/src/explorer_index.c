@@ -25,6 +25,7 @@
 #include "crypto/sha3.h"
 #include "zslp/slp.h"
 #include "znam/znam.h"
+#include "models/zanc.h"
 #include "sapling/constants.h"
 #include "util/log_macros.h"
 #include <string.h>
@@ -492,13 +493,32 @@ static void apply_znam(struct node_db *ndb, const struct transaction *tx,
     }
 }
 
+/* Project one parsed ZANC anchor into zanc_anchors (rebuildable, never
+ * authoritative). Anchoring is permissionless — no owner check. Idempotent:
+ * INSERT OR REPLACE keyed on txid, so re-processing a block is a no-op.
+ * Failures are logged and skipped, never fatal. */
+static void apply_zanc(struct node_db *ndb, const struct transaction *tx,
+                       const struct zanc_message *zm, int height)
+{
+    struct zanc_anchor a;
+    memset(&a, 0, sizeof(a));
+    memcpy(a.txid, tx->hash.data, 32);
+    a.height = height;
+    a.hash_type = zm->hash_type;
+    memcpy(a.digest, zm->digest, ZANC_DIGEST_LEN);
+    memcpy(a.label, zm->label, zm->label_len);
+    a.label[zm->label_len] = '\0';
+    if (!db_zanc_save(ndb, &a))
+        LOG_WARN("explorer", "apply_zanc: anchor save failed at h=%d", height);
+}
+
 /* ── op_return dispatch ────────────────────────────────────────────── */
 
-/* Persist the generic op_returns row (one per tx) and dispatch to the two
+/* Persist the generic op_returns row (one per tx) and dispatch to the
  * on-chain OP_RETURN protocols: ZSLP (slp_parse → is_slp flag, then
- * explorer_index_apply_slp in explorer_index_zslp.c) and ZNAM (znam_parse →
- * apply_znam). Called only for the FIRST OP_RETURN
- * output of the tx (op_returns PK is txid). */
+ * explorer_index_apply_slp in explorer_index_zslp.c), ZNAM (znam_parse →
+ * apply_znam), and ZANC (zanc_parse → apply_zanc). Called only for the FIRST
+ * OP_RETURN output of the tx (op_returns PK is txid). */
 static void index_op_return(struct node_db *ndb, const struct transaction *tx,
                             const struct tx_out *out, int height)
 {
@@ -518,6 +538,10 @@ static void index_op_return(struct node_db *ndb, const struct transaction *tx,
     struct znam_message zm;
     if (znam_parse(script, len, &zm))
         apply_znam(ndb, tx, &zm, height);
+
+    struct zanc_message am;
+    if (zanc_parse(script, len, &am))
+        apply_zanc(ndb, tx, &am, height);
 }
 
 /* ── Per-tx projection writer ──────────────────────────────────────── */
