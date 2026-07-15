@@ -4,6 +4,7 @@
  * mining, wallet sync, shutdown, and utility functions. */
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
+#include "util/sysinit.h"
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_background_workers.h"
 #include "config/boot_flyclient.h"
@@ -722,6 +723,19 @@ bool app_init_services(struct app_context *ctx,
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);
+
+    /* NETWORK_READY boundary: connman initialized + addrman loaded (peer
+     * manager ready); listeners are bound just below. Advances the boot-stage
+     * machine via the net record registered in boot.c. */
+    {
+        struct zcl_result nr =
+            sysinit_run_stage(BOOT_STAGE_NETWORK_READY, svc);
+        if (!nr.ok) {
+            fprintf(stderr, "[boot] NETWORK_READY boundary failed: %s\n",
+                    nr.message);
+            return false;
+        }
+    }
 
     if (ctx->listen) {
         struct net_service bind4;

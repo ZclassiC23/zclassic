@@ -70,8 +70,20 @@
 /* Process-wide "sandbox entered" latch. Set once, never cleared (enter is
  * one-way); a plain bool is safe because enter() is single-threaded. */
 static bool g_sandbox_active = false;
+static const char *g_active_profile_name = NULL;
 
 bool os_sandbox_active(void) { return g_sandbox_active; }
+
+const char *os_sandbox_active_profile_name(void) { return g_active_profile_name; }
+
+bool os_sandbox_seccomp_supported(void)
+{
+#ifdef ZCL_HAVE_SECCOMP
+    return true;
+#else
+    return false;
+#endif
+}
 
 /* ── no_new_privs ──────────────────────────────────────────────────────── */
 
@@ -239,6 +251,34 @@ const int *os_sandbox_session_denied_syscalls(size_t *count_out)
     if (count_out)
         *count_out = sizeof(g_session_denied) / sizeof(g_session_denied[0]);
     return g_session_denied;
+}
+
+/* The resident node's deny-set: execution + escape ONLY. Deliberately omits
+ * the socket/clone/fork family the session set forbids — a running node opens
+ * peer sockets and spawns threads, so those must stay allowed. */
+static const int g_node_steady_denied[] = {
+    /* code execution */
+    __NR_execve, __NR_execveat,
+    /* debugging / cross-process memory */
+    __NR_ptrace, __NR_process_vm_readv, __NR_process_vm_writev,
+    /* mount / namespace escape */
+    __NR_mount, __NR_umount2, __NR_pivot_root, __NR_setns, __NR_unshare,
+    /* kernel surface */
+    __NR_bpf, __NR_kexec_load, __NR_kexec_file_load,
+    __NR_init_module, __NR_finit_module, __NR_delete_module,
+    __NR_perf_event_open,
+    /* keyrings */
+    __NR_add_key, __NR_request_key, __NR_keyctl,
+    /* handle-based open bypass */
+    __NR_open_by_handle_at,
+};
+
+const int *os_sandbox_node_steady_denied_syscalls(size_t *count_out)
+{
+    if (count_out)
+        *count_out = sizeof(g_node_steady_denied) /
+                     sizeof(g_node_steady_denied[0]);
+    return g_node_steady_denied;
 }
 
 struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
@@ -493,13 +533,14 @@ struct os_sandbox_profile os_sandbox_session_child_profile(
 struct os_sandbox_profile os_sandbox_node_steady_state_profile(
     const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules)
 {
-    /* Scaffold: the node runs many threads and legitimately opens fds over
-     * its lifetime, so NO nproc=1 and NO AS clamp here. Landlock grants the
-     * datadir (incl. the late-opened <datadir>/ssl per os-substrate-plan §3);
-     * the seccomp deny-list still forbids execve/ptrace/mount/etc. Not yet
-     * wired into boot — os-substrate-plan §3 "Placement" is a later phase. */
+    /* The node runs many threads and legitimately opens fds + peer sockets
+     * over its lifetime, so NO nproc=1 and NO AS clamp here, and the NODE
+     * deny-set (execution/escape only — keeps socket/clone) instead of the
+     * session set. Landlock grants the datadir (path-beneath covers the
+     * late-opened <datadir>/ssl + SQLite WAL/shm/tmp). Wired at the late
+     * SERVICES_RUNNING boundary via a SYSINIT record in config/src/boot.c. */
     size_t n_denied = 0;
-    const int *denied = os_sandbox_session_denied_syscalls(&n_denied);
+    const int *denied = os_sandbox_node_steady_denied_syscalls(&n_denied);
     return (struct os_sandbox_profile){
         .name = "node_steady_state",
         .no_new_privs = true,
@@ -542,5 +583,6 @@ struct zcl_result os_sandbox_enter(const struct os_sandbox_profile *p)
                                           p->seccomp_deny_exec_mmap));
 
     g_sandbox_active = true;
+    g_active_profile_name = p->name;  /* profile literals are static-lifetime */
     return ZCL_OK;
 }

@@ -158,6 +158,15 @@ struct app_context {
                                  * explicit -fileservice=PEER is always honored
                                  * (the operator chose that peer). */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
+    bool sandbox_steady;       /* -sandbox=steady : enter the os_sandbox node
+                                 * steady-state profile (no_new_privs + Landlock
+                                 * datadir grant + node deny-list) at the late
+                                 * SERVICES_RUNNING boundary. Default false
+                                 * (-sandbox=off). REFUSED without a systemd
+                                 * NOTIFY_SOCKET: the deny-set forbids execve, so
+                                 * the off-systemd self-respawn (src/main.c) would
+                                 * be killed — under systemd, Restart=always owns
+                                 * respawn and no self-exec happens. */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
                                  * the event-log block_index_projection instead of

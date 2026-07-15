@@ -41,6 +41,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 
 #define SB_CHECK(name, expr) do { \
@@ -225,6 +226,59 @@ static int c_enter_socket(void)
     return 6; /* reached only if socket was not denied */
 }
 
+/* ── node steady-state profile (the boot-wired resident-node confinement) ─
+ *
+ * Unlike the session child, the node profile MUST keep socket()/clone() (the
+ * node opens peer sockets + spawns threads) while still denying execve and the
+ * escape family. These children prove that distinction. The record-registration
+ * half of the wiring lives in config/src/boot.c and is pinned by
+ * tools/lint/check_sandbox_wired.sh (a full boot in a unit test is impractical;
+ * multi-thread seccomp/Landlock retrofit is deferred to soak per
+ * BOOT_INVARIANTS.md). */
+
+static char g_node_dir[128];
+
+static int c_node_enter_socket_ok(void)
+{
+    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
+    if (!os_sandbox_enter(&p).ok) return 70;
+    if (!os_sandbox_active()) return 71;
+    /* socket() must be ALLOWED under the node deny-set (session denies it). */
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return 72;
+    close(s);
+    return 0;
+}
+
+static int c_node_enter_fork_ok(void)
+{
+    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
+    if (!os_sandbox_enter(&p).ok) return 70;
+    /* clone/fork must be ALLOWED (the node spawns threads). No nproc clamp. */
+    pid_t c = fork();
+    if (c == 0) _exit(0);
+    if (c < 0) return 73;
+    int s; waitpid(c, &s, 0);
+    return (WIFEXITED(s) && WEXITSTATUS(s) == 0) ? 0 : 74;
+}
+
+static int c_node_enter_exec_denied(void)
+{
+    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
+    if (!os_sandbox_enter(&p).ok) return 70;
+    execve("/bin/true", (char *const[]){"/bin/true", NULL}, (char *const[]){NULL});
+    return 5; /* reached only if exec was not denied */
+}
+
+static bool denyset_contains(const int *set, size_t n, long nr)
+{
+    for (size_t i = 0; i < n; i++) if (set[i] == (int)nr) return true;
+    return false;
+}
+
 /* ── userns map round-trip (userns-gated) ──────────────────────────────── */
 
 static int userns_map_roundtrip(void)
@@ -262,6 +316,7 @@ int test_os_sandbox(void)
 
     test_make_tmpdir(g_ll_dir, sizeof g_ll_dir, "os_sandbox", "ll");
     test_make_tmpdir(g_sess_dir, sizeof g_sess_dir, "os_sandbox", "sess");
+    test_make_tmpdir(g_node_dir, sizeof g_node_dir, "os_sandbox", "node");
     test_fmt_tmpdir(g_fsize_path, sizeof g_fsize_path, "os_sandbox", "fsize");
 
     /* ── builders in isolation ─────────────────────────────────────── */
@@ -293,6 +348,34 @@ int test_os_sandbox(void)
     SB_CHECK("enter(SESSION_CHILD): socket denied -> SIGSYS",
              sb_run_child(c_enter_socket) == -SIGSYS);
 
+    /* ── node steady-state profile: construction + child probe ─────── */
+    {
+        struct os_sandbox_path_rule r = { g_node_dir, true, true };
+        struct os_sandbox_profile np = os_sandbox_node_steady_state_profile(&r, 1);
+        SB_CHECK("node profile is named node_steady_state",
+                 np.name && strcmp(np.name, "node_steady_state") == 0);
+        SB_CHECK("node profile: no rlimit clamp (many threads)",
+                 !np.apply_rlimits);
+        SB_CHECK("node profile: seccomp + landlock + no_new_privs on",
+                 np.seccomp && np.landlock && np.no_new_privs);
+        size_t nn = 0;
+        const int *nd = os_sandbox_node_steady_denied_syscalls(&nn);
+        SB_CHECK("node profile denied set == node deny-set",
+                 np.denied_syscalls == nd && np.n_denied == nn);
+        SB_CHECK("node deny-set includes execve", denyset_contains(nd, nn, __NR_execve));
+        SB_CHECK("node deny-set includes ptrace", denyset_contains(nd, nn, __NR_ptrace));
+        SB_CHECK("node deny-set EXCLUDES socket (node needs it)",
+                 !denyset_contains(nd, nn, __NR_socket));
+        SB_CHECK("node deny-set EXCLUDES clone (node spawns threads)",
+                 !denyset_contains(nd, nn, __NR_clone));
+    }
+    SB_CHECK("enter(NODE): socket allowed (unlike session)",
+             sb_run_child(c_node_enter_socket_ok) == 0);
+    SB_CHECK("enter(NODE): fork/clone allowed",
+             sb_run_child(c_node_enter_fork_ok) == 0);
+    SB_CHECK("enter(NODE): exec denied -> SIGSYS",
+             sb_run_child(c_node_enter_exec_denied) == -SIGSYS);
+
     /* ── capability probe + userns-gated assertions ────────────────── */
     struct os_sandbox_caps caps = os_sandbox_probe_caps();
     printf("os_sandbox: caps userns=%d landlock_abi=%d seccomp=%d\n",
@@ -319,6 +402,7 @@ int test_os_sandbox(void)
 
     test_rm_rf_recursive(g_ll_dir);
     test_rm_rf_recursive(g_sess_dir);
+    test_rm_rf_recursive(g_node_dir);
     unlink(g_fsize_path);
 
     printf("=== os_sandbox tests done: %d failure(s) ===\n", failures);

@@ -1,0 +1,6 @@
+04 000010 wallet_loaded
+05 000010 block_index_loaded
+06 000010 chain_tip_resolved
+07 000010 network_ready
+08 000010 services_running
+08 000090 sandbox

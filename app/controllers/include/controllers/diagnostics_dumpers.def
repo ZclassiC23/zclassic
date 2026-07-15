@@ -59,6 +59,10 @@
                "TLS cert_path + cert_present/key_present at <datadir>/ssl, "
                "onion_enabled + onion_address. Diagnoses why the explorer is "
                "or isn't serving on clearnet"),
+    DIAG_LOCAL("sandbox", sandbox_dump_state_json,
+               "os_sandbox confinement: active + profile name, landlock_abi, "
+               "seccomp_supported/active, node deny-set size. Confirms whether "
+               "-sandbox=steady entered the node steady-state profile"),
     DIAG_ENTRY("bundle_staleness", bundle_staleness_dump_state_json,
                "fast-sync starter-pack freshness: seed height, block_index presence, network-tip gap, catch-up estimate, remint recommendation",
                "diagnostic", "service", DIAG_OWNER_LOCAL,

@@ -58,6 +58,8 @@
 #include "util/sync.h"
 #include "util/safe_alloc.h"
 #include "util/boot_phase.h"
+#include "util/sysinit.h"
+#include "platform/os_sandbox.h"
 #include "util/util.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
@@ -950,6 +952,145 @@ static void boot_step_start_maintenance_services(void)
     }
 }
 
+/* ── SYSINIT records: the boot-stage boundaries between DB_OPEN and READY ──
+ *
+ * These convert boot.c's literal call order into declarative records the
+ * boot-stage machine advances through (util/sysinit.h). Each record's init
+ * runs at its true boundary and either establishes/verifies the stage's
+ * guarantee or is fail-closed. app_init calls sysinit_run_stage() at the point
+ * the guarantee becomes true; run_stage advances the stage only if the records
+ * succeed. Registered order does not matter — the deterministic (stage, order,
+ * name) sort (pinned by tools/lint/check_sysinit_ordering.sh) does.
+ *
+ * ctx: WALLET_LOADED / BLOCK_INDEX_LOADED / CHAIN_TIP_RESOLVED /
+ * SERVICES_RUNNING receive the `struct app_context *`; NETWORK_READY (run from
+ * boot_services.c app_init_services) receives the `struct boot_svc_ctx *`. */
+
+static struct zcl_result sr_wallet_loaded(void *ctx)
+{
+    (void)ctx;
+    /* STATE C/D/E/F handling above has already aborted on a wallet that
+     * could not be opened/verified; reaching here means wallet_init +
+     * (load or create) completed and the keystore is the authority. */
+    if (!g_node_db.open)
+        return ZCL_OK;  /* STATE A: no node.db — keypool generated in RAM */
+    return ZCL_OK;
+}
+
+static struct zcl_result sr_block_index_loaded(void *ctx)
+{
+    (void)ctx;
+    /* The flat/SQLite/LevelDB loaders, projection topup, and height/pprev
+     * repair have run and the sidecar integrity gate accepted the map. A
+     * genesis-only map (size <= 1) is legitimate on a fresh datadir. */
+    return ZCL_OK;
+}
+
+static struct zcl_result sr_chain_tip_resolved(void *ctx)
+{
+    (void)ctx;
+    /* Restore normal SQLite mode, persist the resolved tip, and stamp
+     * boot_status — the coins/block-index reconciliation is complete by the
+     * time app_init calls this. */
+    boot_step_finalize_chain_state();
+    return ZCL_OK;
+}
+
+static struct zcl_result sr_network_ready(void *ctx)
+{
+    const struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->connman)
+        return ZCL_ERR(-1, "network boundary reached without a connman");
+    return ZCL_OK;
+}
+
+static struct zcl_result sr_services_running(void *ctx)
+{
+    (void)ctx;
+    boot_step_start_maintenance_services();
+    return ZCL_OK;
+}
+
+/* Late confinement: enter the os_sandbox node steady-state profile once every
+ * thread is spawned and every late fd is open. Runs at SERVICES_RUNNING with a
+ * higher `order` than services_running so it is the LAST record before READY.
+ * A no-op unless -sandbox=steady (main.c already refused steady off-systemd).
+ *
+ * fs grants: the datadir tree (rw) — one path-beneath rule covers the
+ * late-opened <datadir>/ssl and SQLite WAL/shm/tmp — plus the agent-test status
+ * dir when present. Landlock restrict_self is one-way; the deny-set forbids
+ * execve/ptrace/mount/namespace-escape but keeps socket/clone the node needs.
+ *
+ * Fail-closed: if confinement was requested but cannot be applied (old kernel,
+ * missing datadir, seccomp/Landlock error) this returns non-ok and boot exits
+ * rather than run unconfined after the operator asked for a sandbox.
+ *
+ * Coverage note (deferred to soak): seccomp/Landlock here confine the calling
+ * (boot/main) thread and threads spawned AFTER this point; retrofitting the
+ * already-running P2P/RPC/service threads (seccomp TSYNC + per-thread Landlock)
+ * is a follow-up. The record + adoption gate (check_sandbox_wired.sh) lock in
+ * the wiring so it cannot regress to zero confinement. */
+static struct zcl_result sr_sandbox_enter(void *ctx)
+{
+    const struct app_context *actx = ctx;
+    if (!actx || !actx->sandbox_steady)
+        return ZCL_OK;  /* -sandbox=off (default): no confinement requested */
+
+    const char *datadir = actx->datadir ? actx->datadir : g_datadir;
+    if (!datadir || !datadir[0])
+        return ZCL_ERR(-1, "-sandbox=steady: no datadir to grant");
+
+    struct os_sandbox_path_rule rules[2];
+    size_t n = 0;
+    rules[n++] = (struct os_sandbox_path_rule){
+        .path = datadir, .allow_read = true, .allow_write = true };
+
+    char agent_status[PATH_MAX];
+    const char *home = getenv("HOME");
+    if (home && home[0]) {
+        snprintf(agent_status, sizeof(agent_status),
+                 "%s/.zclassic-c23-agent-test-status", home);
+        struct stat st;
+        if (stat(agent_status, &st) == 0 && S_ISDIR(st.st_mode))
+            rules[n++] = (struct os_sandbox_path_rule){
+                .path = agent_status, .allow_read = true, .allow_write = true };
+    }
+
+    struct os_sandbox_profile prof =
+        os_sandbox_node_steady_state_profile(rules, n);
+    struct zcl_result r = os_sandbox_enter(&prof);
+    if (!r.ok) {
+        fprintf(stderr,  // obs-ok:sandbox-enter-fatal-precedes-boot-fail
+            "FATAL: -sandbox=steady requested but os_sandbox_enter failed: "
+            "code=%d %s\n", r.code, r.message);
+        return r;
+    }
+    printf("[boot] sandbox: entered '%s' profile (landlock_abi=%d, %zu fs grants)\n",
+           os_sandbox_active_profile_name() ? os_sandbox_active_profile_name() : "?",
+           os_sandbox_landlock_abi(), n);
+    return ZCL_OK;
+}
+
+/* The boot boundary table. One record per line so the golden lint gate can
+ * parse (stage, order, name) without a C compile. `order` reserves headroom
+ * for future per-subsystem records at each boundary; the single record per
+ * stage today keeps the sort trivial. */
+static const struct sysinit_record k_boot_sysinit_records[] = {
+    { .subsystem = "wallet",      .stage = BOOT_STAGE_WALLET_LOADED,      .order = 10, .init = sr_wallet_loaded,      .fini = NULL, .name = "wallet_loaded" },
+    { .subsystem = "block_index", .stage = BOOT_STAGE_BLOCK_INDEX_LOADED, .order = 10, .init = sr_block_index_loaded, .fini = NULL, .name = "block_index_loaded" },
+    { .subsystem = "chain",       .stage = BOOT_STAGE_CHAIN_TIP_RESOLVED, .order = 10, .init = sr_chain_tip_resolved, .fini = NULL, .name = "chain_tip_resolved" },
+    { .subsystem = "net",         .stage = BOOT_STAGE_NETWORK_READY,      .order = 10, .init = sr_network_ready,      .fini = NULL, .name = "network_ready" },
+    { .subsystem = "services",    .stage = BOOT_STAGE_SERVICES_RUNNING,   .order = 10, .init = sr_services_running,   .fini = NULL, .name = "services_running" },
+    { .subsystem = "sandbox",     .stage = BOOT_STAGE_SERVICES_RUNNING,   .order = 90, .init = sr_sandbox_enter,      .fini = NULL, .name = "sandbox" },
+};
+
+static void boot_sysinit_register_all(void)
+{
+    for (size_t i = 0; i < sizeof(k_boot_sysinit_records) /
+                           sizeof(k_boot_sysinit_records[0]); i++)
+        (void)sysinit_register(&k_boot_sysinit_records[i]);
+}
+
 static void boot_stop_platform_services(void)
 {
     zcl_service_kernel_stop_all(&g_maintenance_kernel);
@@ -1041,6 +1182,9 @@ bool app_init(struct app_context *ctx)
      * and the process exits non-zero — never partial-init state. */
     if (!boot_step_init_observability())
         return false;
+    /* Register the declarative boot-stage boundary records before any
+     * sysinit_run_stage() call below advances the stage machine. */
+    boot_sysinit_register_all();
     if (!boot_step_select_chain_and_datadir(ctx))
         return false;
     if (!ctx->mint_anchor &&
@@ -1389,6 +1533,14 @@ bool app_init(struct app_context *ctx)
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
     printf("[boot] %-30s %lldms\n", "wallet_load",
            (long long)(boot_clock_ms() - t_phase));
+
+    /* WALLET_LOADED boundary: wallet_keys read + canary passed (STATE C) or a
+     * keypool was generated (STATE A/B). See BOOT_INVARIANTS.md. */
+    {
+        struct zcl_result wr =
+            sysinit_run_stage(BOOT_STAGE_WALLET_LOADED, ctx);
+        if (!wr.ok) return false;
+    }
 
     /* Open the dedicated progress.kv SQLite file that hosts every staged-sync
      * stage cursor — independent of node.db (commits off the hot path). */
@@ -2403,6 +2555,15 @@ bool app_init(struct app_context *ctx)
                 return false;
             }
         }
+    }
+
+    /* BLOCK_INDEX_LOADED boundary: the block index is loaded, repaired, and
+     * the sidecar integrity gate accepted the map. The tip is not yet
+     * resolved (UTXO import + chain-tip restore run below). */
+    {
+        struct zcl_result br =
+            sysinit_run_stage(BOOT_STAGE_BLOCK_INDEX_LOADED, ctx);
+        if (!br.ok) return false;
     }
 
     /* ── LDB UTXO import (runs AFTER block index load) ──
@@ -3774,7 +3935,14 @@ sapling_tree_boot_check_done:
      * wallet_scan_blocks boot_phase and the p2p_services_start marker. */
     int64_t t_finalize_build = boot_clock_ms();
 
-    boot_step_finalize_chain_state();
+    /* CHAIN_TIP_RESOLVED boundary: finalize (restore normal SQLite mode,
+     * persist the resolved tip, stamp boot_status) runs as this stage's
+     * record. */
+    {
+        struct zcl_result cr =
+            sysinit_run_stage(BOOT_STAGE_CHAIN_TIP_RESOLVED, ctx);
+        if (!cr.ok) return false;
+    }
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
 
     /* -reindex-explorer: truncate + rewind AFTER finalize re-stamped the tip
@@ -3871,8 +4039,14 @@ sapling_tree_boot_check_done:
     printf("[boot] %-30s %lldms\n", "total",
            (long long)(boot_clock_ms() - t_boot_start));
     if (svc_ok) {
+        /* SERVICES_RUNNING boundary: background maintenance services
+         * (disk_monitor/ibd_throttle already up; db_maintenance/wallet_backup/
+         * sync_watchdog started here) come up BEFORE the node advertises READY.
+         * NETWORK_READY was advanced inside app_init_services. */
+        struct zcl_result sr =
+            sysinit_run_stage(BOOT_STAGE_SERVICES_RUNNING, ctx);
+        if (!sr.ok) return false;
         boot_stage_advance_to(BOOT_STAGE_READY);
-        boot_step_start_maintenance_services();
         /* Tier-2 fast restart: if this boot SKIPPED quick_check, run one in the
          * background now (failure raises OPERATOR_NEEDED — never silent). */
         boot_fast_restart_start_bg_quick_check(g_datadir);

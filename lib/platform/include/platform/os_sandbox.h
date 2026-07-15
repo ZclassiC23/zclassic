@@ -173,6 +173,15 @@ struct zcl_result os_sandbox_landlock_restrict(
  * receives its length. This is the named SESSION deny-set constant. */
 const int *os_sandbox_session_denied_syscalls(size_t *count_out);
 
+/* The RESIDENT NODE's deny-set: execution + namespace/mount/kernel escape only
+ * (execve/execveat, ptrace/process_vm_*, mount family, setns/unshare/pivot_root,
+ * bpf/kexec/module ops, keyrings, open_by_handle_at, perf_event_open). Unlike
+ * the SESSION set it does NOT deny socket/connect/clone — the node legitimately
+ * opens peer sockets and spawns threads over its lifetime, so denying those
+ * would kill a running node. Returns a static const array; *count_out receives
+ * its length. Named the NODE STEADY-STATE deny-set constant. */
+const int *os_sandbox_node_steady_denied_syscalls(size_t *count_out);
+
 /* Install a hand-rolled seccomp-bpf DENY-list (no libseccomp): every syscall
  * in `denied` returns SECCOMP_RET_KILL_PROCESS; everything else defaults to
  * SECCOMP_RET_ALLOW. A deny-list (not an allow-list) is deliberate — even a
@@ -248,6 +257,15 @@ struct zcl_result os_sandbox_enter(const struct os_sandbox_profile *p);
 
 /* True after a successful os_sandbox_enter() in this process. */
 bool os_sandbox_active(void);
+
+/* The `name` of the profile that entered, or NULL if none has. Introspection
+ * only (backs the `sandbox` dumpstate subsystem). */
+const char *os_sandbox_active_profile_name(void);
+
+/* True iff this build was compiled with the seccomp headers (so a seccomp
+ * filter install is reachable). Cheap, non-forking — unlike os_sandbox_probe_
+ * caps() it does not fork a child. */
+bool os_sandbox_seccomp_supported(void);
 
 #ifdef __cplusplus
 }
