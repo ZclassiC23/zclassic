@@ -632,9 +632,14 @@ run_check_command()
     if [ -n "$CHECK_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$CHECK_COMMAND")
     elif [ "$MODE" = "verify" ]; then
-        (cd "$ROOT" && make --no-print-directory ff)
+        # ZCL_DEV_WATCH_LANE selects the checkout lock's non-blocking,
+        # defer-on-contention side (tools/dev/checkout-lock.sh via the `ff`
+        # target) instead of racing a foreground build/test run; exit 99
+        # means deferred, not failed. See CHECKOUT_LOCK in the Makefile.
+        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory ff)
     else
-        (cd "$ROOT" && tools/agent_fast_ci.sh)
+        (cd "$ROOT" && tools/dev/checkout-lock.sh watcher \
+            "$ROOT/build/.checkout.lock" -- tools/agent_fast_ci.sh)
     fi
 }
 
@@ -643,7 +648,7 @@ run_rebuild_command()
     if [ -n "$REBUILD_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$REBUILD_COMMAND")
     else
-        (cd "$ROOT" && make --no-print-directory fast-rebuild)
+        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory fast-rebuild)
     fi
 }
 
@@ -702,7 +707,7 @@ schedule_async_immutable_build()
         # script opens its own independent fd 9 for the generation lock.
         exec 9>&- 2>/dev/null || true
         cd "$ROOT" || exit 1
-        make --no-print-directory fast-rebuild > "$log_path" 2>&1 &&
+        ZCL_DEV_WATCH_LANE=1 make --no-print-directory fast-rebuild > "$log_path" 2>&1 &&
         "$SCRIPT_DIR/source-identity.sh" verify-record \
             "$source_id" "$source_clean" "$source_mutation" \
             >> "$log_path" 2>&1 &&
@@ -827,6 +832,19 @@ run_cycle()
     run_check_command
     rc=$?
     CHECK_MS=$(( $(clock_ms) - phase_started ))
+    if [ "$rc" -eq 99 ]; then
+        # tools/dev/checkout-lock.sh: a foreground make already holds the
+        # per-checkout lock. This is not a check failure — the watcher
+        # yields and retries on the next poll instead of racing a
+        # foreground build/test run in the same checkout.
+        CHECK_RESULT="deferred"
+        FAILURE_PHASE="deferred"
+        FAILURE_DETAIL="foreground build holds the checkout lock"
+        AGENT_NEXT_ACTION="retry after the foreground build/test run finishes"
+        write_cycle_record "$changed_file" deferred
+        log "cycle=$CYCLE deferred: foreground build holds the lock"
+        return 3
+    fi
     CHECK_RESULT="$([ "$rc" -eq 0 ] && printf passed || printf failed)"
     if [ "$rc" -ne 0 ]; then
         FAILURE_PHASE="check"

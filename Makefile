@@ -341,6 +341,20 @@ BUILD_EPOCH_OBJECT_TOOL = tools/dev/compile-epoch-object.sh
 BUILD_EPOCH_PUBLISH_TOOL = tools/dev/publish-build-alias.sh
 BUILD_EPOCH_SESSION_TOOL = tools/dev/build-epoch-session.sh
 BUILD_EPOCH_KEEP ?= 3
+
+# Checkout-wide counterpart to the per-profile epoch-GC lock above: the
+# per-profile lock only keeps two writers of the SAME object root from
+# colliding, not the dev-watch loop's `make ff` (dev profile) from running
+# at the same instant as a foreground `make test-parallel`/`make test`
+# (test-rel profile) — both drive test_make_lint_gates/
+# test_consensus_state_snapshot_install through fixed fixture paths, so two
+# concurrent test_parallel processes racing those paths is a real
+# false-failure source. ZCL_DEV_WATCH_LANE=1 (set only by
+# tools/dev/watch-dev-lane.sh) selects the non-blocking, defer-on-contention
+# side; every other caller blocks. See tools/dev/checkout-lock.sh.
+CHECKOUT_LOCK_TOOL = tools/dev/checkout-lock.sh
+CHECKOUT_LOCK = $(BUILD_DIR)/.checkout.lock
+CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
 BUILD_EPOCH_OBJECT_FORCE = $(if $(ZCL_COMPDB_FORCE),FORCE,)
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 BUILD_COMPILER_ID := $(ZCL_ZERO_SHA256)
@@ -452,7 +466,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-replay-canary replay-canary-linger-status \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-crypto-verify bench-regress \
-	lint check-build-epoch-integrity check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
+	lint check-build-epoch-integrity check-checkout-lock check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -730,8 +744,16 @@ test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
+# Checkout-locked (see CHECKOUT_LOCK above): test_make_lint_gates and
+# test_consensus_state_snapshot_install plant/probe fixed, non-PID-namespaced
+# paths, so two concurrent test_parallel processes racing this run is a real
+# false-failure source, not just a build-object collision. Always foreground
+# (the watcher never calls this target — it runs test_parallel through
+# `make ff`, which is itself checkout-locked).
 test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
-	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE)'
 
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
@@ -745,20 +767,26 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
+# Checkout-locked — see the `test-parallel` target above for why.
 t: $(TEST_PARALLEL_REL_CANDIDATE)
 	@if [ -z "$(ONLY)" ]; then \
 	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
 	  exit 2; fi
-	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)'
 
 # Hot-path variant for edit loops. It resolves the complete source inventory in
 # a cached, mutation-keyed per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
+# Checkout-locked — see the `test-parallel` target above for why.
 t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@if [ -z "$(ONLY)" ]; then \
 	  echo "usage: make t-fast ONLY=<group-substr>   (e.g. make t-fast ONLY=node_health_service)"; \
 	  exit 2; fi
-	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
 
 # The leanest changed-aware spelling: no ONLY= to remember. Impact mappings
 # classify the current working-tree hints, but never reduce proof scope; this
@@ -810,16 +838,25 @@ fast-changed-compile:
 # and short-circuiting, with a dense FIRST-ERROR[<rung>] line on the first break.
 # No live probe, no full/LTO build. `make ff` after an edit; strict gate before
 # push is still `make lint && make build-only && relevant tests` / `make pre-push-ci`.
+# Checkout-locked (see CHECKOUT_LOCK above): the watcher's own `make ff` defers
+# instead of racing a foreground build/test run in the same checkout.
 ff:
-	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh ff
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
+	  env ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh ff
 
 # Fast local node executable for AI/operator development. `fast-rebuild` first
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
 # This deliberately does not replace `zclassic23`, `make deploy`, or release
 # artifacts.
 dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
+# Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
+# target via run_rebuild_command, so it defers instead of racing a foreground
+# rebuild in the same checkout.
 fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild:
-	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
+	  env ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
 
 $(ZCLASSIC23_DEV_BIN): $(DEV_CANDIDATE_BIN) FORCE
 	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_CANDIDATE_BIN)" "$@" "$(DEV_SESSION)" \
@@ -1445,8 +1482,11 @@ $(BIN_DIR)/zcl-blog: tools/zcl-blog
 # Default `make test` = the fast fork-based parallel suite (~1min, 282 groups).
 # The slow single-process binary is still available as `make test-full`.
 # Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
+# Checkout-locked — see the `test-parallel` target above for why.
 test: $(TEST_PARALLEL_REL_CANDIDATE)
-	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE)'
 
 test-full: test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)
@@ -4180,6 +4220,10 @@ check-build-epoch-integrity:
 	@echo "══ LINT: mutation-keyed compile epochs + atomic publication ══"
 	@tools/dev/build-epoch-selftest.sh
 
+check-checkout-lock:
+	@echo "══ LINT: checkout-wide watcher/foreground mutual exclusion ══"
+	@tools/dev/checkout-lock-selftest.sh
+
 # wf/dx-scanner-immunity — runs FIRST: names any untracked stray .c/.h file
 # under a scanned source dir as "untracked stray file (not a code
 # violation)" before any OTHER gate has a chance to report its content as
@@ -4198,7 +4242,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-build-epoch-integrity check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance
+lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
