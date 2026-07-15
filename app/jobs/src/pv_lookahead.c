@@ -18,6 +18,7 @@
 #include "sapling/params_init.h"
 #include "storage/disk_block_io.h"
 #include "json/json.h"
+#include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -297,7 +298,9 @@ bool pv_lookahead_start(struct main_state *ms, const char *datadir,
      * inline verifies, never a respawn mid-fold. */
     liveness_contract_init(&g_pool_contract, "mint.pv_lookahead");
     g_pool_contract.deadline_secs = 10;
-    supervisor_child_id cid = supervisor_register(&g_pool_contract);
+    supervisor_domains_init();
+    supervisor_child_id cid =
+        supervisor_register_in_domain(g_chain_sup, &g_pool_contract);
     atomic_store(&g_pool_child_id, cid);
     if (cid == SUPERVISOR_INVALID_ID)
         LOG_WARN("pv_lookahead",
