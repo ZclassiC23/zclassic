@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
-[![CI](https://img.shields.io/badge/CI-local%20make%20lint%20(82%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
+[![CI](https://img.shields.io/badge/CI-local%20make%20lint%20(83%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
@@ -110,7 +110,7 @@ git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
 make fast-rebuild   # changed-file dev compile + non-LTO local node link
 make dev-bin        # fast non-LTO local node -> build/bin/zclassic23-dev
-make test           # full suite (630 parallel groups)
+make test           # full suite (631 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -291,8 +291,10 @@ process. It is the ABI: **~130 typed command leaves** (178 catalog entries
 counting branches) across 7 registry files
 (`config/commands/{root,core,app,dev,ops,accounts,code}.def`) under
 `core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`/`code.*`, each a typed
-`zcl_command_spec` (input/output schema, auth, risk, latency, cost) validated
-fail-closed at every startup.
+`zcl_command_spec` (input/output schema, a one-line output **semantics**
+contract, a per-leaf response **byte budget**, auth, risk, latency, cost)
+validated fail-closed at every startup — so responses are self-describing and
+bounded, and no error reply lacks a `next` action to run.
 
 ```bash
 build/bin/zclassic23 status
@@ -363,9 +365,11 @@ zclassic23 (~15 MB, static)
   change fails the HARD lint gate `check-core-seal` unless it goes through the
   documented owner unseal ritual (`core/UNSEAL.md`).
 - **Steady-state sandbox:** `-sandbox=steady` applies `no_new_privs`,
-  `PR_SET_DUMPABLE(0)`, Landlock datadir grants, and a seccomp deny-list,
-  entered as the last boot stage before the node reports ready; witnessed via
-  `dumpstate sandbox`.
+  `PR_SET_DUMPABLE(0)`, Landlock datadir grants, and a seccomp deny-list
+  installed atomically across **every running thread** (seccomp `TSYNC`, so the
+  already-spawned P2P/RPC/validation threads are covered, not just new ones),
+  entered as the last boot stage before the node reports ready; thread coverage
+  witnessed via `dumpstate sandbox`.
 - **No shell-outs:** zero `system()`/`popen()` in shipped app/lib/config code
   (lint-enforced).
 - **Wallet keystore:** AES-256-GCM at-rest encryption for new wallets; an
@@ -376,7 +380,7 @@ zclassic23 (~15 MB, static)
   pathnames.
 - **`zcl_sql`** is SELECT-only, semicolon-rejected, auto-LIMIT, and denies a
   set of wallet-secret tables/columns by name.
-- **82 lint gates** (`make lint`) enforce these and the defensive-coding
+- **83 lint gates** (`make lint`) enforce these and the defensive-coding
   rules below on every change. Full list:
   [`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md); safety boundary:
   [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
@@ -407,7 +411,7 @@ default doesn't yet apply retroactively to existing plaintext wallets.
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (630 registered parallel groups); bugs become 64-bit
+- **Tests:** `make test` (631 registered parallel groups); bugs become 64-bit
   seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
