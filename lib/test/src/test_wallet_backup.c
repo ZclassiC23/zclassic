@@ -457,8 +457,10 @@ static int t_dump_state_json(void)
     cfg.interval_seconds = 3600;
 
     bool started = wallet_backup_start(&cfg, &f.ndb).ok;
-    struct wallet_backup_status warm;
-    wb_wait_runs_past(0, &warm);
+    /* This subtest asserts the dump SHAPE, not thread scheduling (other
+     * subtests cover the async path): run one backup synchronously so the
+     * counters are deterministically populated even under suite contention. */
+    bool ran = wallet_backup_now().ok;
 
     struct json_value v = {0};
     json_set_object(&v);
@@ -469,6 +471,12 @@ static int t_dump_state_json(void)
     bool shape_ok = ok && running && json_get_bool(running) == true &&
                     total_runs && json_get_int(total_runs) >= 1 &&
                     last_key_count && json_get_int(last_key_count) == 2;
+    if (!shape_ok)
+        fprintf(stderr, "wb dump shape: ran=%d ok=%d running=%d total_runs=%lld "
+                "last_key_count=%lld\n", ran, ok,
+                running ? (int)json_get_bool(running) : -1,
+                total_runs ? (long long)json_get_int(total_runs) : -1,
+                last_key_count ? (long long)json_get_int(last_key_count) : -1);
     json_free(&v);
 
     wallet_backup_stop();
