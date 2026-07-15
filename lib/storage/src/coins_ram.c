@@ -32,6 +32,9 @@
 #include "util/stage.h"
 
 #include <sqlite3.h>
+#include <assert.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +62,11 @@ struct ram_slot {
 #define COINS_RAM_MAX_LOAD_NUM  7
 #define COINS_RAM_MAX_LOAD_DEN  10
 #define COINS_RAM_DEFAULT_FLUSH_EVERY 50000u
+/* Live-slot high-water flush cap: ~3M live coins (< the 8M-slot default cap's
+ * 70% grow point at 5.6M), so the overlay flushes to durable coins_kv before a
+ * dense window can force a grow() / OOM. Overridable via ZCL_FOLD_INRAM_MAX_SLOTS
+ * (0 disables). */
+#define COINS_RAM_DEFAULT_MAX_SLOTS (3u * 1024u * 1024u)
 
 static struct {
     bool             active;
@@ -71,6 +79,7 @@ static struct {
     uint32_t         flush_every;
     uint32_t         since_flush;   /* heights applied since last flush */
     int32_t          last_applied;  /* highest height noted, -1 = none */
+    size_t           max_slots;     /* live-slot high-water flush cap (0=off) */
 } G;
 
 /* ── flag ─────────────────────────────────────────────────────────────── */
@@ -104,7 +113,28 @@ bool coins_ram_active(void) { return G.active && G.slots != NULL; }
  * balanced by the matching number of exits. */
 static _Thread_local int t_writer_depth = 0;
 
-void coins_ram_writer_enter(void) { t_writer_depth++; }
+/* Mint serial-pipeline READ marker (coins_ram.h). In a debug build the drive
+ * thread id is recorded (guarded by an atomic flag) so coins_ram_writer_enter
+ * can assert the utxo_apply writer bracket runs on that exact thread. */
+static _Thread_local int t_mint_drive_depth = 0;
+#ifndef NDEBUG
+static atomic_bool g_mint_drive_active = false;
+static pthread_t   g_mint_drive_tid;   /* valid only while g_mint_drive_active */
+#endif
+
+void coins_ram_writer_enter(void)
+{
+    t_writer_depth++;
+#ifndef NDEBUG
+    /* Single-threaded mint-pipeline invariant: while the mint marker is active
+     * the utxo_apply writer bracket MUST run on that same drive thread — a
+     * mismatch means a non-drive thread mutated the overlay while the mint read
+     * relaxation was in force. */
+    if (atomic_load_explicit(&g_mint_drive_active, memory_order_acquire))
+        assert(pthread_equal(pthread_self(), g_mint_drive_tid) &&
+               "coins_ram writer bracket ran off the mint drive thread");
+#endif
+}
 void coins_ram_writer_exit(void)
 {
     if (t_writer_depth > 0) t_writer_depth--;
@@ -116,6 +146,31 @@ bool coins_ram_writer_thread(void)
      * thread reads/writes its own instance — no cross-thread access, no torn
      * read, no memory-ordering hazard. */
     return t_writer_depth > 0;
+}
+
+void coins_ram_mint_drive_enter(void)
+{
+    t_mint_drive_depth++;
+#ifndef NDEBUG
+    if (t_mint_drive_depth == 1) {
+        g_mint_drive_tid = pthread_self();
+        atomic_store_explicit(&g_mint_drive_active, true, memory_order_release);
+    }
+#endif
+}
+void coins_ram_mint_drive_exit(void)
+{
+    if (t_mint_drive_depth > 0) t_mint_drive_depth--;
+#ifndef NDEBUG
+    if (t_mint_drive_depth == 0)
+        atomic_store_explicit(&g_mint_drive_active, false, memory_order_release);
+#endif
+}
+bool coins_ram_mint_drive_thread(void)
+{
+    /* Same _Thread_local rationale as coins_ram_writer_thread: no cross-thread
+     * hazard. Default 0 on every thread, so this is inert off the mint path. */
+    return t_mint_drive_depth > 0;
 }
 
 /* ── hashing / probing ───────────────────────────────────────────────── */
@@ -221,10 +276,26 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
     }
     G.since_flush = 0;
     G.last_applied = -1;
+    /* Live-slot high-water flush cap (OOM guard): flush when the live overlay
+     * crosses this many slots even before the block cadence. ZCL_FOLD_INRAM_MAX
+     * _SLOTS overrides (0 disables); bounded. */
+    G.max_slots = COINS_RAM_DEFAULT_MAX_SLOTS;
+    {
+        const char *ms = getenv("ZCL_FOLD_INRAM_MAX_SLOTS");
+        if (ms && ms[0]) {
+            char *end = NULL;
+            long n = strtol(ms, &end, 10);
+            if (end != ms && n >= 0) {
+                if (n > 64000000L) n = 64000000L;
+                G.max_slots = (size_t)n;
+            }
+        }
+    }
     G.active = true;
     LOG_INFO("coins_ram",
-             "[coins_ram] init: %zu slots (~%zu MB), flush every %u blocks",
-             cap, (cap * sizeof(*G.slots)) >> 20, G.flush_every);
+             "[coins_ram] init: %zu slots (~%zu MB), flush every %u blocks, "
+             "high-water %zu live slots",
+             cap, (cap * sizeof(*G.slots)) >> 20, G.flush_every, G.max_slots);
     return true;
 }
 
@@ -1139,9 +1210,20 @@ bool coins_ram_note_applied(int32_t height)
     if (!coins_ram_active()) return true;
     G.last_applied = height;
     G.since_flush++;
-    if (G.since_flush >= G.flush_every) {
+    /* Flush on the block cadence OR the live-slot high water (a dense window
+     * that outruns the cadence — the OOM guard), at this applied-height
+     * boundary where the reducer witness + co-written cursor are consistent. A
+     * flush during an open drain batch defers to utxo_apply_stage_drain. */
+    bool cadence_due = G.since_flush >= G.flush_every;
+    bool high_water  = G.max_slots && G.live_count >= G.max_slots;
+    if (cadence_due || high_water) {
         if (stage_batch_active())
             return true;
+        if (high_water && !cadence_due)
+            LOG_INFO("coins_ram",
+                     "[coins_ram] high-water flush at height=%d "
+                     "(live=%zu >= cap=%zu, %u blocks since last flush)",
+                     height, G.live_count, G.max_slots, G.since_flush);
         return coins_ram_flush(height);
     }
     return true;

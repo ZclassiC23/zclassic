@@ -46,8 +46,8 @@ lib/sapling/src/sapling.c 1200
 lib/sim/src/postmortem.c 1444
 lib/sim/src/simnet_cluster.c 881
 lib/sim/src/simnet_wire.c 1496
-lib/storage/src/coins_kv.c 918
-lib/storage/src/coins_ram.c 1298
+lib/storage/src/coins_kv.c 930
+lib/storage/src/coins_ram.c 1380
 lib/storage/src/coins_view_sqlite.c 1247
 lib/storage/src/utxo_projection.c 978
 lib/storage/src/znam_projection.c 873

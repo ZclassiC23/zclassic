@@ -62,7 +62,10 @@ bool coins_ram_enabled(void);
 /* Lazily allocate the map (sized for ~4M entries) and bind it to the durable
  * coins_kv handle used for read-through + flush. Idempotent. Returns false on
  * OOM. No-op (returns true) when the flag is off. `flush_every_blocks` is the
- * K cadence (0 → default). */
+ * block cadence (0 → ZCL_FOLD_INRAM_FLUSH_EVERY or the compiled default). A
+ * second trigger, the live-slot HIGH WATER (ZCL_FOLD_INRAM_MAX_SLOTS, default
+ * ~3M; 0 disables), flushes a dense window before it can grow the overlay
+ * without bound and OOM. Both drain through coins_ram_note_applied. */
 bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks);
 
 /* True once coins_ram_init has bound a live map (and the flag is on). The
@@ -91,6 +94,26 @@ bool coins_ram_active(void);
 void coins_ram_writer_enter(void);
 void coins_ram_writer_exit(void);
 bool coins_ram_writer_thread(void);
+
+/* ── mint serial-pipeline READ marker (distinct from the writer bracket) ──
+ *
+ * The offline FULL mint (-mint-anchor, config/boot_mint_anchor.c
+ * boot_mint_anchor_run) drives all eight reducer stages serially on ONE thread,
+ * so script_validate's prevout resolver and utxo_apply's writer bracket run on
+ * the SAME thread in different steps. The writer bracket (write visibility) only
+ * spans utxo_apply; this marker (read visibility) spans the WHOLE drive so
+ * coins_kv_overlay_safe() lets every stage — script_validate included — read the
+ * un-flushed overlay (a writer-only gate would take the durable path and miss a
+ * recent coin, wedging the fold: prevout_unresolved). Counter form so nested
+ * entry is balanced.
+ *
+ * CONTRACT: valid ONLY for the single-threaded offline mint pipeline; NEVER
+ * enter it on a live, multi-threaded node. Inert where not entered (default
+ * false on every thread). A debug build asserts, in coins_ram_writer_enter, that
+ * the writer bracket runs on this drive thread while the marker is active. */
+void coins_ram_mint_drive_enter(void);
+void coins_ram_mint_drive_exit(void);
+bool coins_ram_mint_drive_thread(void);
 
 /* ── overlay mutations (mirror coins_kv_add_many / coins_kv_spend_many) ── */
 

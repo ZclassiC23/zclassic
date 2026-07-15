@@ -186,6 +186,20 @@ static void *cr_reader_thread(void *p)
     return NULL;
 }
 
+/* Mint-drive marker gate: an UNMARKED reader thread (no writer bracket, no mint
+ * drive marker) must take the durable SQLite path — coins_kv_get returns what
+ * lives in coins_kv, invisible to any overlay tombstone. Used to prove the
+ * marker gates overlay visibility per-thread. */
+struct cr_md_arg { sqlite3 *db; const uint8_t *txid; bool present; bool drive; };
+static void *cr_md_reader_thread(void *p)
+{
+    struct cr_md_arg *a = p;
+    int64_t v = 0; size_t sl = 0; uint8_t sb[8];
+    a->drive = coins_ram_mint_drive_thread();  /* expect false: fresh thread */
+    a->present = coins_kv_get(a->db, a->txid, 0, &v, sb, sizeof(sb), &sl);
+    return NULL;
+}
+
 int test_coins_ram(void);
 int test_coins_ram(void)
 {
@@ -1017,6 +1031,135 @@ int test_coins_ram(void)
             progress_store_close();
         }
         test_rm_rf_recursive(dirP);
+    }
+
+    /* ──────────────────────────────────────────────────────────────────────
+     * (e) MINT-DRIVE READ MARKER gate: coins_ram_mint_drive_thread() is the
+     *     read-visibility marker the FULL -mint-anchor serial fold brackets its
+     *     whole drive with, so script_validate's prevout resolver (a DIFFERENT
+     *     stage step than utxo_apply's writer bracket, but the SAME single drive
+     *     thread) sees the un-flushed overlay via coins_kv_overlay_safe(). This
+     *     pins: (1) the per-thread marker contract (false by default, true only
+     *     inside the bracket, counter-balanced, isolated per thread); and (2)
+     *     the OBSERVABLE effect — an overlay tombstone shadowing a durable coin
+     *     is ABSENT to a marked (drive) thread but PRESENT to an unmarked thread
+     *     (which safely takes the durable SQLite path). Item (2) is the exact
+     *     read-visibility the FULL-fold in-RAM cure turns on.
+     * ────────────────────────────────────────────────────────────────────── */
+    {
+        char dirM[256];
+        test_make_tmpdir(dirM, sizeof(dirM), "coins_ram_mintdrive", "md");
+        CR_CHECK("md: open", progress_store_open(dirM));
+        sqlite3 *dbM = progress_store_db();
+        CR_CHECK("md: schema", coins_kv_ensure_schema(dbM));
+        CR_CHECK("md: init", coins_ram_init(dbM, 1000000 /* manual flush */));
+        CR_CHECK("md: active", coins_ram_active());
+
+        /* A durable coin the overlay will SHADOW as spent. Write it straight to
+         * SQLite (the overlay-bypassing raw variant) so the two layers disagree:
+         * durable=present, overlay=tombstone. */
+        struct uint256 md = cr_txid(0x7D);
+        uint8_t mdscript[2] = { 0xAB, 0xCD };
+        struct coins_kv_add_row row = {
+            .txid = md.data, .vout = 0, .value = 12345, .height = 9,
+            .is_coinbase = false, .script = mdscript, .script_len = 2 };
+        CR_CHECK("md: durable add (raw sqlite)",
+                 coins_kv_add_many_sqlite(dbM, &row, 1));
+
+        /* Overlay tombstone (a spend of a durable coin) — the mutation needs the
+         * writer bracket, exactly as the fold holds it around utxo_apply. */
+        coins_ram_writer_enter();
+        CR_CHECK("md: overlay tombstone", coins_ram_spend(md.data, 0));
+        coins_ram_writer_exit();
+
+        /* (1) marker contract — mirrors the writer-bracket contract. */
+        CR_CHECK("md: main not drive-thread yet", !coins_ram_mint_drive_thread());
+        coins_ram_mint_drive_enter();
+        CR_CHECK("md: enter -> drive thread", coins_ram_mint_drive_thread());
+        coins_ram_mint_drive_enter();      /* nested */
+        coins_ram_mint_drive_exit();
+        CR_CHECK("md: nested -> still drive (counter)",
+                 coins_ram_mint_drive_thread());
+
+        /* (2a) On the MARKED thread coins_kv_get routes to the overlay → the
+         *      tombstone shadows the durable row → ABSENT. This is the coin the
+         *      old FULL-fold refusal existed to avoid; it now resolves via the
+         *      overlay on the drive thread. */
+        int64_t mv = 0; size_t ml = 0; uint8_t mb[8];
+        CR_CHECK("md: marked thread sees overlay tombstone (absent)",
+                 !coins_kv_get(dbM, md.data, 0, &mv, mb, sizeof(mb), &ml));
+
+        coins_ram_mint_drive_exit();
+        CR_CHECK("md: final exit -> not drive thread",
+                 !coins_ram_mint_drive_thread());
+
+        /* (2b) On an UNMARKED thread (no writer, no mint-drive) coins_kv_get
+         *      takes the durable SQLite path → the tombstone is invisible → the
+         *      coin is PRESENT. Confirms the marker is _Thread_local and gates
+         *      overlay visibility per-thread (the UAF guard for a live node). */
+        struct cr_md_arg ma = { .db = dbM, .txid = md.data,
+                                .present = false, .drive = true };
+        pthread_t mt;
+        int mpc = pthread_create(&mt, NULL, cr_md_reader_thread, &ma);
+        CR_CHECK("md: unmarked reader spawned", mpc == 0);
+        if (mpc == 0) {
+            pthread_join(mt, NULL);
+            CR_CHECK("md: unmarked thread is NOT a drive thread", !ma.drive);
+            CR_CHECK("md: unmarked thread sees durable coin (present)",
+                     ma.present);
+        }
+
+        coins_ram_shutdown();
+        progress_store_close();
+        test_rm_rf_recursive(dirM);
+    }
+
+    /* ──────────────────────────────────────────────────────────────────────
+     * (f) HIGH-WATER flush: when the live overlay slot count crosses
+     *     ZCL_FOLD_INRAM_MAX_SLOTS, coins_ram_note_applied flushes MID-window
+     *     even though the block cadence (flush_every) is nowhere near due — the
+     *     OOM guard for a dense window that mints many coins between cadence
+     *     boundaries. We set the cap to 4 and prove the 4th applied height
+     *     drains the overlay to durable coins_kv. flush_every is huge so ONLY
+     *     the high water can trigger the flush.
+     * ────────────────────────────────────────────────────────────────────── */
+    {
+        setenv("ZCL_FOLD_INRAM_MAX_SLOTS", "4", 1);
+        char dirH[256];
+        test_make_tmpdir(dirH, sizeof(dirH), "coins_ram_hiwater", "h");
+        CR_CHECK("hw: open", progress_store_open(dirH));
+        sqlite3 *dbH = progress_store_db();
+        CR_CHECK("hw: schema", coins_kv_ensure_schema(dbH));
+        CR_CHECK("hw: init (flush_every huge)", coins_ram_init(dbH, 1000000));
+        CR_CHECK("hw: active", coins_ram_active());
+        coins_ram_writer_enter();
+
+        /* Add 4 live coins, noting each applied height. live_count reaches the
+         * cap (4) on the 4th note_applied → that call flushes. */
+        bool durable_empty_before = coins_kv_count_sqlite(dbH) == 0;
+        CR_CHECK("hw: durable empty before", durable_empty_before);
+        for (int k = 0; k < 4; k++) {
+            struct uint256 hk = cr_txid((uint8_t)(0x90 + k));
+            uint8_t sc[1] = { (uint8_t)k };
+            CR_CHECK("hw: add",
+                     coins_kv_add(dbH, hk.data, 0, 1000 + k, 100 + k,
+                                  false, sc, 1));
+            CR_CHECK("hw: note_applied", coins_ram_note_applied(100 + k));
+        }
+
+        /* The high-water flush drained the overlay into durable coins_kv: read
+         * the durable set directly (overlay-bypassing) to prove the 4 rows
+         * landed WITHOUT hitting the block cadence. */
+        CR_CHECK("hw: durable count == 4 after high-water flush",
+                 coins_kv_count_sqlite(dbH) == 4);
+        /* And the effective count is unchanged (overlay now empty, rows durable). */
+        CR_CHECK("hw: effective count == 4", coins_kv_count(dbH) == 4);
+
+        coins_ram_writer_exit();
+        coins_ram_shutdown();
+        progress_store_close();
+        test_rm_rf_recursive(dirH);
+        unsetenv("ZCL_FOLD_INRAM_MAX_SLOTS");
     }
 
     /* ──────────────────────────────────────────────────────────────────────
