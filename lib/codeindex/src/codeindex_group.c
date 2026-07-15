@@ -26,7 +26,7 @@ static const char *const k_lib_modules[] = {
     "event", "framework", "health", "hotswap", "kernel", "json", "keys",
     "metrics", "mining", "net", "platform", "policy", "primitives", "rpc",
     "script", "session", "sim", "storage", "support", "sync", "util", "validation",
-    "vcs", "wallet", "sapling", "zslp", "znam", "codeindex",
+    "vcs", "wallet", "sapling", "zslp", "znam", "zanc", "codeindex",
 };
 
 static const char *const k_app_shapes[] = {
@@ -152,6 +152,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/sapling") == 0) return "Sapling zk-SNARK primitives: Groth16 prover, Jubjub/BLS12-381, note encryption, circuits";
     if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
     if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
+    if (strcmp(group, "lib/zanc") == 0) return "ZCL Anchors (ZANC) on-chain SHA2/SHA3 software-package anchoring overlay";
     if (strcmp(group, "lib/codeindex") == 0) return "the in-binary source-code navigator index: scan, store, query, the `code` CLI";
 
     /* domain/<ctx> — one line per bounded context in k_domain_contexts[] above. */
