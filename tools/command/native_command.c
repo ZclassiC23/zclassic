@@ -40,6 +40,7 @@
 #include "controllers/meta_native_handlers.h"
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"
+#include "command/rom_compile_render.h"
 #include "mcp/rpc_client.h"
 
 #include <ctype.h>
@@ -1720,6 +1721,71 @@ void zcl_native_handle_ops_producer_status(
     (void)json_push_kv_str(&reply->data, "text", t);
 }
 
+/* ── ops.rom native leaf ─────────────────────────────────────────────────
+ * Dispatches `dumpstate rom_compile` (app/jobs/src/rom_compile_status.c —
+ * pure composition over EXISTING telemetry: the per-stage step-EWMA
+ * counters, the refold-in-progress signal, the L0 reducer frontier, the
+ * sealed segment store, and the state-seal ring — no second producer)
+ * against THIS running node and renders the rich-ASCII human view via
+ * rom_compile_render_ascii. The structured zcl.rom_compile.v1 body is
+ * copied into reply->data verbatim for machine consumers; the CLI prints
+ * data.text unless --format=json. */
+void zcl_native_handle_ops_rom(const struct zcl_command_request *request,
+                               struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("dumpstate", "[\"rom_compile\"]");
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a rom_compile body",
+                               "ops.rom");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value envelope;
+    if (!json_read(&envelope, result, strlen(result)) ||
+        envelope.type != JSON_OBJ) {
+        json_free(&envelope);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_BODY",
+                               "execute", false, false,
+                               "dumpstate rom_compile returned unparsable JSON",
+                               "ops.rom");
+        return;
+    }
+    free(result);
+
+    const struct json_value *err = json_get(&envelope, "error");
+    if (err && err->type == JSON_STR) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "ROM_STATUS_ERROR",
+                               "execute", false, false,
+                               json_get_str(err), "ops.rom");
+        json_free(&envelope);
+        return;
+    }
+
+    const struct json_value *state = json_get(&envelope, "state");
+    char text[4096];
+    rom_compile_render_ascii(state, text, sizeof(text));
+
+    json_free(&reply->data);
+    json_init(&reply->data);
+    if (state && state->type == JSON_OBJ)
+        json_copy(&reply->data, state);
+    else
+        json_set_object(&reply->data);
+    (void)json_push_kv_str(&reply->data, "text", text);
+    json_free(&envelope);
+}
+
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
  * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
  * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer
@@ -2171,6 +2237,7 @@ static bool nc_is_prose_leaf(const char *path)
             strcmp(path, "ops.debug.explain") == 0 ||
             strcmp(path, "ops.debug.profile") == 0 ||
             strcmp(path, "ops.debug.producer") == 0 ||
+            strcmp(path, "ops.debug.rom") == 0 ||
             strcmp(path, "core.status.brief") == 0);
 }
 

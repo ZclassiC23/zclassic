@@ -125,6 +125,15 @@
              "running, workers, window, queue_depth, cache_hits/misses/hit_rate, "
              "verdicts_produced, throughput_blk_per_sec, supervised/supervisor_child_id",
              "app/jobs/src/pv_lookahead.c", "lib/test/src/test_pv_lookahead.c"),
+    DIAG_JOB("rom_compile", rom_compile_status_dump_state_json,
+             "ROM compilation fold progress: active/mode/height/target/percent/"
+             "rate_blk_s/eta, the eight reducer stages' live step_us_ewma with "
+             "bottleneck_stage, and the layer ladder (rom_checkpoint/"
+             "sealed_history/sealed_base_receipt/delta/tip_ring). Idle-node-safe: "
+             "when no fold is active this reports the steady-state ladder, not "
+             "an error",
+             "app/jobs/src/rom_compile_status.c",
+             "lib/test/src/test_rom_compile_status.c"),
     DIAG_STAGE("reducer_frontier", reducer_frontier_dump_state_json,
                "reducer L0 authority: H*, served_floor, stage cursors, "
                "success-checked frontiers, coins frontier, first "

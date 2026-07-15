@@ -67,6 +67,7 @@
 #include "jobs/stage_repair_coin_backfill.h"
 #include "jobs/refold_progress.h"
 #include "jobs/pv_lookahead.h"
+#include "jobs/rom_compile_status.h"
 #include "services/chain_tip_watchdog.h"
 #include "services/sticky_escalator.h"
 #include "services/authority_projection_audit.h"
