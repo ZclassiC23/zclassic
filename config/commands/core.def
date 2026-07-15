@@ -11,6 +11,9 @@
 
 ZCL_COMMAND_READY_READ(
     "core.status", "core", "", "Consensus node status: height, sync, health",
+    "Live node health, tip height, peer count, and the single most useful "
+    "next action, read from the running node at call time; a named "
+    "blocker replaces height when sync is stalled.", 0,
     "status,height,sync,consensus,tip", "zcl.command.empty_input.v1",
     "zcl.core_status.v1", "", "", "zclassic23 core status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -24,6 +27,9 @@ ZCL_COMMAND_READY_READ(
     "core.status.brief", "core", "",
     "Flat lean status: hstar, gap, blocker, conditions, peers, rss "
     "(full field list: docs/NATIVE_COMMAND_INTERFACE.md CLI UX contract)",
+    "Same live status fields as core.status flattened to bare scalars "
+    "for scripting, read from the running node at call time; one "
+    "snapshot per call, not a stream.", 0,
     "status,brief,lean,flat,gap,serving,healthy", "zcl.command.empty_input.v1",
     "zcl.core_status_brief.v1", "", "", "zclassic23 core status brief",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -39,6 +45,9 @@ ZCL_COMMAND_BRANCH("core.chain", "core", "Blocks, transactions, and mempool",
 
 ZCL_COMMAND_READY_READ(
     "core.chain.tip", "core.chain", "", "Active chain tip in one call",
+    "Best-known local chain tip height, hash, and cumulative work, "
+    "read live from the running node's block index at call time; a "
+    "named blocker may replace height mid-sync.", 0,
     "tip,best,height,hash,work", "zcl.command.empty_input.v1",
     "zcl.chain_tip.v1", "", "", "zclassic23 core chain tip",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -51,7 +60,11 @@ ZCL_COMMAND_BRANCH("core.chain.block", "core.chain", "Block by height or hash",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.chain.block.get", "core.chain.block", "",
-    "Get one block by height or hash", "block,get,height,hash",
+    "Get one block by height or hash",
+    "One full block record (header, transactions) resolved from the "
+    "local block index at call time by height or hash; heights are in "
+    "blocks, absent below the node's synced range.", 0,
+    "block,get,height,hash",
     "zcl.core_block_get.input.v1", "zcl.block.v1", "height,hash,verbosity",
     "height", "zclassic23 core chain block get --height=478544",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -64,7 +77,11 @@ ZCL_COMMAND_BRANCH("core.chain.transaction", "core.chain",
                    "Transaction by id", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.chain.transaction.get", "core.chain.transaction", "",
-    "Get one transaction by id", "transaction,tx,get,txid",
+    "Get one transaction by id",
+    "One transaction's full decoded fields looked up live by txid from "
+    "mempool or the local block index at call time; absent if unknown "
+    "to this node.", 0,
+    "transaction,tx,get,txid",
     "zcl.core_tx_get.input.v1", "zcl.transaction.v1", "txid,verbose", "txid",
     "zclassic23 core chain transaction get --txid=<hex>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -77,7 +94,11 @@ ZCL_COMMAND_BRANCH("core.chain.mempool", "core.chain", "Mempool state",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.chain.mempool.status", "core.chain.mempool", "",
-    "Mempool size, bytes, and fee summary", "mempool,status,fees",
+    "Mempool size, bytes, and fee summary",
+    "Live mempool transaction count, total size in bytes, and fee-rate "
+    "summary read from the running node's mempool at call time; a "
+    "point-in-time snapshot that changes every block/relay.", 0,
+    "mempool,status,fees",
     "zcl.command.empty_input.v1", "zcl.mempool_status.v1", "", "",
     "zclassic23 core chain mempool status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -87,7 +108,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.chain.mempool.list", "core.chain.mempool", "",
-    "List mempool transaction ids", "mempool,list,txids",
+    "List mempool transaction ids",
+    "Every mempool transaction id present at call time, read live from "
+    "the running node; bounded to the list budget row cap, not a paged "
+    "or historical view.", ZCL_COMMAND_LIST_BUDGET,
+    "mempool,list,txids",
     "zcl.command.empty_input.v1", "zcl.mempool_list.v1", "", "",
     "zclassic23 core chain mempool list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -100,7 +125,11 @@ ZCL_COMMAND_BRANCH("core.chain.wait", "core.chain",
                    "Block until a chain condition holds", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_PLANNED_READ(
     "core.chain.wait.height", "core.chain.wait", "",
-    "Wait until the tip reaches a target height", "wait,height,sync",
+    "Wait until the tip reaches a target height",
+    "Will report whether the tip reached the target height within the "
+    "timeout once wired; today the handler is unbound and the call "
+    "fails closed with exit 3.", 0,
+    "wait,height,sync",
     "zcl.core_wait_height.input.v1", "zcl.wait_result.v1", "height,timeout_ms",
     "height", "zclassic23 core chain wait height --height=3200000",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -110,7 +139,11 @@ ZCL_COMMAND_PLANNED_READ(
     "blocking wait proxy is deferred to the Wave 2.2 job protocol")
 ZCL_COMMAND_PLANNED_READ(
     "core.chain.wait.blocker", "core.chain.wait", "",
-    "Wait until a named blocker is raised or cleared", "wait,blocker,stall",
+    "Wait until a named blocker is raised or cleared",
+    "Will report the raised/cleared transition of the named sync "
+    "blocker once wired; today the handler is unbound and fails "
+    "closed with exit 3.", 0,
+    "wait,blocker,stall",
     "zcl.core_wait_blocker.input.v1", "zcl.wait_result.v1", "blocker,timeout_ms",
     "blocker", "zclassic23 core chain wait blocker",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -120,7 +153,11 @@ ZCL_COMMAND_PLANNED_READ(
     "blocking wait proxy is deferred to the Wave 2.2 job protocol")
 ZCL_COMMAND_PLANNED_READ(
     "core.chain.wait.halt", "core.chain.wait", "",
-    "Wait until the node halts on a named blocker", "wait,halt,blocker",
+    "Wait until the node halts on a named blocker",
+    "Will report the blocker name that caused the node to halt once "
+    "wired; today the handler is unbound and fails closed with "
+    "exit 3.", 0,
+    "wait,halt,blocker",
     "zcl.core_wait_halt.input.v1", "zcl.wait_result.v1", "timeout_ms", "",
     "zclassic23 core chain wait halt",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -134,6 +171,9 @@ ZCL_COMMAND_BRANCH("core.sync", "core", "Sync phase and validation progress",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.sync.status", "core.sync", "", "Sync phase and header/block gap",
+    "Current sync phase and the live header/block gap to the network "
+    "tip, read from the running node at call time; gap is measured in "
+    "blocks.", 0,
     "sync,status,phase,gap", "zcl.command.empty_input.v1", "zcl.sync_status.v1",
     "", "", "zclassic23 core sync status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -143,7 +183,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.sync.validation", "core.sync", "",
-    "Background validation progress", "validation,proofs,progress",
+    "Background validation progress",
+    "Background proof-verification progress (blocks walked from "
+    "genesis vs chain height), read live from the running node at "
+    "call time; disabled entirely under -nobgvalidation.", 0,
+    "validation,proofs,progress",
     "zcl.command.empty_input.v1", "zcl.validation_status.v1", "", "",
     "zclassic23 core sync validation",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -153,6 +197,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.sync.blockers", "core.sync", "", "Active named sync blockers",
+    "Every named blocker currently stalling sync, read live from the "
+    "running node's blocker registry at call time; empty when sync is "
+    "advancing normally.", 0,
     "blockers,stall,sync", "zcl.command.empty_input.v1", "zcl.blockers.v1",
     "", "", "zclassic23 core sync blockers",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -162,6 +209,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.sync.diagnose", "core.sync", "", "Diagnose why sync is not advancing",
+    "A live diagnostic snapshot (stage cursor, gap, likely cause) "
+    "computed from the running node's reducer state at call time, "
+    "not a cached or historical report.", 0,
     "sync,diagnose,stall,gap", "zcl.command.empty_input.v1", "zcl.syncdiag.v1",
     "", "", "zclassic23 core sync diagnose",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -176,7 +226,11 @@ ZCL_COMMAND_BRANCH("core.consensus", "core",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.consensus.report", "core.consensus", "",
-    "Consensus parity and rule report", "consensus,report,parity",
+    "Consensus parity and rule report",
+    "Live consensus-parity check results against the zclassicd golden "
+    "values, computed from the running node's current chain state at "
+    "call time.", 0,
+    "consensus,report,parity",
     "zcl.command.empty_input.v1", "zcl.consensus_report.v1", "", "",
     "zclassic23 core consensus report",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -186,7 +240,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.consensus.integrity", "core.consensus", "",
-    "SHA3 over consensus tables", "integrity,sha3,dataintegrity",
+    "SHA3 over consensus tables",
+    "A SHA3-256 digest computed live over the node's consensus-critical "
+    "tables at call time; foreground cost scales with table size, not "
+    "a cached value.", 0,
+    "integrity,sha3,dataintegrity",
     "zcl.command.empty_input.v1", "zcl.data_integrity.v1", "", "",
     "zclassic23 core consensus integrity",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -198,7 +256,11 @@ ZCL_COMMAND_BRANCH("core.consensus.utxo", "core.consensus",
                    "UTXO set commitment and audit", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.consensus.utxo.commitment", "core.consensus.utxo", "",
-    "SHA3 commitment over the UTXO set", "utxo,commitment,sha3",
+    "SHA3 commitment over the UTXO set",
+    "A SHA3-256 commitment computed live over the full current UTXO "
+    "set at call time; recomputed on every call, not a cached "
+    "snapshot.", 0,
+    "utxo,commitment,sha3",
     "zcl.command.empty_input.v1", "zcl.utxo_commitment.v1", "", "",
     "zclassic23 core consensus utxo commitment",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -208,7 +270,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.consensus.utxo.audit", "core.consensus.utxo", "",
-    "Audit the UTXO set for drift", "utxo,audit,drift",
+    "Audit the UTXO set for drift",
+    "Live drift-detection results comparing the running node's UTXO "
+    "set against expected invariants at call time; a foreground scan, "
+    "not a cached report.", 0,
+    "utxo,audit,drift",
     "zcl.command.empty_input.v1", "zcl.utxo_audit.v1", "", "",
     "zclassic23 core consensus utxo audit",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -218,7 +284,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.consensus.mmb", "core.consensus", "",
-    "Merkle Mountain Belt commitment state", "mmb,flyclient,commitment",
+    "Merkle Mountain Belt commitment state",
+    "Live FlyClient Merkle Mountain Belt commitment state read from "
+    "the running node at call time; the utxo_root it carries is not "
+    "committed by ZClassic headers.", 0,
+    "mmb,flyclient,commitment",
     "zcl.command.empty_input.v1", "zcl.mmb.v1", "", "",
     "zclassic23 core consensus mmb",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -230,7 +300,11 @@ ZCL_COMMAND_BRANCH("core.consensus.block", "core.consensus",
                    "Invalidate or reconsider a block", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.consensus.block.invalidate", "core.consensus.block", "",
-    "Mark a block invalid and reorg away from it", "invalidate,reorg,block",
+    "Mark a block invalid and reorg away from it",
+    "Will report the reorg outcome of invalidating the given block "
+    "once wired; today the handler is unbound and fails closed with "
+    "exit 3 rather than mutating chain state.", 0,
+    "invalidate,reorg,block",
     "zcl.core_block_ref.input.v1", "zcl.block_mutation.v1", "hash", "hash",
     "zclassic23 core consensus block invalidate --hash=<hash>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_DESTRUCTIVE,
@@ -243,7 +317,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "chain-mutation confirmation handshake is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.consensus.block.reconsider", "core.consensus.block", "",
-    "Clear an invalid mark and reconsider a block", "reconsider,block",
+    "Clear an invalid mark and reconsider a block",
+    "Will report whether the previously invalidated block was "
+    "reconsidered and reorganized back in once wired; today unbound "
+    "and fails closed with exit 3.", 0,
+    "reconsider,block",
     "zcl.core_block_ref.input.v1", "zcl.block_mutation.v1", "hash", "hash",
     "zclassic23 core consensus block reconsider --hash=<hash>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
@@ -260,6 +338,8 @@ ZCL_COMMAND_BRANCH("core.network", "core", "Peers and onion transport",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.network.status", "core.network", "", "Network info and connections",
+    "Live network transport info and connection counts, read from the "
+    "running node's P2P subsystem at call time.", 0,
     "network,status,connections", "zcl.command.empty_input.v1",
     "zcl.network_status.v1", "", "", "zclassic23 core network status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -270,6 +350,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "core.network.chain_view", "core.network", "",
     "Reachable-network chain view: modal tip, max height, our delta, forks",
+    "Aggregated live view of every connected peer's reported tip, "
+    "computed from current peer state at call time; modal/max heights "
+    "and our delta shift as peers connect or advance.", 0,
     "network,chain,view,fork,tip,modal,consensus,behind",
     "zcl.command.empty_input.v1",
     "zcl.network_chain_view.v1", "", "",
@@ -283,7 +366,11 @@ ZCL_COMMAND_BRANCH("core.network.peers", "core.network",
                    "Connected peers", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.network.peers.list", "core.network.peers", "",
-    "List connected peers", "peers,list,addresses,latency",
+    "List connected peers",
+    "Every currently connected peer's address, version, and stats, "
+    "read live from the running node's peer table at call time; "
+    "bounded to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "peers,list,addresses,latency",
     "zcl.command.empty_input.v1", "zcl.peers.v1", "", "",
     "zclassic23 core network peers list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -293,7 +380,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.network.peers.incidents", "core.network.peers", "",
-    "Recent peer misbehavior incidents", "peers,incidents,ban,misbehavior",
+    "Recent peer misbehavior incidents",
+    "Recent peer misbehavior/ban-score incidents recorded by the "
+    "running node, most-recent-first as of call time; bounded to the "
+    "list budget row cap, not full history.", ZCL_COMMAND_LIST_BUDGET,
+    "peers,incidents,ban,misbehavior",
     "zcl.command.empty_input.v1", "zcl.peer_incidents.v1", "", "",
     "zclassic23 core network peers incidents",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -303,7 +394,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.network.peers.latency", "core.network.peers", "",
-    "Round-trip latency for every peer", "peers,latency,ping",
+    "Round-trip latency for every peer",
+    "Round-trip latency in microseconds for every connected peer, "
+    "measured live at call time via the P2P ping game; bounded to the "
+    "list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "peers,latency,ping",
     "zcl.command.empty_input.v1", "zcl.peer_latency.v1", "", "",
     "zclassic23 core network peers latency",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -313,7 +408,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.network.peers.add", "core.network.peers", "",
-    "Add an outbound peer connection", "peers,add,connect,addnode",
+    "Add an outbound peer connection",
+    "Will report the connection outcome for the given address once "
+    "wired; today the handler is unbound and fails closed with exit 3 "
+    "rather than dialing a peer.", 0,
+    "peers,add,connect,addnode",
     "zcl.core_peer_add.input.v1", "zcl.peer_add.v1", "address", "address",
     "zclassic23 core network peers add --address=<ip:port>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
@@ -327,7 +426,11 @@ ZCL_COMMAND_BRANCH("core.network.onion", "core.network",
                    "Embedded onion service", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.network.onion.status", "core.network.onion", "",
-    "Onion address and bootstrap status", "onion,tor,status,address",
+    "Onion address and bootstrap status",
+    "Live embedded-Tor onion address and bootstrap percentage, read "
+    "from the running node's Tor pthread state at call time; absent "
+    "when the stub Tor build is linked.", 0,
+    "onion,tor,status,address",
     "zcl.command.empty_input.v1", "zcl.onion_status.v1", "", "",
     "zclassic23 core network onion status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -337,7 +440,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.network.onion.health", "core.network.onion", "",
-    "Onion reachability health", "onion,tor,health,reachability",
+    "Onion reachability health",
+    "Live onion-service reachability check result from the running "
+    "node at call time; reflects the most recent self-probe, not a "
+    "continuous monitor.", 0,
+    "onion,tor,health,reachability",
     "zcl.command.empty_input.v1", "zcl.onion_health.v1", "", "",
     "zclassic23 core network onion health",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -351,6 +458,8 @@ ZCL_COMMAND_BRANCH("core.wallet", "core", "Keys, balance, and transactions",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.wallet.status", "core.wallet", "", "Wallet summary and key counts",
+    "Live wallet summary (key/address counts, load state) read from "
+    "the running node's wallet subsystem at call time.", 0,
     "wallet,status,info", "zcl.command.empty_input.v1", "zcl.wallet_status.v1",
     "", "", "zclassic23 core wallet status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -360,6 +469,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.wallet.balance", "core.wallet", "", "Confirmed and total balance",
+    "Confirmed and total wallet balance in zatoshi, computed live from "
+    "the running node's UTXO set at call time; total includes "
+    "unconfirmed mempool-visible outputs.", 0,
     "wallet,balance", "zcl.command.empty_input.v1", "zcl.wallet_balance.v1",
     "", "", "zclassic23 core wallet balance",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -371,7 +483,11 @@ ZCL_COMMAND_BRANCH("core.wallet.address", "core.wallet",
                    "Transparent addresses", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.address.new", "core.wallet.address", "",
-    "Derive and persist a new transparent address", "wallet,address,new",
+    "Derive and persist a new transparent address",
+    "Will report the newly derived transparent address once wired; "
+    "today the handler is unbound and fails closed with exit 3 rather "
+    "than mutating the wallet.", 0,
+    "wallet,address,new",
     "zcl.command.empty_input.v1", "zcl.wallet_address.v1", "", "",
     "zclassic23 core wallet address new",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -382,7 +498,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "wallet key-mutation binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_READY_READ(
     "core.wallet.address.list", "core.wallet.address", "",
-    "List transparent addresses", "wallet,address,list",
+    "List transparent addresses",
+    "Every transparent address currently held in the wallet, read "
+    "live at call time; bounded to the list budget row cap.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "wallet,address,list",
     "zcl.command.empty_input.v1", "zcl.wallet_addresses.v1", "", "",
     "zclassic23 core wallet address list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -392,7 +512,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.address.import", "core.wallet.address", "",
-    "Import a watch-only address", "wallet,address,import",
+    "Import a watch-only address",
+    "Will report whether the given address was imported watch-only "
+    "once wired; today the handler is unbound and fails closed with "
+    "exit 3 rather than mutating the wallet.", 0,
+    "wallet,address,import",
     "zcl.core_addr_import.input.v1", "zcl.wallet_address.v1", "address",
     "address", "zclassic23 core wallet address import --address=<addr>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -403,7 +527,12 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "wallet import binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.address.export-key", "core.wallet.address", "",
-    "Export the private key for an address", "wallet,export,privkey",
+    "Export the private key for an address",
+    "Will return the raw private key material for the given address "
+    "once wired, gated to the owner auth tier; today the handler is "
+    "unbound and fails closed with exit 3, so no key ever leaves the "
+    "node via this path yet.", 0,
+    "wallet,export,privkey",
     "zcl.core_addr_ref.input.v1", "zcl.wallet_privkey.v1", "address", "address",
     "zclassic23 core wallet address export-key --address=<addr>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_READ, ZCL_COMMAND_RISK_READ,
@@ -417,6 +546,9 @@ ZCL_COMMAND_BRANCH("core.wallet.utxo", "core.wallet", "Spendable outputs",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.wallet.utxo.list", "core.wallet.utxo", "", "List spendable UTXOs",
+    "Every currently spendable UTXO the wallet holds, read live from "
+    "the running node's UTXO set at call time; bounded to the list "
+    "budget row cap.", ZCL_COMMAND_LIST_BUDGET,
     "wallet,utxo,unspent", "zcl.command.empty_input.v1", "zcl.wallet_utxos.v1",
     "", "", "zclassic23 core wallet utxo list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -428,7 +560,11 @@ ZCL_COMMAND_BRANCH("core.wallet.transaction", "core.wallet",
                    "Wallet transactions", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.wallet.transaction.list", "core.wallet.transaction", "",
-    "List recent wallet transactions", "wallet,transaction,list,history",
+    "List recent wallet transactions",
+    "The wallet's most recent transactions, read live from the "
+    "running node at call time, newest first; bounded to the list "
+    "budget row cap, not full history.", ZCL_COMMAND_LIST_BUDGET,
+    "wallet,transaction,list,history",
     "zcl.command.empty_input.v1", "zcl.wallet_tx_list.v1", "", "",
     "zclassic23 core wallet transaction list",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -438,7 +574,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.wallet.transaction.get", "core.wallet.transaction", "",
-    "Get one wallet transaction by id", "wallet,transaction,get,txid",
+    "Get one wallet transaction by id",
+    "One wallet transaction's full decoded fields looked up live by "
+    "txid at call time; absent if the txid does not belong to this "
+    "wallet.", 0,
+    "wallet,transaction,get,txid",
     "zcl.core_tx_get.input.v1", "zcl.wallet_tx.v1", "txid", "txid",
     "zclassic23 core wallet transaction get --txid=<hex>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -448,7 +588,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.transaction.send", "core.wallet.transaction", "",
-    "Build, sign, and broadcast a payment", "wallet,send,pay,broadcast",
+    "Build, sign, and broadcast a payment",
+    "Will report the broadcast transaction id once the plan/commit "
+    "handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3, so no funds move.", 0,
+    "wallet,send,pay,broadcast",
     "zcl.core_wallet_send.input.v1", "zcl.wallet_send.v1",
     "address,amount,idempotency_key", "",
     "zclassic23 core wallet transaction send --input='<obj>'",
@@ -464,7 +608,11 @@ ZCL_COMMAND_BRANCH("core.wallet.shielded", "core.wallet",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.shielded.address", "core.wallet.shielded", "",
-    "Derive a new shielded address", "shielded,sapling,address,new",
+    "Derive a new shielded address",
+    "Will report the newly derived Sapling shielded address once "
+    "wired; today the handler is unbound and fails closed with exit 3 "
+    "rather than mutating the wallet.", 0,
+    "shielded,sapling,address,new",
     "zcl.command.empty_input.v1", "zcl.shielded_address.v1", "", "",
     "zclassic23 core wallet shielded address",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -475,7 +623,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "shielded key-mutation binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_READ(
     "core.wallet.shielded.balance", "core.wallet.shielded", "",
-    "Shielded balance for one address", "shielded,balance,sapling",
+    "Shielded balance for one address",
+    "Will report the confirmed shielded balance in zatoshi for the "
+    "given address once the argument mapping is wired; today the "
+    "handler is unbound and fails closed with exit 3.", 0,
+    "shielded,balance,sapling",
     "zcl.core_shielded_ref.input.v1", "zcl.shielded_balance.v1", "address",
     "address", "zclassic23 core wallet shielded balance --address=<zaddr>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -485,7 +637,11 @@ ZCL_COMMAND_PLANNED_READ(
     "shielded balance argument mapping is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_READ(
     "core.wallet.shielded.notes", "core.wallet.shielded", "",
-    "List spendable shielded notes", "shielded,notes,unspent",
+    "List spendable shielded notes",
+    "Will list every spendable Sapling note the wallet holds once "
+    "wired, bounded to the list budget row cap; today the handler is "
+    "unbound and fails closed with exit 3.", ZCL_COMMAND_LIST_BUDGET,
+    "shielded,notes,unspent",
     "zcl.command.empty_input.v1", "zcl.shielded_notes.v1", "", "",
     "zclassic23 core wallet shielded notes",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -495,7 +651,11 @@ ZCL_COMMAND_PLANNED_READ(
     "shielded note listing binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.shielded.send", "core.wallet.shielded", "",
-    "Send a shielded payment", "shielded,send,z_sendmany",
+    "Send a shielded payment",
+    "Will report the broadcast shielded transaction id once the "
+    "plan/commit handshake and prover are wired; today the handler is "
+    "unbound and fails closed with exit 3, so no funds move.", 0,
+    "shielded,send,z_sendmany",
     "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
     "from,to,amount,idempotency_key", "",
     "zclassic23 core wallet shielded send --input='<obj>'",
@@ -510,7 +670,11 @@ ZCL_COMMAND_BRANCH("core.wallet.backup", "core.wallet", "Wallet backup",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.wallet.backup.status", "core.wallet.backup", "",
-    "Wallet backup freshness", "wallet,backup,status",
+    "Wallet backup freshness",
+    "Live wallet backup age and last-backup timestamp, read from the "
+    "running node at call time; freshness is measured in seconds "
+    "since the last successful backup.", 0,
+    "wallet,backup,status",
     "zcl.command.empty_input.v1", "zcl.wallet_backup_status.v1", "", "",
     "zclassic23 core wallet backup status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -520,7 +684,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.backup.now", "core.wallet.backup", "",
-    "Take a wallet backup now", "wallet,backup,now",
+    "Take a wallet backup now",
+    "Will report the path and outcome of an on-demand wallet backup "
+    "once wired; today the handler is unbound and fails closed with "
+    "exit 3, so no backup file is written.", 0,
+    "wallet,backup,now",
     "zcl.command.empty_input.v1", "zcl.wallet_backup.v1", "", "",
     "zclassic23 core wallet backup now",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -531,6 +699,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "wallet backup-now binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_READY_READ(
     "core.wallet.audit", "core.wallet", "", "Audit wallet key/UTXO consistency",
+    "Live consistency check between the wallet's key set and its "
+    "UTXO/address records, computed from the running node's state at "
+    "call time; a foreground scan, not cached.", 0,
     "wallet,audit,consistency", "zcl.command.empty_input.v1",
     "zcl.wallet_audit.v1", "", "", "zclassic23 core wallet audit",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -540,7 +711,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.rescan", "core.wallet", "",
-    "Rescan the chain for wallet transactions", "wallet,rescan",
+    "Rescan the chain for wallet transactions",
+    "Will report rescan job progress from the given start height once "
+    "the job binding is wired; today the handler is unbound and fails "
+    "closed with exit 3, so no rescan runs.", 0,
+    "wallet,rescan",
     "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v1", "start_height",
     "", "zclassic23 core wallet rescan",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -552,7 +727,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "wallet rescan job binding is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.replay", "core.wallet", "",
-    "Replay wallet state from chain", "wallet,replay,rebuild",
+    "Replay wallet state from chain",
+    "Will report replay job progress rebuilding wallet state from "
+    "chain history once wired; today the handler is unbound and fails "
+    "closed with exit 3, so no replay runs.", 0,
+    "wallet,replay,rebuild",
     "zcl.command.empty_input.v1", "zcl.wallet_replay.v1", "", "",
     "zclassic23 core wallet replay",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
@@ -568,6 +747,9 @@ ZCL_COMMAND_BRANCH("core.storage", "core", "Raw node storage",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.storage.stats", "core.storage", "", "Database size and table stats",
+    "Live on-disk database size and per-table row/byte stats, read "
+    "from the running node's storage layer at call time; sizes are "
+    "in bytes.", 0,
     "storage,stats,db,size", "zcl.command.empty_input.v1", "zcl.db_stats.v1",
     "", "", "zclassic23 core storage stats",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -577,7 +759,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_READ(
     "core.storage.integrity", "core.storage", "",
-    "Verify raw storage integrity", "storage,integrity,check",
+    "Verify raw storage integrity",
+    "Will report raw SQLite/storage integrity check results once a "
+    "distinct handler is wired; today the handler is unbound and "
+    "fails closed with exit 3.", 0,
+    "storage,integrity,check",
     "zcl.command.empty_input.v1", "zcl.storage_integrity.v1", "", "",
     "zclassic23 core storage integrity",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -587,7 +773,11 @@ ZCL_COMMAND_PLANNED_READ(
     "a distinct storage-integrity handler is a Wave 2.2 deliverable")
 ZCL_COMMAND_READY_READ(
     "core.storage.query", "core.storage", "",
-    "Run one SELECT-only query over node.db", "storage,query,sql,select",
+    "Run one SELECT-only query over node.db",
+    "Raw SELECT-only query results read live from node.db at call "
+    "time; rows are auto-LIMITed and capped by the list budget, "
+    "non-SELECT statements are rejected.", ZCL_COMMAND_LIST_BUDGET,
+    "storage,query,sql,select",
     "zcl.core_storage_query.input.v1", "zcl.storage_query.v1", "sql,limit",
     "sql", "zclassic23 core storage query --sql='SELECT ...'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -601,6 +791,8 @@ ZCL_COMMAND_BRANCH("core.mining", "core", "Mining info and benchmarks",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.mining.status", "core.mining", "", "Mining info and difficulty",
+    "Live mining info (difficulty, network hashrate estimate) read "
+    "from the running node's chain state at call time.", 0,
     "mining,status,difficulty,hashrate", "zcl.command.empty_input.v1",
     "zcl.mining_status.v1", "", "", "zclassic23 core mining status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -610,6 +802,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.mining.benchmark", "core.mining", "", "Run an Equihash solver benchmark",
+    "A freshly measured Equihash solver benchmark (solutions/sec) run "
+    "live on this call on the node's hardware, not a cached or "
+    "historical figure.", 0,
     "mining,benchmark,equihash,solver", "zcl.command.empty_input.v1",
     "zcl.mining_benchmark.v1", "", "", "zclassic23 core mining benchmark",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -628,6 +823,9 @@ ZCL_COMMAND_BRANCH("core.node", "core", "Local node lifecycle",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
     "core.node.bootstatus", "core.node", "", "Pre-RPC boot status",
+    "Boot stage, progress, and serving state read directly from "
+    "<datadir>/boot_status.json on disk at call time, not via RPC; "
+    "valid even before the node's RPC port binds.", 0,
     "boot,bootstatus,startup,progress,phase,stage,serving",
     "zcl.core_bootstatus.input.v1", "zcl.core_bootstatus.v1", "datadir", "",
     "zclassic23 core node bootstatus --datadir=/home/you/.zclassic-c23",
@@ -638,6 +836,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_node_bootstatus)
 ZCL_COMMAND_READY_READ(
     "core.node.bootwait", "core.node", "", "Wait for boot to serve",
+    "Polls <datadir>/boot_status.json on disk at the given heartbeat "
+    "interval and reports once the node starts serving or the timeout "
+    "elapses; valid even before RPC binds.", 0,
     "boot,bootwait,wait,startup,serving,ready",
     "zcl.core_bootwait.input.v1", "zcl.core_bootstatus.v1",
     "datadir,timeout_ms,heartbeat_ms", "",

@@ -2,6 +2,9 @@
 
 ZCL_COMMAND_READY_READ(
     "app.list", "app", "", "List installed App manifests",
+    "Every installed App manifest from the local App registry; a complete "
+    "snapshot at call time, unpaged, static until an App is mounted or removed.",
+    ZCL_COMMAND_LIST_BUDGET,
     "apps,manifest,installed", "zcl.command.empty_input.v1",
     "zcl.app_index.v1", "", "", "zclassic23 app list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
@@ -13,6 +16,8 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "app.inspect", "app", "", "Inspect one App manifest and bindings",
+    "One App's manifest, declared capabilities, and route bindings from the "
+    "local registry; complete for that App as currently installed.", 0,
     "app,manifest,capabilities,bindings", "zcl.app_ref_input.v1",
     "zcl.app_manifest_summary.v1", "app_id", "app_id",
     "zclassic23 app inspect social",
@@ -25,6 +30,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_COMPAT_READ(
     "app.protocols", "app", "appprotocols", "List App protocol contracts",
+    "The wire and event protocol contracts each installed App declares, read "
+    "from the node; enumerates every registered App protocol at call time.",
+    ZCL_COMMAND_LIST_BUDGET,
     "protocols,events,p2p,wire", "zcl.command.empty_input.v1",
     "zcl.app_protocols.v1", "", "", "zclassic23 app protocols",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,

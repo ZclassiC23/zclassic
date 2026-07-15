@@ -27,9 +27,10 @@
 
 #define ZCL_COMMAND_BRANCH(path_, parent_, summary_, layer_)                   \
     { .path = (path_), .parent = (parent_), .aliases = "",                     \
-      .summary = (summary_), .tags = "", .input_schema = "",                   \
+      .summary = (summary_), .semantics = "", .tags = "", .input_schema = "",  \
       .output_schema = "", .input_keys = "", .positional_keys = "",            \
       .example = "", .availability_reason = "", .compat_target = "",           \
+      .budget_bytes = 0,                                                       \
       .layer = (layer_), .effect = ZCL_COMMAND_EFFECT_READ,                    \
       .risk = ZCL_COMMAND_RISK_READ, .scope = ZCL_COMMAND_SCOPE_LOCAL,         \
       .authority = ZCL_COMMAND_AUTH_PUBLIC,                                    \
@@ -41,15 +42,18 @@
       .traits = ZCL_COMMAND_TRAIT_NONE,                                        \
       .transports = ZCL_COMMAND_TRANSPORT_NATIVE, .handler = NULL },
 
-#define ZCL_COMMAND_READY_READ(path_, parent_, aliases_, summary_, tags_,      \
+#define ZCL_COMMAND_READY_READ(path_, parent_, aliases_, summary_, semantics_, \
+                               budget_, tags_,                                 \
                                in_, out_, in_keys_, pos_keys_, example_,       \
                                layer_, scope_, authority_, latency_, cost_,    \
                                lanes_, caps_, traits_, transports_, handler_)  \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
-      .availability_reason = "", .compat_target = "", .layer = (layer_),       \
+      .availability_reason = "", .compat_target = "",                          \
+      .budget_bytes = (budget_), .layer = (layer_),                            \
       .effect = ZCL_COMMAND_EFFECT_READ, .risk = ZCL_COMMAND_RISK_READ,        \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_COMMAND_READY, .mode = ZCL_COMMAND_MODE_SYNC,        \
@@ -58,18 +62,21 @@
       .required_capabilities = (caps_), .traits = (traits_),                   \
       .transports = (transports_), .handler = (handler_) },
 
-#define ZCL_COMMAND_COMPAT_READ(path_, parent_, aliases_, summary_, tags_,     \
+#define ZCL_COMMAND_COMPAT_READ(path_, parent_, aliases_, summary_, semantics_,\
+                                budget_, tags_,                               \
                                 in_, out_, in_keys_, pos_keys_, example_,      \
                                 layer_, scope_, authority_, latency_, cost_,   \
                                 lanes_, caps_, transports_, compat_)           \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason =                                                   \
           "native adapter is not executable yet; use the compatibility "      \
           "target",                                                            \
-      .compat_target = (compat_), .layer = (layer_),                          \
+      .compat_target = (compat_), .budget_bytes = (budget_),                   \
+      .layer = (layer_),                                                       \
       .effect = ZCL_COMMAND_EFFECT_READ, .risk = ZCL_COMMAND_RISK_READ,        \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_COMMAND_COMPAT, .mode = ZCL_COMMAND_MODE_SYNC,       \
@@ -78,15 +85,18 @@
       .required_capabilities = (caps_), .traits = ZCL_COMMAND_TRAIT_NONE,      \
       .transports = (transports_), .handler = NULL },
 
-#define ZCL_COMMAND_PLANNED_READ(path_, parent_, aliases_, summary_, tags_,    \
+#define ZCL_COMMAND_PLANNED_READ(path_, parent_, aliases_, summary_,           \
+                                 semantics_, budget_, tags_,                   \
                                  in_, out_, in_keys_, pos_keys_, example_,     \
                                  layer_, scope_, authority_, latency_, cost_,  \
                                  lanes_, caps_, reason_)                       \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = (reason_), .compat_target = "",                   \
+      .budget_bytes = (budget_),                                               \
       .layer = (layer_), .effect = ZCL_COMMAND_EFFECT_READ,                    \
       .risk = ZCL_COMMAND_RISK_READ, .scope = (scope_),                        \
       .authority = (authority_), .availability = ZCL_COMMAND_PLANNED,          \
@@ -95,17 +105,20 @@
       .required_capabilities = (caps_), .traits = ZCL_COMMAND_TRAIT_NONE,      \
       .transports = ZCL_COMMAND_TRANSPORT_NATIVE, .handler = NULL },
 
-#define ZCL_COMMAND_PLANNED_COMMAND(path_, parent_, aliases_, summary_, tags_, \
+#define ZCL_COMMAND_PLANNED_COMMAND(path_, parent_, aliases_, summary_,        \
+                                    semantics_, budget_, tags_,               \
                                     in_, out_, in_keys_, pos_keys_, example_,  \
                                     layer_, effect_, risk_, scope_,            \
                                     authority_, mode_, latency_, cost_,        \
                                     confirmation_, lanes_, caps_, traits_,     \
                                     reason_)                                   \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = (reason_), .compat_target = "",                   \
+      .budget_bytes = (budget_),                                               \
       .layer = (layer_), .effect = (effect_), .risk = (risk_),                 \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_COMMAND_PLANNED, .mode = (mode_),                    \
@@ -118,17 +131,20 @@
  * COMPAT (NULL handler, points at a compatibility target) but carries the full
  * effect/risk/mode policy of the mutation it will one day own. Used by dev.def
  * for `dev.change.apply` (the cycle still shells out to Make targets). */
-#define ZCL_COMMAND_COMPAT_COMMAND(path_, parent_, aliases_, summary_, tags_,  \
+#define ZCL_COMMAND_COMPAT_COMMAND(path_, parent_, aliases_, summary_,         \
+                                   semantics_, budget_, tags_,                \
                                    in_, out_, in_keys_, pos_keys_, example_,   \
                                    layer_, effect_, risk_, scope_,             \
                                    authority_, mode_, latency_, cost_,         \
                                    confirmation_, lanes_, caps_, traits_,      \
                                    reason_, compat_)                           \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = (reason_), .compat_target = (compat_),            \
+      .budget_bytes = (budget_),                                               \
       .layer = (layer_), .effect = (effect_), .risk = (risk_),                 \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_COMMAND_COMPAT, .mode = (mode_),                     \
@@ -141,17 +157,20 @@
  * the first executable mutating native leaves (account.add/role/suspend/...).
  * Mirrors ZCL_COMMAND_PLANNED_COMMAND's full effect/risk/mode policy grammar
  * but binds an executable handler instead of failing BLOCKED. */
-#define ZCL_COMMAND_READY_COMMAND(path_, parent_, aliases_, summary_, tags_,   \
+#define ZCL_COMMAND_READY_COMMAND(path_, parent_, aliases_, summary_,          \
+                                  semantics_, budget_, tags_,                 \
                                   in_, out_, in_keys_, pos_keys_, example_,    \
                                   layer_, effect_, risk_, scope_,              \
                                   authority_, mode_, latency_, cost_,          \
                                   confirmation_, lanes_, caps_, traits_,       \
                                   handler_)                                    \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = "", .compat_target = "",                          \
+      .budget_bytes = (budget_),                                               \
       .layer = (layer_), .effect = (effect_), .risk = (risk_),                 \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_COMMAND_READY, .mode = (mode_),                      \
@@ -175,17 +194,20 @@
 #define ZCL_DEV_HANDLER(handler_) NULL
 #endif
 
-#define ZCL_COMMAND_DEV_READ(path_, parent_, aliases_, summary_, tags_,       \
+#define ZCL_COMMAND_DEV_READ(path_, parent_, aliases_, summary_, semantics_,  \
+                             budget_, tags_,                                  \
                              in_, out_, in_keys_, pos_keys_, example_,        \
                              scope_, authority_, latency_, cost_, lanes_,     \
                              caps_, traits_, handler_, release_reason_,       \
                              compat_)                                         \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = ZCL_DEV_REASON(release_reason_),                  \
       .compat_target = ZCL_DEV_COMPAT(compat_),                                \
+      .budget_bytes = (budget_),                                               \
       .layer = ZCL_COMMAND_LAYER_DEV, .effect = ZCL_COMMAND_EFFECT_READ,       \
       .risk = ZCL_COMMAND_RISK_READ, .scope = (scope_),                        \
       .authority = (authority_), .availability = ZCL_DEV_AVAILABILITY,         \
@@ -195,17 +217,20 @@
       .transports = ZCL_COMMAND_TRANSPORT_NATIVE,                              \
       .handler = ZCL_DEV_HANDLER(handler_) },
 
-#define ZCL_COMMAND_DEV_COMMAND(path_, parent_, aliases_, summary_, tags_,    \
+#define ZCL_COMMAND_DEV_COMMAND(path_, parent_, aliases_, summary_,           \
+                                semantics_, budget_, tags_,                   \
                                 in_, out_, in_keys_, pos_keys_, example_,     \
                                 effect_, risk_, scope_, authority_, mode_,    \
                                 latency_, cost_, confirmation_, lanes_, caps_,\
                                 traits_, handler_, release_reason_, compat_)  \
     { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
-      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .summary = (summary_), .semantics = (semantics_), .tags = (tags_),       \
+      .input_schema = (in_),                                                   \
       .output_schema = (out_), .input_keys = (in_keys_),                       \
       .positional_keys = (pos_keys_), .example = (example_),                   \
       .availability_reason = ZCL_DEV_REASON(release_reason_),                  \
       .compat_target = ZCL_DEV_COMPAT(compat_),                                \
+      .budget_bytes = (budget_),                                               \
       .layer = ZCL_COMMAND_LAYER_DEV, .effect = (effect_), .risk = (risk_),    \
       .scope = (scope_), .authority = (authority_),                            \
       .availability = ZCL_DEV_AVAILABILITY, .mode = (mode_),                   \

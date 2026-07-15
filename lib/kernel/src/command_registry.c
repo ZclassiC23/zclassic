@@ -561,6 +561,20 @@ bool zcl_command_registry_validate(const struct zcl_command_registry *registry,
                                   "planned leaf %s has handler", spec->path);
                 return false;
             }
+            if (spec->availability == ZCL_COMMAND_READY &&
+                (!spec->semantics || !spec->semantics[0] ||
+                 strcmp(spec->semantics, spec->summary) == 0)) {
+                if (why) snprintf(why, why_size,
+                                  "ready leaf %s lacks distinct semantics",
+                                  spec->path);
+                return false;
+            }
+        }
+        if (spec->budget_bytes != 0 &&
+            (spec->budget_bytes < 256 || spec->budget_bytes > 65536)) {
+            if (why) snprintf(why, why_size,
+                              "leaf %s budget_bytes out of range", spec->path);
+            return false;
         }
         if (spec->availability != ZCL_COMMAND_READY &&
             (!spec->availability_reason || !spec->availability_reason[0])) {
@@ -1005,6 +1019,8 @@ size_t zcl_command_registry_describe_json(
               json_push_kv_str(&root, "availability",
                                zcl_command_availability_name(
                                    spec->availability));
+    if (spec->semantics && spec->semantics[0])
+        ok = ok && json_push_kv_str(&root, "semantics", spec->semantics);
     if (spec->availability_reason && spec->availability_reason[0])
         ok = ok && json_push_kv_str(&root, "availability_reason",
                                     spec->availability_reason);
@@ -1040,6 +1056,10 @@ size_t zcl_command_registry_describe_json(
          json_push_kv_int(&policy, "allowed_lanes", spec->allowed_lanes) &&
          json_push_kv_int(&policy, "required_capabilities",
                           (int64_t)spec->required_capabilities) &&
+         json_push_kv_int(&policy, "budget_bytes",
+                          spec->budget_bytes > 0
+                              ? spec->budget_bytes
+                              : (int64_t)ZCL_COMMAND_RESULT_BUDGET) &&
          json_push_kv(&root, "policy", &policy) &&
          json_push_kv_str(&root, "example", spec->example);
     if (spec->aliases && spec->aliases[0])
@@ -1372,10 +1392,24 @@ static size_t serialize_reply(const struct zcl_command_spec *spec,
              json_push_kv(&root, "data", &reply->data);
     } else {
         ok = ok && push_error(&root, &reply->error);
+        /* No error may lack an escape action: if the handler left `next` empty,
+         * point the caller at this command's contract so a bare failure always
+         * carries a next step. */
+        if (reply->next_count == 0) {
+            char describe_input[ZCL_COMMAND_MAX_PATH + 16];
+            (void)snprintf(describe_input, sizeof(describe_input),
+                           "{\"path\":\"%s\"}", spec->path);
+            (void)zcl_command_reply_add_next(
+                reply, "discover.describe", describe_input,
+                "inspect this command's contract and availability");
+        }
     }
     ok = ok && push_next_array(&root, reply);
-    size_t contract = successful ? ZCL_COMMAND_RESULT_BUDGET
-                                 : ZCL_COMMAND_ERROR_BUDGET;
+    size_t contract = successful
+                          ? (spec->budget_bytes > 0
+                                 ? (size_t)spec->budget_bytes
+                                 : ZCL_COMMAND_RESULT_BUDGET)
+                          : ZCL_COMMAND_ERROR_BUDGET;
     if (budget_bytes > 0 && budget_bytes < contract)
         contract = budget_bytes;
     size_t result = ok
