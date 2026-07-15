@@ -6,13 +6,6 @@
 #include "util/safe_alloc.h"
 #include <time.h>
 
-static uint64_t curve25519_monotonic_ns(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
 int test_sapling(void)
 {
     int failures = 0;
@@ -1134,9 +1127,20 @@ int test_sapling(void)
      * "optimisation" (windowed precomputation, conditional point-adds)
      * trips before it lands.
      *
-     * Tolerance is generous to absorb CI scheduler noise. A regression
-     * that reintroduces secret-bit-dependent control flow would push
-     * the ratio well past 1.15. */
+     * Measures per-thread CPU time (clock_thread_cpu_ns), not wall clock:
+     * unlike CLOCK_MONOTONIC this only accrues while THIS thread is
+     * actually executing on a core, so it is immune to scheduler
+     * preemption from other test groups or a concurrent build sharing the
+     * box — a real non-constant-time branch still burns real CPU cycles
+     * and still moves the ratio; only the noise from being descheduled
+     * drops out. Each of the 9 samples runs the pair in alternating order
+     * (lo-then-hi, then hi-then-lo) and sums both runs per side, which
+     * cancels one-sided frequency-ramp/cache bias instead of just
+     * dampening it; the verdict is the median ratio across samples, so one
+     * skewed sample can't decide the outcome. Tolerance stays generous for
+     * remaining SMT/cache noise — a regression that reintroduces
+     * secret-bit-dependent control flow still pushes the ratio well past
+     * 1.15, the same bound as before. */
     printf("curve25519_scalarmult timing vs scalar weight (Wave 2)... ");
     {
         /* Use the RFC 7748 Bob public key as the input point so the
@@ -1167,35 +1171,51 @@ int test_sapling(void)
         for (int i = 0; i < WARMUP; i++)
             curve25519_scalarmult(out, lo_scalar, bob_pk);
 
-        /* Median-of-five per side to dampen scheduler noise. */
-        uint64_t lo_meds[5], hi_meds[5];
-        for (int batch = 0; batch < 5; batch++) {
-            uint64_t t0 = curve25519_monotonic_ns();
-            for (int i = 0; i < ITERS; i++)
-                curve25519_scalarmult(out, lo_scalar, bob_pk);
-            lo_meds[batch] = curve25519_monotonic_ns() - t0;
-
-            t0 = curve25519_monotonic_ns();
-            for (int i = 0; i < ITERS; i++)
-                curve25519_scalarmult(out, hi_scalar, bob_pk);
-            hi_meds[batch] = curve25519_monotonic_ns() - t0;
-        }
-        for (int a = 0; a < 5; a++)
-            for (int b = a + 1; b < 5; b++) {
-                if (lo_meds[b] < lo_meds[a]) {
-                    uint64_t t = lo_meds[a]; lo_meds[a] = lo_meds[b]; lo_meds[b] = t;
-                }
-                if (hi_meds[b] < hi_meds[a]) {
-                    uint64_t t = hi_meds[a]; hi_meds[a] = hi_meds[b]; hi_meds[b] = t;
-                }
+        #define CX25519_TIMING_BATCHES 9
+        struct { uint64_t lo_ns, hi_ns; double ratio; } samples[CX25519_TIMING_BATCHES];
+        for (int batch = 0; batch < CX25519_TIMING_BATCHES; batch++) {
+            uint64_t lo_a, lo_b, hi_a, hi_b, t0;
+#define CX25519_TIMED_RUN(dst, scalar) \
+            t0 = (uint64_t)clock_thread_cpu_ns(); \
+            for (int i = 0; i < ITERS; i++) \
+                curve25519_scalarmult(out, (scalar), bob_pk); \
+            (dst) = (uint64_t)clock_thread_cpu_ns() - t0
+            if ((batch & 1) == 0) {
+                CX25519_TIMED_RUN(lo_a, lo_scalar);
+                CX25519_TIMED_RUN(hi_a, hi_scalar);
+                CX25519_TIMED_RUN(hi_b, hi_scalar);
+                CX25519_TIMED_RUN(lo_b, lo_scalar);
+            } else {
+                CX25519_TIMED_RUN(hi_a, hi_scalar);
+                CX25519_TIMED_RUN(lo_a, lo_scalar);
+                CX25519_TIMED_RUN(lo_b, lo_scalar);
+                CX25519_TIMED_RUN(hi_b, hi_scalar);
             }
-        uint64_t lo = lo_meds[2], hi = hi_meds[2];
-        double ratio = (double)hi / (double)lo;
-        bool ok = (ratio <= 1.15) && (ratio >= 0.85);
+#undef CX25519_TIMED_RUN
+            samples[batch].lo_ns = lo_a + lo_b;
+            samples[batch].hi_ns = hi_a + hi_b;
+            samples[batch].ratio = samples[batch].lo_ns != 0
+                ? (double)samples[batch].hi_ns / (double)samples[batch].lo_ns
+                : 0.0;
+        }
+        for (int a = 1; a < CX25519_TIMING_BATCHES; a++) {
+            typeof(samples[0]) s = samples[a];
+            int b = a;
+            while (b > 0 && samples[b - 1].ratio > s.ratio) {
+                samples[b] = samples[b - 1];
+                b--;
+            }
+            samples[b] = s;
+        }
+        uint64_t lo = samples[CX25519_TIMING_BATCHES / 2].lo_ns;
+        uint64_t hi = samples[CX25519_TIMING_BATCHES / 2].hi_ns;
+        double ratio = samples[CX25519_TIMING_BATCHES / 2].ratio;
+        bool ok = lo != 0 && (ratio <= 1.15) && (ratio >= 0.85);
         printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+        #undef CX25519_TIMING_BATCHES
     }
 
     /* --- Sprout KDF --- */
