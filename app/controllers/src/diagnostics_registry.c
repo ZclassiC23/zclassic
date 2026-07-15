@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "platform/os_sandbox.h"
+#include "util/thread_registry.h"
 #include "controllers/agent_copy_prove_controller.h"
 #include "controllers/agent_test_controller.h"
 #include "controllers/block_intake_json.h"
@@ -319,6 +320,22 @@ static bool sandbox_dump_state_json(struct json_value *out, const char *key)
     size_t n_denied = 0;
     (void)os_sandbox_node_steady_denied_syscalls(&n_denied);
     json_push_kv_int(out, "node_denied_syscalls", (int64_t)n_denied);
+
+    /* Thread-coverage witness — two independent dimensions, reported so the
+     * witness proves ACTUAL coverage, not intent:
+     *  - seccomp_tsync: the filter was installed via seccomp(2)+TSYNC, so it is
+     *    on EVERY thread of the process atomically (pre-existing + future).
+     *  - landlock_covered_threads: threads that have run landlock_restrict_self.
+     *    Landlock has no TSYNC and is not retroactive, so the ~30 service
+     *    threads spawned before the late SERVICES_RUNNING sandbox entry are the
+     *    documented residual (Landlock-unconfined but seccomp-confined). */
+    json_push_kv_str(out, "seccomp_install_method",
+                     os_sandbox_seccomp_install_method());
+    json_push_kv_bool(out, "seccomp_tsync", os_sandbox_seccomp_tsync_active());
+    json_push_kv_int(out, "threads_total",
+                     (int64_t)thread_registry_live_count());
+    json_push_kv_int(out, "landlock_covered_threads",
+                     (int64_t)os_sandbox_landlock_restricted_count());
     return true;
 }
 

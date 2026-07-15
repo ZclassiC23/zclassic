@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -67,12 +68,65 @@
 #define SECCOMP_RET_KILL_PROCESS 0x80000000U
 #endif
 
+/* seccomp(2) mode + TSYNC flag (kernel >= 3.17). The seccomp(2) syscall with
+ * SECCOMP_FILTER_FLAG_TSYNC installs the filter on EVERY thread of the calling
+ * process atomically — unlike prctl(PR_SET_SECCOMP), which confines only the
+ * calling thread and its later descendants. Fallbacks let this compile against
+ * a libc predating the seccomp(2) wrapper/flag; on x86_64 __NR_seccomp==317. */
+#ifndef __NR_seccomp
+#define __NR_seccomp 317
+#endif
+#ifndef SECCOMP_SET_MODE_FILTER
+#define SECCOMP_SET_MODE_FILTER 1
+#endif
+#ifndef SECCOMP_FILTER_FLAG_TSYNC
+#define SECCOMP_FILTER_FLAG_TSYNC (1UL << 0)
+#endif
+
 /* Process-wide "sandbox entered" latch. Set once, never cleared (enter is
  * one-way); a plain bool is safe because enter() is single-threaded. */
 static bool g_sandbox_active = false;
 static const char *g_active_profile_name = NULL;
 
+/* Which mechanism actually installed the seccomp filter, recorded so the
+ * `sandbox` witness can prove thread coverage rather than intent: TSYNC means
+ * the filter reached ALL threads atomically; PRCTL means only the caller +
+ * later descendants. Atomic because the witness reads it from another thread. */
+enum seccomp_install_method {
+    SECCOMP_INSTALL_NONE = 0,
+    SECCOMP_INSTALL_TSYNC,
+    SECCOMP_INSTALL_PRCTL,
+};
+static _Atomic int g_seccomp_install_method = SECCOMP_INSTALL_NONE;
+
+/* Count of threads that have PROVABLY entered a Landlock domain in this process
+ * — incremented once per successful landlock_restrict_self. Landlock has no
+ * TSYNC equivalent and is not retroactive, so this is the honest measure of
+ * Landlock thread coverage (as opposed to seccomp, which TSYNC makes total).
+ * Children a restricted thread later spawns inherit the domain but are NOT
+ * counted here, so this is a conservative floor, never an over-count. */
+static _Atomic int g_landlock_restrict_count = 0;
+
 bool os_sandbox_active(void) { return g_sandbox_active; }
+
+int os_sandbox_landlock_restricted_count(void)
+{
+    return atomic_load(&g_landlock_restrict_count);
+}
+
+const char *os_sandbox_seccomp_install_method(void)
+{
+    switch (atomic_load(&g_seccomp_install_method)) {
+    case SECCOMP_INSTALL_TSYNC: return "tsync";
+    case SECCOMP_INSTALL_PRCTL: return "prctl";
+    default:                    return "";
+    }
+}
+
+bool os_sandbox_seccomp_tsync_active(void)
+{
+    return atomic_load(&g_seccomp_install_method) == SECCOMP_INSTALL_TSYNC;
+}
 
 const char *os_sandbox_active_profile_name(void) { return g_active_profile_name; }
 
@@ -203,6 +257,7 @@ struct zcl_result os_sandbox_landlock_restrict(
                        "(no_new_privs run first?)", e, strerror(e));
     }
     close(ruleset_fd);
+    atomic_fetch_add(&g_landlock_restrict_count, 1);
     return ZCL_OK;
 #endif
 }
@@ -369,10 +424,39 @@ struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
         .filter = filt,
     };
 
+    /* Install on ALL threads atomically via seccomp(2)+TSYNC so the filter
+     * lands on every already-running thread, not just the caller and its
+     * future descendants. Return-value contract (man 2 seccomp):
+     *   0        -> installed on every thread (TSYNC succeeded)
+     *   > 0      -> the tid of a thread whose existing filter is incompatible;
+     *              coverage is NOT total, so fail closed
+     *   -1/ENOSYS-> seccomp(2) absent (kernel < 3.17) -> fall back to prctl
+     *   -1/other -> genuine failure -> fail closed */
+    errno = 0;
+    long tsync = syscall(__NR_seccomp, (long)SECCOMP_SET_MODE_FILTER,
+                         (long)SECCOMP_FILTER_FLAG_TSYNC, &prog);
+    if (tsync == 0) {
+        atomic_store(&g_seccomp_install_method, SECCOMP_INSTALL_TSYNC);
+        return ZCL_OK;
+    }
+    if (tsync > 0)
+        return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
+                       "seccomp(TSYNC) could not synchronise thread tid=%ld "
+                       "(incompatible pre-existing filter) — refusing partial "
+                       "coverage", tsync);
+    if (errno != ENOSYS)
+        return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
+                       "seccomp(SET_MODE_FILTER, TSYNC) failed errno=%d (%s) "
+                       "(no_new_privs run first?)", errno, strerror(errno));
+
+    /* ENOSYS: no seccomp(2) on this kernel — the prctl path still installs the
+     * filter on the calling thread + its future descendants (partial coverage,
+     * recorded so the witness reports it honestly). */
     if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0) != 0)
         return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
                        "prctl(PR_SET_SECCOMP) failed errno=%d (%s) "
                        "(no_new_privs run first?)", errno, strerror(errno));
+    atomic_store(&g_seccomp_install_method, SECCOMP_INSTALL_PRCTL);
     return ZCL_OK;
 #endif
 }

@@ -1025,11 +1025,11 @@ static struct zcl_result sr_services_running(void *ctx)
  * missing datadir, seccomp/Landlock error) this returns non-ok and boot exits
  * rather than run unconfined after the operator asked for a sandbox.
  *
- * Coverage note (deferred to soak): seccomp/Landlock here confine the calling
- * (boot/main) thread and threads spawned AFTER this point; retrofitting the
- * already-running P2P/RPC/service threads (seccomp TSYNC + per-thread Landlock)
- * is a follow-up. The record + adoption gate (check_sandbox_wired.sh) lock in
- * the wiring so it cannot regress to zero confinement. */
+ * Thread coverage (see `dumpstate sandbox`): seccomp installs via TSYNC
+ * (SECCOMP_FILTER_FLAG_TSYNC), covering EVERY thread atomically — incl. the ~30
+ * already-running service threads. Landlock has no TSYNC and full retrofit is
+ * unsound (a thread predates the datadir lock; boot/steady threads read outside
+ * it), so it stays on this thread; the rest are the seccomp-only residual. */
 static struct zcl_result sr_sandbox_enter(void *ctx)
 {
     const struct app_context *actx = ctx;

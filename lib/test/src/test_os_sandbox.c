@@ -35,7 +35,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sched.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -279,6 +281,70 @@ static bool denyset_contains(const int *set, size_t n, long nr)
     return false;
 }
 
+/* ── seccomp TSYNC: the filter must reach a PRE-EXISTING thread ─────────────
+ *
+ * The retrofit's whole point: os_sandbox_seccomp_deny installs via
+ * seccomp(2)+SECCOMP_FILTER_FLAG_TSYNC so a thread that was ALREADY RUNNING
+ * before the install is covered too (prctl(PR_SET_SECCOMP) would confine only
+ * the caller + its later descendants). These children run inside a fork so the
+ * SIGSYS kill is contained to the child. */
+
+static _Atomic int g_tsync_thread_ready;
+static _Atomic int g_tsync_go;
+
+/* Spawned BEFORE the filter is installed; when released it makes a DENIED
+ * syscall (execve). If TSYNC covered this pre-existing thread the syscall
+ * SIGSYS-kills the whole process; if it did not, execve would replace the
+ * process image with /bin/true (exit 0) — the negative outcome the parent
+ * distinguishes by terminating signal vs exit code. */
+static void *tsync_preexisting_thread(void *arg)
+{
+    (void)arg;
+    atomic_store(&g_tsync_thread_ready, 1);
+    while (atomic_load(&g_tsync_go) == 0) { /* spin until released */ }
+    execve("/bin/true", (char *const[]){"/bin/true", NULL},
+           (char *const[]){NULL});
+    return NULL; /* reached only if execve was neither denied nor performed */
+}
+
+static int c_tsync_covers_preexisting_thread(void)
+{
+    atomic_store(&g_tsync_thread_ready, 0);
+    atomic_store(&g_tsync_go, 0);
+
+    pthread_t th;
+    if (pthread_create(&th, NULL, tsync_preexisting_thread, NULL) != 0)
+        return 70;
+    /* Ensure the thread exists BEFORE the filter is installed. */
+    while (atomic_load(&g_tsync_thread_ready) == 0) { /* spin */ }
+
+    size_t n = 0;
+    const int *d = os_sandbox_node_steady_denied_syscalls(&n);
+    if (!os_sandbox_no_new_privs()) return 71;
+    struct zcl_result r = os_sandbox_seccomp_deny(d, n, false);
+    if (!r.ok) return 72;
+    /* On this kernel TSYNC must be the path that ran. */
+    if (!os_sandbox_seccomp_tsync_active()) return 73;
+
+    atomic_store(&g_tsync_go, 1);
+    /* The pre-existing thread's execve must SIGSYS-kill the whole process. If
+     * it instead exec'd /bin/true, join returns and we report the miss. */
+    pthread_join(th, NULL);
+    return 8; /* reached only if the pre-existing thread was NOT confined */
+}
+
+/* Records which install mechanism ran: on a >= 3.17 kernel it must be TSYNC. */
+static int c_tsync_method_is_tsync(void)
+{
+    size_t n = 0;
+    const int *d = os_sandbox_node_steady_denied_syscalls(&n);
+    if (!os_sandbox_no_new_privs()) return 70;
+    if (!os_sandbox_seccomp_deny(d, n, false).ok) return 71;
+    const char *m = os_sandbox_seccomp_install_method();
+    if (!m || strcmp(m, "tsync") != 0) return 72;
+    return 0;
+}
+
 /* ── userns map round-trip (userns-gated) ──────────────────────────────── */
 
 static int userns_map_roundtrip(void)
@@ -375,6 +441,12 @@ int test_os_sandbox(void)
              sb_run_child(c_node_enter_fork_ok) == 0);
     SB_CHECK("enter(NODE): exec denied -> SIGSYS",
              sb_run_child(c_node_enter_exec_denied) == -SIGSYS);
+
+    /* ── seccomp TSYNC retrofit: covers a pre-existing thread ──────────── */
+    SB_CHECK("seccomp install method is TSYNC on this kernel",
+             sb_run_child(c_tsync_method_is_tsync) == 0);
+    SB_CHECK("seccomp TSYNC: pre-existing thread's exec -> SIGSYS (whole process)",
+             sb_run_child(c_tsync_covers_preexisting_thread) == -SIGSYS);
 
     /* ── capability probe + userns-gated assertions ────────────────── */
     struct os_sandbox_caps caps = os_sandbox_probe_caps();
