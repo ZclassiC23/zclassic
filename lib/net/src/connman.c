@@ -38,6 +38,8 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+#include "util/thread_liveness.h"
+#include "util/blocker.h"
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -56,6 +58,39 @@ static pthread_t g_thread_socket;
 static pthread_t g_thread_open;
 static pthread_t g_thread_message;
 static volatile bool g_stop = false;
+
+/* Supervisor liveness for the 4 P2P threads. Root children (not
+ * supervisor_register_in_domain(net,...)): lib/net cannot include the
+ * app-side supervisors/domains.h without a lib-layering violation — see
+ * util/thread_liveness.h. zcl_connman_sock wakes on a deterministic 50ms
+ * poll() timeout, so it gets a REAL deadline; the other three legitimately
+ * sit idle (DNS-seed sleep cadence, outbound-dialer backoff sleep, message
+ * condvar wait) so they are liveness-only (no deadline, no progress gate) —
+ * present on the tree, heartbeat when they do work, never falsely flagged
+ * for a quiet cycle. */
+static struct thread_liveness_child g_dns_seed_liveness = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_sock_liveness     = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_open_liveness     = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_msg_liveness      = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_sock_poll_iterations = 0;
+
+/* Reactor fd-array stats (Task 2 — see REACTOR_MAX_FDS in connman.h).
+ * npfds_high_water is written only by thread_socket_handler (single
+ * writer); the configured_* fields are snapshotted once in connman_start(). */
+static _Atomic size_t g_reactor_npfds_high_water        = 0;
+static _Atomic size_t g_reactor_configured_listen_sockets = 0;
+static _Atomic int    g_reactor_configured_max_connections = 0;
+
+void connman_get_reactor_stats(struct connman_reactor_stats *out)
+{
+    if (!out) return;
+    out->npfds_high_water = atomic_load(&g_reactor_npfds_high_water);
+    out->reactor_max_fds = REACTOR_MAX_FDS;
+    out->configured_max_connections =
+        atomic_load(&g_reactor_configured_max_connections);
+    out->configured_listen_sockets =
+        atomic_load(&g_reactor_configured_listen_sockets);
+}
 
 #define CONNMAN_RECV_LOW_WATER_SLOTS 16
 
@@ -309,6 +344,7 @@ void connman_kick_onion_seeds(struct connman *cm)
 static void *thread_dns_seed(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
+    thread_liveness_beat(&g_dns_seed_liveness, -1);
 
     if (g_connect_only) {
         printf("Connect-only mode: skipping seeds, connecting to addnodes only\n");
@@ -411,11 +447,13 @@ static void *thread_dns_seed(void *arg)
     int64_t last_addrman_flush = (int64_t)platform_time_wall_time_t();
     int64_t start_ts = (int64_t)platform_time_wall_time_t();
     int64_t floor_below_since = 0;
+    uint64_t seed_rounds = 0;
     while (!g_stop) {
         size_t n = cm->manager.num_nodes;
         int interval = (n == 0) ? 30 : (n < 3) ? 60 : 300;
         sleep(interval);
         if (g_stop) break;
+        thread_liveness_beat(&g_dns_seed_liveness, (int64_t)++seed_rounds);
         size_t cur = cm->manager.num_nodes;
         int64_t now = (int64_t)platform_time_wall_time_t();
         if ((int)cur < PEER_FLOOR_MIN) {
@@ -1004,6 +1042,8 @@ static void *thread_open_connections(void *arg)
     struct connman *cm = (struct connman *)arg;
 
     static int64_t s_last_addrman_attempt = 0;
+    uint64_t open_iterations = 0;
+    thread_liveness_beat(&g_open_liveness, 0);
 
     while (!g_stop) {
         /* Count outbound peers in two buckets:
@@ -1205,6 +1245,10 @@ static void *thread_open_connections(void *arg)
             }
         }
 
+        /* Liveness-only, not the sleep-tail's 10s cap: the dial attempts
+         * above can block on connect() for longer than that. */
+        thread_liveness_beat(&g_open_liveness, (int64_t)++open_iterations);
+
         /* Sleep based on outbound count:
          * 0 outbound: 200ms (desperate)
          * below target: 1s
@@ -1226,13 +1270,17 @@ static void *thread_socket_handler(void *arg)
     while (!g_stop) {
         /* Build poll array: listen sockets + connected nodes.
          * Using poll() instead of select() avoids FD_SETSIZE (1024) limit
-         * which caused stack corruption with high fd numbers. */
-        struct pollfd pfds[256]; /* max: 8 listen + ~200 peers */
+         * which caused stack corruption with high fd numbers. Array size is
+         * REACTOR_MAX_FDS (connman.h) — connman_start()'s admission check
+         * guarantees num_listen_sockets + max_connections never exceeds it,
+         * so these loop bounds are a defense-in-depth belt, not the
+         * enforcement point. */
+        struct pollfd pfds[REACTOR_MAX_FDS];
         size_t npfds = 0;
         size_t listen_count = cm->manager.num_listen_sockets;
 
         /* Add listen sockets */
-        for (size_t i = 0; i < listen_count && npfds < 256; i++) {
+        for (size_t i = 0; i < listen_count && npfds < REACTOR_MAX_FDS; i++) {
             pfds[npfds].fd = (int)cm->manager.listen_sockets[i].socket;
             pfds[npfds].events = POLLIN;
             pfds[npfds].revents = 0;
@@ -1240,10 +1288,10 @@ static void *thread_socket_handler(void *arg)
         }
 
         /* Add connected nodes — snapshot fd + index under lock */
-        struct { int fd; size_t node_idx; } node_fds[200];
+        struct { int fd; size_t node_idx; } node_fds[REACTOR_MAX_FDS];
         size_t n_node_fds = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
-        for (size_t i = 0; i < cm->manager.num_nodes && npfds < 256; i++) {
+        for (size_t i = 0; i < cm->manager.num_nodes && npfds < REACTOR_MAX_FDS; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
             int fd = (int)node->socket;
             if (fd < 0) continue;
@@ -1253,7 +1301,7 @@ static void *thread_socket_handler(void *arg)
             pfds[npfds].fd = fd;
             pfds[npfds].events = events;
             pfds[npfds].revents = 0;
-            if (n_node_fds < 200) {
+            if (n_node_fds < REACTOR_MAX_FDS) {
                 node_fds[n_node_fds].fd = fd;
                 node_fds[n_node_fds].node_idx = i;
                 n_node_fds++;
@@ -1261,6 +1309,18 @@ static void *thread_socket_handler(void *arg)
             npfds++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+        /* High-water mark for operator/agent introspection (net/connman
+         * dump-state). Single writer (this thread), plain atomic store. */
+        if (npfds > atomic_load_explicit(&g_reactor_npfds_high_water,
+                                         memory_order_relaxed))
+            atomic_store_explicit(&g_reactor_npfds_high_water, npfds,
+                                  memory_order_relaxed);
+
+        thread_liveness_beat(&g_sock_liveness,
+                             (int64_t)atomic_fetch_add_explicit(
+                                 &g_sock_poll_iterations, 1,
+                                 memory_order_relaxed) + 1);
 
         if (npfds == 0) {
             usleep(50000);
@@ -1773,8 +1833,10 @@ void connman_run_deferred_free_sweep(struct connman *cm)
 static void *thread_message_handler(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
+    uint64_t msg_cycles = 0;
 
     while (!g_stop) {
+        thread_liveness_beat(&g_msg_liveness, (int64_t)++msg_cycles);
         bool did_work = connman_run_message_cycle(cm);
         if (!did_work) {
             struct timespec until;
@@ -1852,6 +1914,36 @@ bool connman_start(struct connman *cm)
         g_peer_bw_active = true;
     }
 
+    /* Listen sockets are already bound by the time connman_start() runs
+     * (boot_services binds before starting the service), so
+     * num_listen_sockets is final here. If it plus max_connections would
+     * overflow the hand-sized poll() fd arrays in thread_socket_handler,
+     * refuse to start instead of silently truncating the reactor to
+     * whatever fits pfds[REACTOR_MAX_FDS] with no operator-visible signal. */
+    atomic_store(&g_reactor_configured_listen_sockets,
+                 cm->manager.num_listen_sockets);
+    atomic_store(&g_reactor_configured_max_connections,
+                 cm->manager.max_connections);
+    {
+        size_t reactor_needed =
+            cm->manager.num_listen_sockets + (size_t)cm->manager.max_connections;
+        if (reactor_needed > REACTOR_MAX_FDS) {
+            char reason[BLOCKER_REASON_MAX];
+            snprintf(reason, sizeof reason,
+                     "connman reactor overflow: %zu listen socket(s) + "
+                     "%d configured max_connections = %zu exceeds "
+                     "REACTOR_MAX_FDS=%d — lower max_connections or the "
+                     "listen socket count before starting P2P",
+                     cm->manager.num_listen_sockets, cm->manager.max_connections,
+                     reactor_needed, REACTOR_MAX_FDS);
+            struct blocker_record rec;
+            if (blocker_init(&rec, "connman_reactor_overflow", "net",
+                             BLOCKER_PERMANENT, reason))
+                (void)blocker_set(&rec);
+            LOG_FAIL("net", "%s", reason);
+        }
+    }
+
     g_stop = false;
 
     if (thread_registry_spawn("zcl_dns_seed", thread_dns_seed, cm,
@@ -1861,6 +1953,7 @@ bool connman_start(struct connman *cm)
         LOG_FAIL("net", "thread_registry_spawn failed for dns_seed thread");
     }
     cm->dns_seed_thread_started = true;
+    thread_liveness_register(&g_dns_seed_liveness, "zcl_dns_seed", 0, 0);
 
     if (thread_registry_spawn("zcl_connman_sock", thread_socket_handler,
                                   cm, &g_thread_socket) != 0) {
@@ -1871,6 +1964,11 @@ bool connman_start(struct connman *cm)
         LOG_FAIL("net", "thread_registry_spawn failed for socket_handler thread");
     }
     cm->socket_thread_started = true;
+    /* Real deadline: this thread wakes on a deterministic 50ms poll()
+     * timeout (or immediately on socket readiness), so a 30s silence is
+     * genuinely wedged, not idle. Progress marker = poll iterations. */
+    thread_liveness_register(&g_sock_liveness, "zcl_connman_sock",
+                             /*deadline_secs=*/30, /*progress_quiet_us=*/0);
 
     if (thread_registry_spawn("zcl_connman_open", thread_open_connections,
                                   cm, &g_thread_open) != 0) {
@@ -1883,6 +1981,7 @@ bool connman_start(struct connman *cm)
         LOG_FAIL("net", "thread_registry_spawn failed for open_connections thread");
     }
     cm->open_thread_started = true;
+    thread_liveness_register(&g_open_liveness, "zcl_connman_open", 0, 0);
 
     if (thread_registry_spawn("zcl_connman_msg", thread_message_handler,
                                   cm, &g_thread_message) != 0) {
@@ -1897,6 +1996,7 @@ bool connman_start(struct connman *cm)
         LOG_FAIL("net", "thread_registry_spawn failed for message_handler thread");
     }
     cm->message_thread_started = true;
+    thread_liveness_register(&g_msg_liveness, "zcl_connman_msg", 0, 0);
 
     cm->started = true;
     printf("P2P threads started.\n");
@@ -1946,21 +2046,25 @@ void connman_join(struct connman *cm)
             if (!timed_join(g_thread_dns_seed, 5))
                 LOG_WARN("connman", "dns_seed thread join timed out");
             cm->dns_seed_thread_started = false;
+            thread_liveness_retire(&g_dns_seed_liveness);
         }
         if (cm->socket_thread_started) {
             if (!timed_join(g_thread_socket, 5))
                 LOG_WARN("connman", "socket thread join timed out");
             cm->socket_thread_started = false;
+            thread_liveness_retire(&g_sock_liveness);
         }
         if (cm->open_thread_started) {
             if (!timed_join(g_thread_open, 5))
                 LOG_WARN("connman", "open thread join timed out");
             cm->open_thread_started = false;
+            thread_liveness_retire(&g_open_liveness);
         }
         if (cm->message_thread_started) {
             if (!timed_join(g_thread_message, 5))
                 LOG_WARN("connman", "message thread join timed out");
             cm->message_thread_started = false;
+            thread_liveness_retire(&g_msg_liveness);
         }
         cm->started = false;
     }

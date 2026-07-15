@@ -56,6 +56,7 @@
 #include "util/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -231,6 +232,13 @@ struct msg_block_intake {
 static pthread_mutex_t g_block_intake_create_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct log_throttle g_block_intake_worker_log = LOG_THROTTLE_INIT;
 static struct log_throttle g_block_intake_dispatch_log = LOG_THROTTLE_INIT;
+
+/* Supervisor liveness (root child — lib/net cannot include the app-side
+ * supervisors/domains.h, see util/thread_liveness.h). Liveness-only: the
+ * ingest loop condvar-waits with no messages queued, so it idles
+ * indefinitely and legitimately; no deadline, no progress-quiet gate. */
+static struct thread_liveness_child g_p2p_ingest_liveness = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_p2p_ingest_beat_count = 0;
 
 static void msg_block_intake_item_init(struct msg_block_intake_item *item)
 {
@@ -410,6 +418,8 @@ static void *msg_block_intake_worker(void *arg)
         msg_block_intake_item_free(&item);
         processed_since_drain++;
         msg_block_intake_maybe_drain_catchup(in, &processed_since_drain);
+        thread_liveness_beat(&g_p2p_ingest_liveness,
+                             (int64_t)atomic_fetch_add(&g_p2p_ingest_beat_count, 1) + 1);
     }
 
     return NULL;
@@ -454,6 +464,7 @@ static struct msg_block_intake *msg_block_intake_start(struct msg_processor *mp)
         LOG_NULL("net", "block intake worker spawn failed rc=%d", rc);
     }
     in->thread_started = true;
+    thread_liveness_register(&g_p2p_ingest_liveness, "zcl_p2p_ingest", 0, 0);
     pthread_mutex_unlock(&g_block_intake_create_lock);
     return in;
 }
@@ -537,8 +548,10 @@ void msg_processor_stop_block_intake(struct msg_processor *mp)
     pthread_cond_broadcast(&in->cv);
     pthread_mutex_unlock(&in->mu);
 
-    if (in->thread_started)
+    if (in->thread_started) {
         pthread_join(in->thread, NULL);
+        thread_liveness_retire(&g_p2p_ingest_liveness);
+    }
 
     pthread_mutex_lock(&in->mu);
     msg_block_intake_drain_locked(in);

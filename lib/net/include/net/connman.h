@@ -16,6 +16,31 @@
 
 #define MAX_ADDNODES 16
 
+/* Reactor fd-array ceiling for thread_socket_handler's poll() set (listen
+ * sockets + connected peers). Named so the hand-sized pfds[]/node_fds[]
+ * stack arrays and the connman_start() admission check below share one
+ * source of truth instead of silently truncating past a hardcoded literal.
+ * Ceiling doc: 8 listen sockets + up to ~1000 configured max_connections
+ * (net.h DEFAULT_MAX_PEER_CONNECTIONS=125 today; CONNMAN_DEFERRED_FREE_
+ * HARD_CAP above already treats 8x default = 1000 as the operator ceiling).
+ * 1024 gives headroom over 1008 without wasting much stack (pollfd is 8
+ * bytes; { int; size_t } is 16 bytes -> ~24 KB total per poll iteration,
+ * fine against the default 8 MB thread stack). */
+#define REACTOR_MAX_FDS 1024
+
+/* Reactor admission + high-water stats, exposed for the net/connman
+ * dump-state JSON (see peer_lifecycle_dump_state_json). Populated at
+ * connman_start() (configured_*) and updated on the socket-handler thread's
+ * hot path (npfds_high_water; single-writer atomic, no lock). */
+struct connman_reactor_stats {
+    size_t npfds_high_water;
+    size_t reactor_max_fds;
+    int    configured_max_connections;
+    size_t configured_listen_sockets;
+};
+
+void connman_get_reactor_stats(struct connman_reactor_stats *out);
+
 /* Initial capacity of the deferred-free list: starts at 256, grows
  * dynamically on overflow up to CONNMAN_DEFERRED_FREE_HARD_CAP. The fixed
  * cap-256 used to overflow under Tor-driven churn while the message

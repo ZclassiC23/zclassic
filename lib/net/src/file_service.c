@@ -33,6 +33,7 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+#include "util/thread_liveness.h"
 
 static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
@@ -456,6 +457,21 @@ static unsigned g_fs_client_queue_len = 0;
 static pthread_mutex_t g_fs_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_fs_client_queue_cv = PTHREAD_COND_INITIALIZER;
 
+/* Supervisor liveness for the file-market threads. Root children (not
+ * supervisor_register_in_domain(...)): lib/net cannot include the app-side
+ * supervisors/domains.h without a lib-layering violation — see
+ * util/thread_liveness.h. All three legitimately sit idle when the file
+ * market has no active client/request (queue-pop condvar wait, accept()
+ * timeout, single-shot manifest build), so they are liveness-only (no
+ * deadline, no progress gate) — present on the tree, heartbeat when they
+ * wake, never falsely flagged for a quiet cycle. zcl_fs_wkr is a pool of
+ * FS_SERVER_WORKERS interchangeable threads; they share one contract (any
+ * worker beating it proves "at least one fs_wkr loop is alive/ticking",
+ * which is the intent — not per-worker isolation). */
+static struct thread_liveness_child g_fs_wkr_liveness      = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_fs_server_liveness   = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_fs_manifest_liveness = { .id = SUPERVISOR_INVALID_ID };
+
 /* Background manifest builder — hashes all block files (~7 GB). */
 static struct file_manifest g_server_fm;
 static _Atomic bool g_have_manifest = false;
@@ -736,6 +752,8 @@ static void *fs_manifest_thread(void *arg)
     g_server_fm = next;
     pthread_mutex_unlock(&g_manifest_mutex);
     atomic_store(&g_have_manifest, ok);
+    /* Single-shot thread — the build above IS its one dispatch. */
+    thread_liveness_beat(&g_fs_manifest_liveness, ok ? (int64_t)next.num_chunks : 0);
     return NULL;
 }
 
@@ -1013,6 +1031,7 @@ static void *fs_client_worker_thread(void *arg)
 
         if (!fs_client_queue_pop(&slot))
             break;
+        thread_liveness_beat(&g_fs_wkr_liveness, -1);
         if (slot.fd >= 0)
             fs_handle_client_fd(slot.fd, slot.ip);
     }
@@ -1058,6 +1077,8 @@ static void *fs_server_thread(void *arg)
     memset(utxo_root, 0, 32);
 
     while (atomic_load(&g_fs_running)) {
+        thread_liveness_beat(&g_fs_server_liveness, -1);
+
         struct sockaddr_in6 client_addr;
         socklen_t client_len = sizeof(client_addr);
 
@@ -1143,23 +1164,29 @@ void fs_server_start(const char *datadir, uint16_t port)
         started_workers++;
     }
     g_fs_worker_threads_started = started_workers;
+    if (started_workers > 0)
+        thread_liveness_register(&g_fs_wkr_liveness, "zcl_fs_wkr", 0, 0);
 
     if (thread_registry_spawn("zcl_fs_server", fs_server_thread, NULL,
                                   &g_fs_thread) != 0) {
         atomic_store(&g_fs_running, false);
         pthread_cond_broadcast(&g_fs_client_queue_cv);
         pthread_mutex_unlock(&g_fs_state_mutex);
-        fprintf(stderr, "file_service: failed to start server thread\n");
+        fprintf(stderr,  // obs-ok:file-service-startup-failure
+                "file_service: failed to start server thread\n");
         for (unsigned i = 0; i < started_workers; i++)
             pthread_join(g_fs_worker_threads[i], NULL);
         g_fs_worker_threads_started = 0;
+        thread_liveness_retire(&g_fs_wkr_liveness);
         return;
     }
     g_fs_thread_started = true;
+    thread_liveness_register(&g_fs_server_liveness, "zcl_fs_server", 0, 0);
     if (g_fs_datadir) {
         if (thread_registry_spawn("zcl_fs_manifest", fs_manifest_thread,
                                       NULL, &g_fs_manifest_thread) == 0) {
             g_fs_manifest_thread_started = true;
+            thread_liveness_register(&g_fs_manifest_liveness, "zcl_fs_manifest", 0, 0);
         } else {
             fprintf(stderr,  // obs-ok:file-service-startup-failure
                     "file_service: failed to start manifest thread\n");
@@ -1205,12 +1232,18 @@ void fs_server_stop(void)
     pthread_cond_broadcast(&g_fs_client_queue_cv);
     fs_client_queue_close_all();
 
-    if (have_server)
+    if (have_server) {
         fs_join_thread_bounded(server_thread, "server", 5);
-    if (have_manifest)
+        thread_liveness_retire(&g_fs_server_liveness);
+    }
+    if (have_manifest) {
         fs_join_thread_bounded(manifest_thread, "manifest", 5);
+        thread_liveness_retire(&g_fs_manifest_liveness);
+    }
     for (unsigned i = 0; i < worker_threads_started; i++)
         fs_join_thread_bounded(worker_threads[i], "worker", 5);
+    if (worker_threads_started > 0)
+        thread_liveness_retire(&g_fs_wkr_liveness);
 }
 
 /* ── Parallel download worker ──────────────────────────────────── */

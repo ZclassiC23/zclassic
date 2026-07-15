@@ -31,34 +31,17 @@ zcl_hodl_ref     bounded  one-shot explorer HODL-page refresh per task (explorer
 zcl_blk_scan     bounded  boot-time block-file scan worker, joined (boot_block_file_scan.c)
 bg_quick_check   bounded  boot-time fast-restart quick check, joined (boot_fast_restart.c)
 #
-# ── disposition: io-blocking ──────────────────────────────────────────────
-# Threads that block INDEFINITELY on accept()/recv()/poll() and process one
-# unit per wake. A wall-clock heartbeat deadline would false-fire on a
-# legitimately quiet socket; the honest next step is a LIVENESS-ONLY contract
-# (deadline=0, no-progress=0) heartbeating at each accept/dispatch boundary —
-# tracked here until that per-loop wiring lands. Higher-level P2P/RPC health
-# is already observed by net.outbound_floor / chain.chain_tip_watchdog.
-zcl_dns_seed     io-blocking  P2P DNS-seed resolver loop (connman.c)
-zcl_connman_sock io-blocking  P2P socket handler loop (connman.c)
-zcl_connman_open io-blocking  P2P outbound-connection opener loop (connman.c)
-zcl_connman_msg  io-blocking  P2P message handler loop (connman.c)
-zcl_fs_wkr       io-blocking  file-market chunk-serving worker (file_service.c)
-zcl_fs_server    io-blocking  file-market accept loop (file_service.c)
-zcl_fs_manifest  io-blocking  file-market manifest server loop (file_service.c)
-zcl_https_wkr    io-blocking  HTTPS request worker (https_server.c)
-zcl_https_listen io-blocking  HTTPS accept loop (https_server.c)
-zcl_http_listen  io-blocking  HTTP accept loop (https_server.c)
-zcl_p2p_ingest   io-blocking  P2P message-ingest loop (msgprocessor.c)
-zcl_tor_monitor  io-blocking  Tor onion-status monitor loop (tor_integration.c)
-zcl_tor          io-blocking  embedded Tor main loop (tor_integration.c)
-zcl_ws_pump      io-blocking  websocket event-pump loop (ws_events.c)
-zcl_async_rpc    io-blocking  async-RPC queue worker, condvar-blocked (async_rpc_queue.c)
-zcl_rpc_worker   io-blocking  RPC request worker (httpserver.c)
-zcl_rpc_listen   io-blocking  RPC accept loop (httpserver.c)
-zcl_rpc_tls      io-blocking  RPC TLS accept loop (httpserver.c)
-zcl_rpc_cookie   io-blocking  RPC cookie-rotation loop (httpserver.c)
-#
-# ── disposition: cpu-bound ────────────────────────────────────────────────
-# Runs only while mining is enabled; solves Equihash in a tight loop with no
-# natural heartbeat boundary. Liveness-only contract is future work.
-zcl_miner        cpu-bound  Equihash miner worker, active only while mining (lib/mining/src/gen.c)
+# ── (2026-07-15, watchdogd-drain lane) ─────────────────────────────────────
+# The former "io-blocking" and "cpu-bound" cohorts (zcl_dns_seed,
+# zcl_connman_sock, zcl_connman_open, zcl_connman_msg, zcl_fs_wkr,
+# zcl_fs_server, zcl_fs_manifest, zcl_https_wkr, zcl_https_listen,
+# zcl_http_listen, zcl_p2p_ingest, zcl_tor_monitor, zcl_tor, zcl_ws_pump,
+# zcl_async_rpc, zcl_rpc_worker, zcl_rpc_listen, zcl_rpc_tls,
+# zcl_rpc_cookie, zcl_miner) are now all on the supervisor liveness tree via
+# util/thread_liveness.h — LIVENESS-ONLY contracts (deadline=0,
+# progress_quiet_us=0) heartbeating at each accept/dispatch/work-item
+# boundary, except zcl_connman_sock (a real 30s deadline — it wakes on a
+# deterministic 50ms poll() timeout) and zcl_tor (never instrumented
+# directly — opaque vendored Tor code; beaten as a proxy from
+# zcl_tor_monitor's own poll loop). What remains below are the genuine
+# bounded one-shots.

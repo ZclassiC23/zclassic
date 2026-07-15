@@ -4,6 +4,7 @@
 
 #include "core/utiltime.h"
 #include "event/event.h"
+#include "net/connman.h"
 #include "net/fast_sync.h"
 #include "util/log_macros.h"
 
@@ -1741,6 +1742,22 @@ bool peer_lifecycle_dump_state_json(struct json_value *out,
     json_free(&peers);
     append_sources_locked(out);
     pthread_mutex_unlock(&g_pl.lock);
+
+    /* connman_get_reactor_stats reads process-global atomics, not a
+     * connman lock, so this is safe to call outside g_pl.lock. */
+    struct connman_reactor_stats rs;
+    connman_get_reactor_stats(&rs);
+    struct json_value reactor = {0};
+    json_set_object(&reactor);
+    json_push_kv_int(&reactor, "npfds_high_water", (int64_t)rs.npfds_high_water);
+    json_push_kv_int(&reactor, "reactor_max_fds", (int64_t)rs.reactor_max_fds);
+    json_push_kv_int(&reactor, "configured_max_connections",
+                     (int64_t)rs.configured_max_connections);
+    json_push_kv_int(&reactor, "configured_listen_sockets",
+                     (int64_t)rs.configured_listen_sockets);
+    json_push_kv(out, "reactor", &reactor);
+    json_free(&reactor);
+
     return true;
 }
 

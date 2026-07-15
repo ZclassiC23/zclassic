@@ -34,6 +34,7 @@
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
+#include "util/thread_liveness.h"
 
 #define RPC_HTTP_WORKERS 4
 #define RPC_HTTP_QUEUE_CAP 64
@@ -106,6 +107,23 @@ static int g_tls_listen_fd = -1;
 static pthread_t g_tls_listen_thread;
 static bool g_tls_listen_thread_started = false;
 static uint16_t g_tls_port = 0;
+
+/* Supervisor liveness for the 4 RPC HTTP threads. Root children (not
+ * supervisor_register_in_domain(...)): lib/rpc cannot include the app-side
+ * supervisors/domains.h without a lib-layering violation — see
+ * util/thread_liveness.h ("RPC-timeout" is already listed there as one of
+ * the lib/-layer cross-cutting infra threads on this pattern). All four
+ * legitimately idle (accept() blocks with no deterministic timeout, the
+ * worker pool blocks on a queue condvar, the cookie rotator sleeps on a
+ * fixed cadence) so they are liveness-only (no deadline, no progress
+ * gate) — present on the tree, heartbeat when they do work, never falsely
+ * flagged for a quiet cycle. g_worker_threads spawns RPC_HTTP_WORKERS
+ * workers under one name ("zcl_rpc_worker"); they share ONE contract —
+ * any worker's heartbeat proves at least one worker loop is alive. */
+static struct thread_liveness_child g_rpc_worker_liveness = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_rpc_listen_liveness = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_rpc_tls_liveness    = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_rpc_cookie_liveness = { .id = SUPERVISOR_INVALID_ID };
 
 bool rpc_http_test_build_response_envelope(bool rpc_ok,
                                            const char *method,
@@ -738,6 +756,7 @@ static void *rpc_worker_thread_fn(void *arg)
 
     while (g_running) {
         struct rpc_conn conn = dequeue_client();
+        thread_liveness_beat(&g_rpc_worker_liveness, -1);
         if (conn.fd < 0)
             continue;
         handle_client(conn);
@@ -754,6 +773,7 @@ static void *listen_thread_fn(void *arg)
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(g_listen_fd,
                                 (struct sockaddr *)&client_addr, &addr_len);
+        thread_liveness_beat(&g_rpc_listen_liveness, -1);
         if (client_fd < 0) {
             if (g_running)
                 perror("accept");
@@ -783,6 +803,7 @@ static void *tls_listen_thread_fn(void *arg)
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(g_tls_listen_fd,
                                 (struct sockaddr *)&client_addr, &addr_len);
+        thread_liveness_beat(&g_rpc_tls_liveness, -1);
         if (client_fd < 0) {
             if (g_running)
                 perror("tls accept");
@@ -916,6 +937,7 @@ static void *cookie_rotate_thread_fn(void *arg)
         /* Sleep in 1-second ticks so we notice shutdown promptly */
         for (int i = 0; i < g_cookie_rotate_sec && g_running; i++)
             sleep(1);
+        thread_liveness_beat(&g_rpc_cookie_liveness, -1);
         if (g_running)
             rpc_http_cookie_rotate();
     }
@@ -1144,6 +1166,8 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
             return false;
         }
         g_workers_started = i + 1;
+        if (i == 0)
+            thread_liveness_register(&g_rpc_worker_liveness, "zcl_rpc_worker", 0, 0);
     }
 
     if (thread_registry_spawn("zcl_rpc_listen", listen_thread_fn, NULL,
@@ -1161,12 +1185,14 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         return false;
     }
     g_listen_thread_started = true;
+    thread_liveness_register(&g_rpc_listen_liveness, "zcl_rpc_listen", 0, 0);
 
     /* Start TLS listener thread if configured */
     if (g_tls_ctx && g_tls_listen_fd >= 0) {
         if (thread_registry_spawn("zcl_rpc_tls", tls_listen_thread_fn,
                                       NULL, &g_tls_listen_thread) == 0) {
             g_tls_listen_thread_started = true;
+            thread_liveness_register(&g_rpc_tls_liveness, "zcl_rpc_tls", 0, 0);
         } else {
             fprintf(stderr, "RPC TLS: listener thread start failed\n");  // obs-ok:helper-context-logged
             close(g_tls_listen_fd);
@@ -1181,6 +1207,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         if (thread_registry_spawn("zcl_rpc_cookie", cookie_rotate_thread_fn,
                                       NULL, &g_cookie_rotate_thread) == 0) {
             g_cookie_rotate_started = true;
+            thread_liveness_register(&g_rpc_cookie_liveness, "zcl_rpc_cookie", 0, 0);
             printf("RPC cookie rotation: every %d seconds\n",
                    g_cookie_rotate_sec);
         }
@@ -1208,15 +1235,18 @@ void rpc_http_stop(void)
     if (g_listen_thread_started) {
         pthread_join(g_listen_thread, NULL);
         g_listen_thread_started = false;
+        thread_liveness_retire(&g_rpc_listen_liveness);
     }
     if (g_tls_listen_thread_started) {
         pthread_join(g_tls_listen_thread, NULL);
         g_tls_listen_thread_started = false;
+        thread_liveness_retire(&g_rpc_tls_liveness);
     }
     if (g_workers_started > 0) {
         for (size_t i = 0; i < g_workers_started; i++)
             pthread_join(g_worker_threads[i], NULL);
         g_workers_started = 0;
+        thread_liveness_retire(&g_rpc_worker_liveness);
     }
 
     pthread_mutex_lock(&g_client_queue_mutex);
@@ -1234,6 +1264,7 @@ void rpc_http_stop(void)
     if (g_cookie_rotate_started) {
         pthread_join(g_cookie_rotate_thread, NULL);
         g_cookie_rotate_started = false;
+        thread_liveness_retire(&g_rpc_cookie_liveness);
     }
 
     if (g_cookie_file[0]) {
