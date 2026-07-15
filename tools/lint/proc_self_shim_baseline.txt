@@ -27,6 +27,7 @@ tools/mcp/controllers/diagnostics_controller.c
 # capability-relative path construction (openat semantics), not a proc read.
 app/services/src/canary_sentinel_watch.c
 config/src/consensus_state_replay_receipt.c
+app/controllers/src/anchor_controller.c
 lib/test/src/test_canary_sentinel_watch.c
 config/src/consensus_state_snapshot_install_activate.c
 lib/storage/src/progress_store.c
