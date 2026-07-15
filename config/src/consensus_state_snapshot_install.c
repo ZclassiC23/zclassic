@@ -389,6 +389,20 @@ bool consensus_state_artifact_evidence_receipt_digest(
     return ok;
 }
 
+bool consensus_state_artifact_evidence_file_digest(
+    const struct consensus_state_artifact_evidence *evidence,
+    uint8_t out[32])
+{
+    if (!evidence || !out)
+        return false;
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
+    bool ok = consensus_state_artifact_evidence_revalidate(evidence);
+    if (ok)
+        memcpy(out, evidence->file_digest, 32);
+    zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+    return ok;
+}
+
 bool consensus_state_artifact_evidence_candidate_lease_begin(
     const struct consensus_state_artifact_evidence *evidence,
     struct consensus_state_bundle_manifest *manifest,

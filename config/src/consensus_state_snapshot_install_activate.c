@@ -12,6 +12,7 @@
 
 #include "config/consensus_state_snapshot_install.h"
 
+#include "config/consensus_state_replay_receipt.h" /* independent-replay authority */
 #include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
 #include "jobs/reducer_frontier.h"       /* reducer_frontier_compute_hstar,
                                           * REDUCER_TRUSTED_BASE_*_KEY */
@@ -123,19 +124,30 @@ static bool activate_consume_fail_seed(void) { return false; }
 static bool activate_consume_fail_after_seed(void) { return false; }
 #endif
 
-/* ZClassic headers do not commit the transparent/shielded state sets. The
- * current bundle receipt is bundle-supplied and therefore cannot authorize a
- * live state replacement, even when every internal digest and selected-chain
- * height/hash check passes. Keep the transactional engine executable in the
- * hermetic copy-proof harness, but make production publication unreachable
- * until an independently replay-bound receipt exists outside the artifact. */
-static bool activate_independent_authority_available(void)
+/* ZClassic headers do not commit the transparent/shielded state sets, so the
+ * bundle's self-recomputed digests cannot authorize a live state replacement
+ * even when every internal digest and selected-chain height/hash check passes.
+ * The ONLY production authority is an independent replay-derived receipt
+ * (consensus_state_replay_receipt.h) written by -verify-consensus-bundle after
+ * re-deriving every component digest from this datadir's OWN folded tables:
+ * it must bind EXACTLY this bundle whole-file digest + artifact + anchor +
+ * component digests + the running binary image. The ZCL_TESTING seam lets the
+ * hermetic copy-proof harness exercise the install mechanics without one. */
+static bool activate_independent_authority_available(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_artifact_evidence *evidence,
+    int datadir_fd)
 {
 #ifdef ZCL_TESTING
-    return atomic_load(&g_activate_test_independent_authority);
-#else
-    return false;
+    if (atomic_load(&g_activate_test_independent_authority))
+        return true;
 #endif
+    uint8_t bundle_file_digest[32];
+    if (!consensus_state_artifact_evidence_file_digest(evidence,
+                                                       bundle_file_digest))
+        return false;
+    return consensus_state_replay_receipt_authority_available(
+        manifest, bundle_file_digest, datadir_fd);
 }
 
 /* Reducer-derived tables cleared on cutover — the exact list
@@ -850,11 +862,6 @@ bool consensus_state_snapshot_install_activate(
         return false;
     }
     memset(result, 0, sizeof(*result));
-    if (!activate_independent_authority_available())
-        return activate_fail(
-            result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
-            "activation contained: bundle-supplied provenance is not "
-            "independent complete-state replay authority");
     if (!progress_db || !request || !request->bundle_path ||
         request->datadir_fd < 0 || !request->datadir_display ||
         !request->datadir_display[0])
@@ -936,6 +943,19 @@ bool consensus_state_snapshot_install_activate(
     }
 
     result->height = manifest.height;
+
+    /* 3b. Independent-replay authority gate. Without a valid replay receipt
+     *     the install stays CONTAINED (VERIFIED_CONTAINED) and writes nothing —
+     *     the bundle's self-asserted digests do not authenticate its contents. */
+    if (!activate_independent_authority_available(&manifest, evidence,
+                                                  request->datadir_fd)) {
+        consensus_state_artifact_evidence_free(evidence);
+        return activate_fail(result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
+                             "no independent replay-derived receipt authorizes "
+                             "this bundle; run -verify-consensus-bundle against "
+                             "a datadir folded to the anchor first (install "
+                             "stays contained)");
+    }
 
     /* 4. Lease the immutable read transaction (revalidates the pinned file),
      *    then run the one atomic install transaction under the progress-store

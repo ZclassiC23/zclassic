@@ -204,6 +204,18 @@ struct app_context {
                                  * refusal. NULL unless the operator sets the flag.
                                  * Refuses on the canonical datadir unless
                                  * ZCL_DEPLOY_ALLOW_CANONICAL is set. */
+    const char *verify_consensus_bundle; /* -verify-consensus-bundle=PATH :
+                                 * EXPLICIT-ONLY offline replay verifier. Admits a
+                                 * zcl.consensus_state_bundle.v1 FILE read-only, then
+                                 * INDEPENDENTLY re-derives the UTXO/anchor/nullifier
+                                 * component digests from THIS datadir's own
+                                 * genesis->anchor folded tables (bundle tables never
+                                 * used as derivation input) and, only if they all
+                                 * match, writes an fsync'd replay receipt outside the
+                                 * bundle. That receipt is what lifts the ACTIVATE
+                                 * production containment. Terminal: exits after
+                                 * writing the receipt or a typed refusal. NULL unless
+                                 * the operator sets the flag. */
     bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
                                  * a baked, SHA3-verified anchor snapshot
                                  * (<datadir>/utxo-anchor.snapshot or
@@ -376,6 +388,17 @@ void boot_install_consensus_bundle(struct node_db *ndb,
                                    struct main_state *ms,
                                    const char *bundle_path,
                                    const char *datadir);
+
+/* -verify-consensus-bundle=PATH (impl in config/src/boot_verify_consensus_bundle.c):
+ * the offline replay verifier that produces the independent receipt ACTIVATE
+ * requires. TERMINAL: NEVER returns — it _exit()s after printing a named
+ * terminal (receipt written + components reported, or a typed refusal). Admits
+ * the bundle read-only, then re-derives every component digest from the OPEN
+ * progress store (this datadir's own genesis->anchor fold, parked at the anchor)
+ * and writes the fsync'd receipt only if they all match the bundle. Reads the
+ * bundle and the local store; never mutates progress.kv. */
+void boot_verify_consensus_bundle(const char *bundle_path,
+                                  const char *datadir);
 
 #ifdef ZCL_TESTING
 /* Unit surface for the exact production lane/owner gate. `authorization` is

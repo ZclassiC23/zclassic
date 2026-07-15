@@ -135,6 +135,12 @@ bool consensus_state_artifact_evidence_revalidate(
 bool consensus_state_artifact_evidence_receipt_digest(
     const struct consensus_state_artifact_evidence *evidence,
     uint8_t out[32]);
+/* Raw SHA3-256 of the complete admitted bundle FILE (revalidated). This is the
+ * whole-file digest the replay receipt binds so a byte-different bundle can
+ * never reuse another bundle's receipt. */
+bool consensus_state_artifact_evidence_file_digest(
+    const struct consensus_state_artifact_evidence *evidence,
+    uint8_t out[32]);
 
 /* Stream a history-complete admitted bundle into a separate FULL-durable
  * SQLite progress generation.  The builder closes and independently reopens
@@ -251,9 +257,10 @@ bool consensus_state_snapshot_install_activate(
     struct consensus_state_activate_result *result);
 
 #ifdef ZCL_TESTING
-/* Production containment remains the default even in the test binary. The
- * hermetic activation transaction is reachable only while this explicit seam
- * is enabled by the copy-proof test. */
+/* Force activate's independent-replay authority gate open, bypassing the
+ * on-disk replay receipt. Lets the activate/copy-proof fixtures drive the
+ * atomic-install mechanics without standing up a full genesis->anchor folded
+ * datadir. Containment remains the default even in the test binary. */
 void consensus_state_snapshot_install_activate_test_set_independent_authority(
     bool available);
 /* One-shot race hook after the durable prior-generation copy but immediately

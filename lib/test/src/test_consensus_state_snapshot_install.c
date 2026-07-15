@@ -5,6 +5,7 @@
 
 #include "coins/utxo_commitment.h"
 #include "config/boot.h"
+#include "config/consensus_state_replay_receipt.h"
 #include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
 #include "core/serialize.h"
@@ -2362,8 +2363,26 @@ int test_consensus_state_snapshot_install(void)
         if (ares.prior_generation_path[0])
             (void)unlink(ares.prior_generation_path);
 
-        /* (iii) Positive — ADMIT path: atomically install the complete bundle. */
+        /* (ii-b) Negative — WITHOUT independent-replay authority the ADMIT-worthy
+         * bundle stays CONTAINED and writes NOTHING (the production posture: the
+         * bundle's self-asserted digests do not authenticate its contents). */
         areq.bundle_path = b.path;
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            false);
+        struct consensus_state_activate_result ares_contained;
+        CSI_CHECK("activate: no replay receipt keeps the install VERIFIED_"
+                  "CONTAINED (store untouched, still wedged)",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &ares_contained) &&
+                  !ares_contained.activated &&
+                  ares_contained.status ==
+                      CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (iii) Positive — ADMIT path with authority granted (the ZCL_TESTING
+         * hook stands in for a valid replay receipt): install atomically. */
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            true);
         CSI_CHECK("activate: complete bundle installs atomically",
                   consensus_state_snapshot_install_activate(pdb, &areq, &ares) &&
                   ares.activated &&
@@ -2383,6 +2402,60 @@ int test_consensus_state_snapshot_install(void)
                       "typeof(script)='blob' AND length(script)=0",
                       &activated_empty_scripts) &&
                   activated_empty_scripts == 1);
+
+        /* (iii-b) INDEPENDENT REPLAY RECEIPT — the store is now folded to the
+         * anchor (coins_applied == anchor+1), so the offline verifier can
+         * re-derive every component digest from THIS datadir's own tables (never
+         * the bundle) and, on a full match, persist the receipt that authorizes
+         * ACTIVATE with the ZCL_TESTING hook OFF. */
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            false);
+        {
+            struct consensus_state_replay_result vres;
+            /* A tampered bundle cannot even be admitted, so no receipt is made. */
+            CSI_CHECK("replay: verifier persists no receipt for a tampered bundle",
+                      write_bundle(&b, CSI_WRONG_UTXO_ROOT) &&
+                      !consensus_state_replay_verify_and_write_receipt(
+                          pdb, b.path, active_dir, &vres) &&
+                      !vres.verified);
+            CSI_CHECK("replay: valid bundle restored", write_bundle(&b, CSI_VALID));
+            CSI_CHECK("replay: verifier re-derives from the datadir's own tables "
+                      "and writes a receipt",
+                      consensus_state_replay_verify_and_write_receipt(
+                          pdb, b.path, active_dir, &vres) &&
+                      vres.verified && vres.height == b.height &&
+                      vres.utxo_count == 2 && vres.anchor_count == 2 &&
+                      vres.nullifier_count == 2);
+
+            struct consensus_state_artifact_evidence *rev = NULL;
+            struct consensus_state_bundle_manifest rman;
+            uint8_t rfile[32];
+            struct zcl_result ro =
+                consensus_state_artifact_evidence_open(b.path, &rev);
+            bool rgot = ro.ok && rev &&
+                consensus_state_artifact_evidence_manifest_copy(rev, &rman) &&
+                consensus_state_artifact_evidence_file_digest(rev, rfile);
+            CSI_CHECK("replay: receipt authorizes THIS exact bundle + anchor",
+                      rgot &&
+                      consensus_state_replay_receipt_authority_available(
+                          &rman, rfile, active_dir_fd));
+            uint8_t wrong_file[32];
+            memcpy(wrong_file, rfile, 32);
+            wrong_file[0] ^= 0xff;
+            CSI_CHECK("replay: receipt refuses a foreign bundle-file digest",
+                      rgot &&
+                      !consensus_state_replay_receipt_authority_available(
+                          &rman, wrong_file, active_dir_fd));
+            struct consensus_state_bundle_manifest wrong_man = rman;
+            wrong_man.utxo_root[0] ^= 0xff;
+            CSI_CHECK("replay: receipt refuses a foreign component digest",
+                      rgot &&
+                      !consensus_state_replay_receipt_authority_available(
+                          &wrong_man, rfile, active_dir_fd));
+            if (rev)
+                consensus_state_artifact_evidence_free(rev);
+        }
+
         sapling_tree_init(&gate_tree);
         CSI_CHECK("activate: post-install sapling gate is FOUND (wedge cured)",
                   anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &gate_tree,
@@ -2491,10 +2564,24 @@ int test_consensus_state_snapshot_install(void)
         if (ares.prior_generation_path[0])
             unlink(ares.prior_generation_path);
 
-        if (active_dir_fd >= 0)
-            (void)close(active_dir_fd);
+        /* (vii) The real replay receipt written above lifts the production
+         * containment with the ZCL_TESTING hook OFF: activate consults the
+         * on-disk receipt, finds it binds THIS bundle, and installs. */
         consensus_state_snapshot_install_activate_test_set_independent_authority(
             false);
+        struct consensus_state_activate_result ares_auth;
+        CSI_CHECK("activate: a valid on-disk replay receipt lifts the production "
+                  "containment (real authority, no test hook)",
+                  consensus_state_snapshot_install_activate(pdb, &areq,
+                                                            &ares_auth) &&
+                  ares_auth.activated &&
+                  ares_auth.status == CONSENSUS_INSTALL_ACTIVATED &&
+                  active_is(pdb, &b));
+        if (ares_auth.prior_generation_path[0])
+            unlink(ares_auth.prior_generation_path);
+
+        if (active_dir_fd >= 0)
+            (void)close(active_dir_fd);
         progress_store_close();
         test_cleanup_tmpdir(active_dir);
     }
