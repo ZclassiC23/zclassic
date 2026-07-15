@@ -13,12 +13,17 @@
  * does not call would trip `-Wunused-function` and break the build;
  * `static inline` suppresses that.
  *
- * NOTE on `exec_sql`: it is intentionally NOT shared. Each projection
- * keeps its own `static bool exec_sql(sqlite3*, const char*, const char*)`
- * so its diagnostic log lines stay tagged with that module's prefix
- * (e.g. "[utxo_projection] ..."). `apply_pragmas` below calls it, so
- * this header forward-declares the prototype; every including TU supplies
- * the matching definition.
+ * NOTE on `exec_sql`: `apply_pragmas` below calls a 3-arg
+ * `static bool exec_sql(sqlite3*, const char*, const char*)`, so this
+ * header forward-declares that prototype; every including TU must supply
+ * a matching definition (even a thin one) or leave `apply_pragmas`
+ * uncalled. znam_projection.c / peers_projection.c (via
+ * storage/projection_consumer.c, the shared event-log consumer skeleton
+ * they're built on) and every other caller of
+ * `projection_consumer_exec_sql()` (storage/projection_consumer.h) share
+ * ONE tagged exec-and-log body instead of each keeping a private copy —
+ * the module-prefix tagging that used to require a private copy is now a
+ * `log_tag` argument.
  *
  * Divergent siblings that must keep their LOCAL copies and do NOT include
  * this header: block_index_projection.c (mono_now_ms, 5-pragma loop

@@ -647,6 +647,13 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "projection_consumer") == 0) {
+        printf("[test] ZCL_TEST_ONLY=projection_consumer — running only\n");
+        failures += test_projection_consumer();
+        printf("\n=== projection_consumer subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "utxo_activation_paused") == 0) {
         printf("[test] ZCL_TEST_ONLY=utxo_activation_paused — running only\n");
         failures += test_utxo_activation_paused();
@@ -1402,6 +1409,7 @@ int main(int argc, char **argv)
     failures += test_mailbox_adoption();
     failures += test_projection();
     failures += test_projection_adoption();
+    failures += test_projection_consumer();
     failures += test_progress_store();
     failures += test_event_log();
     failures += test_mempool_projection();

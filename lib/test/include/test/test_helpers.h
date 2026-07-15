@@ -617,6 +617,7 @@ int test_mailbox(void);
 int test_mailbox_adoption(void);
 int test_projection(void);
 int test_projection_adoption(void);
+int test_projection_consumer(void);
 int test_progress_store(void);
 int test_event_log(void);
 int test_mempool_projection(void);
