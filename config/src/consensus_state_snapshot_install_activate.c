@@ -12,6 +12,7 @@
 
 #include "config/consensus_state_snapshot_install.h"
 
+#include "config/consensus_state_replay_receipt.h" /* independent-replay authority */
 #include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
 #include "jobs/reducer_frontier.h"       /* reducer_frontier_compute_hstar,
                                           * REDUCER_TRUSTED_BASE_*_KEY */
@@ -48,6 +49,38 @@ static const char *const k_activate_stages[] = {
     "header_admit", "validate_headers", "body_fetch", "body_persist",
     "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
 };
+
+#ifdef ZCL_TESTING
+static bool g_activate_force_independent_authority = false;
+void consensus_state_activate_test_force_independent_authority(bool granted)
+{
+    g_activate_force_independent_authority = granted;
+}
+#endif
+
+/* The install is CONTAINED unless an independent replay-derived receipt for
+ * EXACTLY this bundle + anchor + component digests exists in the datadir. The
+ * bundle can recompute its own digests (self-asserted provenance), and a
+ * ZClassic header commits none of the UTXO/anchor/nullifier CONTENTS, so
+ * matching height/hash to a local header is not content authentication. The
+ * receipt is the only thing that authorizes touching progress.kv in production;
+ * the ZCL_TESTING hook lets fixtures exercise the install mechanics. */
+static bool activate_independent_authority_available(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_artifact_evidence *evidence,
+    const char *datadir)
+{
+#ifdef ZCL_TESTING
+    if (g_activate_force_independent_authority)
+        return true;
+#endif
+    uint8_t bundle_file_digest[32];
+    if (!consensus_state_artifact_evidence_file_digest(evidence,
+                                                       bundle_file_digest))
+        return false;
+    return consensus_state_replay_receipt_authority_available(
+        manifest, bundle_file_digest, datadir);
+}
 
 static bool activate_fail(struct consensus_state_activate_result *result,
                           enum consensus_state_install_status status,
@@ -366,6 +399,19 @@ bool consensus_state_snapshot_install_activate(
     }
 
     result->height = manifest.height;
+
+    /* 3b. Independent-replay authority gate. Without a valid replay receipt the
+     *     install stays CONTAINED (VERIFIED_CONTAINED) and touches nothing —
+     *     the bundle's self-asserted digests do not authenticate its contents. */
+    if (!activate_independent_authority_available(&manifest, evidence,
+                                                  request->datadir)) {
+        consensus_state_artifact_evidence_free(evidence);
+        return activate_fail(result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
+                             "no independent replay-derived receipt authorizes "
+                             "this bundle; run -verify-consensus-bundle against "
+                             "a datadir folded to the anchor first (install "
+                             "stays contained)");
+    }
 
     /* 4. Capture the physically restorable prior generation (no open txn). */
     if (!activate_backup_prior_generation(progress_db, request->datadir,

@@ -3404,6 +3404,10 @@ int main(int argc, char **argv)
                          sizeof("-install-consensus-bundle=") - 1) == 0)
             ctx.install_consensus_bundle =
                 argv[i] + sizeof("-install-consensus-bundle=") - 1;
+        else if (strncmp(argv[i], "-verify-consensus-bundle=",
+                         sizeof("-verify-consensus-bundle=") - 1) == 0)
+            ctx.verify_consensus_bundle =
+                argv[i] + sizeof("-verify-consensus-bundle=") - 1;
         else if (strcmp(argv[i], "-fold-inram") == 0) {
             /* Bulk-fold in-RAM UTXO hot store (storage/coins_ram.h). The
              * storage layer reads ZCL_FOLD_INRAM as the single source of truth

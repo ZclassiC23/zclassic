@@ -3358,6 +3358,10 @@ sapling_tree_boot_check_done:
      * install a consensus-state bundle FILE, then _exit (TERMINAL). Placed here
      * so the header chain is loaded for the chain-binding evidence. Full
      * contract on boot_install_consensus_bundle() — it never returns. */
+    /* Offline replay verifier (produces the receipt the install requires);
+     * reads the same open progress store, mutates nothing, TERMINALLY _exit()s. */
+    if (ctx->verify_consensus_bundle)
+        boot_verify_consensus_bundle(ctx->verify_consensus_bundle, ctx->datadir);
     if (ctx->install_consensus_bundle)
         boot_install_consensus_bundle(&g_node_db, &g_state,
                                       ctx->install_consensus_bundle,
