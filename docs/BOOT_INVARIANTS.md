@@ -33,25 +33,49 @@ Stages are strictly **monotonic**. The advance API enforces:
 | `DATADIR_LOCKED` | Chain params selected (main/test/regtest). Datadir exists and is owned by this process (lockfile held). Unclean-shutdown marker checked. |
 | `CRYPTO_READY` | ECC initialized. SHA-256 + field-arithmetic self-tests passed. `main_state_init` complete. `g_state.chain_active` initialized. Activation controller registered. |
 | `DB_OPEN` | `node.db` opened. Schema migrations applied. DB worker thread started (or fallback to direct SQLite). |
-| `WALLET_LOADED` | `wallet_keys` read (STATE C invariant). Canary self-test OK. STATE D/E/F abort paths not triggered. (Not yet wired — to be filled in.) |
-| `BLOCK_INDEX_LOADED` | `block_index` loaded from LevelDB. `g_state.chain_active` populated with stored tip. (Not yet wired.) |
-| `CHAIN_TIP_RESOLVED` | Reducer activation complete. CSR consistent. Coins.db tip equals or trails block_index tip per the [coins-before-block-index ordering invariant](#coins-vs-block-index-ordering). (Not yet wired.) |
-| `NETWORK_READY` | Connman initialized. Peer manager ready. Listeners not yet bound. (Not yet wired.) |
-| `SERVICES_RUNNING` | Background services started: disk_monitor, ibd_throttle, db_maintenance, wallet_backup, sync_watchdog. (Not yet wired.) |
+| `WALLET_LOADED` | `wallet_keys` read (STATE C invariant). Canary self-test OK. STATE D/E/F abort paths not triggered. |
+| `BLOCK_INDEX_LOADED` | `block_index` loaded from LevelDB. `g_state.chain_active` populated with stored tip. |
+| `CHAIN_TIP_RESOLVED` | Reducer activation complete. CSR consistent. Coins.db tip equals or trails block_index tip per the [coins-before-block-index ordering invariant](#coins-vs-block-index-ordering). |
+| `NETWORK_READY` | Connman initialized. Peer manager ready. Listeners not yet bound. |
+| `SERVICES_RUNNING` | Background services started: disk_monitor, ibd_throttle, db_maintenance, wallet_backup, sync_watchdog. |
 | `READY` | HTTPS + RPC + (optional) Tor onion listening. The node accepts external requests. |
 | `SHUTDOWN_REQUESTED` | `app_shutdown` entered. New requests refused. |
 | `SHUTDOWN_COMPLETE` | Clean shutdown marker written. Datadir lock released. All services stopped. Safe to exit. |
 
 ---
 
-## Currently wired (incremental adoption)
+## Currently wired
 
-- `BOOT_STAGE_DATADIR_LOCKED` — `boot_step_select_chain_and_datadir`
-- `BOOT_STAGE_CRYPTO_READY` — `boot_step_init_crypto_and_state`
-- `BOOT_STAGE_DB_OPEN` — `app_init` after `node_db_sync_init` succeeds
-- `BOOT_STAGE_READY` — end of `app_init` on `svc_ok`
-- `BOOT_STAGE_SHUTDOWN_REQUESTED` — start of `app_shutdown`
-- `BOOT_STAGE_SHUTDOWN_COMPLETE` — end of `app_shutdown`
+All twelve boundaries are wired. The five middle boundaries (WALLET_LOADED …
+SERVICES_RUNNING) are advanced through the **SYSINIT** declarative table
+(`util/sysinit.h`, `config/src/boot.c:k_boot_sysinit_records[]`): each is a
+`struct sysinit_record` whose init runs at its true boundary, and
+`sysinit_run_stage(stage, ctx)` advances the state machine only if the records
+succeed (fail-closed — a failed boundary returns a typed `zcl_result` and boot
+exits, instead of a silent forward-jump WARN). The deterministic
+(stage, order, name) run order is pinned by
+`tools/lint/check_sysinit_ordering.sh` against a golden file.
+
+- `BOOT_STAGE_DATADIR_LOCKED` — `boot_step_select_chain_and_datadir` (direct)
+- `BOOT_STAGE_CRYPTO_READY` — `boot_step_init_crypto_and_state` (direct)
+- `BOOT_STAGE_DB_OPEN` — `app_init` after `node_db_sync_init` succeeds (direct)
+- `BOOT_STAGE_WALLET_LOADED` — SYSINIT `wallet_loaded`, after the wallet
+  load/create block (STATE C/D/E/F resolved)
+- `BOOT_STAGE_BLOCK_INDEX_LOADED` — SYSINIT `block_index_loaded`, after the
+  block-index loaders + repair + the sidecar integrity gate
+- `BOOT_STAGE_CHAIN_TIP_RESOLVED` — SYSINIT `chain_tip_resolved`, whose init
+  runs `boot_step_finalize_chain_state` (after coins/block-index reconcile)
+- `BOOT_STAGE_NETWORK_READY` — SYSINIT `network_ready`, in `app_init_services`
+  after `connman_init` + `connman_load_addrman`, before listeners bind
+- `BOOT_STAGE_SERVICES_RUNNING` — SYSINIT `services_running`, whose init runs
+  `boot_step_start_maintenance_services`, before READY is advertised
+- `BOOT_STAGE_READY` — end of `app_init` on `svc_ok` (direct)
+- `BOOT_STAGE_SHUTDOWN_REQUESTED` — start of `app_shutdown` (direct)
+- `BOOT_STAGE_SHUTDOWN_COMPLETE` — end of `app_shutdown` (direct)
+
+The offline `-mint-anchor` path legitimately forward-jumps
+`CHAIN_TIP_RESOLVED → READY` (no network/services), which the state machine
+logs as a WARN forward-jump — expected for that one-shot producer.
 
 ---
 

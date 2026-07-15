@@ -3361,6 +3361,20 @@ check-no-raw-clock-outside-platform:
 	@echo "→ Gate #19: no_raw_clock_outside_platform"
 	@./tools/lint/check_no_raw_clock_outside_platform.sh
 
+# Gate: sysinit boot-boundary ordering (HARD). Pins the deterministic
+# (stage, order, name) run order of the declarative boot-stage records in
+# config/src/boot.c against a golden file. See check_sysinit_ordering.sh.
+check-sysinit-ordering:
+	@echo "→ Gate: sysinit_ordering"
+	@./tools/lint/check_sysinit_ordering.sh
+
+# Gate: sandbox wiring (HARD). Asserts boot registers the os_sandbox
+# steady-state record so -sandbox=steady can never regress to zero
+# confinement. See check_sandbox_wired.sh.
+check-sandbox-wired:
+	@echo "→ Gate: sandbox_wired"
+	@./tools/lint/check_sandbox_wired.sh
+
 # os-substrate Rung 0: no system()/popen()/execlp() in the resident node
 # binary's own code — every shell-out migrated onto lib/util spawn +
 # file_tree_ops. HARD (FAIL); tools/ and lib/test/ are out of scope.
@@ -3662,7 +3676,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

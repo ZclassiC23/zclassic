@@ -3487,6 +3487,8 @@ int main(int argc, char **argv)
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strcmp(argv[i], "-sandbox=steady") == 0) ctx.sandbox_steady = true;
+        else if (strcmp(argv[i], "-sandbox=off") == 0) ctx.sandbox_steady = false;
         else if (strcmp(argv[i], "-hotswap-activate") == 0) {
             /* Arm Tier-1 live hot-swap ACTIVATION for this resident node. This
              * is only ONE of the two required gates: a live swap also needs
@@ -3652,6 +3654,19 @@ int main(int argc, char **argv)
      * check is read-only; a failure here means app_init never runs. */
     if (ctx.mint_anchor && !boot_mint_anchor_preflight_run_all(ctx.datadir, NULL))
         return 1;
+
+    /* -sandbox=steady fail-closed: the node deny-set forbids execve, so the
+     * off-systemd self-respawn (the S7 re-exec below) would be KILLED. Under
+     * systemd, Restart=always owns respawn and no self-exec happens — so the
+     * sandbox is only honored there. Refuse rather than silently disarming the
+     * liveness-recovery path. */
+    if (ctx.sandbox_steady && !sd_notify_is_active()) {
+        fprintf(stderr,
+            "FATAL: -sandbox=steady requires a systemd NOTIFY_SOCKET "
+            "(the sandbox forbids execve, which the off-systemd self-respawn "
+            "needs). Run under systemd, or drop -sandbox=steady.\n");
+        return 1;
+    }
 
     if (!app_init(&ctx)) {
         fprintf(stderr, "Initialization failed.\n");

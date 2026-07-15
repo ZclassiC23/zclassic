@@ -494,6 +494,8 @@ add/remove a gate.
 - `check-model-ar-lifecycle`
 - `check-model-validation`
 - `check-no-raw-clock-outside-platform`
+- `check-sysinit-ordering`
+- `check-sandbox-wired`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-shellouts`
 - `check-no-authoritative-ram-state`

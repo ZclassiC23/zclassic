@@ -9,6 +9,7 @@
  */
 
 #include "platform/time_compat.h"
+#include "platform/os_sandbox.h"
 #include "controllers/agent_copy_prove_controller.h"
 #include "controllers/agent_test_controller.h"
 #include "controllers/block_intake_json.h"
@@ -294,6 +295,28 @@ static bool explorer_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "onion_enabled", tor_integration_is_enabled());
     const char *onion = tor_integration_get_onion_address();
     json_push_kv_str(out, "onion_address", onion ? onion : "");
+    return true;
+}
+
+/* os_sandbox confinement state. A denied syscall KILLs the process (no
+ * survivable "denied counter"), so the observable state is: whether a profile
+ * entered, which one, the Landlock ABI, and the deny-set/seccomp posture. */
+static bool sandbox_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+    json_push_kv_bool(out, "active", os_sandbox_active());
+    const char *prof = os_sandbox_active_profile_name();
+    json_push_kv_str(out, "profile", prof ? prof : "");
+    json_push_kv_int(out, "landlock_abi", (int64_t)os_sandbox_landlock_abi());
+    json_push_kv_bool(out, "seccomp_supported", os_sandbox_seccomp_supported());
+    json_push_kv_bool(out, "seccomp_active",
+                      os_sandbox_active() && os_sandbox_seccomp_supported());
+    size_t n_denied = 0;
+    (void)os_sandbox_node_steady_denied_syscalls(&n_denied);
+    json_push_kv_int(out, "node_denied_syscalls", (int64_t)n_denied);
     return true;
 }
 
