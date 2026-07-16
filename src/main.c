@@ -2538,7 +2538,7 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
 }
 
 /* Opt-in log-level filter (Phase E3). -loglevel=<all|info|warn|error|fatal|off>
- * raises the floor the LOG_*/GUARD* macros (log_macros.h) emit at. Default
+ * raises the floor the LOG_* / GUARD* macros (log_macros.h) emit at. Default
  * stays ZCL_LOG_ALL (zero behavior change) unless the flag is present. An
  * unrecognized value is a warning, never a boot abort — see
  * zcl_log_level_from_string()'s contract in util/log_level.h. */

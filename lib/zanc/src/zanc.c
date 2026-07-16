@@ -1,10 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCL Anchors (ZANC) — OP_RETURN parser and builder. Same PUSH encoding as
- * ZNAM/ZSLP (script/op_return_push.h). */
+ * ZCL Anchors (ZANC) — OP_RETURN parser and builder. The reference instance of
+ * the overlay SDK: the lokad-tagged framing, the pedantic field reads, and the
+ * bounded builder all come from overlay/overlay_codec.h, so ZANC hand-rolls
+ * only its own field grammar (hash_type + digest + UTF-8 label). The wire bytes
+ * are identical to the pre-SDK hand-rolled encoding. */
 
 #include "zanc/zanc.h"
-#include "script/op_return_push.h"
+#include "overlay/overlay_codec.h"
 #include <string.h>
 
 bool zanc_hash_type_valid(uint8_t t)
@@ -68,46 +71,31 @@ bool zanc_parse(const uint8_t *script, size_t script_len,
     if (!msg) return false;
     memset(msg, 0, sizeof(*msg));
 
-    if (!script || script_len == 0) return false;
-    const uint8_t *p = script;
-    const uint8_t *end = script + script_len;
+    /* Fields 0-1: lokad "ZANC" + version — the shared overlay framing. */
+    struct overlay_reader r;
+    if (!overlay_reader_begin(&r, script, script_len, ZANC_LOKAD_BYTES))
+        return false;
+    if (!overlay_expect_u8(&r, ZANC_VERSION)) return false;
+    msg->version = ZANC_VERSION;
 
-    if (p >= end || *p != 0x6a) return false;    /* OP_RETURN */
-    p++;
+    /* Field 2: hash_type (1 byte, must be a supported type). */
+    if (!overlay_read_u8(&r, &msg->hash_type)) return false;
+    if (!zanc_hash_type_valid(msg->hash_type)) return false;
 
-    const uint8_t *data;
-    size_t len;
+    /* Field 3: digest (exactly 32 bytes). */
+    if (!overlay_read_fixed(&r, msg->digest, ZANC_DIGEST_LEN)) return false;
 
-    /* Field 0: lokad "ZANC" */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 4 || memcmp(data, ZANC_LOKAD_BYTES, 4) != 0) return false;
-
-    /* Field 1: version */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 1 || data[0] != ZANC_VERSION) return false;
-    msg->version = data[0];
-
-    /* Field 2: hash_type */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 1 || !zanc_hash_type_valid(data[0])) return false;
-    msg->hash_type = data[0];
-
-    /* Field 3: digest (exactly 32 bytes) */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != ZANC_DIGEST_LEN) return false;
-    memcpy(msg->digest, data, ZANC_DIGEST_LEN);
-
-    /* Field 4: label (0..32 bytes, UTF-8) */
-    p = read_push(p, end, &data, &len);
-    if (!p || len > ZANC_LABEL_MAX) return false;
-    if (!zanc_label_valid((const char *)data, len)) return false;
-    msg->label_len = (uint8_t)len;
-    if (len) memcpy(msg->label, data, len);
-    msg->label[len] = '\0';
+    /* Field 4: label (0..32 bytes, UTF-8). */
+    size_t label_len = 0;
+    if (!overlay_read_bounded(&r, (uint8_t *)msg->label, ZANC_LABEL_MAX,
+                              &label_len))
+        return false;
+    msg->label[label_len] = '\0';
+    if (!zanc_label_valid(msg->label, label_len)) return false;
+    msg->label_len = (uint8_t)label_len;
 
     /* No trailing bytes after the label push. */
-    if (p != end) return false;
-    return true;
+    return overlay_reader_finish(&r);
 }
 
 size_t zanc_build_anchor(uint8_t *out, size_t out_len, uint8_t hash_type,
@@ -120,18 +108,11 @@ size_t zanc_build_anchor(uint8_t *out, size_t out_len, uint8_t hash_type,
     size_t label_len = label ? strlen(label) : 0;
     if (!zanc_label_valid(label, label_len)) return 0;
 
-    if (out_len < 1) return 0;
-    size_t off = 0;
-    out[off++] = 0x6a;                           /* OP_RETURN */
-
-    uint8_t version = ZANC_VERSION;
-    bool ok = push_data_checked(out, &off, out_len,
-                                (const uint8_t *)ZANC_LOKAD_BYTES, 4);
-    ok = ok && push_data_checked(out, &off, out_len, &version, 1);
-    ok = ok && push_data_checked(out, &off, out_len, &hash_type, 1);
-    ok = ok && push_data_checked(out, &off, out_len, digest, ZANC_DIGEST_LEN);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)(label ? label : ""),
-                                 label_len);
-    return ok ? off : 0;
+    struct overlay_writer w;
+    overlay_writer_begin(&w, out, out_len, ZANC_LOKAD_BYTES);
+    overlay_put_u8(&w, ZANC_VERSION);
+    overlay_put_u8(&w, hash_type);
+    overlay_put_field(&w, digest, ZANC_DIGEST_LEN);
+    overlay_put_field(&w, (const uint8_t *)(label ? label : ""), label_len);
+    return overlay_writer_finish(&w);
 }

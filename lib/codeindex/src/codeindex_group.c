@@ -26,7 +26,7 @@ static const char *const k_lib_modules[] = {
     "event", "framework", "health", "hotswap", "kernel", "json", "keys",
     "metrics", "mining", "net", "platform", "policy", "primitives", "rpc",
     "script", "session", "sim", "storage", "support", "sync", "util", "validation",
-    "vcs", "wallet", "sapling", "zslp", "znam", "zanc", "codeindex",
+    "vcs", "wallet", "sapling", "overlay", "zslp", "znam", "zanc", "codeindex",
 };
 
 static const char *const k_app_shapes[] = {
@@ -150,6 +150,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/vcs") == 0) return "in-binary ZVCS: source+binary snapshot/revert, sealed-core commitment guard";
     if (strcmp(group, "lib/wallet") == 0) return "wallet key/persistence infra: HD keychain, BIP44, mnemonic, keystore, wallet DB";
     if (strcmp(group, "lib/sapling") == 0) return "Sapling zk-SNARK primitives: Groth16 prover, Jubjub/BLS12-381, note encryption, circuits";
+    if (strcmp(group, "lib/overlay") == 0) return "overlay SDK: shared OP_RETURN codec + rebuildable-projection scaffold behind ZNAM/ZSLP/ZMSG/ZANC";
     if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
     if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
     if (strcmp(group, "lib/zanc") == 0) return "ZCL Anchors (ZANC) on-chain SHA2/SHA3 software-package anchoring overlay";
