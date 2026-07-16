@@ -266,6 +266,38 @@ bool seal_kv_get_at_height(struct sqlite3 *db, int32_t g,
     return true;
 }
 
+bool seal_kv_nearest_rewind_base(struct sqlite3 *db, int32_t H,
+                                 struct seal_record *out, bool *found)
+{
+    if (found) *found = false;
+    if (!db || !out) return false;
+
+    progress_store_tx_lock();
+    bool any = false;
+    struct seal_record best;
+    memset(&best, 0, sizeof(best));
+    for (int s = 0; s < SEAL_RING_SLOTS; s++) {
+        struct seal_record rec;
+        bool present = false, self_ok = false;
+        if (!seal_read_slot(db, s, &rec, &present, &self_ok)) {
+            progress_store_tx_unlock();
+            return false;
+        }
+        if (!present || !self_ok) continue;
+        if (rec.height > H) continue;   /* not a base at/below the target */
+        if (!any || rec.height > best.height) {
+            best = rec;
+            any = true;
+        }
+    }
+    progress_store_tx_unlock();
+    if (any) {
+        *out = best;
+        if (found) *found = true;
+    }
+    return true;
+}
+
 bool seal_kv_mark_ratified_in_tx(struct sqlite3 *db, int slot,
                                  struct seal_record *r)
 {

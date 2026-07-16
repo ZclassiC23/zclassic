@@ -643,6 +643,7 @@ int test_coins_ram(void);
 int test_seal_kv(void);
 int test_sha3_sidecar_io(void);
 int test_seal_ratify(void);
+int test_seal_rewind(void);
 int test_nullifier_kv(void);
 int test_nullifier_backfill_service(void);
 int test_utxo_recovery_shielded_backfill(void);
