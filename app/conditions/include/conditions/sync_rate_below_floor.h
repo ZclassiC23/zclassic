@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * sync_rate_below_floor — OBSERVATIONAL performance-regression naming for
- * real fold throughput (blocks/sec), net of ibd_throttle's DELIBERATE
- * injected sleep. See the SYMPTOM/REMEDY/WITNESSED contract below. Never
- * touches a validity predicate and never gates or slows the fold (CLAUDE.md
- * "Consensus parity is inviolable") — it only NAMES a slowdown. */
+ * sync_rate_below_floor — ACTING liveness signal for real fold throughput
+ * (blocks/sec), net of ibd_throttle's DELIBERATE injected sleep. See the
+ * SYMPTOM/REMEDY/WITNESSED contract below. Never touches a validity predicate
+ * and never gates or slows the fold (CLAUDE.md "Consensus parity is
+ * inviolable") — it names a slowdown AND invokes the recovery ladder. */
 
 #ifndef ZCL_CONDITIONS_SYNC_RATE_BELOW_FLOOR_H
 #define ZCL_CONDITIONS_SYNC_RATE_BELOW_FLOOR_H
@@ -27,20 +27,26 @@
  *   tip_finalize_stage_cursor()). A window too short to measure meaningfully
  *   (post-throttle-subtraction, below SYNC_RATE_MIN_WINDOW_US), or a tick
  *   with no peers / no pending work, is simply skipped (streak untouched).
- * REMEDY: OBSERVATIONAL ONLY — no repair seam. Names the slow window with a
- *   typed BLOCKER_TRANSIENT blocker ("sync_rate_below_floor") carrying
- *   observed_bps, floor_bps, network_tip, log_head, and the id of the
- *   current dominant active blocker (blocker_select_dominant over the full
- *   registry, if any — the likely root cause), and logs it.
- *   COND_REMEDY_FAILED is the honest "cannot/will-not auto-fix" outcome.
+ * REMEDY: names the slow window with a typed BLOCKER_TRANSIENT blocker
+ *   ("sync_rate_below_floor") carrying observed_bps, floor_bps, network_tip,
+ *   log_head, and the id of the current dominant active blocker
+ *   (blocker_select_dominant over the full registry, if any — the likely root
+ *   cause), THEN invokes the top-level always-terminating recovery ladder via
+ *   sticky_escalator_note_stall() (whose rungs re-derive on their own
+ *   supervised ticks and self-clear on tip progress) and returns
+ *   COND_REMEDY_OK — a corrective action was taken. The remedy never gates or
+ *   slows the fold; if the slow-fold symptom has not cleared by the witness
+ *   window the engine downgrades the OK to COND_REMEDY_UNWITNESSED and re-arms
+ *   on cooldown, re-noting the stall. The operator page stays the LAST resort
+ *   on the ladder, not the first response to this recoverable class.
  * WITNESSED: clears once the live window rate recovers to/above the floor,
  *   OR the gate itself resolves (peers vanish, or pending work drains —
  *   network_tip <= log_head, i.e. the node caught up) — an honest clear,
  *   since the symptom this condition names ("behind and not catching up")
  *   no longer applies either way.
- * COND_WARN; poll_secs=30 while inactive (backoff 120s, max_attempts=1 →
- *   operator_needed fast, honest "cannot fix"); cooldown re-arms every 600s,
- *   unbounded, while the rate stays below floor. */
+ * COND_WARN; poll_secs=30 while inactive (backoff 120s, max_attempts=1);
+ *   cooldown re-arms every 600s, unbounded, re-noting the stall to the ladder
+ *   while the rate stays below floor. */
 void register_sync_rate_below_floor(void);
 
 struct json_value;

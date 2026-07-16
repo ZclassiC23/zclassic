@@ -19,12 +19,17 @@
  *   8-stage children heartbeat WITHOUT draining while it is active
  *   (staged_sync_supervisor.c), so a genuinely wedged drive was previously
  *   invisible: no supervisor child watches it. This Condition is that watch.
- * REMEDY: there is no automated repair seam for a wedged synchronous drive
- *   on another thread (killing it mid-write risks a torn commit) — the
- *   remedy names the fault with a typed BLOCKER_TRANSIENT blocker
- *   ("reducer_drive_stuck") carrying the driver label, age, and the frozen
- *   utxo_apply cursor height, and logs it. COND_REMEDY_FAILED: this is an
- *   honest "cannot self-heal" outcome that pages the operator.
+ * REMEDY: the remedy cannot safely touch a wedged synchronous drive on
+ *   another thread (killing it mid-write risks a torn commit), so it returns
+ *   COND_REMEDY_FAILED and pages the operator on the normal ladder. It is no
+ *   longer a dead end, though: it names the fault with a typed
+ *   BLOCKER_TRANSIENT blocker ("reducer_drive_stuck") carrying the driver
+ *   label, age, and the frozen utxo_apply cursor height, AND arms a
+ *   deadline-gated escape ("reducer_drive_ladder_kick",
+ *   REDUCER_DRIVE_ESCAPE_DEADLINE_SEC) that blocker_supervisor_sweep()
+ *   actuates into the top-level recovery ladder (sticky_escalator_note_stall)
+ *   if the drive is still frozen past the grace window — a safe corrective
+ *   action that never touches the drive's write path.
  * WITNESSED: the blocker clears (witness calls blocker_clear) the instant
  *   the drive exits OR the utxo_apply cursor advances past the height
  *   frozen at detect time — whichever comes first.
