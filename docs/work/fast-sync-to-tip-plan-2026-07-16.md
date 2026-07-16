@@ -337,7 +337,7 @@ Algorithm:
 
 **Wiring / entry point:** add an owner-gated native command
 (`ops.recover.import-shielded-history` under `app/controllers`) and/or a boot
-flag `-import-shielded-history=PATH`, following the argv pattern of the existing
+flag `-import-complete-shielded=ZCLASSICD-DATADIR`, following the argv pattern of the existing
 recovery entry points (`app/services/src/legacy_import_service.c`,
 `node_db_import_service.c`). It must be **contained** exactly like the other
 recovery apply paths (refuses on the public dev lanes; runs only for the
@@ -350,7 +350,7 @@ operator on canonical/copy datadirs).
 | `lib/storage/src/chainstate_legacy_reader.c` + `.h` | + 6 iterator/pointer entry points (§4.2) |
 | `lib/storage/src/nullifier_kv.c` + `.h` | + `nullifier_kv_publish_full_replay_complete_in_tx` (cursor→0, mirror of anchor primitive) |
 | `app/services/src/shielded_history_import_service.c` (new) + internal header | the importer (§4.4) |
-| `app/controllers/src/*` | owner-gated native command + optional `-import-shielded-history` argv |
+| `app/controllers/src/*` | owner-gated native command + optional `-import-complete-shielded` argv |
 | `app/controllers/src/diagnostics_registry.c` | register `shielded_import` dumper (§5) |
 | `lib/test/src/test_*` | importer unit test on a synthetic chainstate fixture; copy-prove harness hook (§6) |
 
@@ -514,7 +514,7 @@ verdict:
 2. **Point-in-time chainstate copy:** also copy `~/.zclassic/chainstate` via the
    `utxo_recovery_ldb_copy.c` stable-signature guard (never read the live one).
 3. **Run the importer** against the copy:
-   `zclassic23 -datadir="$COPY" -import-shielded-history="$CHAINSTATE_COPY"`
+   `zclassic23 -datadir="$COPY" -import-complete-shielded="$CHAINSTATE_COPY"`
    (isolated `$ISO_HOME`, `-nolegacyimport -nofilesync -connect=127.0.0.1:39999`,
    no real network — same isolation as `cure-copy-prove.sh:176-202`). FAIL unless
    the importer logs its explicit success banner and exits 0.

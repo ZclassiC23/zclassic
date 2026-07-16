@@ -12,36 +12,31 @@
 # cure-copy-prove.sh does.
 #
 # ============================================================================
-# DEPENDENCY NOTICE — read before running this for real
+# CONTRACT — read before running this for real
 # ============================================================================
-# As of 2026-07-16 the importer this script drives does NOT exist on main.
-# docs/work/fast-sync-to-tip-plan-2026-07-16.md section 4 is a DESIGN ONLY
-# spec for:
-#   - 6 new chainstate_legacy_reader.c/.h iterator/pointer entry points
-#     (chainstate_legacy_iter_{sapling,sprout}_{anchors,nullifiers},
-#     chainstate_legacy_get_best_{sapling,sprout}_anchor)
-#   - nullifier_kv_publish_full_replay_complete_in_tx (nullifier_kv.c/.h)
-#   - the importer service itself: shielded_history_import_from_chainstate()
-#     in a new app/services/src/shielded_history_import_service.c
+# As of 2026-07-16 the importer this script drives IS on main (merged from
+# lane worktree-wf_38a8a7cc-2b5-1): the 6 chainstate_legacy_reader iterators,
+# nullifier_kv_publish_full_replay_complete_in_tx, the importer service
+# shielded_history_import_from_chainstate(), and the terminal boot flag below.
+# (The optional `sovereignty` dumpstate subsystem, design doc section 5.5, is
+# also on main via lane -2.) The importer's contract:
 #   - a terminal boot flag, documented interface (this script's contract):
-#       zclassic23 -datadir=DIR -import-shielded-history=CHAINSTATE_COPY_DIR
-#     On success it MUST print, to stderr, exactly one line matching
-#       ^IMPORTED: -import-shielded-history: .*$
-#     and exit 0 (mirroring config/src/boot_install_consensus_bundle.c's
-#     proven "INSTALLED: -install-consensus-bundle: %s" / exit(EXIT_SUCCESS)
-#     convention). On any refusal it MUST print
-#       ^REFUSED: -import-shielded-history: .*$
-#     and exit nonzero. THIS SCRIPT ENFORCES THAT EXACT CONTRACT (see phase 1
-#     below) — until the importer lands and emits that banner, every non-dry
-#     run of this script will FAIL at phase 1 with a message pointing back
-#     here. That is the correct, fail-closed behavior for a harness whose
-#     subject does not exist yet: it names the missing dependency instead of
-#     hanging to --deadline or reporting a false PASS.
-#   - a `sovereignty` dumpstate subsystem (design doc section 5.5) — also not
-#     yet registered. This script treats that check as best-effort/soft (see
+#       zclassic23 -datadir=TARGET-COPY -import-complete-shielded=ZCLASSICD-DATADIR
+#     The importer reads ZCLASSICD-DATADIR/chainstate via its own FNV-stable
+#     point-in-time snapshot (ldb_snapshot_make, manifest-changed retry —
+#     mirrors --gen-utxo-snapshot), so it is handed the LIVE zclassicd datadir
+#     directly and never a torn image; zclassicd keeps running untouched.
+#     On success it prints, to stdout, exactly one line matching
+#       ^IMPORT COMPLETE (committed=.*$
+#     and exits 0. On any refusal it prints
+#       ^IMPORT REFUSED .*$
+#     and exits nonzero (wedge intact, both cursors stay positive). THIS
+#     SCRIPT ENFORCES THAT EXACT CONTRACT (see phase 1 below): if a build
+#     predates the importer, the argv loop silently ignores the unknown flag
+#     and phase 1 FAILS with a message pointing back here — fail-closed, never
+#     a false PASS from a plain exit-0.
+#   - the `sovereignty` dumpstate check is treated as best-effort/soft (see
 #     step 6) and never fails the verdict on its absence.
-# None of the above is implemented by this change. This script is the
-# consumer-side proof harness ready to gate that work the moment it lands.
 # ============================================================================
 #
 # What this proves, once the importer exists (design doc section 6):
@@ -68,10 +63,10 @@
 #     datadir path — refuses otherwise (mirrors
 #     app/controllers/src/agent_copy_prove_controller.c's cp_path_safety_ok()).
 #   - --copy-dir must not already exist (never silently overwrites/reuses).
-#   - the zclassicd chainstate is READ via `cp -a` into a path INSIDE
-#     --copy-dir before the importer ever sees it — the live
-#     `~/.zclassic/chainstate` LevelDB is never opened directly by this
-#     script or (per the design spec) by the importer itself.
+#   - the live `~/.zclassic/chainstate` LevelDB is never opened directly:
+#     the importer takes a FNV-stable point-in-time snapshot of it
+#     (ldb_snapshot_make, manifest-changed retry) before iterating, so a
+#     concurrent zclassicd write can never hand it a torn manifest.
 #   - zclassicd itself is only ever queried over its existing RPC port
 #     (read-only getblockhash calls) — never stopped, restarted, or written
 #     to. Pass --skip-zclassicd-check to omit even that (loudly marks the
@@ -197,12 +192,12 @@ echo "  node_bin:                  $NODE_BIN"
 echo "  ports:                     rpc=$RPCPORT p2p=$P2PPORT fs=$FSPORT https=$HTTPSPORT"
 echo "  zclassicd cross-check:     $([ "$SKIP_ZD_CHECK" = "1" ] && echo 'SKIPPED (--skip-zclassicd-check; verdict will be PASS-INCOMPLETE at best)' || echo "datadir=$ZD_DATADIR rpcport=$ZD_RPCPORT (read-only RPC only)")"
 echo "  steps:"
-echo "    1. cp -a \"\$SRC\" \"\$COPY_DIR\""
-echo "    2. cp -a \"\$CHAINSTATE_SRC\" \"\$COPY_DIR/.chainstate-src-copy\" (point-in-time copy;"
-echo "       the live zclassicd chainstate is never opened directly)"
-echo "    3. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -import-shielded-history=\"\$COPY_DIR/.chainstate-src-copy\""
-echo "       (terminal; require literal 'IMPORTED: -import-shielded-history:' banner + exit 0 —"
-echo "       SEE THE DEPENDENCY NOTICE at the top of this script if this flag does not exist yet)"
+echo "    1. cp -a \"\$SRC\" \"\$COPY_DIR\"  (throwaway wedged target datadir)"
+echo "    2. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -import-complete-shielded=\"\$ZD_DATADIR\""
+echo "       (terminal; the importer FNV-stable-snapshots \$ZD_DATADIR/chainstate"
+echo "       itself — zclassicd is read-only, never stopped; require literal"
+echo "       'IMPORT COMPLETE (committed=' banner + exit 0 — SEE THE DEPENDENCY"
+echo "       NOTICE at the top of this script if this flag does not exist yet)"
 echo "    4. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -rpcport=\$RPCPORT -port=\$P2PPORT"
 echo "       -connect=127.0.0.1:39999 -nolegacyimport -nofilesync (isolated boot)"
 echo "    5. poll getblockcount + dumpstate reducer_frontier/blocker until"
@@ -226,15 +221,14 @@ echo "[import-copy-prove] cp -a $SRC -> $COPY_DIR"
 cp -a "$SRC" "$COPY_DIR"
 rm -f "$COPY_DIR"/*.pid "$COPY_DIR"/.lock 2>/dev/null || true
 
-# ── step 2: point-in-time copy of the zclassicd chainstate ─────────────
-# (the future importer additionally does its own FNV-signature-stable copy
-#  per design doc section 4.4 step 1 / utxo_recovery_ldb_copy.c; this outer
-#  cp -a is this script's own guarantee that it never hands the importer a
-#  live path, independent of whatever the importer does internally.)
-
-CHAINSTATE_COPY="$COPY_DIR/.chainstate-src-copy"
-echo "[import-copy-prove] cp -a $CHAINSTATE_SRC -> $CHAINSTATE_COPY"
-cp -a "$CHAINSTATE_SRC" "$CHAINSTATE_COPY"
+# ── step 2: NO manual chainstate copy ──────────────────────────────────
+# The importer reads $ZD_DATADIR/chainstate through its OWN FNV-stable
+# point-in-time snapshot (ldb_snapshot_make with manifest-changed retry,
+# src/main.c import_complete_shielded_mode), which is strictly tear-safe —
+# a plain `cp -a` of the live, actively-written LevelDB could hand it a torn
+# manifest (the 2026-06-09 bug class). We therefore pass the live zclassicd
+# datadir directly and let the importer make the stable copy; zclassicd is
+# only ever read, never stopped.
 
 cleanup() {
     if [ -n "${NODE_PID:-}" ] && kill -0 "$NODE_PID" 2>/dev/null; then
@@ -254,27 +248,27 @@ NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=127.0.0.1:39999 -n
 # ── step 3: terminal import call (phase 1) ─────────────────────────────
 
 IMPORT_LOG="$COPY_DIR/import_shielded_history.log"
-echo "[import-copy-prove] phase 1: terminal -import-shielded-history=$CHAINSTATE_COPY (timeout ${DEADLINE}s)"
+echo "[import-copy-prove] phase 1: terminal -import-complete-shielded=$ZD_DATADIR (timeout ${DEADLINE}s)"
 import_rc=0
 if command -v timeout >/dev/null 2>&1; then
     HOME="$ISO_HOME" timeout "${DEADLINE}s" \
         "$NODE_BIN" -datadir="$COPY_DIR" -rpcport="$RPCPORT" -port="$P2PPORT" \
-        $NODE_ISO_ARGS -import-shielded-history="$CHAINSTATE_COPY" \
+        $NODE_ISO_ARGS -import-complete-shielded="$ZD_DATADIR" \
         > "$IMPORT_LOG" 2>&1 || import_rc=$?
 else
     HOME="$ISO_HOME" \
         "$NODE_BIN" -datadir="$COPY_DIR" -rpcport="$RPCPORT" -port="$P2PPORT" \
-        $NODE_ISO_ARGS -import-shielded-history="$CHAINSTATE_COPY" \
+        $NODE_ISO_ARGS -import-complete-shielded="$ZD_DATADIR" \
         > "$IMPORT_LOG" 2>&1 || import_rc=$?
 fi
 
-if [ "$import_rc" != "0" ] || ! grep -q '^IMPORTED: -import-shielded-history:' "$IMPORT_LOG"; then
+if [ "$import_rc" != "0" ] || ! grep -q '^IMPORT COMPLETE (committed=' "$IMPORT_LOG"; then
     echo "======================================================================"
     echo "  import-copy-prove VERDICT: FAIL"
     echo "  copy:    $COPY_DIR"
-    echo "  reason:  terminal -import-shielded-history did not report IMPORTED"
+    echo "  reason:  terminal -import-complete-shielded did not report IMPORT COMPLETE"
     echo "           (exit=$import_rc). Inspect $IMPORT_LOG. Nothing further was booted."
-    echo "  NOTE:    if $IMPORT_LOG shows no mention of -import-shielded-history at all,"
+    echo "  NOTE:    if $IMPORT_LOG shows no mention of -import-complete-shielded at all,"
     echo "           the importer (docs/work/fast-sync-to-tip-plan-2026-07-16.md section 4)"
     echo "           is not yet merged on this build — see the DEPENDENCY NOTICE at the"
     echo "           top of this script. The argv loop silently ignores unknown flags, so"
@@ -284,7 +278,7 @@ if [ "$import_rc" != "0" ] || ! grep -q '^IMPORTED: -import-shielded-history:' "
     echo "======================================================================"
     exit 1
 fi
-echo "[import-copy-prove] import reported IMPORTED — booting normally to prove H* CLIMB"
+echo "[import-copy-prove] import reported IMPORT COMPLETE — booting normally to prove H* CLIMB"
 
 # ── step 4: normal boot (phase 2) ──────────────────────────────────────
 

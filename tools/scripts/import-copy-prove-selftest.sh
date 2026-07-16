@@ -65,7 +65,7 @@ import_arg=""
 for a in "$@"; do
     case "$a" in
         -datadir=*)                 datadir="${a#-datadir=}" ;;
-        -import-shielded-history=*) import_arg="${a#-import-shielded-history=}" ;;
+        -import-complete-shielded=*) import_arg="${a#-import-complete-shielded=}" ;;
     esac
 done
 if [ -n "$import_arg" ]; then
@@ -73,10 +73,10 @@ if [ -n "$import_arg" ]; then
     [ -r "$FAKE_IMPORT_BEHAVIOR_FILE" ] && behavior="$(cat "$FAKE_IMPORT_BEHAVIOR_FILE")"
     case "$behavior" in
         ok)
-            echo "IMPORTED: -import-shielded-history: selftest fixture ok"
+            echo "IMPORT COMPLETE (committed=5): selftest fixture ok"
             exit 0 ;;
         fail)
-            echo "REFUSED: -import-shielded-history: selftest fixture forced failure" >&2
+            echo "IMPORT REFUSED — selftest fixture forced failure (wedge intact)" >&2
             exit 1 ;;
         missing)
             # Simulates an unmerged flag: the real argv loop ignores unknown
@@ -252,7 +252,7 @@ test_missing_importer_fails_fast_with_dependency_note() {
     local rc; rc="$(run_script)"
     assert_rc "$rc" 1 "an unimplemented importer flag did not FAIL"
     assert_contains "$OUTPUT" "VERDICT: FAIL" "missing-importer run did not report FAIL"
-    assert_contains "$OUTPUT" "did not report IMPORTED" "missing-importer FAIL reason absent"
+    assert_contains "$OUTPUT" "did not report IMPORT COMPLETE" "missing-importer FAIL reason absent"
     assert_contains "$OUTPUT" "is not yet merged on this build" \
         "missing-importer FAIL did not point at the dependency notice"
     printf '[import-copy-prove-selftest] PASS: an unmerged importer fails fast, not silently\n'
