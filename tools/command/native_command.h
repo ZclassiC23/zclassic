@@ -82,6 +82,15 @@ void zcl_native_handle_discover_describe(
 void zcl_native_handle_discover_schema(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* dev.usage.* — self-review of the command interaction ledger (Phase D).
+ * Read-only; compiled into both builds, but bound as READY handlers only in a
+ * dev catalog (COMPAT in release). tools/command/native_usage_command.c. */
+void zcl_native_handle_dev_usage_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_usage_tail(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

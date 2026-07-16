@@ -569,3 +569,50 @@ ZCL_COMMAND_DEV_READ(
     zcl_native_handle_dev_diagnose_show,
     "durable failure artifacts are available through the dev binary",
     "zclassic23-dev dev diagnose show <failure-id>")
+
+ZCL_COMMAND_BRANCH("dev.usage", "dev",
+                   "Self-review of the command interaction ledger",
+                   ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_DEV_READ(
+    "dev.usage.summary", "dev.usage", "", "Per-leaf usage summary from the "
+    "command interaction ledger",
+    "Aggregates the content-free command-ledger records "
+    "(<datadir>/telemetry/command_ledger.ndjson + one rotated generation) over "
+    "the trailing window into per-leaf {calls,error_rate,p50_us,p99_us,"
+    "avg_output_bytes,budget_exceeded_count}, ranked by call count. p50/p99 are "
+    "sampled from the bounded tail scan; retention_gap flags a dropped older "
+    "generation and window_start_ms/window_end_ms report the span actually "
+    "covered.", 8192,
+    "usage,ledger,telemetry,latency,self-review",
+    "zcl.dev_usage_summary_input.v1", "zcl.cmd_ledger_summary.v1",
+    "window_s,leaf,top", "leaf",
+    "zclassic23 dev usage summary",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_usage_summary,
+    "command-ledger telemetry is available through the dev binary",
+    "zclassic23-dev dev usage summary")
+
+ZCL_COMMAND_DEV_READ(
+    "dev.usage.tail", "dev.usage", "", "Most recent command interaction "
+    "ledger records",
+    "Returns the most recent content-free command-ledger records (newest "
+    "first, optionally filtered to one leaf) as {ts_unix_ms,seq,leaf,transport,"
+    "input_bytes,output_bytes,budget_bytes,budget_exceeded,elapsed_us,budget_ms,"
+    "latency_class,ok,code,request_id}; carries only byte counts and typed "
+    "metadata, never input/output content. retention_gap flags a dropped older "
+    "generation.", 8192,
+    "usage,ledger,telemetry,recent,self-review",
+    "zcl.dev_usage_tail_input.v1", "zcl.cmd_ledger_tail.v1",
+    "n,leaf", "n",
+    "zclassic23 dev usage tail",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_usage_tail,
+    "command-ledger telemetry is available through the dev binary",
+    "zclassic23-dev dev usage tail")
