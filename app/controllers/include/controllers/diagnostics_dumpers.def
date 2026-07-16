@@ -173,6 +173,14 @@
                "lib/test/src/test_peer_lifecycle.c"),
     DIAG_LOCAL("network_monitor", network_monitor_dump_state_json,
                "reachable-network chain view: modal tip, max height, our delta, fork clusters"),
+    DIAG_SERVICE("network_census", network_crawler_dump_state_json,
+                 "whole-network observatory (opt-in crawler): enabled/running, "
+                 "addresses_known, census_rows, probed_last_round, reachable_count, "
+                 "onion/clearnet split, version histogram (top-N), height "
+                 "distribution (modal/max/min/spread), and a whole-network "
+                 "eclipse_suspected signal + evidence (our modal vs network modal)",
+                 "app/services/src/network_crawler.c",
+                 "lib/test/src/test_network_crawler.c"),
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",

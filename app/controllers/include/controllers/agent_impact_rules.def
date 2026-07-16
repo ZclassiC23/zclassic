@@ -332,6 +332,11 @@ AGENT_IMPACT_RULE("app/services/src/disk_monitor.c|app/services/include/services
  * command all share the network_monitor focused test group. */
 AGENT_IMPACT_RULE("app/services/src/network_monitor.c|app/services/include/services/network_monitor.h|app/models/src/peer_chain_observation.c|app/models/include/models/peer_chain_observation.h|app/conditions/src/net_tip_regression.c|app/conditions/include/conditions/net_tip_regression.h|app/conditions/src/net_fork_detected.c|app/conditions/include/conditions/net_fork_detected.h|app/conditions/src/net_partition_suspected.c|app/conditions/include/conditions/net_partition_suspected.h|config/src/boot_msg_callbacks.c|config/src/boot_network_monitor.c|config/include/config/boot_network_monitor.h|lib/test/src/test_network_monitor.c", "network_monitor condition_engine make_lint_gates")
 
+/* Whole-network observatory: the opt-in supervised crawler + its real dialer,
+ * the pure census fold, and the network_census dumper all share the
+ * network_crawler focused test group. */
+AGENT_IMPACT_RULE("app/services/src/network_crawler.c|app/services/src/network_crawler_probe.c|app/services/include/services/network_crawler.h|lib/test/src/test_network_crawler.c", "network_crawler syncdiag_rpc make_lint_gates")
+
 /* Unified transactional dev loop, status, indexing, and benchmark contracts. */
 AGENT_IMPACT_RULE("tools/dev/watch-dev-lane.sh|tools/dev/deploy-dev-lane.sh|tools/dev/deploy-dev-lane-selftest.sh|tools/dev/recover-dev-lane.sh|tools/dev/recover-dev-lane-selftest.sh|deploy/zcl23-dev.service", "syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/agent-dev-status.sh|tools/dev/agent-doctor.sh|app/controllers/src/agent_controller.c|tools/mcp/controllers/ops_controller.c", "syncdiag_rpc mcp_controllers make_lint_gates")
