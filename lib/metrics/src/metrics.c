@@ -5,6 +5,7 @@
 
 #include "metrics/metrics.h"
 #include "metrics/prometheus_metrics.h"
+#include "metrics/stage_metrics.h"
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "chain/chainparams.h"
@@ -405,6 +406,8 @@ static void *metrics_thread_fn(void *arg)
 
             metrics_prometheus_set_peer_kinds(ext.magicbean_peer_count,
                                        ext.zclassic_c23_peer_count);
+
+            metrics_stage_set_samples(ext.stage_cursor, ext.stage_step_us_ewma);
         }
 
         if (is_tty) {
