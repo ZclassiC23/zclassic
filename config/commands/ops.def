@@ -179,8 +179,14 @@ ZCL_COMMAND_READY_READ(
     "ops.debug.rom", "ops.debug", "ops.rom", "ROM compilation fold progress",
     "Live ROM-compile-fold telemetry (dumpstate rom_compile) read from THIS "
     "running node at call time — height/target/percent/rate/ETA, the eight "
-    "reducer stages' step_us_ewma, and the layer ladder; when no fold is "
-    "active this is the steady-state ladder, not an error.",
+    "reducer stages' step_us_ewma, the ROM pipeline rows (fold -> seal -> "
+    "manifest -> bundle export), and the layer ladder; when no fold is "
+    "active this is the steady-state ladder, not an error. CLI-only argv "
+    "inputs (intercepted before dispatch, not part of the machine JSON "
+    "contract): --watch redraws in place until interrupted, --once renders a "
+    "single frame, --interval=<secs> sets the poll cadence (clamped 1..60s), "
+    "and --datadir=<dir> renders a FOREIGN offline producer datadir read-only "
+    "(progress.kv + segments + mint-progress.log) instead of this node.",
     ZCL_COMMAND_LIST_BUDGET,
     "rom,compile,fold,progress,checkpoint,anchor,layers,ascii,mint",
     "zcl.command.empty_input.v1", "zcl.rom_compile.v1", "", "",

@@ -177,6 +177,71 @@ static void rcr_layer_ladder(const struct json_value *state, char *out,
     }
 }
 
+/* The ROM pipeline as first-class rows: fold -> seal -> manifest -> bundle
+ * export. This is the compile-and-publish spine (fold the chain, seal the
+ * bodies, verify the manifest, export a re-servable bundle), rendered above the
+ * raw layer ladder so the operator reads the pipeline stages at a glance. Reads
+ * the SAME fold / layers.sealed_history / layers.bundle_export the ladder reads;
+ * no second data path. A missing bundle_export renders 'absent' gracefully. */
+static void rcr_rom_pipeline(const struct json_value *state, char *out,
+                             size_t cap, size_t *len)
+{
+    const struct json_value *fold = json_get(state, "fold");
+    const struct json_value *layers = json_get(state, "layers");
+    const struct json_value *seal = layers ? json_get(layers, "sealed_history")
+                                           : NULL;
+    const struct json_value *bx = layers ? json_get(layers, "bundle_export")
+                                         : NULL;
+
+    rcr_append(out, cap, len,
+              "ROM pipeline (fold -> seal -> manifest -> bundle):\n");
+
+    {
+        int64_t height = fold ? json_get_int(json_get(fold, "height")) : 0;
+        int64_t target = fold ? json_get_int(json_get(fold, "target")) : 0;
+        double percent = fold ? json_get_real(json_get(fold, "percent")) : 0.0;
+        char detail[64];
+        snprintf(detail, sizeof(detail), "height=%lld/%lld (%.2f%%)",
+                (long long)height, (long long)target, percent);
+        rcr_ladder_row(out, cap, len, "fold", height > 0, detail);
+    }
+    {
+        bool present = seal && json_get_bool(json_get(seal, "present"));
+        int64_t sealed = seal ? json_get_int(json_get(seal, "present_count"))
+                              : 0;
+        int64_t total = seal ? json_get_int(json_get(seal, "segment_count"))
+                             : 0;
+        char detail[64];
+        snprintf(detail, sizeof(detail), "%lld/%lld segments sealed",
+                (long long)sealed, (long long)total);
+        rcr_ladder_row(out, cap, len, "seal", present, detail);
+    }
+    {
+        int64_t verified = seal ? json_get_int(json_get(seal, "verified_count"))
+                               : 0;
+        int64_t total = seal ? json_get_int(json_get(seal, "segment_count"))
+                             : 0;
+        char detail[64];
+        snprintf(detail, sizeof(detail), "verified=%lld/%lld",
+                (long long)verified, (long long)total);
+        rcr_ladder_row(out, cap, len, "manifest", verified > 0, detail);
+    }
+    {
+        bool present = bx && json_get_bool(json_get(bx, "present"));
+        char detail[80];
+        if (present)
+            snprintf(detail, sizeof(detail), "last_height=%lld generations=%lld",
+                    (long long)json_get_int(json_get(bx, "last_height")),
+                    (long long)json_get_int(json_get(bx, "generations")));
+        else if (bx && json_get_str(json_get(bx, "note")))
+            snprintf(detail, sizeof(detail), "absent (%s)",
+                    json_get_str(json_get(bx, "note")));
+        else
+            snprintf(detail, sizeof(detail), "absent");
+        rcr_ladder_row(out, cap, len, "bundle export", present, detail);
+    }
+}
+
 void rom_compile_render_ascii(const struct json_value *state, char *out,
                               size_t cap)
 {
@@ -195,5 +260,6 @@ void rom_compile_render_ascii(const struct json_value *state, char *out,
     else
         rcr_append(out, cap, &len, "ROM compile — no fold section\n");
     rcr_stage_bars(state, out, cap, &len);
+    rcr_rom_pipeline(state, out, cap, &len);
     rcr_layer_ladder(state, out, cap, &len);
 }

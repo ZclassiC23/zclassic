@@ -32,6 +32,7 @@
 #include "jobs/tip_finalize_stage.h"
 
 #include "util/supervisor.h"
+#include "supervisors/domains.h"
 #include "util/thread_registry.h"
 #include "util/clientversion.h"
 #include "util/log_macros.h"
@@ -536,7 +537,9 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
         atomic_store(&g_bx_contract.period_secs, 0);
         atomic_store(&g_bx_contract.deadline_secs, 0);
         atomic_store(&g_bx_contract.progress_max_quiet_us, 0);
-        supervisor_child_id id = supervisor_register(&g_bx_contract);
+        supervisor_domains_init();
+        supervisor_child_id id =
+            supervisor_register_in_domain(g_op_sup, &g_bx_contract);
         atomic_store(&g_bx_supervisor_id, id);
         if (id != SUPERVISOR_INVALID_ID)
             supervisor_tick(id);

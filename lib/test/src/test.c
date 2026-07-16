@@ -1462,6 +1462,8 @@ int main(int argc, char **argv)
     failures += test_refold_cadence();
     { extern int test_rom_compile_status(void);
       failures += test_rom_compile_status(); }
+    { extern int test_rom_watch_loop(void);
+      failures += test_rom_watch_loop(); }
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
     { extern int test_snapshot_boot_seed(void);

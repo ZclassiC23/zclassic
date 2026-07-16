@@ -180,6 +180,7 @@ static void build_fixture(struct json_value *out)
         json_push_kv_bool(&l, "present", true);
         json_push_kv_int(&l, "segment_count", 12);
         json_push_kv_int(&l, "present_count", 12);
+        json_push_kv_int(&l, "verified_count", 11);
         json_push_kv_int(&l, "min_height", 0);
         json_push_kv_int(&l, "max_height", 2199000);
         json_push_kv(&layers, "sealed_history", &l); json_free(&l);
@@ -205,6 +206,14 @@ static void build_fixture(struct json_value *out)
         json_push_kv_int(&l, "hstar", 2200000);
         json_push_kv_int(&l, "external_tip_height", 2200000);
         json_push_kv(&layers, "tip_ring", &l); json_free(&l);
+    }
+    {
+        struct json_value l;
+        json_init(&l); json_set_object(&l);
+        json_push_kv_bool(&l, "present", true);
+        json_push_kv_int(&l, "last_height", 2199999);
+        json_push_kv_int(&l, "generations", 3);
+        json_push_kv(&layers, "bundle_export", &l); json_free(&l);
     }
     json_push_kv(out, "layers", &layers);
     json_free(&layers);
@@ -271,6 +280,67 @@ static int test_rom_compile_render_idle_fixture(void)
     return failures;
 }
 
+static int test_rom_compile_render_pipeline_rows(void)
+{
+    int failures = 0;
+
+    TEST("rom_compile render: the ROM pipeline promotes fold/seal/manifest/"
+         "bundle to first-class rows") {
+        struct json_value fixture;
+        build_fixture(&fixture);
+
+        char text[8192];
+        rom_compile_render_ascii(&fixture, text, sizeof(text));
+
+        ASSERT(strstr(text,
+                     "ROM pipeline (fold -> seal -> manifest -> bundle):")
+               != NULL);
+        /* fold present (height 2200000), seal present (12 segments),
+         * manifest present (verified 11), bundle export present (last 2199999,
+         * 3 generations). */
+        ASSERT(strstr(text, "[#] fold") != NULL);
+        ASSERT(strstr(text, "height=2200000/3056758") != NULL);
+        ASSERT(strstr(text, "[#] seal") != NULL);
+        ASSERT(strstr(text, "12/12 segments sealed") != NULL);
+        ASSERT(strstr(text, "[#] manifest") != NULL);
+        ASSERT(strstr(text, "verified=11/12") != NULL);
+        ASSERT(strstr(text, "[#] bundle export") != NULL);
+        ASSERT(strstr(text, "last_height=2199999 generations=3") != NULL);
+
+        json_free(&fixture);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_rom_compile_render_bundle_absent(void)
+{
+    int failures = 0;
+
+    TEST("rom_compile render: an absent bundle_export renders 'absent' "
+         "gracefully, never a crash") {
+        struct json_value fixture;
+        build_fixture(&fixture);
+        /* Flip the bundle_export layer to not-present (no export yet). */
+        struct json_value *layers =
+            (struct json_value *)json_get(&fixture, "layers");
+        struct json_value *bx =
+            (struct json_value *)json_get(layers, "bundle_export");
+        json_set_bool((struct json_value *)json_get(bx, "present"), false);
+
+        char text[8192];
+        rom_compile_render_ascii(&fixture, text, sizeof(text));
+        ASSERT(strstr(text, "[ ] bundle export") != NULL);
+        ASSERT(strstr(text, "absent") != NULL);
+
+        json_free(&fixture);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_rom_compile_render_null_state(void)
 {
     int failures = 0;
@@ -293,6 +363,8 @@ int test_rom_compile_status(void)
     failures += test_rom_compile_dump_active_mode();
     failures += test_rom_compile_render_active_fixture();
     failures += test_rom_compile_render_idle_fixture();
+    failures += test_rom_compile_render_pipeline_rows();
+    failures += test_rom_compile_render_bundle_absent();
     failures += test_rom_compile_render_null_state();
     return failures;
 }
