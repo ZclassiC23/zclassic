@@ -23,6 +23,8 @@
 
 #include <stdio.h>
 
+#include "util/log_level.h"
+
 /* Malformed inputs are the expected hot path in fuzz binaries. Keep the
  * LOG_* return/control-flow contracts, but do not let millions of expected
  * rejects backpressure libFuzzer through stderr. A variadic function call
@@ -34,37 +36,53 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 {
     (void)fmt;
 }
-#define ZCL_LOG_EMIT(...) zcl_fuzz_discard_log(__VA_ARGS__)
+#define ZCL_LOG_RAW(...) zcl_fuzz_discard_log(__VA_ARGS__)
 #else
-#define ZCL_LOG_EMIT(...) ((void)fprintf(stderr, __VA_ARGS__))
+#define ZCL_LOG_RAW(...) ((void)fprintf(stderr, __VA_ARGS__))
 #endif
+
+/* Opt-in level gate (see util/log_level.h): the calling macro passes its
+ * own level STRUCTURALLY (ZCL_LOG_ERROR, ZCL_LOG_WARN, ...) — nothing here
+ * parses the rendered text. Default level is ZCL_LOG_ALL, so `level >=
+ * zcl_log_level_get()` is true for every call site until -loglevel=
+ * raises the floor: zero behavior change unless the flag is passed. A
+ * suppressed line skips the fprintf entirely (and its vararg formatting
+ * cost), same as the fuzz-quiet path above. */
+#define ZCL_LOG_EMIT_AT(level, ...) do { \
+    if ((level) >= zcl_log_level_get()) \
+        ZCL_LOG_RAW(__VA_ARGS__); \
+} while (0)
+
+/* Back-compat alias: the historical unconditional-emit name, kept at
+ * ZCL_LOG_ERROR rank (the LOG_FAIL/LOG_ERR/LOG_NULL/GUARD* rank below). */
+#define ZCL_LOG_EMIT(...) ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, __VA_ARGS__)
 
 /* ── Core: log context + return ──────────────────────────────────── */
 
 /* Log error and return false. Use in functions returning bool. */
 #define LOG_FAIL(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return false; \
 } while (0)
 
 /* Log error and return -1. Use in MCP handlers / int-returning funcs. */
 #define LOG_ERR(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return -1; \
 } while (0)
 
 /* Log error and return NULL. Use in pointer-returning functions. */
 #define LOG_NULL(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return NULL; \
 } while (0)
 
 /* Log error and return a custom value. */
 #define LOG_RETURN(val, domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return (val); \
 } while (0)
@@ -88,13 +106,13 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 
 /* Log a warning and continue (no return). */
 #define LOG_WARN(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] WARN: %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[%s] WARN: %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
 /* Log an informational line and continue (no return). */
 #define LOG_INFO(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT("[%s] INFO %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_INFO, "[%s] INFO %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
@@ -103,7 +121,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Guard: if condition is false, log and return false. */
 #define GUARD(cond, domain, fmt, ...) do { \
     if (!(cond)) { \
-        ZCL_LOG_EMIT("[%s] %s:%d %s(): GUARD FAILED: " fmt "\n", \
+        ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): GUARD FAILED: " fmt "\n", \
                 (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
         return false; \
     } \
@@ -112,7 +130,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Guard: if pointer is NULL, log and return false. */
 #define GUARD_NOT_NULL(ptr, domain, label) do { \
     if (!(ptr)) { \
-        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return false; \
     } \
@@ -121,7 +139,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Guard: if pointer is NULL, log and return NULL. */
 #define GUARD_NOT_NULL_RET_NULL(ptr, domain, label) do { \
     if (!(ptr)) { \
-        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return NULL; \
     } \
@@ -130,7 +148,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Guard: if pointer is NULL, log and return -1. */
 #define GUARD_NOT_NULL_ERR(ptr, domain, label) do { \
     if (!(ptr)) { \
-        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return -1; \
     } \
