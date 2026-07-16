@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "platform/os_sandbox.h"
+#include "util/command_ledger.h"
 #include "util/thread_registry.h"
 #include "controllers/agent_copy_prove_controller.h"
 #include "controllers/agent_test_controller.h"

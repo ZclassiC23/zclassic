@@ -21,6 +21,7 @@
 
 #include "config/boot.h"
 #include "hotswap/hotswap_module.h"
+#include "util/command_ledger.h"
 #include "rpc/client.h"
 #include "rpc/protocol.h"
 #include "net/file_service.h"
@@ -3622,6 +3623,10 @@ int main(int argc, char **argv)
     }
 
     printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
+    /* Phase D: install the command interaction ledger so in-process dispatches
+     * (in-process MCP, the future REST server) append to the same durable
+     * flight recorder the fresh-process CLI writes. */
+    (void)command_ledger_install(ctx.datadir);
     rpc_agent_set_boot_context(app_operator_lane_name(ctx.operator_lane),
                                app_runtime_profile_name(ctx.runtime_profile),
                                ctx.datadir, ctx.rpc_port, ctx.p2p_port,

@@ -28,6 +28,7 @@
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "platform/time_compat.h"
+#include "util/command_ledger.h"
 #include "util/safe_alloc.h"
 #include "util/boot_status.h"
 #include "controllers/native_handler_body.h"
@@ -2548,6 +2549,9 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     (void)snprintf(g_bridge_datadir, sizeof(g_bridge_datadir), "%s",
                    datadir ? datadir : "");
     g_bridge_rpc_port = rpc_port;
+    /* Phase D: every fresh-process CLI dispatch appends one content-free record
+     * to <datadir>/telemetry/command_ledger.ndjson (installs the sink). */
+    (void)command_ledger_install(datadir);
 
     const struct zcl_command_registry *reg = catalog();
     char why[128];

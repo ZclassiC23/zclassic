@@ -3,6 +3,7 @@
 #include "kernel/command_registry.h"
 
 #include "crypto/sha256.h"
+#include "platform/clock.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -16,6 +17,23 @@
 static bool command_is_branch(const struct zcl_command_spec *spec);
 
 static _Atomic uint64_t g_request_sequence = 1;
+
+/* ── Command interaction ledger + durable latency source (Phase D) ───────────
+ * Registered function pointers only — the kernel never learns how the ledger is
+ * stored (util/command_ledger owns that). A NULL sink is the zero-overhead fast
+ * path (one acquire-load + NULL check per dispatch). */
+static _Atomic(zcl_command_ledger_sink_fn) g_ledger_sink = NULL;
+static _Atomic(zcl_command_latency_source_fn) g_latency_source = NULL;
+
+void zcl_command_registry_set_ledger_sink(zcl_command_ledger_sink_fn fn)
+{
+    atomic_store_explicit(&g_ledger_sink, fn, memory_order_release);
+}
+
+void zcl_command_registry_set_latency_source(zcl_command_latency_source_fn fn)
+{
+    atomic_store_explicit(&g_latency_source, fn, memory_order_release);
+}
 
 /* ── Per-leaf latency ring (OS-B2) ───────────────────────────────────────
  * A small in-process ring of the last ZCL_COMMAND_LATENCY_RING_CAP dispatch
@@ -897,9 +915,16 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         } else if (strcmp(key, "max_lines") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1000;
-        } else if (strcmp(key, "since_secs") == 0) {
+        } else if (strcmp(key, "since_secs") == 0 ||
+                   strcmp(key, "window_s") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 31536000;
+        } else if (strcmp(key, "top") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 50;
+        } else if (strcmp(key, "n") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 200;
         } else if (strcmp(key, "limit") == 0 || strcmp(key, "depth") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1000000;
@@ -1154,11 +1179,30 @@ size_t zcl_command_registry_describe_json(
     json_set_object(&root);
     json_set_object(&input);
     json_set_object(&policy);
-    /* OS-B2: measured latency for this leaf (process-lifetime; empty on a fresh
-     * CLI process — see the ring's PROCESS-LIFETIME CAVEAT). */
+    /* OS-B2: measured latency for this leaf. Prefer the durable command-ledger
+     * source when one is registered (Phase D: cross-process history that
+     * survives a fresh CLI process), falling back to the in-process ring
+     * (process-lifetime; empty on a fresh CLI process — see the ring's
+     * PROCESS-LIFETIME CAVEAT). `observed_source` names which one answered. */
     int64_t observed_p99_us = 0;
     uint32_t observed_samples = 0;
-    (void)latency_ring_p99(registry, spec, &observed_p99_us, &observed_samples);
+    const char *observed_source = "process_ring";
+    zcl_command_latency_source_fn latency_source =
+        atomic_load_explicit(&g_latency_source, memory_order_acquire);
+    bool observed_from_source = false;
+    if (latency_source) {
+        int64_t src_p99 = 0;
+        uint32_t src_n = 0;
+        if (latency_source(spec->path, 0, &src_p99, &src_n) && src_n > 0) {
+            observed_p99_us = src_p99;
+            observed_samples = src_n;
+            observed_source = "durable_ledger";
+            observed_from_source = true;
+        }
+    }
+    if (!observed_from_source)
+        (void)latency_ring_p99(registry, spec, &observed_p99_us,
+                               &observed_samples);
     bool ok = json_push_kv_str(&root, "schema", "zcl.command_spec.v1") &&
               json_push_kv_str(&root, "path", spec->path) &&
               json_push_kv_str(&root, "summary", spec->summary) &&
@@ -1211,6 +1255,7 @@ size_t zcl_command_registry_describe_json(
          json_push_kv_int(&policy, "observed_p99_us", observed_p99_us) &&
          json_push_kv_int(&policy, "observed_samples",
                           (int64_t)observed_samples) &&
+         json_push_kv_str(&policy, "observed_source", observed_source) &&
          json_push_kv(&root, "policy", &policy) &&
          json_push_kv_str(&root, "example", spec->example);
     if (spec->aliases && spec->aliases[0])
@@ -1754,6 +1799,53 @@ size_t zcl_command_registry_execute_json(
     }
     if (exit_code)
         *exit_code = reply.exit_code;
+
+    /* Phase D: hand this dispatch to the command interaction ledger sink, if
+     * one is registered. Built AFTER serialize_reply so output_bytes is the
+     * final rendered length (fallback included). CONTENT-FREE: input_bytes is a
+     * measured size (the scratch json_write is discarded, never stored), never
+     * the input content. A NULL sink is the zero-overhead fast path. */
+    zcl_command_ledger_sink_fn ledger_sink =
+        atomic_load_explicit(&g_ledger_sink, memory_order_acquire);
+    if (ledger_sink) {
+        bool ledger_ok = reply.status == ZCL_COMMAND_STATUS_PASSED ||
+                         reply.status == ZCL_COMMAND_STATUS_ACCEPTED;
+        int64_t budget_ms = zcl_command_latency_budget_ms(spec->latency);
+        /* Effective response byte budget: mirror serialize_reply's contract. */
+        size_t contract = ledger_ok
+                              ? (spec->budget_bytes > 0
+                                     ? (size_t)spec->budget_bytes
+                                     : ZCL_COMMAND_RESULT_BUDGET)
+                              : ZCL_COMMAND_ERROR_BUDGET;
+        if (budget_bytes > 0 && budget_bytes < contract)
+            contract = budget_bytes;
+        /* Bounded, discarded scratch — measures the request size only. */
+        char input_scratch[ZCL_COMMAND_MAX_INPUT];
+        size_t input_written = json_write(input, input_scratch,
+                                          sizeof(input_scratch));
+        if (input_written > sizeof(input_scratch))
+            input_written = sizeof(input_scratch);
+        struct zcl_command_ledger_record record;
+        memset(&record, 0, sizeof(record));
+        record.ts_unix_ms = clock_now_wall_ms();
+        record.seq = sequence;
+        record.leaf = spec->path;
+        record.transport = context ? context->transport : ZCL_CMD_TRANSPORT_NATIVE;
+        record.input_bytes = (int64_t)input_written;
+        record.output_bytes = (int64_t)result;
+        record.budget_bytes = (int64_t)contract;
+        record.budget_exceeded = elapsed_us > budget_ms * 1000;
+        record.elapsed_us = elapsed_us < 0 ? 0 : elapsed_us;
+        record.budget_ms = budget_ms;
+        record.latency_class = spec->latency;
+        record.ok = ledger_ok;
+        (void)snprintf(record.code, sizeof(record.code), "%s",
+                       reply.error.code);
+        (void)snprintf(record.request_id, sizeof(record.request_id),
+                       "local-%016llx", (unsigned long long)sequence);
+        ledger_sink(&record);
+    }
+
     /* Release the override snapshot ref (NULL-safe) now the handler has run. */
     handler_snapshot_release(held);
     zcl_command_reply_free(&reply);
