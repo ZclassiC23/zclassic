@@ -531,6 +531,42 @@ bool nullifier_kv_table_exists(sqlite3 *db)
     return found;
 }
 
+bool nullifier_kv_row_count(sqlite3 *db, int pool, int64_t *count_out)
+{
+    if (count_out) *count_out = 0;
+    if (!db ||
+        (pool != NULLIFIER_POOL_SPROUT && pool != NULLIFIER_POOL_SAPLING) ||
+        !count_out) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] row_count: invalid args");
+        return false;
+    }
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT COUNT(*) FROM nullifiers WHERE pool=?",
+        -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] row_count prepare: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = true;
+    if (sqlite3_bind_int(s, 1, pool) != SQLITE_OK) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] row_count bind: %s",
+                 sqlite3_errmsg(db));
+        ok = false;
+    } else {
+        int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+        if (rc == SQLITE_ROW) {
+            *count_out = sqlite3_column_int64(s, 0);
+        } else {
+            LOG_WARN("nullifier_kv", "[nullifier_kv] row_count step rc=%d: %s",
+                     rc, sqlite3_errmsg(db));
+            ok = false;
+        }
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
 bool nullifier_kv_get(sqlite3 *db, const uint8_t nf[32], int pool,
                       bool *found, int64_t *height_out)
 {

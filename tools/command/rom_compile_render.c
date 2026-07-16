@@ -242,6 +242,62 @@ static void rcr_rom_pipeline(const struct json_value *state, char *out,
     }
 }
 
+/* shielded_import section (app/jobs/src/rom_compile_status.c): makes the
+ * -import-complete-shielded import -> resume transition visible in the
+ * human ops.rom view, not just the JSON. A healthy node (no gap on either
+ * pool) gets one compact line; a node still behind an anchor or nullifier
+ * backfill gap gets the per-pool cursor/blocker/imported-count detail so an
+ * operator can see the cure land without a log-grep. */
+static void rcr_shielded_import(const struct json_value *state, char *out,
+                                size_t cap, size_t *len)
+{
+    const struct json_value *si = json_get(state, "shielded_import");
+    if (!si || si->type != JSON_OBJ)
+        return;
+
+    const char *status = json_get_str(json_get(si, "status"));
+    int64_t next_h = json_get_int(json_get(si, "utxo_apply_next_height"));
+    rcr_append(out, cap, len,
+              "shielded history: %s (utxo_apply resumes from height=%lld)\n",
+              status && status[0] ? status : "unknown", (long long)next_h);
+
+    const struct json_value *anchor = json_get(si, "anchor");
+    const struct json_value *nf = json_get(si, "nullifier");
+    bool anchor_gap = anchor && json_get_bool(json_get(anchor, "gap"));
+    bool nf_gap = nf && json_get_bool(json_get(nf, "gap"));
+    if (!anchor_gap && !nf_gap)
+        return;  /* healthy node: the one-line status above is enough */
+
+    if (anchor) {
+        rcr_append(out, cap, len,
+                  "  anchor:    sprout_cursor=%lld sapling_cursor=%lld "
+                  "gap_blocker=%s imported(sprout=%lld sapling=%lld)\n",
+                  (long long)json_get_int(
+                      json_get(anchor, "sprout_activation_cursor")),
+                  (long long)json_get_int(
+                      json_get(anchor, "sapling_activation_cursor")),
+                  json_get_bool(json_get(anchor, "gap_blocker_active"))
+                      ? "active" : "clear",
+                  (long long)json_get_int(
+                      json_get(anchor, "sprout_anchors_imported")),
+                  (long long)json_get_int(
+                      json_get(anchor, "sapling_anchors_imported")));
+    }
+    if (nf) {
+        rcr_append(out, cap, len,
+                  "  nullifier: activation_cursor=%lld gap_blocker=%s "
+                  "imported(sprout=%lld sapling=%lld)\n",
+                  (long long)json_get_int(
+                      json_get(nf, "activation_cursor")),
+                  json_get_bool(json_get(nf, "gap_blocker_active"))
+                      ? "active" : "clear",
+                  (long long)json_get_int(
+                      json_get(nf, "sprout_nullifiers_imported")),
+                  (long long)json_get_int(
+                      json_get(nf, "sapling_nullifiers_imported")));
+    }
+}
+
 void rom_compile_render_ascii(const struct json_value *state, char *out,
                               size_t cap)
 {
@@ -262,4 +318,5 @@ void rom_compile_render_ascii(const struct json_value *state, char *out,
     rcr_stage_bars(state, out, cap, &len);
     rcr_rom_pipeline(state, out, cap, &len);
     rcr_layer_ladder(state, out, cap, &len);
+    rcr_shielded_import(state, out, cap, &len);
 }
