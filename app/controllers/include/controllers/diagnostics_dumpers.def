@@ -136,8 +136,13 @@
     DIAG_JOB("rom_compile", rom_compile_status_dump_state_json,
              "ROM compilation fold progress: active/mode/height/target/percent/"
              "rate_blk_s/eta, the eight reducer stages' live step_us_ewma with "
-             "bottleneck_stage, and the layer ladder (rom_checkpoint/"
-             "sealed_history/sealed_base_receipt/delta/tip_ring). Idle-node-safe: "
+             "bottleneck_stage, the layer ladder (rom_checkpoint/"
+             "sealed_history/sealed_base_receipt/delta/tip_ring), and "
+             "shielded_import (anchor+nullifier activation cursors, "
+             "utxo_apply.{anchor,nullifier}_backfill_gap blocker state, "
+             "durable imported anchor/nullifier row counts, and "
+             "utxo_apply_next_height so the -import-complete-shielded "
+             "import->resume transition is observable). Idle-node-safe: "
              "when no fold is active this reports the steady-state ladder, not "
              "an error",
              "app/jobs/src/rom_compile_status.c",

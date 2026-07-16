@@ -16,14 +16,19 @@
 #include "jobs/script_validate_stage.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/tip_finalize_stage.h"
 #include "util/stage.h"
 #include "controllers/chain_segment_controller.h"
 #include "services/seal_service.h"
 #include "config/bundle_exporter.h"
 #include "storage/progress_store.h"
+#include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "chain/checkpoints.h"
 #include "json/json.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "core/utiltime.h"
 #include "platform/time_compat.h"
@@ -313,6 +318,112 @@ static void push_layers(struct json_value *out)
     json_free(&layers);
 }
 
+/* ── shielded-history import -> resume transition telemetry ──────────────
+ *
+ * Makes the shielded_history_import_service.c (-import-complete-shielded)
+ * cure OBSERVABLE end to end: both activation cursors, whether the standing
+ * gap blockers (utxo_apply.anchor_backfill_gap / .nullifier_backfill_gap)
+ * are still latched, the durable row counts a completed import actually
+ * wrote (anchor_kv/nullifier_kv — otherwise the -import-complete-shielded
+ * run's counts are lost to stdout the moment that one-shot process exits),
+ * and the reducer's own resume cursor (utxo_apply_stage_cursor — the SAME
+ * live counter fold.height already derives from) so "is it actually
+ * recovering?" is a `dumpstate rom_compile` / `ops.rom` read, not a
+ * log-grep. Read-only: one best-effort progress.kv snapshot under a
+ * NON-BLOCKING trylock (same "diagnostics are observational, never queue
+ * behind the reducer" contract as reducer_frontier_dump_state_json) — a
+ * busy store reports itself busy rather than blocking the caller. */
+static void push_shielded_import(struct json_value *out)
+{
+    struct json_value si;
+    json_init(&si);
+    json_set_object(&si);
+
+    bool anchor_gap_blocker = blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+    bool nf_gap_blocker = blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+
+    sqlite3 *db = progress_store_db();
+    json_push_kv_bool(&si, "progress_store_open", db != NULL);
+
+    bool snapshot_ok = false;
+    bool sprout_a_found = false, sapling_a_found = false, nf_found = false;
+    int64_t sprout_a_cursor = -1, sapling_a_cursor = -1, nf_cursor = -1;
+    int64_t sprout_a_count = 0, sapling_a_count = 0;
+    int64_t sprout_nf_count = 0, sapling_nf_count = 0;
+
+    if (db && progress_store_tx_trylock()) {
+        snapshot_ok =
+            anchor_kv_activation_cursor(db, ANCHOR_POOL_SPROUT,
+                                        &sprout_a_cursor, &sprout_a_found) &&
+            anchor_kv_activation_cursor(db, ANCHOR_POOL_SAPLING,
+                                        &sapling_a_cursor, &sapling_a_found) &&
+            nullifier_kv_activation_cursor(db, &nf_cursor, &nf_found) &&
+            anchor_kv_row_count(db, ANCHOR_POOL_SPROUT, &sprout_a_count) &&
+            anchor_kv_row_count(db, ANCHOR_POOL_SAPLING, &sapling_a_count) &&
+            nullifier_kv_row_count(db, NULLIFIER_POOL_SPROUT,
+                                   &sprout_nf_count) &&
+            nullifier_kv_row_count(db, NULLIFIER_POOL_SAPLING,
+                                   &sapling_nf_count);
+        progress_store_tx_unlock();
+    }
+    json_push_kv_bool(&si, "snapshot_complete", snapshot_ok);
+    json_push_kv_str(&si, "snapshot_status",
+                     !db ? "progress_store_closed"
+                         : snapshot_ok ? "available"
+                                       : "progress_store_busy_or_error");
+
+    bool anchor_cursor_known = sprout_a_found && sapling_a_found;
+    bool anchor_gap = !snapshot_ok || !anchor_cursor_known ||
+                      sprout_a_cursor > 0 || sapling_a_cursor > 0 ||
+                      anchor_gap_blocker;
+    struct json_value anchor;
+    json_init(&anchor);
+    json_set_object(&anchor);
+    json_push_kv_bool(&anchor, "cursor_known", anchor_cursor_known);
+    json_push_kv_int(&anchor, "sprout_activation_cursor", sprout_a_cursor);
+    json_push_kv_int(&anchor, "sapling_activation_cursor", sapling_a_cursor);
+    json_push_kv_bool(&anchor, "gap_blocker_active", anchor_gap_blocker);
+    json_push_kv_bool(&anchor, "gap", anchor_gap);
+    json_push_kv_int(&anchor, "sprout_anchors_imported", sprout_a_count);
+    json_push_kv_int(&anchor, "sapling_anchors_imported", sapling_a_count);
+    json_push_kv(&si, "anchor", &anchor);
+    json_free(&anchor);
+
+    bool nf_gap = !snapshot_ok || !nf_found || nf_cursor > 0 || nf_gap_blocker;
+    struct json_value nf;
+    json_init(&nf);
+    json_set_object(&nf);
+    json_push_kv_bool(&nf, "cursor_known", nf_found);
+    json_push_kv_int(&nf, "activation_cursor", nf_cursor);
+    json_push_kv_bool(&nf, "gap_blocker_active", nf_gap_blocker);
+    json_push_kv_bool(&nf, "gap", nf_gap);
+    json_push_kv_int(&nf, "sprout_nullifiers_imported", sprout_nf_count);
+    json_push_kv_int(&nf, "sapling_nullifiers_imported", sapling_nf_count);
+    json_push_kv(&si, "nullifier", &nf);
+    json_free(&nf);
+
+    /* The SAME live cursor fold.height derives from (both gaps hold shielded
+     * spends behind this stage, jobs/utxo_apply_stage.h) — named here too so
+     * an operator reading only the shielded_import section still sees the
+     * resume height climbing without cross-referencing fold.height. */
+    json_push_kv_int(&si, "utxo_apply_next_height",
+                     (int64_t)utxo_apply_stage_cursor());
+
+    const char *status;
+    if (!snapshot_ok)
+        status = "unknown_snapshot_unavailable";
+    else if (anchor_gap)
+        status = "gap_anchor_backfill_pending";
+    else if (nf_gap)
+        status = "gap_nullifier_backfill_pending";
+    else
+        status = "complete";
+    json_push_kv_str(&si, "status", status);
+
+    json_push_kv(out, "shielded_import", &si);
+    json_free(&si);
+}
+
 bool rom_compile_status_dump_state_json(struct json_value *out,
                                         const char *key)
 {
@@ -379,5 +490,6 @@ bool rom_compile_status_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "commit_us_ewma", stage_batch_commit_us_ewma());
 
     push_layers(out);
+    push_shielded_import(out);
     return true;
 }

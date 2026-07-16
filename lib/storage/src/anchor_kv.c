@@ -610,6 +610,37 @@ bool anchor_kv_table_is_empty(sqlite3 *db, int pool, bool *empty_out)
     return ok;
 }
 
+bool anchor_kv_row_count(sqlite3 *db, int pool, int64_t *count_out)
+{
+    if (count_out) *count_out = 0;
+    if (!db || !anchor_pool_valid(pool) || !count_out) {
+        LOG_WARN(ANCHOR_SUBSYS, "row_count: invalid args");
+        return false;
+    }
+    char sql[96];
+    int n = snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s",
+                     anchor_table(pool));
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN(ANCHOR_SUBSYS, "row_count prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = true;
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *count_out = sqlite3_column_int64(s, 0);
+    } else {
+        LOG_WARN(ANCHOR_SUBSYS, "row_count step rc=%d: %s", rc,
+                 sqlite3_errmsg(db));
+        ok = false;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
 bool anchor_kv_seed_frontier_row(sqlite3 *db, int pool,
                                  const struct incremental_merkle_tree *tree,
                                  int64_t height,

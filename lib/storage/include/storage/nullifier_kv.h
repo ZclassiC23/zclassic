@@ -154,6 +154,14 @@ bool shielded_history_reset_to_boundary(struct sqlite3 *db,
  * table existence is never completeness evidence. */
 bool nullifier_kv_table_exists(struct sqlite3 *db);
 
+/* Durable row count of revealed nullifiers in `pool` (0=Sprout, 1=Sapling).
+ * Diagnostic-only: an operator/dumper's observable proof of HOW MANY
+ * historical nullifiers a completed import
+ * (shielded_history_import_service.c) or a from-genesis fold has actually
+ * written, independent of and cross-checkable against the activation
+ * cursor. Returns false on store error and leaves *count_out at 0. */
+bool nullifier_kv_row_count(struct sqlite3 *db, int pool, int64_t *count_out);
+
 /* Point-read one nullifier in one pool. Returns false only on a store error;
  * *found reports presence, *height_out (optional) the revealing height. */
 bool nullifier_kv_get(struct sqlite3 *db, const uint8_t nf[32], int pool,

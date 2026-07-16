@@ -100,6 +100,14 @@ bool anchor_kv_publish_full_replay_complete_in_tx(
  * (and leaves *empty_out false). */
 bool anchor_kv_table_is_empty(struct sqlite3 *db, int pool, bool *empty_out);
 
+/* Durable row count for `pool`'s anchor table (sprout_anchors / sapling_anchors).
+ * Diagnostic-only: an operator/dumper's observable proof of HOW MANY historical
+ * frontier roots a completed import (shielded_history_import_service.c) or a
+ * from-genesis fold has actually written, independent of and cross-checkable
+ * against the activation cursor. Returns false on store error and leaves
+ * *count_out at 0. */
+bool anchor_kv_row_count(struct sqlite3 *db, int pool, int64_t *count_out);
+
 /* Seed ONE frontier row for `pool` at `height`, but ONLY after verifying the
  * frontier's own computed root equals `expected_root` (the block's
  * hashFinalSaplingRoot / hashFinalSproutRoot at that height).  This is the

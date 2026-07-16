@@ -27,11 +27,17 @@ struct json_value;
  * THIS process — first call in a session reports rate=0/eta unknown), the
  * eight reducer stages' live step_us_ewma (bottleneck-highlighted), and the
  * layer ladder (ROM checkpoint / sealed segment history / sealed state-seal
- * ring / delta frontier / tip ring). When no fold is active (a normal node
- * at or past the anchor) this still returns a complete, non-error body:
- * fold.active=false, fold.percent clamped to 100, and the layer ladder
- * reflecting steady-state tip status. Read-only; never mutates progress.kv.
- * `key` is unused. */
+ * ring / delta frontier / tip ring), and a `shielded_import` section making
+ * the shielded_history_import_service.c (-import-complete-shielded) import
+ * -> resume transition observable: both activation cursors (anchor
+ * sprout/sapling + nullifier), whether the standing
+ * utxo_apply.{anchor,nullifier}_backfill_gap blockers are latched, the
+ * durable anchor_kv/nullifier_kv row counts a completed import actually
+ * wrote, and the reducer's own resume cursor (utxo_apply_next_height).
+ * When no fold is active (a normal node at or past the anchor) this still
+ * returns a complete, non-error body: fold.active=false, fold.percent
+ * clamped to 100, and the layer ladder reflecting steady-state tip status.
+ * Read-only; never mutates progress.kv. `key` is unused. */
 bool rom_compile_status_dump_state_json(struct json_value *out,
                                         const char *key);
 

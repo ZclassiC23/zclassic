@@ -15,11 +15,13 @@
 struct json_value;
 
 /* Renders a fold progress bar, a horizontal bar chart of the eight reducer
- * stages' step_us_ewma (the bottleneck stage marked), and the layer ladder
+ * stages' step_us_ewma (the bottleneck stage marked), the layer ladder
  * (ROM checkpoint / sealed history / sealed base+receipt / delta / tip ring)
- * as filled/empty blocks. Bounded to `cap` bytes, always NUL-terminated
- * (truncates cleanly, never overflows). A NULL/malformed `state` renders a
- * one-line diagnostic instead of crashing. */
+ * as filled/empty blocks, and a shielded_import line (status + resume
+ * height; per-pool cursor/blocker/imported-count detail only while a gap is
+ * open). Bounded to `cap` bytes, always NUL-terminated (truncates cleanly,
+ * never overflows). A NULL/malformed `state` renders a one-line diagnostic
+ * instead of crashing. */
 void rom_compile_render_ascii(const struct json_value *state, char *out,
                               size_t cap);
 

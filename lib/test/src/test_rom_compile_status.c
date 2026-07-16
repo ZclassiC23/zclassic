@@ -21,9 +21,18 @@
 
 #include "jobs/rom_compile_status.h"
 #include "jobs/refold_progress.h"
+#include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_nullifiers.h"
 #include "command/rom_compile_render.h"
+#include "core/uint256.h"
 #include "json/json.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
+#include "util/blocker.h"
 
+#include <sqlite3.h>
 #include <string.h>
 
 static int test_rom_compile_dump_idle_shape(void)
@@ -104,6 +113,155 @@ static int test_rom_compile_dump_active_mode(void)
         ASSERT_STR_EQ(json_get_str(json_get(fold, "mode")), "from_genesis");
         json_free(&out);
         refold_progress_test_set_cached(false);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static void rcs_leaf(struct uint256 *o, uint8_t seed)
+{
+    for (int i = 0; i < 32; i++) o->data[i] = (uint8_t)(seed + i * 7);
+}
+
+static void rcs_nf(uint8_t out[32], uint8_t tag)
+{
+    memset(out, 0, 32);
+    out[0] = tag;
+    out[1] = 0x52;
+    out[31] = 0x43;
+}
+
+/* Import -> resume telemetry, end to end against a REAL progress.kv: before
+ * a shielded-history import both activation cursors are positive, both gap
+ * blockers are latched, and imported counts are zero; after simulating the
+ * exact atomic transition shielded_history_import_from_chainstate performs
+ * (write rows, flip both markers to zero in one transaction, refresh both
+ * blockers) the dumper reports gap=false, the durable row counts the import
+ * actually wrote, and status=complete. This is the "is it actually
+ * recovering?" question the LANE exists to answer as a typed view. */
+static int test_rom_compile_dump_shielded_import_transition(void)
+{
+    int failures = 0;
+
+    TEST("rom_compile dump: shielded_import reflects the real import -> "
+         "resume transition") {
+        char dir[256];
+        progress_store_close();
+        test_make_tmpdir(dir, sizeof(dir), "rom_compile", "shielded_import");
+        bool opened = progress_store_open(dir);
+        ASSERT(opened);
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        blocker_reset_for_testing();
+
+        /* Pre-import: a snapshot/borrowed seed activated both pools above
+         * genesis — the wedge state utxo_apply.{anchor,nullifier}_backfill_gap
+         * names. */
+        const int64_t boundary = 50;
+        ASSERT(anchor_kv_initialize_history(db, boundary));
+        ASSERT(nullifier_kv_initialize_history(db, boundary));
+        utxo_apply_anchor_gap_blocker_refresh(db);
+        utxo_apply_nullifier_gap_blocker_refresh(db);
+
+        struct json_value pre;
+        json_init(&pre);
+        ASSERT(rom_compile_status_dump_state_json(&pre, NULL));
+        const struct json_value *si_pre = json_get(&pre, "shielded_import");
+        ASSERT(si_pre && si_pre->type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(si_pre, "progress_store_open")));
+        ASSERT(json_get_bool(json_get(si_pre, "snapshot_complete")));
+
+        const struct json_value *anchor_pre = json_get(si_pre, "anchor");
+        ASSERT(json_get_bool(json_get(anchor_pre, "cursor_known")));
+        ASSERT_EQ(json_get_int(json_get(anchor_pre, "sprout_activation_cursor")),
+                  boundary);
+        ASSERT_EQ(json_get_int(json_get(anchor_pre, "sapling_activation_cursor")),
+                  boundary);
+        ASSERT(json_get_bool(json_get(anchor_pre, "gap_blocker_active")));
+        ASSERT(json_get_bool(json_get(anchor_pre, "gap")));
+        ASSERT_EQ(json_get_int(json_get(anchor_pre, "sprout_anchors_imported")),
+                  (int64_t)0);
+        ASSERT_EQ(json_get_int(json_get(anchor_pre, "sapling_anchors_imported")),
+                  (int64_t)0);
+
+        const struct json_value *nf_pre = json_get(si_pre, "nullifier");
+        ASSERT(json_get_bool(json_get(nf_pre, "cursor_known")));
+        ASSERT_EQ(json_get_int(json_get(nf_pre, "activation_cursor")), boundary);
+        ASSERT(json_get_bool(json_get(nf_pre, "gap_blocker_active")));
+        ASSERT(json_get_bool(json_get(nf_pre, "gap")));
+
+        ASSERT_STR_EQ(json_get_str(json_get(si_pre, "status")),
+                     "gap_anchor_backfill_pending");
+        json_free(&pre);
+
+        /* Simulate the exact atomic cure: write the complete historical rows,
+         * then flip BOTH markers to zero in one transaction — the same
+         * sequence shielded_history_import_from_chainstate performs. */
+        struct incremental_merkle_tree spr_tree, sap_tree;
+        sprout_tree_init(&spr_tree);
+        sapling_tree_init(&sap_tree);
+        struct uint256 spr_leaf, sap_leaf;
+        rcs_leaf(&spr_leaf, 0x11);
+        rcs_leaf(&sap_leaf, 0x22);
+        incremental_tree_append(&spr_tree, &spr_leaf);
+        incremental_tree_append(&sap_tree, &sap_leaf);
+        ASSERT(anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &spr_tree, 10));
+        ASSERT(anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &sap_tree, 20));
+
+        uint8_t spr_nf[32], sap_nf[32];
+        rcs_nf(spr_nf, 0x01);
+        rcs_nf(sap_nf, 0x02);
+        ASSERT(nullifier_kv_add(db, spr_nf, NULLIFIER_POOL_SPROUT, 10));
+        ASSERT(nullifier_kv_add(db, sap_nf, NULLIFIER_POOL_SAPLING, 20));
+
+        char *err = NULL;
+        ASSERT(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err)
+               == SQLITE_OK);
+        ASSERT(anchor_kv_publish_full_replay_complete_in_tx(db, boundary));
+        ASSERT(nullifier_kv_publish_full_replay_complete_in_tx(db, boundary));
+        ASSERT(sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK);
+        utxo_apply_anchor_gap_blocker_refresh(db);
+        utxo_apply_nullifier_gap_blocker_refresh(db);
+
+        struct json_value post;
+        json_init(&post);
+        ASSERT(rom_compile_status_dump_state_json(&post, NULL));
+        const struct json_value *si_post = json_get(&post, "shielded_import");
+        ASSERT(si_post && si_post->type == JSON_OBJ);
+
+        const struct json_value *anchor_post = json_get(si_post, "anchor");
+        ASSERT_EQ(json_get_int(json_get(anchor_post, "sprout_activation_cursor")),
+                  (int64_t)0);
+        ASSERT_EQ(json_get_int(json_get(anchor_post, "sapling_activation_cursor")),
+                  (int64_t)0);
+        ASSERT(!json_get_bool(json_get(anchor_post, "gap_blocker_active")));
+        ASSERT(!json_get_bool(json_get(anchor_post, "gap")));
+        ASSERT_EQ(json_get_int(json_get(anchor_post, "sprout_anchors_imported")),
+                  (int64_t)1);
+        ASSERT_EQ(json_get_int(json_get(anchor_post, "sapling_anchors_imported")),
+                  (int64_t)1);
+
+        const struct json_value *nf_post = json_get(si_post, "nullifier");
+        ASSERT_EQ(json_get_int(json_get(nf_post, "activation_cursor")),
+                  (int64_t)0);
+        ASSERT(!json_get_bool(json_get(nf_post, "gap_blocker_active")));
+        ASSERT(!json_get_bool(json_get(nf_post, "gap")));
+        ASSERT_EQ(json_get_int(json_get(nf_post, "sprout_nullifiers_imported")),
+                  (int64_t)1);
+        ASSERT_EQ(json_get_int(json_get(nf_post, "sapling_nullifiers_imported")),
+                  (int64_t)1);
+
+        ASSERT_STR_EQ(json_get_str(json_get(si_post, "status")), "complete");
+        /* The resume cursor: utxo_apply hasn't run in this fixture, so it
+         * simply must be a well-formed non-negative height, honestly derived
+         * from the SAME live counter fold.height already reads. */
+        ASSERT(json_get_int(json_get(si_post, "utxo_apply_next_height")) >= 0);
+
+        json_free(&post);
+        blocker_reset_for_testing();
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
         PASS();
     } _test_next:;
 
@@ -217,6 +375,40 @@ static void build_fixture(struct json_value *out)
     }
     json_push_kv(out, "layers", &layers);
     json_free(&layers);
+
+    struct json_value si;
+    json_init(&si);
+    json_set_object(&si);
+    json_push_kv_bool(&si, "progress_store_open", true);
+    json_push_kv_bool(&si, "snapshot_complete", true);
+    json_push_kv_str(&si, "snapshot_status", "available");
+    {
+        struct json_value a;
+        json_init(&a); json_set_object(&a);
+        json_push_kv_bool(&a, "cursor_known", true);
+        json_push_kv_int(&a, "sprout_activation_cursor", 0);
+        json_push_kv_int(&a, "sapling_activation_cursor", 0);
+        json_push_kv_bool(&a, "gap_blocker_active", false);
+        json_push_kv_bool(&a, "gap", false);
+        json_push_kv_int(&a, "sprout_anchors_imported", 128);
+        json_push_kv_int(&a, "sapling_anchors_imported", 256);
+        json_push_kv(&si, "anchor", &a); json_free(&a);
+    }
+    {
+        struct json_value n;
+        json_init(&n); json_set_object(&n);
+        json_push_kv_bool(&n, "cursor_known", true);
+        json_push_kv_int(&n, "activation_cursor", 0);
+        json_push_kv_bool(&n, "gap_blocker_active", false);
+        json_push_kv_bool(&n, "gap", false);
+        json_push_kv_int(&n, "sprout_nullifiers_imported", 64);
+        json_push_kv_int(&n, "sapling_nullifiers_imported", 96);
+        json_push_kv(&si, "nullifier", &n); json_free(&n);
+    }
+    json_push_kv_int(&si, "utxo_apply_next_height", 2200001);
+    json_push_kv_str(&si, "status", "complete");
+    json_push_kv(out, "shielded_import", &si);
+    json_free(&si);
 }
 
 static int test_rom_compile_render_active_fixture(void)
@@ -356,15 +548,97 @@ static int test_rom_compile_render_null_state(void)
     return failures;
 }
 
+static int test_rom_compile_render_shielded_import_healthy(void)
+{
+    int failures = 0;
+
+    TEST("rom_compile render: healthy shielded_import (no gap) renders one "
+         "compact status line, no per-pool noise") {
+        struct json_value fixture;
+        build_fixture(&fixture);
+
+        char text[8192];
+        rom_compile_render_ascii(&fixture, text, sizeof(text));
+
+        ASSERT(strstr(text,
+                     "shielded history: complete (utxo_apply resumes from "
+                     "height=2200001)") != NULL);
+        ASSERT(strstr(text, "anchor:") == NULL);
+        ASSERT(strstr(text, "nullifier:") == NULL);
+
+        json_free(&fixture);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_rom_compile_render_shielded_import_gap(void)
+{
+    int failures = 0;
+
+    TEST("rom_compile render: a standing anchor/nullifier gap surfaces the "
+         "per-pool cursor/blocker/imported-count detail") {
+        struct json_value fixture;
+        build_fixture(&fixture);
+        struct json_value *si =
+            (struct json_value *)json_get(&fixture, "shielded_import");
+        json_set_str((struct json_value *)json_get(si, "status"),
+                    "gap_anchor_backfill_pending");
+        struct json_value *anchor =
+            (struct json_value *)json_get(si, "anchor");
+        json_set_bool((struct json_value *)json_get(anchor, "gap"), true);
+        json_set_bool(
+            (struct json_value *)json_get(anchor, "gap_blocker_active"), true);
+        json_set_int(
+            (struct json_value *)json_get(anchor, "sprout_activation_cursor"),
+            3050000);
+        json_set_int(
+            (struct json_value *)json_get(anchor, "sapling_activation_cursor"),
+            3050000);
+        json_set_int(
+            (struct json_value *)json_get(anchor, "sprout_anchors_imported"),
+            0);
+        json_set_int(
+            (struct json_value *)json_get(anchor, "sapling_anchors_imported"),
+            0);
+
+        char text[8192];
+        rom_compile_render_ascii(&fixture, text, sizeof(text));
+
+        ASSERT(strstr(text, "shielded history: gap_anchor_backfill_pending")
+               != NULL);
+        ASSERT(strstr(text,
+                     "anchor:    sprout_cursor=3050000 "
+                     "sapling_cursor=3050000 gap_blocker=active "
+                     "imported(sprout=0 sapling=0)") != NULL);
+        /* The nullifier pool in this fixture is still healthy — its detail
+         * line still renders because the SECTION gate is anchor_gap ||
+         * nullifier_gap, not per-pool; both pools get their own line so the
+         * operator can tell which one is still gated. */
+        ASSERT(strstr(text, "nullifier: activation_cursor=0 "
+                           "gap_blocker=clear imported(sprout=64 "
+                           "sapling=96)") != NULL);
+
+        json_free(&fixture);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_rom_compile_status(void)
 {
     int failures = 0;
     failures += test_rom_compile_dump_idle_shape();
     failures += test_rom_compile_dump_active_mode();
+    failures += test_rom_compile_dump_shielded_import_transition();
     failures += test_rom_compile_render_active_fixture();
     failures += test_rom_compile_render_idle_fixture();
     failures += test_rom_compile_render_pipeline_rows();
     failures += test_rom_compile_render_bundle_absent();
     failures += test_rom_compile_render_null_state();
+    failures += test_rom_compile_render_shielded_import_healthy();
+    failures += test_rom_compile_render_shielded_import_gap();
     return failures;
 }

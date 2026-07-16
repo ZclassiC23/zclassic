@@ -183,6 +183,25 @@ int test_nullifier_kv(void)
                  fs && hs == 100 && fz && hz == 200);
     }
 
+    /* nullifier_kv_row_count: the per-pool diagnostic count backing
+     * `dumpstate rom_compile`'s shielded_import.nullifier.*_imported —
+     * agrees with the combined nk_count() and reports each pool
+     * independently (the same (nf,pool) namespace separation above). */
+    {
+        int64_t sprout_n = -1, sapling_n = -1;
+        NK_CHECK("row_count sprout ok",
+                 nullifier_kv_row_count(db, NULLIFIER_POOL_SPROUT, &sprout_n));
+        NK_CHECK("row_count sapling ok",
+                 nullifier_kv_row_count(db, NULLIFIER_POOL_SAPLING,
+                                        &sapling_n));
+        NK_CHECK("row_count per-pool == 1 each", sprout_n == 1 &&
+                 sapling_n == 1);
+        NK_CHECK("row_count sum agrees with combined nk_count",
+                 sprout_n + sapling_n == nk_count(db));
+        NK_CHECK("row_count rejects an invalid pool",
+                 !nullifier_kv_row_count(db, 2, &sprout_n));
+    }
+
     /* INSERT OR REPLACE idempotence: re-adding the same (nf,pool) keeps ONE
      * row and takes the latest height. */
     NK_CHECK("re-add n1 sprout h=150",
