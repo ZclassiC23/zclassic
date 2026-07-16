@@ -339,7 +339,8 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
     }
     return boot_utxo_parity_register(svc) && boot_soak_attestation_register(svc) &&
            boot_canary_watch_register(svc) && /* parity + soak log + canary pager */
-           boot_utxo_mirror_sync_register(svc) && boot_mem_pressure_register(svc);
+           boot_utxo_mirror_sync_register(svc) && boot_mem_pressure_register(svc) &&
+           boot_supervisor_backstop_register(svc); /* Pillar 7 sweep-heartbeat watcher */
 }
 
 bool boot_running(const struct boot_svc_ctx *svc)

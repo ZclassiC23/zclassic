@@ -185,7 +185,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_advance_atomicity) \
     X(block_source_policy_status_json) \
     X(lag_slo) X(boot_phase) X(boot_status) X(sysinit) X(path_check) X(parse_num) X(boot_progress) X(supervisor) \
-    X(supervisor_domains) X(supervisor_production_tree) \
+    X(supervisor_domains) X(supervisor_production_tree) X(supervisor_backstop) \
     X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(sticky_conditions) X(sticky_escalator) X(mem_pressure) \
     X(validation_pack_conditions) \
