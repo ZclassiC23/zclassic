@@ -80,4 +80,34 @@ bool shielded_history_import_from_chainstate(
     const struct uint256 *expected_tip_sapling_root,
     struct shielded_import_report *out);
 
+struct node_db;
+
+/* Register the CURED coins tip (coins_applied_height - 1) as a cold-import
+ * TRUST anchor so Invariant A (utxo_recovery_block_ancestry_break) installs it
+ * into the in-memory active chain instead of refusing it as a detached island.
+ *
+ * WHY: clearing the shielded anchor/nullifier wedge lets utxo_apply resume, but
+ * the coins tip left by the transparent seed has a pprev height-tear between the
+ * compiled SHA3 anchor and it. Without a trust anchor at the tip, the boot
+ * restore's Invariant A gate refuses to install it, active_chain_tip() stays
+ * NULL, and process_headers builds a genesis-only getheaders locator — the tail
+ * bodies to network tip are never requested.
+ *
+ * The anchor identity is the import's OWN header-committed coins-best — height
+ * from progress.kv's co-committed coins_applied_height, hash from the
+ * validate_headers_log own-hash (the Invariant A trust root) via
+ * reducer_frontier_derive_coins_best — never a borrowed peer value (respects
+ * check-no-new-borrowed-seed). Registers the in-memory anchor (effective this
+ * process, e.g. the copy-prove harness / unit test) AND writes the DURABLE
+ * node_db seed keys the boot restore path re-reads every boot, so the coins tip
+ * installs on the next NORMAL boot after the owner-gated import mode exits.
+ *
+ * Call AFTER a successful shielded_history_import_from_chainstate, with the same
+ * progress_db (must be progress_store_db() so the durable count token reads the
+ * canonical store) and an open node_db for the target datadir. Best-effort:
+ * returns false (logs the reason) when coins-best is not yet derivable — it
+ * never undoes the committed import. */
+bool shielded_history_import_register_cured_tip_trust_anchor(
+    struct sqlite3 *progress_db, struct node_db *ndb);
+
 #endif /* ZCL_SERVICES_SHIELDED_HISTORY_IMPORT_SERVICE_H */
