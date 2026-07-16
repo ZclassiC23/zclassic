@@ -45,6 +45,7 @@
 #include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "services/shielded_history_import_service.h"
+#include "jobs/proof_validate_null_hash_rearm.h"
 #include "chain/chain.h"                  /* BLOCK_VALID_TRANSACTIONS: connected floor */
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
@@ -2777,6 +2778,38 @@ static int import_complete_shielded_mode(int argc, char **argv)
                     "one extra boot to install into the active chain.\n",
                     ndb_path);
         }
+    }
+
+    /* Re-arm proof_validate over the pre-2026-07-13 NULL-block_hash suffix so the
+     * post-cure fold is not wedged at utxo_apply's label_splice guard (which
+     * correctly refuses a hashless proof verdict). The rewind FLOOR is
+     * utxo_apply's own cursor (LCC-safe — never rewinds an already-applied
+     * height). Contained: a rewind beyond the recovery block-rollback cap
+     * (default 100) is REFUSED; raise ZCL_MAX_BLOCK_ROLLBACK past the reported
+     * depth after a copy proof. progress_store is still open here. */
+    if (ok) {
+        struct proof_validate_rearm_report rr;
+        memset(&rr, 0, sizeof(rr));
+        enum proof_validate_rearm_outcome ro =
+            proof_validate_null_hash_rearm(progress_store_db(), NULL, &rr);
+        if (ro == PV_REARM_REARMED) {
+            printf("proof_validate re-arm: rewound cursor %llu->%llu, deleted "
+                   "%lld NULL-block_hash rows; the next boot re-derives them.\n",
+                   (unsigned long long)rr.pv_cursor_before,
+                   (unsigned long long)rr.rewound_to, (long long)rr.deleted_rows);
+        } else if (ro == PV_REARM_REFUSED) {
+            fprintf(stderr,
+                    "WARNING: proof_validate re-arm REFUSED — rewinding to h=%d "
+                    "(%lld NULL-block_hash rows) exceeds the recovery "
+                    "block-rollback cap. Raise ZCL_MAX_BLOCK_ROLLBACK past it "
+                    "and re-run, else the post-cure fold wedges at utxo_apply.\n",
+                    rr.lowest_null_height, (long long)rr.null_row_count);
+        } else if (ro == PV_REARM_ERROR) {
+            fprintf(stderr, "WARNING: proof_validate re-arm ERROR — see "
+                            "node.log [proof_validate]; the fold may wedge.\n");
+        }
+        /* PV_REARM_NOT_NEEDED: the fold above utxo_apply is already
+         * hash-complete — nothing to do. */
     }
 
     progress_store_close();
