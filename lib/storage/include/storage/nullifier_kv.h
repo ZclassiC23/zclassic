@@ -97,6 +97,16 @@ bool nullifier_kv_activation_cursor(struct sqlite3 *db,
 bool nullifier_kv_reset_in_tx(struct sqlite3 *db,
                               int64_t activation_cursor);
 
+/* Flip the durable nullifier activation marker from `expected_boundary` to zero
+ * in the caller's ALREADY-OPEN transaction, WITHOUT clearing the rows — the
+ * mirror of anchor_kv_publish_full_replay_complete_in_tx for the nullifier set,
+ * so a complete-history importer can publish anchor + nullifier completeness
+ * together in one atomic transaction. Refuses (leaving the positive marker in
+ * place) unless the current marker exists and still equals the positive
+ * `expected_boundary`; re-reads and verifies zero before returning true. */
+bool nullifier_kv_publish_full_replay_complete_in_tx(
+    struct sqlite3 *db, int64_t expected_boundary);
+
 /* Delete every bounded full-replay session marker in the caller's open
  * transaction. Missing keys are success. */
 bool shielded_history_cancel_full_replay_in_tx(struct sqlite3 *db);

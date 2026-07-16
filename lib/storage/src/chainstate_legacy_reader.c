@@ -336,3 +336,208 @@ int64_t chainstate_legacy_iter(void *handle,
     db_iter_free(&it);
     return count;
 }
+
+/* ── Bulk historical anchor + nullifier iteration ─────────────────────
+ *
+ * ATTRIBUTION. The chainstate key schema iterated below (DB_SPROUT_ANCHOR='A',
+ * DB_SAPLING_ANCHOR='Z', DB_SAPLING_NULLIFIER='S', DB_NULLIFIER='s',
+ * DB_BEST_SAPLING_ANCHOR='z', DB_BEST_SPROUT_ANCHOR='a') is ported from the
+ * Zcash reference implementation (zcash/src/txdb.cpp; MIT / Apache-2.0). This
+ * is a clean-room C23 reader over our own dbwrapper + the boost::optional-
+ * compatible incremental tree codec; the reference C++ is a format oracle only
+ * and is never linked into the binary. */
+
+/* Shared anchor-keyspace walker. `prefix` is 'Z' (Sapling) or 'A' (Sprout);
+ * `is_sprout` selects the tree init/depth. FAIL-CLOSED on every anomaly:
+ * returns -1 without delivering a partial verified set. */
+static int64_t iter_anchor_keyspace(struct chainstate_legacy_handle *h,
+                                    char prefix, bool is_sprout,
+                                    legacy_anchor_cb cb, void *ctx)
+{
+    if (!h || !cb)
+        return -1;
+
+    struct db_iterator it;
+    db_iter_init(&it, &h->db);
+    db_iter_seek(&it, &prefix, 1);
+
+    int64_t count = 0;
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *k = db_iter_key(&it, &klen);
+        if (klen < 1 || k[0] != prefix)
+            break;
+        if (klen != 33) {
+            /* A stray non-33 key inside the anchor prefix is a corrupt/foreign
+             * record; a completeness-critical import cannot silently skip it. */
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': malformed key length=%zu — refusing",
+                    prefix, klen);
+        }
+
+        struct uint256 root;
+        memcpy(root.data, k + 1, 32);
+
+        size_t vlen = 0;
+        const char *v = db_iter_value(&it, &vlen);
+        if (!v || vlen == 0) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': empty value — refusing", prefix);
+        }
+
+        struct incremental_merkle_tree tree;
+        if (is_sprout)
+            sprout_tree_init(&tree);
+        else
+            sapling_tree_init(&tree);
+        struct byte_stream s;
+        stream_init_from_data(&s, (const unsigned char *)v, vlen);
+        if (!incremental_tree_deserialize(&tree, &s) ||
+            stream_remaining(&s) != 0) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': deserialize failed vlen=%zu — refusing",
+                    prefix, vlen);
+        }
+
+        /* Fail-closed: the stored tree MUST hash back to its own key, exactly
+         * like the point lookup (a torn/forged tree cannot pass). */
+        struct uint256 computed;
+        incremental_tree_root(&tree, &computed);
+        if (memcmp(computed.data, root.data, 32) != 0) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': root mismatch (stored tree does not "
+                    "hash to key) — refusing", prefix);
+        }
+
+        if (!cb(&root, &tree, ctx)) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': consumer refused record — aborting",
+                    prefix);
+        }
+        count++;
+        db_iter_next(&it);
+    }
+
+    if (!db_iter_check_error(&it)) {
+        db_iter_free(&it);
+        LOG_ERR("chainstate_legacy",
+                "anchor iter '%c': torn SST / status error — refusing", prefix);
+    }
+    db_iter_free(&it);
+    return count;
+}
+
+int64_t chainstate_legacy_iter_sapling_anchors(void *handle,
+                                               legacy_anchor_cb cb, void *ctx)
+{
+    return iter_anchor_keyspace(handle, 'Z', false, cb, ctx);
+}
+
+int64_t chainstate_legacy_iter_sprout_anchors(void *handle,
+                                              legacy_anchor_cb cb, void *ctx)
+{
+    return iter_anchor_keyspace(handle, 'A', true, cb, ctx);
+}
+
+/* Shared nullifier-keyspace walker. `prefix` is 'S' (Sapling) or 's' (Sprout).
+ * The chainstate value is presence-only; the key IS the spent marker. */
+static int64_t iter_nullifier_keyspace(struct chainstate_legacy_handle *h,
+                                       char prefix, legacy_nullifier_cb cb,
+                                       void *ctx)
+{
+    if (!h || !cb)
+        return -1;
+
+    struct db_iterator it;
+    db_iter_init(&it, &h->db);
+    db_iter_seek(&it, &prefix, 1);
+
+    int64_t count = 0;
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *k = db_iter_key(&it, &klen);
+        if (klen < 1 || k[0] != prefix)
+            break;
+        if (klen != 33) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "nullifier iter '%c': malformed key length=%zu — refusing",
+                    prefix, klen);
+        }
+        uint8_t nf[32];
+        memcpy(nf, k + 1, 32);
+        if (!cb(nf, ctx)) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "nullifier iter '%c': consumer refused — aborting", prefix);
+        }
+        count++;
+        db_iter_next(&it);
+    }
+
+    if (!db_iter_check_error(&it)) {
+        db_iter_free(&it);
+        LOG_ERR("chainstate_legacy",
+                "nullifier iter '%c': torn SST / status error — refusing",
+                prefix);
+    }
+    db_iter_free(&it);
+    return count;
+}
+
+int64_t chainstate_legacy_iter_sapling_nullifiers(void *handle,
+                                                  legacy_nullifier_cb cb,
+                                                  void *ctx)
+{
+    return iter_nullifier_keyspace(handle, 'S', cb, ctx);
+}
+
+int64_t chainstate_legacy_iter_sprout_nullifiers(void *handle,
+                                                 legacy_nullifier_cb cb,
+                                                 void *ctx)
+{
+    return iter_nullifier_keyspace(handle, 's', cb, ctx);
+}
+
+static bool get_best_anchor_pointer(void *handle, char key_byte,
+                                    struct uint256 *root_out)
+{
+    if (root_out)
+        uint256_set_null(root_out);
+    if (!handle || !root_out)
+        LOG_FAIL("chainstate_legacy", "get_best_anchor: NULL arg");
+    struct chainstate_legacy_handle *h = handle;
+
+    char *val = NULL;
+    size_t vlen = 0;
+    if (!db_read(&h->db, &key_byte, 1, &val, &vlen) || !val) {
+        if (val) free(val);
+        return false;   /* absent pointer = empty pool, not an error */
+    }
+    if (vlen != 32) {
+        free(val);
+        LOG_FAIL("chainstate_legacy",
+                 "get_best_anchor '%c': value not 32 bytes (%zu)",
+                 key_byte, vlen);
+    }
+    memcpy(root_out->data, val, 32);
+    free(val);
+    return true;
+}
+
+bool chainstate_legacy_get_best_sapling_anchor(void *handle,
+                                               struct uint256 *root_out)
+{
+    return get_best_anchor_pointer(handle, 'z', root_out);
+}
+
+bool chainstate_legacy_get_best_sprout_anchor(void *handle,
+                                              struct uint256 *root_out)
+{
+    return get_best_anchor_pointer(handle, 'a', root_out);
+}
