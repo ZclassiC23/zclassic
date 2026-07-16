@@ -388,6 +388,82 @@ static int run_bulk_iter_tests(void)
                   chainstate_legacy_get_best_sapling_anchor(NULL, &r) == false);
     }
 
+    /* ── J. EMPTY value under a well-formed 33-byte 'Z' anchor key —
+     *       refused, not a crash / OOB read. Regression: this scenario
+     *       existed in an earlier revision of this file and was dropped by
+     *       merge f4ab099a7's conflict resolution (which took the "ours"
+     *       side of a conflicting rewrite wholesale). The reader itself
+     *       was never affected — chainstate_legacy_reader.c's
+     *       `if (!v || vlen == 0)` check (both in iter_anchor_keyspace and
+     *       the chainstate_legacy_get_sapling_anchor point lookup) already
+     *       refuses an empty value; this only re-adds the missing
+     *       coverage. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_emptyval", "db");
+    {
+        BLK_CHECK("make empty (emptyval)", blk_make_empty(dir));
+        struct uint256 root; blk_fill(&root, 0x99, 9);
+        char key[33]; key[0] = 'Z'; memcpy(key + 1, root.data, 32);
+        BLK_CHECK("put well-formed 'Z' key with empty (0-byte) value",
+                  blk_put(dir, key, sizeof(key), (const unsigned char *)"", 0));
+
+        void *h = NULL;
+        BLK_CHECK("open (emptyval)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            /* Point lookup: db_read() returns a non-NULL 0-length buffer
+             * for a present-but-empty LevelDB value (malloc(0) is non-NULL
+             * on glibc), so this exercises the explicit `vlen == 0` check
+             * — not the "key absent" path — and must land on MISSING, the
+             * documented "nothing usable returned" outcome (never FOUND). */
+            struct incremental_merkle_tree got;
+            BLK_CHECK("get_sapling_anchor(empty value) == MISSING",
+                      chainstate_legacy_get_sapling_anchor(h, &root, &got) ==
+                          CHAINSTATE_ANCHOR_MISSING);
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == -1 (empty value refused)",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── K. TRUNCATED (short) anchor value — fewer bytes than
+     *       incremental_tree_deserialize needs for the tree it is claimed
+     *       to hold. Must fail closed on the short buffer (stream_read's
+     *       bounds check trips inside incremental_tree_deserialize) with
+     *       no read past the value's actual length. Same drop history as
+     *       scenario J above. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_truncval", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sapling(6, &t);
+        struct uint256 root; incremental_tree_root(&t, &root);
+        struct byte_stream ser; stream_init(&ser, 256);
+        bool ser_ok = incremental_tree_serialize(&t, &ser) && !ser.error;
+        BLK_CHECK("serialize a real tree for truncation", ser_ok);
+
+        char key[33]; key[0] = 'Z'; memcpy(key + 1, root.data, 32);
+        BLK_CHECK("make empty (truncval)", blk_make_empty(dir));
+        /* Store the FIRST 3 bytes only (well short of a full tree) under
+         * the tree's own (real, correctly-computed) root key. */
+        size_t short_len = ser.size > 3 ? 3 : ser.size;
+        BLK_CHECK("put truncated (3-byte) serialized tree under its own root",
+                  ser_ok && blk_put(dir, key, sizeof(key), ser.data, short_len));
+        stream_free(&ser);
+
+        void *h = NULL;
+        BLK_CHECK("open (truncval)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct incremental_merkle_tree got;
+            BLK_CHECK("get_sapling_anchor(truncated) == ERROR",
+                      chainstate_legacy_get_sapling_anchor(h, &root, &got) ==
+                          CHAINSTATE_ANCHOR_ERROR);
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == -1 (truncated value refused)",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
     return failures;
 }
 
