@@ -676,12 +676,19 @@ int test_proof_validate_stage(void)
         PV_CHECK("rearm: pv cursor at 5",
                  proof_validate_stage_cursor() == 5);
 
-        /* utxo_apply is wedged at height 2 (its cursor). Heights below 2 are
-         * already applied and must NOT be rewound (LCC floor). */
+        /* Both downstream proof-receipt consumers are wedged at height 2:
+         * utxo_apply (label_splice guard) and tip_finalize (validation_evidence).
+         * The re-arm floors at min(utxo_apply, tip_finalize); seed BOTH cursors
+         * so the LCC floor reflects the deepest consumer. Heights below 2 are
+         * already applied by both and must NOT be rewound (LCC floor). */
         PV_CHECK("rearm: seed utxo_apply cursor = 2",
                  exec_sql(db,
                      "INSERT OR REPLACE INTO stage_cursor(name, cursor, "
                      "updated_at) VALUES('utxo_apply', 2, 1)"));
+        PV_CHECK("rearm: seed tip_finalize cursor = 2",
+                 exec_sql(db,
+                     "INSERT OR REPLACE INTO stage_cursor(name, cursor, "
+                     "updated_at) VALUES('tip_finalize', 2, 1)"));
 
         /* Recreate the pre-stamping artifact: null the block_hash of the
          * ok=1 rows at/above the utxo_apply cursor (heights 2,3,4). */
