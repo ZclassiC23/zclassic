@@ -354,6 +354,12 @@
                "mirror hash-disagreement bisect locator: last_locate_unix, last_first_div, probes_last_run, divergence_latched, pending record"),
     DIAG_LOCAL("nullifier_backfill", nullifier_backfill_dump_state_json,
                "owner-gated C-3 nullifier gap backfill: durable activation/resume cursors, derived status, gap_blocker_active"),
+    DIAG_LOCAL("shielded_gap_remedy", shielded_gap_remedy_dump_state_json,
+               "CONTAINED verify-only remedy surface for the shielded-history wedge "
+               "(utxo_apply.anchor_backfill_gap / nullifier_backfill_gap): gap "
+               "state + the NAMED owner-run import command + copy-prove step + "
+               "containment verdict (auto_execute always false; refuses_live off a "
+               "-COPY- datadir)"),
     DIAG_ENTRY("chain_segments", chain_segment_dump_state_json,
                "sealed ROM segment store for finalized block bodies: segment_count, "
                "covered height range, SHA3 manifest root, present_count (cheap file check; "

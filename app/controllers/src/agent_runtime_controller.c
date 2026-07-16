@@ -131,6 +131,11 @@ const char *agent_runtime_context_datadir(void)
     return g_agent_runtime.datadir;
 }
 
+const char *agent_runtime_context_operator_lane(void)
+{
+    return g_agent_runtime.operator_lane;
+}
+
 static size_t agent_runtime_contract_count(void)
 {
     size_t n = agent_contract_count();

@@ -48,6 +48,7 @@ void rpc_agent_set_boot_context(const char *operator_lane,
                                 int rpc_port, int p2p_port,
                                 int https_port, int fs_port);
 const char *agent_runtime_context_datadir(void);
+const char *agent_runtime_context_operator_lane(void);
 void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
                                             const char *operator_lane,
                                             const char *runtime_profile,
