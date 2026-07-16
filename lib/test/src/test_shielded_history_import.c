@@ -599,13 +599,18 @@ int test_shielded_history_import(void)
         test_rm_rf_recursive(nd_dir);
     }
 
-    /* ── Scenario F: a MID-SCAN reader anomaly (an anchor whose stored tree does
-     * NOT hash to its key) aborts the whole import. The streaming anchor pass
-     * may have staged valid rows before the reader hits the bad record and
-     * returns -1; the service must roll the WHOLE transaction back — empty
-     * tables, both cursors still positive, both gap blockers still raised. This
-     * proves the reused-statement insert path preserves all-or-nothing
-     * atomicity through a fault partway through the scan. */
+    /* ── Scenario F: a corrupt TIP FRONTIER aborts the whole import. The bulk
+     * import deliberately does NOT Pedersen-recompute every historical anchor's
+     * root (that O(anchors × Pedersen) cost is intractable on the real chain,
+     * and a historical anchor's root validity is enforced downstream anyway —
+     * a Sapling spend's Groth16 proof binds to the anchor root, so a bogus
+     * historical root cannot admit an invalid spend). But the TIP FRONTIER is
+     * consensus-load-bearing (the wallet appends new notes to it), so the
+     * service STILL Pedersen-verifies the tip anchor's tree against the
+     * header-committed root. A torn/forged tip tree must abort the WHOLE
+     * transaction: the streaming anchor pass may have staged valid historical
+     * rows first, so this also proves the reused-statement insert path preserves
+     * all-or-nothing atomicity through a fault partway through the scan. */
     {
         char cs_dir[256], pg_dir[256];
         test_make_tmpdir(cs_dir, sizeof(cs_dir), "shi_midscan", "cs");
@@ -615,16 +620,17 @@ int test_shielded_history_import(void)
         SHI_CHECK("build complete fixture (mid-scan scenario)",
                   shi_build_chainstate(cs_dir, false, &tip_root));
 
-        /* Inject one corrupt Sapling anchor: a validly-serialized tree stored
-         * under a MISMATCHED root key. The reader deserializes it fine, then its
-         * fail-closed root re-check (root != key) aborts the scan with -1. */
-        struct incremental_merkle_tree corrupt_tree;
-        struct uint256 real_root, bogus_root;
-        shi_sapling_tree(4, &corrupt_tree, &real_root);
-        shi_fill(&bogus_root, 0xC0, 77777);   /* != real_root */
-        SHI_CHECK("inject corrupt (root != key) Sapling anchor",
-                  !uint256_eq(&bogus_root, &real_root) &&
-                  shi_put_anchor(cs_dir, 'Z', &corrupt_tree, &bogus_root));
+        /* Overwrite the tip frontier: store, under the best-anchor key
+         * ('Z' + tip_root, named by the 'z' pointer), a validly-serialized tree
+         * that hashes to a DIFFERENT root. The tip-bind (pointer-root vs
+         * header-root) still passes, but shi_anchor_cb recomputes the tip tree
+         * and its root != tip_root, aborting the scan. */
+        struct incremental_merkle_tree corrupt_tip;
+        struct uint256 corrupt_root;
+        shi_sapling_tree(4, &corrupt_tip, &corrupt_root);
+        SHI_CHECK("corrupt tip tree hashes to a root != the committed tip root",
+                  !uint256_eq(&corrupt_root, &tip_root) &&
+                  shi_put_anchor(cs_dir, 'Z', &corrupt_tip, &tip_root));
 
         SHI_CHECK("progress.kv opens (mid-scan)", progress_store_open(pg_dir));
         sqlite3 *db = progress_store_db();
