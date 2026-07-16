@@ -815,6 +815,178 @@ static int test_status_brief_rejects_contract_contradictions(void)
     return failures;
 }
 
+/* A fully valid zcl.public_status.v1 document (mirrors
+ * status_brief_mock_rpc's default fixture) so each case below can drop or
+ * corrupt exactly one field and prove the resulting error names that field
+ * instead of the old one-size-fits-all "invalid zcl.public_status.v1". */
+static const char g_status_brief_valid_doc[] =
+    "{\"schema\":\"zcl.public_status.v1\","
+    "\"partial_result\":false,"
+    "\"served_height\":3117073,\"header_height\":3117074,"
+    "\"served_height_known\":true,"
+    "\"header_height_known\":true,"
+    "\"gap\":1,\"peer_best_height\":3117074,"
+    "\"peer_best_height_known\":true,"
+    "\"target_height\":3117074,\"target_height_known\":true,"
+    "\"chain_evidence_consistent\":true,"
+    "\"sync_state\":\"at_tip\",\"serving\":true,"
+    "\"healthy\":true,\"primary_blocker\":\"none\","
+    "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+        "\"budget_ms\":250,\"partial_result\":false,"
+        "\"budget_exceeded\":false},"
+    "\"peers\":{\"total\":1},"
+    "\"conditions\":{"
+        "\"schema\":\"zcl.condition_engine_summary.v1\","
+        "\"active_count\":2},"
+    "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+        "\"rss_mb\":512},"
+    "\"reducer\":{\"tip_advance_age_seconds\":3},"
+    "\"security_posture\":{"
+        "\"schema\":\"zcl.security_posture.v1\","
+        "\"anchor_backfill_gap\":false,"
+        "\"nullifier_backfill_gap\":false}}";
+
+/* E1: the composite validation used to collapse ~30 predicates into one
+ * opaque "invalid zcl.public_status.v1" message. Each case here removes (or
+ * corrupts) exactly one representative field from an otherwise-valid
+ * document and proves the error names that exact field, and correctly
+ * classifies an entirely-absent key (an older node binary's `agent` RPC
+ * predating a newer field) as schema/version skew rather than a generic
+ * malformed-document error. */
+static int test_status_brief_names_first_failing_field(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status names the first failing zcl.public_status.v1 field") {
+        ASSERT(s != NULL);
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+
+        /* Case 1: an entirely-absent top-level bool field (as an older node
+         * binary's agent RPC would omit) -> named + classified as version
+         * skew, not a generic malformed-document error. */
+        {
+            const char *removed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":true,\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3},"
+                "\"security_posture\":{"
+                    "\"schema\":\"zcl.security_posture.v1\","
+                    "\"anchor_backfill_gap\":false,"
+                    "\"nullifier_backfill_gap\":false}}";
+            g_status_brief_agent_fixture = removed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "chain_evidence_consistent") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") != NULL);
+        }
+
+        /* Case 2: an entirely-absent nested object (a whole newer subsystem
+         * projection an older node never emitted) -> named + version skew. */
+        {
+            const char *removed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"chain_evidence_consistent\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":true,\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3}}";
+            g_status_brief_agent_fixture = removed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "security_posture") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") != NULL);
+        }
+
+        /* Case 3: a field that is PRESENT but the wrong JSON type -> named,
+         * but classified as malformed, not version skew (the key exists;
+         * its value just violates the contract). */
+        {
+            const char *malformed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"chain_evidence_consistent\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":\"yes\",\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3},"
+                "\"security_posture\":{"
+                    "\"schema\":\"zcl.security_posture.v1\","
+                    "\"anchor_backfill_gap\":false,"
+                    "\"nullifier_backfill_gap\":false}}";
+            g_status_brief_agent_fixture = malformed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"healthy\"") != NULL ||
+                   strstr(out, "field healthy") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") == NULL);
+            ASSERT(strstr(out, "missing/invalid field healthy") != NULL);
+        }
+
+        /* Baseline: the fully valid document names nothing and passes. */
+        {
+            g_status_brief_agent_fixture = g_status_brief_valid_doc;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        }
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_planned_fail_closed(void)
 {
     int failures = 0;
@@ -1477,6 +1649,7 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_composite_fails_closed();
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
+    failures += test_status_brief_names_first_failing_field();
     failures += test_bridge_mcp_free_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();
