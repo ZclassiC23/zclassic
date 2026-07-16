@@ -23,6 +23,7 @@
 #include "platform/clock.h"
 #include "services/reducer_drain.h"
 #include "services/reducer_ingest_service.h"
+#include "services/sticky_escalator.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -84,11 +85,14 @@ static void rdw_reset(void)
     condition_engine_reset_for_testing();
     blocker_reset_for_testing();
     reducer_drive_watchdog_test_reset();
+    sticky_escalator_test_reset();
     /* reducer_drive_guard has no test-reset hook of its own (it is a bare
      * enter/exit counter) — make sure no earlier test group left a drive
      * "active" behind by forcing it fully closed. */
     while (reducer_drive_active())
         reducer_drive_exit();
+    /* register_reducer_drive_watchdog re-registers the blocker escape after
+     * blocker_reset_for_testing() wiped the escape registry above. */
     register_reducer_drive_watchdog();
 }
 
@@ -99,6 +103,7 @@ static void rdw_cleanup(void)
     condition_engine_reset_for_testing();
     blocker_reset_for_testing();
     reducer_drive_watchdog_test_reset();
+    sticky_escalator_test_reset();
     clock_reset_default();
 }
 
@@ -151,6 +156,35 @@ int test_reducer_drive_watchdog(void)
             }
         }
         RDW_CHECK("blocker detail names the driver label", found_reason);
+
+        /* ---- (a2) ACT (Pillar 1): the blocker carries a deadline-gated
+         * escape, and blocker_supervisor_sweep() ACTUATES it into the recovery
+         * ladder once the deadline lapses — not just a named blocker. ---- */
+        bool esc_wired = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "reducer_drive_stuck") == 0) {
+                esc_wired = strcmp(snaps[i].escape_action,
+                                   "reducer_drive_ladder_kick") == 0 &&
+                            snaps[i].escape_deadline_us > 0;
+                break;
+            }
+        }
+        RDW_CHECK("blocker arms a deadline-gated ladder-kick escape", esc_wired);
+
+        bool armed_before = sticky_escalator_test_armed();
+        int dispatched_before = blocker_escape_dispatched_count();
+        /* Push the blocker's monotonic clock past the escape deadline (60s) so
+         * the sweep fires the escape edge. Then restore the real clock so the
+         * later sub-tests are unaffected. */
+        blocker_advance_clock_for_testing(70LL * 1000 * 1000);
+        int fired = blocker_supervisor_sweep();
+        bool ok_escape = !armed_before &&
+                         fired >= 1 &&
+                         blocker_escape_dispatched_count() > dispatched_before &&
+                         sticky_escalator_test_armed();
+        blocker_set_clock_for_testing(0);
+        RDW_CHECK("deadline sweep actuates the escape -> ARMS the ladder",
+                 ok_escape);
 
         /* ---- (b) cursor movement clears it ---- */
         reducer_drive_watchdog_test_set_cursor_override(101);

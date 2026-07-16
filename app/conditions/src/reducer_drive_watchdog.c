@@ -15,6 +15,7 @@
 #include "platform/time_compat.h"
 #include "services/reducer_drain.h"
 #include "services/reducer_ingest_service.h"
+#include "services/sticky_escalator.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -29,11 +30,24 @@
 #include <stdlib.h>
 
 /* Typed blocker id — see util/blocker.h. TRANSIENT: a wedged drive is
- * recoverable the instant the drive itself exits or advances (there is no
- * escape action a supervisor sweep can dispatch that would be safe — the
- * drive owns the write path). */
+ * recoverable the instant the drive itself exits or advances. There is no
+ * SAFE escape that touches the drive's write path (killing a synchronous
+ * drive mid-write risks a torn commit), but there IS a safe escape that does
+ * NOT touch it: arm the top-level recovery ladder, whose rungs re-derive on
+ * their own supervised ticks. The blocker carries that escape with a grace
+ * deadline so blocker_supervisor_sweep() ACTUATES it if the drive stays
+ * frozen past the window, rather than only surfacing the fault. */
 #define REDUCER_DRIVE_WATCHDOG_BLOCKER_ID "reducer_drive_stuck"
 #define REDUCER_DRIVE_WATCHDOG_DEFAULT_SEC 60
+
+/* Escape wiring for the reducer_drive_stuck blocker. The action name is
+ * interned (static string) as blocker_register_escape requires. The deadline
+ * is measured from the blocker's first set (by which point the drive has
+ * already been frozen >= the watchdog threshold), so the ladder is armed only
+ * after a genuine sustained wedge — a legitimately long fold that resolves
+ * within the grace window never trips it. */
+#define REDUCER_DRIVE_ESCAPE_ACTION       "reducer_drive_ladder_kick"
+#define REDUCER_DRIVE_ESCAPE_DEADLINE_SEC 60
 
 /* Baseline cursor tracking (single-writer: the condition engine tick
  * thread calls detect/remedy/witness for one condition serially, never
@@ -120,6 +134,21 @@ static bool detect_reducer_drive_watchdog(void)
     return true;
 }
 
+/* Escape dispatched by blocker_supervisor_sweep() once the reducer_drive_stuck
+ * blocker outlives its escape deadline (the drive stayed frozen past the grace
+ * window). It does NOT touch the drive's write path — it arms the top-level
+ * always-terminating recovery ladder (sticky_escalator), whose rungs
+ * re-derive on their own supervised ticks and self-clear on real tip
+ * progress. Cheap + reentrant-safe; idempotent re-arm if already armed. */
+static void reducer_drive_stuck_escape(const struct blocker_snapshot *snap)
+{
+    (void)snap;
+    sticky_escalator_note_stall("reducer_drive_stuck");
+    LOG_WARN("condition",
+             "[condition:reducer_drive_watchdog] escape fired — armed recovery "
+             "ladder (action=%s)", REDUCER_DRIVE_ESCAPE_ACTION);
+}
+
 static enum condition_remedy_result remedy_reducer_drive_watchdog(void)
 {
     int64_t age_us = atomic_load(&g_age_at_detect_us);
@@ -132,21 +161,29 @@ static enum condition_remedy_result remedy_reducer_drive_watchdog(void)
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
              "reducer drive '%s' active %llds, utxo_apply cursor frozen at "
-             "height %llu (threshold=%ds) — no automated repair seam, "
-             "clears when the drive advances or exits",
+             "height %llu (threshold=%ds) — recovery ladder armed via escape "
+             "'%s' if still frozen in %ds; clears when the drive advances or "
+             "exits",
              label, (long long)(age_us / 1000000),
-             (unsigned long long)cursor, threshold_secs);
+             (unsigned long long)cursor, threshold_secs,
+             REDUCER_DRIVE_ESCAPE_ACTION, REDUCER_DRIVE_ESCAPE_DEADLINE_SEC);
 
     struct blocker_record r;
     if (blocker_init(&r, REDUCER_DRIVE_WATCHDOG_BLOCKER_ID, "reducer_drive",
                      BLOCKER_TRANSIENT, reason)) {
+        /* Deadline-gated escape: blocker_supervisor_sweep() fires
+         * reducer_drive_stuck_escape at since_us + deadline if the drive is
+         * still frozen (the blocker still present). */
+        r.escape_deadline_secs = REDUCER_DRIVE_ESCAPE_DEADLINE_SEC;
+        snprintf(r.escape_action, sizeof(r.escape_action), "%s",
+                 REDUCER_DRIVE_ESCAPE_ACTION);
         (void)blocker_set(&r);
         atomic_store(&g_last_fire_unix, platform_time_wall_unix());
     }
 
     LOG_WARN("condition",
              "[condition:reducer_drive_watchdog] label=%s age_s=%lld "
-             "cursor=%llu threshold_s=%d action=name_blocker",
+             "cursor=%llu threshold_s=%d action=name_blocker+arm_escape",
              label, (long long)(age_us / 1000000),
              (unsigned long long)cursor, threshold_secs);
 
@@ -154,10 +191,13 @@ static enum condition_remedy_result remedy_reducer_drive_watchdog(void)
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
 
-    /* Honest "cannot self-heal": there is no safe automated action against a
-     * synchronous drive owned by another thread. FAILED pages the operator
-     * on the normal ladder; the cooldown re-arm (see the condition struct)
-     * keeps re-notifying without ever latching a recoverable stall forever. */
+    /* The remedy itself cannot safely touch the synchronous drive on another
+     * thread, so it returns FAILED here — but it is no longer a dead end: the
+     * blocker now carries a deadline-gated escape (armed above) that
+     * blocker_supervisor_sweep() actuates into the recovery ladder if the
+     * drive stays frozen past the grace window. FAILED pages the operator on
+     * the normal ladder as a parallel last resort; the cooldown re-arm keeps
+     * re-notifying without ever latching a recoverable stall forever. */
     return COND_REMEDY_FAILED;
 }
 
@@ -223,6 +263,13 @@ static struct condition c_reducer_drive_watchdog = {
 void register_reducer_drive_watchdog(void)
 {
     (void)condition_register(&c_reducer_drive_watchdog);
+    /* Wire the escape so blocker_supervisor_sweep() can actuate the ladder on
+     * deadline. Idempotent: only register when absent, so a test that wipes
+     * the escape registry (blocker_reset_for_testing) re-registers cleanly and
+     * a duplicate production call never logs a spurious "duplicate" error. */
+    if (!blocker_lookup_escape(REDUCER_DRIVE_ESCAPE_ACTION))
+        (void)blocker_register_escape(REDUCER_DRIVE_ESCAPE_ACTION,
+                                      reducer_drive_stuck_escape);
 }
 
 bool reducer_drive_dump_state_json(struct json_value *out, const char *key)

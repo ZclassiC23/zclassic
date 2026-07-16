@@ -21,6 +21,7 @@
 #include "net/connman.h"
 #include "platform/time_compat.h"
 #include "services/ibd_throttle.h"
+#include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -289,7 +290,7 @@ static enum condition_remedy_result remedy_sync_rate_below_floor(void)
              "fold rate %lld.%03lld bps below floor %lld.%03lld bps for >= "
              "%d consecutive windows while peers connected and pending work "
              "exists (network_tip=%d log_head=%lld); dominant active "
-             "blocker=%s (observational only — never gates or slows the "
+             "blocker=%s (recovery ladder invoked — never gates or slows the "
              "fold; clears when the rate recovers or the backlog drains)",
              (long long)(bps / SYNC_RATE_SCALE),
              (long long)(bps % SYNC_RATE_SCALE < 0 ? -(bps % SYNC_RATE_SCALE)
@@ -305,18 +306,32 @@ static enum condition_remedy_result remedy_sync_rate_below_floor(void)
         atomic_store(&g_last_fire_unix, platform_time_wall_unix());
     }
 
+    /* ACT: close the detect->act loop. A sustained growing gap (peers +
+     * pending work, fold crawling below floor for K windows) is the most
+     * direct "not catching up" signal — hand it to the top-level
+     * always-terminating recovery ladder (sticky_escalator), whose rungs
+     * re-derive on their own supervised ticks and self-clear on real tip
+     * progress. This never touches a validity predicate or the fold write
+     * path (CLAUDE.md "Consensus parity is inviolable"); note_stall is cheap,
+     * reentrant-safe, and idempotent (a no-op re-arm if the ladder is already
+     * armed by chain_tip_watchdog). The operator page remains the LAST resort
+     * on the ladder, never the first response to this recoverable class. */
+    sticky_escalator_note_stall("sync_rate_below_floor");
+
     LOG_WARN("condition",
              "[condition:sync_rate_below_floor] observed_bps_x1000=%lld "
              "floor_bps_x1000=%lld network_tip=%d log_head=%lld "
-             "dominant_blocker=%s action=name_blocker",
+             "dominant_blocker=%s action=name_blocker+ladder_kick",
              (long long)bps, (long long)floor, tip, (long long)head, dom_id);
 
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
-    /* Honest "cannot/will-not self-heal": this condition exists ONLY to name
-     * a slowdown, never to act on the fold. */
-    return COND_REMEDY_FAILED;
+    /* The remedy took a corrective action (armed the ladder). The symptom
+     * does not clear this instant — the engine downgrades an un-witnessed OK
+     * to COND_REMEDY_UNWITNESSED and re-arms on the 600s cooldown, re-noting
+     * the stall until the fold recovers (witness clears) or drains. */
+    return COND_REMEDY_OK;
 }
 
 static bool witness_sync_rate_below_floor(int64_t target_at_detect)
