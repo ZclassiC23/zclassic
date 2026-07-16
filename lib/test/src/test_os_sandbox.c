@@ -186,8 +186,11 @@ static int c_landlock(void)
  * os_sandbox_landlock_restrict() runs is NOT confined by it (no TSYNC
  * equivalent for Landlock). It stays unconfined until it calls
  * os_sandbox_landlock_apply_to_self() on ITSELF, from inside its own loop —
- * exactly how supervisor_thread_main / the health sweeper / the metrics
- * printer use it. This child proves both halves: unconfined before the join,
+ * exactly how the health sweeper / the metrics printer use it (the
+ * supervisor dispatch thread deliberately does NOT — see supervisor.c:
+ * supervisor_thread_main — since it fans out to every registered child's
+ * on_tick and confining the dispatcher would confine all of them). This
+ * child proves both halves: unconfined before the join,
  * confined after, idempotent on a repeat call, and the witness count moves by
  * exactly one per distinct joining thread. */
 
@@ -260,8 +263,8 @@ static int c_landlock_retrofit_join(void)
 
 /* Calling the retrofit join before ANY Landlock domain exists in this process
  * is a non-fatal non-ok (OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE) — never a crash,
- * since supervisor/health/metrics call it unconditionally on every tick from
- * boot onward, long before -sandbox=steady (if ever) enters one. */
+ * since health/metrics call it unconditionally on every tick from boot
+ * onward, long before -sandbox=steady (if ever) enters one. */
 static int c_landlock_apply_before_any_domain(void)
 {
     struct zcl_result r = os_sandbox_landlock_apply_to_self();

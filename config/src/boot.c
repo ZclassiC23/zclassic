@@ -1024,7 +1024,13 @@ static struct zcl_result sr_services_running(void *ctx)
  * installs via TSYNC (every thread, atomically); Landlock has no TSYNC
  * equivalent, so os_sandbox_landlock_apply_to_self() is the retrofit join an
  * already-running thread calls from its own loop — wired into the
- * supervisor, health-sweep and metrics loops today. */
+ * health-sweep and metrics loops today. Deliberately NOT wired into the
+ * supervisor dispatch thread (lib/util/src/supervisor.c): that one thread
+ * runs EVERY registered supervisor child's on_tick synchronously, so
+ * confining it would confine every dispatched callback across every domain,
+ * not just an audited loop — it stays the documented Landlock-unconfined
+ * (still seccomp-confined) residual alongside file_service/
+ * wallet_backup_service/disk_monitor/event_async. */
 static struct zcl_result sr_sandbox_enter(void *ctx)
 {
     const struct app_context *actx = ctx;

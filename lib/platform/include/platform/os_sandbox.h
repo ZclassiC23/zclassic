@@ -254,13 +254,22 @@ int os_sandbox_landlock_restricted_count(void);
  * datadir tree + the agent-test status dir + OS_SANDBOX_PROC_SELF_STATUS_
  * PATH). A thread that later needs to open a path outside those grants will
  * get EACCES after joining — do not wire this into a thread that does
- * arbitrary/user-configured file I/O. Wired today (config/src/boot.c) into
- * the supervisor, health-sweep and metrics loops — audited pure, no file I/O
- * beyond the grants above. Deliberately NOT wired into file_service (market
- * transfers read user-configured paths), wallet_backup_service (configurable
- * backup_dir), disk_monitor (probes arbitrary mount paths), or event_async
- * (fans out to unaudited observer callbacks) — those remain the documented
- * Landlock-unconfined-but-seccomp-confined residual.
+ * arbitrary/user-configured file I/O, AND do not wire this into a dispatch
+ * thread that runs OTHER subsystems' callbacks on its own stack (confining
+ * the dispatcher confines every dispatched callback with no per-callback
+ * opt-out — see the supervisor note below). Wired today (config/src/boot.c)
+ * into the health-sweep and metrics loops only — each owns its entire loop
+ * body and was audited pure, no file I/O beyond the grants above.
+ * Deliberately NOT wired into file_service (market transfers read
+ * user-configured paths), wallet_backup_service (configurable backup_dir),
+ * disk_monitor (probes arbitrary mount paths), event_async (fans out to
+ * unaudited observer callbacks), or the supervisor dispatch thread
+ * (lib/util/src/supervisor.c:supervisor_thread_main — the SINGLE dispatch
+ * thread for every registered supervisor child; it runs every g_contracts[]
+ * on_tick handler synchronously on that one thread, across every domain, so
+ * confining it would confine every dispatched on_tick, not just an audited
+ * one) — those remain the documented Landlock-unconfined-but-seccomp-confined
+ * residual.
  *
  * Returns ZCL_OK (including the idempotent no-op case). Returns non-ok with
  * OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE if no steady-state Landlock domain is
