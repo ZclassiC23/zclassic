@@ -36,6 +36,7 @@ SRC_FIXTURE="$SANDBOX/fixture-datadir"
 CHAINSTATE_FIXTURE="$SANDBOX/fixture-chainstate"
 ZD_FIXTURE="$SANDBOX/fixture-zclassicd-datadir"
 IMPORT_BEHAVIOR_FILE="$SANDBOX/import-behavior"
+HEADER_REFRESH_BEHAVIOR_FILE="$SANDBOX/header-refresh-behavior"
 
 WEDGE=3176325
 WEDGE_PLUS1=3176326
@@ -60,6 +61,24 @@ assert_contains() {
 cat > "$FAKE_NODE" <<'NODE_EOF'
 #!/bin/sh
 # Fake zclassic23 for the import-copy-prove hermetic selftest ONLY.
+if [ "${1:-}" = "--importblockindex" ]; then
+    # Header-refresh step (step 1b): zclassic23 --importblockindex <src> [<target>]
+    behavior="ok"
+    [ -r "${FAKE_HEADER_REFRESH_BEHAVIOR_FILE:-}" ] && behavior="$(cat "$FAKE_HEADER_REFRESH_BEHAVIOR_FILE")"
+    case "$behavior" in
+        ok)
+            target="${3:-}"
+            if [ -n "$target" ]; then
+                mkdir -p "$(dirname "$target")" 2>/dev/null || true
+                : > "$target"
+            fi
+            echo "=== ZClassic Block-Index (header) Import ==="
+            exit 0 ;;
+        fail)
+            echo "header-refresh fixture: forced failure" >&2
+            exit 1 ;;
+    esac
+fi
 datadir=""
 import_arg=""
 for a in "$@"; do
@@ -180,6 +199,7 @@ run_script() {
         ZCL_NODE_BIN="$FAKE_NODE" \
         ZCL_RPC_BIN="$FAKE_RPC" \
         FAKE_IMPORT_BEHAVIOR_FILE="$IMPORT_BEHAVIOR_FILE" \
+        FAKE_HEADER_REFRESH_BEHAVIOR_FILE="$HEADER_REFRESH_BEHAVIOR_FILE" \
         FAKE_ZD_DIR="$ZD_FIXTURE" \
         FAKE_COPY_TIP="$TIP" \
         FAKE_ZD_TIP="$((TIP + 100))" \
@@ -342,7 +362,43 @@ test_hash_mismatch_fails_gate_c() {
     printf '[import-copy-prove-selftest] PASS: a same-height hash mismatch fails GATE (c) (the missing-anchor signature)\n'
 }
 
-# ── test 8: --skip-zclassicd-check yields PASS-INCOMPLETE, never a bare PASS ──
+# ── test 8: header-refresh (step 1b) failure FAILs before phase 1 ever runs ──
+
+test_header_refresh_failure_fails_before_phase1() {
+    OUTPUT="$SANDBOX/out-headerrefresh-fail"
+    COPY_DIR="$(fresh_copy_dir)"
+    echo ok > "$IMPORT_BEHAVIOR_FILE"
+    echo fail > "$HEADER_REFRESH_BEHAVIOR_FILE"
+    EXTRA_ARGS=()
+    local rc; rc="$(run_script)"
+    echo ok > "$HEADER_REFRESH_BEHAVIOR_FILE"
+    assert_rc "$rc" 1 "a failed header-refresh (step 1b) did not FAIL the harness"
+    assert_contains "$OUTPUT" "VERDICT: FAIL" "header-refresh failure did not report FAIL"
+    assert_contains "$OUTPUT" "header-refresh (--importblockindex) failed" \
+        "header-refresh FAIL reason absent"
+    printf '[import-copy-prove-selftest] PASS: a failed header refresh fails fast, before phase 1 runs\n'
+}
+
+# ── test 9: --skip-header-refresh bypasses step 1b ──────────────────────
+
+test_skip_header_refresh_bypasses_step() {
+    OUTPUT="$SANDBOX/out-skip-headerrefresh"
+    COPY_DIR="$(fresh_copy_dir)"
+    echo ok > "$IMPORT_BEHAVIOR_FILE"
+    echo fail > "$HEADER_REFRESH_BEHAVIOR_FILE"   # would FAIL the run if NOT skipped
+    TEST_BLOCKER_RESPONSE="$BLOCKER_CLEAR"
+    TEST_FRONTIER_RESPONSE="$FRONTIER_CONTINUOUS"
+    TEST_COPY_HASHES="$COPY_HASHES_MATCH"
+    EXTRA_ARGS=(--expect-climb-past="$WEDGE" --skip-header-refresh)
+    local rc; rc="$(run_script)"
+    echo ok > "$HEADER_REFRESH_BEHAVIOR_FILE"
+    unset TEST_BLOCKER_RESPONSE TEST_FRONTIER_RESPONSE TEST_COPY_HASHES
+    assert_rc "$rc" 0 "--skip-header-refresh did not bypass a forced header-refresh failure"
+    assert_contains "$OUTPUT" "step 1b SKIPPED" "skip flag did not note the step was skipped"
+    printf '[import-copy-prove-selftest] PASS: --skip-header-refresh bypasses step 1b\n'
+}
+
+# ── test 10: --skip-zclassicd-check yields PASS-INCOMPLETE, never a bare PASS ──
 
 test_skip_zclassicd_check_is_incomplete_not_pass() {
     OUTPUT="$SANDBOX/out-skipzd"
@@ -368,5 +424,7 @@ test_full_pass_all_gates_green
 test_blocker_still_present_fails_gate_a
 test_continuity_gap_fails_gate_b
 test_hash_mismatch_fails_gate_c
+test_header_refresh_failure_fails_before_phase1
+test_skip_header_refresh_bypasses_step
 test_skip_zclassicd_check_is_incomplete_not_pass
 printf '[import-copy-prove-selftest] PASS: all import-copy-prove.sh driver-logic proofs\n'

@@ -12,6 +12,27 @@
 # cure-copy-prove.sh does.
 #
 # ============================================================================
+# HEADER-REFRESH STEP (added 2026-07-16, before phase 1)
+# ============================================================================
+# A real diagnostic run against a wedged clone found the importer's tip-bind
+# refusing with:
+#   "tip bind FAILED: best Sapling anchor != expected header hashFinalSaplingRoot
+#    at h=3151581 — refusing"
+#   "Tip bind: height=3151581 hashFinalSaplingRoot=0000...0000"
+# i.e. the clone's own blocks.sapling_root column was ALL-ZERO at the bind
+# height because the clone's header chain was stale relative to zclassicd's
+# current chainstate tip. Before phase 1 (the -import-complete-shielded call)
+# this script now runs the proven read-only two-step recipe's step 1
+# (docs/HANDOFF.md "legacy TWO-step recipe"):
+#   "$NODE_BIN" --importblockindex "$ZD_DATADIR" "$COPY_DIR/node.db"
+# against the COPY's node.db — refreshing the copy's SQLite `blocks` header
+# chain (and blocks.sapling_root) from zclassicd's live LevelDB block index,
+# read-only, same LOCK-avoidance as the existing recipe. Skippable with
+# --skip-header-refresh; on failure the script FAILs (never silently proceeds
+# with stale headers into phase 1).
+# ============================================================================
+#
+# ============================================================================
 # CONTRACT — read before running this for real
 # ============================================================================
 # As of 2026-07-16 the importer this script drives IS on main (merged from
@@ -89,6 +110,10 @@
 #                                   tools/zcl-rpc.c already does; never written)
 #     [--zclassicd-rpcport=N]      (default 8232)
 #     [--skip-zclassicd-check]     (skip gate (c); marks verdict PASS-INCOMPLETE)
+#     [--skip-header-refresh]      (skip the pre-phase-1 --importblockindex header
+#                                   refresh; the step is ON by default and FAILs
+#                                   the run if it errors — pass this only if the
+#                                   copy's headers are already known current)
 #
 # Exit codes: 0 PASS (or PASS-INCOMPLETE with --skip-zclassicd-check),
 #             1 FAIL, 2 usage/precondition error.
@@ -111,10 +136,11 @@ HTTPSPORT=19035
 ZD_DATADIR="$HOME/.zclassic"
 ZD_RPCPORT=8232
 SKIP_ZD_CHECK=0
+SKIP_HEADER_REFRESH=0
 DRY_RUN=0
 
 usage() {
-    sed -n '2,105p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,118p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -132,6 +158,7 @@ while [ $# -gt 0 ]; do
         --zclassicd-datadir=*)    ZD_DATADIR="${1#--zclassicd-datadir=}" ;;
         --zclassicd-rpcport=*)    ZD_RPCPORT="${1#--zclassicd-rpcport=}" ;;
         --skip-zclassicd-check)   SKIP_ZD_CHECK=1 ;;
+        --skip-header-refresh)    SKIP_HEADER_REFRESH=1 ;;
         -h|--help)                usage; exit 0 ;;
         *) echo "import-copy-prove: unknown option $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -191,8 +218,14 @@ echo "  deadline_secs:             $DEADLINE"
 echo "  node_bin:                  $NODE_BIN"
 echo "  ports:                     rpc=$RPCPORT p2p=$P2PPORT fs=$FSPORT https=$HTTPSPORT"
 echo "  zclassicd cross-check:     $([ "$SKIP_ZD_CHECK" = "1" ] && echo 'SKIPPED (--skip-zclassicd-check; verdict will be PASS-INCOMPLETE at best)' || echo "datadir=$ZD_DATADIR rpcport=$ZD_RPCPORT (read-only RPC only)")"
+echo "  header refresh:            $([ "$SKIP_HEADER_REFRESH" = "1" ] && echo 'SKIPPED (--skip-header-refresh)' || echo 'ON (default) — fails the run on error, never proceeds with stale headers')"
 echo "  steps:"
 echo "    1. cp -a \"\$SRC\" \"\$COPY_DIR\"  (throwaway wedged target datadir)"
+echo "    1b. header refresh (unless --skip-header-refresh):"
+echo "       \"\$NODE_BIN\" --importblockindex \"\$ZD_DATADIR\" \"\$COPY_DIR/node.db\""
+echo "       (proven read-only recipe step 1 — refreshes the copy's header chain"
+echo "       + blocks.sapling_root before phase 1; see the HEADER-REFRESH STEP"
+echo "       notice at the top of this script)"
 echo "    2. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -import-complete-shielded=\"\$ZD_DATADIR\""
 echo "       (terminal; the importer FNV-stable-snapshots \$ZD_DATADIR/chainstate"
 echo "       itself — zclassicd is read-only, never stopped; require literal"
@@ -244,6 +277,39 @@ mkdir -p "$ISO_HOME"
 [ -e "$HOME/.zcash-params" ] && ln -sfn "$HOME/.zcash-params" "$ISO_HOME/.zcash-params"
 
 NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=127.0.0.1:39999 -nolegacyimport -nofilesync"
+
+# ── step 1b: header refresh (default ON, before phase 1) ───────────────
+# See the HEADER-REFRESH STEP notice at the top of this script: the
+# 2026-07-16 tip-bind refusal ("hashFinalSaplingRoot=0000...0000") is caused
+# by the copy's own header chain (and blocks.sapling_root) being stale
+# relative to zclassicd's current chainstate tip. Refresh it here, read-only,
+# via the proven two-step recipe's step 1, BEFORE the importer runs. Never
+# proceeds into phase 1 with headers we know are stale: any failure here
+# FAILs the whole run.
+if [ "$SKIP_HEADER_REFRESH" = "0" ]; then
+    HEADER_REFRESH_LOG="$COPY_DIR/header_refresh.log"
+    echo "[import-copy-prove] step 1b: header refresh — $NODE_BIN --importblockindex $ZD_DATADIR $COPY_DIR/node.db"
+    href_rc=0
+    HOME="$ISO_HOME" "$NODE_BIN" --importblockindex "$ZD_DATADIR" "$COPY_DIR/node.db" \
+        > "$HEADER_REFRESH_LOG" 2>&1 || href_rc=$?
+    if [ "$href_rc" != "0" ]; then
+        echo "======================================================================"
+        echo "  import-copy-prove VERDICT: FAIL"
+        echo "  copy:    $COPY_DIR"
+        echo "  reason:  header-refresh (--importblockindex) failed (exit=$href_rc)."
+        echo "           Inspect $HEADER_REFRESH_LOG. Phase 1 (-import-complete-shielded)"
+        echo "           was NOT run: proceeding with headers known to be stale risks"
+        echo "           reproducing the 2026-07-16 tip-bind refusal"
+        echo "           (hashFinalSaplingRoot=0000...0000) rather than exercising a"
+        echo "           genuine anchor/nullifier gap. Pass --skip-header-refresh only"
+        echo "           if the copy's headers are already known current by other means."
+        echo "======================================================================"
+        exit 1
+    fi
+    echo "[import-copy-prove] header refresh done — copy's headers now cover zclassicd's tip"
+else
+    echo "[import-copy-prove] step 1b SKIPPED (--skip-header-refresh) — copy's headers are assumed already current"
+fi
 
 # ── step 3: terminal import call (phase 1) ─────────────────────────────
 
