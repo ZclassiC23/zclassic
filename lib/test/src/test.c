@@ -1497,6 +1497,8 @@ int main(int argc, char **argv)
       failures += test_stage_repair_tipfin_backfill(); }
     { extern int test_reorg_residue_tipfin_replace(void);
       failures += test_reorg_residue_tipfin_replace(); }
+    { extern int test_stage_rederive_range(void);
+      failures += test_stage_rederive_range(); }
     { extern int test_utxo_apply_upstream_hole(void);
       failures += test_utxo_apply_upstream_hole(); }
     { extern int test_reducer_reconcile_witness(void);
