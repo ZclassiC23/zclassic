@@ -2573,6 +2573,18 @@ static bool import_shielded_is_live_datadir(const char *target)
 
 static int import_complete_shielded_mode(int argc, char **argv)
 {
+    /* UX: glibc block-buffers stdout when it isn't a tty (the common case
+     * for a redirected/logged import run), so every printf() below would
+     * sit in the buffer until process exit. For a run that goes CPU-bound
+     * inside shielded_history_import_from_chainstate() for many minutes,
+     * that means the operator watches a blank terminal with no way to
+     * tell "running" from "stuck" — a silent stall, which the node's
+     * prime invariant forbids. Force line buffering up front so every
+     * banner below (Source/Target/Chainstate snapshot/Tip bind/
+     * IMPORT COMPLETE|REFUSED) lands on the terminal/log the instant it's
+     * printed. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     const char *home = getenv("HOME");
     const char *src = NULL;
     char target[512];
