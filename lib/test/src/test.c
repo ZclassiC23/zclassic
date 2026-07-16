@@ -1451,6 +1451,8 @@ int main(int argc, char **argv)
     failures += test_nullifier_kv();
     failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();
+    { extern int test_always_sync_selfheal(void);
+      failures += test_always_sync_selfheal(); }
     failures += test_script_validate_stage();
     failures += test_script_validate_contextual_gate();
     failures += test_proof_validate_stage();
