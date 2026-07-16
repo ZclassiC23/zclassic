@@ -332,7 +332,6 @@ int test_hotswap_simnet(void);
 int test_hotswap_module(void);
 int test_dev_platform(void);
 int test_command_registry_catalog(void);
-int test_command_ledger(void);
 int test_native_api_contract(void);
 int test_mcp_controllers(void);
 int test_mcp_inproc_equiv(void);

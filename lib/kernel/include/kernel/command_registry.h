@@ -192,18 +192,6 @@ enum zcl_command_transport {
     ZCL_COMMAND_TRANSPORT_RPC = 1U << 4,
 };
 
-/* Which transport carried one dispatch, recorded in the command interaction
- * ledger (util/command_ledger). Distinct from the `enum zcl_command_transport`
- * bitmask above (which advertises the set of transports a leaf may be reached
- * through in spec->transports): this is a single dense ordinal per call, 0 ==
- * the local native/CLI path so a zero-initialized context reads as native. */
-enum zcl_cmd_transport {
-    ZCL_CMD_TRANSPORT_NATIVE = 0,
-    ZCL_CMD_TRANSPORT_RPC,
-    ZCL_CMD_TRANSPORT_REST,
-    ZCL_CMD_TRANSPORT_MCP,
-};
-
 struct zcl_command_spec;
 struct zcl_command_registry;
 
@@ -218,12 +206,6 @@ struct zcl_command_context {
      * (the least-privilege floor); real sessions raise it from their role via
      * authz_ceiling_for_role(). A NULL context bypasses the check entirely. */
     enum zcl_command_authority authority_ceiling;
-    /* Transport that carried this dispatch, stamped into each command-ledger
-     * record (util/command_ledger). Default 0 == ZCL_CMD_TRANSPORT_NATIVE: a
-     * zero-initialized context (local operator / plain CLI / in-process) reads
-     * as native. RPC/REST/MCP adapters set it where they construct the context.
-     */
-    enum zcl_cmd_transport transport;
     bool dev_build;
 };
 
@@ -427,57 +409,6 @@ const char *zcl_command_latency_name(enum zcl_command_latency value);
 const char *zcl_command_cost_name(enum zcl_command_cost value);
 const char *zcl_command_confirmation_name(enum zcl_command_confirmation value);
 const char *zcl_command_status_name(enum zcl_command_status value);
-
-/* ── Command interaction ledger seam (Phase D — agent flight recorder) ──────
- *
- * The kernel stays dependency-pure: it does not know how the ledger is stored.
- * A util-layer sink (util/command_ledger) registers itself, and every dispatch
- * through zcl_command_registry_execute_json hands it ONE content-free record
- * describing that call. No sink registered == a single atomic load + NULL check
- * (zero overhead). Same registered-function-pointer idiom as the hot-swap
- * handler snapshot above.
- *
- * The record is a POD mirror of the durable zcl.cmd_ledger.v1 schema. It is
- * CONTENT-FREE by construction: it carries only byte COUNTS and typed metadata,
- * never the input or output bytes themselves. `leaf` and `request_id`/`code`
- * are the leaf's own static path and the dispatch's error code — never caller
- * data. The sink is called synchronously from the dispatching thread and must
- * copy anything it needs before returning (`leaf` points at the immutable
- * catalog string, valid for the process lifetime; the char arrays are inline). */
-struct zcl_command_ledger_record {
-    int64_t ts_unix_ms;      /* wall-clock append time (platform clock) */
-    uint64_t seq;            /* process-local dispatch sequence */
-    const char *leaf;        /* canonical leaf path (static catalog string) */
-    enum zcl_cmd_transport transport;
-    int64_t input_bytes;     /* serialized request size (count only) */
-    int64_t output_bytes;    /* serialized reply size (count only) */
-    int64_t budget_bytes;    /* effective response byte budget */
-    bool budget_exceeded;    /* latency budget overrun (elapsed_us > budget) */
-    int64_t elapsed_us;      /* dispatch duration */
-    int64_t budget_ms;       /* declared latency-bucket budget */
-    enum zcl_command_latency latency_class;
-    bool ok;                 /* passed/accepted vs blocked/failed */
-    char code[64];           /* error code, empty on success */
-    char request_id[48];     /* "local-<seq>" envelope id */
-};
-
-typedef void (*zcl_command_ledger_sink_fn)(
-    const struct zcl_command_ledger_record *record);
-
-/* Register (or, with NULL, unregister) the durable ledger sink. Idempotent.
- * Once set, every execute_json dispatch hands the sink one record. */
-void zcl_command_registry_set_ledger_sink(zcl_command_ledger_sink_fn fn);
-
-/* A durable per-leaf p99 source. Returns true and fills the p99_us + samples
- * out-params for `leaf` over the trailing `window_s` seconds (<=0 == all
- * retained), false with samples==0 when it has no data. Same signature as
- * command_ledger_p99. When registered, discover.describe prefers it over the
- * in-process latency ring. */
-typedef bool (*zcl_command_latency_source_fn)(
-    const char *leaf, int64_t window_s, int64_t *p99_us, uint32_t *samples);
-
-/* Register (or, with NULL, unregister) the durable latency source. Idempotent. */
-void zcl_command_registry_set_latency_source(zcl_command_latency_source_fn fn);
 
 #ifdef __cplusplus
 }

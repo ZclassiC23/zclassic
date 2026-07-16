@@ -1741,10 +1741,6 @@ static int test_describe_emits_observed_p99(void)
         ASSERT(policy != NULL);
         int64_t samples = json_get_int(json_get(policy, "observed_samples"));
         ASSERT(samples >= (int64_t)10);
-        /* Phase D: with no durable latency source registered in this binary the
-         * describe policy names the in-process ring as the observed source. */
-        ASSERT_STR_EQ(json_get_str(json_get(policy, "observed_source")),
-                      "process_ring");
         json_free(&root);
         PASS();
     } _test_next:;

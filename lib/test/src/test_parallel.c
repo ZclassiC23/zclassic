@@ -90,7 +90,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
-    X(command_ledger) \
     X(native_api_contract) \
     X(principal_authz) X(auth_login) X(command_authority) \
     X(command_handler_snapshot) \
