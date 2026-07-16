@@ -5,6 +5,8 @@
 
 #include "jobs/reducer_frontier.h"
 
+#include "reducer_frontier_rewind_bases.h"
+
 #include "json/json.h"
 #include "net/connman.h"
 #include "services/sync_monitor.h"
@@ -682,6 +684,11 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)active_chain_extend_window_have_data_fast_count());
     json_push_kv_int(out, "window_extend_slow",
                      (int64_t)active_chain_extend_window_have_data_slow_count());
+
+    /* Rolling self-verified rewind bases (Pillar 3): every currently-available
+     * safe rewind target and the O(delta) distance from H* to the nearest
+     * one — see reducer_frontier_rewind_bases.c. */
+    reducer_frontier_push_rewind_bases_json(out, hstar);
 
     /* Reserved `_health` key (see docs/work "Adding state introspection" +
      * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
