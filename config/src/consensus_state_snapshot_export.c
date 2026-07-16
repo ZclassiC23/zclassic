@@ -62,7 +62,7 @@ static bool output_name_valid(const char *name)
     return strlen(name) < CONSENSUS_EXPORT_NAME_MAX - 48;
 }
 
-static void output_binding_init(struct consensus_export_output_binding *output)
+void consensus_export_output_init(struct consensus_export_output_binding *output)
 {
     memset(output, 0, sizeof(*output));
     output->dirfd = -1;
@@ -295,7 +295,7 @@ static bool output_vfs_register(struct consensus_export_output_binding *output)
     return true;
 }
 
-static void output_binding_close(struct consensus_export_output_binding *output)
+void consensus_export_output_close(struct consensus_export_output_binding *output)
 {
     if (!output || output->abandon_on_close)
         return;
@@ -337,7 +337,7 @@ static bool output_sqlite_close_strict(
     return clean;
 }
 
-static bool output_binding_open(
+bool consensus_export_output_open(
     const struct consensus_state_snapshot_export_request *request,
     struct consensus_export_output_binding *output,
     struct consensus_state_export_result *result)
@@ -359,7 +359,7 @@ static bool output_binding_open(
     snprintf(output->final_name, sizeof(output->final_name), "%s",
              request->output_name);
     if (!output_name_absent(output, output->final_name)) {
-        output_binding_close(output);
+        consensus_export_output_close(output);
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "output name already exists or is uninspectable");
     }
@@ -395,7 +395,7 @@ void consensus_state_snapshot_export_test_set_before_link_hook(
     g_before_link_ctx = ctx;
 }
 
-static void output_run_after_bind_hook(void)
+void consensus_export_run_after_bind_hook(void)
 {
     void (*hook)(void *) = g_after_output_bind_hook;
     void *ctx = g_after_output_bind_ctx;
@@ -425,7 +425,7 @@ static void output_run_before_link_hook(void)
         hook(ctx);
 }
 #else
-static void output_run_after_bind_hook(void) { }
+void consensus_export_run_after_bind_hook(void) { }
 static void output_run_after_staging_create_hook(void) { }
 static void output_run_before_link_hook(void) { }
 #endif
@@ -634,12 +634,73 @@ bool consensus_export_finalize_temp(
     return true;
 }
 
-static bool digest_nonzero(const uint8_t digest[32])
+bool consensus_export_digest_nonzero(const uint8_t digest[32])
 {
     uint8_t any = 0;
     for (size_t i = 0; i < 32; i++)
         any |= digest[i];
     return any != 0;
+}
+
+/* Shared derive+write core used by BOTH exporter entries. Runs the proof, opens
+ * the anonymous staging inode, writes the bundle, and strictly closes the dest.
+ * The CALLER owns the SOURCE read transaction (a held lock+BEGIN on the owned
+ * handle for the offline mint, or a private WAL-snapshot BEGIN for the live
+ * exporter). *manifest is filled for finalize_temp/result on success. */
+bool consensus_export_prove_write(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_export_output_binding *output,
+    struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result)
+{
+    struct consensus_state_source_receipt receipt;
+    memset(&receipt, 0, sizeof(receipt));
+    struct consensus_state_bundle_proof_summary
+        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT];
+    memset(proofs, 0, sizeof(proofs));
+    sqlite3 *destination = NULL;
+
+    bool ok = consensus_export_prove_source(source, request, manifest, &receipt,
+                                            proofs, result);
+    if (ok)
+        ok = consensus_export_open_temp(output, &destination, result);
+    if (ok)
+        ok = consensus_export_write_bundle(source, destination, manifest,
+                                           &receipt, proofs, result);
+    if (destination) {
+        if (!output_sqlite_close_strict(output, &destination) && ok) {
+            (void)consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                        "bundle close failed");
+            ok = false;
+        }
+        destination = NULL;
+    }
+    return ok;
+}
+
+/* Fill the EXPORTED result on success — identical for both entries. */
+void consensus_export_fill_success(
+    const struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result)
+{
+    if (!result)
+        return;
+    result->status = CONSENSUS_EXPORT_EXPORTED;
+    result->history_complete = true;
+    result->source_clean = manifest->source_clean;
+    result->validation_profile = manifest->validation_profile;
+    result->height = manifest->height;
+    result->utxo_count = manifest->utxo_count;
+    result->anchor_count = manifest->anchor_count;
+    result->nullifier_count = manifest->nullifier_count;
+    memcpy(result->artifact_digest, manifest->artifact_digest, 32);
+    snprintf(result->reason, sizeof(result->reason),
+             "exported immutable %s height=%d source=%s profile=%s",
+             CONSENSUS_STATE_BUNDLE_SCHEMA, manifest->height,
+             manifest->source_clean ? "clean" : "dirty",
+             manifest->validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                 ? "full" : "checkpoint_fold");
 }
 
 bool consensus_state_snapshot_export(
@@ -657,7 +718,7 @@ bool consensus_state_snapshot_export(
                                      "source is not the owned progress.kv handle");
     if (request->expected_height < 0 ||
         request->expected_height >= INT32_MAX ||
-        !digest_nonzero(request->expected_block_hash))
+        !consensus_export_digest_nonzero(request->expected_block_hash))
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "invalid expected source height/hash");
 
@@ -666,21 +727,15 @@ bool consensus_state_snapshot_export(
     if (!output)
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "output binding allocation failed");
-    output_binding_init(output);
-    if (!output_binding_open(request, output, result)) {
+    consensus_export_output_init(output);
+    if (!consensus_export_output_open(request, output, result)) {
         free(output);
         return false;
     }
-    output_run_after_bind_hook();
+    consensus_export_run_after_bind_hook();
 
-    sqlite3 *destination = NULL;
     struct consensus_state_bundle_manifest manifest;
     memset(&manifest, 0, sizeof(manifest));
-    struct consensus_state_source_receipt receipt;
-    memset(&receipt, 0, sizeof(receipt));
-    struct consensus_state_bundle_proof_summary
-        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT];
-    memset(proofs, 0, sizeof(proofs));
     bool source_tx = false;
     bool ok = true;
 
@@ -699,22 +754,8 @@ bool consensus_state_snapshot_export(
         source_tx = true;
     }
     if (ok)
-        ok = consensus_export_prove_source(progress_db, request, &manifest,
-                                           &receipt, proofs, result);
-    if (ok)
-        ok = consensus_export_open_temp(output, &destination, result);
-    if (ok)
-        ok = consensus_export_write_bundle(progress_db, destination, &manifest,
-                                           &receipt, proofs, result);
-    if (destination) {
-        if (!output_sqlite_close_strict(output, &destination) && ok) {
-            (void)consensus_export_fail(
-                result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                "bundle close failed");
-            ok = false;
-        }
-        destination = NULL;
-    }
+        ok = consensus_export_prove_write(progress_db, request, output, &manifest,
+                                result);
     if (source_tx) {
         const char *finish = ok ? "COMMIT" : "ROLLBACK";
         if (sqlite3_exec(progress_db, finish, NULL, NULL, NULL) != SQLITE_OK) {
@@ -731,29 +772,13 @@ bool consensus_state_snapshot_export(
     if (ok)
         ok = consensus_export_finalize_temp(output, &manifest, result);
     if (!ok) {
-        output_binding_close(output);
+        consensus_export_output_close(output);
         if (!output->abandon_on_close)
             free(output);
         return false;
     }
-    if (result) {
-        result->status = CONSENSUS_EXPORT_EXPORTED;
-        result->history_complete = true;
-        result->source_clean = manifest.source_clean;
-        result->validation_profile = manifest.validation_profile;
-        result->height = manifest.height;
-        result->utxo_count = manifest.utxo_count;
-        result->anchor_count = manifest.anchor_count;
-        result->nullifier_count = manifest.nullifier_count;
-        memcpy(result->artifact_digest, manifest.artifact_digest, 32);
-        snprintf(result->reason, sizeof(result->reason),
-                 "exported immutable %s height=%d source=%s profile=%s",
-                 CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height,
-                 manifest.source_clean ? "clean" : "dirty",
-                 manifest.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
-                     ? "full" : "checkpoint_fold");
-    }
-    output_binding_close(output);
+    consensus_export_fill_success(&manifest, result);
+    consensus_export_output_close(output);
     if (!output->abandon_on_close)
         free(output);
     return true;

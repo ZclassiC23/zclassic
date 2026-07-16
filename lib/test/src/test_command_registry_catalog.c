@@ -815,6 +815,178 @@ static int test_status_brief_rejects_contract_contradictions(void)
     return failures;
 }
 
+/* A fully valid zcl.public_status.v1 document (mirrors
+ * status_brief_mock_rpc's default fixture) so each case below can drop or
+ * corrupt exactly one field and prove the resulting error names that field
+ * instead of the old one-size-fits-all "invalid zcl.public_status.v1". */
+static const char g_status_brief_valid_doc[] =
+    "{\"schema\":\"zcl.public_status.v1\","
+    "\"partial_result\":false,"
+    "\"served_height\":3117073,\"header_height\":3117074,"
+    "\"served_height_known\":true,"
+    "\"header_height_known\":true,"
+    "\"gap\":1,\"peer_best_height\":3117074,"
+    "\"peer_best_height_known\":true,"
+    "\"target_height\":3117074,\"target_height_known\":true,"
+    "\"chain_evidence_consistent\":true,"
+    "\"sync_state\":\"at_tip\",\"serving\":true,"
+    "\"healthy\":true,\"primary_blocker\":\"none\","
+    "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+        "\"budget_ms\":250,\"partial_result\":false,"
+        "\"budget_exceeded\":false},"
+    "\"peers\":{\"total\":1},"
+    "\"conditions\":{"
+        "\"schema\":\"zcl.condition_engine_summary.v1\","
+        "\"active_count\":2},"
+    "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+        "\"rss_mb\":512},"
+    "\"reducer\":{\"tip_advance_age_seconds\":3},"
+    "\"security_posture\":{"
+        "\"schema\":\"zcl.security_posture.v1\","
+        "\"anchor_backfill_gap\":false,"
+        "\"nullifier_backfill_gap\":false}}";
+
+/* E1: the composite validation used to collapse ~30 predicates into one
+ * opaque "invalid zcl.public_status.v1" message. Each case here removes (or
+ * corrupts) exactly one representative field from an otherwise-valid
+ * document and proves the error names that exact field, and correctly
+ * classifies an entirely-absent key (an older node binary's `agent` RPC
+ * predating a newer field) as schema/version skew rather than a generic
+ * malformed-document error. */
+static int test_status_brief_names_first_failing_field(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status names the first failing zcl.public_status.v1 field") {
+        ASSERT(s != NULL);
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+
+        /* Case 1: an entirely-absent top-level bool field (as an older node
+         * binary's agent RPC would omit) -> named + classified as version
+         * skew, not a generic malformed-document error. */
+        {
+            const char *removed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":true,\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3},"
+                "\"security_posture\":{"
+                    "\"schema\":\"zcl.security_posture.v1\","
+                    "\"anchor_backfill_gap\":false,"
+                    "\"nullifier_backfill_gap\":false}}";
+            g_status_brief_agent_fixture = removed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "chain_evidence_consistent") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") != NULL);
+        }
+
+        /* Case 2: an entirely-absent nested object (a whole newer subsystem
+         * projection an older node never emitted) -> named + version skew. */
+        {
+            const char *removed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"chain_evidence_consistent\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":true,\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3}}";
+            g_status_brief_agent_fixture = removed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "security_posture") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") != NULL);
+        }
+
+        /* Case 3: a field that is PRESENT but the wrong JSON type -> named,
+         * but classified as malformed, not version skew (the key exists;
+         * its value just violates the contract). */
+        {
+            const char *malformed =
+                "{\"schema\":\"zcl.public_status.v1\","
+                "\"partial_result\":false,"
+                "\"served_height\":3117073,\"header_height\":3117074,"
+                "\"served_height_known\":true,"
+                "\"header_height_known\":true,"
+                "\"gap\":1,\"peer_best_height\":3117074,"
+                "\"peer_best_height_known\":true,"
+                "\"target_height\":3117074,\"target_height_known\":true,"
+                "\"chain_evidence_consistent\":true,"
+                "\"sync_state\":\"at_tip\",\"serving\":true,"
+                "\"healthy\":\"yes\",\"primary_blocker\":\"none\","
+                "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                    "\"budget_ms\":250,\"partial_result\":false,"
+                    "\"budget_exceeded\":false},"
+                "\"peers\":{\"total\":1},"
+                "\"conditions\":{"
+                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"active_count\":2},"
+                "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                    "\"rss_mb\":512},"
+                "\"reducer\":{\"tip_advance_age_seconds\":3},"
+                "\"security_posture\":{"
+                    "\"schema\":\"zcl.security_posture.v1\","
+                    "\"anchor_backfill_gap\":false,"
+                    "\"nullifier_backfill_gap\":false}}";
+            g_status_brief_agent_fixture = malformed;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"healthy\"") != NULL ||
+                   strstr(out, "field healthy") != NULL);
+            ASSERT(strstr(out, "predates the CLI contract") == NULL);
+            ASSERT(strstr(out, "missing/invalid field healthy") != NULL);
+        }
+
+        /* Baseline: the fully valid document names nothing and passes. */
+        {
+            g_status_brief_agent_fixture = g_status_brief_valid_doc;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        }
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_planned_fail_closed(void)
 {
     int failures = 0;
@@ -1455,6 +1627,126 @@ static int test_next_actions_fail_closed(void)
     return failures;
 }
 
+/* ── OS-B2: the per-command latency envelope ─────────────────────────── */
+
+static int test_latency_budget_mapping(void)
+{
+    int failures = 0;
+    TEST("latency enum maps to the documented ms budget, total over the enum") {
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_INSTANT),
+                  (int64_t)50);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_FAST),
+                  (int64_t)250);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_FOREGROUND),
+                  (int64_t)750);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_BACKGROUND),
+                  (int64_t)900);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_PERSISTENT),
+                  (int64_t)900);
+        /* Out-of-range falls back to the PERSISTENT/900ms ceiling. */
+        ASSERT_EQ(zcl_command_latency_budget_ms((enum zcl_command_latency)999),
+                  (int64_t)900);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_envelope_carries_latency_contract(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("zcl.result.v1 carries budget_ms/elapsed_ms/budget_exceeded") {
+        const struct zcl_command_spec *s = find_spec(reg, "discover.help");
+        ASSERT(s != NULL);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT(strstr(out, "\"budget_ms\"") != NULL);
+        ASSERT(strstr(out, "\"elapsed_ms\"") != NULL);
+        ASSERT(strstr(out, "\"budget_exceeded\":false") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool b2_latency_in_scope(const struct zcl_command_spec *s)
+{
+    if (s->availability != ZCL_COMMAND_READY ||
+        s->effect != ZCL_COMMAND_EFFECT_READ ||
+        s->mode != ZCL_COMMAND_MODE_SYNC)
+        return false;
+    return strncmp(s->path, "discover.", 9) == 0 ||
+           strncmp(s->path, "code.", 5) == 0;
+}
+
+static int test_ready_read_leaves_meet_latency_bucket(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every READY discover.*/code.* leaf's WARM dispatch meets its latency bucket") {
+        /* budget_ms is a WARM-latency contract (docs/NATIVE_COMMAND_INTERFACE.md
+         * §8 "warm latency class"). code.* leaves lazily build the in-binary
+         * code index on their first call (a ~1s one-time O(codebase) scan);
+         * that cold build is not the steady-state read this bucket budgets. So
+         * warm each in-scope leaf once (result ignored), then assert the SECOND
+         * dispatch's envelope meets the bucket. */
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (!b2_latency_in_scope(s))
+                continue;
+            char warm[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit wcode = ZCL_COMMAND_EXIT_INTERNAL;
+            (void)exec_leaf(reg, s, warm, sizeof(warm), &wcode);
+        }
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (!b2_latency_in_scope(s))
+                continue;
+            char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            /* Dispatch with an empty object; leaves needing a required
+             * positional fail input validation FAST (before any I/O) — still a
+             * valid latency measurement, ok=false is expected and not asserted
+             * here. */
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT(strstr(out, "\"budget_exceeded\":false") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_describe_emits_observed_p99(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("describe surfaces observed_p99_us/observed_samples after repeated dispatch") {
+        const struct zcl_command_spec *s = find_spec(reg, "discover.help");
+        ASSERT(s != NULL);
+        char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        for (int i = 0; i < 10; i++)
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        char describe_out[ZCL_COMMAND_SPEC_BUDGET + 1];
+        size_t n = zcl_command_registry_describe_json(reg, "discover.help",
+                                                       describe_out,
+                                                       sizeof(describe_out));
+        ASSERT(n > 0);
+        ASSERT(strstr(describe_out, "\"observed_p99_us\"") != NULL);
+        /* Earlier tests in this binary already dispatched discover.help, so the
+         * ring holds >= 10 samples (tests share the static g_latency_rings). */
+        struct json_value root;
+        ASSERT(json_read(&root, describe_out, n));
+        const struct json_value *policy = json_get(&root, "policy");
+        ASSERT(policy != NULL);
+        int64_t samples = json_get_int(json_get(policy, "observed_samples"));
+        ASSERT(samples >= (int64_t)10);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
@@ -1462,6 +1754,10 @@ int test_command_registry_catalog(void)
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();
     failures += test_describe_emits_semantics();
+    failures += test_latency_budget_mapping();
+    failures += test_envelope_carries_latency_contract();
+    failures += test_ready_read_leaves_meet_latency_bucket();
+    failures += test_describe_emits_observed_p99();
     failures += test_next_actions_fail_closed();
     failures += test_domain_leaf_counts();
     failures += test_six_roots();
@@ -1477,6 +1773,7 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_composite_fails_closed();
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
+    failures += test_status_brief_names_first_failing_field();
     failures += test_bridge_mcp_free_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();

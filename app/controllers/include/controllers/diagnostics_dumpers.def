@@ -125,6 +125,15 @@
              "running, workers, window, queue_depth, cache_hits/misses/hit_rate, "
              "verdicts_produced, throughput_blk_per_sec, supervised/supervisor_child_id",
              "app/jobs/src/pv_lookahead.c", "lib/test/src/test_pv_lookahead.c"),
+    DIAG_JOB("rom_compile", rom_compile_status_dump_state_json,
+             "ROM compilation fold progress: active/mode/height/target/percent/"
+             "rate_blk_s/eta, the eight reducer stages' live step_us_ewma with "
+             "bottleneck_stage, and the layer ladder (rom_checkpoint/"
+             "sealed_history/sealed_base_receipt/delta/tip_ring). Idle-node-safe: "
+             "when no fold is active this reports the steady-state ladder, not "
+             "an error",
+             "app/jobs/src/rom_compile_status.c",
+             "lib/test/src/test_rom_compile_status.c"),
     DIAG_STAGE("reducer_frontier", reducer_frontier_dump_state_json,
                "reducer L0 authority: H*, served_floor, stage cursors, "
                "success-checked frontiers, coins frontier, first "
@@ -173,6 +182,14 @@
                "lib/test/src/test_peer_lifecycle.c"),
     DIAG_LOCAL("network_monitor", network_monitor_dump_state_json,
                "reachable-network chain view: modal tip, max height, our delta, fork clusters"),
+    DIAG_SERVICE("network_census", network_crawler_dump_state_json,
+                 "whole-network observatory (opt-in crawler): enabled/running, "
+                 "addresses_known, census_rows, probed_last_round, reachable_count, "
+                 "onion/clearnet split, version histogram (top-N), height "
+                 "distribution (modal/max/min/spread), and a whole-network "
+                 "eclipse_suspected signal + evidence (our modal vs network modal)",
+                 "app/services/src/network_crawler.c",
+                 "lib/test/src/test_network_crawler.c"),
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",
@@ -201,6 +218,10 @@
     DIAG_SERVICE("block_pruning", block_pruning_dump_state_json,
                  "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data",
                  "app/services/src/block_pruning_service.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("segment_sealer", segment_sealer_dump_state_json,
+                 "sealed ROM segment sealer: enabled flag, finalized frontier, "
+                 "segments sealed/failed, last sealed first_height, last status",
+                 "app/services/src/segment_sealer_service.c", DIAG_TEST_DEFAULT),
     DIAG_SERVICE("crypto_registry", crypto_registry_dump_state_json,
                  "registered crypto schemes, statuses, implementations, and kind counts",
                  "lib/crypto_registry/src/crypto_registry.c", DIAG_TEST_DEFAULT),
@@ -337,6 +358,11 @@
                consensus_state_publication_cas_dump_state_json,
                "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "
                "bound artifact/chain/source/epoch digests, bundle H/hash, expected frontier H/hash, decision digest"),
+    DIAG_LOCAL("bundle_exporter", bundle_exporter_dump_state_json,
+               "standing live consensus-state bundle exporter: "
+               "session_open/qualified, degradation_reason, "
+               "last_export_height/time/duration, exports_ok/failed, "
+               "every_blocks, keep, generations present, last_refusal"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),
     DIAG_LOCAL("auth", auth_challenge_dump_state_json,

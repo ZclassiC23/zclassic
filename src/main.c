@@ -26,6 +26,8 @@
 #include "net/file_service.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
+#include "util/log_level.h"
+#include "util/log_macros.h"
 #include "util/file_tree_ops.h"
 #include "util/spawn.h"
 #include <sqlite3.h>
@@ -2535,9 +2537,30 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
     return 0;
 }
 
+/* Opt-in log-level filter (Phase E3). -loglevel=<all|info|warn|error|fatal|off>
+ * raises the floor the LOG_*/GUARD* macros (log_macros.h) emit at. Default
+ * stays ZCL_LOG_ALL (zero behavior change) unless the flag is present. An
+ * unrecognized value is a warning, never a boot abort — see
+ * zcl_log_level_from_string()'s contract in util/log_level.h. */
+static void apply_argv_loglevel(void)
+{
+    const char *raw = GetArg("-loglevel", NULL);
+    if (!raw || !raw[0])
+        return;
+
+    enum zcl_log_level level;
+    if (zcl_log_level_from_string(raw, &level)) {
+        zcl_log_level_set(level);
+    } else {
+        LOG_WARN("boot", "unrecognized -loglevel=%s (want "
+                 "all|info|warn|error|fatal|off) — keeping ALL", raw);
+    }
+}
+
 int main(int argc, char **argv)
 {
     ParseParameters(argc, (const char *const *)argv);
+    apply_argv_loglevel();
 
     for (int i = 1; i < argc; ++i) {
         if (strncmp(argv[i], "-bench", 6) == 0)

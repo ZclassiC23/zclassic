@@ -1262,6 +1262,7 @@ int main(int argc, char **argv)
     { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
     { extern int test_network_monitor(void); failures += test_network_monitor(); }
+    { extern int test_network_crawler(void); failures += test_network_crawler(); }
     failures += test_db_maintenance();
     failures += test_mempool_limits();
     failures += test_addrman_integrity();
@@ -1393,6 +1394,7 @@ int main(int argc, char **argv)
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_cpu_topology();
+    failures += test_log_level();
     failures += test_operator_ux();
     failures += test_service_state();
     failures += test_service_state_driver();
@@ -1460,6 +1462,10 @@ int main(int argc, char **argv)
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
     failures += test_refold_cadence();
+    { extern int test_rom_compile_status(void);
+      failures += test_rom_compile_status(); }
+    { extern int test_rom_watch_loop(void);
+      failures += test_rom_watch_loop(); }
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
     { extern int test_snapshot_boot_seed(void);

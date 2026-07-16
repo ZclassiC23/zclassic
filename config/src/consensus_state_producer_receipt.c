@@ -2,6 +2,7 @@
  * Producer-owned durable source receipt for the full-history exporter. */
 
 #include "config/consensus_state_producer_receipt.h"
+#include "consensus_state_producer_receipt_internal.h"
 
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
@@ -17,7 +18,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define PRODUCER_RECEIPT_SUBSYS "consensus_producer_receipt"
 
 /* Singleton start-of-fold ownership marker in the producer's progress.kv.
  * Distinct from the exporter-read consensus_state_source_receipt: this records
@@ -187,88 +187,6 @@ static bool fill_source_identity_claim(struct consensus_state_source_receipt *r)
     claim_digest("zcl.producer_build_inputs.v2", build_inputs_preimage,
                  sizeof(build_inputs_preimage), r->build_inputs_digest);
     return true;
-}
-
-static void proof_u64(struct sha3_256_ctx *ctx, uint64_t value)
-{
-    uint8_t le[8];
-    for (size_t i = 0; i < sizeof(le); i++)
-        le[i] = (uint8_t)(value >> (8u * i));
-    sha3_256_write(ctx, le, sizeof(le));
-}
-
-/* Recompute the genesis..height header corpus digest and confirm the tip hash.
- * MUST stay byte-identical to prove_header_chain() in
- * consensus_state_snapshot_export_proof.c — the exporter compares the receipt's
- * chain_corpus_digest against its own recomputation. The producer-receipt test
- * runs the real exporter, so any drift here fails the test. */
-static bool header_corpus_digest(sqlite3 *db, int32_t height,
-                                 const uint8_t expected_hash[32],
-                                 uint8_t out[32])
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT height,hash,parent_hash FROM header_admit_log "
-            "WHERE height BETWEEN 0 AND ? ORDER BY height", -1, &st,
-            NULL) != SQLITE_OK) {
-        LOG_WARN(PRODUCER_RECEIPT_SUBSYS, "header corpus prepare failed: %s",
-                 sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int(st, 1, height);
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-    static const char domain[] =
-        "zcl.consensus_state_bundle.v1/source-header-chain";
-    sha3_256_write(&ctx, (const uint8_t *)domain, sizeof(domain));
-
-    uint8_t prior[32] = {0};
-    int64_t expected_height = 0;
-    bool ok = true;
-    int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        int height_type = sqlite3_column_type(st, 0);
-        int hash_type = sqlite3_column_type(st, 1);
-        int parent_type = sqlite3_column_type(st, 2);
-        const void *hash = hash_type == SQLITE_BLOB
-            ? sqlite3_column_blob(st, 1) : NULL;
-        const void *parent = parent_type == SQLITE_BLOB
-            ? sqlite3_column_blob(st, 2) : NULL;
-        int parent_len = parent ? sqlite3_column_bytes(st, 2) : 0;
-        int64_t row_height = height_type == SQLITE_INTEGER
-            ? sqlite3_column_int64(st, 0) : -1;
-        bool genesis_parent = row_height == 0 && parent_type == SQLITE_NULL;
-        bool linked_parent = row_height > 0 && parent_type == SQLITE_BLOB &&
-                             parent && parent_len == 32 &&
-                             memcmp(parent, prior, 32) == 0;
-        if (height_type != SQLITE_INTEGER || hash_type != SQLITE_BLOB || !hash ||
-            sqlite3_column_bytes(st, 1) != 32 ||
-            row_height != expected_height ||
-            (!genesis_parent && !linked_parent)) {
-            ok = false;
-            break;
-        }
-        proof_u64(&ctx, (uint64_t)row_height);
-        sha3_256_write(&ctx, hash, 32);
-        if (row_height > 0) {
-            sha3_256_write(&ctx, parent, 32);
-        } else {
-            uint8_t no_parent[32] = {0};
-            sha3_256_write(&ctx, no_parent, sizeof(no_parent));
-        }
-        memcpy(prior, hash, sizeof(prior));
-        expected_height++;
-    }
-    if (rc != SQLITE_DONE || expected_height != (int64_t)height + 1 ||
-        memcmp(prior, expected_hash, 32) != 0)
-        ok = false;
-    sqlite3_finalize(st);
-    if (ok)
-        sha3_256_finalize(&ctx, out);
-    else
-        LOG_WARN(PRODUCER_RECEIPT_SUBSYS,
-                 "genesis..h=%d header corpus incomplete or wrong tip", height);
-    return ok;
 }
 
 static bool read_session_blob(sqlite3_stmt *st, int col, uint8_t out[32])
@@ -455,6 +373,39 @@ static bool insert_session(sqlite3 *db,
                                 SQLITE_TRANSIENT) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, start_us) == SQLITE_OK &&
               sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Read the EXISTING committed receipt's fold_cursor (H*+1 of the last finalize).
+ * *present reports whether a receipt row exists; returns false only on a store
+ * error. Used by the monotonic re-finalize guard: the standing live exporter
+ * (config/src/bundle_exporter.c) re-finalizes each export cycle at the current
+ * durable tip, and the committed generation must only ever roll FORWARD. */
+static bool read_existing_receipt_fold_cursor(sqlite3 *db, int64_t *out,
+                                              bool *present)
+{
+    *present = false;
+    *out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT fold_cursor FROM consensus_state_source_receipt "
+            "WHERE singleton=1", -1, &st, NULL) != SQLITE_OK) {
+        /* Table may not exist yet: a legitimate "no prior receipt". */
+        return true;
+    }
+    int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) == SQLITE_INTEGER) {
+            *out = sqlite3_column_int64(st, 0);
+            *present = true;
+        } else {
+            ok = false;
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
     sqlite3_finalize(st);
     return ok;
 }
@@ -759,14 +710,43 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
     }
 
     if (ok &&
-        !header_corpus_digest(pdb, height, block_hash,
-                              receipt.chain_corpus_digest)) {
+        !producer_receipt_header_corpus_digest(pdb, height, block_hash,
+                                               receipt.chain_corpus_digest)) {
         (void)exec_checked(pdb, "ROLLBACK");
         progress_store_tx_unlock();
         return set_err(err, err_size,
                        "producer receipt finalize: genesis..H* header corpus "
                        "does not resolve the completed tip");
     }
+    /* Monotonic re-finalize guard: the committed generation may only roll
+     * FORWARD. A first finalize (no prior receipt) always passes; a re-finalize
+     * at an equal height is an idempotent re-emit; a re-finalize at a LOWER
+     * height is refused (fail closed). The running-binary + session-epoch checks
+     * above already forbid a FOREIGN binary from re-finalizing at all. */
+    if (ok) {
+        int64_t existing_cursor = 0;
+        bool existing_present = false;
+        if (!read_existing_receipt_fold_cursor(pdb, &existing_cursor,
+                                                &existing_present)) {
+            (void)exec_checked(pdb, "ROLLBACK");
+            progress_store_tx_unlock();
+            return set_err(err, err_size,
+                           "producer receipt finalize: existing receipt fold "
+                           "cursor read failed");
+        }
+        if (existing_present && (int64_t)height + 1 < existing_cursor) {
+            (void)exec_checked(pdb, "ROLLBACK");
+            progress_store_tx_unlock();
+            char why[192];
+            snprintf(why, sizeof(why),
+                     "producer receipt finalize: monotonic re-finalize cannot "
+                     "move the committed fold cursor backward (have=%lld "
+                     "want=%lld)", (long long)existing_cursor,
+                     (long long)((int64_t)height + 1));
+            return set_err(err, err_size, why);
+        }
+    }
+
     if (ok) {
         receipt.fold_cursor = (int64_t)height + 1;
         consensus_state_source_receipt_digest(&receipt, receipt.receipt_digest);

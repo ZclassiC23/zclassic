@@ -285,19 +285,71 @@ bool coins_kv_spend_many(sqlite3 *db, const struct coins_kv_spend_row *rows,
     return coins_kv_spend_many_sqlite(db, rows, count);
 }
 
-bool coins_kv_exists_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+/* ── shared point-read SQL + a lazy prepare-or-reuse helper ───────────────
+ * The fresh (_sqlite) and cached (_sqlite_cached) variants share ONE SQL text
+ * and ONE column-extraction path per query, so the two prepare strategies are
+ * provably byte-identical (same statement, same binds, same column reads). */
+static const char CKV_SQL_EXISTS[] =
+    "SELECT 1 FROM coins WHERE txid=? AND vout=?";
+static const char CKV_SQL_GET[] =
+    "SELECT value, script FROM coins WHERE txid=? AND vout=?";
+static const char CKV_SQL_GET_PREVOUT[] =
+    "SELECT value, script, height, is_coinbase FROM coins WHERE txid=? AND vout=?";
+
+/* Return a ready-to-bind statement: either a fresh prepare (fresh==true, the
+ * caller finalizes) or the caller's cached statement (*cache; prepared lazily
+ * once, then reset+clear for reuse). Returns NULL on prepare failure (leaving
+ * *cache NULL). */
+static sqlite3_stmt *ckv_point_stmt(sqlite3 *db, const char *sql, bool fresh,
+                                    sqlite3_stmt **cache)
 {
-    if (!db || !txid) return false;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT 1 FROM coins WHERE txid=? AND vout=?",
-        -1, &s, NULL) != SQLITE_OK)
-        return false;
+    if (fresh) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
+            return NULL;
+        return s;
+    }
+    if (*cache) {
+        sqlite3_reset(*cache);          /* release any prior row lock */
+        sqlite3_clear_bindings(*cache);
+        return *cache;
+    }
+    if (sqlite3_prepare_v2(db, sql, -1, cache, NULL) != SQLITE_OK) {
+        *cache = NULL;
+        return NULL;
+    }
+    return *cache;
+}
+
+/* Bind (txid,vout) and step for an EXISTS probe; reset when reuse==true so a
+ * cached statement releases its lock for the next call. */
+static bool ckv_exists_step(sqlite3_stmt *s, const uint8_t txid[32],
+                            uint32_t vout, bool reuse)
+{
     sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     bool found = sqlite3_step(s) == SQLITE_ROW;  // raw-sql-ok:progress-kv-kernel-store
+    if (reuse) sqlite3_reset(s);
+    return found;
+}
+
+bool coins_kv_exists_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_EXISTS, true, NULL);
+    if (!s) return false;
+    bool found = ckv_exists_step(s, txid, vout, false);
     sqlite3_finalize(s);
     return found;
+}
+
+bool coins_kv_exists_sqlite_cached(sqlite3 *db, sqlite3_stmt **cache,
+                                   const uint8_t txid[32], uint32_t vout)
+{
+    if (!db || !cache || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_EXISTS, false, cache);
+    if (!s) return false;
+    return ckv_exists_step(s, txid, vout, true);
 }
 
 bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
@@ -307,16 +359,12 @@ bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     return coins_kv_exists_sqlite(db, txid, vout);
 }
 
-bool coins_kv_get_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
-                  int64_t *value_out, uint8_t *script_out, size_t script_cap,
-                  size_t *script_len_out)
+/* Bind (txid,vout), step, and extract the (value,script) column set; reset
+ * when reuse==true (cached statement). */
+static bool ckv_get_step(sqlite3_stmt *s, const uint8_t txid[32], uint32_t vout,
+                         int64_t *value_out, uint8_t *script_out,
+                         size_t script_cap, size_t *script_len_out, bool reuse)
 {
-    if (!db || !txid) return false;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT value, script FROM coins WHERE txid=? AND vout=?",
-        -1, &s, NULL) != SQLITE_OK)
-        return false;
     sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     bool found = false;
@@ -333,27 +381,45 @@ bool coins_kv_get_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
             memcpy(script_out, sblob, copy);
         }
     }
+    if (reuse) sqlite3_reset(s);
+    return found;
+}
+
+bool coins_kv_get_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                  int64_t *value_out, uint8_t *script_out, size_t script_cap,
+                  size_t *script_len_out)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_GET, true, NULL);
+    if (!s) return false;
+    bool found = ckv_get_step(s, txid, vout, value_out, script_out, script_cap,
+                              script_len_out, false);
     sqlite3_finalize(s);
     return found;
 }
 
-bool coins_kv_get_prevout_sqlite(sqlite3 *db, const uint8_t txid[32],
-                                 uint32_t vout, int64_t *value_out,
-                                 uint8_t *script_out, size_t script_cap,
-                                 size_t *script_len_out,
-                                 int32_t *height_out,
-                                 bool *is_coinbase_out)
+bool coins_kv_get_sqlite_cached(sqlite3 *db, sqlite3_stmt **cache,
+                                const uint8_t txid[32], uint32_t vout,
+                                int64_t *value_out, uint8_t *script_out,
+                                size_t script_cap, size_t *script_len_out)
 {
-    if (!db || !txid) return false;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT value, script, height, is_coinbase "
-        "FROM coins WHERE txid=? AND vout=?",
-        -1, &s, NULL) != SQLITE_OK)
-        return false;
+    if (!db || !cache || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_GET, false, cache);
+    if (!s) return false;
+    return ckv_get_step(s, txid, vout, value_out, script_out, script_cap,
+                        script_len_out, true);
+}
+
+/* Bind (txid,vout), step, and extract the (value,script,height,is_coinbase)
+ * prevout column set; reset when reuse==true (cached statement). */
+static bool ckv_prevout_step(sqlite3_stmt *s, const uint8_t txid[32],
+                             uint32_t vout, int64_t *value_out,
+                             uint8_t *script_out, size_t script_cap,
+                             size_t *script_len_out, int32_t *height_out,
+                             bool *is_coinbase_out, bool reuse)
+{
     sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
-
     bool found = false;
     if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         found = true;
@@ -369,8 +435,40 @@ bool coins_kv_get_prevout_sqlite(sqlite3 *db, const uint8_t txid[32],
             memcpy(script_out, sblob, copy);
         }
     }
+    if (reuse) sqlite3_reset(s);
+    return found;
+}
+
+bool coins_kv_get_prevout_sqlite(sqlite3 *db, const uint8_t txid[32],
+                                 uint32_t vout, int64_t *value_out,
+                                 uint8_t *script_out, size_t script_cap,
+                                 size_t *script_len_out,
+                                 int32_t *height_out,
+                                 bool *is_coinbase_out)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_GET_PREVOUT, true, NULL);
+    if (!s) return false;
+    bool found = ckv_prevout_step(s, txid, vout, value_out, script_out,
+                                  script_cap, script_len_out, height_out,
+                                  is_coinbase_out, false);
     sqlite3_finalize(s);
     return found;
+}
+
+bool coins_kv_get_prevout_sqlite_cached(sqlite3 *db, sqlite3_stmt **cache,
+                                        const uint8_t txid[32], uint32_t vout,
+                                        int64_t *value_out, uint8_t *script_out,
+                                        size_t script_cap,
+                                        size_t *script_len_out,
+                                        int32_t *height_out,
+                                        bool *is_coinbase_out)
+{
+    if (!db || !cache || !txid) return false;
+    sqlite3_stmt *s = ckv_point_stmt(db, CKV_SQL_GET_PREVOUT, false, cache);
+    if (!s) return false;
+    return ckv_prevout_step(s, txid, vout, value_out, script_out, script_cap,
+                            script_len_out, height_out, is_coinbase_out, true);
 }
 
 bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,

@@ -269,6 +269,16 @@ static const struct zcl_command_registry g_catalog_registry = {
     .count = sizeof(g_catalog_commands) / sizeof(g_catalog_commands[0]),
 };
 
+/* OS-B2 size guard: the kernel's per-leaf latency-ring side-table
+ * (g_latency_rings[ZCL_COMMAND_LATENCY_TABLE_MAX]) must be at least as large as
+ * the compiled catalog, since it is keyed by catalog offset. `lib/kernel` may
+ * not include config headers, so this check lives here, on the config side,
+ * which already includes kernel/command_registry.h. */
+_Static_assert(sizeof(g_catalog_commands) / sizeof(g_catalog_commands[0]) <=
+                   ZCL_COMMAND_LATENCY_TABLE_MAX,
+               "catalog leaf count exceeds the kernel latency-ring table — "
+               "raise ZCL_COMMAND_LATENCY_TABLE_MAX in command_registry.h");
+
 const struct zcl_command_registry *zcl_command_catalog(void)
 {
     return &g_catalog_registry;

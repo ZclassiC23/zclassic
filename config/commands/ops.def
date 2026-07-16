@@ -176,6 +176,28 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_producer_status)
 
 ZCL_COMMAND_READY_READ(
+    "ops.debug.rom", "ops.debug", "ops.rom", "ROM compilation fold progress",
+    "Live ROM-compile-fold telemetry (dumpstate rom_compile) read from THIS "
+    "running node at call time — height/target/percent/rate/ETA, the eight "
+    "reducer stages' step_us_ewma, the ROM pipeline rows (fold -> seal -> "
+    "manifest -> bundle export), and the layer ladder; when no fold is "
+    "active this is the steady-state ladder, not an error. CLI-only argv "
+    "inputs (intercepted before dispatch, not part of the machine JSON "
+    "contract): --watch redraws in place until interrupted, --once renders a "
+    "single frame, --interval=<secs> sets the poll cadence (clamped 1..60s), "
+    "and --datadir=<dir> renders a FOREIGN offline producer datadir read-only "
+    "(progress.kv + segments + mint-progress.log) instead of this node.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "rom,compile,fold,progress,checkpoint,anchor,layers,ascii,mint",
+    "zcl.command.empty_input.v1", "zcl.rom_compile.v1", "", "",
+    "zclassic23 ops rom",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_rom)
+
+ZCL_COMMAND_READY_READ(
     "ops.debug.backtrace", "ops.debug", "", "Dump every thread's backtrace",
     "A captured backtrace for every live thread plus the log path it was "
     "written to, dumped by the running node at call time; a point-in-time "

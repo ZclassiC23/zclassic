@@ -12,6 +12,7 @@
 #include "test/test_helpers.h"
 
 #include "services/block_index_integrity.h"
+#include "config/boot_cursor_state.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -768,6 +769,166 @@ static int t_pprev_repair_cursor_skip(void)
     return failures;
 }
 
+/* ── OS-S2 boot O(delta) cursors (config/src/boot_cursor_state.c) ──────── */
+
+/* Build a correct genesis-rooted chain of N blocks into `ms`. Caller owns the
+ * backing storage. hashes[0] is set to the real genesis so repair anchors it. */
+static void bcs_build_chain(struct main_state *ms, struct block_index *blocks,
+                            struct uint256 *hashes, int n)
+{
+    for (int i = 0; i < n; i++) {
+        memset(&blocks[i], 0, sizeof(blocks[i]));
+        memset(&hashes[i], 0, sizeof(hashes[i]));
+        hashes[i].data[0] = (uint8_t)(i + 1);
+        blocks[i].phashBlock = &hashes[i];
+        blocks[i].pprev = (i > 0) ? &blocks[i - 1] : NULL;
+        blocks[i].nHeight = i;
+        blocks[i].nBits = 0x2007ffff;
+        blocks[i].nTx = 1;
+        blocks[i].nChainTx = (unsigned)(i + 1);
+        block_map_insert(&ms->map_block_index, &hashes[i], &blocks[i]);
+    }
+    hashes[0] = chain_params_get()->consensus.hashGenesisBlock;
+}
+
+static int t_bcs_fingerprint(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+    enum { N = 12 };
+    struct block_index blocks[N];
+    struct uint256 hashes[N];
+    bcs_build_chain(&ms, blocks, hashes, N);
+
+    uint64_t fp1 = boot_block_index_fingerprint(&ms);
+    uint64_t fp2 = boot_block_index_fingerprint(&ms);
+    BII_RUN("bcs: fingerprint is stable across identical reads", fp1 == fp2);
+    BII_RUN("bcs: fingerprint is nonzero for a populated map", fp1 != 0);
+
+    blocks[5].nHeight = 999;   /* perturb one navigation field */
+    uint64_t fp3 = boot_block_index_fingerprint(&ms);
+    BII_RUN("bcs: fingerprint changes when a height changes", fp3 != fp1);
+
+    main_state_free(&ms);
+    return failures;
+}
+
+static int t_bcs_repair_heights_range_cursor(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+    enum { N = 10 };
+    struct block_index blocks[N];
+    struct uint256 hashes[N];
+    bcs_build_chain(&ms, blocks, hashes, N);
+
+    /* (a) Clean chain + cursor mid: nothing is wrong, so the O(delta) path
+     * returns 0 without touching heights, and reports the true max height. */
+    int out_max = -1;
+    int fixed_clean = block_index_repair_heights_range(&ms, 5, &out_max);
+    BII_RUN("bcs: range repair returns 0 on a clean chain (fast path)",
+            fixed_clean == 0);
+    BII_RUN("bcs: range repair reports max height for cursor advance",
+            out_max == N - 1);
+
+    /* (b) Corrupt the tip to a HIGH value (reads as above the cursor); the
+     * range repair counts + fixes it via genesis-rooted propagation. */
+    blocks[N - 1].nHeight = 4242;
+    int fixed = block_index_repair_heights_range(&ms, N - 2, &out_max);
+    BII_RUN("bcs: range repair fixes a wrong height above the cursor",
+            fixed > 0 && blocks[N - 1].nHeight == N - 1);
+
+    /* (c) Corrupt an entry to a value AT/BELOW the cursor: the gate excludes
+     * it (nHeight not > min_height), so it is NOT counted and survives —
+     * proving the cursor skips already-verified below-cursor work. */
+    blocks[3].nHeight = 1;   /* 1 <= cursor 5 → excluded */
+    int fixed_below = block_index_repair_heights_range(&ms, 5, NULL);
+    BII_RUN("bcs: range repair skips a wrong height at/below the cursor",
+            fixed_below == 0 && blocks[3].nHeight == 1);
+
+    /* Full (-1) re-derives everything — the un-cursored entry point. */
+    int full = block_index_repair_heights_range(&ms, -1, NULL);
+    BII_RUN("bcs: full range (-1) repairs the below-cursor wrong height",
+            full > 0 && blocks[3].nHeight == 3);
+
+    main_state_free(&ms);
+    return failures;
+}
+
+static int t_bcs_clamp_on_reorg(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, ":memory:")) {
+        printf("bcs: clamp — node_db_open(:memory:) FAILED\n");
+        return 1;
+    }
+
+    node_db_state_set_int(&ndb, BOOT_CUR_HEIGHTS, 100);
+    node_db_state_set_int(&ndb, BOOT_CUR_HEIGHTS_CNT, 500);
+    node_db_state_set_int(&ndb, BOOT_CUR_NCHAINTX, 100);
+    node_db_state_set_int(&ndb, BOOT_CUR_WALLET, 100);
+
+    /* Reorg at fork height 50 → every int cursor clamps to 49, count zeroed. */
+    boot_cursor_clamp_on_reorg(&ndb, 50);
+    int64_t h = -1, cnt = -1, nct = -1, wal = -1;
+    node_db_state_get_int(&ndb, BOOT_CUR_HEIGHTS, &h);
+    node_db_state_get_int(&ndb, BOOT_CUR_HEIGHTS_CNT, &cnt);
+    node_db_state_get_int(&ndb, BOOT_CUR_NCHAINTX, &nct);
+    node_db_state_get_int(&ndb, BOOT_CUR_WALLET, &wal);
+    BII_RUN("bcs: clamp lowers heights/nchaintx/wallet cursors to fork-1",
+            h == 49 && nct == 49 && wal == 49);
+    BII_RUN("bcs: clamp zeros the heights-count guard so #1 re-derives",
+            cnt == 0);
+
+    /* A fork ABOVE the cursors is a no-op (min-only). */
+    boot_cursor_clamp_on_reorg(&ndb, 200);
+    node_db_state_get_int(&ndb, BOOT_CUR_HEIGHTS, &h);
+    BII_RUN("bcs: clamp is min-only (fork above cursor is a no-op)", h == 49);
+
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_bcs_repair_heights_wrapper(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, ":memory:")) {
+        printf("bcs: wrapper — node_db_open(:memory:) FAILED\n");
+        return 1;
+    }
+    struct main_state ms;
+    main_state_init(&ms);
+    enum { N = 200 };  /* > 100 so the size gate in boot.c would engage */
+    static struct block_index blocks[N];
+    static struct uint256 hashes[N];
+    bcs_build_chain(&ms, blocks, hashes, N);
+
+    /* First call: no cursor → full repair + stamp. */
+    (void)boot_cursor_repair_heights(&ms, &ndb);
+    int64_t upto = -1, cnt = -1;
+    node_db_state_get_int(&ndb, BOOT_CUR_HEIGHTS, &upto);
+    node_db_state_get_int(&ndb, BOOT_CUR_HEIGHTS_CNT, &cnt);
+    BII_RUN("bcs: wrapper stamps high-water + count after first pass",
+            upto == N - 1 && cnt == (int64_t)ms.map_block_index.size);
+
+    /* Second call: count matches size + high-water set → fast-skip. Corrupt a
+     * height first; the skip must LEAVE it (proving the O(1) path ran). */
+    blocks[N - 1].nHeight = 5150;
+    int repaired = boot_cursor_repair_heights(&ms, &ndb);
+    BII_RUN("bcs: wrapper fast-skips when the count-guarded cursor covers all",
+            repaired == 0 && blocks[N - 1].nHeight == 5150);
+
+    main_state_free(&ms);
+    node_db_close(&ndb);
+    return failures;
+}
+
 int test_block_index_integrity(void)
 {
     printf("\n=== block_index_integrity tests ===\n");
@@ -792,5 +953,9 @@ int test_block_index_integrity(void)
     failures += t_height_repair_detached_subtree();
     failures += t_anchor_repair_null_inputs();
     failures += t_pprev_repair_cursor_skip();
+    failures += t_bcs_fingerprint();
+    failures += t_bcs_repair_heights_range_cursor();
+    failures += t_bcs_clamp_on_reorg();
+    failures += t_bcs_repair_heights_wrapper();
     return failures;
 }

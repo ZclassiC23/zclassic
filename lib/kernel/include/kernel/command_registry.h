@@ -91,6 +91,26 @@ enum zcl_command_latency {
     ZCL_COMMAND_LATENCY_PERSISTENT,
 };
 
+/* Per-latency-bucket dispatch budget in milliseconds. Rehomes the legacy
+ * agent_first_call.h budgets (250/500/750/900, MCP-only, deleted in zero-MCP
+ * W3) as the kernel's own contract so every native leaf carries it, not just
+ * the five MCP agent controllers that used to. */
+#define ZCL_COMMAND_LATENCY_BUDGET_INSTANT_MS    50
+#define ZCL_COMMAND_LATENCY_BUDGET_FAST_MS       250
+#define ZCL_COMMAND_LATENCY_BUDGET_FOREGROUND_MS 750
+#define ZCL_COMMAND_LATENCY_BUDGET_BACKGROUND_MS 900
+#define ZCL_COMMAND_LATENCY_BUDGET_PERSISTENT_MS 900
+
+/* >= the compiled catalog's leaf count; sized with headroom for the per-leaf
+ * latency-sample ring (OS-B2 §2). config/src/command_catalog.c asserts against
+ * this at compile time (size guard). */
+#define ZCL_COMMAND_LATENCY_TABLE_MAX 512U
+
+/* Maps a leaf's declared `latency` enum to its dispatch budget in ms. Pure,
+ * total: an out-of-range value falls back to the PERSISTENT/900ms ceiling,
+ * never 0 or undefined behavior. */
+int64_t zcl_command_latency_budget_ms(enum zcl_command_latency latency);
+
 enum zcl_command_cost {
     ZCL_COMMAND_COST_TINY = 0,
     ZCL_COMMAND_COST_LOW,

@@ -93,6 +93,54 @@ static bool status_machine_token(const char *value)
     return true;
 }
 
+/* ── Named-predicate validation ────────────────────────────────────
+ *
+ * zcl.public_status.v1 is validated by a long ordered list of
+ * predicates. Historically these lived in one giant `&&` chain, so
+ * whichever predicate failed, the operator/AI only ever saw one
+ * opaque message ("RPC agent returned an error or invalid
+ * zcl.public_status.v1") with no clue which field was the problem —
+ * including the common case of an older node binary whose `agent` RPC
+ * predates a field the CLI now requires.
+ *
+ * `status_validate` tracks the FIRST predicate that fails: its field
+ * name (for the error message) and whether the underlying JSON key
+ * was entirely ABSENT (as opposed to present-but-malformed). Absent +
+ * schema-matches is schema/version skew — the node binary predates
+ * the CLI contract; present-but-wrong is a malformed/self-contradictory
+ * document. The SCHECK() macro below turns each conjunct of the
+ * former `&&` chain into a named, order-preserving, short-circuiting
+ * check: once one predicate has failed, every later SCHECK() is a
+ * no-op that does not evaluate its condition (so it stays safe to
+ * dereference sub-objects the earlier checks proved exist). */
+struct status_validate {
+    bool failed;
+    bool version_skew; /* first failing key was absent, not malformed */
+    char field[96];
+};
+
+static bool status_key_missing(const struct json_value *obj, const char *key)
+{
+    return !obj || obj->type != JSON_OBJ || json_get(obj, key) == NULL;
+}
+
+static bool status_note_fail(struct status_validate *v, const char *field,
+                             bool missing)
+{
+    if (!v->failed) {
+        v->failed = true;
+        v->version_skew = missing;
+        (void)snprintf(v->field, sizeof(v->field), "%s", field);
+    }
+    return false;
+}
+
+/* `missing`/`cond` are only evaluated once v->failed is false, so this
+ * is safe to chain even when later conds read through an object an
+ * earlier failed check would have left NULL. */
+#define SCHECK(v, field, missing, cond) \
+    ((v)->failed ? false : ((cond) ? true : status_note_fail((v), (field), (missing))))
+
 char *zcl_native_status_brief_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
@@ -136,81 +184,154 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         status_schema_is(resources, "zcl.node_resources.v1") &&
         status_read_optional_nonnegative(resources, "rss_mb", &rss_mb,
                                          &rss_known);
+
+    struct status_validate v = {0};
     bool valid = parsed &&
-        status_schema_is(&agent, "zcl.public_status.v1") &&
-        status_read_known_height(&agent, "served_height",
-                                 "served_height_known", &served_height,
-                                 &served_known) &&
-        status_read_known_height(&agent, "header_height",
-                                 "header_height_known", &header_height,
-                                 &header_known) &&
-        status_read_nonnegative_int(&agent, "gap", &gap) &&
-        status_read_known_height(&agent, "peer_best_height",
-                                 "peer_best_height_known", &peer_best,
-                                 &peer_best_known) &&
-        status_read_known_height(&agent, "target_height",
-                                 "target_height_known", &target_height,
-                                 &target_known) &&
-        status_read_bool(&agent, "chain_evidence_consistent",
-                         &chain_evidence_consistent) &&
-        status_read_bool(&agent, "partial_result", &partial_result) &&
-        status_read_bool(&agent, "serving", &serving) &&
-        status_read_bool(&agent, "healthy", &healthy) &&
-        status_machine_token(sync_state) &&
-        status_machine_token(reported_blocker) &&
-        peers && peers->type == JSON_OBJ &&
-        conditions && conditions->type == JSON_OBJ &&
-        status_schema_is(conditions, "zcl.condition_engine_summary.v1") &&
-        reducer && reducer->type == JSON_OBJ &&
-        security && security->type == JSON_OBJ &&
-        status_schema_is(security, "zcl.security_posture.v1") &&
-        first_call && first_call->type == JSON_OBJ &&
-        status_schema_is(first_call, "zcl.first_call_contract.v1") &&
-        status_read_nonnegative_int(peers, "total", &peer_count) &&
-        status_read_nonnegative_int(conditions, "active_count",
-                                    &active_conditions) &&
-        status_read_optional_nonnegative(reducer, "tip_advance_age_seconds",
-                                         &tip_advance_age_seconds,
-                                         &tip_age_known) &&
-        status_read_bool(security, "anchor_backfill_gap", &anchor_gap) &&
-        status_read_bool(security, "nullifier_backfill_gap",
-                         &nullifier_gap) &&
-        status_read_nonnegative_int(first_call, "budget_ms",
-                                    &first_call_budget_ms) &&
-        first_call_budget_ms > 0 &&
-        status_read_bool(first_call, "partial_result",
-                         &first_call_partial) &&
-        status_read_bool(first_call, "budget_exceeded", &budget_exceeded) &&
-        !budget_exceeded && first_call_partial == partial_result &&
-        (resources_shape_ok || (partial_result && !resources)) &&
-        (!partial_result ||
-         (json_get_str(json_get(&agent, "partial_reason")) != NULL &&
-          json_get_str(json_get(&agent, "partial_reason"))[0])) &&
-        (!serving || served_known) && (!healthy || serving) &&
-        ((!anchor_gap && !nullifier_gap) || !healthy);
+        SCHECK(&v, "schema", status_key_missing(&agent, "schema"),
+              status_schema_is(&agent, "zcl.public_status.v1")) &&
+        SCHECK(&v, "served_height_known",
+              status_key_missing(&agent, "served_height") ||
+                  status_key_missing(&agent, "served_height_known"),
+              status_read_known_height(&agent, "served_height",
+                                       "served_height_known", &served_height,
+                                       &served_known)) &&
+        SCHECK(&v, "header_height_known",
+              status_key_missing(&agent, "header_height") ||
+                  status_key_missing(&agent, "header_height_known"),
+              status_read_known_height(&agent, "header_height",
+                                       "header_height_known", &header_height,
+                                       &header_known)) &&
+        SCHECK(&v, "gap", status_key_missing(&agent, "gap"),
+              status_read_nonnegative_int(&agent, "gap", &gap)) &&
+        SCHECK(&v, "peer_best_height_known",
+              status_key_missing(&agent, "peer_best_height") ||
+                  status_key_missing(&agent, "peer_best_height_known"),
+              status_read_known_height(&agent, "peer_best_height",
+                                       "peer_best_height_known", &peer_best,
+                                       &peer_best_known)) &&
+        SCHECK(&v, "target_height_known",
+              status_key_missing(&agent, "target_height") ||
+                  status_key_missing(&agent, "target_height_known"),
+              status_read_known_height(&agent, "target_height",
+                                       "target_height_known", &target_height,
+                                       &target_known)) &&
+        SCHECK(&v, "chain_evidence_consistent",
+              status_key_missing(&agent, "chain_evidence_consistent"),
+              status_read_bool(&agent, "chain_evidence_consistent",
+                               &chain_evidence_consistent)) &&
+        SCHECK(&v, "partial_result",
+              status_key_missing(&agent, "partial_result"),
+              status_read_bool(&agent, "partial_result", &partial_result)) &&
+        SCHECK(&v, "serving", status_key_missing(&agent, "serving"),
+              status_read_bool(&agent, "serving", &serving)) &&
+        SCHECK(&v, "healthy", status_key_missing(&agent, "healthy"),
+              status_read_bool(&agent, "healthy", &healthy)) &&
+        SCHECK(&v, "sync_state", status_key_missing(&agent, "sync_state"),
+              status_machine_token(sync_state)) &&
+        SCHECK(&v, "primary_blocker",
+              status_key_missing(&agent, "primary_blocker"),
+              status_machine_token(reported_blocker)) &&
+        SCHECK(&v, "peers", status_key_missing(&agent, "peers"),
+              peers && peers->type == JSON_OBJ) &&
+        SCHECK(&v, "conditions", status_key_missing(&agent, "conditions"),
+              conditions && conditions->type == JSON_OBJ) &&
+        SCHECK(&v, "conditions.schema",
+              status_key_missing(conditions, "schema"),
+              status_schema_is(conditions,
+                               "zcl.condition_engine_summary.v1")) &&
+        SCHECK(&v, "reducer", status_key_missing(&agent, "reducer"),
+              reducer && reducer->type == JSON_OBJ) &&
+        SCHECK(&v, "security_posture",
+              status_key_missing(&agent, "security_posture"),
+              security && security->type == JSON_OBJ) &&
+        SCHECK(&v, "security_posture.schema",
+              status_key_missing(security, "schema"),
+              status_schema_is(security, "zcl.security_posture.v1")) &&
+        SCHECK(&v, "first_call", status_key_missing(&agent, "first_call"),
+              first_call && first_call->type == JSON_OBJ) &&
+        SCHECK(&v, "first_call.schema",
+              status_key_missing(first_call, "schema"),
+              status_schema_is(first_call, "zcl.first_call_contract.v1")) &&
+        SCHECK(&v, "peers.total", status_key_missing(peers, "total"),
+              status_read_nonnegative_int(peers, "total", &peer_count)) &&
+        SCHECK(&v, "conditions.active_count",
+              status_key_missing(conditions, "active_count"),
+              status_read_nonnegative_int(conditions, "active_count",
+                                          &active_conditions)) &&
+        SCHECK(&v, "reducer.tip_advance_age_seconds",
+              status_key_missing(reducer, "tip_advance_age_seconds"),
+              status_read_optional_nonnegative(
+                  reducer, "tip_advance_age_seconds",
+                  &tip_advance_age_seconds, &tip_age_known)) &&
+        SCHECK(&v, "security_posture.anchor_backfill_gap",
+              status_key_missing(security, "anchor_backfill_gap"),
+              status_read_bool(security, "anchor_backfill_gap",
+                               &anchor_gap)) &&
+        SCHECK(&v, "security_posture.nullifier_backfill_gap",
+              status_key_missing(security, "nullifier_backfill_gap"),
+              status_read_bool(security, "nullifier_backfill_gap",
+                               &nullifier_gap)) &&
+        SCHECK(&v, "first_call.budget_ms",
+              status_key_missing(first_call, "budget_ms"),
+              status_read_nonnegative_int(first_call, "budget_ms",
+                                          &first_call_budget_ms)) &&
+        SCHECK(&v, "first_call.budget_ms", false, first_call_budget_ms > 0) &&
+        SCHECK(&v, "first_call.partial_result",
+              status_key_missing(first_call, "partial_result"),
+              status_read_bool(first_call, "partial_result",
+                               &first_call_partial)) &&
+        SCHECK(&v, "first_call.budget_exceeded",
+              status_key_missing(first_call, "budget_exceeded"),
+              status_read_bool(first_call, "budget_exceeded",
+                               &budget_exceeded)) &&
+        SCHECK(&v, "first_call.budget_exceeded", false, !budget_exceeded) &&
+        SCHECK(&v, "first_call.partial_result", false,
+              first_call_partial == partial_result) &&
+        SCHECK(&v, "resources", status_key_missing(&agent, "resources"),
+              resources_shape_ok || (partial_result && !resources)) &&
+        SCHECK(&v, "partial_reason",
+              status_key_missing(&agent, "partial_reason"),
+              !partial_result ||
+                  (json_get_str(json_get(&agent, "partial_reason")) != NULL &&
+                   json_get_str(json_get(&agent, "partial_reason"))[0])) &&
+        SCHECK(&v, "served_height_known", false, !serving || served_known) &&
+        SCHECK(&v, "healthy", false, !healthy || serving) &&
+        SCHECK(&v, "security_posture.anchor_backfill_gap", false,
+              (!anchor_gap && !nullifier_gap) || !healthy);
 
     if (valid) {
         gap_known = chain_evidence_consistent;
         /* A consistent local chain has target==header and an exact arithmetic
          * gap.  An inconsistent/unknown chain is emitted as null and the
          * producer's sentinel gap must remain zero. */
-        valid = gap_known
-            ? served_known && header_known && target_known &&
-              target_height == header_height &&
-              header_height >= served_height &&
-              gap == header_height - served_height
-            : gap == 0;
+        valid = SCHECK(&v, "gap", false,
+                       gap_known
+                           ? served_known && header_known && target_known &&
+                             target_height == header_height &&
+                             header_height >= served_height &&
+                             gap == header_height - served_height
+                           : gap == 0);
     }
 
     if (!valid) {
         json_free(&agent);
         free(raw);
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
-        (void)snprintf(
-            err->message, sizeof(err->message),
-            "RPC agent returned an error or invalid zcl.public_status.v1");
-        LOG_NULL("native.status",
-                 "RPC agent returned an error or invalid zcl.public_status.v1");
+        if (!parsed) {
+            (void)snprintf(err->message, sizeof(err->message),
+                          "RPC agent returned an error or invalid "
+                          "zcl.public_status.v1 (unparsable JSON response)");
+        } else if (v.version_skew) {
+            (void)snprintf(err->message, sizeof(err->message),
+                          "invalid zcl.public_status.v1: node binary "
+                          "predates the CLI contract (missing field %s)",
+                          v.field);
+        } else {
+            (void)snprintf(err->message, sizeof(err->message),
+                          "invalid zcl.public_status.v1: missing/invalid "
+                          "field %s", v.field);
+        }
+        LOG_NULL("native.status", "%s", err->message);
     }
 
     /* Permanent independently-diagnosed shielded-history incompleteness is

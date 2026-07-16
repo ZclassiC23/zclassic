@@ -1,0 +1,386 @@
+// one-result-type-ok:json-dump-bool — the only bool-returning export here is
+// segment_sealer_dump_state_json, the zcl_state introspection dumper, whose
+// convention (CLAUDE.md "Adding state introspection") mandates a bool return.
+
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Segment Sealer Service — see services/segment_sealer_service.h for design.
+ *
+ * The seal loop, per tick:
+ *   1. frontier = active_chain_height - finality_depth  (finalized, immutable)
+ *   2. next-range = first unsealed, fully-below-frontier, 10k-aligned segment
+ *   3. seal exactly that ONE segment via chain_segment_seal_range, reading each
+ *      body through the ordinary disk path (never reducer internals)
+ * One segment per tick bounds the IO so the sealer never races the reducer
+ * drive. The body source fails closed on any height that is off the active
+ * chain or missing HAVE_DATA, so seal_range leaves no partial segment behind.
+ */
+
+#include "platform/time_compat.h"
+#include "services/segment_sealer_service.h"
+
+#include "chain/chain.h"
+#include "core/serialize.h"
+#include "event/event.h"
+#include "json/json.h"
+#include "primitives/block.h"
+#include "storage/chain_segment.h"
+#include "storage/disk_block_io.h"
+#include "supervisors/domains.h"
+#include "util/file_tree_ops.h"
+#include "util/log_macros.h"
+#include "util/result.h"
+#include "util/safe_alloc.h"
+#include "util/supervisor.h"
+#include "util/thread_registry.h"
+
+#include <errno.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct segment_sealer_service *g_segment_sealer = NULL;
+
+static struct liveness_contract g_seal_contract;
+static _Atomic supervisor_child_id g_seal_supervisor_id = SUPERVISOR_INVALID_ID;
+
+/* ── Range selection (pure) ─────────────────────────────────────────────── */
+
+bool segment_sealer_next_range(uint32_t frontier_incl,
+                               const struct chain_segment_store *store,
+                               uint32_t *first, uint32_t *count)
+{
+    const uint32_t seg = CHAIN_SEGMENT_BLOCKS_PER_SEG;
+    /* Walk aligned segments from genesis; return the first one that is fully
+     * below the frontier and not already sealed. The scan is a few hundred
+     * cheap covers() probes at most — bounded by chain_height / 10000. */
+    for (uint32_t k = 0;; k++) {
+        uint32_t f = k * seg;
+        uint32_t top = f + seg - 1;
+        if (top < f) return false;             /* overflow guard */
+        if (top > frontier_incl) return false; /* not yet finalized */
+        bool sealed = store && chain_segment_store_covers(store, f);
+        if (!sealed) {
+            if (first) *first = f;
+            if (count) *count = seg;
+            return true;
+        }
+    }
+}
+
+/* ── Disk-backed body source (mirrors chain_segment_controller) ─────────── */
+
+struct seal_body_ctx {
+    struct main_state *ms;
+    const char *datadir;
+};
+
+static bool seal_body_read(void *user, uint32_t height,
+                           uint8_t **bytes, size_t *len)
+{
+    struct seal_body_ctx *c = user;
+    *bytes = NULL; *len = 0;
+
+    struct block_index *bi = active_chain_at(&c->ms->chain_active, (int)height);
+    if (!bi || !bi->phashBlock ||
+        !(block_index_status_load(bi) & BLOCK_HAVE_DATA))
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_index_pread(&blk, bi, c->datadir)) {
+        block_free(&blk);
+        return false;
+    }
+
+    struct byte_stream s;
+    stream_init(&s, 4096);
+    if (!block_serialize(&blk, &s) || s.size == 0) {
+        stream_free(&s);
+        block_free(&blk);
+        return false;
+    }
+    uint8_t *copy = zcl_malloc(s.size, "segment_sealer/body");
+    if (copy) {
+        memcpy(copy, s.data, s.size);
+        *bytes = copy;
+        *len = s.size;
+    }
+    stream_free(&s);
+    block_free(&blk);
+    return copy != NULL;
+}
+
+/* ── One seal pass ──────────────────────────────────────────────────────── */
+
+int segment_sealer_run_once(struct segment_sealer_service *svc, bool force)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        return 0;
+    if (!force && !svc->enabled)
+        return 0;
+
+    int chain_height = active_chain_height(&svc->ms->chain_active);
+    if (chain_height <= svc->finality_depth) {
+        atomic_store(&svc->frontier, -1);
+        return 0; /* chain too short to have any finalized segment */
+    }
+    uint32_t frontier = (uint32_t)(chain_height - svc->finality_depth);
+    atomic_store(&svc->frontier, (int64_t)frontier);
+
+    char dir[3200];
+    snprintf(dir, sizeof(dir), "%s/segments", svc->datadir);
+
+    /* Load the current coverage so we skip already-sealed segments. */
+    struct chain_segment_store *store = NULL;
+    char err[256] = {0};
+    enum cseg_status ost =
+        chain_segment_store_open(dir, &store, err, sizeof(err));
+    if (ost != CSEG_OK) {
+        LOG_WARN("segment_sealer", "[segment_sealer] store open %s: %s (%s)",
+                 dir, cseg_status_str(ost), err);
+        atomic_store(&svc->last_status, (int)ost);
+        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
+    }
+
+    uint32_t first = 0, count = 0;
+    bool have = segment_sealer_next_range(frontier, store, &first, &count);
+    chain_segment_store_close(store);
+    if (!have)
+        return 0; /* nothing to seal right now */
+
+    struct zcl_result mk = zcl_mkdir_p(dir, 0755);
+    if (!mk.ok) {
+        LOG_WARN("segment_sealer", "[segment_sealer] mkdir %s: %s",
+                 dir, mk.message);
+        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
+    }
+
+    struct seal_body_ctx bctx = { .ms = svc->ms, .datadir = svc->datadir };
+    err[0] = 0;
+    enum cseg_status st = chain_segment_seal_range(dir, seal_body_read, &bctx,
+                                                   first, count, err, sizeof(err));
+    atomic_store(&svc->last_status, (int)st);
+    if (st != CSEG_OK) {
+        atomic_fetch_add(&svc->seal_failures, 1);
+        LOG_WARN("segment_sealer",
+                 "[segment_sealer] seal [%u,%u) failed: %s (%s)",
+                 first, first + count, cseg_status_str(st), err);
+        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
+    }
+    atomic_fetch_add(&svc->segments_sealed, 1);
+    atomic_store(&svc->last_sealed_first, (int64_t)first);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "source=chain.segment_sealer decision=sealed "
+                "first=%u count=%u frontier=%u", first, count, frontier);
+    LOG_INFO("segment_sealer", "[segment_sealer] sealed segment [%u,%u) frontier=%u",
+             first, first + count, frontier);
+    return 1;
+}
+
+/* ── Supervision ────────────────────────────────────────────────────────── */
+
+static int64_t seal_deadline_secs(const struct segment_sealer_service *svc)
+{
+    int tick = svc && svc->tick_seconds > 0
+        ? svc->tick_seconds : SEGMENT_SEALER_DEFAULT_TICK_SECONDS;
+    return (int64_t)tick * 3 + 30;
+}
+
+static void seal_heartbeat(struct segment_sealer_service *svc)
+{
+    supervisor_child_id id = atomic_load(&g_seal_supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID) return;
+    supervisor_progress(id, svc ? atomic_load(&svc->segments_sealed) : 0);
+    supervisor_tick(id);
+}
+
+static void seal_on_stall(struct liveness_contract *c)
+{
+    struct segment_sealer_service *svc =
+        c ? (struct segment_sealer_service *)c->ctx : NULL;
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    LOG_WARN("segment_sealer",
+             "[segment_sealer] supervisor stall reason=%s sealed=%lld failures=%lld",
+             reason, svc ? (long long)atomic_load(&svc->segments_sealed) : 0,
+             svc ? (long long)atomic_load(&svc->seal_failures) : 0);
+}
+
+static struct zcl_result seal_register_supervisor(
+    struct segment_sealer_service *svc)
+{
+    if (!svc)
+        return ZCL_ERR(-1, "segment_sealer: register: null svc");
+    if (!supervisor_start())
+        return ZCL_ERR(-2, "segment_sealer: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_seal_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        g_seal_contract.ctx = svc;
+        supervisor_set_period(id, 0);
+        supervisor_set_deadline(id, seal_deadline_secs(svc));
+        seal_heartbeat(svc);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_seal_contract, "chain.segment_sealer");
+    atomic_store(&g_seal_contract.period_secs, 0);
+    atomic_store(&g_seal_contract.deadline_secs, seal_deadline_secs(svc));
+    atomic_store(&g_seal_contract.progress_max_quiet_us, 0);
+    g_seal_contract.ctx = svc;
+    g_seal_contract.on_tick = NULL;
+    g_seal_contract.on_stall = seal_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_seal_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-3, "segment_sealer: supervisor_register failed");
+    atomic_store(&g_seal_supervisor_id, id);
+    seal_heartbeat(svc);
+    return ZCL_OK;
+}
+
+/* ── Background thread ──────────────────────────────────────────────────── */
+
+static void *segment_sealer_thread(void *arg)
+{
+    struct segment_sealer_service *svc = arg;
+    atomic_store(&svc->state, 1);
+
+    pthread_mutex_lock(&svc->ready_mutex);
+    svc->ready = true;
+    pthread_cond_signal(&svc->ready_cond);
+    pthread_mutex_unlock(&svc->ready_mutex);
+
+    while (!atomic_load(&svc->stop_requested)) {
+        if (svc->enabled) {
+            /* Seal at most one segment per wake — bounded IO, no reducer race. */
+            (void)segment_sealer_run_once(svc, false);
+        }
+        seal_heartbeat(svc);
+
+        int total_ms = svc->tick_seconds * 1000;
+        int slept = 0;
+        while (slept < total_ms) {
+            if (atomic_load(&svc->stop_requested)) break;
+            platform_sleep_ms(500);
+            slept += 500;
+        }
+    }
+    atomic_store(&svc->state, 2);
+    return NULL;
+}
+
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
+void segment_sealer_init(struct segment_sealer_service *svc,
+                         struct main_state *ms, const char *datadir)
+{
+    memset(svc, 0, sizeof(*svc));
+    svc->ms = ms;
+    svc->datadir = datadir;
+    pthread_mutex_init(&svc->ready_mutex, NULL);
+    pthread_cond_init(&svc->ready_cond, NULL);
+    atomic_store(&svc->stop_requested, false);
+    atomic_store(&svc->state, 0);
+    atomic_store(&svc->frontier, -1);
+    atomic_store(&svc->last_status, (int)CSEG_OK);
+
+    svc->finality_depth = SEGMENT_SEALER_DEFAULT_FINALITY_DEPTH;
+    svc->tick_seconds = SEGMENT_SEALER_DEFAULT_TICK_SECONDS;
+
+    const char *env = getenv("ZCL_SEGMENT_SEALER");
+    svc->enabled = env && env[0] == '1' && env[1] == '\0';
+}
+
+struct zcl_result segment_sealer_start(struct segment_sealer_service *svc)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        return ZCL_ERR(-1, "segment_sealer: start: null svc/ms/datadir");
+    if (svc->thread_started)
+        return ZCL_ERR(-2, "segment_sealer: start: already running");
+
+    atomic_store(&svc->stop_requested, false);
+    svc->ready = false;
+    if (thread_registry_spawn("zcl_segment_seal", segment_sealer_thread, svc,
+                              &svc->thread) != 0)
+        return ZCL_ERR(-3, "segment_sealer: thread create failed: %s",
+                       strerror(errno));
+    svc->thread_started = true;
+
+    pthread_mutex_lock(&svc->ready_mutex);
+    bool ready_ok = true;
+    while (!svc->ready) {
+        struct timespec deadline;
+        platform_time_realtime_timespec(&deadline);
+        deadline.tv_sec += 30;
+        int rc = pthread_cond_timedwait(&svc->ready_cond, &svc->ready_mutex,
+                                        &deadline);
+        if (rc == ETIMEDOUT && !svc->ready) { ready_ok = false; break; }
+    }
+    pthread_mutex_unlock(&svc->ready_mutex);
+    if (!ready_ok) {
+        atomic_store(&svc->stop_requested, true);
+        pthread_detach(svc->thread);
+        svc->thread_started = false;
+        return ZCL_ERR(-4, "segment_sealer: thread did not signal ready in 30s");
+    }
+
+    struct zcl_result sup = seal_register_supervisor(svc);
+    if (!sup.ok) {
+        atomic_store(&svc->stop_requested, true);
+        pthread_join(svc->thread, NULL);
+        svc->thread_started = false;
+        return sup;
+    }
+    printf("[segment_sealer] started — enabled=%d finality_depth=%d tick=%ds\n",
+           svc->enabled, svc->finality_depth, svc->tick_seconds);
+    return ZCL_OK;
+}
+
+void segment_sealer_stop(struct segment_sealer_service *svc)
+{
+    if (!svc || !svc->thread_started) return;
+    supervisor_child_id id = atomic_load(&g_seal_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
+    atomic_store(&svc->stop_requested, true);
+    pthread_join(svc->thread, NULL);
+    svc->thread_started = false;
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_seal_supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
+    pthread_mutex_destroy(&svc->ready_mutex);
+    pthread_cond_destroy(&svc->ready_cond);
+    printf("[segment_sealer] stopped\n");
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+bool segment_sealer_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+    if (!g_segment_sealer) {
+        json_push_kv_bool(out, "running", false);
+        return true;
+    }
+    struct segment_sealer_service *svc = g_segment_sealer;
+    json_push_kv_bool(out, "running", svc->thread_started);
+    json_push_kv_bool(out, "enabled", svc->enabled);
+    json_push_kv_int(out, "finality_depth", svc->finality_depth);
+    json_push_kv_int(out, "tick_seconds", svc->tick_seconds);
+    json_push_kv_int(out, "segments_sealed", atomic_load(&svc->segments_sealed));
+    json_push_kv_int(out, "seal_failures", atomic_load(&svc->seal_failures));
+    json_push_kv_int(out, "last_sealed_first", atomic_load(&svc->last_sealed_first));
+    json_push_kv_int(out, "frontier", atomic_load(&svc->frontier));
+    json_push_kv_str(out, "last_status",
+                     cseg_status_str((enum cseg_status)atomic_load(&svc->last_status)));
+    return true;
+}

@@ -237,6 +237,20 @@ void zcl_native_handle_ops_producer_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.rom — dispatch the `dumpstate rom_compile` RPC against THIS running
+ * node and render its ROM-compilation-fold telemetry (zcl.rom_compile.v1) as
+ * rich ASCII: a fold progress bar, a horizontal bar chart of the eight
+ * reducer stages' step_us_ewma (the bottleneck stage highlighted), and the
+ * layer ladder (ROM checkpoint / sealed segment history / sealed state-seal
+ * ring / delta frontier / tip ring), each filled or empty. The structured
+ * fields are also returned verbatim in reply->data for machine consumers;
+ * the CLI prints data.text unless --format=json. See
+ * app/jobs/src/rom_compile_status.c for the data source (all EXISTING
+ * telemetry — no second producer). */
+void zcl_native_handle_ops_rom(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Render the CLI UX contract's ONE-LINE status brief: a single line, <=200
  * bytes, stable `key=value` pairs (no JSON braces), from the flat brief body
  * core.status.brief emits (see zcl_native_status_brief_body): hstar, gap,

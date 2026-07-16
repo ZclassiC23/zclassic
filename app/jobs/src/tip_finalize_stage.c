@@ -3,6 +3,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/tip_finalize_stage_hooks.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/refold_progress.h"
 #include "jobs/reducer_frontier.h"
@@ -36,8 +37,6 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
-static tip_finalize_utxo_count_fn g_utxo_counter = NULL;
-static void *g_utxo_counter_user = NULL;
 
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
@@ -264,6 +263,10 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
         return false;
     }
 
+    /* OS-S2: clamp boot-derived cursors to the fork height so a restart in the
+     * reorg window re-derives navigation indices above it. fork = rewind_to-1. */
+    tip_finalize_hooks_reorg_clamp((int)rewind_to - 1);
+
     /* LOWER the external provable-tip cache (H*) on the reorg rewind. This is
      * the #1 site: stage_set_cursor just dropped the tip_finalize cursor, but
      * g_last_advance_height (and thus active_chain_height) is raise-only and
@@ -285,10 +288,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
 
 static bool live_utxo_count_after(int height_after, int64_t *out_count)
 {
-    *out_count = -1;
-    if (!g_utxo_counter)
-        return true;
-    return g_utxo_counter(height_after, out_count, g_utxo_counter_user);
+    return tip_finalize_hooks_count_utxos(height_after, out_count);
 }
 
 static job_result_t step_finalize(struct stage_step_ctx *c)
@@ -762,8 +762,7 @@ void tip_finalize_stage_shutdown(void)
         g_stage = NULL;
     }
     g_ms = NULL;
-    g_utxo_counter = NULL;
-    g_utxo_counter_user = NULL;
+    tip_finalize_hooks_reset();
     tip_finalize_observe_shutdown();
     /* Mirror the served-tip reset into the external provable-tip cache so a
      * stale-high H* from this run cannot leak into the next boot. */
@@ -772,15 +771,9 @@ void tip_finalize_stage_shutdown(void)
 }
 
 /* tip_finalize_stage_set_authoritative_tip, tip_finalize_stage_seed_anchor,
- * and the durable tip readers live in sibling TUs. */
-
-void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *user)
-{
-    pthread_mutex_lock(&g_lock);
-    g_utxo_counter = fn;
-    g_utxo_counter_user = user;
-    pthread_mutex_unlock(&g_lock);
-}
+ * and the durable tip readers live in sibling TUs. The DI-hook setters
+ * (tip_finalize_stage_set_utxo_counter / _set_reorg_clamp) and their accessors
+ * live in tip_finalize_stage_hooks.c. */
 
 uint64_t tip_finalize_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
 int64_t tip_finalize_stage_step_us_ewma(void)

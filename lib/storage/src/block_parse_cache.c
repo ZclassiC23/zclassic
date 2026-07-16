@@ -34,6 +34,7 @@
 #include "chain/chain.h"
 #include "core/serialize.h"
 #include "primitives/block.h"
+#include "storage/chain_segment.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/mem_pressure.h"
@@ -41,6 +42,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define BPC_CAPACITY 16
@@ -132,6 +134,108 @@ static void bpc_store_locked(int32_t height, const uint8_t hash[32],
     g_bpc[victim].stamp = ++g_bpc_clock;
 }
 
+/* ── Sealed-segment source (the fold substrate) ──────────────────────────
+ * Below the sealed frontier a finalized body is read from an mmap'd, sealed
+ * segment (sequential + hash-verified) instead of a blk*.dat pread. The store
+ * is opened lazily on the first miss and keyed to a datadir; a datadir change
+ * (or the absence of a segments dir) reopens/empties it. Because segments store
+ * exactly the block_serialize output, deserializing the segment bytes yields a
+ * struct byte-identical to a fresh disk read — and we additionally re-derive
+ * the block hash and require it to equal the caller's active-chain hash before
+ * serving, so a segment on a different fork can never be substituted. Any miss
+ * or mismatch falls through to the unchanged blk*.dat path, so a node with no
+ * segments is byte-for-byte unchanged. */
+static pthread_mutex_t g_seg_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct chain_segment_store *g_seg_store; /* NULL until first open */
+static char g_seg_datadir[3072];
+static bool g_seg_open_tried;                   /* store open attempted for g_seg_datadir */
+
+/* Ensure the resident store matches `datadir`. MUST hold g_seg_mutex. */
+static void bpc_segment_sync_store_locked(const char *datadir)
+{
+    if (g_seg_open_tried && strncmp(g_seg_datadir, datadir,
+                                    sizeof(g_seg_datadir)) == 0)
+        return; /* already opened for this datadir */
+
+    if (g_seg_store) {
+        chain_segment_store_close(g_seg_store);
+        g_seg_store = NULL;
+    }
+    snprintf(g_seg_datadir, sizeof(g_seg_datadir), "%s", datadir);
+    g_seg_open_tried = true;
+
+    char dir[3200];
+    snprintf(dir, sizeof(dir), "%s/segments", datadir);
+    char err[256] = {0};
+    struct chain_segment_store *s = NULL;
+    enum cseg_status st = chain_segment_store_open(dir, &s, err, sizeof(err));
+    if (st != CSEG_OK) {
+        LOG_WARN("block_parse_cache",
+                 "segment store open failed dir=%s: %s (%s) — using blk*.dat",
+                 dir, cseg_status_str(st), err);
+        return;
+    }
+    g_seg_store = s; /* may cover nothing; that is fine */
+}
+
+/* Try to fill `out` for (height, block_hash) from a sealed segment. Returns
+ * true only when a covering segment yielded a body whose re-derived hash equals
+ * `block_hash`. On any negative outcome `out` is left free-safe and false is
+ * returned so the caller uses the disk path. */
+static bool bpc_segment_try(int32_t height, const uint8_t block_hash[32],
+                            const char *datadir, struct block *out)
+{
+    if (!datadir || !datadir[0] || height < 0)
+        return false;
+
+    pthread_mutex_lock(&g_seg_mutex);
+    bpc_segment_sync_store_locked(datadir);
+    struct chain_segment_store *store = g_seg_store;
+    if (!store || !chain_segment_store_covers(store, (uint32_t)height)) {
+        pthread_mutex_unlock(&g_seg_mutex);
+        return false;
+    }
+    uint8_t *raw = NULL;
+    size_t rawlen = 0;
+    char err[256] = {0};
+    enum cseg_status st = chain_segment_store_get_block(
+        store, (uint32_t)height, &raw, &rawlen, err, sizeof(err));
+    pthread_mutex_unlock(&g_seg_mutex);
+
+    if (st != CSEG_OK || !raw || rawlen == 0) {
+        if (st != CSEG_OK)
+            LOG_WARN("block_parse_cache",
+                     "segment read h=%d: %s (%s) — falling back to blk*.dat",
+                     height, cseg_status_str(st), err);
+        free(raw);
+        return false;
+    }
+
+    struct byte_stream s;
+    stream_init_from_data(&s, raw, rawlen);
+    bool parsed = block_deserialize(out, &s);
+    stream_free(&s);
+    free(raw);
+    if (!parsed) {
+        block_free(out);
+        block_init(out);
+        LOG_WARN("block_parse_cache",
+                 "segment body deserialize failed h=%d — falling back", height);
+        return false;
+    }
+
+    /* Bind the served body to the caller's active-chain hash: a segment on a
+     * different fork (or a stale height mapping) must never be substituted. */
+    struct uint256 got;
+    block_get_hash(out, &got);
+    if (memcmp(got.data, block_hash, 32) != 0) {
+        block_free(out);
+        block_init(out);
+        return false;
+    }
+    return true;
+}
+
 bool block_parse_cache_get(int32_t height, const uint8_t block_hash[32],
                            const struct block_index *bi, const char *datadir,
                            struct block *out)
@@ -173,13 +277,18 @@ miss:
      *    does its own hash compare and a reader hash-reject would change its
      *    refetch classification). Then cache a deep clone and hand the
      *    freshly-read body to the caller (no extra parse, no extra clone). ── */
-    struct disk_block_pos pos;
-    disk_block_pos_init(&pos);
-    if (!block_index_disk_pos_snapshot(bi, &pos, NULL))
-        return false;
-    if (!read_block_from_disk_pread(out, &pos, datadir ? datadir : "")) {
-        /* out is left free-able by the reader's failure contract. */
-        return false;
+    /* Prefer a sealed segment below the frontier (sequential mmap read, hash-
+     * verified, byte-identical to the disk body). A miss/mismatch falls through
+     * to the unchanged blk*.dat pread. */
+    if (!bpc_segment_try(height, block_hash, datadir, out)) {
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        if (!block_index_disk_pos_snapshot(bi, &pos, NULL))
+            return false;
+        if (!read_block_from_disk_pread(out, &pos, datadir ? datadir : "")) {
+            /* out is left free-able by the reader's failure contract. */
+            return false;
+        }
     }
 
     /* Cache a deep clone of the body for the downstream stages. A cache failure

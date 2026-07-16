@@ -62,6 +62,33 @@ bool consensus_state_snapshot_export(
     const struct consensus_state_snapshot_export_request *request,
     struct consensus_state_export_result *result);
 
+/* ── Live-node exporter (standing producer) ─────────────────────────────────
+ *
+ * Prove + export one zcl.consensus_state_bundle.v1 from a PRIVATE read-only WAL
+ * snapshot of the owned progress.kv, so a SERVING node is never stalled for the
+ * (potentially multi-second) proof + copy. Unlike consensus_state_snapshot_export
+ * — which owns progress_store_tx_lock for the whole derive/copy and is meant for
+ * the quiesced offline mint — this entry holds the process lock ONLY to pin the
+ * WAL read snapshot (milliseconds: open a second read-only connection + BEGIN +
+ * one probe read), then runs the identical proof/write/finalize pipeline against
+ * that private consistent snapshot with NO lock held.
+ *
+ * On a live mutable store coins_kv is the UTXO set AT THE TIP, so a bundle can
+ * only be exported at the snapshot's frozen H*: the caller MUST have already
+ * monotonic-finalized the source receipt at the current durable tip and set
+ * request->expected_height / expected_block_hash to that exact durable tip. If
+ * the reducer advanced H* between the receipt finalize and the snapshot pin, the
+ * proof fails closed (MISSING_PROOF) and the caller simply retries next cycle.
+ *
+ * The caller MUST also ensure the in-RAM coins overlay is inactive
+ * (!coins_ram_active()) — the durable snapshot reflects durable coins only; the
+ * proof independently refuses while the overlay is live. Same fail-closed
+ * publication guarantees (independent reopen+validate, fsync, chmod 0400, atomic
+ * no-replace link, dir fsync) as consensus_state_snapshot_export. */
+bool consensus_state_snapshot_export_from_progress_snapshot(
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result);
+
 #ifdef ZCL_TESTING
 /* Deterministic adversarial hooks around directory binding and anonymous
  * staging-inode creation. */

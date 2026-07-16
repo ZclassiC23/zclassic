@@ -11,6 +11,9 @@
 #include "validation/process_block.h"
 #include "primitives/block.h"
 #include "core/serialize.h"
+#include "controllers/wallet_scan.h"
+#include "wallet/wallet.h"
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -213,6 +216,60 @@ static int test_coins_sqlite_null_safety(void)
     return 1;
 }
 
+/* ── OS-S2 #4: wallet Pass-1 file-match cache pure helpers ─────── */
+
+#define WSCAN_CHK(cond, msg) do { \
+    if (cond) { printf("  OK: %s\n", (msg)); } \
+    else { printf("  FAIL: %s\n", (msg)); failures++; } \
+} while (0)
+
+static int test_wallet_scan_keyset_fp(void)
+{
+    int failures = 0;
+    /* struct wallet embeds fixed 4096-entry arrays — heap-allocate it. */
+    struct wallet *w = calloc(1, sizeof(*w));
+    struct wallet *w2 = calloc(1, sizeof(*w));
+    if (!w || !w2) { free(w); free(w2); printf("  keyset_fp: OOM\n"); return 1; }
+
+    w->keystore.num_keys = 2;
+    w->keystore.keys[0].used = true;
+    w->keystore.keys[0].keyid.id.data[0] = 0x11;
+    w->keystore.keys[1].used = true;
+    w->keystore.keys[1].keyid.id.data[0] = 0x22;
+
+    *w2 = *w;  /* identical keyset */
+    uint64_t fp = wallet_scan_keyset_fp(w);
+    uint64_t fp_same = wallet_scan_keyset_fp(w2);
+    WSCAN_CHK(fp == fp_same, "keyset_fp is deterministic for equal keysets");
+    WSCAN_CHK(fp != 0, "keyset_fp is nonzero for a populated keyset");
+
+    /* Flip a key off → different fingerprint (import/remove invalidation). */
+    w2->keystore.keys[1].used = false;
+    uint64_t fp_diff = wallet_scan_keyset_fp(w2);
+    WSCAN_CHK(fp_diff != fp, "keyset_fp changes when a key is removed");
+
+    free(w);
+    free(w2);
+    return failures;
+}
+
+static int test_wallet_scan_cache_valid(void)
+{
+    int failures = 0;
+    /* Same fp, tip not rewound → reusable. */
+    WSCAN_CHK(wallet_scan_cache_valid(1234, 1234, 100, 100),
+                "cache valid when fp matches and tip is unchanged");
+    WSCAN_CHK(wallet_scan_cache_valid(1234, 1234, 100, 150),
+                "cache valid when tip advanced above cached");
+    /* fp mismatch (keyset changed) → invalid. */
+    WSCAN_CHK(!wallet_scan_cache_valid(1234, 5678, 100, 100),
+                "cache invalid when keyset fingerprint differs");
+    /* tip rewound below cached (reorg) → invalid. */
+    WSCAN_CHK(!wallet_scan_cache_valid(1234, 1234, 100, 90),
+                "cache invalid when tip rewound below cached (reorg)");
+    return failures;
+}
+
 /* ── Main ────────────────────────────────────────────────────── */
 
 int test_block_scan(void)
@@ -227,8 +284,10 @@ int test_block_scan(void)
     failures += test_block_magic();
     failures += test_header_parse();
     failures += test_coins_sqlite_null_safety();
+    failures += test_wallet_scan_keyset_fp();
+    failures += test_wallet_scan_cache_valid();
 
     printf("%d passed, %d failed\n\n",
-           6 - failures, failures);
+           8 - failures, failures);
     return failures;
 }

@@ -375,6 +375,9 @@ Schema: `zcl.result.v1`
   "request_id": "01...",
   "data_schema": "zcl.dev_app_sim.v1",
   "elapsed_us": 9,
+  "budget_ms": 750,
+  "elapsed_ms": 0,
+  "budget_exceeded": false,
   "data": {},
   "next": [{
     "command": "dev.app.publish",

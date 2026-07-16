@@ -142,7 +142,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
-    X(coin_selection) X(disk_monitor) X(network_monitor) X(db_maintenance) \
+    X(coin_selection) X(disk_monitor) X(network_monitor) X(network_crawler) X(db_maintenance) \
     X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
@@ -207,7 +207,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
     X(have_data_unreadable) \
-    X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(service_state) \
+    X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(log_level) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
     X(clock) X(rng) X(os_proc) X(os_sandbox) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
@@ -223,7 +223,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(created_outputs_index) X(coins_kv) X(coins_ram) \
     X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_devloop) X(codeindex) \
-    X(chain_segment) \
+    X(chain_segment) X(segment_sealer) X(segment_corruption) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
     X(utxo_recovery_shielded_backfill) \
@@ -238,6 +238,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_cadence) X(refold_premature_clear) \
+    X(rom_compile_status) X(rom_watch_loop) \
     X(refold_from_anchor_fatal) X(refold_auto_arm) X(anchor_selfmint) \
     X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) X(boot_snapshot_drop_bodiless) \
     X(boot_datadir_lock) X(boot_shutdown_marker) X(boot_stale_locks) \
@@ -266,6 +267,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_fold_livelock) \
     X(mint_anchor_fresh_datadir) \
     X(fold_inram_crash_proof) \
+    X(coins_kv_read_cache) \
+    X(parallel_range_fold) \
     X(boot_matrix) \
     X(reducer_drain_spin_contract) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \

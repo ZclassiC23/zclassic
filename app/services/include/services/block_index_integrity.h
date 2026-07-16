@@ -220,6 +220,16 @@ void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v);
 struct main_state;
 int block_index_repair_heights(struct main_state *ms);
 
+/* Cursor-gated overload (OS-S2 #1). Only entries with nHeight > min_height are
+ * counted as candidates for repair (pass -1 for a full scan); the true genesis
+ * is always checked. When a wrong height IS found above the cursor the full
+ * genesis-rooted propagation runs (idempotent — it never disturbs an
+ * already-correct below-cursor prefix). out_max_height (optional) receives the
+ * highest nHeight present so the caller can advance the cursor.
+ * block_index_repair_heights(ms) == block_index_repair_heights_range(ms,-1,NULL). */
+int block_index_repair_heights_range(struct main_state *ms, int min_height,
+                                     int *out_max_height);
+
 /* Returns true if block_index_repair_heights() has been called
  * (even if it repaired 0 entries — the scan itself is the signal). */
 bool block_index_heights_repaired(void);

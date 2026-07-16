@@ -7,6 +7,7 @@
 
 #include "test/test_helpers.h"
 #include "metrics/prometheus_metrics.h"
+#include "metrics/stage_metrics.h"
 #include "event/event.h"
 #include "rpc/http_middleware.h"
 
@@ -178,6 +179,131 @@ static int test_envelope_truncation(void)
         size_t n = metrics_prometheus_render_prometheus(small, sizeof(small));
         ASSERT(n < sizeof(small));
         ASSERT(small[n] == '\0' || small[sizeof(small) - 1] == '\0');
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Reducer stage telemetry (Phase E4) ───────────────────────
+ *
+ * lib/metrics/src/stage_metrics.c has no app/jobs visibility, so these
+ * tests exercise it the same way the real writer does: feed it a
+ * fixture sample via metrics_stage_set_samples() (the same call
+ * lib/metrics/src/metrics.c makes each tick from the external_gauges
+ * callback) and assert what metrics_prometheus_render_prometheus()
+ * renders from it. */
+
+static const char *const k_test_stage_names[METRICS_STAGE_COUNT] = {
+    "header_admit", "validate_headers", "body_fetch", "body_persist",
+    "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
+};
+
+static int test_stage_metrics_zero_default(void)
+{
+    int failures = 0;
+    TEST("metrics: stage cursor/ewma default to zero pre-tick") {
+        metrics_stage_reset();
+        for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
+            ASSERT(metrics_stage_get_cursor(i) == 0);
+            ASSERT(metrics_stage_get_step_us_ewma(i) == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stage_metrics_set_and_get(void)
+{
+    int failures = 0;
+    TEST("metrics: stage samples round-trip through set/get") {
+        metrics_stage_reset();
+        int64_t cursor[METRICS_STAGE_COUNT];
+        int64_t ewma[METRICS_STAGE_COUNT];
+        for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
+            cursor[i] = 1000 + i;
+            ewma[i] = 50 + i * 10;
+        }
+        metrics_stage_set_samples(cursor, ewma);
+        for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
+            ASSERT(metrics_stage_get_cursor(i) == 1000 + i);
+            ASSERT(metrics_stage_get_step_us_ewma(i) == 50 + i * 10);
+        }
+        ASSERT(strcmp(metrics_stage_name(0), "header_admit") == 0);
+        ASSERT(strcmp(metrics_stage_name(METRICS_STAGE_COUNT - 1),
+                       "tip_finalize") == 0);
+        metrics_stage_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stage_metrics_bounds_safe(void)
+{
+    int failures = 0;
+    TEST("metrics: stage accessors are bounds-safe on an out-of-range index") {
+        ASSERT(metrics_stage_name(-1) == NULL);
+        ASSERT(metrics_stage_name(METRICS_STAGE_COUNT) == NULL);
+        ASSERT(metrics_stage_get_cursor(-1) == 0);
+        ASSERT(metrics_stage_get_cursor(METRICS_STAGE_COUNT) == 0);
+        ASSERT(metrics_stage_get_step_us_ewma(-1) == 0);
+        ASSERT(metrics_stage_get_step_us_ewma(METRICS_STAGE_COUNT) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stage_metrics_prometheus_render(void)
+{
+    int failures = 0;
+    TEST("metrics: all 16 stage series + batch-commit gauge appear with sane values") {
+        metrics_stage_reset();
+        int64_t cursor[METRICS_STAGE_COUNT];
+        int64_t ewma[METRICS_STAGE_COUNT];
+        for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
+            cursor[i] = 3176325 - i;   /* distinct, plausible reducer heights */
+            ewma[i] = 100 + i;         /* distinct, plausible microsecond EWMAs */
+        }
+        metrics_stage_set_samples(cursor, ewma);
+
+        char buf[16384];
+        size_t n = metrics_prometheus_render_prometheus(buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "# HELP zcl_stage_step_us_ewma"));
+        ASSERT(contains(buf, "# TYPE zcl_stage_step_us_ewma gauge"));
+        ASSERT(contains(buf, "# HELP zcl_stage_cursor"));
+        ASSERT(contains(buf, "# TYPE zcl_stage_cursor gauge"));
+        ASSERT(contains(buf, "# HELP zcl_stage_batch_commit_us_ewma"));
+        ASSERT(contains(buf, "# TYPE zcl_stage_batch_commit_us_ewma gauge"));
+
+        for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
+            char line[128];
+            snprintf(line, sizeof(line),
+                "zcl_stage_step_us_ewma{stage=\"%s\"} %lld",
+                k_test_stage_names[i], (long long)(100 + i));
+            ASSERT(contains(buf, line));
+            snprintf(line, sizeof(line),
+                "zcl_stage_cursor{stage=\"%s\"} %lld",
+                k_test_stage_names[i], (long long)(3176325 - i));
+            ASSERT(contains(buf, line));
+        }
+        /* stage_batch_commit_us_ewma() is read live (no fixture seed) — 0
+         * pre-boot is itself a sane value; just assert the series is
+         * present and non-negative-looking (no stray minus sign). */
+        ASSERT(!contains(buf, "zcl_stage_batch_commit_us_ewma -"));
+
+        metrics_stage_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stage_metrics_render_tiny_buffer(void)
+{
+    int failures = 0;
+    TEST("metrics: stage render stays within a tiny buffer's capacity") {
+        char small[8];
+        size_t pos = metrics_stage_render_prometheus(small, sizeof(small), 0);
+        ASSERT(pos <= sizeof(small));
         PASS();
     } _test_next:;
     return failures;
@@ -692,6 +818,12 @@ int test_mcp_metrics(void)
     failures += test_cardinality_cap();
     failures += test_envelope_truncation();
 
+    failures += test_stage_metrics_zero_default();
+    failures += test_stage_metrics_set_and_get();
+    failures += test_stage_metrics_bounds_safe();
+    failures += test_stage_metrics_prometheus_render();
+    failures += test_stage_metrics_render_tiny_buffer();
+
     failures += test_peer_offence_kinds();
     failures += test_peer_offence_other_bucket();
     failures += test_peer_bans_counter();
@@ -714,6 +846,7 @@ int test_mcp_metrics(void)
     failures += test_consensus_reset_clears_rejects();
 
     metrics_prometheus_reset();
+    metrics_stage_reset();
     rpc_http_middleware_set_global(NULL);
     return failures;
 }

@@ -40,6 +40,9 @@
 #include "controllers/meta_native_handlers.h"
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"
+#include "command/rom_compile_render.h"
+#include "command/rom_compile_offline.h"
+#include "command/rom_watch_loop.h"
 #include "mcp/rpc_client.h"
 
 #include <ctype.h>
@@ -1720,6 +1723,183 @@ void zcl_native_handle_ops_producer_status(
     (void)json_push_kv_str(&reply->data, "text", t);
 }
 
+/* ── ops.rom native leaf ─────────────────────────────────────────────────
+ * Dispatches `dumpstate rom_compile` (app/jobs/src/rom_compile_status.c —
+ * pure composition over EXISTING telemetry: the per-stage step-EWMA
+ * counters, the refold-in-progress signal, the L0 reducer frontier, the
+ * sealed segment store, and the state-seal ring — no second producer)
+ * against THIS running node and renders the rich-ASCII human view via
+ * rom_compile_render_ascii. The structured zcl.rom_compile.v1 body is
+ * copied into reply->data verbatim for machine consumers; the CLI prints
+ * data.text unless --format=json. */
+void zcl_native_handle_ops_rom(const struct zcl_command_request *request,
+                               struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("dumpstate", "[\"rom_compile\"]");
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a rom_compile body",
+                               "ops.rom");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value envelope;
+    if (!json_read(&envelope, result, strlen(result)) ||
+        envelope.type != JSON_OBJ) {
+        json_free(&envelope);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_BODY",
+                               "execute", false, false,
+                               "dumpstate rom_compile returned unparsable JSON",
+                               "ops.rom");
+        return;
+    }
+    free(result);
+
+    const struct json_value *err = json_get(&envelope, "error");
+    if (err && err->type == JSON_STR) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "ROM_STATUS_ERROR",
+                               "execute", false, false,
+                               json_get_str(err), "ops.rom");
+        json_free(&envelope);
+        return;
+    }
+
+    const struct json_value *state = json_get(&envelope, "state");
+    char text[4096];
+    rom_compile_render_ascii(state, text, sizeof(text));
+
+    json_free(&reply->data);
+    json_init(&reply->data);
+    if (state && state->type == JSON_OBJ)
+        json_copy(&reply->data, state);
+    else
+        json_set_object(&reply->data);
+    (void)json_push_kv_str(&reply->data, "text", text);
+    json_free(&envelope);
+}
+
+/* ── ops.rom --watch: live redraw loop (Phase B) ─────────────────────────
+ * The single-shot ops.rom leaf above is unchanged. When the operator adds
+ * --watch/--once (optionally --interval=<secs>, --datadir=<dir>), the argv path
+ * intercepts BEFORE registry dispatch (native_command_main) and drives
+ * rom_watch_run with one of two fetch closures: the live-node dumpstate RPC, or
+ * the read-only offline composer against a foreign producer datadir. All the
+ * loop/redraw/parse logic lives in rom_watch_loop.c + rom_compile_offline.c;
+ * this file only builds the closure and parses the four flags. */
+
+/* Live fetch: dumpstate rom_compile against THIS node, unwrap the `state`. */
+static bool nc_rom_fetch_live(void *ctx, struct json_value *out, char *err,
+                              size_t errlen)
+{
+    (void)ctx;
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("dumpstate", "[\"rom_compile\"]");
+    if (!result) {
+        (void)snprintf(err, errlen, "node did not return a rom_compile body");
+        return false;
+    }
+    struct json_value env;
+    if (!json_read(&env, result, strlen(result)) || env.type != JSON_OBJ) {
+        json_free(&env);
+        free(result);
+        (void)snprintf(err, errlen, "dumpstate rom_compile returned unparsable JSON");
+        return false;
+    }
+    free(result);
+    const struct json_value *e = json_get(&env, "error");
+    if (e && e->type == JSON_STR) {
+        (void)snprintf(err, errlen, "%s", json_get_str(e));
+        json_free(&env);
+        return false;
+    }
+    const struct json_value *state = json_get(&env, "state");
+    if (!state || state->type != JSON_OBJ) {
+        (void)snprintf(err, errlen, "dumpstate rom_compile returned no state body");
+        json_free(&env);
+        return false;
+    }
+    json_copy(out, state);
+    json_free(&env);
+    return true;
+}
+
+/* Offline fetch: compose a rom_compile body from a foreign producer datadir. */
+static bool nc_rom_fetch_offline(void *ctx, struct json_value *out, char *err,
+                                 size_t errlen)
+{
+    const char *datadir = (const char *)ctx;
+    return rom_compile_offline_compose(datadir, out, err, errlen);
+}
+
+/* Scan the unconsumed argv words for the ops.rom watch flags. If neither
+ * --watch, --once, nor --datadir=<dir> is present, returns false (the caller
+ * falls through to the normal single-shot dispatch). Otherwise builds the fetch
+ * closure + opts, runs rom_watch_run, stores its exit code in *rc, and returns
+ * true. Recognizes: --watch, --once, --interval=<secs>, --datadir=<dir>. */
+static bool nc_ops_rom_try_watch(const char *const *words, size_t count,
+                                 size_t consumed, const char *cli_datadir,
+                                 int *rc)
+{
+    bool want_watch = false, want_once = false;
+    int interval_ms = 2000;
+    const char *offline_datadir = NULL;
+
+    for (size_t i = consumed; i < count; i++) {
+        const char *w = words[i];
+        if (!w)
+            continue;
+        if (strcmp(w, "--watch") == 0) {
+            want_watch = true;
+        } else if (strcmp(w, "--once") == 0) {
+            want_once = true;
+        } else if (strncmp(w, "--interval=", 11) == 0) {
+            int secs = atoi(w + 11);
+            if (secs > 0)
+                interval_ms = secs * 1000;
+        } else if (strncmp(w, "--datadir=", 10) == 0) {
+            offline_datadir = w + 10;
+        }
+    }
+
+    if (!want_watch && !want_once && !offline_datadir)
+        return false;
+
+    struct rom_watch_opts opts = {
+        .interval_ms = interval_ms,
+        /* --once (or the default single offline shot) renders exactly once;
+         * --watch loops until interrupted. */
+        .max_iters = want_watch && !want_once ? 0 : 1,
+        .ansi = isatty(fileno(stdout)) ? true : false,
+        .stream = stdout,
+    };
+
+    if (offline_datadir && offline_datadir[0]) {
+        *rc = rom_watch_run(nc_rom_fetch_offline, (void *)offline_datadir,
+                            &opts);
+    } else if (offline_datadir) {
+        /* --datadir= with an empty value: fall back to the CLI default if any,
+         * else run live. */
+        if (cli_datadir && cli_datadir[0])
+            *rc = rom_watch_run(nc_rom_fetch_offline, (void *)cli_datadir,
+                                &opts);
+        else
+            *rc = rom_watch_run(nc_rom_fetch_live, NULL, &opts);
+    } else {
+        *rc = rom_watch_run(nc_rom_fetch_live, NULL, &opts);
+    }
+    return true;
+}
+
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
  * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
  * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer
@@ -2171,6 +2351,7 @@ static bool nc_is_prose_leaf(const char *path)
             strcmp(path, "ops.debug.explain") == 0 ||
             strcmp(path, "ops.debug.profile") == 0 ||
             strcmp(path, "ops.debug.producer") == 0 ||
+            strcmp(path, "ops.debug.rom") == 0 ||
             strcmp(path, "core.status.brief") == 0);
 }
 
@@ -2509,6 +2690,16 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             root_word, "discover.search", "query", root_word,
             "search for the intended command");
         return ZCL_COMMAND_EXIT_INVALID;
+    }
+
+    /* ops.rom watch mode: intercept --watch / --once / --interval=<secs> /
+     * --datadir=<dir> BEFORE the flag parser below (ops.debug.rom takes empty
+     * input, so those flags would otherwise be rejected as unknown keys). When
+     * one is present this runs the redraw loop and returns its exit code. */
+    if (strcmp(spec->path, "ops.debug.rom") == 0) {
+        int rc = 0;
+        if (nc_ops_rom_try_watch(words, count, consumed, datadir, &rc))
+            return rc;
     }
 
     /* Collect the tokens the path did not consume: positionals in order and

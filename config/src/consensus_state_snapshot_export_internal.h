@@ -67,4 +67,30 @@ bool consensus_export_finalize_temp(
     const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_export_result *result);
 
+/* Shared by the offline-mint and live exporter entry TUs
+ * (consensus_state_snapshot_export.c + _live.c). */
+void consensus_export_output_init(struct consensus_export_output_binding *output);
+bool consensus_export_output_open(
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_export_output_binding *output,
+    struct consensus_state_export_result *result);
+void consensus_export_output_close(struct consensus_export_output_binding *output);
+void consensus_export_run_after_bind_hook(void);
+bool consensus_export_digest_nonzero(const uint8_t digest[32]);
+
+/* Shared derive+write core used by BOTH exporter entries. Runs the proof,
+ * opens the anonymous staging inode, writes the bundle, and strictly closes
+ * the dest. The CALLER owns the SOURCE read transaction. */
+bool consensus_export_prove_write(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_export_output_binding *output,
+    struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result);
+
+/* Fill the EXPORTED result on success — identical for both entries. */
+void consensus_export_fill_success(
+    const struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result);
+
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_EXPORT_INTERNAL_H */

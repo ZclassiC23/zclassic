@@ -4,6 +4,7 @@
  */
 
 #include "metrics/prometheus_metrics.h"
+#include "metrics/stage_metrics.h"
 #include "core/utiltime.h"
 #include "event/event.h"
 #include "net/peer_scoring.h"
@@ -1288,6 +1289,13 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
         "zcl_blocker_escape_dispatched_total %d\n",
         active_perm, active_trans, active_dep, active_res, active_total,
         escape_total);
+
+    /* ── Reducer stage block (Phase E4) ───────────────────────
+     *
+     * zcl_stage_step_us_ewma / zcl_stage_cursor per stage, plus the
+     * shared zcl_stage_batch_commit_us_ewma gauge. Fixed 8-stage
+     * cardinality — see lib/metrics/src/stage_metrics.c. */
+    pos = metrics_stage_render_prometheus(buf, cap, pos);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);

@@ -3189,6 +3189,40 @@ slo-probe-selftest:
 	     exit 1; \
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
+
+# install-logrotate: Phase E2 — size-threshold node.log rotation with NO
+# external logrotate dependency (repo rule: no external deps). Rotates
+# every ~/.zclassic-c23*/node.log + mint-progress.log past 512 MiB,
+# copytruncate semantics (see tools/scripts/zcl-logrotate.sh header), 2
+# kept gzip generations. Only the TIMER is started (enable --now); the
+# .service is never started here — the first real run is whatever the
+# timer schedules next (daily ~03:00, see the .timer comments).
+.PHONY: install-logrotate logrotate-status logrotate-selftest
+install-logrotate:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-logrotate.service "$(HOME)/.config/systemd/user/zclassic23-logrotate.service"
+	@install -m 644 deploy/zclassic23-logrotate.timer "$(HOME)/.config/systemd/user/zclassic23-logrotate.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-logrotate.timer
+	@echo "installed log rotation: zclassic23-logrotate.timer (daily ~03:00)"
+	@echo "status: make logrotate-status"
+
+logrotate-status:
+	@systemctl --user list-timers zclassic23-logrotate.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-logrotate.service zclassic23-logrotate.timer --no-pager -n 12 2>/dev/null || true
+
+# logrotate-selftest: hermetic regression guard — fixture datadir under a
+# temp HOME, no live nodes touched.
+logrotate-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/zcl-logrotate.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "logrotate-selftest: FAIL zcl-logrotate.sh (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "logrotate-selftest: PASS"'
+
 # install-replay-canary: the standing full-history replay canary (lane
 # S2d, wf/s2d-replay-canary-crashloop). nightly = --from=anchor (~45 min,
 # 04:30+jitter), weekly = --from=genesis (~6 h, Sun 05:30+jitter) — both

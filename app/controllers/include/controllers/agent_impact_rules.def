@@ -8,7 +8,9 @@
 
 AGENT_IMPACT_RULE("Makefile|README.md|.github/CONTRIBUTING.md|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|deploy/examples/*.service|deploy/examples/*.timer|docs/AGENT_API.md|docs/BUILD.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/GETTING_STARTED.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c", "make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/agent_impact_rules.def", "syncdiag_rpc make_lint_gates")
-AGENT_IMPACT_RULE("lib/storage/src/chain_segment.c|lib/storage/include/storage/chain_segment.h|app/controllers/src/chain_segment_controller.c|app/controllers/include/controllers/chain_segment_controller.h|lib/test/src/test_chain_segment.c", "chain_segment syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/chain_segment.c|lib/storage/src/chain_segment_store.c|lib/storage/include/storage/chain_segment.h|app/controllers/src/chain_segment_controller.c|app/controllers/include/controllers/chain_segment_controller.h|lib/test/src/test_chain_segment.c", "chain_segment block_parse_cache segment_sealer segment_corruption syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/segment_sealer_service.c|app/services/include/services/segment_sealer_service.h|lib/test/src/test_segment_sealer.c", "segment_sealer chain_segment supervisor syncdiag_rpc mcp_controllers make_lint_gates")
+AGENT_IMPACT_RULE("app/conditions/src/segment_corruption.c|app/conditions/include/conditions/segment_corruption.h|lib/test/src/test_segment_corruption.c", "segment_corruption chain_segment condition_engine syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/store_controller.c|app/controllers/src/store_controller_pow.c|app/controllers/src/store_controller_schema.c|app/controllers/include/controllers/store_controller.h|app/controllers/include/controllers/store_controller_internal.h|app/models/src/store.c|app/models/include/models/store.h|app/views/src/store_view.c|app/views/include/views/store_internal.h", "store store_e2e_gate store_e2e_shielded sqlite make_lint_gates")
 AGENT_IMPACT_RULE("docs/HANDOFF.md", "make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/explorer_*.c|app/controllers/include/controllers/explorer_*.h|app/views/src/explorer_*.c|app/views/src/explorer_*.css|app/views/include/views/explorer_*.h|lib/test/src/test_explorer*.c", "explorer")
@@ -22,6 +24,11 @@ AGENT_IMPACT_RULE("tools/dev/source-identity.sh|tools/dev/source-identity-selfte
 AGENT_IMPACT_RULE("lib/util/src/self_backtrace.c|lib/util/include/util/self_backtrace.h|lib/util/src/async_safe_write.c|lib/util/include/util/async_safe_write.h|lib/util/src/signal_handler.c|lib/util/include/util/signal_handler.h|lib/util/src/thread_registry.c|lib/util/include/util/thread_registry.h|lib/test/src/test_self_backtrace.c", "self_backtrace thread_registry command_registry_catalog rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/thread_liveness.c|lib/util/include/util/thread_liveness.h|lib/util/src/supervisor.c|lib/util/include/util/supervisor.h|lib/test/src/test_supervisor_production_tree.c|lib/test/src/test_supervisor.c", "supervisor supervisor_domains supervisor_production_tree thread_registry make_lint_gates")
 AGENT_IMPACT_RULE("lib/health/src/heartbeat.c|lib/metrics/src/metrics.c|lib/event/src/event.c|lib/rpc/src/rpc_timeout.c|config/src/db_service.c|tools/lint/check_thread_supervision.sh|tools/lint/thread_supervision_baseline.txt", "supervisor supervisor_production_tree make_lint_gates")
+/* Phase E4: per-reducer-stage Prometheus telemetry. stage_metrics.c/h has
+ * no app/jobs visibility (lib/ layering); its data arrives via the
+ * external-gauges seam filled in config/src/boot_node_utilities.c (already
+ * covered by the metrics.c/metrics.h rule above). */
+AGENT_IMPACT_RULE("lib/metrics/src/prometheus_metrics.c|lib/metrics/include/metrics/prometheus_metrics.h|lib/metrics/src/stage_metrics.c|lib/metrics/include/metrics/stage_metrics.h|lib/test/src/test_mcp_metrics.c", "metrics make_lint_gates")
 
 AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c", "mcp_controllers")
 AGENT_IMPACT_RULE("tools/mcp/baseline.c|tools/mcp/baseline.h|lib/test/src/test_mcp_baseline.c", "mcp_baseline mcp_controllers")
@@ -54,13 +61,14 @@ AGENT_IMPACT_RULE("lib/net/include/net/net.h|lib/net/include/net/protocol.h", "n
 AGENT_IMPACT_RULE("lib/test/src/test_net.c", "net")
 AGENT_IMPACT_RULE("lib/test/src/test_api_query_filters.c", "api")
 AGENT_IMPACT_RULE("app/jobs/include/jobs/replay_count_only.h|app/jobs/src/replay_count_only.c|lib/test/src/test_utxo_apply_coinbase_maturity.c", "utxo_apply_coinbase_maturity")
+AGENT_IMPACT_RULE("app/jobs/src/psc_extract.c|app/jobs/src/psc_join.c|app/jobs/src/psc_range_fold.c|app/jobs/include/jobs/psc_range_fold.h|app/jobs/include/jobs/psc_internal.h|lib/test/src/test_parallel_range_fold.c", "parallel_range_fold make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_bip34_coinbase_height_parity.c", "bip34_coinbase_height_parity consensus_parity")
 AGENT_IMPACT_RULE("lib/test/src/test_pow_diffadj_precedence.c", "pow_diffadj_precedence difficulty_adjustment_adversarial consensus_parity")
 AGENT_IMPACT_RULE("lib/test/fuzz_seeds/block/*", "block_parse_cache")
-AGENT_IMPACT_RULE("lib/storage/src/block_parse_cache.c|lib/storage/include/storage/block_parse_cache.h|lib/test/src/test_block_parse_cache.c", "block_parse_cache mem_pressure make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/block_parse_cache.c|lib/storage/include/storage/block_parse_cache.h|lib/test/src/test_block_parse_cache.c", "block_parse_cache chain_segment mem_pressure make_lint_gates")
 AGENT_IMPACT_RULE("lib/platform/src/os_proc.c|lib/platform/include/platform/os_proc.h|lib/test/src/test_os_proc.c", "os_proc mem_pressure node_health_service make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/mem_pressure.c|lib/util/include/util/mem_pressure.h|lib/test/src/test_mem_pressure.c|config/src/boot_mem_pressure.c|app/conditions/src/memory_pressure_high.c|app/conditions/include/conditions/memory_pressure_high.h|tools/lint/check_proc_self_shim.sh|tools/lint/proc_self_shim_baseline.txt", "mem_pressure sticky_conditions os_proc supervisor condition_engine make_lint_gates")
-AGENT_IMPACT_RULE("lib/util/include/util/log_macros.h", "make_lint_gates")
+AGENT_IMPACT_RULE("lib/util/include/util/log_macros.h|lib/util/include/util/log_level.h|lib/util/src/log_level.c|lib/test/src/test_log_level.c", "log_level make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/file_service.c|lib/net/include/net/file_service.h|app/controllers/src/file_controller.c|app/controllers/include/controllers/file_controller.h|lib/test/src/test_file_controller.c", "file_controller file_service_pow_gate api make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/fast_sync.c|lib/net/include/net/fast_sync.h|lib/test/src/test_file_service_pow_gate.c", "fast_sync file_service_pow_gate snapshot_sync_service make_lint_gates")
 
@@ -114,6 +122,7 @@ AGENT_IMPACT_RULE("app/services/src/nullifier_backfill_*.c|app/services/src/null
 AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_nullifiers.c|app/jobs/include/jobs/utxo_apply_nullifiers.h|lib/storage/src/nullifier_kv.c|lib/storage/include/storage/nullifier_kv.h|lib/test/src/test_nullifier_kv.c|lib/test/src/test_sapling_nullifier_adversarial.c", "sapling_nullifier_adversarial nullifier_kv parity_lockin_anchor_membership reindex_epilogue make_lint_gates")
 AGENT_IMPACT_RULE("app/jobs/include/jobs/stage_repair.h|app/jobs/src/stage_repair*.c|lib/test/src/test_stage_repair*.c", "stage_repair make_lint_gates")
 AGENT_IMPACT_RULE("app/jobs/src/validate_headers_stage.c|app/jobs/src/validate_headers_validator.c|app/jobs/src/validate_headers_report.c|app/jobs/src/validate_headers_internal.h|app/jobs/include/jobs/validate_headers_stage.h|lib/test/src/test_validate_headers_stage.c", "validate_headers_stage make_lint_gates")
+AGENT_IMPACT_RULE("app/jobs/include/jobs/rom_compile_status.h|app/jobs/src/rom_compile_status.c|tools/command/rom_compile_render.c|tools/command/rom_compile_render.h|tools/command/rom_watch_loop.c|tools/command/rom_watch_loop.h|tools/command/rom_compile_offline.c|tools/command/rom_compile_offline.h|lib/test/src/test_rom_compile_status.c|lib/test/src/test_rom_watch_loop.c", "rom_compile_status rom_watch_loop command_registry_catalog syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/framework/include/framework/condition.h|lib/framework/src/condition.c|lib/test/src/test_condition_engine.c", "condition_engine syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/conditions/src/condition_registry.c|app/conditions/include/conditions/condition_registry.h|app/conditions/include/conditions/condition_registry.def", "condition_engine syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/supervisor.c|lib/util/include/util/supervisor.h|lib/test/src/test_supervisor.c", "supervisor supervisor_domains supervisor_production_tree make_lint_gates")
@@ -197,7 +206,7 @@ AGENT_IMPACT_RULE("lib/storage/src/block_index_projection.c|lib/storage/include/
 AGENT_IMPACT_RULE("lib/wallet/src/wallet_sqlite.c|lib/wallet/include/wallet/wallet_sqlite.h|lib/test/src/test_wallet_persistence_cycle.c|lib/test/src/test_wallet_sqlite_enc.c|lib/test/src/test_wallet_sqlite_open_errors.c|lib/test/src/test_wallet_canary.c", "wallet_persistence_cycle wallet_sqlite_enc wallet_sqlite_open_errors wallet_canary make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller_node.c|app/controllers/src/api_controller_status.c|app/controllers/src/download_stats_json.c|app/controllers/include/controllers/download_stats_json.h|app/controllers/src/node_binary_identity_json.c|app/controllers/include/controllers/node_binary_identity_json.h|lib/test/src/test_api.c", "api syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("lib/storage/src/event_log*.c|lib/storage/include/storage/event_log*.h|lib/test/src/test_event_log.c", "event_log")
-AGENT_IMPACT_RULE("lib/storage/src/coins_ram.c|lib/storage/include/storage/coins_ram.h|lib/storage/src/coins_kv.c|lib/test/src/test_coins_ram.c|lib/test/src/test_fold_inram_crash_proof.c", "coins_ram coins_kv fold_inram_crash_proof reducer_frontier make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/coins_ram.c|lib/storage/include/storage/coins_ram.h|lib/storage/src/coins_kv.c|lib/storage/include/storage/coins_kv.h|lib/test/src/test_coins_ram.c|lib/test/src/test_coins_kv_read_cache.c|lib/test/src/test_fold_inram_crash_proof.c", "coins_ram coins_kv coins_kv_read_cache fold_inram_crash_proof reducer_frontier make_lint_gates")
 AGENT_IMPACT_RULE("tools/sim/*|tools/sim/scenarios/*|lib/test/src/test_chaos_harness.c", "chaos_harness make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/src/simnet.c|lib/sim/include/sim/simnet.h|lib/test/src/test_simnet.c", "simnet make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/include/sim/simnet_cluster.h", "simnet_cluster make_lint_gates")
@@ -332,6 +341,11 @@ AGENT_IMPACT_RULE("app/services/src/disk_monitor.c|app/services/include/services
  * command all share the network_monitor focused test group. */
 AGENT_IMPACT_RULE("app/services/src/network_monitor.c|app/services/include/services/network_monitor.h|app/models/src/peer_chain_observation.c|app/models/include/models/peer_chain_observation.h|app/conditions/src/net_tip_regression.c|app/conditions/include/conditions/net_tip_regression.h|app/conditions/src/net_fork_detected.c|app/conditions/include/conditions/net_fork_detected.h|app/conditions/src/net_partition_suspected.c|app/conditions/include/conditions/net_partition_suspected.h|config/src/boot_msg_callbacks.c|config/src/boot_network_monitor.c|config/include/config/boot_network_monitor.h|lib/test/src/test_network_monitor.c", "network_monitor condition_engine make_lint_gates")
 
+/* Whole-network observatory: the opt-in supervised crawler + its real dialer,
+ * the pure census fold, and the network_census dumper all share the
+ * network_crawler focused test group. */
+AGENT_IMPACT_RULE("app/services/src/network_crawler.c|app/services/src/network_crawler_probe.c|app/services/include/services/network_crawler.h|lib/test/src/test_network_crawler.c", "network_crawler syncdiag_rpc make_lint_gates")
+
 /* Unified transactional dev loop, status, indexing, and benchmark contracts. */
 AGENT_IMPACT_RULE("tools/dev/watch-dev-lane.sh|tools/dev/deploy-dev-lane.sh|tools/dev/deploy-dev-lane-selftest.sh|tools/dev/recover-dev-lane.sh|tools/dev/recover-dev-lane-selftest.sh|deploy/zcl23-dev.service", "syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/agent-dev-status.sh|tools/dev/agent-doctor.sh|app/controllers/src/agent_controller.c|tools/mcp/controllers/ops_controller.c", "syncdiag_rpc mcp_controllers make_lint_gates")
@@ -399,6 +413,13 @@ AGENT_IMPACT_RULE("config/src/boot_shutdown_marker.c|config/include/config/boot_
 AGENT_IMPACT_RULE("config/src/boot_datadir_lock.c|config/include/config/boot_datadir_lock.h|lib/test/src/test_boot_datadir_lock.c", "boot_datadir_lock make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/src/block_index_loader_rebuild.c|app/services/include/services/block_index_loader.h|lib/test/src/test_block_index_loader.c|lib/test/src/test_block_index_rebuild.c", "load_verify_boot block_index_loader block_index_rebuild block_index_integrity make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_index_integrity.c|app/services/include/services/block_index_integrity.h|lib/test/src/test_block_index_integrity.c", "block_index_integrity make_lint_gates")
+/* OS-S2 boot O(delta) cursors: the shared module owns the four cursor keys, the
+ * reorg clamp, the block-index fingerprint, and the #1/#2 cursor wrappers.
+ * Proven by test_block_index_integrity (fingerprint/clamp/range-repair). */
+AGENT_IMPACT_RULE("config/src/boot_cursor_state.c|config/include/config/boot_cursor_state.h", "block_index_integrity make_lint_gates")
+/* OS-S2 #4: wallet Pass-1 file-match cache (keyset/tip/size-keyed). Pure
+ * helpers proven by test_block_scan. */
+AGENT_IMPACT_RULE("app/controllers/src/wallet_scan.c|app/controllers/include/controllers/wallet_scan.h|lib/test/src/test_block_scan.c", "block_scan make_lint_gates")
 /* Fast-boot cursor stamping (import side) + shielded backfill service: the
  * skip-when-covered behavior is proven by test_block_index_integrity's
  * t_pprev_repair_cursor_skip. */
@@ -433,13 +454,13 @@ AGENT_IMPACT_RULE("lib/storage/include/storage/sha3_sidecar_io.h|lib/storage/src
 AGENT_IMPACT_RULE("lib/storage/src/snapshot_shielded.c|lib/storage/include/storage/snapshot_shielded.h|lib/storage/src/coins_kv_snapshot_write.c|lib/storage/include/storage/coins_kv.h|lib/storage/src/coins_ram.c|lib/storage/include/storage/coins_ram.h|config/src/boot_shielded_seed.c|config/include/config/boot_shielded_seed.h|config/src/boot_mint_anchor.c|lib/test/src/test_snapshot_shielded.c|lib/test/src/test_fold_inram_crash_proof.c", "snapshot_shielded utxo_snapshot_loader snapshot_apply_coins_kv coins fold_inram_crash_proof make_lint_gates")
 AGENT_IMPACT_RULE("lib/chain/src/utxo_snapshot_loader.c|lib/chain/include/chain/utxo_snapshot_loader.h|config/src/boot_refold_staged.c", "snapshot_shielded utxo_snapshot_loader refold_from_anchor_fatal load_verify_boot make_lint_gates")
 AGENT_IMPACT_RULE("config/src/consensus_state_snapshot_install.c|config/src/consensus_state_snapshot_install_activate.c|config/src/consensus_state_snapshot_install_internal.h|config/src/consensus_state_snapshot_candidate*.c|config/src/consensus_state_bundle_validate.c|config/src/boot_snapshot_install.c|config/src/boot_install_consensus_bundle.c|config/include/config/consensus_state_snapshot_install.h|config/include/config/consensus_state_bundle_validate.h|config/include/config/boot_snapshot_install.h|lib/storage/src/consensus_state_bundle_codec.c|lib/storage/include/storage/consensus_state_bundle_codec.h|lib/test/src/test_consensus_state_snapshot_install.c", "consensus_state_snapshot_install consensus_state_snapshot_export make_lint_gates")
-AGENT_IMPACT_RULE("config/src/consensus_state_snapshot_export*.c|config/src/consensus_state_snapshot_output_seal.c|config/src/consensus_state_sqlite_text.h|config/src/consensus_state_snapshot_export_internal.h|config/include/config/consensus_state_snapshot_export.h|lib/test/src/test_consensus_state_snapshot_export.c", "consensus_state_snapshot_export consensus_state_snapshot_install make_lint_gates")
+AGENT_IMPACT_RULE("config/src/consensus_state_snapshot_export*.c|config/src/consensus_state_snapshot_output_seal.c|config/src/consensus_state_sqlite_text.h|config/src/consensus_state_snapshot_export_internal.h|config/include/config/consensus_state_snapshot_export.h|config/src/bundle_exporter.c|config/include/config/bundle_exporter.h|lib/test/src/test_consensus_state_snapshot_export.c", "consensus_state_snapshot_export consensus_state_snapshot_install make_lint_gates")
 /* Independent replay-derived receipt (-verify-consensus-bundle): the offline
  * verifier + the ACTIVATE authority gate it feeds. Tests live in the
  * consensus_state_snapshot_install group. */
 AGENT_IMPACT_RULE("config/src/consensus_state_replay_receipt.c|config/include/config/consensus_state_replay_receipt.h|config/src/boot_verify_consensus_bundle.c", "consensus_state_snapshot_install make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/consensus_state_chain_binding_service.c|app/services/include/services/consensus_state_chain_binding_service.h|lib/test/src/test_consensus_state_chain_binding.c", "consensus_state_chain_binding consensus_state_snapshot_install make_lint_gates")
-AGENT_IMPACT_RULE("config/src/consensus_state_producer_receipt.c|config/src/consensus_state_producer_status.c|config/include/config/consensus_state_producer_receipt.h|config/src/boot_mint_anchor.c|lib/test/src/test_consensus_state_producer_receipt.c", "consensus_state_producer_receipt consensus_state_snapshot_export make_lint_gates")
+AGENT_IMPACT_RULE("config/src/consensus_state_producer_receipt*.c|config/src/consensus_state_producer_receipt_internal.h|config/src/consensus_state_producer_status.c|config/include/config/consensus_state_producer_receipt.h|config/src/boot_mint_anchor.c|lib/test/src/test_consensus_state_producer_receipt.c", "consensus_state_producer_receipt consensus_state_snapshot_export make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/consensus_state_publication_cas.c|app/services/include/services/consensus_state_publication_cas.h|lib/test/src/test_consensus_state_publication_cas.c", "consensus_state_publication_cas consensus_state_chain_binding make_lint_gates")
 
 /* os-substrate Rung 0 (L1): the single fd-based file-tree walker that replaces
