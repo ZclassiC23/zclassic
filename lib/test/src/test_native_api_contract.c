@@ -420,7 +420,9 @@ static bool run_dev_failure_api_fixture(void)
     len = exec_dev_handler(
         "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
         &ref, "normal", out, sizeof(out), &exit_code);
-    API_REQUIRE(len > 0 && len <= 2048 && exit_code == ZCL_COMMAND_EXIT_OK);
+    /* Bound raised 2048 -> 2144 to absorb OS-B2's per-command latency contract
+     * (budget_ms/elapsed_ms/budget_exceeded, ~55 bytes) now in every envelope. */
+    API_REQUIRE(len > 0 && len <= 2144 && exit_code == ZCL_COMMAND_EXIT_OK);
     json_init(&root);
     API_REQUIRE(json_read(&root, out, len));
     data = json_get(&root, "data");
