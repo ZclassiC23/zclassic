@@ -131,6 +131,18 @@ int64_t chainstate_legacy_iter_sapling_anchors(void *handle,
 int64_t chainstate_legacy_iter_sprout_anchors(void *handle,
                                               legacy_anchor_cb cb, void *ctx);
 
+/* Bulk-import variants of the anchor iterators: identical byte-integrity
+ * enforcement (leveldb block-CRC, deserialize success, no trailing bytes) but
+ * WITHOUT the per-anchor Pedersen root recompute, whose O(anchors × Pedersen)
+ * cost is intractable on the real mainnet historical anchor set. Use ONLY for
+ * the complete-shielded import, and ONLY when the caller separately
+ * Pedersen-verifies the tip frontier against the header-committed
+ * hashFinalSaplingRoot. Same return contract as the verifying variants. */
+int64_t chainstate_legacy_iter_sapling_anchors_bulk(void *handle,
+                                                    legacy_anchor_cb cb, void *ctx);
+int64_t chainstate_legacy_iter_sprout_anchors_bulk(void *handle,
+                                                    legacy_anchor_cb cb, void *ctx);
+
 /* Iterate every Sapling ('S') / Sprout ('s') nullifier. The chainstate value
  * is presence-only (a single serialized `true` byte); the 32-byte key IS the
  * spent marker, so the callback receives only the nf bytes. Returns the count,

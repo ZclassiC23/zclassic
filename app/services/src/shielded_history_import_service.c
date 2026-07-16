@@ -69,6 +69,21 @@ static bool shi_anchor_cb(const struct uint256 *root,
     if (c->best_present && uint256_eq(root, &c->best_root)) {
         height = c->tip_height;
         c->saw_best = true;
+        /* Tip-frontier consensus check — the ONE Pedersen root recompute the
+         * bulk import keeps (guarded to the best/tip anchor, so O(1) per pool,
+         * not O(anchors)). The tip anchor's tree MUST hash to best_root; for
+         * Sapling, best_root was already verified == the header-committed
+         * hashFinalSaplingRoot at the tip-bind, so this binds the imported
+         * frontier tree to the header. Historical anchors are byte-integrity
+         * only (leveldb-CRC + deserialize), via the _bulk reader path. */
+        struct uint256 tip_computed;
+        incremental_tree_root(tree, &tip_computed);
+        if (!uint256_eq(&tip_computed, &c->best_root)) {
+            c->ok = false;
+            LOG_RETURN(false, SHI_SUBSYS,
+                       "tip frontier tree does not hash to committed root "
+                       "pool=%d — refusing (torn/forged frontier)", c->pool);
+        }
     }
     if (!anchor_kv_add_tree(c->db, c->pool, tree, height)) {
         c->ok = false;
@@ -260,7 +275,7 @@ bool shielded_history_import_from_chainstate(
         .tip_height = expected_tip_height, .next_seq = 0,
         .best_root = best_sapling, .best_present = true,
     };
-    int64_t n = chainstate_legacy_iter_sapling_anchors(h, shi_anchor_cb, &sap);
+    int64_t n = chainstate_legacy_iter_sapling_anchors_bulk(h, shi_anchor_cb, &sap);
     if (n < 0 || !sap.ok || !sap.saw_best) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
@@ -269,6 +284,8 @@ bool shielded_history_import_from_chainstate(
                  "rolled back", (long long)n, sap.ok, sap.saw_best);
     }
     report.sapling_anchors = sap.count;
+    LOG_INFO(SHI_SUBSYS, "import phase: %lld Sapling anchors staged (tip frontier verified)",
+             (long long)sap.count);
 
     /* Sprout anchors (best may be absent — a drained/empty pool). */
     struct shi_ctx spr = {
@@ -278,7 +295,7 @@ bool shielded_history_import_from_chainstate(
     };
     if (sprout_best_present)
         spr.best_root = best_sprout;
-    n = chainstate_legacy_iter_sprout_anchors(h, shi_anchor_cb, &spr);
+    n = chainstate_legacy_iter_sprout_anchors_bulk(h, shi_anchor_cb, &spr);
     if (n < 0 || !spr.ok || (sprout_best_present && !spr.saw_best)) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
@@ -288,6 +305,8 @@ bool shielded_history_import_from_chainstate(
                  sprout_best_present, spr.saw_best);
     }
     report.sprout_anchors = spr.count;
+    LOG_INFO(SHI_SUBSYS, "import phase: %lld Sprout anchors staged",
+             (long long)spr.count);
 
     /* Sapling nullifiers. */
     struct shi_ctx snf = {
@@ -302,6 +321,8 @@ bool shielded_history_import_from_chainstate(
                              "rolled back", (long long)n);
     }
     report.sapling_nullifiers = snf.count;
+    LOG_INFO(SHI_SUBSYS, "import phase: %lld Sapling nullifiers staged",
+             (long long)snf.count);
 
     /* Sprout nullifiers. */
     struct shi_ctx pnf = {
@@ -316,6 +337,8 @@ bool shielded_history_import_from_chainstate(
                              "rolled back", (long long)n);
     }
     report.sprout_nullifiers = pnf.count;
+    LOG_INFO(SHI_SUBSYS, "import phase: %lld Sprout nullifiers staged; committing + flipping cursors",
+             (long long)pnf.count);
 
     /* We are done reading the chainstate; close it before the flip so a torn
      * source cannot silently reopen. */

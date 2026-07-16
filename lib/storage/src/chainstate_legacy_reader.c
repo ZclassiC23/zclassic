@@ -366,8 +366,21 @@ int64_t chainstate_legacy_iter(void *handle,
 /* Shared anchor-keyspace walker. `prefix` is 'Z' (Sapling) or 'A' (Sprout);
  * `is_sprout` selects the tree init/depth. FAIL-CLOSED on every anomaly:
  * returns -1 without delivering a partial verified set. */
+/* `verify_root`: when true, recompute each stored tree's Pedersen root and
+ * refuse a mismatch (the sovereign fail-closed check). When false (bulk import
+ * of zclassicd's complete historical set), SKIP that per-anchor recompute: the
+ * O(anchors × Pedersen-hash) cost is intractable on the real mainnet anchor set
+ * (~14 min pegged, gdb: incremental_tree_root→pedersen_merkle_hash). The
+ * byte-integrity floor still holds — leveldb block-CRC (verify_checksums=ON),
+ * a successful incremental_tree_deserialize, and stream_remaining()==0 — and the
+ * anchor's root IS its key. Historical anchor tree CONTENTS are not
+ * consensus-load-bearing (ZClassic headers commit none of them); only PRESENCE
+ * of each root and the TIP FRONTIER are, and the caller must Pedersen-verify the
+ * tip frontier once against the header-committed hashFinalSaplingRoot. This is
+ * the release-assisted trust boundary; the fully-sovereign path folds from
+ * genesis. */
 static int64_t iter_anchor_keyspace(struct chainstate_legacy_handle *h,
-                                    char prefix, bool is_sprout,
+                                    char prefix, bool is_sprout, bool verify_root,
                                     legacy_anchor_cb cb, void *ctx)
 {
     if (!h || !cb)
@@ -426,14 +439,18 @@ static int64_t iter_anchor_keyspace(struct chainstate_legacy_handle *h,
         }
 
         /* Fail-closed: the stored tree MUST hash back to its own key, exactly
-         * like the point lookup (a torn/forged tree cannot pass). */
-        struct uint256 computed;
-        incremental_tree_root(&tree, &computed);
-        if (memcmp(computed.data, root.data, 32) != 0) {
-            db_iter_free(&it);
-            LOG_ERR("chainstate_legacy",
-                    "anchor iter '%c': root mismatch (stored tree does not "
-                    "hash to key) — refusing", prefix);
+         * like the point lookup (a torn/forged tree cannot pass). Skipped on the
+         * bulk-import path (see iter_anchor_keyspace header) — byte-integrity is
+         * still enforced above and the tip frontier is verified by the caller. */
+        if (verify_root) {
+            struct uint256 computed;
+            incremental_tree_root(&tree, &computed);
+            if (memcmp(computed.data, root.data, 32) != 0) {
+                db_iter_free(&it);
+                LOG_ERR("chainstate_legacy",
+                        "anchor iter '%c': root mismatch (stored tree does not "
+                        "hash to key) — refusing", prefix);
+            }
         }
 
         if (!cb(&root, &tree, ctx)) {
@@ -458,13 +475,28 @@ static int64_t iter_anchor_keyspace(struct chainstate_legacy_handle *h,
 int64_t chainstate_legacy_iter_sapling_anchors(void *handle,
                                                legacy_anchor_cb cb, void *ctx)
 {
-    return iter_anchor_keyspace(handle, 'Z', false, cb, ctx);
+    return iter_anchor_keyspace(handle, 'Z', false, true, cb, ctx);
 }
 
 int64_t chainstate_legacy_iter_sprout_anchors(void *handle,
                                               legacy_anchor_cb cb, void *ctx)
 {
-    return iter_anchor_keyspace(handle, 'A', true, cb, ctx);
+    return iter_anchor_keyspace(handle, 'A', true, true, cb, ctx);
+}
+
+/* Bulk-import variants: skip the per-anchor Pedersen root recompute (see
+ * iter_anchor_keyspace header). The caller MUST Pedersen-verify the tip frontier
+ * against the header-committed root separately. */
+int64_t chainstate_legacy_iter_sapling_anchors_bulk(void *handle,
+                                                    legacy_anchor_cb cb, void *ctx)
+{
+    return iter_anchor_keyspace(handle, 'Z', false, false, cb, ctx);
+}
+
+int64_t chainstate_legacy_iter_sprout_anchors_bulk(void *handle,
+                                                   legacy_anchor_cb cb, void *ctx)
+{
+    return iter_anchor_keyspace(handle, 'A', true, false, cb, ctx);
 }
 
 /* Shared nullifier-keyspace walker. `prefix` is 'S' (Sapling) or 's' (Sprout).
