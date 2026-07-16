@@ -177,7 +177,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 # Library layer
 LIB_MODULES = bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script session sim storage \
-	support sync util validation vcs wallet sapling zslp znam zanc
+	support sync util validation vcs wallet sapling overlay zslp znam zanc
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c)))
