@@ -171,6 +171,19 @@ bool shielded_history_import_from_chainstate(
         expected_tip_height < 0)
         LOG_FAIL(SHI_SUBSYS, "invalid args");
 
+    /* Fork-safety, defense-in-depth: an all-zero expected root means the caller
+     * failed to obtain the header-committed hashFinalSaplingRoot (e.g. reading a
+     * blocks.sapling_root projection column that a header import left null). The
+     * tip is far past Sapling activation, so its frontier root can never be
+     * zero. Binding the imported frontier against zeros — then flipping the
+     * activation cursors — would convert the SAFE wedge into an ACCEPT of an
+     * unverified frontier. Refuse before touching the transaction. */
+    if (uint256_is_null(expected_tip_sapling_root))
+        LOG_FAIL(SHI_SUBSYS,
+                 "expected tip Sapling root is all-zero — caller did not "
+                 "obtain the header-committed hashFinalSaplingRoot; refusing to "
+                 "bind the tip frontier against zeros (wedge left intact)");
+
     if (!anchor_kv_ensure_schema(progress_db) ||
         !nullifier_kv_ensure_schema(progress_db) ||
         !progress_meta_table_ensure(progress_db))

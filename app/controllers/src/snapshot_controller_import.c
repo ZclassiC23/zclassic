@@ -181,6 +181,17 @@ static void *import_block_index_thread(void *arg)
          * (sapling = Σ value_balance, sprout = Σ vpub_old − vpub_new). */
         db_blk.sapling_value = dbi.nSaplingValue;
         db_blk.sprout_value = dbi.has_sprout_value ? dbi.nSproutValue : 0;
+        /* hashFinalSaplingRoot is a CONSENSUS field committed in every block
+         * HEADER; the source CDiskBlockIndex carries it (deserialized above),
+         * so a header-only import already has the chain-committed tip Sapling
+         * root without any block body. Persist it into the projection column
+         * now — otherwise blocks.sapling_root stays all-zero until full block
+         * connection, and the complete shielded-history import
+         * (-import-complete-shielded) cannot bind its tip frontier against a
+         * zero column (it refuses, all-or-nothing). Full connection later
+         * writes the IDENTICAL value (the header field), so this is a pure
+         * projection fill, never a consensus decision. */
+        memcpy(db_blk.sapling_root, dbi.hashFinalSaplingRoot.data, 32);
         if (dbi.nHeight > max_height)
             max_height = dbi.nHeight;
         if (a->header_only) {
