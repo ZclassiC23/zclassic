@@ -10,6 +10,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "metrics/stage_metrics.h"
+
 struct main_state;
 struct connman;
 struct chain_params;
@@ -29,6 +31,16 @@ struct metrics_external_gauges {
      * before the chain-state repository initializes). Feeds the
      * `header_gap_growing` MCP metric alert — see tools/mcp/metrics.c. */
     int64_t header_gap_blocks;
+    /* The 8 reducer stages' live cursor + step_us_ewma, indexed in the
+     * fixed METRICS_STAGE_COUNT order (metrics_stage_name()). Filled by
+     * boot_metrics_external_gauges() (config/src/boot_node_utilities.c,
+     * the only writer with app/jobs visibility) and forwarded to
+     * lib/metrics/src/stage_metrics.c by the metrics tick — see
+     * stage_metrics.h for why this indirection exists (lib/ cannot
+     * include app/jobs headers). Zero-initialized (all-zero cursor/ewma)
+     * is a valid pre-boot default, not a sentinel. */
+    int64_t stage_cursor[METRICS_STAGE_COUNT];
+    int64_t stage_step_us_ewma[METRICS_STAGE_COUNT];
 };
 
 typedef void (*metrics_external_gauges_fn)(

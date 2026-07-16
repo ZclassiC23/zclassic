@@ -21,6 +21,14 @@
 #include "services/sync_monitor.h"
 #include "services/chain_state_service.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
+#include "jobs/body_fetch_stage.h"
+#include "jobs/body_persist_stage.h"
+#include "jobs/script_validate_stage.h"
+#include "jobs/proof_validate_stage.h"
+#include "jobs/utxo_apply_stage.h"
+#include "jobs/tip_finalize_stage.h"
 #include "chain/chainparams.h"
 #include "sync/sync_state.h"
 #include "event/event.h"
@@ -84,6 +92,32 @@ static void boot_metrics_external_gauges(
             out->header_gap_blocks = hh - served;
         }
     }
+
+    /* Per-reducer-stage telemetry (Phase E4): fixed 8-stage cursor +
+     * step_us_ewma snapshot, forwarded to lib/metrics/src/stage_metrics.c
+     * by the metrics tick (lib/metrics/src/metrics.c) since lib/ cannot
+     * include these app/jobs headers directly. Order MUST match
+     * metrics_stage_name()'s canonical order in
+     * lib/metrics/include/metrics/stage_metrics.h — mirrors the same
+     * fixed-order rows[] pattern diag_profile_push_stage_ewma() uses in
+     * app/controllers/src/diagnostics_registry.c for the `profile`
+     * command's stage_ewma block. */
+    out->stage_cursor[0]       = (int64_t)header_admit_stage_cursor();
+    out->stage_step_us_ewma[0] = header_admit_stage_step_us_ewma();
+    out->stage_cursor[1]       = (int64_t)validate_headers_stage_cursor();
+    out->stage_step_us_ewma[1] = validate_headers_stage_step_us_ewma();
+    out->stage_cursor[2]       = (int64_t)body_fetch_stage_cursor();
+    out->stage_step_us_ewma[2] = body_fetch_stage_step_us_ewma();
+    out->stage_cursor[3]       = (int64_t)body_persist_stage_cursor();
+    out->stage_step_us_ewma[3] = body_persist_stage_step_us_ewma();
+    out->stage_cursor[4]       = (int64_t)script_validate_stage_cursor();
+    out->stage_step_us_ewma[4] = script_validate_stage_step_us_ewma();
+    out->stage_cursor[5]       = (int64_t)proof_validate_stage_cursor();
+    out->stage_step_us_ewma[5] = proof_validate_stage_step_us_ewma();
+    out->stage_cursor[6]       = (int64_t)utxo_apply_stage_cursor();
+    out->stage_step_us_ewma[6] = utxo_apply_stage_step_us_ewma();
+    out->stage_cursor[7]       = (int64_t)tip_finalize_stage_cursor();
+    out->stage_step_us_ewma[7] = tip_finalize_stage_step_us_ewma();
 }
 
 /* ── Utility functions ─────────────────────────────────────── */
