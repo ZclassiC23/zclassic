@@ -13,6 +13,7 @@
 #include "util/thread_registry.h"
 #include "controllers/agent_copy_prove_controller.h"
 #include "controllers/agent_test_controller.h"
+#include "controllers/shielded_gap_remedy_controller.h"
 #include "controllers/block_intake_json.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
