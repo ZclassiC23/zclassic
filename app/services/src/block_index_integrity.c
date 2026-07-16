@@ -224,6 +224,13 @@ static size_t bii_pprev_repair_max_reads(void)
 
 int block_index_repair_heights(struct main_state *ms)
 {
+    return block_index_repair_heights_range(ms, -1, NULL);
+}
+
+int block_index_repair_heights_range(struct main_state *ms, int min_height,
+                                     int *out_max_height)
+{
+    if (out_max_height) *out_max_height = -1;
     if (!ms) return 0;
 
     struct timespec t0;
@@ -243,25 +250,33 @@ int block_index_repair_heights(struct main_state *ms)
      * "wrong" (see bii_is_genesis for the relabel failure mode). */
     int wrong = 0;
     int detached = 0;
+    int max_h = -1;
     {
         size_t iter = 0;
         struct block_index *pi;
         const struct block_index *first_detached = NULL;
         while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
             if (!pi) continue;
-            if (pi->pprev && pi->nHeight != pi->pprev->nHeight + 1)
+            if (pi->nHeight > max_h) max_h = pi->nHeight;
+            /* Cursor gate (OS-S2 #1): a prior verified run already covered
+             * entries at/below min_height, so only re-count wrongs above it.
+             * The true genesis is always checked (it must sit at 0). */
+            if (pi->pprev && pi->nHeight > min_height &&
+                pi->nHeight != pi->pprev->nHeight + 1)
                 wrong++;
             else if (!pi->pprev) {
                 if (bii_is_genesis(pi)) {
                     if (pi->nHeight != 0)
                         wrong++;
-                } else if (pi->nHeight != 0 || (pi->nStatus & BLOCK_HAVE_DATA)) {
+                } else if (pi->nHeight > min_height &&
+                           (pi->nHeight != 0 || (pi->nStatus & BLOCK_HAVE_DATA))) {
                     detached++;
                     if (!first_detached)
                         first_detached = pi;
                 }
             }
         }
+        if (out_max_height) *out_max_height = max_h;
         if (detached > 0 && first_detached && first_detached->phashBlock) {
             char hex[65];
             uint256_get_hex(first_detached->phashBlock, hex);
