@@ -30,6 +30,11 @@ their recorded baselines:
 - **`app/services/src/header_sync_service.c` → 812 (new over-ceiling)** —
   Pillar 0's `best_header_fallback` locator path: when `active_chain_tip()` is
   NULL, build the getheaders locator from `pindex_best_header`, never genesis.
+- **`config/src/boot.c` 4070 → 4071 (+1)** — Track B's one-line call-site change
+  passing the derived coins-best `hash_found` flag into
+  `boot_crashonly_clear_reindex_request_if_covered` so a hash-verified coins-best
+  at the reindex anchor is treated as covered (no destructive wipe). `boot.c` is
+  an existing monster far over the ceiling; splitting it is separate tracked debt.
 
 Splitting these files is worthwhile cleanup, but each is consensus-adjacent
 boot/recovery code where a hasty shape split risks introducing a liveness bug —
