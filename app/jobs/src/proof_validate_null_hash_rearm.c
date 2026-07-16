@@ -88,6 +88,14 @@ enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
     report->pv_cursor_before = pv_cursor;
     report->ua_cursor_floor = ua_cursor;
 
+    /* The pre-stamping artifact predates even the block_hash column on some
+     * datadirs (the live canonical node's proof_validate_log has no block_hash
+     * column at all). Ensure the column exists (idempotent CREATE/ADD COLUMN)
+     * before scanning for NULL-block_hash rows, else the scan fails with
+     * "no such column: block_hash" and the whole re-arm errors. */
+    if (!proof_validate_log_ensure_schema(db))
+        return finish(report, PV_REARM_ERROR);
+
     /* Nothing to re-derive if proof_validate has not led utxo_apply. */
     if (pv_cursor <= ua_cursor)
         return finish(report, PV_REARM_NOT_NEEDED);
