@@ -1705,6 +1705,125 @@ int test_utxo_apply_stage(void)
         uv_teardown(dir, &ms, &sc);
     }
 
+    /* (i2) IMPORT-COMMIT CONTINUITY: after shielded_history_import_service.c's
+     * exact commit sequence (anchor_kv_publish_full_replay_complete_in_tx +
+     * nullifier_kv_publish_full_replay_complete_in_tx +
+     * shielded_history_cancel_full_replay_in_tx, one BEGIN IMMEDIATE/COMMIT)
+     * flips both anchor pools + the nullifier marker from a positive wedge
+     * boundary to durably 0, the blocker refresh must RE-DERIVE from the live
+     * cursor (not a stale cached verdict) and the reducer must RESUME folding
+     * the SAME held block at the SAME height — no skip, no duplicate write,
+     * no re-wedge on the following heights. This is the live H*=wedge shape
+     * (docs/HANDOFF.md: utxo_apply.anchor_backfill_gap + the nullifier
+     * history dependency raised together) taken all the way through cursor
+     * flip -> blocker clear -> forward fold. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+        blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+        UV_CHECK("import continuity: setup",
+                 uv_setup("import_continuity", 4, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+        const uint8_t tag[1] = { 0x97 };
+        UV_CHECK("import continuity: h=1 spend attaches (empty-root anchor)",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x78));
+
+        /* Seed the WEDGE: both anchor pools + the nullifier marker at the
+         * SAME positive boundary (the importer requires a uniform boundary —
+         * shielded_history_import_service.c:shi_read_boundaries refuses a
+         * mixed one). */
+        const int64_t boundary = 1;
+        UV_CHECK("import continuity: wedge both anchor pools positive",
+                 exec_sql(db, "UPDATE anchor_state SET activation_cursor=1"));
+        UV_CHECK("import continuity: wedge nullifier marker positive",
+                 progress_meta_set(db, "nullifier_kv.activation_cursor",
+                                   "1", 1));
+        utxo_apply_anchor_gap_blocker_refresh(db);
+        utxo_apply_nullifier_gap_blocker_refresh(db);
+        UV_CHECK("import continuity: anchor gap blocker raised",
+                 blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+        UV_CHECK("import continuity: nullifier gap blocker raised",
+                 blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        /* h=0 (transparent) applies; h=1's spend HOLDs on the wedge — exactly
+         * the live stall (JOB_IDLE, cursor pinned at the unresolved height). */
+        UV_CHECK("import continuity: h=0 applies, h=1 wedges",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        int32_t applied_before = -1; bool applied_before_found = false;
+        UV_CHECK("import continuity: coins_applied_height pinned at wedge",
+                 coins_kv_get_applied_height(db, &applied_before,
+                                             &applied_before_found) &&
+                     applied_before_found && applied_before == 1);
+        UV_CHECK("import continuity: h=1 authored nothing while wedged",
+                 uv_coin_rows_at(db, 1) == 0 && uv_nf_rows_at(db, 1) == 0);
+
+        /* Flip BOTH activation cursors to 0 via the importer's EXACT commit
+         * primitives in its EXACT one-transaction sequence, WITHOUT calling
+         * the refresh functions yet: proves the still-raised blocker is a
+         * stale, live-recheckable cache, not something the commit itself
+         * must clear. */
+        progress_store_tx_lock();
+        UV_CHECK("import continuity: BEGIN IMMEDIATE",
+                 exec_sql(db, "BEGIN IMMEDIATE"));
+        UV_CHECK("import continuity: anchor cursors published complete",
+                 anchor_kv_publish_full_replay_complete_in_tx(db, boundary));
+        UV_CHECK("import continuity: nullifier cursor published complete",
+                 nullifier_kv_publish_full_replay_complete_in_tx(db,
+                                                                 boundary));
+        UV_CHECK("import continuity: replay markers cancelled",
+                 shielded_history_cancel_full_replay_in_tx(db));
+        UV_CHECK("import continuity: COMMIT", exec_sql(db, "COMMIT"));
+        progress_store_tx_unlock();
+
+        int64_t spr_c = -1, sap_c = -1; bool spr_f = false, sap_f = false;
+        UV_CHECK("import continuity: both anchor cursors now durably 0",
+                 anchor_kv_activation_cursor(db, ANCHOR_POOL_SPROUT, &spr_c,
+                                             &spr_f) &&
+                     anchor_kv_activation_cursor(db, ANCHOR_POOL_SAPLING,
+                                                 &sap_c, &sap_f) &&
+                     spr_f && sap_f && spr_c == 0 && sap_c == 0);
+        UV_CHECK("import continuity: nullifier cursor now durably 0",
+                 uv_meta_is(db, "nullifier_kv.activation_cursor", "0"));
+        UV_CHECK("import continuity: blockers still raised pre-refresh "
+                 "(stale cache, not auto-cleared by the commit)",
+                 blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) &&
+                     blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        /* The next reducer tick's refresh re-derives from the LIVE cursor
+         * (not a cached snapshot) and clears both. */
+        utxo_apply_anchor_gap_blocker_refresh(db);
+        utxo_apply_nullifier_gap_blocker_refresh(db);
+        UV_CHECK("import continuity: anchor gap blocker refresh clears it",
+                 !blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+        UV_CHECK("import continuity: nullifier gap blocker refresh clears it",
+                 !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        /* Resume: the SAME held block at h=1 applies (no skip), then h=2,3
+         * apply cleanly (no re-wedge) — the cursor reaches the full tip. */
+        UV_CHECK("import continuity: fold RESUMES at h=1 (no skip) and "
+                 "drains the rest (no re-wedge over h=2,3)",
+                 utxo_apply_stage_drain(100) == 3 &&
+                     utxo_apply_stage_cursor() == 4);
+        UV_CHECK("import continuity: h=1 spend authored exactly once "
+                 "(no duplicate)",
+                 uv_coin_rows_at(db, 1) > 0 && uv_nf_rows_at(db, 1) == 1);
+        int32_t applied_after = -1; bool applied_after_found = false;
+        UV_CHECK("import continuity: coins_applied_height advances to "
+                 "hstar+1 (continuity, not skipping)",
+                 coins_kv_get_applied_height(db, &applied_after,
+                                             &applied_after_found) &&
+                     applied_after_found && applied_after == 4);
+        UV_CHECK("import continuity: no residual gap blocker after resume",
+                 !blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) &&
+                     !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        blocker_clear("utxo_apply.apply_failed");
+        uv_teardown(dir, &ms, &sc);
+    }
+
     /* (j) Malformed durable completeness evidence is a store-fatal hold, not a
      * value that strtoll silently converts to the complete marker 0. */
     {
