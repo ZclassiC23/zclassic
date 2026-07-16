@@ -94,6 +94,19 @@
 #     run as NOT gate-complete; see step 6/7 below) for e.g. a hermetic
 #     fixture run with no zclassicd available.
 #
+# RUNTIME CHARACTERISTICS (live empirical finding, 2026-07-16, a real import
+# of the merged binary against a wedged clone + live zclassicd): the
+# ldb_snapshot_make() step above is a hardlink of the immutable SSTs
+# (lib/storage/src/ldb_snapshot.c) and is effectively instant — it is NOT the
+# bottleneck. What follows it (streaming every Sapling/Sprout anchor through
+# the fail-closed incremental-merkle-tree root re-check, shi_anchor_cb /
+# shi_nullifier_cb) is CPU-bound (one core pegged) and currently runs for
+# MANY MINUTES with no progress output and no node.db writes yet — this
+# script's phase-1 step below can legitimately sit silent for a long time
+# before the "IMPORT COMPLETE" banner appears; do not mistake that silence
+# for a hang. --deadline (default 3600s) must stay generous enough to cover
+# it end-to-end, including the post-import H* CLIMB poll.
+#
 # Usage:
 #   tools/scripts/import-copy-prove.sh [--dry-run] \
 #     [--src=DIR]                  (datadir to copy from; default: $HOME/.zclassic-c23)
@@ -140,7 +153,7 @@ SKIP_HEADER_REFRESH=0
 DRY_RUN=0
 
 usage() {
-    sed -n '2,118p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,132p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do

@@ -513,18 +513,42 @@ by design**, so it needs a sibling harness `tools/scripts/import-copy-prove.sh`
 that reuses the same safety scaffolding but swaps the install step and the
 verdict:
 
+**Landed** as `tools/scripts/import-copy-prove.sh` (see that script's own header
+comment for the authoritative, current contract — this list is kept in sync
+with it, not the other way around):
+
 1. **Safety (unchanged):** require the `--copy-dir` to contain the literal
    `/.zclassic-c23-COPY-` marker and refuse to alias any live datadir
    (`cure-copy-prove.sh:92-107`); `cp -a` the source; strip `.pid`/`.lock`;
    `cleanup()` trap SIGKILLs the copy's node on exit
    (`cure-copy-prove.sh:150-168`).
-2. **Point-in-time chainstate copy:** also copy `~/.zclassic/chainstate` via the
-   `utxo_recovery_ldb_copy.c` stable-signature guard (never read the live one).
+2. **Header refresh (step 1b):** `zclassic23 --importblockindex "$ZD_DATADIR"
+   "$COPY_DIR/node.db"` against the copy — read-only, refreshes the copy's
+   SQLite `blocks` header chain (and `blocks.sapling_root`) from zclassicd's
+   live LevelDB block index before phase 1 runs. Required because a copy whose
+   own header chain is stale makes the importer's tip-frontier bind refuse
+   with a zero `hashFinalSaplingRoot` (the 2026-07-16 empirical finding,
+   below) rather than exercising a genuine anchor/nullifier gap. FAILs the
+   whole run on error; skippable with `--skip-header-refresh` only when the
+   copy's headers are already known current.
 3. **Run the importer** against the copy:
-   `zclassic23 -datadir="$COPY" -import-complete-shielded="$CHAINSTATE_COPY"`
+   `zclassic23 -datadir="$COPY" -import-complete-shielded="$ZD_DATADIR"`
    (isolated `$ISO_HOME`, `-nolegacyimport -nofilesync -connect=127.0.0.1:39999`,
-   no real network — same isolation as `cure-copy-prove.sh:176-202`). FAIL unless
-   the importer logs its explicit success banner and exits 0.
+   no real network — same isolation as `cure-copy-prove.sh:176-202`). There is
+   **no separate manual chainstate copy step**: the importer takes the live
+   zclassicd datadir directly and makes its own FNV-stable point-in-time
+   snapshot internally (`ldb_snapshot_make`, manifest-changed retry,
+   `src/main.c import_complete_shielded_mode`) — the harness never touches
+   `~/.zclassic/chainstate` itself. FAIL unless the importer prints the exact
+   `^IMPORT COMPLETE (committed=` banner and exits 0.
+   > **Runtime characteristic (live empirical finding, 2026-07-16):** the
+   > `ldb_snapshot_make` hardlink of the immutable SSTs is effectively
+   > instant — it is NOT the bottleneck. What follows (streaming every
+   > Sapling/Sprout anchor through the fail-closed incremental-merkle-tree
+   > root re-check) is CPU-bound (one core pegged) and currently runs for
+   > **many minutes with zero progress output and no `node.db` writes yet**.
+   > This is silence, not a hang; the harness's `--deadline` (default 3600s)
+   > must stay generous enough to cover it.
 4. **Normal isolated boot** of the copy (`cure-copy-prove.sh:205-211` pattern).
 5. **Gate — all three, no from-genesis fold anywhere in the above:**
    - **(a) Blocker cleared + H\* CLIMB past 3,176,325**: poll `getblockcount` /
