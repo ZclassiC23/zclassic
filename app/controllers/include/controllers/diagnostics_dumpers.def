@@ -375,7 +375,10 @@
                "operational (release_assisted) vs sovereign (self_folded) "
                "trust mode: coins_kv_proven_authority, self_folded_marker, "
                "coins_applied_height, hstar, self_derived_tip_static_checks, "
-               "authority_posture, trust_mode, and what is gated "
+               "authority_posture, trust_mode, per-pool shielded_pool_counts "
+               "(sprout/sapling anchors + nullifiers), the "
+               "shielded_import.provenance row (source/best-block/counts/"
+               "tip-bind from -import-complete-shielded), and what is gated "
                "(mint/wallet-spend/snapshot-export vs tip-following)"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),

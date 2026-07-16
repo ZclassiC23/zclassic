@@ -18,10 +18,12 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
+#include "controllers/sovereignty_controller.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "json/json.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -325,6 +327,47 @@ int test_shielded_history_import(void)
                   !blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
         SHI_CHECK("nullifier gap blocker cleared after import",
                   !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        /* the sovereignty dumper surfaces the same per-pool counts and the
+         * provenance row the import just committed — see CLAUDE.md "Adding
+         * state introspection" + sovereignty_controller.c's sov_count_rows /
+         * sov_push_import_provenance_json. */
+        {
+            struct json_value out = {0};
+            SHI_CHECK("sovereignty dumper ok after import",
+                      sovereignty_dump_state_json(&out, NULL));
+            const struct json_value *pools =
+                json_get(&out, "shielded_pool_counts");
+            SHI_CHECK("dumper: sprout_anchors == 2",
+                      pools &&
+                      json_get_int(json_get(pools, "sprout_anchors")) == 2);
+            SHI_CHECK("dumper: sapling_anchors == 3",
+                      pools &&
+                      json_get_int(json_get(pools, "sapling_anchors")) == 3);
+            SHI_CHECK("dumper: sprout_nullifiers == 2",
+                      pools &&
+                      json_get_int(json_get(pools, "sprout_nullifiers")) == 2);
+            SHI_CHECK("dumper: sapling_nullifiers == 3",
+                      pools &&
+                      json_get_int(json_get(pools, "sapling_nullifiers")) == 3);
+            const struct json_value *prov_present =
+                json_get(&out, "shielded_import_provenance_present");
+            SHI_CHECK("dumper: provenance row present",
+                      prov_present && json_get_bool(prov_present));
+            const struct json_value *prov =
+                json_get(&out, "shielded_import_provenance");
+            const char *prov_str = prov ? json_get_str(prov) : NULL;
+            SHI_CHECK("dumper: provenance names self_folded=false",
+                      prov_str && strstr(prov_str, "self_folded=false"));
+            SHI_CHECK("dumper: provenance names the tip height",
+                      prov_str && strstr(prov_str, "tip_h=3176325"));
+            const struct json_value *self_folded =
+                json_get(&out, "self_folded_marker");
+            SHI_CHECK("dumper: self_folded_marker stays false after import "
+                      "(operational tip, not yet sovereign)",
+                      self_folded && !json_get_bool(self_folded));
+            json_free(&out);
+        }
 
         progress_store_close();
         test_rm_rf_recursive(cs_dir);

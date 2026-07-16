@@ -35,6 +35,15 @@
 
 struct sqlite3;
 
+/* progress_meta key the importer stamps its provenance row under (source,
+ * best block, per-pool counts, tip-anchor-bind result, self_folded=false) on
+ * a successful commit — see shi_write_provenance in
+ * shielded_history_import_service.c §4.4/§5 of
+ * docs/work/fast-sync-to-tip-plan-2026-07-16.md. Exposed here so other
+ * SELECT-only readers (sovereignty_dump_state_json) can read it back via
+ * progress_meta_get without duplicating the literal. */
+#define SHIELDED_IMPORT_PROVENANCE_KEY "shielded_import.provenance"
+
 /* Per-run outcome. Populated on both success and refusal (partial counts on a
  * refusal reflect what was iterated before the anomaly; nothing was committed
  * unless `committed` is true). */

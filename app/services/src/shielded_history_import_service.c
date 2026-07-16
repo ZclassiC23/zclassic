@@ -34,7 +34,7 @@
 #include <string.h>
 
 #define SHI_SUBSYS "shielded_import"
-#define SHI_PROVENANCE_KEY "shielded_import.provenance"
+#define SHI_PROVENANCE_KEY SHIELDED_IMPORT_PROVENANCE_KEY
 
 /* Streaming callback context — shared by the anchor + nullifier iterators. */
 struct shi_ctx {
