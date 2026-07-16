@@ -1017,6 +1017,8 @@ int main(int argc, char **argv)
     failures += test_consensus_state_snapshot_install();
     failures += test_consensus_state_snapshot_export();
     failures += test_consensus_state_producer_receipt();
+    { extern int test_authority_receipt(void);
+      failures += test_authority_receipt(); }
     failures += test_consensus_state_chain_binding();
     failures += test_consensus_state_publication_cas();
     { extern int test_snapshot_shielded(void);

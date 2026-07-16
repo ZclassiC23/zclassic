@@ -102,7 +102,15 @@ static uint64_t get_le64(const uint8_t *p)
 }
 
 /* SHA3-256 of the running executable image — the race-free /proc/self/exe idiom
- * (matches consensus_state_producer_receipt.c's running_binary_digest). */
+ * (matches consensus_state_producer_receipt.c's running_binary_digest).
+ *
+ * OS-A1 note: this body is exactly authority_receipt_running_binary_digest()
+ * (util/authority_receipt.h). This live cure path is INTENTIONALLY not rewired
+ * onto the generalized primitive — the 344-byte replay payload + its binding
+ * digest are behaviorally frozen. The extraction generalizes the SHAPE so new
+ * privileged transitions bind authority the same way instead of re-deriving it;
+ * a future re-base here would be a byte-preserving change proven against the
+ * consensus_state_snapshot_install group, not a behavior change. */
 static bool rr_verifier_binary_digest(uint8_t out[32])
 {
     int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);

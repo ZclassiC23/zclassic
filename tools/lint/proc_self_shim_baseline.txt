@@ -25,6 +25,9 @@ tools/mcp/controllers/diagnostics_controller.c
 # direct open("/proc/self/exe") is the race-free way to hash the running
 # binary (a path readlink reintroduces TOCTOU), and "/proc/self/fd/N/…" is
 # capability-relative path construction (openat semantics), not a proc read.
+# lib/util/src/authority_receipt.c generalizes exactly that race-free
+# running-binary digest (PERMANENT-exemption class, same reason).
+lib/util/src/authority_receipt.c
 app/services/src/canary_sentinel_watch.c
 config/src/consensus_state_replay_receipt.c
 app/controllers/src/anchor_controller.c

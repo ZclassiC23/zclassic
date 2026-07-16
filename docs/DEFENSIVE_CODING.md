@@ -305,6 +305,25 @@ assert green).
   `.core-unseal-token`). Tool: `tools/core_seal.c` (no external deps: links the
   in-tree FIPS-202 SHA3-256).
 
+- **Gate #48: `check-privileged-transition-receipt`** (RATCHET — Law 7, OS-A1) —
+  every native command leaf whose spec is `ZCL_COMMAND_AUTH_OWNER` **and** effect
+  `ZCL_COMMAND_EFFECT_MUTATE`/`ZCL_COMMAND_EFFECT_DESTRUCTIVE` is a candidate
+  privileged transition and MUST carry a disposition in
+  `tools/lint/privileged_transition_receipt_baseline.txt`: `receipt:<file>` (the
+  handler binds an authority receipt — an independently-derived record over
+  {artifact digest, context anchor, the exact running-binary image} re-checked
+  fail-closed at use time, see `lib/util/include/util/authority_receipt.h`) or
+  `exempt:<reason>` (not an artifact-install transition). A NEW owner-mutating
+  leaf with no disposition FAILS, forcing a conscious Law-7 review. Each
+  `receipt:<file>` line is positively checked: `<file>` must still call
+  `authority_receipt_*_available(` (or the pre-generalized
+  `consensus_state_replay_receipt_authority_available(`), so a wired gate cannot
+  silently vanish. The generalized idiom (`lib/util/src/authority_receipt.c`) is
+  the foundation for safe hotload AND signed off-chain contracts; the original
+  live instance is `config/src/consensus_state_replay_receipt.c` (the sovereign-
+  cure ACTIVATE gate, intentionally not rewired). Impl:
+  `tools/lint/check_privileged_transition_receipt.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -561,6 +580,7 @@ add/remove a gate.
 - `check-vcs-no-git`
 - `check-vcs-no-sha1`
 - `check-command-contract`
+- `check-privileged-transition-receipt`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
