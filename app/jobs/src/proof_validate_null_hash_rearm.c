@@ -25,6 +25,7 @@
 
 #define STAGE_NAME "proof_validate"
 #define UTXO_APPLY_STAGE_NAME "utxo_apply"
+#define TIP_FINALIZE_STAGE_NAME "tip_finalize"
 #define REARM_REASON "proof_validate.null_hash_rearm"
 
 const char *proof_validate_rearm_outcome_name(
@@ -68,11 +69,16 @@ enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
         return finish(report, PV_REARM_ERROR);
     }
 
-    /* Read the two durable cursors. proof_validate is upstream of (>=)
-     * utxo_apply; the floor is utxo_apply's cursor so we never rewind a height
-     * that has already been applied (the LCC invariant — rewinding below a
-     * downstream consumer's cursor is what stalled the reducer on 2026-07-02). */
-    uint64_t pv_cursor = 0, ua_cursor = 0;
+    /* Read the durable cursors. proof_validate is upstream of BOTH consumers of
+     * its receipts: utxo_apply (label_splice guard) AND tip_finalize
+     * (validation_evidence). The floor is the LOWEST of those two so we
+     * re-derive every height a downstream consumer still needs, yet never rewind
+     * below the deepest consumer's cursor (the LCC invariant — rewinding below a
+     * downstream consumer's cursor is what stalled the reducer on 2026-07-02).
+     * tip_finalize lags utxo_apply by up to one block, so flooring at utxo_apply
+     * alone leaves the tip_finalize boundary block hashless and it cannot
+     * finalize. */
+    uint64_t pv_cursor = 0, ua_cursor = 0, tf_cursor = 0;
     if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &pv_cursor)) {
         LOG_WARN("proof_validate",
                  "[proof_validate] null-hash re-arm: pv cursor read failed");
@@ -85,6 +91,16 @@ enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
                  "failed");
         return finish(report, PV_REARM_ERROR);
     }
+    if (!stage_cursor_read_or_zero(db, TIP_FINALIZE_STAGE_NAME, STAGE_NAME,
+                                   &tf_cursor)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm: tip_finalize cursor read "
+                 "failed");
+        return finish(report, PV_REARM_ERROR);
+    }
+    /* The deepest consumer cursor = the lowest of the two; use it as the floor. */
+    if (tf_cursor < ua_cursor)
+        ua_cursor = tf_cursor;
     report->pv_cursor_before = pv_cursor;
     report->ua_cursor_floor = ua_cursor;
 
