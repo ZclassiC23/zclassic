@@ -369,6 +369,26 @@ int test_shielded_history_import(void)
             json_free(&out);
         }
 
+        /* progress counters advanced from zero to the full imported set and the
+         * run is no longer marked active (a reader sees a finished, named run —
+         * never a silent stop). anchors_done = 3 Sapling + 2 Sprout,
+         * nullifiers_done = 3 + 2, both cumulative across pools. */
+        {
+            struct shi_progress p;
+            memset(&p, 0, sizeof(p));
+            SHI_CHECK("progress snapshot ok after import",
+                      shielded_history_import_progress_snapshot(&p));
+            SHI_CHECK("progress: not active after import completes", !p.active);
+            SHI_CHECK("progress: phase is DONE after import",
+                      p.phase == SHI_PHASE_DONE);
+            SHI_CHECK("progress: anchors_done advanced to 5 (3 sap + 2 spr)",
+                      p.anchors_done == 5);
+            SHI_CHECK("progress: nullifiers_done advanced to 5 (3 sap + 2 spr)",
+                      p.nullifiers_done == 5);
+            SHI_CHECK("progress: elapsed_ms is non-negative",
+                      p.elapsed_ms >= 0);
+        }
+
         progress_store_close();
         test_rm_rf_recursive(cs_dir);
         test_rm_rf_recursive(pg_dir);
@@ -577,6 +597,78 @@ int test_shielded_history_import(void)
         test_rm_rf_recursive(cs_dir);
         test_rm_rf_recursive(pg_dir);
         test_rm_rf_recursive(nd_dir);
+    }
+
+    /* ── Scenario F: a MID-SCAN reader anomaly (an anchor whose stored tree does
+     * NOT hash to its key) aborts the whole import. The streaming anchor pass
+     * may have staged valid rows before the reader hits the bad record and
+     * returns -1; the service must roll the WHOLE transaction back — empty
+     * tables, both cursors still positive, both gap blockers still raised. This
+     * proves the reused-statement insert path preserves all-or-nothing
+     * atomicity through a fault partway through the scan. */
+    {
+        char cs_dir[256], pg_dir[256];
+        test_make_tmpdir(cs_dir, sizeof(cs_dir), "shi_midscan", "cs");
+        test_make_tmpdir(pg_dir, sizeof(pg_dir), "shi_midscan", "pg");
+
+        struct uint256 tip_root;
+        SHI_CHECK("build complete fixture (mid-scan scenario)",
+                  shi_build_chainstate(cs_dir, false, &tip_root));
+
+        /* Inject one corrupt Sapling anchor: a validly-serialized tree stored
+         * under a MISMATCHED root key. The reader deserializes it fine, then its
+         * fail-closed root re-check (root != key) aborts the scan with -1. */
+        struct incremental_merkle_tree corrupt_tree;
+        struct uint256 real_root, bogus_root;
+        shi_sapling_tree(4, &corrupt_tree, &real_root);
+        shi_fill(&bogus_root, 0xC0, 77777);   /* != real_root */
+        SHI_CHECK("inject corrupt (root != key) Sapling anchor",
+                  !uint256_eq(&bogus_root, &real_root) &&
+                  shi_put_anchor(cs_dir, 'Z', &corrupt_tree, &bogus_root));
+
+        SHI_CHECK("progress.kv opens (mid-scan)", progress_store_open(pg_dir));
+        sqlite3 *db = progress_store_db();
+        SHI_CHECK("wedge seeded (mid-scan)", db && shi_seed_wedge(db));
+
+        struct shielded_import_report rep;
+        bool ok = shielded_history_import_from_chainstate(
+            db, cs_dir, SHI_TIP_H, &tip_root, &rep);
+        SHI_CHECK("mid-scan anomaly REFUSES (returns false)", !ok);
+        SHI_CHECK("mid-scan anomaly did NOT commit", !rep.committed);
+
+        /* full rollback: nothing staged survives */
+        SHI_CHECK("mid-scan: sapling_anchors table empty (rolled back)",
+                  shi_count(db, "sapling_anchors") == 0);
+        SHI_CHECK("mid-scan: sprout_anchors table empty (rolled back)",
+                  shi_count(db, "sprout_anchors") == 0);
+        SHI_CHECK("mid-scan: nullifiers table empty (rolled back)",
+                  shi_count(db, "nullifiers") == 0);
+
+        /* safe wedge held: cursors still positive, blockers still raised */
+        SHI_CHECK("mid-scan: Sprout anchor cursor still positive",
+                  shi_cursor_is(db, ANCHOR_POOL_SPROUT, SHI_BOUNDARY));
+        SHI_CHECK("mid-scan: Sapling anchor cursor still positive",
+                  shi_cursor_is(db, ANCHOR_POOL_SAPLING, SHI_BOUNDARY));
+        SHI_CHECK("mid-scan: nullifier cursor still positive",
+                  shi_nf_cursor_is(db, SHI_BOUNDARY));
+        SHI_CHECK("mid-scan: anchor gap blocker still raised",
+                  blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+        SHI_CHECK("mid-scan: nullifier gap blocker still raised",
+                  blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+        /* the progress surface reports a finished (not silently-stuck) run */
+        {
+            struct shi_progress p;
+            memset(&p, 0, sizeof(p));
+            SHI_CHECK("mid-scan: progress snapshot ok",
+                      shielded_history_import_progress_snapshot(&p));
+            SHI_CHECK("mid-scan: progress not active after rollback",
+                      !p.active);
+        }
+
+        progress_store_close();
+        test_rm_rf_recursive(cs_dir);
+        test_rm_rf_recursive(pg_dir);
     }
 
     return failures;

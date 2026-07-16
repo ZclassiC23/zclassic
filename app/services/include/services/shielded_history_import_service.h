@@ -58,6 +58,43 @@ struct shielded_import_report {
     bool committed;              /* true iff the atomic transaction COMMITted */
 };
 
+/* ── Live progress (never-silent invariant) ───────────────────────────────
+ *
+ * The import streams millions of anchor + nullifier records inside ONE
+ * transaction. That work is CPU-bound and, historically, silent — a violation
+ * of the node's prime invariant (a stall must always be a NAMED point at a
+ * known cursor, never a quiet stop). The service therefore maintains lock-free
+ * atomic progress counters + a coarse phase, periodically emits a
+ * "shielded import progress: ..." node.log line, and exposes a snapshot getter
+ * a concurrent diagnostics reader (dumpstate on another thread) can render
+ * without touching the database. */
+enum shi_phase {
+    SHI_PHASE_IDLE            = 0, /* no import has run in this process yet */
+    SHI_PHASE_SNAPSHOT        = 1, /* opening the chainstate snapshot + tip bind */
+    SHI_PHASE_SCAN_ANCHORS    = 2, /* streaming Sprout+Sapling anchor frontiers */
+    SHI_PHASE_SCAN_NULLIFIERS = 3, /* streaming Sprout+Sapling nullifiers */
+    SHI_PHASE_BIND            = 4, /* flipping activation cursors + provenance in-tx */
+    SHI_PHASE_COMMIT          = 5, /* COMMITting the atomic transaction */
+    SHI_PHASE_DONE            = 6, /* last import finished (committed OR rolled back) */
+};
+
+struct shi_progress {
+    bool    active;          /* an import is currently running */
+    int     phase;           /* enum shi_phase (last observed) */
+    int64_t anchors_done;    /* anchor rows streamed so far (both pools, cumulative) */
+    int64_t nullifiers_done; /* nullifier rows streamed so far (both pools, cumulative) */
+    int64_t elapsed_ms;      /* since the current/last import began (frozen once done) */
+};
+
+/* Snapshot the importer's live progress for a concurrent reader (e.g. a
+ * dumpstate handler on another thread). Reentrant + lock-free (atomic loads);
+ * never touches the database or the chainstate. Always fills *out; returns
+ * false only on a NULL argument. */
+bool shielded_history_import_progress_snapshot(struct shi_progress *out);
+
+/* Stable human-readable name for an enum shi_phase value (logs + the dumper). */
+const char *shielded_history_import_phase_name(int phase);
+
 /* Import the COMPLETE historical Sprout+Sapling anchor and nullifier sets from
  * a point-in-time copy / fixture of a zclassicd chainstate LevelDB at
  * `chainstate_src_path` into anchor_kv + nullifier_kv held in `progress_db`,
