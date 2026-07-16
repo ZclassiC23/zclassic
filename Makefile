@@ -1539,6 +1539,17 @@ $(BIN_DIR)/export_snapshot: tools/export_snapshot.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
 
+# verify_anchor_completeness: cross-checks a zclassicd chainstate LevelDB copy
+# against a zclassic23 progress.kv — did the shielded-history importer
+# (shielded_history_import_service.c) capture every anchor/nullifier its
+# source chainstate held? Reads the raw LevelDB keyspace directly (leveldb/c.h),
+# independent of chainstate_legacy_reader.c, as an orthogonal ground truth.
+.PHONY: verify_anchor_completeness
+verify_anchor_completeness: $(BIN_DIR)/verify_anchor_completeness
+$(BIN_DIR)/verify_anchor_completeness: tools/verify_anchor_completeness.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libleveldb.a -l:libsqlite3.a -lstdc++ -lpthread -lm -ldl
+
 .PHONY: zcl-blog
 zcl-blog: $(BIN_DIR)/zcl-blog
 $(BIN_DIR)/zcl-blog: tools/zcl-blog
