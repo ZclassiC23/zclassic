@@ -19,6 +19,23 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         "\nSend from a transparent or shielded address to multiple recipients.\n"
         "Supports t→t, t→z, z→z, and z→t transactions.\n");
 
+    /* Sovereign guard (docs/work/fast-sync-to-tip-plan-2026-07-16.md §5.3):
+     * refuse a spend (t->t, t->z, z->t, z->z — this handler covers all four)
+     * while the tip is release_assisted (borrowed shielded history, not
+     * self-folded). Wallet viewing, balance, and receive stay unaffected —
+     * only this spend entry is gated. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("wallet_spend", sov_reason,
+                                     sizeof(sov_reason))) {
+            json_set_str(result, "Error: spend refused — tip is "
+                                 "release_assisted (borrowed shielded "
+                                 "history, not self-folded)");
+            LOG_FAIL("wallet_shielded", "z_sendmany: refused — %s",
+                     sov_reason);
+        }
+    }
+
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
         LOG_FAIL("wallet_shielded", "z_sendmany: expected 2+ params, got %zu", json_size(params));

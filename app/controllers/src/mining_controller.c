@@ -5,6 +5,7 @@
 
 #include "views/format_helpers.h"
 #include "controllers/mining_controller.h"
+#include "controllers/sovereignty_controller.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -128,6 +129,21 @@ static bool rpc_generate(const struct json_value *params, bool help,
         "Mine blocks immediately (regtest only).\n"
         "Arguments:\n"
         "1. numblocks (numeric, required) How many blocks to generate");
+
+    /* Sovereign guard (docs/work/fast-sync-to-tip-plan-2026-07-16.md §5.3):
+     * refuse to mint on a borrowed-and-not-self-folded (release_assisted)
+     * shielded history. This gates the MINT action only — tip-following
+     * (rpc_submitblock accepting a block relayed/mined by someone else, the
+     * reducer's own forward fold) is never touched here. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("mint", sov_reason, sizeof(sov_reason))) {
+            json_set_str(result, "Error: mint refused — tip is "
+                                 "release_assisted (borrowed shielded "
+                                 "history, not self-folded)");
+            LOG_FAIL("mining", "generate: refused — %s", sov_reason);
+        }
+    }
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -275,6 +291,21 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "getblocktemplate ( \"jsonrequestobject\" )\n"
         "Returns data needed to construct a block to work on.");
+
+    /* Sovereign guard — same rationale as rpc_generate above: refuse to hand
+     * out mining work while the tip is release_assisted (borrowed shielded
+     * history). Checked before building the template so a real miner never
+     * wastes an Equihash solve on work that submitblock/generate would then
+     * have refused anyway. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("mint", sov_reason, sizeof(sov_reason))) {
+            json_set_str(result, "Error: mint refused — tip is "
+                                 "release_assisted (borrowed shielded "
+                                 "history, not self-folded)");
+            LOG_FAIL("mining", "getblocktemplate: refused — %s", sov_reason);
+        }
+    }
 
     const struct chain_params *cp = chain_params_get();
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);

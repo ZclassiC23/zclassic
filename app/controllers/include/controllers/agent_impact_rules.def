@@ -261,8 +261,14 @@ AGENT_IMPACT_RULE("examples/*|docs/cookbook/*", "simnet simnet_txkit make_lint_g
  * params-gated; the activation profile + base simnet are the fast proxies. */
 AGENT_IMPACT_RULE("lib/sim/src/simnet_sapling.c|lib/sim/include/sim/simnet_sapling.h|lib/test/src/test_simnet_sapling_shielded_send.c", "simnet_sapling_activation simnet make_lint_gates")
 
-/* Wallet shielded controllers + helpers (librustzcash-backed proving path). */
-AGENT_IMPACT_RULE("app/controllers/src/wallet_shielded_controller.c|app/controllers/src/wallet_shielded_send.c|app/controllers/src/wallet_shielded_send_shielded.c", "wallet shielded_payment_gate make_lint_gates")
+/* Wallet shielded controllers + helpers (librustzcash-backed proving path).
+ * z_sendmany is also the wallet-spend sovereignty guard entry (§5.3 of
+ * docs/work/fast-sync-to-tip-plan-2026-07-16.md) — include sovereignty_guard. */
+AGENT_IMPACT_RULE("app/controllers/src/wallet_shielded_controller.c|app/controllers/src/wallet_shielded_send.c|app/controllers/src/wallet_shielded_send_shielded.c", "wallet shielded_payment_gate sovereignty_guard make_lint_gates")
+/* The operational-vs-sovereign trust split (coins_kv_is_proven_authority vs
+ * coins_kv_contains_refold_marker): the shared guard + dumper, and its two
+ * enforcement call sites (mint/mining, wallet spend). */
+AGENT_IMPACT_RULE("app/controllers/src/sovereignty_controller.c|app/controllers/include/controllers/sovereignty_controller.h|lib/test/src/test_sovereignty_guard.c|app/controllers/src/mining_controller.c|app/controllers/include/controllers/wallet_shielded_internal.h|lib/storage/src/coins_kv.c|lib/storage/include/storage/coins_kv.h|lib/test/src/test_coins_kv_sovereign_gate.c", "sovereignty_guard wallet shielded_payment_gate mining coins_kv_sovereign_gate syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/wallet_helpers.c|app/controllers/include/controllers/wallet_helpers.h", "wallet wallet_persistence_cycle make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/transaction_controller.c", "transaction rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/wallet/src/wallet.c|lib/wallet/include/wallet/wallet.h|lib/test/src/test_wallet.c|lib/test/src/test_wallet_funds_safety.c", "wallet wallet_funds_safety coin_selection make_lint_gates")
