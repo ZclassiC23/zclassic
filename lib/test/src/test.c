@@ -221,6 +221,13 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "seal_rewind") == 0) {
+        printf("[test] ZCL_TEST_ONLY=seal_rewind — running the seal-ring rewind consumer only\n");
+        { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
+        printf("\n=== seal_rewind subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "onion_slice") == 0) {
         printf("[test] ZCL_TEST_ONLY=onion_slice — running the MVP #2 hermetic onion slice only\n");
         { extern int test_onion_bootstrap_slice(void);
@@ -1446,6 +1453,7 @@ int main(int argc, char **argv)
     failures += test_seal_kv();
     failures += test_sha3_sidecar_io();
     failures += test_seal_ratify();
+    { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
     { extern int test_vcs_core(void); failures += test_vcs_core(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     failures += test_nullifier_kv();

@@ -105,6 +105,20 @@ bool seal_kv_newest_ratified(struct sqlite3 *db, struct seal_record *out,
 bool seal_kv_get_at_height(struct sqlite3 *db, int32_t g,
                            struct seal_record *out, bool *found, int *out_slot);
 
+/* Select the NEAREST self-valid rewind base at or below target height H: the
+ * self-valid seal with the HIGHEST height <= H. This is the O(delta) recovery
+ * entry point — a torn/deep rewind resets the reducer to THIS seal instead of
+ * the single compiled SHA3 checkpoint, so re-derivation folds only [G, H]
+ * rather than [checkpoint, H]. Returns true on a clean scan; *found=false when
+ * the ring holds no self-valid seal at/below H (the caller then falls back to
+ * the compiled checkpoint). On found, *out is the base record: its `height` is
+ * the rewind target G and its `coins_sha3` is the commitment the executor must
+ * REPRODUCE by re-deriving the coins set at G — never trust the stored value
+ * alone. Skips any slot whose self_sha3 is invalid. SELECT-only (acquires the
+ * recursive tx lock). */
+bool seal_kv_nearest_rewind_base(struct sqlite3 *db, int32_t H,
+                                 struct seal_record *out, bool *found);
+
 /* Mark slot ratified=1 IN the caller's open txn: sets r->ratified=1,
  * re-serializes, rewrites the slot key. Returns false on a write error. */
 bool seal_kv_mark_ratified_in_tx(struct sqlite3 *db, int slot,
