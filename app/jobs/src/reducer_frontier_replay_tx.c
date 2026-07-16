@@ -108,7 +108,16 @@ static bool rf_replay_rewindable_utxo_row(sqlite3 *db, int height)
     return true;
 }
 
-static bool rf_replay_inverse_checked(sqlite3 *db, int first_h, int cursor)
+/* LCC-safe coins inverse-rewind of the applied range [first_h, cursor): for
+ * every height it verifies the utxo_apply_log row is rewindable (an ok=1 row
+ * MUST carry an inverse delta) and emits the inverse delta, undoing the coin
+ * mutations back to first_h. Refuses (returns false) rather than manufacture a
+ * hole if any row is missing its inverse image — the caller then escalates to a
+ * refold-from-anchor rung. Caller holds progress_store_tx_lock() and an open
+ * transaction. Exposed (was rf_replay_inverse_checked) so stage_rederive_range
+ * reuses the SAME coins rewind (Law 2 — one write path). */
+bool reducer_frontier_replay_inverse_delta_range_checked(sqlite3 *db,
+                                                         int first_h, int cursor)
 {
     for (int h = cursor - 1; h >= first_h; h--) {
         if (!rf_replay_rewindable_utxo_row(db, h))
@@ -306,7 +315,7 @@ bool reducer_frontier_replay_dry_run_stale_script(
     bool ok = rf_replay_backfill_created_outputs_range(db, ms, replay_first,
                                                        backfill_top) &&
               (!rewind_coins ||
-               rf_replay_inverse_checked(db, replay_first, utxo_cursor)) &&
+               reducer_frontier_replay_inverse_delta_range_checked(db, replay_first, utxo_cursor)) &&
               (!rewind_coins ||
                coins_kv_set_applied_height_in_tx(db, replay_first)) &&
               script_validate_stage_dry_run_block(blk, height, dry);
@@ -348,7 +357,7 @@ bool reducer_frontier_replay_stale_script_tx(
     if (!rf_replay_backfill_created_outputs_range(db, ms, replay_first,
                                                   backfill_top) ||
         (rewind_coins &&
-         !rf_replay_inverse_checked(db, replay_first, utxo_cursor)) ||
+         !reducer_frontier_replay_inverse_delta_range_checked(db, replay_first, utxo_cursor)) ||
         !reducer_frontier_replay_delete_log_range(
             db, "script_validate_log", replay_first, script_cursor) ||
         !reducer_frontier_replay_delete_log_range(
@@ -402,7 +411,7 @@ bool reducer_frontier_replay_stale_proof_tx(sqlite3 *db,
 
     bool rewind_coins = utxo_cursor > replay_first;
     if ((rewind_coins &&
-         !rf_replay_inverse_checked(db, replay_first, utxo_cursor)) ||
+         !reducer_frontier_replay_inverse_delta_range_checked(db, replay_first, utxo_cursor)) ||
         !reducer_frontier_replay_delete_log_range(
             db, "proof_validate_log", replay_first, proof_cursor) ||
         (rewind_coins &&

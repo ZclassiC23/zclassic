@@ -264,6 +264,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(stage_repair_script_refill) \
     X(validate_script_hash_split_repair) \
     X(stage_repair_tipfin_backfill) X(reorg_residue_tipfin_replace) \
+    X(stage_rederive_range) \
     X(utxo_apply_upstream_hole) \
     X(reducer_reconcile_witness) \
     X(reducer_step_drain_harness) \

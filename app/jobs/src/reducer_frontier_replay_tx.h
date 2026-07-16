@@ -21,6 +21,16 @@ bool reducer_frontier_replay_delete_log_range(struct sqlite3 *db,
                                               int first_h,
                                               int cursor);
 
+/* LCC-safe coins inverse-rewind of [first_h, cursor): verifies each
+ * utxo_apply_log row is rewindable (ok=1 ⇒ inverse delta present) and emits the
+ * inverse delta, undoing coin mutations back to first_h. Refuses (false) rather
+ * than manufacture a hole when an inverse image is missing. Caller holds
+ * progress_store_tx_lock() and an open transaction. Shared by the stale-script
+ * replay and stage_rederive_range (Law 2 — one coins-rewind path). */
+bool reducer_frontier_replay_inverse_delta_range_checked(struct sqlite3 *db,
+                                                         int first_h,
+                                                         int cursor);
+
 bool reducer_frontier_replay_script_ok_at_unlocked(struct sqlite3 *db,
                                                    int height,
                                                    int *out_ok);
