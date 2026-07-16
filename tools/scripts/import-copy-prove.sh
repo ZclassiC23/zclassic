@@ -244,6 +244,9 @@ echo "       (terminal; the importer FNV-stable-snapshots \$ZD_DATADIR/chainstat
 echo "       itself — zclassicd is read-only, never stopped; require literal"
 echo "       'IMPORT COMPLETE (committed=' banner + exit 0 — SEE THE DEPENDENCY"
 echo "       NOTICE at the top of this script if this flag does not exist yet)"
+echo "    3b. clear any stale \$COPY_DIR/auto_reindex_request left over from the"
+echo "       wedged source datadir — never let the proving boot silently"
+echo "       detour into -reindex-chainstate instead of exercising the import"
 echo "    4. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -rpcport=\$RPCPORT -port=\$P2PPORT"
 echo "       -connect=127.0.0.1:39999 -nolegacyimport -nofilesync (isolated boot)"
 echo "    5. poll getblockcount + dumpstate reducer_frontier/blocker until"
@@ -358,6 +361,29 @@ if [ "$import_rc" != "0" ] || ! grep -q '^IMPORT COMPLETE (committed=' "$IMPORT_
     exit 1
 fi
 echo "[import-copy-prove] import reported IMPORT COMPLETE — booting normally to prove H* CLIMB"
+
+# ── step 3b: clear any stale auto_reindex_request ──────────────────────
+# The copy was cp -a'd from a wedged datadir; if that datadir had ever armed
+# a self-rebuild request (config/src/boot_crashonly.c
+# boot_crashonly_consume_reindex_request(), storage/boot_auto_reindex.h) the
+# sentinel file <datadir>/auto_reindex_request rides along in the copy.
+# import_complete_shielded_mode() is a separate terminal argv path (src/main.c)
+# that returns before the normal boot sequence ever runs, so phase 1 above
+# does NOT consume or clear it — left in place, the very next normal boot
+# (phase 2, right below) would silently detour into -reindex-chainstate
+# instead of exercising the state this harness just imported, which would
+# either make GATE (a)'s climb take far longer than --deadline expects or
+# (worse) mask whether the IMPORT itself, rather than a full block replay,
+# is what carried the copy past the wedge. Clear it unconditionally here —
+# it is a top-level sentinel, never part of derived state, and the whole
+# point of this run is to prove the FRESH import; a rebuild-from-blocks
+# would prove something else.
+if [ -e "$COPY_DIR/auto_reindex_request" ]; then
+    echo "[import-copy-prove] step 3b: stale auto_reindex_request found in the copy — clearing before boot"
+    rm -f "$COPY_DIR/auto_reindex_request"
+else
+    echo "[import-copy-prove] step 3b: no stale auto_reindex_request present — nothing to clear"
+fi
 
 # ── step 4: normal boot (phase 2) ──────────────────────────────────────
 
