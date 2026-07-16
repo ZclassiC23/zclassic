@@ -249,10 +249,15 @@ enum chainstate_anchor_result chainstate_legacy_get_sapling_anchor(
     struct byte_stream s;
     stream_init_from_data(&s, (const unsigned char *)val, vlen);
     sapling_tree_init(tree_out);
-    if (!incremental_tree_deserialize(tree_out, &s)) {
+    if (!incremental_tree_deserialize(tree_out, &s) ||
+        stream_remaining(&s) != 0) {
+        /* Fail-closed on a short/torn record OR trailing bytes after a valid
+         * tree — matches the bulk iterator's completeness bar so a forged blob
+         * that merely prefixes a real tree cannot slip through. */
         free(val);
         LOG_ERR("chainstate_legacy",
-                "get_sapling_anchor: deserialize failed (vlen=%zu)", vlen);
+                "get_sapling_anchor: deserialize failed / trailing bytes "
+                "(vlen=%zu)", vlen);
         return CHAINSTATE_ANCHOR_ERROR;
     }
     free(val);
