@@ -1127,11 +1127,15 @@ int test_sticky_escalator(void)
     }
 
     /* ── T12: resnapshot detects the nearest SELF-VERIFIED rewind base ───────
-     * With NO base it names the typed blocker resnapshot_no_base; with a
-     * ratified seal reachable it names resnapshot_no_consumer (base found, but
-     * no in-process stage_rederive_range consumer linked in this build). Either
-     * way it advances — never a borrowed-state snapshot pull, never a faked
-     * "done". Witnessed via the typed blocker registry. */
+     * With NO base it names the typed blocker resnapshot_no_base and advances.
+     * With a ratified seal reachable AND the stage_rederive_range primitive now
+     * LINKED into this build (pillar2's universal re-derive), it invokes that
+     * in-process consumer from the base; on the degenerate range this minimal
+     * fixture presents (no observable tip above the base) the consumer refuses
+     * honestly and the rung advances to the durable reindex rung — naming
+     * neither no_base (a base WAS found) nor no_consumer (a consumer IS linked).
+     * Either way it advances — never a borrowed-state snapshot pull, never a
+     * faked "done". Witnessed via the typed blocker registry. */
     {
         struct se_fixture fx;
         SE_CHECK("T12: setup fixture", setup_fixture(&fx, "t12_resnapshot_base"));
@@ -1162,8 +1166,12 @@ int test_sticky_escalator(void)
                  blocker_exists("sticky_escalator.resnapshot_no_base") &&
                  !blocker_exists("sticky_escalator.resnapshot_no_consumer"));
 
-        /* Sub-case B: seed a ratified seal -> resnapshot finds the base and
-         * names no_consumer (stage_rederive_range weak symbol is NULL here). */
+        /* Sub-case B: seed a ratified seal -> resnapshot finds the base and,
+         * with the real stage_rederive_range consumer now linked (weak symbol
+         * resolves to the pillar2 primitive), invokes it from that base. The
+         * consumer refuses the degenerate [1000, no-tip] range and the rung
+         * advances to reindex — no_base is NOT named (base found) and
+         * no_consumer is NOT named (consumer linked). */
         SE_CHECK("T12B: seed a ratified seal at a grid point",
                  seed_ratified_seal(db, 1000));
         sticky_escalator_test_reset();
@@ -1178,9 +1186,10 @@ int test_sticky_escalator(void)
         SE_CHECK("T12B: no-op rederive -> resnapshot",
                  sticky_escalator_test_drive(0, t2 + 32) ==
                      STICKY_RUNG_RESNAPSHOT);
-        SE_CHECK("T12B: resnapshot finds the seal base, names no_consumer, advances",
+        SE_CHECK("T12B: resnapshot finds the seal base, invokes the linked "
+                 "re-derive consumer, advances",
                  sticky_escalator_test_drive(0, t2 + 33) == STICKY_RUNG_REINDEX &&
-                 blocker_exists("sticky_escalator.resnapshot_no_consumer") &&
+                 !blocker_exists("sticky_escalator.resnapshot_no_consumer") &&
                  !blocker_exists("sticky_escalator.resnapshot_no_base"));
 
         blocker_clear("sticky_escalator.resnapshot_no_base");
