@@ -156,6 +156,16 @@ const struct block_index *utxo_recovery_block_ancestry_break(
     if (!bi)
         return NULL;
 
+    /* The candidate ITSELF may be the registered cold-import trust anchor: the
+     * shielded-history import attests the cured coins tip (exact height+hash) as
+     * an SHA3-provenance terminus. A height tear BELOW it (between the compiled
+     * anchor and the cured tip) must NOT refuse it — the attestation is the
+     * proof. Check the candidate up front, mirroring the tear-point and
+     * pprev-less-root cold-import checks below; a non-matching candidate still
+     * descends and is refused if it is a genuine detached island. */
+    if (utxo_recovery_cold_import_anchor_matches(bi))
+        return NULL;
+
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     const int32_t anchor = cp ? cp->height
                               : REDUCER_FRONTIER_TRUSTED_ANCHOR;
