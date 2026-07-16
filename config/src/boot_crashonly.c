@@ -25,7 +25,8 @@ bool boot_crashonly_consume_reindex_request(const char *datadir)
 }
 
 bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
-                                                     int coins_best_height)
+                                                     int coins_best_height,
+                                                     bool coins_best_hash_verified)
 {
     int32_t anchor = 0;
     int count = 0;
@@ -38,13 +39,29 @@ bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
         return false;
     if (anchor <= 0)
         return false; /* anchor 0 is the boot-storage episode, not a tip. */
-    if (coins_best_height <= anchor)
+    /* The anchor is the tip height at which the wedge armed the reindex.
+     * "Covered" (clear the stale sentinel, do NOT wipe) means one of:
+     *   - coins-best strictly ABOVE the anchor: the live reducer advanced past
+     *     the request without it, so the request is stale; OR
+     *   - coins-best exactly AT the anchor AND hash-verified: the transparent
+     *     UTXO set is provably intact through the wedge tip (a torn set could
+     *     not derive a hash-verified coins-best there). Reindex-chainstate only
+     *     rebuilds transparent coins, so consuming it here cannot fix a wedge
+     *     that lives DOWNSTREAM of a covered coins set (e.g. a missing shielded
+     *     anchor at a higher height) — it would only destructively WIPE a
+     *     healthy near-tip coins set and burn an O(chain) rebuild, the opposite
+     *     of always-sync-fast. Let the real (non-transparent) blocker surface.
+     * A coins-best strictly BELOW the anchor, or AT it but UNVERIFIED (possibly
+     * torn), leaves the reindex justified — keep consuming. */
+    if (coins_best_height < anchor)
+        return false;
+    if (coins_best_height == anchor && !coins_best_hash_verified)
         return false;
 
     fprintf(stderr,
             "[boot] crash-only recovery: clearing stale auto-reindex request "
             "anchor=%d count=%d because derived coins-best h=%d already "
-            "advanced beyond it\n",
+            "covers it (transparent coins intact through the wedge point)\n",
             (int)anchor, count, coins_best_height);
     event_emitf(EV_BOOT_ACTIVATE, 0,
                 "crashonly_auto_reindex_cleared_stale anchor=%d count=%d "

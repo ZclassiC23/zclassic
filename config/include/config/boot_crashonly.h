@@ -17,13 +17,19 @@
  * the next boot should run -reindex-chainstate. */
 bool boot_crashonly_consume_reindex_request(const char *datadir);
 
-/* Clear a stale tip-height reindex request when durable coins authority has
- * already advanced beyond the request anchor. Equality is still the first
- * boot that should consume a freshly requested reindex. Anchor 0 is the
- * distinct boot-storage episode and is never cleared by this covered-tip
+/* Clear a stale tip-height reindex request when durable coins authority
+ * already covers the request anchor. Covered means: coins-best strictly ABOVE
+ * the anchor (the live reducer moved on), OR coins-best exactly AT the anchor
+ * AND HASH-VERIFIED — a hash-verified coins-best at the wedge tip proves the
+ * transparent UTXO set is intact through it, so consuming reindex-chainstate
+ * would only WIPE a healthy near-tip coins set and burn an O(chain) rebuild
+ * without fixing a downstream (e.g. shielded-anchor) wedge. Coins-best at the
+ * anchor but UNVERIFIED could still be torn, so it keeps consuming. Anchor 0 is
+ * the distinct boot-storage episode and is never cleared by this covered-tip
  * guard. */
 bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
-                                                     int coins_best_height);
+                                                     int coins_best_height,
+                                                     bool coins_best_hash_verified);
 
 /* Clear the self-rebuild budget once the boot reaches a clean integrity state. */
 void boot_crashonly_clear(const char *datadir);

@@ -1710,7 +1710,8 @@ bool app_init(struct app_context *ctx)
             struct boot_derived_coins_best pre_reindex_dcb;
             if (boot_derive_coins_best(&pre_reindex_dcb)) {
                 (void)boot_crashonly_clear_reindex_request_if_covered(
-                    ctx->datadir, pre_reindex_dcb.height);
+                    ctx->datadir, pre_reindex_dcb.height,
+                    pre_reindex_dcb.hash_found);
             }
             if (boot_crashonly_consume_reindex_request(ctx->datadir))
                 ctx->reindex_chainstate = true;

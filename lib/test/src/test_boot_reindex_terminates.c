@@ -193,10 +193,13 @@ int test_boot_reindex_terminates(void)
 
     /* ──────────────────────────────────────────────────────────────────
      * (D) A stale tip-height request self-clears once durable coins authority
-     * has advanced beyond its anchor. Equality is still the first boot that
-     * should consume a freshly requested reindex; above-anchor progress proves
-     * the live reducer moved on without the request. The special boot-storage
-     * anchor 0 and terminal markers are not cleared by this covered-tip guard.
+     * COVERS its anchor: above-anchor progress proves the live reducer moved on
+     * without the request, and a HASH-VERIFIED coins-best exactly AT the anchor
+     * proves the transparent set is intact through the wedge tip (so consuming
+     * reindex-chainstate would only destructively wipe a healthy near-tip coins
+     * set without fixing a downstream/shielded wedge). An UNVERIFIED at-anchor
+     * coins-best could still be torn, so it keeps consuming. The special
+     * boot-storage anchor 0 and terminal markers are not cleared by this guard.
      * ────────────────────────────────────────────────────────────────── */
     {
         char dir[256];
@@ -207,17 +210,26 @@ int test_boot_reindex_terminates(void)
         int n1 = boot_auto_reindex_request(dir, ANCHOR);
         BR_CHECK("covered: request starts pending",
                  n1 == 1 && boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: below-anchor coins-best does not clear",
+        BR_CHECK("covered: below-anchor coins-best does not clear (even verified)",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR - 1) &&
+                     dir, ANCHOR - 1, true) &&
                  boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: coins-best at anchor keeps fresh request",
+        BR_CHECK("covered: at-anchor but UNVERIFIED keeps request (maybe torn)",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR) &&
+                     dir, ANCHOR, false) &&
                  boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: coins-best above anchor clears stale request",
+        BR_CHECK("covered: at-anchor and HASH-VERIFIED clears "
+                 "(transparent set intact — wiping it would be destructive)",
                  boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR + 1) &&
+                     dir, ANCHOR, true) &&
+                 !boot_auto_reindex_pending(dir));
+
+        /* Re-arm to check the above-anchor path (reducer moved on) clears
+         * regardless of hash verification. */
+        (void)boot_auto_reindex_request(dir, ANCHOR);
+        BR_CHECK("covered: above-anchor clears stale request (reducer moved on)",
+                 boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR + 1, false) &&
                  !boot_auto_reindex_pending(dir));
 
         int n2 = boot_auto_reindex_request(dir, 0);
@@ -225,14 +237,14 @@ int test_boot_reindex_terminates(void)
                  n2 == 1 && boot_auto_reindex_pending(dir));
         BR_CHECK("covered: boot-storage anchor 0 is never stale-cleared",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, 999999) &&
+                     dir, 999999, true) &&
                  boot_auto_reindex_pending(dir));
         boot_auto_reindex_clear(dir);
 
         (void)boot_auto_reindex_mark_terminal(dir, ANCHOR);
         BR_CHECK("covered: terminal marker is not stale-cleared",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR + 100) &&
+                     dir, ANCHOR + 100, true) &&
                  boot_auto_reindex_is_terminal(dir));
 
         test_cleanup_tmpdir(dir);
