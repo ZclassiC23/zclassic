@@ -7,6 +7,7 @@
 #include "health/heartbeat.h"
 #include "core/utiltime.h"
 #include "json/json.h"
+#include "platform/os_sandbox.h"
 #include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 
@@ -234,6 +235,13 @@ static void *sweeper_thread(void *arg)
 {
     (void)arg;
     while (atomic_load(&g_running)) {
+        /* Landlock retrofit join — see os_sandbox_landlock_apply_to_self().
+         * This thread predates -sandbox=steady's late sandbox entry; joining
+         * from inside its own loop is idempotent and a cheap no-op once
+         * joined (or while the sandbox is inactive). */
+        if (os_sandbox_active())
+            (void)os_sandbox_landlock_apply_to_self();
+
         sweep_once();
         /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
          * change). Marker advances every sweep so a frozen loop is visible. */

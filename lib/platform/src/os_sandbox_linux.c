@@ -100,12 +100,35 @@ enum seccomp_install_method {
 static _Atomic int g_seccomp_install_method = SECCOMP_INSTALL_NONE;
 
 /* Count of threads that have PROVABLY entered a Landlock domain in this process
- * — incremented once per successful landlock_restrict_self. Landlock has no
- * TSYNC equivalent and is not retroactive, so this is the honest measure of
- * Landlock thread coverage (as opposed to seccomp, which TSYNC makes total).
- * Children a restricted thread later spawns inherit the domain but are NOT
- * counted here, so this is a conservative floor, never an over-count. */
+ * — incremented once per successful landlock_restrict_self (whether via the
+ * original os_sandbox_landlock_restrict() call or a later retrofit join via
+ * os_sandbox_landlock_apply_to_self()). Landlock has no TSYNC equivalent and
+ * is not retroactive, so this is the honest measure of Landlock thread
+ * coverage (as opposed to seccomp, which TSYNC makes total). Children a
+ * restricted thread later spawns inherit the domain but are NOT counted here,
+ * so this is a conservative floor, never an over-count. */
 static _Atomic int g_landlock_restrict_count = 0;
+
+/* The ruleset fd from the most recent successful os_sandbox_landlock_restrict()
+ * call, RETAINED (not closed) instead of being closed after that call's own
+ * landlock_restrict_self. Why: Landlock's restrict-self only confines the
+ * CALLING thread — a ruleset applied by the boot thread does not cover
+ * threads that were already running (no TSYNC-style all-thread install
+ * exists for Landlock, unlike seccomp). The fd table is shared by every
+ * thread of a process, so this same fd number is valid from any of them, and
+ * landlock_restrict_self() neither consumes nor requires exclusive use of the
+ * fd it is given — multiple threads may each call it with the same ruleset
+ * fd to independently join that domain. os_sandbox_landlock_apply_to_self()
+ * is the retrofit join primitive that uses it. -1 means "no domain active
+ * yet" (sandbox not entered, or Landlock unavailable on this kernel). */
+static _Atomic int g_retained_ruleset_fd = -1;
+
+/* Per-thread guard: has THIS thread already joined the retained Landlock
+ * domain (via the original restrict call or a retrofit join)? Makes
+ * os_sandbox_landlock_apply_to_self() idempotent — calling it every loop
+ * iteration of a retrofitted thread costs one branch, not a repeated
+ * syscall + wasted domain-stack layer. */
+static _Thread_local bool tl_landlock_joined = false;
 
 bool os_sandbox_active(void) { return g_sandbox_active; }
 
@@ -256,7 +279,51 @@ struct zcl_result os_sandbox_landlock_restrict(
                        "landlock_restrict_self failed errno=%d (%s) "
                        "(no_new_privs run first?)", e, strerror(e));
     }
-    close(ruleset_fd);
+    /* Retain (do not close) the ruleset fd — see g_retained_ruleset_fd. Close
+     * out any previously-retained fd first (this builder is one-way in
+     * practice, but stay leak-safe if a caller ever re-enters). */
+    int prev_fd = atomic_exchange(&g_retained_ruleset_fd, ruleset_fd);
+    if (prev_fd >= 0)
+        close(prev_fd);
+    tl_landlock_joined = true;
+    atomic_fetch_add(&g_landlock_restrict_count, 1);
+    return ZCL_OK;
+#endif
+}
+
+struct zcl_result os_sandbox_landlock_apply_to_self(void)
+{
+#ifndef ZCL_HAVE_LANDLOCK
+    return ZCL_ERR(OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE,
+                   "Landlock headers absent at build time");
+#else
+    if (tl_landlock_joined)
+        return ZCL_OK;  /* idempotent: this thread already holds the domain */
+
+    int fd = atomic_load(&g_retained_ruleset_fd);
+    if (fd < 0)
+        return ZCL_ERR(OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE,
+                       "no active Landlock domain to join (sandbox not "
+                       "entered yet, or Landlock unavailable on this kernel)");
+
+    /* no_new_privs is a per-THREAD kernel attribute (task_struct), not
+     * process-wide — unlike seccomp's TSYNC install, there is no mechanism
+     * that retroactively sets it on sibling threads. A thread spawned before
+     * the boot thread's own os_sandbox_no_new_privs() call (exactly the
+     * threads this retrofit exists for) never got it set on itself, and
+     * landlock_restrict_self(2) requires it (or CAP_SYS_ADMIN) on the CALLING
+     * thread. Setting it here is idempotent (prctl(PR_SET_NO_NEW_PRIVS,1) a
+     * second time is a harmless no-op) and required for the join to succeed. */
+    if (!os_sandbox_no_new_privs())
+        return ZCL_ERR(OS_SANDBOX_ERR_NO_NEW_PRIVS,
+                       "no_new_privs step failed for retrofit join");
+
+    if (ll_restrict_self(fd, 0) != 0)
+        return ZCL_ERR(OS_SANDBOX_ERR_LANDLOCK_SYSCALL,
+                       "landlock_restrict_self (retrofit join) failed "
+                       "errno=%d (%s)", errno, strerror(errno));
+
+    tl_landlock_joined = true;
     atomic_fetch_add(&g_landlock_restrict_count, 1);
     return ZCL_OK;
 #endif

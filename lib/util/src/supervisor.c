@@ -479,6 +479,18 @@ static void *supervisor_thread_main(void *arg)
     while (atomic_load(&g_running) &&
            !thread_registry_shutdown_requested())
     {
+        /* Deliberately NOT joining the Landlock retrofit here (see
+         * os_sandbox_landlock_apply_to_self() in platform/os_sandbox.h):
+         * this is the single dispatch thread for EVERY registered supervisor
+         * child (sweep_once() below runs every g_contracts[] on_tick handler
+         * synchronously, across every subsystem). Confining this thread would
+         * confine every dispatched on_tick, not just an audited loop — any
+         * child callback that does filesystem I/O outside the datadir grant
+         * would EPERM-fail with no per-child opt-out. This thread stays the
+         * documented Landlock-unconfined-but-seccomp-confined residual
+         * alongside file_service/wallet_backup_service/disk_monitor/
+         * event_async (see os_sandbox_landlock_apply_to_self's doc comment). */
+
         sweep_once();
         int ms = atomic_load(&g_tick_ms);
         if (ms < 1) ms = 1;
