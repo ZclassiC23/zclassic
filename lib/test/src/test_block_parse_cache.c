@@ -26,6 +26,7 @@
 
 #include "test/test_helpers.h"
 #include "storage/block_parse_cache.h"
+#include "storage/chain_segment.h"
 #include "storage/disk_block_io.h"
 #include "chain/chain.h"
 #include "primitives/block.h"
@@ -399,11 +400,102 @@ done:
     return failures;
 }
 
+/* ── Test (d): sealed-segment source below the frontier ───────────
+ * The fold substrate: when a sealed segment covers a height, the miss path
+ * serves the body from the mmap'd segment (byte-identical, hash-bound) instead
+ * of blk*.dat. We prove it by breaking the disk pointer so ONLY the segment can
+ * satisfy the read, and by confirming an UNCOVERED height with the same broken
+ * disk pointer genuinely fails — so the segment is demonstrably the source. */
+
+struct seg_body_src { uint32_t h; const unsigned char *bytes; size_t len; };
+static bool seg_body_src_fn(void *u, uint32_t h, uint8_t **b, size_t *l)
+{
+    struct seg_body_src *s = u;
+    if (h != s->h) return false;
+    uint8_t *c = malloc(s->len ? s->len : 1); // raw-alloc-ok:test
+    if (!c) return false;
+    if (s->len) memcpy(c, s->bytes, s->len);
+    *b = c; *l = s->len;
+    return true;
+}
+
+static int test_segment_backed_read(const char *base)
+{
+    int failures = 0;
+    char dir[300];    snprintf(dir, sizeof(dir), "%s/segrd", base);      mkdir(dir, 0755);
+    char blocks[400]; snprintf(blocks, sizeof(blocks), "%s/blocks", dir);   mkdir(blocks, 0755);
+    char segd[400];   snprintf(segd, sizeof(segd), "%s/segments", dir);     mkdir(segd, 0755);
+
+    block_parse_cache_clear();
+
+    TEST("bpc: sealed segment serves the fold body byte-identically (disk broken)") {
+        const uint32_t H = 1000;
+        struct block src;
+        build_block(&src, 0xBEEF, 3);
+        struct fixture fx;
+        if (!make_fixture(&fx, dir, &src, (int)H)) {
+            printf("FAIL (fixture)\n"); failures++; block_free(&src);
+            free(fx.bytes); goto done;
+        }
+        block_free(&src);
+
+        /* Seal the exact on-disk bytes for height H into <dir>/segments. */
+        struct seg_body_src ss = { .h = H, .bytes = fx.bytes, .len = fx.len };
+        char serr[256] = {0};
+        enum cseg_status st = chain_segment_seal_range(segd, seg_body_src_fn, &ss,
+                                                       H, 1, serr, sizeof(serr));
+        if (st != CSEG_OK) {
+            printf("FAIL (seal: %s)\n", serr); failures++;
+            free(fx.bytes); goto done;
+        }
+
+        /* Break the disk pointer: only the sealed segment can now serve H. */
+        fx.bi.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+        fx.bi.nFile = -1;
+        fx.bi.nDataPos = 0;
+        block_parse_cache_clear();
+
+        /* COVERED height -> served from the segment, byte-identical to disk. */
+        struct block out; block_init(&out);
+        bool ok = block_parse_cache_get((int32_t)H, fx.hash.data, &fx.bi, dir, &out);
+        if (!ok) {
+            printf("FAIL (segment get with broken disk)\n"); failures++;
+            block_free(&out); free(fx.bytes); goto done;
+        }
+        size_t l = 0; unsigned char *s = ser(&out, &l);
+        bool ident = s && l == fx.len && memcmp(s, fx.bytes, l) == 0;
+        free(s); block_free(&out);
+        if (!ident) {
+            printf("FAIL (segment body != on-disk bytes)\n"); failures++;
+            free(fx.bytes); goto done;
+        }
+
+        /* UNCOVERED height, same broken disk -> must fail, proving the segment
+         * (not some disk fallback) is what satisfied the covered read. */
+        struct block_index bi2 = fx.bi;
+        bi2.nHeight = (int)H + 50;
+        struct block out2; block_init(&out2);
+        bool ok2 = block_parse_cache_get((int32_t)H + 50, fx.hash.data, &bi2,
+                                         dir, &out2);
+        block_free(&out2);
+        if (ok2) {
+            printf("FAIL (uncovered height served despite broken disk)\n");
+            failures++; free(fx.bytes); goto done;
+        }
+
+        free(fx.bytes);
+        printf("OK\n");
+    }
+done:
+    block_parse_cache_clear();
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_block_parse_cache(void)
 {
-    printf("\n=== block_parse_cache (deep-clone / key / LRU) ===\n");
+    printf("\n=== block_parse_cache (deep-clone / key / LRU / segment) ===\n");
     int failures = 0;
     char tmpdir[256];
     make_test_dir(tmpdir, sizeof(tmpdir));
@@ -411,6 +503,7 @@ int test_block_parse_cache(void)
     failures += test_deep_clone_equality(tmpdir);
     failures += test_no_key_collision(tmpdir);
     failures += test_lru_eviction(tmpdir);
+    failures += test_segment_backed_read(tmpdir);
 
     block_parse_cache_clear();
     cleanup_test_dir(tmpdir);
