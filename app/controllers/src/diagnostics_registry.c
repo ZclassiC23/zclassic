@@ -36,6 +36,7 @@
 #include "services/bg_validation_service.h"
 #include "services/disk_monitor.h"
 #include "services/network_monitor.h"
+#include "services/network_crawler.h"
 #include "services/sync_monitor.h"
 #include "services/db_maintenance.h"
 #include "services/legacy_mirror_sync_service.h"
