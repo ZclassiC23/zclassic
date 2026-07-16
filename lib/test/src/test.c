@@ -1477,6 +1477,7 @@ int main(int argc, char **argv)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_always_sync_chaos();
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
     failures += test_refold_cadence();
