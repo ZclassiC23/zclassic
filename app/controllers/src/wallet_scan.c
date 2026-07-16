@@ -144,6 +144,69 @@ static void *scan_file_thread(void *arg)
     return NULL;
 }
 
+/* --- OS-S2 #4: Pass-1 file-match cache -----------------------------------
+ * Pass-1 (raw byte scan of every blk*.dat) is the dominant wallet-scan cost.
+ * Pass-2 REBUILDS the wallet tables from the full [0,tip] range (DELETE +
+ * re-insert), so the range can NOT be truncated without losing funds. Instead
+ * we cache each file's match bit keyed on (keyset fingerprint, tip height,
+ * per-file size): a warm boot re-reads only files that grew/changed since the
+ * last scan and reuses cached bits for the rest, turning Pass-1's disk reads
+ * O(delta) while Pass-2 stays a full, correctness-preserving rebuild. */
+#define WSCAN_FILECACHE_KEY   "wallet_scan_pass1_filecache"
+#define WSCAN_FILECACHE_MAGIC 0x57534331u   /* 'WSC1' */
+#define WSCAN_FILECACHE_VER   1u
+#define WSCAN_MAX_FILES       200
+
+struct wscan_filecache {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t keyset_fp;
+    int32_t  tip_height;
+    int32_t  num_files;
+    uint64_t sizes[WSCAN_MAX_FILES];
+    uint8_t  match[WSCAN_MAX_FILES];
+};
+
+/* FNV-1a fold over every live key/script id + counts. Any keyset change
+ * (import/remove) flips the fingerprint and invalidates every cached bit,
+ * because a file with no match under the old keys may match new keys. */
+uint64_t wallet_scan_keyset_fp(const struct wallet *w)
+{
+    uint64_t fp = 1469598103934665603ULL;
+    const uint64_t prime = 1099511628211ULL;
+    for (size_t i = 0; i < w->keystore.num_keys; i++) {
+        if (!w->keystore.keys[i].used) continue;
+        const uint8_t *id = w->keystore.keys[i].keyid.id.data;
+        for (int b = 0; b < 20; b++) { fp ^= id[b]; fp *= prime; }
+    }
+    for (size_t i = 0; i < w->keystore.num_scripts; i++) {
+        if (!w->keystore.scripts[i].used) continue;
+        const uint8_t *id = w->keystore.scripts[i].script_id.data;
+        for (int b = 0; b < 20; b++) { fp ^= id[b]; fp *= prime; }
+    }
+    fp ^= (uint64_t)w->keystore.num_keys << 32;
+    fp ^= (uint64_t)w->keystore.num_scripts;
+    return fp;
+}
+
+bool wallet_scan_cache_valid(uint64_t cached_fp, uint64_t cur_fp,
+                             int cached_tip, int cur_tip)
+{
+    return cached_fp == cur_fp && cur_tip >= cached_tip;
+}
+
+/* True iff `c` is a usable cache for this keyset+tip. A tip LOWER than the
+ * cached one signals a reorg rewind — invalidate everything. Per-file size
+ * checks (below) catch the far-more-common file-grew case. */
+static bool wscan_cache_usable(const struct wscan_filecache *c,
+                               uint64_t keyset_fp, int tip_height)
+{
+    return c->magic == WSCAN_FILECACHE_MAGIC &&
+           c->version == WSCAN_FILECACHE_VER &&
+           wallet_scan_cache_valid(c->keyset_fp, keyset_fp,
+                                   c->tip_height, tip_height);
+}
+
 /* --- Main entry point --- */
 
 int wallet_scan_blocks(struct node_db *ndb,
@@ -189,29 +252,65 @@ int wallet_scan_blocks(struct node_db *ndb,
         return 0;
     }
 
-    /* Determine which block files exist */
+    /* Determine which block files exist + capture their current sizes. */
     int num_files = 0;
-    for (int f = 0; f < 200; f++) {
+    uint64_t cur_sizes[WSCAN_MAX_FILES];
+    for (int f = 0; f < WSCAN_MAX_FILES; f++) {
         char path[512];
         snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", datadir, f);
-        if (access(path, R_OK) != 0) break;
+        struct stat fst;
+        if (stat(path, &fst) != 0 || !S_ISREG(fst.st_mode)) break;
+        cur_sizes[f] = (uint64_t)fst.st_size;
         num_files = f + 1;
     }
     printf("wallet_scan: %d block files to scan\n", num_files);
     fflush(stdout);
 
-    /* ========== PASS 1: Parallel raw byte scan ========== */
+    /* OS-S2 #4: load the Pass-1 file-match cache; decide per file whether the
+     * cached bit can be reused (same keyset, tip not lower, size unchanged) or
+     * the file must be re-scanned. */
+    uint64_t keyset_fp = wallet_scan_keyset_fp(w);
+    int tip_height = active_chain_height(chain);
+    struct wscan_filecache cache;
+    memset(&cache, 0, sizeof(cache));
+    bool cache_ok = false;
+    if (ndb->open) {
+        size_t got = 0;
+        if (node_db_state_get(ndb, WSCAN_FILECACHE_KEY, &cache, sizeof(cache),
+                              &got) && got == sizeof(cache))
+            cache_ok = wscan_cache_usable(&cache, keyset_fp, tip_height);
+    }
+
+    /* ========== PASS 1: Parallel raw byte scan (delta files only) ======= */
     printf("wallet_scan: pass 1 — parallel raw byte scan...\n");
     fflush(stdout);
 
     /* Launch threads — up to 8 at a time */
     bool *file_has_match = zcl_calloc((size_t)num_files, sizeof(bool), "wallet scan file match");
-    if (!file_has_match) {
+    bool *need_scan = zcl_calloc((size_t)num_files, sizeof(bool), "wallet scan need");
+    if (!file_has_match || !need_scan) {
         /* zcl_calloc already logged the OOM; release the address hash table
          * and fail the scan rather than dereferencing NULL at the join loop. */
         aht_free(&aht);
+        free(file_has_match);
+        free(need_scan);
         return -1; /* raw-return-ok:zcl_calloc-logged */
     }
+    int reused = 0;
+    for (int f = 0; f < num_files; f++) {
+        bool can_reuse = cache_ok && f < cache.num_files &&
+                         cache.sizes[f] == cur_sizes[f];
+        if (can_reuse) {
+            file_has_match[f] = (cache.match[f] != 0);
+            reused++;
+        } else {
+            need_scan[f] = true;
+        }
+    }
+    printf("wallet_scan: pass 1 — reusing %d/%d cached file results, "
+           "scanning %d\n", reused, num_files, num_files - reused);
+    fflush(stdout);
+
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {
@@ -220,9 +319,11 @@ int wallet_scan_blocks(struct node_db *ndb,
 
         struct scan_thread_arg args[8];
         pthread_t threads[8];
-        int started = 0;
+        bool launched[8] = { false };
 
         for (int i = 0; i < n; i++) {
+            if (!need_scan[base + i])
+                continue;
             args[i].datadir = datadir;
             args[i].file_num = base + i;
             args[i].ht = &aht;
@@ -231,19 +332,40 @@ int wallet_scan_blocks(struct node_db *ndb,
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
                 LOG_WARN("wallet_scan", "wallet_scan: failed to start pass-1 scan thread");
-                for (int j = 0; j < started; j++)
-                    pthread_join(threads[j], NULL);
+                for (int j = 0; j < n; j++)
+                    if (launched[j]) pthread_join(threads[j], NULL);
                 aht_free(&aht);
                 free(file_has_match);
+                free(need_scan);
                 return -1; // raw-return-ok:logged-above
             }
-            started++;
+            launched[i] = true;
         }
         for (int i = 0; i < n; i++) {
+            if (!launched[i])
+                continue;
             pthread_join(threads[i], NULL);
             file_has_match[base + i] = args[i].result;
         }
     }
+
+    /* Persist the refreshed cache for the next boot. */
+    if (ndb->open) {
+        struct wscan_filecache nc;
+        memset(&nc, 0, sizeof(nc));
+        nc.magic = WSCAN_FILECACHE_MAGIC;
+        nc.version = WSCAN_FILECACHE_VER;
+        nc.keyset_fp = keyset_fp;
+        nc.tip_height = tip_height;
+        nc.num_files = num_files;
+        for (int f = 0; f < num_files && f < WSCAN_MAX_FILES; f++) {
+            nc.sizes[f] = cur_sizes[f];
+            nc.match[f] = file_has_match[f] ? 1u : 0u;
+        }
+        if (!node_db_state_set(ndb, WSCAN_FILECACHE_KEY, &nc, sizeof(nc)))
+            LOG_WARN("wallet_scan", "wallet_scan: pass-1 filecache persist failed");
+    }
+    free(need_scan);
 
     platform_time_monotonic_timespec(&ts_p1);
     double p1_ms = (double)(ts_p1.tv_sec - ts_start.tv_sec) * 1000.0 +

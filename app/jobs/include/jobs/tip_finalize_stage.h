@@ -136,6 +136,13 @@ const char *tip_finalize_stage_last_blocked_reason(void);
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
                                          void *user);
 
+/* OS-S2 reorg-clamp hook. Invoked with the fork height (the highest block the
+ * pre- and post-reorg chains agree on) after a reorg rewind commits its cursor,
+ * so boot-derived cursors can be clamped down. NULL clears it. */
+typedef void (*tip_finalize_reorg_clamp_fn)(int fork_height, void *user);
+void tip_finalize_stage_set_reorg_clamp(tip_finalize_reorg_clamp_fn fn,
+                                        void *user);
+
 bool tip_finalize_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_SERVICES_TIP_FINALIZE_STAGE_H */

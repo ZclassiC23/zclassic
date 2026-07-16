@@ -7,6 +7,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_blocktree_cleanup.h"
 #include "config/bundle_exporter.h"
+#include "config/boot_cursor_state.h"
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_legacy_blocks.h"
@@ -1282,6 +1283,11 @@ bool app_init(struct app_context *ctx)
     t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
 
+    /* OS-S2: bind the boot cursors to the tip_finalize reorg-rewind chokepoint
+     * so a live reorg clamps them down (next boot re-derives above the fork). */
+    if (g_node_db.open)
+        boot_cursor_install_reorg_clamp(&g_node_db);
+
     /* Determine the on-disk wallet_keys row count BEFORE attempting to
      * open the wallet_sqlite subsystem. Used below for the abort
      * decisions — we only refuse to proceed when there's something to
@@ -2373,81 +2379,13 @@ bool app_init(struct app_context *ctx)
             LOG_WARN("boot", "[boot] block_index node.db forward-extent top-up "
                      "FAILED — a cold-import restart may regress (node.log above)");
 
-        /* Propagate nChainTx for all blocks in the index.
-         * The flat file and LevelDB don't always store correct nChainTx.
-         * Without this, find_most_work_chain() skips blocks with
-         * nChainTx=0, causing "tip=X most_work=Y" with Y << X.
-         *
-         * Skip-guard: block_index_loader persists+restores nChainTx, so a
-         * warm boot loads a map that is ALREADY fully propagated. The
-         * malloc+qsort+multi-pass below is O(n log n) over millions of
-         * entries while holding boot — wasted work when nothing changed.
-         * An O(n) pre-scan confirms every txn-bearing block already carries
-         * a nonzero nChainTx (and, where its parent's nChainTx is known, the
-         * child equals parent + nTx). If so, skip the rebuild entirely; only
-         * the cold/torn-import case (missing nChainTx) pays the full pass. */
-        bool nchaintx_already_computed = false;
-        if (g_state.map_block_index.size > 100) {
-            nchaintx_already_computed = true;
-            size_t it = 0;
-            struct block_index *bi = NULL;
-            while (block_map_next(&g_state.map_block_index, &it, NULL, &bi)) {
-                if (!bi)
-                    continue;
-                if (bi->nTx > 0 && bi->nChainTx == 0) {
-                    nchaintx_already_computed = false;
-                    break;
-                }
-                /* pprev-consistency where the parent total is known. */
-                if (bi->nHeight > 0 && bi->pprev &&
-                    bi->pprev->nChainTx > 0 && bi->nTx > 0 &&
-                    bi->nChainTx != bi->pprev->nChainTx + bi->nTx) {
-                    nchaintx_already_computed = false;
-                    break;
-                }
-            }
-        }
-        if (nchaintx_already_computed) {
-            printf("nChainTx already computed, skipping propagation\n");
-        } else if (g_state.map_block_index.size > 100) {
-            size_t n = g_state.map_block_index.size;
-            struct block_index **sorted = zcl_malloc(n * sizeof(*sorted), "boot.nchaintx_sorted");
-            if (sorted) {
-                size_t si = 0, idx = 0;
-                struct block_index *sp;
-                while (block_map_next(&g_state.map_block_index, &si, NULL, &sp))
-                    if (sp && idx < n) sorted[idx++] = sp;
-                n = idx;
-                /* Sort by height for forward propagation */
-                qsort(sorted, n, sizeof(*sorted), cmp_block_index_height);
-                /* Multi-pass propagation (converges in 1-2 passes for
-                 * a well-connected chain, up to 5 for edge cases) */
-                int total = 0;
-                for (int pass = 0; pass < 5; pass++) {
-                    int propagated = 0;
-                    for (size_t i = 0; i < n; i++) {
-                        struct block_index *b = sorted[i];
-                        if (b->nHeight == 0) {
-                            if (b->nChainTx == 0 && b->nTx > 0) {
-                                b->nChainTx = b->nTx;
-                                propagated++;
-                            }
-                        } else if (b->pprev && b->pprev->nChainTx > 0 && b->nTx > 0) {
-                            unsigned int expected = b->pprev->nChainTx + b->nTx;
-                            if (b->nChainTx != expected) {
-                                b->nChainTx = expected;
-                                propagated++;
-                            }
-                        }
-                    }
-                    total += propagated;
-                    if (propagated == 0) break;
-                }
-                free(sorted);
-                if (total > 0)
-                    printf("nChainTx propagated for %d blocks\n", total);
-            }
-        }
+        /* Propagate nChainTx for all blocks in the index (OS-S2 #2).
+         * Without it, find_most_work_chain() skips blocks with nChainTx=0,
+         * causing "tip=X most_work=Y" with Y << X. Cursor-gated
+         * (BOOT_CUR_NCHAINTX): a warm boot only re-checks entries above the
+         * persisted high-water and skips the O(n log n) rebuild entirely when
+         * they are contiguous-complete. Full body: boot_cursor_state.c. */
+        boot_cursor_propagate_nchaintx(&g_state, &g_node_db);
     }
 
     printf("[boot] %-30s %lldms\n", "block_index_load",
@@ -2463,7 +2401,7 @@ bool app_init(struct app_context *ctx)
      * is far too slow for 3M+ entries with wrong heights. */
     int index_repaired = 0;
     if (g_state.map_block_index.size > 100)
-        index_repaired += block_index_repair_heights(&g_state);
+        index_repaired += boot_cursor_repair_heights(&g_state, &g_node_db);
 
     /* pprev chain repair: fix corrupted pprev pointers from LDB import (reads
      * hashPrevBlock from disk; must run after height repair). Cursor-gated on

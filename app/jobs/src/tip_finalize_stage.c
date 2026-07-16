@@ -38,6 +38,8 @@ static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
 static tip_finalize_utxo_count_fn g_utxo_counter = NULL;
 static void *g_utxo_counter_user = NULL;
+static tip_finalize_reorg_clamp_fn g_reorg_clamp = NULL;
+static void *g_reorg_clamp_user = NULL;
 
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
@@ -263,6 +265,11 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
         LOG_WARN("tip_finalize", "[tip_finalize] reorg rewind failed from=%llu to=%llu", (unsigned long long)cursor, (unsigned long long)rewind_to);
         return false;
     }
+
+    /* OS-S2: clamp boot-derived cursors to the fork height so a restart in the
+     * reorg window re-derives navigation indices above it. fork = rewind_to-1. */
+    if (g_reorg_clamp)
+        g_reorg_clamp((int)rewind_to - 1, g_reorg_clamp_user);
 
     /* LOWER the external provable-tip cache (H*) on the reorg rewind. This is
      * the #1 site: stage_set_cursor just dropped the tip_finalize cursor, but
@@ -764,6 +771,8 @@ void tip_finalize_stage_shutdown(void)
     g_ms = NULL;
     g_utxo_counter = NULL;
     g_utxo_counter_user = NULL;
+    g_reorg_clamp = NULL;
+    g_reorg_clamp_user = NULL;
     tip_finalize_observe_shutdown();
     /* Mirror the served-tip reset into the external provable-tip cache so a
      * stale-high H* from this run cannot leak into the next boot. */
@@ -779,6 +788,15 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *us
     pthread_mutex_lock(&g_lock);
     g_utxo_counter = fn;
     g_utxo_counter_user = user;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void tip_finalize_stage_set_reorg_clamp(tip_finalize_reorg_clamp_fn fn,
+                                        void *user)
+{
+    pthread_mutex_lock(&g_lock);
+    g_reorg_clamp = fn;
+    g_reorg_clamp_user = user;
     pthread_mutex_unlock(&g_lock);
 }
 

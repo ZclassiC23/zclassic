@@ -6,6 +6,7 @@
 #include "models/database.h"
 #include "validation/chainstate.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 struct wallet;
 
@@ -23,5 +24,18 @@ int wallet_scan_blocks(struct node_db *ndb,
                        const char *datadir,
                        int start_height,
                        int end_height);
+
+/* OS-S2 #4 Pass-1 file-match cache (exposed for unit tests). */
+
+/* FNV-1a fold over every live key/script id + counts. Deterministic for a
+ * fixed keyset; changes whenever a key/script is added or removed. */
+uint64_t wallet_scan_keyset_fp(const struct wallet *w);
+
+/* True iff a persisted Pass-1 cache with (cached_fp, cached_tip) may be reused
+ * against the current (cur_fp, cur_tip): keyset unchanged and the tip has not
+ * rewound below the cached height (a reorg). Per-file size equality is checked
+ * separately by the caller. */
+bool wallet_scan_cache_valid(uint64_t cached_fp, uint64_t cur_fp,
+                             int cached_tip, int cur_tip);
 
 #endif
