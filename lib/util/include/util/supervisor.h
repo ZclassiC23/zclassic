@@ -226,6 +226,24 @@ bool supervisor_domain_dump_state_json(supervisor_domain_t *domain,
 
 int supervisor_child_count_total(void);
 
+/* ── Independent liveness backstop (Pillar 7) ──────────────────────────
+ * The root supervisor thread cannot register a liveness contract on the
+ * tree it drives (Gate #23 exemption — see check_thread_supervision.sh),
+ * so its ONLY exposed liveness signal is this counter. It increments once
+ * per sweep_once() call — production thread loop AND the ZCL_TESTING
+ * synchronous seam alike — BEFORE any child callback runs, so a thread
+ * death or a hang inside a child's on_tick/on_stall freezes it forever.
+ * An independent watcher (util/supervisor_backstop.h) and
+ * boot_sd_watchdog.c both poll this with their OWN clock; no lock, no
+ * dependency on any registered child. */
+uint64_t supervisor_sweep_heartbeat(void);
+
+/* CLOCK_MONOTONIC microseconds at the start of the most recent sweep_once()
+ * call. A caller computes "how long has the counter been frozen" as
+ * `platform_time_monotonic_us() - supervisor_sweep_last_us()` without
+ * needing to have polled supervisor_sweep_heartbeat() itself every tick. */
+int64_t supervisor_sweep_last_us(void);
+
 /* Remove a contract from the registry. Idempotent. */
 void supervisor_unregister(supervisor_child_id id);
 

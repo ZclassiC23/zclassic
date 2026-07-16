@@ -15,6 +15,12 @@
                "child service name, or use subsystem=supervisor.<name>",
                "sync.watchdog", "net.outbound_floor",
                "lib/test/src/test_supervisor.c", false),
+    DIAG_RUNTIME("supervisor_backstop", supervisor_backstop_dump_state_json,
+                 "independent sweep-heartbeat watcher for the root supervisor "
+                 "thread (Pillar 7): freeze threshold, respawn latch, "
+                 "off-systemd fallback state",
+                 "lib/util/src/supervisor_backstop.c",
+                 "lib/test/src/test_supervisor_backstop.c"),
     DIAG_CONDITION("blocker", blocker_dump_state_json,
                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
                    "deadlines, escape actions, fire counts",

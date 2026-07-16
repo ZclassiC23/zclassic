@@ -308,6 +308,16 @@ void boot_bg_hash_verify_stop(void *ctx);
 bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
 void boot_sd_watchdog_stop(void *ctx);
 
+/* ── boot_supervisor_backstop.c ──────────────────────────────────
+ * Registers the independent supervisor-sweep-heartbeat watcher (Pillar 7
+ * — "supervise the supervisor"; see util/supervisor_backstop.h) into the
+ * runtime service kernel. The watcher's own thread + freeze decision
+ * live in lib/util/src/supervisor_backstop.c; this unit is only the
+ * boot-composition glue, same one-call pattern as
+ * boot_mem_pressure_register(). Called from
+ * boot_register_runtime_services() (boot_services.c). */
+bool boot_supervisor_backstop_register(struct boot_svc_ctx *svc);
+
 /* ── boot_mem_pressure.c ────────────────────────────────────────
  * Memory-pressure organ (Rung 1 follow-on, docs/adr/0003-os-substrate-
  * verdict.md): registers lib/util/mem_pressure's poll on the SAME health

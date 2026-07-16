@@ -69,6 +69,8 @@
 #include "controllers/explorer_internal.h"
 #include "services/wallet_backup_service.h"
 #include "services/chain_tip_watchdog.h"  /* #8: self-respawn when off-systemd */
+#include "util/supervisor_backstop.h"     /* Pillar 7: self-respawn on a frozen
+                                            * supervisor sweep, off-systemd */
 #include "util/clientversion.h"
 #include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
 #include "util/ar_step_readonly.h"
@@ -4010,8 +4012,17 @@ int main(int argc, char **argv)
      * was true), so this is a no-op there and the normal exit happens. The
      * bounded restart budget persisted in progress.kv is reloaded by the fresh
      * boot, so self-respawn is bounded exactly like a systemd restart and
-     * cannot loop unbounded. */
-    bool do_respawn = chain_tip_watchdog_respawn_requested() &&
+     * cannot loop unbounded.
+     *
+     * Pillar 7 — "supervise the supervisor": the independent backstop watcher
+     * (lib/util/src/supervisor_backstop.c) latches the SAME kind of flag when
+     * the root supervisor's sweep heartbeat freezes off-systemd (its on-
+     * systemd path instead just stops feeding boot_sd_watchdog's WATCHDOG=1
+     * ping, so systemd's own Restart=always recovers the unit — no re-exec
+     * needed there). Check both flags here so a frozen supervisor gets the
+     * exact same off-systemd recovery as a frozen chain tip. */
+    bool do_respawn = (chain_tip_watchdog_respawn_requested() ||
+                       supervisor_backstop_respawn_requested()) &&
                       !sd_notify_is_active() && g_saved_argv;
     app_shutdown();
     if (do_respawn) {
