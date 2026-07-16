@@ -27,13 +27,369 @@
 
 #include "test/test_helpers.h"
 #include "storage/chainstate_legacy_reader.h"
+#include "storage/dbwrapper.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "core/serialize.h"
 #include "core/uint256.h"
 
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Hermetic coverage of the 6 bulk shielded-history iterators
+ * (iter_{sapling,sprout}_{anchors,nullifiers}, get_best_{sapling,sprout}_
+ * anchor). No live snapshot / no ~/.zcash-params: Sapling frontiers are
+ * Pedersen-hashed in-binary over synthetic commitments, Sprout via
+ * SHA256Compress. Each scenario gets its OWN LevelDB dir so a corrupt row
+ * in one case cannot poison another, and every row is written+closed
+ * BEFORE the reader (which holds the dir lock) opens.
+ * ───────────────────────────────────────────────────────────────────── */
+
+#define BLK_CHECK(name, expr) do {                                   \
+    printf("chainstate_legacy_bulk: %s... ", (name));                \
+    if ((expr)) printf("OK\n");                                      \
+    else { printf("FAIL\n"); failures++; }                           \
+} while (0)
+
+static void blk_fill(struct uint256 *h, uint8_t seed, size_t idx)
+{
+    for (size_t i = 0; i < 32; i++)
+        h->data[i] = (uint8_t)(seed ^ (idx + i));
+}
+
+/* Build a non-empty frontier of `n` synthetic commitments. */
+static void blk_build_sapling(size_t n, struct incremental_merkle_tree *out)
+{
+    sapling_tree_init(out);
+    for (size_t i = 0; i < n; i++) {
+        struct uint256 cm; blk_fill(&cm, 0x33, i);
+        incremental_tree_append(out, &cm);
+    }
+}
+static void blk_build_sprout(size_t n, struct incremental_merkle_tree *out)
+{
+    sprout_tree_init(out);
+    for (size_t i = 0; i < n; i++) {
+        struct uint256 cm; blk_fill(&cm, 0x77, i);
+        incremental_tree_append(out, &cm);
+    }
+}
+
+/* open → put(key,val) → close. Sequential opens only (LevelDB single-writer);
+ * the reader is never open concurrently. */
+static bool blk_put(const char *dir, const char *key, size_t klen,
+                    const unsigned char *val, size_t vlen)
+{
+    struct db_wrapper db;
+    memset(&db, 0, sizeof(db));
+    if (!db_wrapper_open(&db, dir, 1u << 20, false, false))
+        return false;
+    bool ok = db_write(&db, key, klen, (const char *)val, vlen, true);
+    db_wrapper_close(&db);
+    return ok;
+}
+
+/* Create/wipe an empty LevelDB at dir (also lays down the obfuscate key). */
+static bool blk_make_empty(const char *dir)
+{
+    struct db_wrapper db;
+    memset(&db, 0, sizeof(db));
+    if (!db_wrapper_open(&db, dir, 1u << 20, false, true /*wipe*/))
+        return false;
+    db_wrapper_close(&db);
+    return true;
+}
+
+/* Store one anchor row: (prefix||root) -> serialized(tree). */
+static bool blk_put_anchor(const char *dir, char prefix,
+                           const struct uint256 *keyroot,
+                           const struct incremental_merkle_tree *tree)
+{
+    struct byte_stream ser;
+    stream_init(&ser, 256);
+    if (!incremental_tree_serialize(tree, &ser) || ser.error) {
+        stream_free(&ser);
+        return false;
+    }
+    char key[33];
+    key[0] = prefix;
+    memcpy(key + 1, keyroot->data, 32);
+    bool ok = blk_put(dir, key, sizeof(key), ser.data, ser.size);
+    stream_free(&ser);
+    return ok;
+}
+
+struct anchor_collect {
+    int      count;
+    bool     root_ok;      /* every delivered tree re-hashed to its key */
+    struct uint256 last_root;
+    bool     refuse;       /* if set, cb returns false on first record */
+};
+static bool anchor_cb(const struct uint256 *root,
+                      const struct incremental_merkle_tree *tree, void *ctx)
+{
+    struct anchor_collect *c = ctx;
+    struct uint256 rehash;
+    incremental_tree_root(tree, &rehash);
+    if (memcmp(rehash.data, root->data, 32) != 0)
+        c->root_ok = false;
+    c->last_root = *root;
+    c->count++;
+    if (c->refuse) return false;
+    return true;
+}
+
+struct nf_collect {
+    int     count;
+    uint8_t last[32];
+};
+static bool nf_cb(const uint8_t nf[32], void *ctx)
+{
+    struct nf_collect *c = ctx;
+    memcpy(c->last, nf, 32);
+    c->count++;
+    return true;
+}
+
+static int run_bulk_iter_tests(void)
+{
+    int failures = 0;
+    char dir[512];
+
+    /* ── A. Empty pool: every iterator returns 0, best pointers absent. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_empty", "db");
+    BLK_CHECK("make empty db", blk_make_empty(dir));
+    {
+        void *h = NULL;
+        BLK_CHECK("open empty", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            struct nf_collect nc = {0};
+            BLK_CHECK("empty: iter_sapling_anchors == 0",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == 0);
+            BLK_CHECK("empty: iter_sprout_anchors == 0",
+                      chainstate_legacy_iter_sprout_anchors(h, anchor_cb, &ac) == 0);
+            BLK_CHECK("empty: iter_sapling_nullifiers == 0",
+                      chainstate_legacy_iter_sapling_nullifiers(h, nf_cb, &nc) == 0);
+            BLK_CHECK("empty: iter_sprout_nullifiers == 0",
+                      chainstate_legacy_iter_sprout_nullifiers(h, nf_cb, &nc) == 0);
+            struct uint256 br; blk_fill(&br, 0x11, 1);
+            BLK_CHECK("empty: get_best_sapling_anchor == false (absent)",
+                      chainstate_legacy_get_best_sapling_anchor(h, &br) == false &&
+                      uint256_is_null(&br));
+            blk_fill(&br, 0x22, 2);
+            BLK_CHECK("empty: get_best_sprout_anchor == false (absent)",
+                      chainstate_legacy_get_best_sprout_anchor(h, &br) == false &&
+                      uint256_is_null(&br));
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── B. Single Sapling anchor + best pointer. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_sap1", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sapling(7, &t);
+        struct uint256 root; incremental_tree_root(&t, &root);
+        BLK_CHECK("make empty (sap1)", blk_make_empty(dir));
+        BLK_CHECK("put Sapling anchor row", blk_put_anchor(dir, 'Z', &root, &t));
+        char zk = 'z';
+        BLK_CHECK("put best-Sapling pointer",
+                  blk_put(dir, &zk, 1, root.data, 32));
+
+        void *h = NULL;
+        BLK_CHECK("open (sap1)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == 1",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == 1);
+            BLK_CHECK("delivered root matches + tree re-hashes to key",
+                      ac.count == 1 && ac.root_ok &&
+                      memcmp(ac.last_root.data, root.data, 32) == 0);
+            /* Sprout keyspace is empty in this db (isolation). */
+            struct anchor_collect ac2 = {0}; ac2.root_ok = true;
+            BLK_CHECK("iter_sprout_anchors == 0 (isolated)",
+                      chainstate_legacy_iter_sprout_anchors(h, anchor_cb, &ac2) == 0);
+            struct uint256 best; blk_fill(&best, 0x44, 4);
+            BLK_CHECK("get_best_sapling_anchor == root",
+                      chainstate_legacy_get_best_sapling_anchor(h, &best) &&
+                      memcmp(best.data, root.data, 32) == 0);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── C. Single Sprout anchor + best pointer. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_spr1", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sprout(5, &t);
+        struct uint256 root; incremental_tree_root(&t, &root);
+        BLK_CHECK("make empty (spr1)", blk_make_empty(dir));
+        BLK_CHECK("put Sprout anchor row", blk_put_anchor(dir, 'A', &root, &t));
+        char ak = 'a';
+        BLK_CHECK("put best-Sprout pointer",
+                  blk_put(dir, &ak, 1, root.data, 32));
+
+        void *h = NULL;
+        BLK_CHECK("open (spr1)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sprout_anchors == 1",
+                      chainstate_legacy_iter_sprout_anchors(h, anchor_cb, &ac) == 1);
+            BLK_CHECK("Sprout root matches + re-hashes",
+                      ac.count == 1 && ac.root_ok &&
+                      memcmp(ac.last_root.data, root.data, 32) == 0);
+            struct uint256 best; blk_fill(&best, 0x55, 5);
+            BLK_CHECK("get_best_sprout_anchor == root",
+                      chainstate_legacy_get_best_sprout_anchor(h, &best) &&
+                      memcmp(best.data, root.data, 32) == 0);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── D. Nullifier keyspaces ('S' Sapling, 's' Sprout) — presence-only. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_nf", "db");
+    {
+        const unsigned char one = 0x01; /* zcashd stores serialized `true`. */
+        struct uint256 nf1, nf2, nf3;
+        blk_fill(&nf1, 0xA1, 1); blk_fill(&nf2, 0xA2, 2); blk_fill(&nf3, 0xB3, 3);
+        char k[33];
+        BLK_CHECK("make empty (nf)", blk_make_empty(dir));
+        k[0] = 'S'; memcpy(k + 1, nf1.data, 32);
+        BLK_CHECK("put Sapling nf1", blk_put(dir, k, 33, &one, 1));
+        k[0] = 'S'; memcpy(k + 1, nf2.data, 32);
+        BLK_CHECK("put Sapling nf2", blk_put(dir, k, 33, &one, 1));
+        k[0] = 's'; memcpy(k + 1, nf3.data, 32);
+        BLK_CHECK("put Sprout nf3", blk_put(dir, k, 33, &one, 1));
+
+        void *h = NULL;
+        BLK_CHECK("open (nf)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct nf_collect sap = {0}, spr = {0};
+            BLK_CHECK("iter_sapling_nullifiers == 2",
+                      chainstate_legacy_iter_sapling_nullifiers(h, nf_cb, &sap) == 2);
+            BLK_CHECK("iter_sprout_nullifiers == 1",
+                      chainstate_legacy_iter_sprout_nullifiers(h, nf_cb, &spr) == 1);
+            BLK_CHECK("Sprout nf bytes delivered verbatim",
+                      spr.count == 1 && memcmp(spr.last, nf3.data, 32) == 0);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── E. Corrupt (non-re-hashing) anchor: valid tree under a WRONG-root
+     *       key MUST abort the whole scan (fail-closed completeness). ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_badroot", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sapling(4, &t);
+        struct uint256 wrong; blk_fill(&wrong, 0xEE, 999); /* != tree root */
+        BLK_CHECK("make empty (badroot)", blk_make_empty(dir));
+        BLK_CHECK("put valid tree under WRONG root key",
+                  blk_put_anchor(dir, 'Z', &wrong, &t));
+
+        void *h = NULL;
+        BLK_CHECK("open (badroot)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == -1 (root mismatch refused)",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── F. Trailing bytes after a valid tree — torn record, refused. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_trailing", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sapling(6, &t);
+        struct uint256 root; incremental_tree_root(&t, &root);
+        struct byte_stream ser; stream_init(&ser, 256);
+        bool ser_ok = incremental_tree_serialize(&t, &ser) && !ser.error;
+        /* Append one garbage byte after the valid tree. */
+        unsigned char extra = 0xFF;
+        ser_ok = ser_ok && stream_write(&ser, &extra, 1);
+        char key[33]; key[0] = 'Z'; memcpy(key + 1, root.data, 32);
+        BLK_CHECK("make empty (trailing)", blk_make_empty(dir));
+        BLK_CHECK("put tree+trailing byte",
+                  ser_ok && blk_put(dir, key, sizeof(key), ser.data, ser.size));
+        stream_free(&ser);
+
+        void *h = NULL;
+        BLK_CHECK("open (trailing)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            /* Point lookup must also refuse trailing bytes (hardened). */
+            struct incremental_merkle_tree got;
+            BLK_CHECK("get_sapling_anchor(trailing) == ERROR",
+                      chainstate_legacy_get_sapling_anchor(h, &root, &got) ==
+                          CHAINSTATE_ANCHOR_ERROR);
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == -1 (trailing bytes refused)",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── G. Malformed key length inside the anchor prefix — refused. ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_shortkey", "db");
+    {
+        BLK_CHECK("make empty (shortkey)", blk_make_empty(dir));
+        /* A 'Z'-prefixed key of length 20 (not 33) is corrupt/foreign. */
+        char shortkey[20]; memset(shortkey, 0, sizeof(shortkey));
+        shortkey[0] = 'Z';
+        unsigned char v = 0x00;
+        BLK_CHECK("put malformed short 'Z' key",
+                  blk_put(dir, shortkey, sizeof(shortkey), &v, 1));
+
+        void *h = NULL;
+        BLK_CHECK("open (shortkey)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true;
+            BLK_CHECK("iter_sapling_anchors == -1 (short key refused)",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── H. Consumer refusal aborts the scan (import must be complete). ── */
+    test_make_tmpdir(dir, sizeof(dir), "cslr_refuse", "db");
+    {
+        struct incremental_merkle_tree t; blk_build_sapling(3, &t);
+        struct uint256 root; incremental_tree_root(&t, &root);
+        BLK_CHECK("make empty (refuse)", blk_make_empty(dir));
+        BLK_CHECK("put valid Sapling anchor", blk_put_anchor(dir, 'Z', &root, &t));
+        void *h = NULL;
+        BLK_CHECK("open (refuse)", chainstate_legacy_open(dir, &h) && h);
+        if (h) {
+            struct anchor_collect ac = {0}; ac.root_ok = true; ac.refuse = true;
+            BLK_CHECK("cb returning false -> iter == -1",
+                      chainstate_legacy_iter_sapling_anchors(h, anchor_cb, &ac) == -1);
+            chainstate_legacy_close(h);
+        }
+    }
+    test_rm_rf_recursive(dir);
+
+    /* ── I. NULL-arg guards on the bulk surface. ── */
+    {
+        struct anchor_collect ac = {0};
+        struct nf_collect nc = {0};
+        struct uint256 r;
+        BLK_CHECK("iter_sapling_anchors(NULL handle) == -1",
+                  chainstate_legacy_iter_sapling_anchors(NULL, anchor_cb, &ac) == -1);
+        BLK_CHECK("iter_sapling_nullifiers(NULL cb) == -1 is not required; NULL handle == -1",
+                  chainstate_legacy_iter_sapling_nullifiers(NULL, nf_cb, &nc) == -1);
+        BLK_CHECK("get_best_sapling_anchor(NULL) == false",
+                  chainstate_legacy_get_best_sapling_anchor(NULL, &r) == false);
+    }
+
+    return failures;
+}
 
 struct walk_state {
     int64_t  records;
@@ -121,6 +477,10 @@ int test_chainstate_legacy_reader(void)
         if (ok || h != NULL) { printf("FAIL (NULL arg)\n"); failures++; }
         else printf("OK\n");
     }
+
+    /* Hermetic coverage of the 6 shielded-history bulk iterators — always
+     * runs (no live snapshot / no ~/.zcash-params required). */
+    failures += run_bulk_iter_tests();
 
     if (!path) {
         printf("chainstate_legacy_reader: snapshot not found "
