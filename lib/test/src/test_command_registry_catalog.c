@@ -1455,6 +1455,126 @@ static int test_next_actions_fail_closed(void)
     return failures;
 }
 
+/* ── OS-B2: the per-command latency envelope ─────────────────────────── */
+
+static int test_latency_budget_mapping(void)
+{
+    int failures = 0;
+    TEST("latency enum maps to the documented ms budget, total over the enum") {
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_INSTANT),
+                  (int64_t)50);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_FAST),
+                  (int64_t)250);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_FOREGROUND),
+                  (int64_t)750);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_BACKGROUND),
+                  (int64_t)900);
+        ASSERT_EQ(zcl_command_latency_budget_ms(ZCL_COMMAND_LATENCY_PERSISTENT),
+                  (int64_t)900);
+        /* Out-of-range falls back to the PERSISTENT/900ms ceiling. */
+        ASSERT_EQ(zcl_command_latency_budget_ms((enum zcl_command_latency)999),
+                  (int64_t)900);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_envelope_carries_latency_contract(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("zcl.result.v1 carries budget_ms/elapsed_ms/budget_exceeded") {
+        const struct zcl_command_spec *s = find_spec(reg, "discover.help");
+        ASSERT(s != NULL);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT(strstr(out, "\"budget_ms\"") != NULL);
+        ASSERT(strstr(out, "\"elapsed_ms\"") != NULL);
+        ASSERT(strstr(out, "\"budget_exceeded\":false") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool b2_latency_in_scope(const struct zcl_command_spec *s)
+{
+    if (s->availability != ZCL_COMMAND_READY ||
+        s->effect != ZCL_COMMAND_EFFECT_READ ||
+        s->mode != ZCL_COMMAND_MODE_SYNC)
+        return false;
+    return strncmp(s->path, "discover.", 9) == 0 ||
+           strncmp(s->path, "code.", 5) == 0;
+}
+
+static int test_ready_read_leaves_meet_latency_bucket(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every READY discover.*/code.* leaf's WARM dispatch meets its latency bucket") {
+        /* budget_ms is a WARM-latency contract (docs/NATIVE_COMMAND_INTERFACE.md
+         * §8 "warm latency class"). code.* leaves lazily build the in-binary
+         * code index on their first call (a ~1s one-time O(codebase) scan);
+         * that cold build is not the steady-state read this bucket budgets. So
+         * warm each in-scope leaf once (result ignored), then assert the SECOND
+         * dispatch's envelope meets the bucket. */
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (!b2_latency_in_scope(s))
+                continue;
+            char warm[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit wcode = ZCL_COMMAND_EXIT_INTERNAL;
+            (void)exec_leaf(reg, s, warm, sizeof(warm), &wcode);
+        }
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (!b2_latency_in_scope(s))
+                continue;
+            char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            /* Dispatch with an empty object; leaves needing a required
+             * positional fail input validation FAST (before any I/O) — still a
+             * valid latency measurement, ok=false is expected and not asserted
+             * here. */
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT(strstr(out, "\"budget_exceeded\":false") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_describe_emits_observed_p99(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("describe surfaces observed_p99_us/observed_samples after repeated dispatch") {
+        const struct zcl_command_spec *s = find_spec(reg, "discover.help");
+        ASSERT(s != NULL);
+        char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        for (int i = 0; i < 10; i++)
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        char describe_out[ZCL_COMMAND_SPEC_BUDGET + 1];
+        size_t n = zcl_command_registry_describe_json(reg, "discover.help",
+                                                       describe_out,
+                                                       sizeof(describe_out));
+        ASSERT(n > 0);
+        ASSERT(strstr(describe_out, "\"observed_p99_us\"") != NULL);
+        /* Earlier tests in this binary already dispatched discover.help, so the
+         * ring holds >= 10 samples (tests share the static g_latency_rings). */
+        struct json_value root;
+        ASSERT(json_read(&root, describe_out, n));
+        const struct json_value *policy = json_get(&root, "policy");
+        ASSERT(policy != NULL);
+        int64_t samples = json_get_int(json_get(policy, "observed_samples"));
+        ASSERT(samples >= (int64_t)10);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
@@ -1462,6 +1582,10 @@ int test_command_registry_catalog(void)
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();
     failures += test_describe_emits_semantics();
+    failures += test_latency_budget_mapping();
+    failures += test_envelope_carries_latency_contract();
+    failures += test_ready_read_leaves_meet_latency_bucket();
+    failures += test_describe_emits_observed_p99();
     failures += test_next_actions_fail_closed();
     failures += test_domain_leaf_counts();
     failures += test_six_roots();

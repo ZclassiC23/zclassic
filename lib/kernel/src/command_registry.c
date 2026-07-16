@@ -17,6 +17,107 @@ static bool command_is_branch(const struct zcl_command_spec *spec);
 
 static _Atomic uint64_t g_request_sequence = 1;
 
+/* ── Per-leaf latency ring (OS-B2) ───────────────────────────────────────
+ * A small in-process ring of the last ZCL_COMMAND_LATENCY_RING_CAP dispatch
+ * durations per catalog leaf, indexed by the leaf's offset into whichever
+ * `registry->commands` array it was dispatched through. Feeds the
+ * `observed_p99_us`/`observed_samples` fields in
+ * zcl_command_registry_describe_json.
+ *
+ * PROCESS-LIFETIME CAVEAT (read before treating p99 as durable): the plain
+ * CLI path (`zclassic23 <command>`) is a FRESH OS PROCESS PER INVOCATION —
+ * main() dispatches once and returns. A ring that lives in static process
+ * memory therefore starts EMPTY on every plain CLI call; `discover describe`
+ * run immediately after one CLI command will usually show observed_samples=1
+ * (that command's own dispatch), not a historical p99. The ring accumulates
+ * real history only within a long-lived process: `-mcp-inprocess`, the
+ * eventual REST server once OS-B3b wires it through this same execute path, or
+ * a test/fixture process that dispatches the same leaf repeatedly. This is
+ * deliberate phase-1 scope (the acceptance bar is an in-process fixture test)
+ * — a cross-process persistence layer (mmap'd or on-disk ring, keyed like
+ * progress.kv) is explicitly follow-on work, not part of B2. */
+#define ZCL_COMMAND_LATENCY_RING_CAP 64U
+
+struct zcl_command_latency_ring {
+    _Atomic int64_t samples_us[ZCL_COMMAND_LATENCY_RING_CAP];
+    _Atomic uint32_t next;
+    _Atomic uint32_t filled;
+};
+
+static struct zcl_command_latency_ring
+    g_latency_rings[ZCL_COMMAND_LATENCY_TABLE_MAX];
+
+/* Bound-checked against BOTH `registry->count` (the caller's own array) and
+ * ZCL_COMMAND_LATENCY_TABLE_MAX (the side-table's fixed size) before indexing —
+ * an ad hoc test registry larger than the compiled catalog, or a `spec` pointer
+ * that isn't actually inside `registry->commands`, silently no-ops rather than
+ * indexing out of bounds. KNOWN LIMITATION: two DIFFERENT registries dispatched
+ * in the SAME process share slot space by raw offset (e.g. index 3 in the real
+ * catalog and index 3 in a small ad hoc test registry write the same ring). The
+ * only production caller always passes zcl_command_catalog(), so this only
+ * matters inside test binaries that build small ad hoc registries in the SAME
+ * test process as catalog-based tests — acceptable for phase 1. */
+static void latency_ring_record(const struct zcl_command_registry *registry,
+                                const struct zcl_command_spec *spec,
+                                int64_t elapsed_us)
+{
+    if (!registry || !spec || !registry->commands || elapsed_us < 0)
+        return;
+    if (spec < registry->commands ||
+        spec >= registry->commands + registry->count)
+        return;
+    size_t idx = (size_t)(spec - registry->commands);
+    if (idx >= ZCL_COMMAND_LATENCY_TABLE_MAX)
+        return;
+    struct zcl_command_latency_ring *ring = &g_latency_rings[idx];
+    uint32_t slot = atomic_fetch_add_explicit(&ring->next, 1,
+                                              memory_order_relaxed) %
+                    ZCL_COMMAND_LATENCY_RING_CAP;
+    atomic_store_explicit(&ring->samples_us[slot], elapsed_us,
+                          memory_order_relaxed);
+    uint32_t filled = atomic_load_explicit(&ring->filled,
+                                           memory_order_relaxed);
+    if (filled < ZCL_COMMAND_LATENCY_RING_CAP)
+        atomic_fetch_add_explicit(&ring->filled, 1, memory_order_relaxed);
+}
+
+static int latency_cmp_i64(const void *a, const void *b)
+{
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return (x > y) - (x < y);
+}
+
+/* p99 + sample count for the ring at `spec`'s offset in `registry`. Returns
+ * false with *count=0 when no samples exist yet (fresh process — see the
+ * PROCESS-LIFETIME CAVEAT above); *p99_us is 0 in that case, never garbage. */
+static bool latency_ring_p99(const struct zcl_command_registry *registry,
+                             const struct zcl_command_spec *spec,
+                             int64_t *p99_us, uint32_t *count)
+{
+    *p99_us = 0;
+    *count = 0;
+    if (!registry || !spec || !registry->commands ||
+        spec < registry->commands ||
+        spec >= registry->commands + registry->count)
+        return false;
+    size_t idx = (size_t)(spec - registry->commands);
+    if (idx >= ZCL_COMMAND_LATENCY_TABLE_MAX)
+        return false;
+    struct zcl_command_latency_ring *ring = &g_latency_rings[idx];
+    uint32_t filled = atomic_load_explicit(&ring->filled,
+                                           memory_order_relaxed);
+    if (filled == 0)
+        return false;
+    int64_t tmp[ZCL_COMMAND_LATENCY_RING_CAP];
+    for (uint32_t i = 0; i < filled; i++)
+        tmp[i] = atomic_load_explicit(&ring->samples_us[i],
+                                      memory_order_relaxed);
+    qsort(tmp, filled, sizeof(int64_t), latency_cmp_i64);
+    *p99_us = tmp[(size_t)((filled - 1) * 99 / 100)];
+    *count = filled;
+    return true;
+}
+
 /* ── Hot-swap leaf-handler override layer ─────────────────────────────
  *
  * Mirrors the proven mcp_router_replace_batch snapshot design one layer down
@@ -359,6 +460,26 @@ NAME_FN(zcl_command_availability_name, g_availability_names,
         enum zcl_command_availability)
 NAME_FN(zcl_command_mode_name, g_mode_names, enum zcl_command_mode)
 NAME_FN(zcl_command_latency_name, g_latency_names, enum zcl_command_latency)
+
+/* Per-latency dispatch budget in ms (OS-B2). For MODE_JOB/MODE_STREAM leaves
+ * this budgets the dispatch/kickoff call (accept-and-return-a-handle), NEVER
+ * the job's own completion time — jobs are polled, not blocked on. Do not
+ * "fix" BACKGROUND/PERSISTENT to mean job-completion latency. */
+static const int64_t g_latency_budget_ms[] = {
+    [ZCL_COMMAND_LATENCY_INSTANT]    = ZCL_COMMAND_LATENCY_BUDGET_INSTANT_MS,
+    [ZCL_COMMAND_LATENCY_FAST]       = ZCL_COMMAND_LATENCY_BUDGET_FAST_MS,
+    [ZCL_COMMAND_LATENCY_FOREGROUND] = ZCL_COMMAND_LATENCY_BUDGET_FOREGROUND_MS,
+    [ZCL_COMMAND_LATENCY_BACKGROUND] = ZCL_COMMAND_LATENCY_BUDGET_BACKGROUND_MS,
+    [ZCL_COMMAND_LATENCY_PERSISTENT] = ZCL_COMMAND_LATENCY_BUDGET_PERSISTENT_MS,
+};
+
+int64_t zcl_command_latency_budget_ms(enum zcl_command_latency latency)
+{
+    size_t idx = (size_t)latency;
+    if (idx >= sizeof(g_latency_budget_ms) / sizeof(g_latency_budget_ms[0]))
+        return ZCL_COMMAND_LATENCY_BUDGET_PERSISTENT_MS;
+    return g_latency_budget_ms[idx];
+}
 NAME_FN(zcl_command_cost_name, g_cost_names, enum zcl_command_cost)
 NAME_FN(zcl_command_confirmation_name, g_confirmation_names,
         enum zcl_command_confirmation)
@@ -1033,6 +1154,11 @@ size_t zcl_command_registry_describe_json(
     json_set_object(&root);
     json_set_object(&input);
     json_set_object(&policy);
+    /* OS-B2: measured latency for this leaf (process-lifetime; empty on a fresh
+     * CLI process — see the ring's PROCESS-LIFETIME CAVEAT). */
+    int64_t observed_p99_us = 0;
+    uint32_t observed_samples = 0;
+    (void)latency_ring_p99(registry, spec, &observed_p99_us, &observed_samples);
     bool ok = json_push_kv_str(&root, "schema", "zcl.command_spec.v1") &&
               json_push_kv_str(&root, "path", spec->path) &&
               json_push_kv_str(&root, "summary", spec->summary) &&
@@ -1080,6 +1206,11 @@ size_t zcl_command_registry_describe_json(
                           spec->budget_bytes > 0
                               ? spec->budget_bytes
                               : (int64_t)ZCL_COMMAND_RESULT_BUDGET) &&
+         json_push_kv_int(&policy, "budget_ms",
+                          zcl_command_latency_budget_ms(spec->latency)) &&
+         json_push_kv_int(&policy, "observed_p99_us", observed_p99_us) &&
+         json_push_kv_int(&policy, "observed_samples",
+                          (int64_t)observed_samples) &&
          json_push_kv(&root, "policy", &policy) &&
          json_push_kv_str(&root, "example", spec->example);
     if (spec->aliases && spec->aliases[0])
@@ -1435,6 +1566,16 @@ static size_t serialize_reply(const struct zcl_command_registry *registry,
               json_push_kv_str(&root, "request_id", request_id) &&
               json_push_kv_int(&root, "elapsed_us",
                                elapsed_us < 0 ? 0 : elapsed_us);
+    /* OS-B2: fold the per-command latency contract into the envelope beside the
+     * unbudgeted microsecond `elapsed_us`. `budget_ms` derives purely from the
+     * leaf's declared latency bucket; `budget_exceeded` flags an over-budget
+     * dispatch (measured against elapsed_us at microsecond resolution). */
+    int64_t budget_ms = zcl_command_latency_budget_ms(spec->latency);
+    int64_t elapsed_ms = elapsed_us < 0 ? 0 : elapsed_us / 1000;
+    bool budget_exceeded = elapsed_us > budget_ms * 1000;
+    ok = ok && json_push_kv_int(&root, "budget_ms", budget_ms) &&
+         json_push_kv_int(&root, "elapsed_ms", elapsed_ms) &&
+         json_push_kv_bool(&root, "budget_exceeded", budget_exceeded);
     if (invoked_by_alias)
         ok = ok && json_push_kv_str(&root, "canonical_path", spec->path);
     if (successful) {
@@ -1584,6 +1725,14 @@ size_t zcl_command_registry_execute_json(
                                                    memory_order_relaxed);
     const struct zcl_command_registry *next_registry =
         context && context->registry ? context->registry : registry;
+    /* OS-B2: record this dispatch's duration into the per-leaf latency ring.
+     * `spec` was resolved against `registry` (the caller's array), so the ring
+     * is keyed by its offset there; latency_ring_record bounds-checks and
+     * no-ops if `spec` is not inside `registry->commands`. Recording is
+     * unconditional — the PLANNED/COMPAT/denied fast-fail paths included — since a
+     * leaf whose authorization check alone blows its budget is exactly the kind
+     * of regression the ring should catch. */
+    latency_ring_record(registry, spec, elapsed_us);
     size_t result = serialize_reply(next_registry, spec, &reply,
                                     invoked_by_alias, sequence, elapsed_us,
                                     budget_bytes, out, out_size);
