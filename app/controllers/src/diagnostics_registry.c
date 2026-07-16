@@ -55,6 +55,7 @@
 #include "services/mirror_divergence_locator.h"
 #include "services/nullifier_backfill_service.h"
 #include "services/consensus_state_publication_cas.h"
+#include "services/recovery_coordinator.h"
 #include "controllers/chain_segment_controller.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/reducer_frontier.h"

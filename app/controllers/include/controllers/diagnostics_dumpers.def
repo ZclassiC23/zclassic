@@ -383,6 +383,14 @@
                "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "
                "largest_l3_domain (the V-Cache CCD on multi-CCD AMD parts), source "
                "(sysfs/fallback)"),
+    DIAG_SERVICE("recovery", recovery_coordinator_dump_state_json,
+                 "unified recovery coordinator (chain domain): last rung fired "
+                 "(cursor_warm_restart/rederive_range/segment_refetch/blocker) "
+                 "+ last outcome, run count, and per-rung fire counts. Selects "
+                 "the cheapest sufficient rung and orchestrates the existing "
+                 "healers.",
+                 "app/services/src/recovery_coordinator.c",
+                 "lib/test/src/test_recovery_coordinator.c"),
     DIAG_RUNTIME("mem_pressure", mem_pressure_dump_state_json,
                  "memory-pressure organ (Rung 1 follow-on): level "
                  "(nominal/elevated/high/critical), current/denominator "
