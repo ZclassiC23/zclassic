@@ -34,6 +34,7 @@
 #include "json/json.h"
 #include "views/wallet_gui.h"
 #include "models/database.h"
+#include "models/block.h"                 /* db_block_find_by_hash: tip-bind sapling_root */
 #include "controllers/agent_controller.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/network_controller.h"
@@ -44,6 +45,7 @@
 #include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "services/shielded_history_import_service.h"
+#include "chain/chain.h"                  /* BLOCK_VALID_TRANSACTIONS: connected floor */
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"  /* uss_open: post-write checkpoint verify */
@@ -2651,6 +2653,7 @@ static int import_complete_shielded_mode(int argc, char **argv)
     int64_t tip_height = -1;
     struct uint256 tip_sapling_root;
     uint256_set_null(&tip_sapling_root);
+    bool root_populated = false;
     {
         char db_path[600];
         snprintf(db_path, sizeof(db_path), "%s/node.db", target);
@@ -2661,19 +2664,17 @@ static int import_complete_shielded_mode(int argc, char **argv)
                             "header chain first)\n", db_path);
             return 1;
         }
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(ndb.db,
-                "SELECT height,sapling_root FROM blocks "
-                "WHERE hash=? AND status>=3 ORDER BY height DESC LIMIT 1",
-                -1, &s, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(s, 1, best_block.data, 32, SQLITE_TRANSIENT);
-            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-                tip_height = sqlite3_column_int64(s, 0);
-                if (sqlite3_column_bytes(s, 1) == 32)
-                    memcpy(tip_sapling_root.data,
-                           sqlite3_column_blob(s, 1), 32);
-            }
-            sqlite3_finalize(s);
+        /* The header-committed hashFinalSaplingRoot lives in the block index
+         * projection (blocks.sapling_root), populated from the block HEADER by
+         * --importblockindex — NOT a value that requires the block body / full
+         * connection. Read it via the model so the bind source is exactly the
+         * column the header import writes. */
+        struct db_block blk;
+        if (db_block_find_by_hash(&ndb, best_block.data, &blk) &&
+            blk.status >= BLOCK_VALID_TRANSACTIONS) {
+            tip_height = blk.height;
+            memcpy(tip_sapling_root.data, blk.sapling_root, 32);
+            root_populated = !uint256_is_null(&tip_sapling_root);
         }
         node_db_close(&ndb);
     }
@@ -2683,6 +2684,19 @@ static int import_complete_shielded_mode(int argc, char **argv)
                 "chainstate best block not found in the target header chain — "
                 "cannot bind the tip Sapling root. Run --importblockindex "
                 "against the same zclassicd datadir first.\n");
+        return 1;
+    }
+    if (!root_populated) {
+        ldb_snapshot_destroy(snap_path);
+        fprintf(stderr,
+                "tip bind SOURCE is all-zero: blocks.sapling_root at the "
+                "chainstate best block (height=%lld) is null. This header "
+                "chain was imported by a build that did not persist the block "
+                "header's hashFinalSaplingRoot. Re-run `zclassic23 "
+                "--importblockindex <zclassicd-datadir>` with the current "
+                "build (which writes sapling_root from the header), then retry "
+                "-import-complete-shielded. Refusing rather than binding the "
+                "tip frontier against zeros.\n", (long long)tip_height);
         return 1;
     }
     char root_hex[65];

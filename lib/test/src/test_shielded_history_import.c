@@ -17,10 +17,13 @@
 
 #include "test/test_helpers.h"
 
+#include "chain/chain.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "models/block.h"
+#include "models/database.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/shielded_history_import_service.h"
 #include "storage/anchor_kv.h"
@@ -48,6 +51,14 @@ static void shi_fill(struct uint256 *h, uint8_t seed, size_t idx)
 {
     for (size_t i = 0; i < 32; i++)
         h->data[i] = (uint8_t)(seed ^ (idx * 7 + i));
+}
+
+/* The deterministic best-block hash every fixture chainstate stamps as its 'B'
+ * pointer — the integration scenarios (D/E) key the node.db header row off it,
+ * exactly as import_complete_shielded_mode binds via db_block_find_by_hash. */
+static void shi_best_block(struct uint256 *bb)
+{
+    shi_fill(bb, 0xBB, 999);
 }
 
 /* A non-empty Sapling frontier of `n` synthetic commitments -> its root. */
@@ -206,12 +217,41 @@ static bool shi_build_chainstate(const char *cs_dir, bool omit_tip_sapling,
 
     /* best pointers + best block */
     struct uint256 best_block;
-    shi_fill(&best_block, 0xBB, 999);
+    shi_best_block(&best_block);
     if (!shi_put_pointer(cs_dir, 'z', &sr_tip) ||   /* always names the tip */
         !shi_put_pointer(cs_dir, 'a', &pr_best) ||
         !shi_put_pointer(cs_dir, 'B', &best_block))
         return false;
     return true;
+}
+
+/* Write one connected header row into node.db exactly as --importblockindex
+ * does: hash=best_block, a connected status (>=BLOCK_VALID_TRANSACTIONS), and
+ * blocks.sapling_root set to `sapling_root` — the FIXED header import copies the
+ * block header's hashFinalSaplingRoot here; an OLD import left it all-zero. This
+ * is the precise column import_complete_shielded_mode binds the tip against via
+ * db_block_find_by_hash. */
+static bool shi_write_header_row(struct node_db *ndb,
+                                 const struct uint256 *best_block,
+                                 const struct uint256 *sapling_root)
+{
+    static uint8_t sol[1] = {0};
+    struct db_block b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.hash, best_block->data, 32);
+    b.height = SHI_TIP_H;
+    memset(b.prev_hash, 0x10, 32);
+    b.version = 4;
+    memset(b.merkle_root, 0x11, 32);
+    b.time = 1700000000u;
+    b.bits = 0x2000ffffu;
+    memset(b.nonce, 0x22, 32);
+    b.solution = sol;
+    b.solution_len = sizeof(sol);
+    b.status = BLOCK_VALID_SCRIPTS;   /* connected floor for the bind query */
+    b.num_tx = 1;
+    memcpy(b.sapling_root, sapling_root->data, 32);
+    return db_block_save(ndb, &b);
 }
 
 int test_shielded_history_import(void);
@@ -370,6 +410,130 @@ int test_shielded_history_import(void)
         progress_store_close();
         test_rm_rf_recursive(cs_dir);
         test_rm_rf_recursive(pg_dir);
+    }
+
+    /* ── Scenario D: INTEGRATION — header row carries the real
+     * hashFinalSaplingRoot (the FIXED --importblockindex) → the bind source
+     * (blocks.sapling_root read via db_block_find_by_hash) is POPULATED, equals
+     * the chainstate tip anchor, and the import binds + clears the wedge. This
+     * exercises the exact tip-bind seam import_complete_shielded_mode uses. */
+    {
+        char cs_dir[256], pg_dir[256], nd_dir[256];
+        test_make_tmpdir(cs_dir, sizeof(cs_dir), "shi_bind", "cs");
+        test_make_tmpdir(pg_dir, sizeof(pg_dir), "shi_bind", "pg");
+        test_make_tmpdir(nd_dir, sizeof(nd_dir), "shi_bind", "nd");
+
+        struct uint256 tip_root, best_block;
+        SHI_CHECK("build complete fixture (bind scenario)",
+                  shi_build_chainstate(cs_dir, false, &tip_root));
+        shi_best_block(&best_block);
+
+        char ndb_path[320];
+        snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", nd_dir);
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        SHI_CHECK("node.db opens (bind)", node_db_open(&ndb, ndb_path));
+        SHI_CHECK("header row written with REAL header sapling_root",
+                  shi_write_header_row(&ndb, &best_block, &tip_root));
+
+        /* the exact tip-bind read import_complete_shielded_mode performs */
+        struct db_block blk;
+        bool found = db_block_find_by_hash(&ndb, best_block.data, &blk);
+        SHI_CHECK("bind: best block found in header chain", found);
+        SHI_CHECK("bind: status is connected (>= BLOCK_VALID_TRANSACTIONS)",
+                  found && blk.status >= BLOCK_VALID_TRANSACTIONS);
+        struct uint256 bind_root;
+        uint256_set_null(&bind_root);
+        if (found) memcpy(bind_root.data, blk.sapling_root, 32);
+        SHI_CHECK("bind: sapling_root is POPULATED (non-zero)",
+                  !uint256_is_null(&bind_root));
+        SHI_CHECK("bind: sapling_root == header-committed tip root",
+                  uint256_eq(&bind_root, &tip_root));
+        SHI_CHECK("bind: tip height read from header row",
+                  found && blk.height == SHI_TIP_H);
+        node_db_close(&ndb);
+
+        SHI_CHECK("progress.kv opens (bind)", progress_store_open(pg_dir));
+        sqlite3 *db = progress_store_db();
+        SHI_CHECK("wedge seeded (bind)", db && shi_seed_wedge(db));
+
+        struct shielded_import_report rep;
+        bool ok = shielded_history_import_from_chainstate(
+            db, cs_dir, SHI_TIP_H, &bind_root, &rep);
+        SHI_CHECK("import binds + commits using the header-derived root",
+                  ok && rep.committed && rep.tip_anchor_bound);
+        SHI_CHECK("bind cleared wedge: Sapling anchor cursor == 0",
+                  shi_cursor_is(db, ANCHOR_POOL_SAPLING, 0));
+        SHI_CHECK("bind cleared wedge: nullifier cursor == 0",
+                  shi_nf_cursor_is(db, 0));
+        SHI_CHECK("bind cleared anchor gap blocker",
+                  !blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+
+        progress_store_close();
+        test_rm_rf_recursive(cs_dir);
+        test_rm_rf_recursive(pg_dir);
+        test_rm_rf_recursive(nd_dir);
+    }
+
+    /* ── Scenario E: INTEGRATION — header row left blocks.sapling_root all-zero
+     * (an OLD --importblockindex that dropped the header field). The bind source
+     * is detectably zero, and feeding that zero root to the importer must be
+     * REFUSED (fork-safety guard) with a full rollback: no anchor/nullifier row
+     * committed, both cursors stay positive, gap blockers stay raised. */
+    {
+        char cs_dir[256], pg_dir[256], nd_dir[256];
+        test_make_tmpdir(cs_dir, sizeof(cs_dir), "shi_zero", "cs");
+        test_make_tmpdir(pg_dir, sizeof(pg_dir), "shi_zero", "pg");
+        test_make_tmpdir(nd_dir, sizeof(nd_dir), "shi_zero", "nd");
+
+        struct uint256 tip_root, best_block;
+        SHI_CHECK("build complete fixture (zero-column scenario)",
+                  shi_build_chainstate(cs_dir, false, &tip_root));
+        shi_best_block(&best_block);
+
+        char ndb_path[320];
+        snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", nd_dir);
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        SHI_CHECK("node.db opens (zero)", node_db_open(&ndb, ndb_path));
+        struct uint256 zero_root;
+        uint256_set_null(&zero_root);
+        SHI_CHECK("header row written with ZERO sapling_root (old import)",
+                  shi_write_header_row(&ndb, &best_block, &zero_root));
+
+        struct db_block blk;
+        bool found = db_block_find_by_hash(&ndb, best_block.data, &blk);
+        struct uint256 bind_root;
+        uint256_set_null(&bind_root);
+        if (found) memcpy(bind_root.data, blk.sapling_root, 32);
+        SHI_CHECK("bind: best block found but sapling_root DETECTABLY zero",
+                  found && uint256_is_null(&bind_root));
+        node_db_close(&ndb);
+
+        SHI_CHECK("progress.kv opens (zero)", progress_store_open(pg_dir));
+        sqlite3 *db = progress_store_db();
+        SHI_CHECK("wedge seeded (zero)", db && shi_seed_wedge(db));
+
+        struct shielded_import_report rep;
+        bool ok = shielded_history_import_from_chainstate(
+            db, cs_dir, SHI_TIP_H, &bind_root, &rep);
+        SHI_CHECK("service REFUSES a zero tip root (fork-safety guard)",
+                  !ok && !rep.committed);
+        SHI_CHECK("zero-root refusal left both anchor cursors positive",
+                  shi_cursor_is(db, ANCHOR_POOL_SPROUT, SHI_BOUNDARY) &&
+                  shi_cursor_is(db, ANCHOR_POOL_SAPLING, SHI_BOUNDARY));
+        SHI_CHECK("zero-root refusal left nullifier cursor positive",
+                  shi_nf_cursor_is(db, SHI_BOUNDARY));
+        SHI_CHECK("zero-root refusal committed nothing",
+                  shi_count(db, "sapling_anchors") == 0 &&
+                  shi_count(db, "nullifiers") == 0);
+        SHI_CHECK("zero-root refusal left anchor gap blocker raised",
+                  blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+
+        progress_store_close();
+        test_rm_rf_recursive(cs_dir);
+        test_rm_rf_recursive(pg_dir);
+        test_rm_rf_recursive(nd_dir);
     }
 
     return failures;
