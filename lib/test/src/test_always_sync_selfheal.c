@@ -86,13 +86,16 @@
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 /* ── G1 weak-symbol seam: the universal re-derivation primitive ────────
- * fail-safe-architecture.md §0c: "the universal primitive
- * stage_rederive_range(db, ms, lowest_stage, h)". Weak-linked: resolves to
- * NULL until a sibling lane links a real definition under this name. If the
- * landed signature differs, update this declaration to match — that
- * adjustment IS the integration this test exists to gate. */
+ * fail-safe-architecture.md §0c. The primitive LANDED (app/jobs/src/
+ * stage_rederive_range.c) with the range signature (db, ms, from_height,
+ * to_height, out) — re-fold the PoW-verified on-disk bodies across a height
+ * range. This decl is aligned to that landed signature (the integration
+ * this test exists to gate). Kept weak so the `if (!stage_rederive_range)`
+ * skip seam still holds if the definition is ever unlinked. */
+struct stage_rederive_range_result;
 extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
-                                 const char *lowest_stage, int32_t h)
+                                 int from_height, int to_height,
+                                 struct stage_rederive_range_result *out)
     __attribute__((weak));
 
 /* ── G3 weak-symbol seam: the LCC RAISE-rule refusal probe ─────────────
@@ -550,14 +553,14 @@ static int ash_test_stage_rederive_range(void)
              ash_setup_hole_fixture(&fx, "g1_rederive"));
     sqlite3 *db = progress_store_db();
 
-    bool r1 = stage_rederive_range(db, &fx.ms, "script_validate", A + 2);
+    bool r1 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: first call succeeds", r1);
     int ok1 = -1; char status1[64] = {0};
     ASH_CHECK("G1: hole at A+2 now has a real ok=1 row",
              ash_script_row(db, A + 2, &ok1, status1, sizeof(status1)) &&
              ok1 == 1);
 
-    bool r2 = stage_rederive_range(db, &fx.ms, "script_validate", A + 2);
+    bool r2 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: second immediate call also succeeds (idempotent)", r2);
     int ok2 = -1; char status2[64] = {0};
     ASH_CHECK("G1: re-run reproduces a byte-identical verdict (no duplicate work)",
@@ -571,7 +574,7 @@ static int ash_test_stage_rederive_range(void)
     ASH_CHECK("G1: progress store reopens after simulated restart",
              progress_store_open(fx.dir));
     db = progress_store_db();
-    bool r3 = stage_rederive_range(db, &fx.ms, "script_validate", A + 2);
+    bool r3 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: call after simulated crash+restart succeeds", r3);
     int ok3 = -1; char status3[64] = {0};
     ASH_CHECK("G1: post-restart verdict identical (durable, not partial)",
