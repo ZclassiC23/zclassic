@@ -206,6 +206,55 @@ bool nullifier_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
     return true;
 }
 
+bool nullifier_kv_publish_full_replay_complete_in_tx(sqlite3 *db,
+                                                     int64_t expected_boundary)
+{
+    if (!db || expected_boundary <= 0) {
+        LOG_WARN("nullifier_kv",
+                 "[nullifier_kv] publish complete: invalid boundary=%lld",
+                 (long long)expected_boundary);
+        return false;
+    }
+    if (sqlite3_get_autocommit(db) != 0) {
+        LOG_WARN("nullifier_kv",
+                 "[nullifier_kv] publish complete requires caller transaction");
+        return false;
+    }
+    if (!progress_meta_table_ensure(db) || !nullifier_kv_ensure_schema(db))
+        return false;
+
+    /* Refuse before the write unless the marker is present and still names this
+     * exact positive replay generation. */
+    int64_t cursor = -1;
+    bool found = false;
+    if (!nullifier_kv_activation_cursor(db, &cursor, &found) || !found ||
+        cursor != expected_boundary) {
+        LOG_WARN("nullifier_kv",
+                 "[nullifier_kv] publish complete boundary mismatch got=%lld "
+                 "found=%d expected=%lld",
+                 (long long)cursor, found ? 1 : 0,
+                 (long long)expected_boundary);
+        return false;
+    }
+    if (!nf_activation_set_in_tx(db, 0)) {
+        LOG_WARN("nullifier_kv",
+                 "[nullifier_kv] publish complete marker write failed");
+        return false;
+    }
+    /* Re-read and verify the durable zero before accepting. */
+    cursor = -1;
+    found = false;
+    if (!nullifier_kv_activation_cursor(db, &cursor, &found) || !found ||
+        cursor != 0) {
+        LOG_WARN("nullifier_kv",
+                 "[nullifier_kv] publish complete zero verification failed "
+                 "got=%lld found=%d",
+                 (long long)cursor, found ? 1 : 0);
+        return false;
+    }
+    return true;
+}
+
 bool shielded_history_cancel_full_replay_in_tx(sqlite3 *db)
 {
     if (!db || sqlite3_get_autocommit(db) != 0) {

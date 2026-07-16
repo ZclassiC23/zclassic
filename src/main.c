@@ -42,6 +42,8 @@
 #include "storage/coins_db.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/ldb_snapshot.h"
+#include "storage/progress_store.h"
+#include "services/shielded_history_import_service.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"  /* uss_open: post-write checkpoint verify */
@@ -2537,6 +2539,186 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
     return 0;
 }
 
+/* ── -import-complete-shielded=<zclassicd-datadir> mode ─────────────────
+ *
+ * Owner-gated, copy-prove-gated: import the COMPLETE historical Sprout+Sapling
+ * anchor + nullifier set from a zclassicd chainstate into the TARGET datadir's
+ * progress.kv, atomically, and flip both activation cursors to 0 — clearing the
+ * utxo_apply.anchor_backfill_gap + nullifier_backfill_gap wedge WITHOUT a
+ * from-genesis fold (docs/work/fast-sync-to-tip-plan-2026-07-16.md §4).
+ *
+ * NOT auto-run on any live datadir: this REFUSES the operator's live canonical
+ * (~/.zclassic-c23) and mint (~/.zclassic-c23-mint) datadirs by construction;
+ * point it at a -datadir=<COPY> (the copy-prove harness flow, §6). The source
+ * chainstate is read through a point-in-time ldb_snapshot (never the live one).
+ *
+ * Usage: zclassic23 -datadir=<TARGET-COPY>
+ *        -import-complete-shielded=<zclassicd-datadir> */
+static bool import_shielded_is_live_datadir(const char *target)
+{
+    const char *home = getenv("HOME");
+    if (!home || !target)
+        return false;
+    char live[600], mint[600];
+    snprintf(live, sizeof(live), "%s/.zclassic-c23", home);
+    snprintf(mint, sizeof(mint), "%s/.zclassic-c23-mint", home);
+    /* Compare with any single trailing slash normalized away. */
+    size_t tl = strlen(target);
+    while (tl > 1 && target[tl - 1] == '/') tl--;
+    return (strlen(live) == tl && strncmp(target, live, tl) == 0) ||
+           (strlen(mint) == tl && strncmp(target, mint, tl) == 0);
+}
+
+static int import_complete_shielded_mode(int argc, char **argv)
+{
+    const char *home = getenv("HOME");
+    const char *src = NULL;
+    char target[512];
+    snprintf(target, sizeof(target), "%s/.zclassic-c23", home ? home : ".");
+
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "-import-complete-shielded=", 26) == 0)
+            src = argv[i] + 26;
+        else if (strncmp(argv[i], "-datadir=", 9) == 0)
+            snprintf(target, sizeof(target), "%s", argv[i] + 9);
+    }
+    if (!src || !src[0]) {
+        fprintf(stderr,
+                "usage: %s -datadir=<TARGET-COPY> "
+                "-import-complete-shielded=<zclassicd-datadir>\n", argv[0]);
+        return 2;
+    }
+
+    printf("=== ZClassic Complete Shielded-History Import ===\n");
+    printf("Source chainstate: %s/chainstate\n", src);
+    printf("Target datadir:    %s\n", target);
+
+    /* Containment: NEVER write shielded history into a live datadir. The cure
+     * is copy-proven on a COPY first (see §6); the operator points -datadir at
+     * the copy, then cuts over by re-running against canonical after a green
+     * copy-prove. This mode itself refuses the two known live paths. */
+    if (import_shielded_is_live_datadir(target)) {
+        fprintf(stderr,
+                "REFUSING: %s is a live datadir. Copy-prove on a COPY first "
+                "(cp -a the datadir + chainstate, run this against the copy, "
+                "gate on H* climb + tip-hash parity vs zclassicd), then cut "
+                "over. See docs/work/fast-sync-to-tip-plan-2026-07-16.md §6.\n",
+                target);
+        return 1;
+    }
+
+    /* Point-in-time snapshot of the source chainstate (never read the live
+     * LevelDB directly — mirrors --gen-utxo-snapshot). */
+    char cs_src[700], snap_path[900];
+    snprintf(cs_src, sizeof(cs_src), "%s/chainstate", src);
+    struct stat st;
+    if (stat(cs_src, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "missing chainstate at %s\n", cs_src);
+        return 1;
+    }
+    snprintf(snap_path, sizeof(snap_path), "%s/shielded_import_cs_snap",
+             target);
+    char snap_err[256] = {0};
+    bool snap_ok = false;
+    for (int t = 0; t < 4 && !snap_ok; t++) {
+        snap_ok = ldb_snapshot_make(cs_src, snap_path, snap_err,
+                                    sizeof(snap_err));
+        if (!snap_ok && strcmp(snap_err, "manifest_changed") != 0) break;
+    }
+    if (!snap_ok) {
+        fprintf(stderr, "ldb_snapshot_make(%s) failed: %s\n", cs_src, snap_err);
+        return 1;
+    }
+    printf("Chainstate snapshot: %s\n", snap_path);
+
+    /* Read the chainstate best block, then bind it to OUR header chain: the
+     * block's hashFinalSaplingRoot (blocks.sapling_root) is the chain-committed
+     * tip Sapling root the importer verifies the frontier against. */
+    struct uint256 best_block;
+    uint256_set_null(&best_block);
+    {
+        void *rh = NULL;
+        if (!chainstate_legacy_open(snap_path, &rh) || !rh ||
+            !chainstate_legacy_get_best_block(rh, &best_block)) {
+            if (rh) chainstate_legacy_close(rh);
+            ldb_snapshot_destroy(snap_path);
+            fprintf(stderr, "cannot read chainstate best block\n");
+            return 1;
+        }
+        chainstate_legacy_close(rh);
+    }
+
+    int64_t tip_height = -1;
+    struct uint256 tip_sapling_root;
+    uint256_set_null(&tip_sapling_root);
+    {
+        char db_path[600];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", target);
+        struct node_db ndb;
+        if (!node_db_open(&ndb, db_path)) {
+            ldb_snapshot_destroy(snap_path);
+            fprintf(stderr, "cannot open %s (import --importblockindex the "
+                            "header chain first)\n", db_path);
+            return 1;
+        }
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(ndb.db,
+                "SELECT height,sapling_root FROM blocks "
+                "WHERE hash=? AND status>=3 ORDER BY height DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(s, 1, best_block.data, 32, SQLITE_TRANSIENT);
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                tip_height = sqlite3_column_int64(s, 0);
+                if (sqlite3_column_bytes(s, 1) == 32)
+                    memcpy(tip_sapling_root.data,
+                           sqlite3_column_blob(s, 1), 32);
+            }
+            sqlite3_finalize(s);
+        }
+        node_db_close(&ndb);
+    }
+    if (tip_height < 0) {
+        ldb_snapshot_destroy(snap_path);
+        fprintf(stderr,
+                "chainstate best block not found in the target header chain — "
+                "cannot bind the tip Sapling root. Run --importblockindex "
+                "against the same zclassicd datadir first.\n");
+        return 1;
+    }
+    char root_hex[65];
+    uint256_get_hex(&tip_sapling_root, root_hex);
+    printf("Tip bind: height=%lld hashFinalSaplingRoot=%s\n",
+           (long long)tip_height, root_hex);
+
+    if (!progress_store_open(target)) {
+        ldb_snapshot_destroy(snap_path);
+        fprintf(stderr, "cannot open progress.kv in %s\n", target);
+        return 1;
+    }
+    struct shielded_import_report rep = {0};
+    bool ok = shielded_history_import_from_chainstate(
+        progress_store_db(), snap_path, tip_height, &tip_sapling_root, &rep);
+    progress_store_close();
+    ldb_snapshot_destroy(snap_path);
+
+    if (!ok) {
+        fprintf(stderr,
+                "IMPORT REFUSED — nothing committed, wedge intact (both "
+                "activation cursors stay POSITIVE, gap blockers remain). See "
+                "node.log [shielded_import] for the exact anomaly.\n");
+        return 1;
+    }
+    printf("IMPORT COMPLETE (committed=%d): sapling_anchors=%lld "
+           "sprout_anchors=%lld sapling_nf=%lld sprout_nf=%lld\n"
+           "Both activation cursors flipped to 0; the reducer resumes folding "
+           "from %lld. Copy-prove H* climb + tip-hash parity vs zclassicd "
+           "before cutover.\n",
+           rep.committed, (long long)rep.sapling_anchors,
+           (long long)rep.sprout_anchors, (long long)rep.sapling_nullifiers,
+           (long long)rep.sprout_nullifiers, (long long)tip_height + 1);
+    return 0;
+}
+
 /* Opt-in log-level filter (Phase E3). -loglevel=<all|info|warn|error|fatal|off>
  * raises the floor the LOG_ and GUARD macros (log_macros.h) emit at. Default
  * stays ZCL_LOG_ALL (zero behavior change) unless the flag is present. An
@@ -2592,6 +2774,14 @@ int main(int argc, char **argv)
     /* --gen-utxo-snapshot: build sidecar UTXO file from legacy datadir */
     if (argc >= 2 && strcmp(argv[1], "--gen-utxo-snapshot") == 0)
         return gen_utxo_snapshot_mode(argc, argv);
+
+    /* -import-complete-shielded=<zclassicd-datadir>: owner-gated, copy-prove-
+     * gated complete historical anchor+nullifier import into a TARGET-COPY
+     * datadir (refuses live datadirs). Scanned across argv (it follows
+     * -datadir=), not positional. */
+    for (int i = 1; i < argc; i++)
+        if (strncmp(argv[i], "-import-complete-shielded=", 26) == 0)
+            return import_complete_shielded_mode(argc, argv);
 
     /* Wallet backup restore mode — decrypt an encrypted wallet backup.
      * Usage: zclassic23 --decrypt-wallet-backup <src.enc> <dst.sqlite>

@@ -98,6 +98,61 @@ enum chainstate_anchor_result chainstate_legacy_get_sapling_anchor(
     void *handle, const struct uint256 *root,
     struct incremental_merkle_tree *tree_out);
 
+/* ── Bulk historical iteration (complete anchor + nullifier import) ────
+ *
+ * These stream the FULL historical Sprout/Sapling anchor and nullifier
+ * keyspaces a zclassicd chainstate persists on the active chain, so a wedged
+ * C23 store can be filled with the complete set below its reducer cursor in one
+ * atomic transaction (see shielded_history_import_service). The key schema is
+ * ported from the Zcash reference (txdb.cpp DB_SPROUT_ANCHOR='A',
+ * DB_SAPLING_ANCHOR='Z', DB_NULLIFIER='s', DB_SAPLING_NULLIFIER='S',
+ * DB_BEST_SPROUT_ANCHOR='a', DB_BEST_SAPLING_ANCHOR='z') — see the ATTRIBUTION
+ * block in the .c file. Clean-room over our own dbwrapper + the
+ * boost::optional-compatible incremental tree codec; the reference C++ is a
+ * format oracle only and is never linked.
+ *
+ * FAIL-CLOSED / ALL-OR-NOTHING: the anchor iterators re-hash every
+ * deserialized tree and ABORT the whole scan (return -1) on ANY anomaly (short
+ * key, deserialize failure, trailing bytes, root != key, or a torn-SST /
+ * LevelDB status error). A caller treating the range as a COMPLETE set can
+ * therefore trust: either every historical record was delivered verified, or
+ * the scan returned -1 and nothing may be committed. */
+typedef bool (*legacy_anchor_cb)(const struct uint256 *root,
+                                 const struct incremental_merkle_tree *tree,
+                                 void *ctx);
+
+/* Iterate every Sapling ('Z') / Sprout ('A') anchor. The callback receives the
+ * anchor root and the deserialized+root-verified frontier tree (owned by the
+ * reader, valid only for the callback). Returning false from the callback
+ * aborts the scan and is reported as -1 (a consuming import must be complete).
+ * Returns the number of records delivered, or -1 on any anomaly. */
+int64_t chainstate_legacy_iter_sapling_anchors(void *handle,
+                                               legacy_anchor_cb cb, void *ctx);
+int64_t chainstate_legacy_iter_sprout_anchors(void *handle,
+                                              legacy_anchor_cb cb, void *ctx);
+
+/* Iterate every Sapling ('S') / Sprout ('s') nullifier. The chainstate value
+ * is presence-only (a single serialized `true` byte); the 32-byte key IS the
+ * spent marker, so the callback receives only the nf bytes. Returns the count,
+ * or -1 on a short key, a torn-SST / status error, or a false callback. */
+typedef bool (*legacy_nullifier_cb)(const uint8_t nf[32], void *ctx);
+int64_t chainstate_legacy_iter_sapling_nullifiers(void *handle,
+                                                  legacy_nullifier_cb cb,
+                                                  void *ctx);
+int64_t chainstate_legacy_iter_sprout_nullifiers(void *handle,
+                                                 legacy_nullifier_cb cb,
+                                                 void *ctx);
+
+/* Read the current best-anchor pointer: DB_BEST_SAPLING_ANCHOR='z' /
+ * DB_BEST_SPROUT_ANCHOR='a' (a bare 1-byte key whose value is the 32-byte
+ * active-chain tip root). Returns true and fills *root_out only when the key
+ * exists and is exactly 32 bytes; false (with *root_out zeroed) when the key is
+ * absent (an empty pool) or on read error. */
+bool chainstate_legacy_get_best_sapling_anchor(void *handle,
+                                               struct uint256 *root_out);
+bool chainstate_legacy_get_best_sprout_anchor(void *handle,
+                                              struct uint256 *root_out);
+
 #ifdef __cplusplus
 }
 #endif
