@@ -38,18 +38,37 @@
  *            below-cursor historical gap: leave the honest owner-gated permanent
  *            blocker and page the operator.  Never fake-resolve.
  *
+ * NAMED REMEDY (not seed-curable): SAPLING_ANCHOR_GAP_HISTORICAL (rows exist,
+ * a specific below-cursor root is absent) and/or a standalone nullifier gap
+ * (utxo_apply.nullifier_backfill_gap) are the exact wedge
+ * `-import-complete-shielded` (app/services/src/shielded_history_import_service.c)
+ * exists to clear.  This condition does NOT run tier1/1b/2 for that class —
+ * seeding a single frontier row cannot supply a full historical anchor+
+ * nullifier set.  Instead it surfaces the SAME structured, contained recipe
+ * `shielded_gap_remedy_controller.c` reports (owner-run import + copy-prove
+ * step) on this condition's own typed detect/remedy/detail surface, and NEVER
+ * executes anything — containment is asserted, not just documented (see
+ * remedy_named_gap()).  The witness for this class requires BOTH the named
+ * blocker(s) clearing AND H* climbing past the stall height, so a stray tick
+ * cannot be mistaken for the operator having actually run the cure.
+ *
  * CONSENSUS PARITY: the sapling_frontier_mismatch reject path is untouched; a
  * mismatched frontier is never written (anchor_kv_seed_frontier_row re-verifies
- * the root and refuses); activation_cursor is never forced to 0.  The witness is
- * the sole clear-edge: H* climbed past the stall height captured at detect. */
+ * the root and refuses); activation_cursor is never forced to 0 by this
+ * condition (only the owner-run importer flips it).  The birth-defect witness
+ * clear-edge is H* climbing past the stall height captured at detect; the
+ * named-remedy witness additionally requires the relevant blocker(s) gone. */
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
 
 #include "config/boot.h"
 #include "config/runtime.h"
+#include "controllers/shielded_gap_remedy_controller.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_nullifiers.h"
+#include "json/json.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
@@ -64,6 +83,7 @@
 #include "validation/main_state.h"
 #include "validation/process_block.h"
 
+#include <assert.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -79,6 +99,26 @@
 /* H* captured at the rising edge of an episode; the witness clears only when H*
  * climbs strictly past it.  -1 = no active episode. */
 static _Atomic int32_t g_hstar_at_detect = -1;
+
+/* Which flavour of gap is the CURRENT active episode, captured at the same
+ * rising edge as g_hstar_at_detect.  Distinguishes the two witness contracts:
+ * a birth-defect episode clears purely on H* climbing (tier1/1b/2 never touch
+ * activation_cursor, so the blocker can legitimately outlive the cure); a
+ * named-remedy episode additionally requires the blocker(s) named below to be
+ * gone, since only the owner-run import flips activation_cursor to 0 and
+ * clears them. */
+enum safu_episode_kind {
+    SAFU_EPISODE_NONE = 0,
+    SAFU_EPISODE_BIRTH_DEFECT = 1,
+    SAFU_EPISODE_NAMED_REMEDY = 2,
+};
+static _Atomic int g_episode_kind = SAFU_EPISODE_NONE;
+
+/* Which typed blocker(s) were present at the named-remedy episode's rising
+ * edge — the witness only requires clearing the ones that were actually
+ * named, not blockers this episode never observed. */
+static _Atomic bool g_anchor_gap_at_detect = false;
+static _Atomic bool g_nullifier_gap_at_detect = false;
 
 /* Tier-1b borrow is heavy (a point-in-time copy of zclassicd's chainstate), so
  * cap borrow attempts per process.  Once exhausted the remedy falls straight
@@ -133,11 +173,21 @@ static bool detect_sapling_anchor_frontier(void)
     if (!db || !ms)
         return false;
 
-    /* Only engage while the reducer actually declares the anchor gap. */
-    if (!blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID))
+    bool anchor_gap = blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+    bool nullifier_gap = blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+    if (!anchor_gap && !nullifier_gap)
         return false;  // raw-return-ok:healthy no-detect path on every engine tick, not an error
-    if (sapling_anchor_frontier_classify(db) != SAPLING_ANCHOR_GAP_EMPTY_TABLE)
-        return false;
+
+    enum sapling_anchor_gap_class cls = sapling_anchor_frontier_classify(db);
+    bool birth_defect = anchor_gap && cls == SAPLING_ANCHOR_GAP_EMPTY_TABLE;
+    /* NAMED REMEDY: a genuine below-cursor historical anchor gap and/or a
+     * standalone nullifier gap.  Neither is seed-curable by tier1/1b/2 —
+     * `-import-complete-shielded` is the only cure, and it is never run here
+     * (see remedy_named_gap()). */
+    bool named_remedy = (anchor_gap && cls == SAPLING_ANCHOR_GAP_HISTORICAL) ||
+                         nullifier_gap;
+    if (!birth_defect && !named_remedy)
+        return false;  // raw-return-ok:blocker present but not a class this condition names, e.g. read error
 
     /* Must be genuinely behind: H* pinned below the header tip means there is
      * more to fold and the fold is stuck (not simply at tip with nothing to
@@ -148,13 +198,22 @@ static bool detect_sapling_anchor_frontier(void)
         return false;
 
     /* Capture the at-detect baseline ONCE, at the rising edge (detect runs
-     * before the engine flips currently_active). */
+     * before the engine flips currently_active).  Prefer birth-defect when
+     * both are somehow true at once (e.g. a dual anchor+nullifier wedge where
+     * the anchor half is still the auto-curable empty-table case) since it is
+     * the one this condition can actually resolve itself; the nullifier half
+     * re-detects as a fresh named-remedy episode once the anchor half clears. */
     struct condition_runtime_snapshot snap;
     bool already_active =
         condition_engine_get_registered_snapshot(SAFU_COND_NAME, &snap) &&
         snap.currently_active;
-    if (!already_active)
+    if (!already_active) {
         atomic_store(&g_hstar_at_detect, hstar);
+        atomic_store(&g_episode_kind, birth_defect ? SAFU_EPISODE_BIRTH_DEFECT
+                                                    : SAFU_EPISODE_NAMED_REMEDY);
+        atomic_store(&g_anchor_gap_at_detect, anchor_gap);
+        atomic_store(&g_nullifier_gap_at_detect, nullifier_gap);
+    }
     return true;
 }
 
@@ -392,6 +451,64 @@ static bool tier1b_borrow_verified_frontier(sqlite3 *db, struct main_state *ms,
     return seeded;
 }
 
+/* NAMED REMEDY (owner-gated, verify-only): a genuine historical anchor gap
+ * and/or a standalone nullifier gap.  Surfaces the SAME structured recipe
+ * `shielded_gap_remedy_controller.c` reports on this condition's own
+ * detect/remedy surface (single source of truth for the remedy text, read
+ * back via its public JSON dumper) and NEVER executes anything.  Containment
+ * is asserted, not merely logged, so a future edit cannot silently start
+ * auto-running the import from inside a condition remedy. */
+static enum condition_remedy_result remedy_named_gap(void)
+{
+    struct shielded_gap_containment c;
+    shielded_gap_remedy_eval_containment(&c);
+    /* Structural invariant (matches the header contract in
+     * controllers/shielded_gap_remedy_controller.h): this surface never
+     * executes the import.  Assert, don't just trust the field. */
+    assert(!c.auto_execute);
+    if (c.auto_execute) {   /* belt-and-suspenders in a non-asserting build */
+        LOG_WARN(SAFU_SUBSYS,
+                 "[condition:%s] INVARIANT VIOLATION: containment reported "
+                 "auto_execute=true — refusing to treat this as a remedy",
+                 SAFU_COND_NAME);
+        return COND_REMEDY_SKIP;
+    }
+
+    struct json_value sgr;
+    json_init(&sgr);
+    bool have_sgr = shielded_gap_remedy_dump_state_json(&sgr, NULL);
+    const char *summary = "";
+    const char *copy_step = "";
+    const char *import_cmd = "";
+    if (have_sgr) {
+        const struct json_value *remedy = json_get(&sgr, "remedy");
+        summary = json_get_str(json_get(remedy, "summary"));
+        copy_step = json_get_str(json_get(remedy, "copy_prove_step"));
+        import_cmd = json_get_str(json_get(remedy, "import_command"));
+    }
+    LOG_WARN(SAFU_SUBSYS,
+             "[condition:%s] NAMED REMEDY (owner-gated, verify-only — this "
+             "condition NEVER auto-executes it): %s | copy-prove FIRST: %s | "
+             "then: %s | containment: refuses_live=%s lane=%s "
+             "(full detail: dumpstate shielded_gap_remedy)",
+             SAFU_COND_NAME,
+             summary[0] ? summary
+                        : "import the complete Sprout+Sapling anchor and "
+                          "nullifier history (-import-complete-shielded) "
+                          "then reboot",
+             copy_step[0] ? copy_step : "tools/scripts/import-copy-prove.sh",
+             import_cmd[0] ? import_cmd
+                           : "zclassic23 -import-complete-shielded=<zclassicd-datadir>",
+             c.refuses_live ? "true" : "false", c.operator_lane);
+    json_free(&sgr);
+
+    /* Never resolves the symptom itself: honest FAILED (not SKIP — the
+     * condition IS actively engaged and DID surface a remedy), so the engine's
+     * bounded attempt/page machinery still informs the operator. The witness
+     * (blocker cleared + H* climbed) is the only path to COND_REMEDY_OK. */
+    return COND_REMEDY_FAILED;
+}
+
 static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
 {
 #ifdef ZCL_TESTING
@@ -402,8 +519,20 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
     if (!db || !ms)
         return COND_REMEDY_SKIP;
 
+    enum sapling_anchor_gap_class cls = sapling_anchor_frontier_classify(db);
+
+    /* NAMED REMEDY class takes priority: neither tier1 (checkpoint seed) nor
+     * tier1b (borrowed frontier seed) nor tier2 (bounded refold) can supply a
+     * full historical anchor+nullifier set — attempting them here would be
+     * exactly the kind of downstream repair rung TENACITY I3 forbids for a
+     * gap only the write-time import can correctly fill. */
+    if ((cls == SAPLING_ANCHOR_GAP_HISTORICAL &&
+         blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID)) ||
+        blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID))
+        return remedy_named_gap();
+
     /* Re-confirm we still face the curable empty-table birth defect. */
-    if (sapling_anchor_frontier_classify(db) != SAPLING_ANCHOR_GAP_EMPTY_TABLE)
+    if (cls != SAPLING_ANCHOR_GAP_EMPTY_TABLE)
         return COND_REMEDY_SKIP;
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
@@ -458,7 +587,26 @@ static bool witness_sapling_anchor_frontier(int64_t target_at_detect)
     int32_t now = reducer_frontier_provable_tip_cached();
     if (now < 0)
         return false;                 /* read failure = not-yet-cleared */
-    return now > base;                 /* H* climbed past the stall */
+    bool climbed = now > base;         /* H* climbed past the stall */
+
+    /* Birth-defect clear-edge: tier1/1b/2 never touch activation_cursor, so
+     * the anchor gap blocker can legitimately outlive the cure — H* climbing
+     * is the sole, sufficient signal (unchanged from the original design). */
+    if (atomic_load(&g_episode_kind) != SAFU_EPISODE_NAMED_REMEDY)
+        return climbed;
+
+    /* Named-remedy clear-edge: only the owner-run `-import-complete-shielded`
+     * flips activation_cursor to 0, which is what actually clears these
+     * blockers (utxo_apply_anchor_gap_blocker_refresh /
+     * utxo_apply_nullifier_gap_blocker_refresh, called from the importer).
+     * Require BOTH the blocker(s) this episode named gone AND H* climbing —
+     * a stray tick where H* happens to advance without the import having run
+     * must NOT be mistaken for the wedge clearing. */
+    bool anchor_cleared = !atomic_load(&g_anchor_gap_at_detect) ||
+                         !blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+    bool nullifier_cleared = !atomic_load(&g_nullifier_gap_at_detect) ||
+                            !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+    return climbed && anchor_cleared && nullifier_cleared;
 }
 
 static bool detail_sapling_anchor_frontier(struct json_value *out)
@@ -468,11 +616,32 @@ static bool detail_sapling_anchor_frontier(struct json_value *out)
     sqlite3 *db = progress_store_db();
     int cls = db ? (int)sapling_anchor_frontier_classify(db)
                  : (int)SAPLING_ANCHOR_GAP_NONE;
-    return json_push_kv_int(out, "gap_class", cls) &&
-           json_push_kv_int(out, "hstar_at_detect",
-                            atomic_load(&g_hstar_at_detect)) &&
-           json_push_kv_bool(out, "gap_blocker_present",
-                             blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID));
+    bool ok = json_push_kv_int(out, "gap_class", cls) &&
+              json_push_kv_int(out, "hstar_at_detect",
+                               atomic_load(&g_hstar_at_detect)) &&
+              json_push_kv_int(out, "episode_kind", atomic_load(&g_episode_kind)) &&
+              json_push_kv_bool(out, "gap_blocker_present",
+                                blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID)) &&
+              json_push_kv_bool(out, "nullifier_gap_blocker_present",
+                                blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+    if (!ok)
+        return false;
+
+    /* When a NAMED REMEDY applies (genuine historical anchor gap and/or a
+     * standalone nullifier gap), attach the same structured, contained
+     * recipe the shielded_gap_remedy dumper reports — directly on THIS
+     * condition's typed surface, so an operator polling `condition_engine`
+     * sees the actionable cure without a second lookup. Nested object: never
+     * call json_set_object() on `out` itself (it would wipe the fields
+     * pushed above). */
+    if (shielded_gap_remedy_classify() != SHIELDED_GAP_NONE) {
+        struct json_value sgr;
+        json_init(&sgr);
+        if (shielded_gap_remedy_dump_state_json(&sgr, NULL))
+            json_push_kv(out, "shielded_gap_remedy", &sgr);
+        json_free(&sgr);
+    }
+    return true;
 }
 
 static struct condition c_sapling_anchor_frontier_unavailable = {
@@ -495,3 +664,20 @@ void register_sapling_anchor_frontier_unavailable(void)
 {
     (void)condition_register(&c_sapling_anchor_frontier_unavailable);
 }
+
+#ifdef ZCL_TESTING
+void sapling_anchor_frontier_test_reset(void)
+{
+    atomic_store(&g_hstar_at_detect, -1);
+    atomic_store(&g_episode_kind, SAFU_EPISODE_NONE);
+    atomic_store(&g_anchor_gap_at_detect, false);
+    atomic_store(&g_nullifier_gap_at_detect, false);
+    atomic_store(&g_tier1b_attempts, 0);
+    atomic_store(&g_test_remedy_calls, 0);
+}
+
+int sapling_anchor_frontier_test_remedy_calls(void)
+{
+    return atomic_load(&g_test_remedy_calls);
+}
+#endif
