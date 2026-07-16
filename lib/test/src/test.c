@@ -117,6 +117,13 @@ int main(int argc, char **argv)
         if (strncmp(only, "test_", 5) == 0)
             only += 5;
     }
+    if (only && strcmp(only, "lcc") == 0) {
+        printf("[test] ZCL_TEST_ONLY=lcc — running Log-Cursor Contiguity write rules only\n");
+        { extern int test_lcc_write_rules(void);
+          failures += test_lcc_write_rules(); }
+        printf("\n=== LCC write-rules subset complete: %d failure(s) ===\n", failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "onion") == 0) {
         printf("[test] ZCL_TEST_ONLY=onion — running onion bootstrap only\n");
         { extern int test_onion_bootstrap(void);
@@ -1509,6 +1516,8 @@ int main(int argc, char **argv)
       failures += test_stage_rederive_range(); }
     { extern int test_utxo_apply_upstream_hole(void);
       failures += test_utxo_apply_upstream_hole(); }
+    { extern int test_lcc_write_rules(void);
+      failures += test_lcc_write_rules(); }
     { extern int test_reducer_reconcile_witness(void);
       failures += test_reducer_reconcile_witness(); }
     failures += test_process_block_revalidate();
