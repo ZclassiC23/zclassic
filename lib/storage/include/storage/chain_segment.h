@@ -146,4 +146,59 @@ enum cseg_status chain_segment_store_stat(const char *dir,
                                           struct chain_segment_stat *out,
                                           char *err, size_t errlen);
 
+/* ── Resident store reader (the fold substrate) ──────────────────────────
+ * A long-lived, thread-safe handle over a directory of sealed segments. It
+ * locates the segment covering a height by the seg-<first>-<count>.dat file
+ * name (no manifest needed) and keeps a small LRU of mmap'd, digest-verified
+ * segment handles resident so a sequential fold pays the whole-segment SHA3
+ * verify once per segment, then only a per-block 32-byte digest per read.
+ *
+ * This is the source the fold prefers below the sealed frontier: reading a
+ * finalized body from a sealed segment is a sequential mmap read instead of a
+ * blk*.dat pread, and it is byte-identical to the on-disk body (the segment
+ * stored exactly the block_serialize output). An absent/empty segments dir is
+ * not an error — the store simply covers nothing and every read falls through
+ * to blk*.dat, so a node with no segments is byte-for-byte unchanged. */
+struct chain_segment_store;
+
+/* Open a resident reader over `dir`. An absent directory yields an empty store
+ * (covers nothing), not an error. Individual segment files are opened+verified
+ * lazily on first access, not here, so open is cheap (one directory scan). */
+enum cseg_status chain_segment_store_open(const char *dir,
+                                          struct chain_segment_store **out,
+                                          char *err, size_t errlen);
+void chain_segment_store_close(struct chain_segment_store *s);
+
+/* True when some sealed segment contains `height`. Cheap (bounded search over
+ * the segment table); does not open or hash any segment. */
+bool chain_segment_store_covers(const struct chain_segment_store *s,
+                                uint32_t height);
+
+/* Highest height covered by any sealed segment (0 when the store is empty —
+ * pair with chain_segment_store_have to disambiguate a genuine height 0). */
+uint32_t chain_segment_store_sealed_max(const struct chain_segment_store *s);
+bool     chain_segment_store_have(const struct chain_segment_store *s);
+
+/* Copy the raw block bytes for `height` from its covering segment into a fresh
+ * malloc'd buffer (caller frees), re-checking the per-block SHA3. Returns
+ * CSEG_ERR_NOT_FOUND when no segment covers `height`. Thread-safe. */
+enum cseg_status chain_segment_store_get_block(struct chain_segment_store *s,
+                                               uint32_t height,
+                                               uint8_t **bytes, size_t *len,
+                                               char *err, size_t errlen);
+
+/* Number of sealed segments the store knows about, and the [first,count) range
+ * of the i-th (ascending by first_height). For bounded corruption sweeps. */
+uint32_t chain_segment_store_segment_count(const struct chain_segment_store *s);
+bool chain_segment_store_segment_range(const struct chain_segment_store *s,
+                                       uint32_t i, uint32_t *first,
+                                       uint32_t *count);
+
+/* Force a full digest verify of the i-th segment (opens it, which re-hashes the
+ * whole segment). CSEG_ERR_SEGMENT_DIGEST/CSEG_ERR_FORMAT names a corrupt
+ * segment; the covered height range is in `err`. Bounded: one segment. */
+enum cseg_status chain_segment_store_verify_index(struct chain_segment_store *s,
+                                                  uint32_t i,
+                                                  char *err, size_t errlen);
+
 #endif /* ZCL_STORAGE_CHAIN_SEGMENT_H */

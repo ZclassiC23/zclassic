@@ -300,6 +300,86 @@ int test_chain_segment(void)
         test_rm_rf_recursive(dir);
     }
 
+    /* ── Resident store reader (the fold substrate) ─────────────────────
+     * covers()/sealed_max/get_block byte-identity, plus verify_index catching
+     * a per-segment tamper. This is the API block_parse_cache reads through. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "chain_segment", "store");
+        struct fix_src src = { .missing_height = UINT32_MAX };
+        chain_segment_seal_range(dir, fix_body, &src, 1000, 10, err, sizeof(err));
+        chain_segment_seal_range(dir, fix_body, &src, 2000, 10, err, sizeof(err));
+
+        struct chain_segment_store *store = NULL;
+        enum cseg_status st = chain_segment_store_open(dir, &store, err, sizeof(err));
+        CS_CHECK("store open ok", st == CSEG_OK && store != NULL);
+        CS_CHECK("store have", chain_segment_store_have(store));
+        CS_CHECK("segment_count 2", chain_segment_store_segment_count(store) == 2);
+        CS_CHECK("sealed_max 2009", chain_segment_store_sealed_max(store) == 2009);
+        CS_CHECK("covers sealed heights",
+                 chain_segment_store_covers(store, 1000) &&
+                 chain_segment_store_covers(store, 2009));
+        CS_CHECK("does not cover gap/above",
+                 !chain_segment_store_covers(store, 1500) &&
+                 !chain_segment_store_covers(store, 3000));
+
+        /* Byte-identity through the store for every covered height. */
+        bool all_ok = store != NULL;
+        for (uint32_t h = 1000; store && h < 1010; h++) {
+            uint8_t *got = NULL; size_t glen = 0;
+            enum cseg_status gs = chain_segment_store_get_block(store, h, &got,
+                                                               &glen, err, sizeof(err));
+            size_t elen = fix_len(h);
+            uint8_t exp[64]; fix_fill(h, exp, elen);
+            if (gs != CSEG_OK || glen != elen || memcmp(got, exp, elen) != 0)
+                all_ok = false;
+            free(got);
+        }
+        CS_CHECK("store get_block byte-identical", all_ok);
+
+        /* Uncovered height -> not_found (the read-path falls back to blk*.dat). */
+        uint8_t *nb = NULL; size_t nl = 0;
+        enum cseg_status oob = store
+            ? chain_segment_store_get_block(store, 1500, &nb, &nl, err, sizeof(err))
+            : CSEG_ERR_NOT_FOUND;
+        CS_CHECK("uncovered height -> not_found", oob == CSEG_ERR_NOT_FOUND);
+        free(nb);
+
+        /* verify_index passes clean on both, then a byte tamper on segment 1's
+         * file makes its verify_index fail with a named typed error. */
+        CS_CHECK("verify_index clean seg0",
+                 store && chain_segment_store_verify_index(store, 0, err, sizeof(err)) == CSEG_OK);
+
+        char tp[512];
+        snprintf(tp, sizeof(tp), "%s/seg-2000-10.dat", dir);
+        chmod(tp, 0644);
+        FILE *tf = fopen(tp, "r+b");
+        if (tf) { fseek(tf, 32 + 10 * 48 + 2, SEEK_SET); int c = fgetc(tf);
+                  fseek(tf, 32 + 10 * 48 + 2, SEEK_SET); fputc(c ^ 0xff, tf);
+                  fclose(tf); }
+        enum cseg_status vst = store
+            ? chain_segment_store_verify_index(store, 1, err, sizeof(err))
+            : CSEG_OK;
+        CS_CHECK("verify_index catches tamper",
+                 vst == CSEG_ERR_SEGMENT_DIGEST || vst == CSEG_ERR_FORMAT ||
+                 vst == CSEG_ERR_BLOCK_DIGEST);
+
+        chain_segment_store_close(store);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* ── Store over an absent dir: empty, covers nothing (default node) ─── */
+    {
+        struct chain_segment_store *store = NULL;
+        enum cseg_status st = chain_segment_store_open(
+            "/tmp/zcl-nonexistent-seg-dir-xyz", &store, err, sizeof(err));
+        CS_CHECK("absent-dir store ok + empty",
+                 st == CSEG_OK && store != NULL &&
+                 !chain_segment_store_have(store) &&
+                 !chain_segment_store_covers(store, 0));
+        chain_segment_store_close(store);
+    }
+
     printf("chain_segment: %d failures\n", failures);
     return failures;
 }

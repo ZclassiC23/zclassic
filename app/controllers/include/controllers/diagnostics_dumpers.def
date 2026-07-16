@@ -201,6 +201,10 @@
     DIAG_SERVICE("block_pruning", block_pruning_dump_state_json,
                  "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data",
                  "app/services/src/block_pruning_service.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("segment_sealer", segment_sealer_dump_state_json,
+                 "sealed ROM segment sealer: enabled flag, finalized frontier, "
+                 "segments sealed/failed, last sealed first_height, last status",
+                 "app/services/src/segment_sealer_service.c", DIAG_TEST_DEFAULT),
     DIAG_SERVICE("crypto_registry", crypto_registry_dump_state_json,
                  "registered crypto schemes, statuses, implementations, and kind counts",
                  "lib/crypto_registry/src/crypto_registry.c", DIAG_TEST_DEFAULT),
