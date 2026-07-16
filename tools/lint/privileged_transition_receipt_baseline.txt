@@ -1,0 +1,49 @@
+# check_privileged_transition_receipt.sh baseline — Law-7 dispositions.
+#
+# Every native command leaf whose spec is ZCL_COMMAND_AUTH_OWNER AND effect
+# ZCL_COMMAND_EFFECT_MUTATE or ZCL_COMMAND_EFFECT_DESTRUCTIVE is a candidate
+# privileged transition. Each such leaf MUST have a disposition here; a new
+# owner-mutating leaf with none FAILS the gate, forcing a conscious Law-7
+# review. RATCHET: this file only grows when a genuinely new owner-mutating
+# leaf is added — and it should grow with `receipt:` far more often than
+# `exempt:` from now on.
+#
+# Line format (one leaf per line; `#` comments / blank lines ignored):
+#   <leaf.path>  receipt:<relative_file>   # binds an authority_receipt verifier
+#   <leaf.path>  exempt:<one-line reason>  # not an artifact-install transition
+#
+# For a `receipt:<file>` line the gate additionally asserts <file> contains a
+# call matching authority_receipt_.*_available( OR the pre-generalized
+# consensus_state_replay_receipt_authority_available( — a positive check that
+# the wired consumer actually gates on the contract.
+#
+# Today's universe (25 leaves — the initial baseline, all `exempt`). The first
+# real privileged artifact-install transition surfaced as an OWNER leaf (bundle
+# ACTIVATE, hot-swap Phase-3 reopen, `make deploy` generation publish, App
+# cartridge activation) lands here as `receipt:<handler_file>`.
+
+app.account.add           exempt: App-principal AR write, no artifact install
+app.account.role          exempt: App-principal AR write, no artifact install
+app.account.suspend       exempt: App-principal AR write, no artifact install
+app.account.unsuspend     exempt: App-principal AR write, no artifact install
+core.consensus.block.invalidate   exempt: in-memory validity mask, no state bundle install
+core.consensus.block.reconsider   exempt: in-memory validity mask, no state bundle install
+core.wallet.address.new    exempt: keystore write, guarded by wallet AR + AT_REST
+core.wallet.address.import exempt: keystore write, guarded by wallet AR + AT_REST
+core.wallet.transaction.send  exempt: signs+broadcasts, no privileged datadir install
+core.wallet.shielded.send     exempt: signs+broadcasts, no privileged datadir install
+core.wallet.shielded.address  exempt: wallet-local, rebuildable projection
+core.wallet.backup.now     exempt: wallet-local, rebuildable projection
+core.wallet.rescan         exempt: wallet-local, rebuildable projection
+core.wallet.replay         exempt: wallet-local, rebuildable projection
+dev.app.scaffold           exempt: dev-lane, publication already contained
+dev.app.publish            exempt: dev-lane, publication already contained
+dev.change.apply           exempt: dev-lane, publication already contained
+dev.vcs.revert             exempt: ZVCS source epoch, seal ritual owns authority
+dev.vcs.seal.grant         exempt: ZVCS source epoch, seal ritual owns authority
+dev.hotswap.apply          exempt: verify-only dev loop, no live generation swap
+dev.loop.ensure            exempt: verify-only dev loop, no live generation swap
+dev.loop.stop              exempt: verify-only dev loop, no live generation swap
+dev.generation.rollback    exempt: dev generation store, contained
+dev.generation.compact     exempt: dev generation store, contained
+ops.recovery.rebuild       exempt: refold reset, gated by copy-prove doctrine

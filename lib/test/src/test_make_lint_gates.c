@@ -73,6 +73,8 @@
 #define HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL \
     "lib/test/fixtures/hotswap_swappable_bad_shape.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
+#define PRIV_RECEIPT_SCRIPT_REL \
+    "tools/lint/check_privileged_transition_receipt.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 #define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
     "test-tmp/_pre_push_hook_fixture_tmp"
@@ -2940,6 +2942,39 @@ static int t_hotswap_static_state_gate(void)
         /* Recovery. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #48 (Law 7, OS-A1): the privileged-transition-receipt gate is not
+ * hollow. Real tree passes; an empty baseline makes every owner-mutating leaf
+ * undispositioned (trip, exit 1); an empty command-def dir enumerates nothing
+ * (fail-loud, exit 2). Uses the gate's ZCL_PRIV_RECEIPT_* test overrides. */
+static int t_privileged_transition_receipt_gate(void)
+{
+    int failures = 0;
+    TEST("privileged-transition-receipt gate: clean real tree, trips, fails loud") {
+        /* Real config/commands + committed baseline → all dispositioned. */
+        ASSERT(run_gate_script(PRIV_RECEIPT_SCRIPT_REL, NULL) == 0);
+        /* An empty baseline leaves every owner-mutating leaf undispositioned
+         * → exit 1 (proof the disposition check is not hollow). */
+        ASSERT(run_gate_script_with_env(PRIV_RECEIPT_SCRIPT_REL,
+                                        "ZCL_PRIV_RECEIPT_BASELINE",
+                                        "/dev/null") == 1);
+        /* An empty command-def dir enumerates zero leaves → exit 2 (fail-loud,
+         * never a hollow clean). */
+        char empty_dir[PATH_MAX];
+        if (repo_path(empty_dir, sizeof(empty_dir),
+                      "test-tmp/_priv_receipt_empty_defs") != 0) {
+            fprintf(stderr, "[lint-gate] could not resolve empty-def dir path\n");
+            failures++;
+            goto _test_next;
+        }
+        (void)mkdir(empty_dir, 0700);
+        ASSERT(run_gate_script_with_env(PRIV_RECEIPT_SCRIPT_REL,
+                                        "ZCL_PRIV_RECEIPT_DEF_DIR",
+                                        empty_dir) == 2);
         PASS();
     } _test_next:;
     return failures;
@@ -7743,6 +7778,7 @@ int test_make_lint_gates(void)
     failures += t_hotswap_eligible_scope_gate();
     failures += t_hotswap_swappable_shape_gate();
     failures += t_hotswap_static_state_gate();
+    failures += t_privileged_transition_receipt_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
 }
