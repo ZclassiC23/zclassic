@@ -314,9 +314,16 @@ bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
 bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
                                     const struct block_index *tip,
                                     int our_height);
+/* `best_header_fallback` (may be NULL) is the last-resort anchor: when neither
+ * `from` nor the active-chain tip yields a locator (a full-index boot where the
+ * active_chain window / authority is not yet seated), the locator is built from
+ * this header frontier instead of collapsing to a genesis-only locator. A
+ * genesis-only locator makes peers re-serve headers from height 0, which pins
+ * header sync near genesis with nothing to escalate it. */
 struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
+                                      const struct block_index *best_header_fallback,
                                       const struct uint256 *genesis_hash);
 
 #define HEADER_STALL_TIMEOUT_SECS 120

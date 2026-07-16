@@ -499,6 +499,7 @@ bool syncsvc_should_scan_block_files_after_headers(size_t accepted,
 struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
+                                      const struct block_index *best_header_fallback,
                                       const struct uint256 *genesis_hash)
 {
     bool has_genesis = false;
@@ -516,6 +517,17 @@ struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
         syncsvc_build_locator_from_tip(loc, active_chain_tip(chain),
                                        "header_sync locator chain",
                                        "header_sync.locator_chain");
+    }
+
+    /* Full-index boot: the active_chain window / authority is not yet seated so
+     * active_chain_tip() gave nothing. Anchor at the known header frontier
+     * rather than collapsing to a genesis-only locator (which pins header sync
+     * near genesis). NEVER genesis when a frontier header exists. */
+    if (loc->num_hashes == 0 && best_header_fallback &&
+        best_header_fallback->phashBlock) {
+        syncsvc_build_locator_from_tip(loc, best_header_fallback,
+                                       "header_sync locator best_header",
+                                       "header_sync.locator_best_header");
     }
 
     if (loc->num_hashes == 0) {
