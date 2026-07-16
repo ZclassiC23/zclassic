@@ -335,13 +335,20 @@ Algorithm:
     the blocker; the nullifier gap blocker clears likewise; the reducer resumes
     folding from 3,176,326.
 
-**Wiring / entry point:** add an owner-gated native command
-(`ops.recover.import-shielded-history` under `app/controllers`) and/or a boot
-flag `-import-complete-shielded=ZCLASSICD-DATADIR`, following the argv pattern of the existing
-recovery entry points (`app/services/src/legacy_import_service.c`,
-`node_db_import_service.c`). It must be **contained** exactly like the other
-recovery apply paths (refuses on the public dev lanes; runs only for the
-operator on canonical/copy datadirs).
+**Wiring / entry point (landed):** the merged contract is a boot flag only —
+`-import-complete-shielded=ZCLASSICD-DATADIR` (`src/main.c
+import_complete_shielded_mode`, argv-dispatched next to `--importblockindex`),
+not a native command; no `ops.recover.import-shielded-history` command was
+added. It is **contained** exactly like the other recovery apply paths:
+`import_shielded_is_live_datadir()` refuses `~/.zclassic-c23` and
+`~/.zclassic-c23-mint` by construction, so it runs only against an operator
+`-datadir=<COPY>` (the copy-prove harness flow, §6) — never the live
+canonical/mint datadirs. On success it `printf`s the line
+`IMPORT COMPLETE (committed=1): sapling_anchors=... sprout_anchors=...
+sapling_nf=... sprout_nf=...` (matched verbatim by
+`tools/scripts/import-copy-prove.sh`'s `^IMPORT COMPLETE (committed=` grep)
+and exits 0; the same fact is logged via `LOG_INFO(SHI_SUBSYS, "IMPORT
+COMPLETE: ...")` in `shielded_history_import_service.c`.
 
 ### 4.5 Files touched (summary)
 
@@ -350,7 +357,7 @@ operator on canonical/copy datadirs).
 | `lib/storage/src/chainstate_legacy_reader.c` + `.h` | + 6 iterator/pointer entry points (§4.2) |
 | `lib/storage/src/nullifier_kv.c` + `.h` | + `nullifier_kv_publish_full_replay_complete_in_tx` (cursor→0, mirror of anchor primitive) |
 | `app/services/src/shielded_history_import_service.c` (new) + internal header | the importer (§4.4) |
-| `app/controllers/src/*` | owner-gated native command + optional `-import-complete-shielded` argv |
+| `src/main.c` | owner-gated `-import-complete-shielded=<zclassicd-datadir>` boot-flag mode (`import_complete_shielded_mode`); no native command |
 | `app/controllers/src/diagnostics_registry.c` | register `shielded_import` dumper (§5) |
 | `lib/test/src/test_*` | importer unit test on a synthetic chainstate fixture; copy-prove harness hook (§6) |
 
