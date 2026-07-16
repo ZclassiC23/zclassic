@@ -47,7 +47,22 @@ struct json_value;
  * this constant on mainnet and 0 on testnet/regtest. Code that must compute a
  * floor without the runtime helper (e.g. the refold gate) keys the same
  * network branch off chain_params_get()->strNetworkID. This macro stays the
- * mainnet number so existing mainnet-only assertions/tests are unchanged. */
+ * mainnet number so existing mainnet-only assertions/tests are unchanged.
+ *
+ * SELF-DERIVED SOURCING (Pillar 3, docs/work/self-verified-tip-plan.md):
+ * reducer_frontier_compiled_anchor() no longer trusts ONLY this baked literal.
+ * It first asks whether THIS node has its own SHA3-verified anchor artifact —
+ * <datadir>/utxo-anchor.snapshot, produced either by the offline -mint-anchor
+ * ceremony (config/src/boot_mint_anchor.c) or the in-fold self-mint hook
+ * (services/anchor_selfmint.h) — and prefers that self-derived height when
+ * the artifact is present and its recorded SHA3/count/height reproduce the
+ * compiled checkpoint exactly. A present-but-MISMATCHED artifact is REFUSED
+ * (never adopted) and the read falls back to this macro; an ABSENT artifact
+ * also falls back to this macro. The self-derived value can therefore only
+ * ever CONFIRM this constant today — it becomes load-bearing (able to
+ * legitimately advance past this literal) only once a later lane teaches the
+ * fold to mint a NEW anchor beyond genesis's single baked checkpoint. See
+ * reducer_frontier_compiled_anchor() in reducer_frontier.c. */
 #define REDUCER_FRONTIER_TRUSTED_ANCHOR ((int32_t)3056758)
 
 /* The FLOOR H* and the L1 reconcile operate at. On a NORMAL boot this is the
