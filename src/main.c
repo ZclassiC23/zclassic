@@ -2574,13 +2574,29 @@ static int import_complete_shielded_mode(int argc, char **argv)
     const char *home = getenv("HOME");
     const char *src = NULL;
     char target[512];
-    snprintf(target, sizeof(target), "%s/.zclassic-c23", home ? home : ".");
+    int tn = snprintf(target, sizeof(target), "%s/.zclassic-c23",
+                       home ? home : ".");
+    if (tn < 0 || (size_t)tn >= sizeof(target)) {
+        fprintf(stderr,
+                "-import-complete-shielded: $HOME is too long for the "
+                "%zu-byte target datadir buffer — refusing (no silent "
+                "truncation); pass -datadir=<short path> explicitly\n",
+                sizeof(target));
+        return 2;
+    }
 
     for (int i = 1; i < argc; i++) {
-        if (strncmp(argv[i], "-import-complete-shielded=", 26) == 0)
+        if (strncmp(argv[i], "-import-complete-shielded=", 26) == 0) {
             src = argv[i] + 26;
-        else if (strncmp(argv[i], "-datadir=", 9) == 0)
-            snprintf(target, sizeof(target), "%s", argv[i] + 9);
+        } else if (strncmp(argv[i], "-datadir=", 9) == 0) {
+            int n = snprintf(target, sizeof(target), "%s", argv[i] + 9);
+            if (n < 0 || (size_t)n >= sizeof(target)) {
+                fprintf(stderr,
+                        "-datadir=<...> exceeds the %zu-byte path buffer — "
+                        "refusing (no silent truncation)\n", sizeof(target));
+                return 2;
+            }
+        }
     }
     if (!src || !src[0]) {
         fprintf(stderr,
@@ -2610,14 +2626,27 @@ static int import_complete_shielded_mode(int argc, char **argv)
     /* Point-in-time snapshot of the source chainstate (never read the live
      * LevelDB directly — mirrors --gen-utxo-snapshot). */
     char cs_src[700], snap_path[900];
-    snprintf(cs_src, sizeof(cs_src), "%s/chainstate", src);
+    int csn = snprintf(cs_src, sizeof(cs_src), "%s/chainstate", src);
+    if (csn < 0 || (size_t)csn >= sizeof(cs_src)) {
+        fprintf(stderr,
+                "-import-complete-shielded=<path> exceeds the %zu-byte "
+                "chainstate path buffer — refusing (no silent truncation)\n",
+                sizeof(cs_src));
+        return 1;
+    }
     struct stat st;
     if (stat(cs_src, &st) != 0 || !S_ISDIR(st.st_mode)) {
         fprintf(stderr, "missing chainstate at %s\n", cs_src);
         return 1;
     }
-    snprintf(snap_path, sizeof(snap_path), "%s/shielded_import_cs_snap",
-             target);
+    int spn = snprintf(snap_path, sizeof(snap_path),
+                       "%s/shielded_import_cs_snap", target);
+    if (spn < 0 || (size_t)spn >= sizeof(snap_path)) {
+        fprintf(stderr,
+                "-datadir=<...> exceeds the %zu-byte snapshot path buffer — "
+                "refusing (no silent truncation)\n", sizeof(snap_path));
+        return 1;
+    }
     char snap_err[256] = {0};
     bool snap_ok = false;
     for (int t = 0; t < 4 && !snap_ok; t++) {

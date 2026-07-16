@@ -27,6 +27,9 @@
 
 #include "test/test_helpers.h"
 #include "storage/chainstate_legacy_reader.h"
+#include "storage/dbwrapper.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "core/serialize.h"
 #include "core/uint256.h"
 
 #include <inttypes.h>
@@ -34,6 +37,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+#define TCLR_CHECK(name, expr) do {                                  \
+    printf("chainstate_legacy_reader: %s... ", (name));              \
+    if ((expr)) printf("OK\n");                                      \
+    else { printf("FAIL\n"); failures++; }                           \
+} while (0)
 
 struct walk_state {
     int64_t  records;
@@ -93,6 +102,191 @@ static bool dir_exists(const char *p)
     return S_ISDIR(st.st_mode);
 }
 
+/* ── malformed anchor/nullifier fail-closed coverage ───────────────────
+ *
+ * These exercise chainstate_legacy_iter_sapling_anchors/_sprout_anchors and
+ * chainstate_legacy_iter_sapling_nullifiers/_sprout_nullifiers — the exact
+ * primitives shielded_history_import_service.c streams into anchor_kv /
+ * nullifier_kv — against hand-built, single-row, hermetic LevelDB fixtures
+ * (no live snapshot needed, always runs in CI). Every scenario asserts the
+ * iterator returns -1 (fail-closed refusal), never a partial/truncated
+ * count and never a crash on the malformed bytes. */
+
+static bool tclr_put(const char *dir, const char *key, size_t klen,
+                     const void *val, size_t vlen)
+{
+    struct db_wrapper db;
+    memset(&db, 0, sizeof(db));
+    if (!db_wrapper_open(&db, dir, 1u << 20, false, false))
+        return false;
+    bool ok = db_write(&db, key, klen, (const char *)val, vlen, true);
+    db_wrapper_close(&db);
+    return ok;
+}
+
+static bool tclr_anchor_cb_accept(const struct uint256 *root,
+                                  const struct incremental_merkle_tree *tree,
+                                  void *ctx)
+{
+    (void)root; (void)tree; (void)ctx;
+    return true;
+}
+
+static bool tclr_nullifier_cb_accept(const uint8_t nf[32], void *ctx)
+{
+    (void)nf; (void)ctx;
+    return true;
+}
+
+/* Open `dir`, run `iter`, close, and return the iterator's raw result. */
+static int64_t tclr_run_anchor_iter(const char *dir,
+                                    int64_t (*iter)(void *, legacy_anchor_cb,
+                                                    void *))
+{
+    void *h = NULL;
+    if (!chainstate_legacy_open(dir, &h) || !h)
+        return -2; /* open itself failed — distinct from the -1 we assert */
+    int64_t n = iter(h, tclr_anchor_cb_accept, NULL);
+    chainstate_legacy_close(h);
+    return n;
+}
+
+static int64_t tclr_run_nullifier_iter(const char *dir)
+{
+    void *h = NULL;
+    if (!chainstate_legacy_open(dir, &h) || !h)
+        return -2;
+    int64_t n = chainstate_legacy_iter_sapling_nullifiers(
+        h, tclr_nullifier_cb_accept, NULL);
+    chainstate_legacy_close(h);
+    return n;
+}
+
+static int test_chainstate_legacy_malformed_anchors_nullifiers(void)
+{
+    int failures = 0;
+
+    /* (1) malformed key length inside the 'Z' anchor keyspace: 31-byte root
+     * instead of 32 (klen=32, not 33) — must refuse, not read k[1..32] OOB
+     * or silently skip. */
+    {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "tclr_malformed_key", "db");
+        char key[32];
+        key[0] = 'Z';
+        memset(key + 1, 0x11, sizeof(key) - 1);
+        uint8_t val[4] = {0, 0, 0, 0};
+        TCLR_CHECK("put malformed-length 'Z' key",
+                       tclr_put(dir, key, sizeof(key), val, sizeof(val)));
+        int64_t n = tclr_run_anchor_iter(
+            dir, chainstate_legacy_iter_sapling_anchors);
+        TCLR_CHECK("malformed anchor key length -> iter refuses (-1)",
+                       n == -1);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* (2) empty value under a well-formed 33-byte 'Z' key. */
+    {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "tclr_empty_value", "db");
+        char key[33];
+        key[0] = 'Z';
+        memset(key + 1, 0x22, 32);
+        TCLR_CHECK("put well-formed key with empty value",
+                       tclr_put(dir, key, sizeof(key), "", 0));
+        int64_t n = tclr_run_anchor_iter(
+            dir, chainstate_legacy_iter_sapling_anchors);
+        TCLR_CHECK("empty anchor value -> iter refuses (-1)", n == -1);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* (3) short/truncated value: a real serialized tree cut down to 3 bytes
+     * under its OWN root key — must fail closed on the truncated stream
+     * (stream_read bounds-checks), not read past the truncated buffer. */
+    {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "tclr_truncated_value", "db");
+
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 cm;
+        memset(cm.data, 0x5A, 32);
+        incremental_tree_append(&tree, &cm);
+        struct uint256 root;
+        incremental_tree_root(&tree, &root);
+
+        struct byte_stream ser;
+        stream_init(&ser, 256);
+        TCLR_CHECK("serialize a real tree for truncation",
+                       incremental_tree_serialize(&tree, &ser) && !ser.error);
+
+        char key[33];
+        key[0] = 'Z';
+        memcpy(key + 1, root.data, 32);
+        size_t short_len = ser.size > 3 ? 3 : ser.size;
+        TCLR_CHECK("put truncated (3-byte) serialized tree",
+                       tclr_put(dir, key, sizeof(key), ser.data, short_len));
+        stream_free(&ser);
+
+        int64_t n = tclr_run_anchor_iter(
+            dir, chainstate_legacy_iter_sapling_anchors);
+        TCLR_CHECK("truncated anchor value -> iter refuses (-1)",
+                       n == -1);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* (4) root mismatch: a well-formed, fully-deserializable tree stored
+     * under a key that is NOT its own root — must refuse (mirrors the
+     * point-lookup fail-closed check in test_chainstate_sapling_anchor.c,
+     * but through the bulk iterator the importer actually uses). */
+    {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "tclr_root_mismatch", "db");
+
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 cm;
+        memset(cm.data, 0x5B, 32);
+        incremental_tree_append(&tree, &cm);
+
+        struct byte_stream ser;
+        stream_init(&ser, 256);
+        TCLR_CHECK("serialize a real tree for the mismatch fixture",
+                       incremental_tree_serialize(&tree, &ser) && !ser.error);
+
+        char key[33];
+        key[0] = 'Z';
+        memset(key + 1, 0x33, 32); /* != incremental_tree_root(tree) */
+        TCLR_CHECK("put valid tree under a WRONG-root key",
+                       tclr_put(dir, key, sizeof(key), ser.data, ser.size));
+        stream_free(&ser);
+
+        int64_t n = tclr_run_anchor_iter(
+            dir, chainstate_legacy_iter_sapling_anchors);
+        TCLR_CHECK("root-mismatched anchor -> iter refuses (-1)",
+                       n == -1);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* (5) malformed key length inside the 'S' Sapling-nullifier keyspace. */
+    {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "tclr_nf_malformed_key", "db");
+        char key[32];
+        key[0] = 'S';
+        memset(key + 1, 0x44, sizeof(key) - 1);
+        uint8_t present = 1;
+        TCLR_CHECK("put malformed-length 'S' key",
+                       tclr_put(dir, key, sizeof(key), &present, 1));
+        int64_t n = tclr_run_nullifier_iter(dir);
+        TCLR_CHECK("malformed nullifier key length -> iter refuses (-1)",
+                       n == -1);
+        test_rm_rf_recursive(dir);
+    }
+
+    return failures;
+}
+
 static const char *pick_snapshot_path(void)
 {
     const char *override = getenv("ZCL_LEGACY_CHAINSTATE");
@@ -121,6 +315,8 @@ int test_chainstate_legacy_reader(void)
         if (ok || h != NULL) { printf("FAIL (NULL arg)\n"); failures++; }
         else printf("OK\n");
     }
+
+    failures += test_chainstate_legacy_malformed_anchors_nullifiers();
 
     if (!path) {
         printf("chainstate_legacy_reader: snapshot not found "

@@ -347,6 +347,17 @@ int64_t chainstate_legacy_iter(void *handle,
  * compatible incremental tree codec; the reference C++ is a format oracle only
  * and is never linked into the binary. */
 
+/* Hard ceiling on rows a single anchor/nullifier keyspace walk will import.
+ * Real ZClassic mainnet has ~3.17M blocks total and shielded pool usage is a
+ * small fraction of that (see test_chainstate_legacy_reader's [400k..2M]
+ * UTXO-record sanity band for the order of magnitude) — this cap is several
+ * orders of magnitude above any real dataset. It exists purely to fail closed
+ * on a corrupted or pathological chainstate (e.g. a torn/looping key range)
+ * with a NAMED refusal instead of an unbounded walk — never a silent
+ * truncation: the caller (shielded_history_import_service.c) treats any -1
+ * here as "roll back the whole atomic import, cursors stay positive". */
+#define LEGACY_CHAINSTATE_ITER_MAX_ROWS 50000000LL
+
 /* Shared anchor-keyspace walker. `prefix` is 'Z' (Sapling) or 'A' (Sprout);
  * `is_sprout` selects the tree init/depth. FAIL-CLOSED on every anomaly:
  * returns -1 without delivering a partial verified set. */
@@ -367,6 +378,13 @@ static int64_t iter_anchor_keyspace(struct chainstate_legacy_handle *h,
         const char *k = db_iter_key(&it, &klen);
         if (klen < 1 || k[0] != prefix)
             break;
+        if (count >= LEGACY_CHAINSTATE_ITER_MAX_ROWS) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "anchor iter '%c': row count reached the %lld sane cap — "
+                    "refusing (pathological/corrupt chainstate?)", prefix,
+                    (long long)LEGACY_CHAINSTATE_ITER_MAX_ROWS);
+        }
         if (klen != 33) {
             /* A stray non-33 key inside the anchor prefix is a corrupt/foreign
              * record; a completeness-critical import cannot silently skip it. */
@@ -463,6 +481,13 @@ static int64_t iter_nullifier_keyspace(struct chainstate_legacy_handle *h,
         const char *k = db_iter_key(&it, &klen);
         if (klen < 1 || k[0] != prefix)
             break;
+        if (count >= LEGACY_CHAINSTATE_ITER_MAX_ROWS) {
+            db_iter_free(&it);
+            LOG_ERR("chainstate_legacy",
+                    "nullifier iter '%c': row count reached the %lld sane cap "
+                    "— refusing (pathological/corrupt chainstate?)", prefix,
+                    (long long)LEGACY_CHAINSTATE_ITER_MAX_ROWS);
+        }
         if (klen != 33) {
             db_iter_free(&it);
             LOG_ERR("chainstate_legacy",
