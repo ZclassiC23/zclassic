@@ -371,6 +371,12 @@
                "session_open/qualified, degradation_reason, "
                "last_export_height/time/duration, exports_ok/failed, "
                "every_blocks, keep, generations present, last_refusal"),
+    DIAG_LOCAL("sovereignty", sovereignty_dump_state_json,
+               "operational (release_assisted) vs sovereign (self_folded) "
+               "trust mode: coins_kv_proven_authority, self_folded_marker, "
+               "coins_applied_height, hstar, self_derived_tip_static_checks, "
+               "authority_posture, trust_mode, and what is gated "
+               "(mint/wallet-spend/snapshot-export vs tip-following)"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),
     DIAG_LOCAL("auth", auth_challenge_dump_state_json,

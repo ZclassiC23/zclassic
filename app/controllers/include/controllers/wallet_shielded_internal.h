@@ -43,6 +43,7 @@
 #include "models/wallet_tx.h"
 #include "models/mempool_entry.h"
 #include "models/peer.h"
+#include "controllers/sovereignty_controller.h"
 #include "controllers/sync_controller.h"
 #include "controllers/wallet_scan.h"
 #include "coins/coins.h"

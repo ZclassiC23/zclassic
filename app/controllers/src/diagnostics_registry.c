@@ -84,6 +84,7 @@
 #include "storage/progress_store.h"
 #include "config/boot.h"
 #include "config/bundle_exporter.h"
+#include "controllers/sovereignty_controller.h"
 #include "storage/small_projections.h"
 #include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"

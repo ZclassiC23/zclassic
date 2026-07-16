@@ -50,6 +50,7 @@ char *zcl_native_status_body(const struct json_value *args,
     char *tf = mcp_node_rpc("dumpstate", "[\"tip_finalize\"]");
     char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
     char *bl = mcp_node_rpc("dumpstate", "[\"blocker\"]");
+    char *sv = mcp_node_rpc("dumpstate", "[\"sovereignty\"]");
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
     int max_peer_height = 0;
@@ -229,6 +230,20 @@ char *zcl_native_status_body(const struct json_value *args,
     status_push_dumpstate_json(&root, "tip_finalize", "tip_finalize", tf);
     status_push_dumpstate_json(&root, "condition_engine",
                                "condition_engine", ce);
+    status_push_dumpstate_json(&root, "sovereignty", "sovereignty", sv);
+    /* Also surface trust_mode as a flat top-level field — the operator
+     * sovereignty posture (docs/work/fast-sync-to-tip-plan-2026-07-16.md
+     * §5.5) is load-bearing enough to not require drilling into
+     * `sovereignty.trust_mode`. Reads the just-pushed nested object rather
+     * than re-parsing `sv`, so it can never disagree with it. */
+    {
+        const struct json_value *sov_state = json_get(&root, "sovereignty");
+        const struct json_value *tm = sov_state
+            ? json_get(sov_state, "trust_mode") : NULL;
+        json_push_kv_str(&root, "trust_mode",
+                         tm && json_get_str(tm) ? json_get_str(tm)
+                                                 : "unknown");
+    }
     bool blocker_fields_attached = status_push_blocker_summary(&root, bl);
 
     char *out = blocker_fields_attached
@@ -239,7 +254,7 @@ char *zcl_native_status_body(const struct json_value *args,
     json_free(&peers_j);
     json_free(&height_j);
     free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
-    free(rf); free(tf); free(ce); free(bl);
+    free(rf); free(tf); free(ce); free(bl); free(sv);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
