@@ -1,0 +1,160 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * proof_validate NULL-block_hash re-arm — see jobs/proof_validate_null_hash_rearm.h.
+ *
+ * repair-rung-ok:test_proof_validate_stage
+ *   The WRITER is already fixed: proof_validate_log_insert stamps
+ *   bi->phashBlock into every row it authors (commit 7fb9f5650), so no NEW
+ *   ok=1/NULL-block_hash row can be produced. This rung only re-derives the
+ *   historical pre-fix rows in place (it imports no state). The re-derive
+ *   path — a rewound cursor re-folds and re-stamps block_hash — is proven by
+ *   the "null_hash_rearm" subtest in test_proof_validate_stage().
+ */
+
+#include "jobs/proof_validate_null_hash_rearm.h"
+
+#include "jobs/stage_helpers.h"
+#include "proof_validate_log_store.h"
+#include "services/recovery_policy.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+#include "util/stage.h"
+
+#include <sqlite3.h>
+#include <stdint.h>
+
+#define STAGE_NAME "proof_validate"
+#define UTXO_APPLY_STAGE_NAME "utxo_apply"
+#define REARM_REASON "proof_validate.null_hash_rearm"
+
+const char *proof_validate_rearm_outcome_name(
+    enum proof_validate_rearm_outcome o)
+{
+    switch (o) {
+    case PV_REARM_NOT_NEEDED: return "not_needed";
+    case PV_REARM_REFUSED:    return "refused";
+    case PV_REARM_ERROR:      return "error";
+    case PV_REARM_REARMED:    return "rearmed";
+    }
+    return "unknown";
+}
+
+static enum proof_validate_rearm_outcome
+finish(struct proof_validate_rearm_report *report,
+       enum proof_validate_rearm_outcome outcome)
+{
+    if (report)
+        report->outcome = outcome;
+    return outcome;
+}
+
+enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
+    sqlite3 *db, const struct recovery_policy *policy,
+    struct proof_validate_rearm_report *report)
+{
+    struct proof_validate_rearm_report local;
+    if (!report)
+        report = &local;
+    report->outcome = PV_REARM_ERROR;
+    report->pv_cursor_before = 0;
+    report->ua_cursor_floor = 0;
+    report->lowest_null_height = -1;
+    report->null_row_count = 0;
+    report->rewound_to = 0;
+    report->deleted_rows = 0;
+
+    if (!db) {
+        LOG_WARN("proof_validate", "[proof_validate] null-hash re-arm: NULL db");
+        return finish(report, PV_REARM_ERROR);
+    }
+
+    /* Read the two durable cursors. proof_validate is upstream of (>=)
+     * utxo_apply; the floor is utxo_apply's cursor so we never rewind a height
+     * that has already been applied (the LCC invariant — rewinding below a
+     * downstream consumer's cursor is what stalled the reducer on 2026-07-02). */
+    uint64_t pv_cursor = 0, ua_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &pv_cursor)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm: pv cursor read failed");
+        return finish(report, PV_REARM_ERROR);
+    }
+    if (!stage_cursor_read_or_zero(db, UTXO_APPLY_STAGE_NAME, STAGE_NAME,
+                                   &ua_cursor)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm: utxo_apply cursor read "
+                 "failed");
+        return finish(report, PV_REARM_ERROR);
+    }
+    report->pv_cursor_before = pv_cursor;
+    report->ua_cursor_floor = ua_cursor;
+
+    /* Nothing to re-derive if proof_validate has not led utxo_apply. */
+    if (pv_cursor <= ua_cursor)
+        return finish(report, PV_REARM_NOT_NEEDED);
+
+    int lowest_null = -1;
+    int64_t null_count = 0;
+    int scan = proof_validate_log_lowest_null_block_hash(
+        db, (int)ua_cursor, (int)pv_cursor, &lowest_null, &null_count);
+    if (scan < 0)
+        return finish(report, PV_REARM_ERROR);
+    if (scan == 0)
+        return finish(report, PV_REARM_NOT_NEEDED);
+    report->lowest_null_height = lowest_null;
+    report->null_row_count = null_count;
+
+    /* Containment gate. A block_rollback-shaped decision: depth = how many
+     * heights the reducer will re-derive. Default policy refuses beyond the
+     * small cap, so this never autonomously mutates a public/dev node — the
+     * operator raises ZCL_MAX_BLOCK_ROLLBACK / supplies the ack after a copy
+     * proof. A NULL policy is loaded from the environment (default-refuse). */
+    struct recovery_policy loaded;
+    if (!policy) {
+        policy_load_from_env(&loaded);
+        policy = &loaded;
+    }
+    enum policy_decision decision = policy_check_block_rollback(
+        policy, (int64_t)pv_cursor, (int64_t)lowest_null, REARM_REASON);
+    if (decision != POLICY_ALLOW) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm REFUSED (%s): would rewind "
+                 "pv cursor %llu -> %d (%lld heights, %lld NULL rows); raise "
+                 "ZCL_MAX_BLOCK_ROLLBACK or ack to authorise after copy proof",
+                 policy_decision_name(decision),
+                 (unsigned long long)pv_cursor, lowest_null,
+                 (long long)((int64_t)pv_cursor - lowest_null),
+                 (long long)null_count);
+        return finish(report, PV_REARM_REFUSED);
+    }
+
+    /* Rewind FIRST (crash-safe): if we crash after the cursor rewind but before
+     * the delete, the reducer simply re-folds from lowest_null and
+     * INSERT-OR-REPLACEs the NULL rows with re-stamped block_hash. Deleting
+     * first then crashing would erase the wedge evidence a re-detect relies on. */
+    if (!stage_set_named_cursor(db, STAGE_NAME, (uint64_t)lowest_null)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm: pv cursor rewind %llu -> "
+                 "%d failed", (unsigned long long)pv_cursor, lowest_null);
+        return finish(report, PV_REARM_ERROR);
+    }
+    report->rewound_to = (uint64_t)lowest_null;
+
+    /* Delete the NULL-block_hash suffix. A failure here is non-fatal: the
+     * cursor is already rewound, so the re-fold re-stamps every height anyway. */
+    int64_t deleted = 0;
+    if (!proof_validate_log_delete_null_block_hash_suffix(db, lowest_null,
+                                                          &deleted)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] null-hash re-arm: suffix delete from %d "
+                 "failed (cursor already rewound; re-fold will re-stamp)",
+                 lowest_null);
+    }
+    report->deleted_rows = deleted;
+
+    LOG_INFO("proof_validate",
+             "[proof_validate] null-hash re-arm DONE: pv cursor %llu -> %d, "
+             "%lld NULL row(s) deleted; reducer will re-derive + re-stamp "
+             "block_hash so utxo_apply can advance",
+             (unsigned long long)pv_cursor, lowest_null, (long long)deleted);
+    return finish(report, PV_REARM_REARMED);
+}
