@@ -20,6 +20,7 @@
 #include "util/stage.h"
 #include "controllers/chain_segment_controller.h"
 #include "services/seal_service.h"
+#include "config/bundle_exporter.h"
 #include "storage/progress_store.h"
 #include "chain/checkpoints.h"
 #include "json/json.h"
@@ -201,10 +202,15 @@ static void push_layers(struct json_value *out)
         json_init(&l);
         json_set_object(&l);
         int64_t segment_count = ok ? json_get_int(json_get(&seg, "segment_count")) : 0;
+        int64_t present_count =
+            ok ? json_get_int(json_get(&seg, "present_count")) : 0;
         json_push_kv_bool(&l, "present", ok && segment_count > 0);
         json_push_kv_int(&l, "segment_count", segment_count);
-        json_push_kv_int(&l, "present_count",
-                         ok ? json_get_int(json_get(&seg, "present_count")) : 0);
+        json_push_kv_int(&l, "present_count", present_count);
+        /* verified_count == the store's chain_segment_stat.verified_count (the
+         * cheap present-and-matching-header pass the dumper reports); the
+         * manifest ladder row reads it. */
+        json_push_kv_int(&l, "verified_count", present_count);
         json_push_kv_int(&l, "min_height",
                          ok ? json_get_int(json_get(&seg, "min_height")) : -1);
         json_push_kv_int(&l, "max_height",
@@ -276,6 +282,31 @@ static void push_layers(struct json_value *out)
                          reducer_frontier_external_tip_height());
         json_push_kv(&layers, "tip_ring", &l);
         json_free(&l);
+    }
+
+    /* Layer 6 — bundle export: the standing live consensus-state bundle
+     * exporter (config/bundle_exporter.h). The last exported generation is the
+     * head of the ROM pipeline that others re-serve. Composed via the EXISTING
+     * exporter dumper; graceful present=false when the exporter never opened a
+     * session (no state) or never exported. */
+    {
+        struct json_value bx;
+        json_init(&bx);
+        bool ok = bundle_exporter_dump_state_json(&bx, NULL);
+        int64_t last_height =
+            ok ? json_get_int(json_get(&bx, "last_export_height")) : 0;
+        const struct json_value *gens = ok ? json_get(&bx, "generations") : NULL;
+        int64_t gen_count =
+            (gens && gens->type == JSON_ARR) ? (int64_t)gens->num_children : 0;
+        struct json_value l;
+        json_init(&l);
+        json_set_object(&l);
+        json_push_kv_bool(&l, "present", ok && last_height > 0);
+        json_push_kv_int(&l, "last_height", last_height);
+        json_push_kv_int(&l, "generations", gen_count);
+        json_push_kv(&layers, "bundle_export", &l);
+        json_free(&l);
+        json_free(&bx);
     }
 
     json_push_kv(out, "layers", &layers);
