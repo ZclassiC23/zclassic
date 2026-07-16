@@ -27,6 +27,7 @@
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/stage_lcc.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -212,6 +213,23 @@ static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out)
  * lifecycle — this function only runs the UPSERT statement. */
 static bool cursor_write_locked(sqlite3 *db, const char *name, uint64_t value)
 {
+    /* LCC write rule (see util/stage_lcc.h): THE cursor-write chokepoint. A
+     * RAISE over a rowless hole in `<name>_log` is refused when enforcement is
+     * enabled (txn rolls back), else logged loudly but allowed (default). */
+    uint64_t prev = 0;
+    if (!cursor_read(db, name, &prev))
+        return false;
+    char lccerr[192];
+    if (value > prev &&
+        !stage_lcc_check_raise(db, name, prev, value, lccerr, sizeof lccerr)) {
+        bool enforce = stage_lcc_enforcement_enabled(db);
+        fprintf(stderr, "[stage] LCC %s raise %s %llu->%llu: %s\n",  // obs-ok:stage-lcc-refuse
+                enforce ? "REFUSE" : "warn(allow)", name,
+                (unsigned long long)prev, (unsigned long long)value, lccerr);
+        if (enforce)
+            return false;
+    }
+
     sqlite3_stmt *stmt = NULL;
     const char *sql =
         "INSERT INTO stage_cursor (name, cursor, updated_at) "
