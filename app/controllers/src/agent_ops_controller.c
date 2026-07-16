@@ -56,7 +56,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_bool(result, "no_jq_required", true);
     json_push_kv_str(result, "purpose",
                      "one compact agent-ready view of API shape, service architecture, and next work");
-    json_push_kv_str(result, "preferred_transport", "mcp");
+    json_push_kv_str(result, "preferred_transport", "native_cli");
     json_push_kv_str(result, "api_style",
                      "one compact first call, then registry-owned primitive drilldowns");
     json_push_kv_str(result, "dry_source",
@@ -91,11 +91,12 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     json_init(&ux);
     json_set_object(&ux);
-    json_push_kv_str(&ux, "start_here", "zclassic23 agentops / zcl_agent_ops");
+    json_push_kv_str(&ux, "start_here",
+                     "zclassic23 status; then zclassic23 agentops");
     json_push_kv_str(&ux, "change_router",
                      "zclassic23 agentimpact <files...>");
     json_push_kv_str(&ux, "preferred_drilldowns",
-                     "zcl_state, zcl_node_log, zcl_sql, zcl_timeline");
+                     "zclassic23 dumpstate, getnodelog, dbquery, timeline");
     json_push_kv_str(&ux, "add_new_api_rule",
                      "try registry-owned primitives first; add bespoke tools only when a repeated decision needs a stable field");
     json_push_kv(result, "api_ux", &ux);

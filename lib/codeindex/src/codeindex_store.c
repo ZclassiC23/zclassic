@@ -1,16 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * codeindex_store — the derived-state SQLite WAL store for the code index.
+ * codeindex_store — the derived-state SQLite store for the code index.
  *
  * ── OUTSIDE the node.db ActiveRecord lifecycle by design ──
- * index.kv is a dedicated single-writer SQLite WAL file at
+ * index.kv is a dedicated single-writer SQLite file at
  * <root>/.codeindex/index.kv, below the AR layer — exactly like lib/vcs's
  * index.kv, progress.kv, and seal_kv. Its rows are NOT AR models; routing
  * them through AR would be a category error. Raw sqlite3_step here therefore
  * carries the `// raw-sql-ok:codeindex-derived` marker, and the whole store
  * is recomputable from the source tree by codeindex_rebuild
- * ("recompute, never repair"). Each symbol row carries a row_sha3 checksum so
- * a corrupted row is caught on read (verify-on-read). */
+ * ("recompute, never repair"). Canonical generations are opened through a
+ * validated owner-controlled directory + immutable inode capability, never a
+ * second pathname lookup. Each symbol row carries a row_sha3 checksum so a
+ * corrupted row is caught on read (verify-on-read). */
 
 #include "codeindex_priv.h"
 
@@ -19,15 +21,20 @@
 
 #include <sqlite3.h>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 struct ci_store {
     sqlite3        *db;
     pthread_mutex_t lock;   /* recursive: held begin..commit; reads take briefly */
+    int             bound_fd; /* immutable canonical inode, -1 for :memory: */
 };
 
 /* Bounded copy into a fixed field; always NUL-terminates. */
@@ -72,8 +79,12 @@ void ci_symbol_row_hash(const struct ci_symbol *sym, uint8_t out[32])
 static bool apply_pragmas(sqlite3 *db)
 {
     static const char *const pragmas[] = {
-        "PRAGMA journal_mode=WAL",
-        "PRAGMA synchronous=NORMAL",
+        /* A rollback journal keeps an already-open reader bound only to the
+         * old main-file inode while a rebuilt generation is atomically
+         * renamed over the canonical pathname. WAL sidecars are pathname-
+         * shared and would violate that old-reader-retention contract. */
+        "PRAGMA journal_mode=DELETE",
+        "PRAGMA synchronous=FULL",
         "PRAGMA busy_timeout=5000",
         NULL,
     };
@@ -115,7 +126,8 @@ static bool ensure_schema(sqlite3 *db)
         "  row_sha3 BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS includes ("
         "  file_id INTEGER NOT NULL,"
-        "  dep_path TEXT NOT NULL);"
+        "  dep_path TEXT NOT NULL,"
+        "  UNIQUE(file_id,dep_path));"
         "CREATE TABLE IF NOT EXISTS refs ("
         "  callee_name TEXT NOT NULL,"
         "  ref_file TEXT NOT NULL,"
@@ -150,6 +162,7 @@ struct ci_store *ci_store_open_path(const char *dbpath)
     if (!s)
         LOG_NULL("codeindex", "calloc ci_store");
 
+    s->bound_fd = -1;
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -181,21 +194,123 @@ struct ci_store *ci_store_open(const char *root)
     int dn = snprintf(dir, sizeof(dir), "%s/.codeindex", root);
     if (dn <= 0 || (size_t)dn >= sizeof(dir))
         LOG_NULL("codeindex", "root too long");
-    mkdir(dir, 0755);  /* best-effort; open reports the real failure */
-    char path[CI_PATH_MAX];
-    int pn = snprintf(path, sizeof(path), "%s/index.kv", dir);
-    if (pn <= 0 || (size_t)pn >= sizeof(path))
-        LOG_NULL("codeindex", "index path too long");
-    return ci_store_open_path(path);
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dirfd < 0) {
+        if (errno == ENOENT) return NULL;
+        LOG_NULL("codeindex", "open canonical directory failed: %s",
+                 strerror(errno));
+    }
+    struct stat dir_st;
+    if (fstat(dirfd, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode) ||
+        dir_st.st_uid != geteuid() ||
+        (dir_st.st_mode & (S_IWGRP | S_IWOTH))) {
+        close(dirfd);
+        LOG_NULL("codeindex",
+                 "canonical directory is not an owner-controlled capability");
+    }
+
+    /* Open relative to the validated directory and bind SQLite to this exact
+     * descriptor via /proc/self/fd. There is no lstat(path) -> reopen(path)
+     * window, and immutable=1 prevents legacy WAL/SHM names from influencing
+     * a published read-only generation. */
+    int fd = openat(dirfd, "index.kv", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    int open_saved = errno;
+    close(dirfd);
+    if (fd < 0) {
+        if (open_saved == ENOENT) return NULL;
+        LOG_NULL("codeindex", "open canonical index failed: %s",
+                 strerror(open_saved));
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+        st.st_uid != geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH))) {
+        close(fd);
+        LOG_NULL("codeindex",
+                 "canonical index is not a private owner-controlled inode");
+    }
+
+    struct ci_store *s = zcl_calloc(1, sizeof(*s), "ci_store_readonly");
+    if (!s) {
+        close(fd);
+        LOG_NULL("codeindex", "calloc readonly ci_store");
+    }
+    s->bound_fd = fd;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&s->lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+
+    char uri[128];
+    int un = snprintf(uri, sizeof(uri),
+                      "file:/proc/self/fd/%d?mode=ro&immutable=1", fd);
+    if (un <= 0 || (size_t)un >= sizeof(uri)) {
+        close(fd);
+        pthread_mutex_destroy(&s->lock);
+        free(s);
+        LOG_NULL("codeindex", "canonical fd URI overflow");
+    }
+    int flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI;
+    if (sqlite3_open_v2(uri, &s->db, flags, NULL) != SQLITE_OK) {
+        if (s->db) sqlite3_close(s->db);
+        close(fd);
+        pthread_mutex_destroy(&s->lock);
+        free(s);
+        return NULL;
+    }
+    (void)sqlite3_busy_timeout(s->db, 5000);
+    return s;
+}
+
+bool ci_store_write_image_fd(struct ci_store *s, int fd)
+{
+    if (!s || fd < 0)
+        LOG_FAIL("codeindex", "invalid store/image fd");
+
+    pthread_mutex_lock(&s->lock);
+    sqlite3_int64 image_size = 0;
+    unsigned char *image = sqlite3_serialize(s->db, "main", &image_size, 0);
+    bool ok = image && image_size > 0 &&
+              (sqlite3_int64)(off_t)image_size == image_size;
+    int saved = ok ? 0 : EOVERFLOW;
+
+    if (ok && ftruncate(fd, 0) != 0) {
+        ok = false;
+        saved = errno;
+    }
+    sqlite3_int64 offset = 0;
+    while (ok && offset < image_size) {
+        sqlite3_int64 left = image_size - offset;
+        size_t chunk = left > INT64_C(1048576)
+            ? (size_t)INT64_C(1048576) : (size_t)left;
+        ssize_t wrote = pwrite(fd, image + offset, chunk, (off_t)offset);
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0) {
+            ok = false;
+            saved = wrote < 0 ? errno : EIO;
+            break;
+        }
+        offset += wrote;
+    }
+    if (ok && ftruncate(fd, (off_t)image_size) != 0) {
+        ok = false;
+        saved = errno;
+    }
+    if (image) sqlite3_free(image);
+    pthread_mutex_unlock(&s->lock);
+
+    if (!ok)
+        LOG_FAIL("codeindex", "serialize staging image failed: %s",
+                 strerror(saved));
+    return true;
 }
 
 void ci_store_close(struct ci_store *s)
 {
     if (!s) return;
-    if (s->db) {
-        sqlite3_exec(s->db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
-        sqlite3_close(s->db);
-    }
+    if (s->db) sqlite3_close(s->db);
+    if (s->bound_fd >= 0) close(s->bound_fd);
     pthread_mutex_destroy(&s->lock);
     free(s);
 }
@@ -315,7 +430,7 @@ bool ci_store_put_include(struct ci_store *s, int64_t file_id,
         LOG_FAIL("codeindex", "null arg to put_include");
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db,
-        "INSERT INTO includes(file_id,dep_path) VALUES(?,?)",
+        "INSERT OR IGNORE INTO includes(file_id,dep_path) VALUES(?,?)",
         -1, &stmt, NULL) != SQLITE_OK)
         LOG_FAIL("codeindex", "prepare put_include: %s", sqlite3_errmsg(s->db));
     sqlite3_bind_int64(stmt, 1, file_id);

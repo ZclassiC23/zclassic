@@ -15,6 +15,8 @@
  *                                    proof_group for the same single file.
  *   8. complete source roots       — src/, ports/, and lib/test/ are indexed;
  *                                    license boilerplate is not a purpose.
+ *   9. publication safety          — content freshness, old-reader retention,
+ *                                    crash boundaries, and 32-way cold open.
  *
  * All scratch work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -22,6 +24,7 @@
 
 #include "codeindex/codeindex.h"
 #include "codeindex/codeindex_build.h"
+#include "platform/time_compat.h"
 
 /* For the routing-link parity invariant (case 7): `code tests <path>`'s route
  * (tools/command/native_code_command.c) must equal `dev test plan`'s
@@ -31,10 +34,16 @@
 
 #include <sqlite3.h>
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
 #define CI_CHECK(name, expr) do {                                     \
     if (expr) { printf("  codeindex: %s... OK\n", (name)); }          \
@@ -106,6 +115,13 @@ static const char *FOO_H =
     "\n"
     "#endif\n";
 
+static const char *BAR_H =
+    "/* net/bar.h — alternate depfile fixture header. */\n"
+    "#ifndef NET_BAR_H\n"
+    "#define NET_BAR_H\n"
+    "int bar_fixture(void);\n"
+    "#endif\n";
+
 /* Purpose-derivation fixtures (§1.1): stem-dashed header, explicit override,
  * and a file whose only comment is interior (no file-level purpose). */
 static const char *PURPOSE_STEM_C =
@@ -170,6 +186,16 @@ static bool write_fixture(void)
 {
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
            mk_write(FIX, "lib/net/include/net/foo.h", FOO_H) &&
+           mk_write(FIX, "lib/net/include/net/bar.h", BAR_H) &&
+           mk_write(FIX, "build/obj/foo.d",
+                    "build/obj/foo.o: lib/net/src/foo.c "
+                    "lib/net/include/net/foo.h\n") &&
+           mk_write(FIX, "build/test-obj/foo.d",
+                    "build/test-obj/foo.o: lib/net/src/foo.c "
+                    "lib/net/include/net/foo.h\n") &&
+           mk_write(FIX, "build/obj/epochs/old/foo.d",
+                    "build/obj/foo.o: lib/net/src/foo.c "
+                    "lib/net/include/net/bar.h\n") &&
            mk_write(FIX, "lib/net/src/purpose_stem.c", PURPOSE_STEM_C) &&
            mk_write(FIX, "lib/net/src/purpose_override.c", PURPOSE_OVERRIDE_C) &&
            mk_write(FIX, "lib/net/src/purpose_none.c", PURPOSE_NONE_C) &&
@@ -223,6 +249,122 @@ static bool corrupt_symbol(const char *name)
     int rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
     sqlite3_close(db);
     return rc == SQLITE_OK;
+}
+
+/* Inspect the published generation directly, without triggering a lazy
+ * rebuild. Used to distinguish the old/new winner at crash boundaries. */
+static bool published_index_has_symbol(const char *name)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(FIX "/.codeindex/index.kv", &db,
+                        SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    sqlite3_stmt *st = NULL;
+    bool found = false;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM symbols WHERE name=? LIMIT 1", -1, &st, NULL) ==
+        SQLITE_OK) {
+        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+        found = sqlite3_step(st) == SQLITE_ROW;
+    }
+    if (st) sqlite3_finalize(st);
+    sqlite3_close(db);
+    return found;
+}
+
+static bool no_staging_files(void)
+{
+    DIR *d = opendir(FIX "/.codeindex");
+    if (!d) return false;
+    bool clean = true;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "index.kv.tmp.", 13) == 0) {
+            clean = false;
+            break;
+        }
+    }
+    closedir(d);
+    return clean;
+}
+
+static bool file_equals(const char *path, const char *expected)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char buf[128];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    bool eof = feof(f) != 0;
+    fclose(f);
+    size_t expected_len = strlen(expected);
+    return eof && n == expected_len &&
+           memcmp(buf, expected, expected_len) == 0;
+}
+
+static uint64_t monotonic_us(void)
+{
+    int64_t now = platform_time_monotonic_us();
+    return now > 0 ? (uint64_t)now : 0;
+}
+
+static bool crash_rebuild_at(enum codeindex_test_crash_point point)
+{
+    codeindex_test_set_crash_point(point);
+    pid_t pid = fork();
+    if (pid == 0) {
+        struct codeindex *child = codeindex_open(FIX);
+        if (child) codeindex_close(child);
+        _exit(3);  /* reaching here means the required boundary did not fire */
+    }
+    codeindex_test_set_crash_point(CODEINDEX_TEST_CRASH_NONE);
+    if (pid < 0) return false;
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) return false;
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+}
+
+static bool concurrent_open_32(const char *required_symbol)
+{
+    enum { CHILDREN = 32 };
+    int gate[2];
+    if (pipe(gate) != 0) return false;
+    pid_t pids[CHILDREN];
+    int started = 0;
+    for (int i = 0; i < CHILDREN; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(gate[1]);
+            char token = 0;
+            if (read(gate[0], &token, 1) != 1) _exit(10);
+            close(gate[0]);
+            struct codeindex *child = codeindex_open(FIX);
+            struct ci_symbol sym;
+            bool found = false;
+            bool ok = child &&
+                      codeindex_symbol(child, required_symbol, &sym, &found) &&
+                      found;
+            if (child) codeindex_close(child);
+            _exit(ok ? 0 : 11);
+        }
+        if (pid < 0) break;
+        pids[started++] = pid;
+    }
+    close(gate[0]);
+    bool ok = started == CHILDREN;
+    for (int i = 0; i < started; i++) {
+        char token = 'x';
+        if (write(gate[1], &token, 1) != 1) ok = false;
+    }
+    close(gate[1]);
+    for (int i = 0; i < started; i++) {
+        int status = 0;
+        if (waitpid(pids[i], &status, 0) != pids[i] ||
+            !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            ok = false;
+    }
+    return ok;
 }
 
 /* Parse the Makefile's LIB_MODULES (possibly line-continued) into a set. */
@@ -320,6 +462,55 @@ int test_codeindex(void)
     CI_CHECK("helper_add has call-site refs", nref >= 1);
     nref = codeindex_refs(ci, "foo_checksum", refs, 32);
     CI_CHECK("foo_checksum has one call-site ref", nref == 1);
+
+    char includes[8][256];
+    int nincludes = codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8);
+    CI_CHECK("compiler depfile include edge is indexed",
+             nincludes == 1 &&
+             strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
+
+    /* Warm opens validate metadata cache keys only. Exact source/dep bytes are
+     * sealed in the generation and reread only when inode/size/mtime/ctime
+     * changes. Historical compile epochs are outside the active dep graph. */
+    codeindex_close(ci);
+    ci = NULL;
+    CI_CHECK("historical epoch mutation fixture writes",
+             mk_write(FIX, "build/obj/epochs/old/foo.d",
+                      "build/obj/foo.o: lib/net/src/foo.c "
+                      "lib/net/include/net/foo.h\n"));
+    codeindex_test_reset_exact_bytes_read();
+    uint64_t warm_start_us = monotonic_us();
+    ci = codeindex_open(FIX);
+    uint64_t warm_elapsed_us = monotonic_us() - warm_start_us;
+    uint64_t warm_exact_bytes = codeindex_test_exact_bytes_read();
+    printf("  codeindex: warm-open elapsed_us=%llu exact_bytes=%llu\n",
+           (unsigned long long)warm_elapsed_us,
+           (unsigned long long)warm_exact_bytes);
+    CI_CHECK("warm open rereads zero exact-content bytes",
+             ci && warm_exact_bytes == 0);
+    CI_CHECK("fixture warm open stays below 250 ms",
+             ci && warm_elapsed_us > 0 && warm_elapsed_us <= UINT64_C(250000));
+    memset(includes, 0, sizeof(includes));
+    nincludes = ci ? codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8) : -1;
+    CI_CHECK("historical epoch depfiles cannot change active include edges",
+             ci && nincludes == 1 &&
+             strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
+
+    /* Warm acceptance uses an owner-controlled directory capability. Mode
+     * drift fails closed before SQLite can consume the canonical pathname. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    CI_CHECK("make codeindex directory insecure for boundary test",
+             chmod(FIX "/.codeindex", 0777) == 0);
+    struct codeindex *insecure = codeindex_open(FIX);
+    CI_CHECK("warm open rejects group/world-writable codeindex directory",
+             insecure == NULL);
+    if (insecure) codeindex_close(insecure);
+    CI_CHECK("restore owner-controlled codeindex directory",
+             chmod(FIX "/.codeindex", 0755) == 0);
+    ci = codeindex_open(FIX);
+    CI_CHECK("owner-controlled warm index reopens", ci != NULL);
 
     /* file → group */
     struct ci_file cf;
@@ -453,7 +644,14 @@ int test_codeindex(void)
     /* ── 1: build determinism ── */
     char *dump1 = dump_symbols(ci);
     CI_CHECK("dump #1 non-empty", dump1 && dump1[0]);
-    codeindex_rebuild(ci);
+    CI_CHECK("legacy WAL sidecar fixture writes",
+             mk_write(FIX, ".codeindex/index.kv-wal", "legacy-wal-bytes") &&
+             mk_write(FIX, ".codeindex/index.kv-shm", "legacy-shm-bytes"));
+    CI_CHECK("forced rebuild publishes after legacy sidecars",
+             codeindex_rebuild(ci));
+    CI_CHECK("publication removes legacy WAL/SHM names",
+             access(FIX "/.codeindex/index.kv-wal", F_OK) != 0 &&
+             access(FIX "/.codeindex/index.kv-shm", F_OK) != 0);
     char *dump2 = dump_symbols(ci);
     CI_CHECK("rebuild is deterministic (dump identical)",
              dump1 && dump2 && strcmp(dump1, dump2) == 0);
@@ -480,6 +678,196 @@ int test_codeindex(void)
     if (ci) codeindex_symbol(ci, "foo_added", &s, &found);
     CI_CHECK("staleness auto-rebuild reflects the edit",
              found && s.kind == 'T');
+
+    /* Depfiles are consumed index inputs too. A same-size edit with the exact
+     * previous mtime must invalidate include edges even when every C/H byte is
+     * unchanged. */
+    static const char dep_b[] =
+        "build/obj/foo.o: lib/net/src/foo.c lib/net/include/net/bar.h\n";
+    struct stat dep_st;
+    bool dep_stat = stat(FIX "/build/obj/foo.d", &dep_st) == 0;
+    bool dep_write = mk_write(FIX, "build/obj/foo.d", dep_b);
+    struct timespec dep_times[2];
+    if (dep_stat) {
+        dep_times[0] = dep_st.st_atim;
+        dep_times[1] = dep_st.st_mtim;
+    }
+    bool dep_mtime = dep_stat && dep_write &&
+        utimensat(AT_FDCWD, FIX "/build/obj/foo.d", dep_times, 0) == 0;
+    CI_CHECK("same-size depfile edit restores exact previous mtime",
+             dep_mtime);
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    ci = codeindex_open(FIX);
+    memset(includes, 0, sizeof(includes));
+    nincludes = ci ? codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8) : -1;
+    /* Both release and test object-root aliases are active. Changing one
+     * profile must rebuild the union while preserving the other profile's
+     * still-current edge. */
+    CI_CHECK("depfile digest rebuilds the include graph",
+             ci && nincludes == 2 &&
+             strcmp(includes[0], "lib/net/include/net/bar.h") == 0 &&
+             strcmp(includes[1], "lib/net/include/net/foo.h") == 0);
+
+    /* ── 9a: the freshness root is bytes, not (mtime,size). Preserve the
+     * exact original mtime while changing a same-length symbol name. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    char source_current[16384];
+    snprintf(source_current, sizeof(source_current),
+             "%s\nint ci_same_aaaa(void){return 1;}\n", FOO_C);
+    CI_CHECK("content-freshness fixture A writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    ci = codeindex_open(FIX);
+    found = false;
+    if (ci) codeindex_symbol(ci, "ci_same_aaaa", &s, &found);
+    CI_CHECK("content-freshness fixture A is indexed", ci && found);
+    if (ci) { codeindex_close(ci); ci = NULL; }
+
+    struct stat same_st;
+    bool same_stat = stat(FIX "/lib/net/src/foo.c", &same_st) == 0;
+    char *same_name = strstr(source_current, "ci_same_aaaa");
+    if (same_name) memcpy(same_name, "ci_same_bbbb", strlen("ci_same_bbbb"));
+    bool same_write = same_name &&
+        mk_write(FIX, "lib/net/src/foo.c", source_current);
+    struct timespec same_times[2];
+    if (same_stat) {
+        same_times[0] = same_st.st_atim;
+        same_times[1] = same_st.st_mtim;
+    }
+    bool same_mtime = same_stat && same_write &&
+        utimensat(AT_FDCWD, FIX "/lib/net/src/foo.c", same_times, 0) == 0;
+    CI_CHECK("same-size edit restores the exact previous mtime", same_mtime);
+    ci = codeindex_open(FIX);
+    bool found_new = false, found_old = true;
+    if (ci) {
+        codeindex_symbol(ci, "ci_same_bbbb", &s, &found_new);
+        codeindex_symbol(ci, "ci_same_aaaa", &s, &found_old);
+    }
+    CI_CHECK("content digest rejects same-size/same-mtime stale index",
+             ci && found_new && !found_old);
+
+    /* ── 9b: publication is rename-over, not unlink-then-rename. A reader
+     * already bound to generation A remains valid while B becomes canonical. */
+    struct codeindex *old_reader = ci;
+    size_t used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_retained_new(void){return 2;}\n");
+    CI_CHECK("old-reader replacement fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    struct codeindex *new_reader = codeindex_open(FIX);
+    bool old_known = false, old_new = true, new_new = false;
+    if (old_reader) {
+        codeindex_symbol(old_reader, "ci_same_bbbb", &s, &old_known);
+        codeindex_symbol(old_reader, "ci_retained_new", &s, &old_new);
+    }
+    if (new_reader)
+        codeindex_symbol(new_reader, "ci_retained_new", &s, &new_new);
+    CI_CHECK("old reader retains complete prior generation",
+             old_reader && old_known && !old_new);
+    CI_CHECK("new reader sees atomically published generation",
+             new_reader && new_new);
+    if (old_reader) codeindex_close(old_reader);
+    ci = new_reader;
+
+    /* ── 9c: a substituted stage name never receives SQLite writes. The
+     * retained O_EXCL descriptor becomes unlinked, identity verification
+     * refuses publication, and both victim + prior canonical stay intact. */
+    static const char victim_path[] = FIX "/stage-victim.bin";
+    static const char victim_bytes[] = "stage-victim-must-not-change";
+    CI_CHECK("stage-substitution victim fixture writes",
+             mk_write(FIX, "stage-victim.bin", victim_bytes));
+    used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_stage_symlink(void){return 6;}\n");
+    CI_CHECK("symlink-substitution source fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    codeindex_test_set_stage_tamper(CODEINDEX_TEST_STAGE_TAMPER_SYMLINK,
+                                    victim_path);
+    CI_CHECK("symlink-substituted stage is rejected",
+             ci && !codeindex_rebuild(ci));
+    codeindex_test_set_stage_tamper(CODEINDEX_TEST_STAGE_TAMPER_NONE, NULL);
+    CI_CHECK("symlink victim bytes remain unchanged",
+             file_equals(victim_path, victim_bytes));
+    CI_CHECK("symlink substitution preserves prior canonical generation",
+             !published_index_has_symbol("ci_stage_symlink"));
+    CI_CHECK("symlink substitution leaves no staging name",
+             no_staging_files());
+
+    used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_stage_hardlink(void){return 7;}\n");
+    CI_CHECK("hardlink-substitution source fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    codeindex_test_set_stage_tamper(CODEINDEX_TEST_STAGE_TAMPER_HARDLINK,
+                                    victim_path);
+    CI_CHECK("hardlink-substituted stage is rejected",
+             ci && !codeindex_rebuild(ci));
+    codeindex_test_set_stage_tamper(CODEINDEX_TEST_STAGE_TAMPER_NONE, NULL);
+    CI_CHECK("hardlink victim bytes remain unchanged",
+             file_equals(victim_path, victim_bytes));
+    CI_CHECK("hardlink substitution preserves prior canonical generation",
+             !published_index_has_symbol("ci_stage_hardlink"));
+    CI_CHECK("hardlink substitution leaves no staging name",
+             no_staging_files());
+    CI_CHECK("clean rebuild succeeds after stage substitutions",
+             ci && codeindex_rebuild(ci));
+
+    /* ── 9d: process death before rename leaves the old generation; a later
+     * open removes the abandoned unique stage and publishes a complete new
+     * generation. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_crash_before(void){return 3;}\n");
+    CI_CHECK("pre-rename crash fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    CI_CHECK("SIGKILL fires immediately before publication rename",
+             crash_rebuild_at(CODEINDEX_TEST_CRASH_BEFORE_RENAME));
+    CI_CHECK("pre-rename crash preserves the prior canonical generation",
+             !published_index_has_symbol("ci_crash_before"));
+    ci = codeindex_open(FIX);
+    found = false;
+    if (ci) codeindex_symbol(ci, "ci_crash_before", &s, &found);
+    CI_CHECK("next open rebuilds after pre-rename crash", ci && found);
+    CI_CHECK("next opener removes abandoned staging files", no_staging_files());
+
+    /* A kill after rename has exactly the other legal winner: the fully
+     * committed new file. Directory fsync is a power-loss boundary; SIGKILL
+     * cannot manufacture a hybrid SQLite generation. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_crash_after(void){return 4;}\n");
+    CI_CHECK("post-rename crash fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    CI_CHECK("SIGKILL fires immediately after publication rename",
+             crash_rebuild_at(CODEINDEX_TEST_CRASH_AFTER_RENAME));
+    CI_CHECK("post-rename crash exposes one complete new generation",
+             published_index_has_symbol("ci_crash_after"));
+    ci = codeindex_open(FIX);
+    found = false;
+    if (ci) codeindex_symbol(ci, "ci_crash_after", &s, &found);
+    CI_CHECK("post-rename generation reopens and verifies", ci && found);
+    CI_CHECK("post-rename crash leaves no staging file", no_staging_files());
+
+    /* ── 9e: 32 processes start with no index. Exactly one rebuilds; losers
+     * wait, recheck the winner's content root, and adopt it. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    used = strlen(source_current);
+    snprintf(source_current + used, sizeof(source_current) - used,
+             "int ci_concurrent_32(void){return 5;}\n");
+    CI_CHECK("32-way cold-open fixture writes",
+             mk_write(FIX, "lib/net/src/foo.c", source_current));
+    system("rm -rf " FIX "/.codeindex");
+    CI_CHECK("32 concurrent cold opens all adopt one complete generation",
+             concurrent_open_32("ci_concurrent_32"));
+    CI_CHECK("32-way publication leaves no staging files", no_staging_files());
+    ci = codeindex_open(FIX);
+    found = false;
+    if (ci) codeindex_symbol(ci, "ci_concurrent_32", &s, &found);
+    CI_CHECK("32-way winner is the durable canonical index", ci && found);
+    CI_CHECK("32 concurrent warm opens retain the durable generation",
+             concurrent_open_32("ci_concurrent_32"));
 
     /* ── 5: verify-on-read rejects a corrupted row ── */
     if (ci) codeindex_close(ci);

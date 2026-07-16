@@ -2075,9 +2075,8 @@ static bool g_service_operations_filter_params_seen;
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
     if (strcmp(method, "agentmap") == 0)
-        return strdup("{\"schema\":\"zcl.agent_map.v1\","
-                      "\"commands\":[{\"name\":\"build\"}],"
-                      "\"deprecated_shim\":{\"primary\":false}}");
+        return strdup("{\"schema\":\"zcl.agent_map.v2\","
+                      "\"commands\":[{\"name\":\"build\"}]}");
     if (strcmp(method, "agentlanes") == 0)
         return strdup("{\"schema\":\"zcl.agent_lanes.v1\","
                       "\"default_deploy_target\":\"dev\","
@@ -2135,22 +2134,22 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     if (strcmp(method, "agentinterface") == 0)
         return strdup("{\"schema\":\"zcl.agent_interface.v1\","
                       "\"build_commit\":\"nodecafe123\","
-                      "\"preferred_transport\":\"mcp\","
+                      "\"preferred_transport\":\"native_cli\","
                       "\"preferred_payload\":\"json\","
-                      "\"capabilities\":[{\"name\":\"runtime_status\","
+                      "\"capabilities\":[{\"name\":\"full_compatibility_status\","
                       "\"schema\":\"zcl.public_status.v1\","
                       "\"mcp\":\"zcl_agent\"}],"
-                      "\"machine_contract\":{\"schema\":\"zcl.agent_machine_contract.v1\","
+                      "\"machine_contract\":{\"schema\":\"zcl.agent_machine_contract.v2\","
                       "\"payload\":\"json_object\","
                       "\"schema_required\":true,"
                       "\"transport_equivalent_payloads\":true,"
                       "\"no_python_required\":true,"
-                      "\"no_tools_z_required\":true},"
+                      "\"typed_native_commands_required\":true},"
                       "\"runtime_identity\":{\"schema\":\"zcl.agent_runtime_identity.v1\","
                       "\"build_commit\":\"nodecafe123\","
                       "\"binary\":\"zclassic23\"},"
                       "\"must_live_in_c\":[\"deploy/restart safety decisions\"],"
-                      "\"avoid\":[\"do not add new operator logic to tools/z\"]}");
+                      "\"avoid\":[\"do not add external operator wrappers; use typed native zclassic23 commands\"]}");
     if (strcmp(method, "agentops") == 0)
         return strdup("{\"schema\":\"zcl.agent_ops.v1\","
                       "\"api_version\":\"v1\","
@@ -2159,8 +2158,9 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"native_command\":\"zclassic23 agentops\","
                       "\"mcp_tool\":\"zcl_agent_ops\","
                       "\"contract_source\":\"agent_contracts.def\","
+                      "\"preferred_transport\":\"native_cli\","
                       "\"api_style\":\"one compact first call, then registry-owned primitive drilldowns\","
-                      "\"api_ux\":{\"start_here\":\"zclassic23 agentops / zcl_agent_ops\"},"
+                      "\"api_ux\":{\"start_here\":\"zclassic23 status; then zclassic23 agentops\"},"
                       "\"no_jq_required\":true,"
                       "\"workflow\":[{\"rank\":1,"
                       "\"name\":\"first_call\"}],"
@@ -3195,7 +3195,7 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
-                      "zcl.agent_map.v1");
+                      "zcl.agent_map.v2");
         ASSERT(json_get(&root, "commands") != NULL);
         json_free(&root);
         free(body);
@@ -3350,7 +3350,7 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_interface.v1");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "preferred_transport")),
-                      "mcp");
+                      "native_cli");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
                       "nodecafe123");
         ASSERT(json_get(&root, "capabilities") != NULL);
@@ -3370,6 +3370,8 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_ops.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "preferred_transport")),
+                      "native_cli");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
                       "agentops");
         ASSERT(json_get_bool(json_get(&root, "no_jq_required")));

@@ -625,7 +625,9 @@ that decide block/tx validity — the exact surface `core/MANIFEST.sha3` pins).
 When a dev cycle's changed-file set touches any file under `core/`, the fast
 loop **stops before any hot-swap or reload publish** and emits a structured
 refusal envelope on stdout (also persisted as the `zcl.dev_cycle.v1` verdict at
-`$HOME/.local/state/zclassic23-dev/native-cycle.json`), exiting **3**
+`$HOME/.local/state/zclassic23-dev/workspaces/<workspace-id>/native-cycle.json`
+inside a workspace-bound, SHA3-sealed `zcl.dev_cycle_record.v1` wrapper),
+exiting **3**
 (blocked-by-precondition):
 
 ```json

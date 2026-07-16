@@ -19,7 +19,7 @@
 # Sorted by path.
 
 app/controllers/src/agent_anchor_status_controller.c 861
-app/controllers/src/agent_controller.c 908
+app/controllers/src/agent_controller.c 895
 app/controllers/src/api_controller_status.c 898
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013

@@ -135,8 +135,8 @@ binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 `ZCL_FAST_LIVE=0` for isolated/offline work. The shell gate trusts the native
 `zcl.public_status.v1` status/serving/operator-needed contract rather than
 re-encoding height-gap policy, and emits compact JSON summaries when a probe
-fails. There is no `tools/z` fallback in
-the agent fast path; if the native binary JSON interface is unavailable, rebuild
+fails. There is no external shell-wrapper fallback in the agent fast path; if
+the native binary JSON interface is unavailable, rebuild
 the binary or skip the live probe explicitly. Unmapped C/header/source-tree
 changes fail closed until you either add a focused-test mapping or pass
 `ZCL_FAST_TESTS=...`. The focused-test map is shared with native
@@ -179,8 +179,6 @@ Canonical operator APIs, in priority order:
    `zcl_state`, `zcl_node_log`, `zcl_sql`) — typed agent interface over the
    same node RPC truth.
 3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
-4. `tools/z` — deprecated shell compatibility for older terminals and scripts,
-   not an agent interface. Keep it working; do not add new operator logic there.
 
 `make agent-loop` is the normal AI/operator edit gate. Before pushing `main`, the
 tracked pre-push hook computes the exact `origin/main..HEAD` changed-file set,

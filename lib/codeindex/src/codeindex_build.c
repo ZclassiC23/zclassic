@@ -4,10 +4,10 @@
  *
  * Enumerate the source set in a fixed sorted order, scan every file, fold in
  * include edges from build depfiles, write the group hierarchy, all into a
- * fresh <root>/.codeindex/index.kv.tmp, then atomically rename it over
- * index.kv and stamp meta.source_root_sha3. A partial build never corrupts the
- * live store: it only ever appears via the final rename. "Recompute, never
- * repair." */
+ * unique same-directory staging store, then atomically rename it over
+ * index.kv and stamp meta.source_root_sha3. A cross-process lock coalesces
+ * cold opens; an old reader keeps its already-open inode across publication.
+ * A partial build never corrupts the live store. "Recompute, never repair." */
 
 #include "codeindex_priv.h"
 #include "codeindex/codeindex_build.h"
@@ -16,10 +16,16 @@
 #include "util/safe_alloc.h"
 
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 /* ── source enumeration ─────────────────────────────────────────────── */
@@ -74,8 +80,10 @@ static bool prune_dir(const char *name)
            strncmp(name, "test-tmp", 8) == 0;
 }
 
-/* Recursively collect .c/.h under <root>/<reldir> into vec. */
-static void collect_dir(const char *root, const char *reldir, struct strvec *vec)
+/* Recursively collect .c/.h under <root>/<reldir> into vec. Missing optional
+ * roots are empty; permission, I/O, and allocation failures are hard errors. */
+static bool collect_dir(const char *root, const char *reldir,
+                        struct strvec *vec)
 {
     char full[CI_PATH_MAX];
     if (reldir[0])
@@ -83,9 +91,10 @@ static void collect_dir(const char *root, const char *reldir, struct strvec *vec
     else
         snprintf(full, sizeof(full), "%s", root);
     DIR *d = opendir(full);
-    if (!d) return;
+    if (!d) return errno == ENOENT;
+    bool ok = true;
     struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
+    while (ok && (e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
         char child[CI_PATH_MAX];
         int n;
@@ -93,19 +102,35 @@ static void collect_dir(const char *root, const char *reldir, struct strvec *vec
             n = snprintf(child, sizeof(child), "%s/%s", reldir, e->d_name);
         else
             n = snprintf(child, sizeof(child), "%s", e->d_name);
-        if (n <= 0 || (size_t)n >= sizeof(child)) continue;
+        if (n <= 0 || (size_t)n >= sizeof(child)) {
+            ok = false;
+            break;
+        }
         char cfull[CI_PATH_MAX];
-        snprintf(cfull, sizeof(cfull), "%s/%s", root, child);
+        int cn = snprintf(cfull, sizeof(cfull), "%s/%s", root, child);
+        if (cn <= 0 || (size_t)cn >= sizeof(cfull)) {
+            ok = false;
+            break;
+        }
         struct stat st;
-        if (lstat(cfull, &st) != 0) continue;
+        if (lstat(cfull, &st) != 0) {
+            ok = false;
+            break;
+        }
         if (S_ISDIR(st.st_mode)) {
             if (prune_dir(e->d_name)) continue;
-            collect_dir(root, child, vec);
+            ok = collect_dir(root, child, vec);
         } else if (S_ISREG(st.st_mode) && is_source_name(e->d_name)) {
-            sv_push(vec, child);
+            ok = sv_push(vec, child);
         }
     }
-    closedir(d);
+    int saved = errno;
+    if (closedir(d) != 0 && ok) {
+        ok = false;
+        saved = errno;
+    }
+    if (!ok) errno = saved ? saved : EIO;
+    return ok;
 }
 
 bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
@@ -120,9 +145,9 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
     for (size_t i = 0; i < nmod; i++) {
         char rel[CI_PATH_MAX];
         snprintf(rel, sizeof(rel), "lib/%s/src", mods[i]);
-        collect_dir(root, rel, &vec);
+        if (!collect_dir(root, rel, &vec)) goto collect_failed;
         snprintf(rel, sizeof(rel), "lib/%s/include", mods[i]);
-        collect_dir(root, rel, &vec);
+        if (!collect_dir(root, rel, &vec)) goto collect_failed;
     }
     /* app/<shape>/{src,include} */
     size_t nsh = 0;
@@ -130,25 +155,26 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
     for (size_t i = 0; i < nsh; i++) {
         char rel[CI_PATH_MAX];
         snprintf(rel, sizeof(rel), "app/%s/src", shapes[i]);
-        collect_dir(root, rel, &vec);
+        if (!collect_dir(root, rel, &vec)) goto collect_failed;
         snprintf(rel, sizeof(rel), "app/%s/include", shapes[i]);
-        collect_dir(root, rel, &vec);
+        if (!collect_dir(root, rel, &vec)) goto collect_failed;
     }
     /* the standalone roots */
-    collect_dir(root, "core", &vec);
-    collect_dir(root, "config/src", &vec);
-    collect_dir(root, "config/include", &vec);
-    collect_dir(root, "tools", &vec);
-    collect_dir(root, "domain", &vec);
-    collect_dir(root, "adapters", &vec);
-    collect_dir(root, "ports", &vec);
-    collect_dir(root, "src", &vec);
+    if (!collect_dir(root, "core", &vec) ||
+        !collect_dir(root, "config/src", &vec) ||
+        !collect_dir(root, "config/include", &vec) ||
+        !collect_dir(root, "tools", &vec) ||
+        !collect_dir(root, "domain", &vec) ||
+        !collect_dir(root, "adapters", &vec) ||
+        !collect_dir(root, "ports", &vec) ||
+        !collect_dir(root, "src", &vec))
+        goto collect_failed;
 
     /* Tests are not a production LIB_MODULES entry, but they are source a
      * developer must be able to navigate.  collect_dir() retains the same
      * generated-directory pruning used above; the sorted pass below de-dups
      * this root if it ever becomes a listed library module. */
-    collect_dir(root, "lib/test", &vec);
+    if (!collect_dir(root, "lib/test", &vec)) goto collect_failed;
 
     qsort(vec.v, vec.n, sizeof(vec.v[0]), sv_cmp);
 
@@ -159,29 +185,148 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
         char full[CI_PATH_MAX];
         snprintf(full, sizeof(full), "%s/%s", root, vec.v[i]);
         struct stat st;
-        if (stat(full, &st) != 0) continue;
-        int64_t mtime_ns = (int64_t)st.st_mtim.tv_sec * 1000000000ll +
-                           st.st_mtim.tv_nsec;
-        if (!cb(vec.v[i], mtime_ns, (int64_t)st.st_size, user))
+        if (lstat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
+            ok = false;
+            break;
+        }
+        if (!cb(vec.v[i], &st, user))
             ok = false;
     }
     sv_free(&vec);
     return ok;
+
+collect_failed:
+    sv_free(&vec);
+    LOG_FAIL("codeindex", "source enumeration failed: %s", strerror(errno));
 }
 
-/* ── staleness stamp: cheap stat-based tree hash ────────────────────── */
+/* ── staleness stamp: exact content-bound source-tree digest ────────── */
 
-struct stamp_ctx { struct sha3_256_ctx sha; };
+static const char ci_store_format[] = "zcl.codeindex.store.v4";
 
-static bool stamp_cb(const char *relpath, int64_t mtime_ns, int64_t size,
-                     void *user)
+struct stamp_ctx {
+    const char *root;
+    struct sha3_256_ctx sha;
+    struct sha3_256_ctx stat_sha;
+    bool include_stat;
+};
+
+static void source_root_init(struct sha3_256_ctx *sha)
+{
+    static const char domain[] = "zcl.codeindex.source_root.v2";
+    sha3_256_init(sha);
+    sha3_256_write(sha, (const unsigned char *)domain, sizeof(domain));
+}
+
+static void source_root_add(struct sha3_256_ctx *sha, const char *relpath,
+                            const uint8_t content_sha3[32])
+{
+    sha3_256_write(sha, (const unsigned char *)relpath, strlen(relpath) + 1);
+    sha3_256_write(sha, content_sha3, 32);
+}
+
+static void sha_write_u64le(struct sha3_256_ctx *sha, uint64_t value)
+{
+    unsigned char encoded[8];
+    for (unsigned int i = 0; i < sizeof(encoded); i++)
+        encoded[i] = (unsigned char)((value >> (i * 8U)) & 0xffU);
+    sha3_256_write(sha, encoded, sizeof(encoded));
+}
+
+static void source_stat_root_init(struct sha3_256_ctx *sha)
+{
+    static const char domain[] = "zcl.codeindex.source_stat_root.v1";
+    sha3_256_init(sha);
+    sha3_256_write(sha, (const unsigned char *)domain, sizeof(domain));
+}
+
+static void source_stat_root_add(struct sha3_256_ctx *sha,
+                                 const char *relpath, const struct stat *st)
+{
+    sha3_256_write(sha, (const unsigned char *)relpath, strlen(relpath) + 1);
+    sha_write_u64le(sha, (uint64_t)st->st_dev);
+    sha_write_u64le(sha, (uint64_t)st->st_ino);
+    sha_write_u64le(sha, (uint64_t)st->st_size);
+    sha_write_u64le(sha, (uint64_t)st->st_mtim.tv_sec);
+    sha_write_u64le(sha, (uint64_t)st->st_mtim.tv_nsec);
+    sha_write_u64le(sha, (uint64_t)st->st_ctim.tv_sec);
+    sha_write_u64le(sha, (uint64_t)st->st_ctim.tv_nsec);
+}
+
+static bool source_file_sha3(const char *root, const char *relpath,
+                             uint8_t out[32], struct stat *out_st)
+{
+    char path[CI_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", root, relpath);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        LOG_FAIL("codeindex", "source path too long: %s", relpath);
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        LOG_FAIL("codeindex", "open source for digest failed path=%s: %s",
+                 relpath, strerror(errno));
+    FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        int saved = errno;
+        close(fd);
+        LOG_FAIL("codeindex", "stream source for digest failed path=%s: %s",
+                 relpath, strerror(saved));
+    }
+
+    struct stat before, after;
+    if (fstat(fileno(f), &before) != 0 || !S_ISREG(before.st_mode)) {
+        int saved = errno ? errno : EINVAL;
+        fclose(f);
+        LOG_FAIL("codeindex", "inspect source for digest failed path=%s: %s",
+                 relpath, strerror(saved));
+    }
+
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    /* Match ci_scan_file()'s canonical per-file content hash exactly. */
+    static const uint8_t content_tag = 0x02;
+    sha3_256_write(&sha, &content_tag, 1);
+    unsigned char buf[64 * 1024];
+    size_t nr;
+    while ((nr = fread(buf, 1, sizeof(buf), f)) > 0) {
+        sha3_256_write(&sha, buf, nr);
+        ci_test_note_exact_bytes((uint64_t)nr);
+    }
+    bool ok = !ferror(f) && fstat(fileno(f), &after) == 0 &&
+              S_ISREG(after.st_mode) && before.st_dev == after.st_dev &&
+              before.st_ino == after.st_ino && before.st_size == after.st_size &&
+              before.st_mtim.tv_sec == after.st_mtim.tv_sec &&
+              before.st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+              before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+              before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+    int close_rc = fclose(f);
+    if (!ok || close_rc != 0)
+        LOG_FAIL("codeindex", "read source for digest failed path=%s",
+                 relpath);
+    sha3_256_finalize(&sha, out);
+    if (out_st) *out_st = after;
+    return true;
+}
+
+static bool stamp_cb(const char *relpath, const struct stat *st, void *user)
 {
     struct stamp_ctx *c = user;
-    uint8_t buf[16];
-    for (int i = 0; i < 8; i++) buf[i] = (uint8_t)((uint64_t)mtime_ns >> (8 * i));
-    for (int i = 0; i < 8; i++) buf[8 + i] = (uint8_t)((uint64_t)size >> (8 * i));
-    sha3_256_write(&c->sha, (const unsigned char *)relpath, strlen(relpath) + 1);
-    sha3_256_write(&c->sha, buf, sizeof(buf));
+    uint8_t content_sha3[32];
+    struct stat opened_st;
+    if (!source_file_sha3(c->root, relpath, content_sha3, &opened_st))
+        return false;
+    source_root_add(&c->sha, relpath, content_sha3);
+    if (c->include_stat)
+        source_stat_root_add(&c->stat_sha, relpath, &opened_st);
+    (void)st;
+    return true;
+}
+
+static bool source_stat_cb(const char *relpath, const struct stat *st,
+                           void *user)
+{
+    struct sha3_256_ctx *sha = user;
+    source_stat_root_add(sha, relpath, st);
     return true;
 }
 
@@ -189,30 +334,90 @@ bool codeindex_source_root_sha3(const char *root, uint8_t out[32])
 {
     if (!root || !out) LOG_FAIL("codeindex", "null arg to source_root_sha3");
     struct stamp_ctx c;
-    sha3_256_init(&c.sha);
-    static const uint8_t tag = 0x03;
-    sha3_256_write(&c.sha, &tag, 1);
+    memset(&c, 0, sizeof(c));
+    c.root = root;
+    source_root_init(&c.sha);
     if (!ci_enumerate_sources(root, stamp_cb, &c))
         LOG_FAIL("codeindex", "enumerate for stamp failed");
     sha3_256_finalize(&c.sha, out);
     return true;
 }
 
-bool codeindex_is_stale(struct codeindex *ci, bool *stale)
+bool ci_source_roots_sha3(const char *root, uint8_t exact_out[32],
+                          uint8_t stat_out[32])
+{
+    if (!root || !exact_out || !stat_out)
+        LOG_FAIL("codeindex", "null arg to source_roots_sha3");
+    struct stamp_ctx c;
+    memset(&c, 0, sizeof(c));
+    c.root = root;
+    c.include_stat = true;
+    source_root_init(&c.sha);
+    source_stat_root_init(&c.stat_sha);
+    if (!ci_enumerate_sources(root, stamp_cb, &c))
+        LOG_FAIL("codeindex", "enumerate for source roots failed");
+    sha3_256_finalize(&c.sha, exact_out);
+    sha3_256_finalize(&c.stat_sha, stat_out);
+    return true;
+}
+
+bool ci_source_stat_root_sha3(const char *root, uint8_t out[32])
+{
+    if (!root || !out)
+        LOG_FAIL("codeindex", "null arg to source_stat_root_sha3");
+    struct sha3_256_ctx sha;
+    source_stat_root_init(&sha);
+    if (!ci_enumerate_sources(root, source_stat_cb, &sha))
+        LOG_FAIL("codeindex", "enumerate for source stat root failed");
+    sha3_256_finalize(&sha, out);
+    return true;
+}
+
+static bool store_is_stale(const char *root, struct ci_store *store,
+                           bool *stale)
 {
     if (stale) *stale = true;
-    if (!ci || !ci->store) LOG_FAIL("codeindex", "null arg to is_stale");
-    uint8_t cur[32];
-    if (!codeindex_source_root_sha3(ci->root, cur))
-        LOG_FAIL("codeindex", "compute source_root_sha3");
-    uint8_t stored[32];
-    size_t olen = 0; bool found = false;
-    if (!ci_store_meta_get(ci->store, "source_root_sha3", stored,
-                           sizeof(stored), &olen, &found))
-        LOG_FAIL("codeindex", "meta_get source_root_sha3");
+    if (!root || !store) LOG_FAIL("codeindex", "null arg to is_stale");
+    /* The exact content roots are derived and sealed during rebuild. A warm
+     * open validates their metadata cache keys only: inode/size/mtime/ctime
+     * changes on every local content replacement, including a same-size edit
+     * whose mtime is restored. This keeps the common path O(files), not
+     * O(source + every depfile byte). */
+    uint8_t cur_stats[32], cur_dep_stats[32];
+    if (!ci_source_stat_root_sha3(root, cur_stats))
+        LOG_FAIL("codeindex", "compute source_stat_root_sha3");
+    if (!ci_deps_stat_root_sha3(root, cur_dep_stats))
+        LOG_FAIL("codeindex", "compute dep_stat_root_sha3");
+    uint8_t stored_stats[32], stored_dep_stats[32];
+    char stored_format[64];
+    size_t stat_len = 0, dep_stat_len = 0, format_len = 0;
+    bool stat_found = false, dep_stat_found = false, format_found = false;
+    if (!ci_store_meta_get(store, "source_stat_root_sha3", stored_stats,
+                           sizeof(stored_stats), &stat_len, &stat_found))
+        LOG_FAIL("codeindex", "meta_get source_stat_root_sha3");
+    if (!ci_store_meta_get(store, "dep_stat_root_sha3", stored_dep_stats,
+                           sizeof(stored_dep_stats), &dep_stat_len,
+                           &dep_stat_found))
+        LOG_FAIL("codeindex", "meta_get dep_stat_root_sha3");
+    if (!ci_store_meta_get(store, "store_format", stored_format,
+                           sizeof(stored_format), &format_len, &format_found))
+        LOG_FAIL("codeindex", "meta_get store_format");
     if (stale)
-        *stale = !(found && olen == 32 && memcmp(cur, stored, 32) == 0);
+        *stale = !(stat_found && stat_len == 32 &&
+                   memcmp(cur_stats, stored_stats, 32) == 0 &&
+                   dep_stat_found && dep_stat_len == 32 &&
+                   memcmp(cur_dep_stats, stored_dep_stats, 32) == 0 &&
+                   format_found &&
+                   format_len == sizeof(ci_store_format) - 1 &&
+                   memcmp(stored_format, ci_store_format,
+                          sizeof(ci_store_format) - 1) == 0);
     return true;
+}
+
+bool codeindex_is_stale(struct codeindex *ci, bool *stale)
+{
+    if (!ci || !ci->store) LOG_FAIL("codeindex", "null arg to is_stale");
+    return store_is_stale(ci->root, ci->store, stale);
 }
 
 /* ── rebuild ────────────────────────────────────────────────────────── */
@@ -224,6 +429,7 @@ struct build_ctx {
     bool               err;
     struct idmap_ent  *ids;
     size_t             nids, cap_ids;
+    struct sha3_256_ctx source_root;
 };
 
 static void on_sym_cb(const struct ci_symbol *sym, void *user)
@@ -276,10 +482,9 @@ static int64_t idmap_find(const struct build_ctx *b, const char *path)
 /* the per-file enumeration callback needs root; carry it alongside build_ctx. */
 struct build_file_env { struct build_ctx *b; const char *root; };
 
-static bool build_file_cb2(const char *relpath, int64_t mtime_ns, int64_t size,
+static bool build_file_cb2(const char *relpath, const struct stat *file_st,
                            void *user)
 {
-    (void)size;
     struct build_file_env *env = user;
     struct build_ctx *b = env->b;
     if (b->err) return false;
@@ -291,6 +496,7 @@ static bool build_file_cb2(const char *relpath, int64_t mtime_ns, int64_t size,
         b->err = true;
         return false;
     }
+    source_root_add(&b->source_root, relpath, sha);
     struct ci_file f;
     memset(&f, 0, sizeof(f));
     snprintf(f.path, sizeof(f.path), "%s", relpath);
@@ -298,6 +504,8 @@ static bool build_file_cb2(const char *relpath, int64_t mtime_ns, int64_t size,
     /* self-description derived from the file's leading comment (§1.1). */
     snprintf(f.purpose, sizeof(f.purpose), "%s", purpose);
     int64_t id = -1;
+    int64_t mtime_ns = (int64_t)file_st->st_mtim.tv_sec * INT64_C(1000000000) +
+                       (int64_t)file_st->st_mtim.tv_nsec;
     if (!ci_store_put_file(b->store, &f, sha, mtime_ns, &id)) {
         b->err = true;
         return false;
@@ -316,80 +524,469 @@ static void on_dep_cb(const char *src_relpath, const char *dep_relpath,
     if (!ci_store_put_include(b->store, id, dep_relpath)) b->err = true;
 }
 
-bool codeindex_rebuild(struct codeindex *ci)
+static _Atomic uint64_t g_stage_sequence = 1;
+
+struct stage_identity {
+    dev_t dev;
+    ino_t ino;
+};
+
+#ifdef ZCL_TESTING
+static _Atomic int g_test_crash_point = CODEINDEX_TEST_CRASH_NONE;
+static _Atomic int g_test_stage_tamper = CODEINDEX_TEST_STAGE_TAMPER_NONE;
+static _Atomic uint64_t g_test_exact_bytes_read = 0;
+static char g_test_stage_victim[CI_PATH_MAX];
+
+void ci_test_note_exact_bytes(uint64_t bytes)
+{
+    (void)atomic_fetch_add_explicit(&g_test_exact_bytes_read, bytes,
+                                    memory_order_relaxed);
+}
+
+void codeindex_test_reset_exact_bytes_read(void)
+{
+    atomic_store_explicit(&g_test_exact_bytes_read, 0, memory_order_relaxed);
+}
+
+uint64_t codeindex_test_exact_bytes_read(void)
+{
+    return atomic_load_explicit(&g_test_exact_bytes_read,
+                                memory_order_relaxed);
+}
+
+void codeindex_test_set_crash_point(enum codeindex_test_crash_point point)
+{
+    atomic_store_explicit(&g_test_crash_point, (int)point,
+                          memory_order_relaxed);
+}
+
+void codeindex_test_set_stage_tamper(
+    enum codeindex_test_stage_tamper tamper, const char *victim_path)
+{
+    (void)snprintf(g_test_stage_victim, sizeof(g_test_stage_victim), "%s",
+                   victim_path ? victim_path : "");
+    atomic_store_explicit(&g_test_stage_tamper, (int)tamper,
+                          memory_order_relaxed);
+}
+
+static bool codeindex_test_maybe_tamper_stage(int dirfd, const char *name)
+{
+    int tamper = atomic_exchange_explicit(
+        &g_test_stage_tamper, CODEINDEX_TEST_STAGE_TAMPER_NONE,
+        memory_order_relaxed);
+    if (tamper == CODEINDEX_TEST_STAGE_TAMPER_NONE)
+        return true;
+    if (!name || !name[0] || !g_test_stage_victim[0])
+        return false;
+    if (unlinkat(dirfd, name, 0) != 0)
+        return false;
+    if (tamper == CODEINDEX_TEST_STAGE_TAMPER_SYMLINK)
+        return symlinkat(g_test_stage_victim, dirfd, name) == 0;
+    if (tamper == CODEINDEX_TEST_STAGE_TAMPER_HARDLINK)
+        return linkat(AT_FDCWD, g_test_stage_victim, dirfd, name, 0) == 0;
+    return false;
+}
+
+static void codeindex_test_maybe_crash(enum codeindex_test_crash_point point)
+{
+    if (atomic_load_explicit(&g_test_crash_point, memory_order_relaxed) ==
+        (int)point) {
+        (void)kill(getpid(), SIGKILL);
+        _exit(128 + SIGKILL);
+    }
+}
+#else
+#define codeindex_test_maybe_crash(...) ((void)0)
+#define codeindex_test_maybe_tamper_stage(...) true
+#endif
+
+static bool rebuild_lock_open(const char *root, char dir[CI_PATH_MAX],
+                              int *out_dirfd, int *out_lockfd)
+{
+    *out_dirfd = -1;
+    *out_lockfd = -1;
+    int n = snprintf(dir, CI_PATH_MAX, "%s/.codeindex", root);
+    if (n <= 0 || n >= CI_PATH_MAX)
+        LOG_FAIL("codeindex", "index directory path too long");
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST)
+        LOG_FAIL("codeindex", "create index directory failed: %s",
+                 strerror(errno));
+
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dirfd < 0)
+        LOG_FAIL("codeindex", "open index directory failed: %s",
+                 strerror(errno));
+    struct stat dir_st;
+    if (fstat(dirfd, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode) ||
+        dir_st.st_uid != geteuid() || (dir_st.st_mode & (S_IWGRP | S_IWOTH))) {
+        close(dirfd);
+        LOG_FAIL("codeindex",
+                 "index directory must be owner-controlled and not writable by group/other");
+    }
+    int lockfd = openat(dirfd, "rebuild.lock",
+                        O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (lockfd < 0) {
+        int saved = errno;
+        close(dirfd);
+        LOG_FAIL("codeindex", "open rebuild lock failed: %s", strerror(saved));
+    }
+    if (flock(lockfd, LOCK_EX) != 0) {
+        int saved = errno;
+        close(lockfd);
+        close(dirfd);
+        LOG_FAIL("codeindex", "acquire rebuild lock failed: %s",
+                 strerror(saved));
+    }
+    *out_dirfd = dirfd;
+    *out_lockfd = lockfd;
+    return true;
+}
+
+static bool cleanup_orphan_stages(int dirfd)
+{
+    int scanfd = dup(dirfd);
+    if (scanfd < 0)
+        LOG_FAIL("codeindex", "dup index directory failed: %s",
+                 strerror(errno));
+    DIR *dir = fdopendir(scanfd);
+    if (!dir) {
+        int saved = errno;
+        close(scanfd);
+        LOG_FAIL("codeindex", "scan index directory failed: %s",
+                 strerror(saved));
+    }
+
+    bool ok = true;
+    struct dirent *ent;
+    static const char prefix[] = "index.kv.tmp.";
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, prefix, sizeof(prefix) - 1) != 0)
+            continue;
+        if (unlinkat(dirfd, ent->d_name, 0) != 0 && errno != ENOENT) {
+            ok = false;
+            break;
+        }
+    }
+    closedir(dir);
+    if (!ok)
+        LOG_FAIL("codeindex", "remove orphan staging store failed: %s",
+                 strerror(errno));
+    return true;
+}
+
+static bool create_unique_stage(int dirfd, char name[128],
+                                struct stage_identity *identity,
+                                int *out_fd)
+{
+    if (!identity || !out_fd)
+        LOG_FAIL("codeindex", "null staging identity/fd");
+    *out_fd = -1;
+    for (unsigned int attempt = 0; attempt < 128; attempt++) {
+        uint64_t seq = atomic_fetch_add_explicit(&g_stage_sequence, 1,
+                                                 memory_order_relaxed);
+        int n = snprintf(name, 128, "index.kv.tmp.%ld.%llu",
+                         (long)getpid(), (unsigned long long)seq);
+        if (n <= 0 || n >= 128)
+            LOG_FAIL("codeindex", "staging name overflow");
+        int fd = openat(dirfd, name,
+                        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                        0600);
+        if (fd >= 0) {
+            struct stat st;
+            if (fstat(fd, &st) != 0) {
+                int saved = errno;
+                close(fd);
+                unlinkat(dirfd, name, 0);
+                LOG_FAIL("codeindex", "inspect staging inode failed: %s",
+                         strerror(saved));
+            }
+            if (!S_ISREG(st.st_mode) || st.st_nlink != 1) {
+                close(fd);
+                unlinkat(dirfd, name, 0);
+                LOG_FAIL("codeindex", "staging inode is not private regular");
+            }
+            identity->dev = st.st_dev;
+            identity->ino = st.st_ino;
+            *out_fd = fd;
+            return true;
+        }
+        if (errno != EEXIST)
+            LOG_FAIL("codeindex", "create staging inode failed: %s",
+                     strerror(errno));
+    }
+    LOG_FAIL("codeindex", "could not allocate unique staging name");
+}
+
+static void rebuild_lock_close(int dirfd, int lockfd)
+{
+    if (lockfd >= 0) {
+        (void)flock(lockfd, LOCK_UN);
+        close(lockfd);
+    }
+    if (dirfd >= 0) close(dirfd);
+}
+
+static bool remove_legacy_sidecars(int dirfd)
+{
+    static const char *const names[] = { "index.kv-wal", "index.kv-shm" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        /* unlinkat removes the directory entry itself and never follows a
+         * substituted symlink. Any already-open legacy reader retains its
+         * inode, while new immutable readers cannot associate the old name. */
+        if (unlinkat(dirfd, names[i], 0) != 0 && errno != ENOENT)
+            LOG_FAIL("codeindex", "remove legacy sidecar %s failed: %s",
+                     names[i], strerror(errno));
+    }
+    return true;
+}
+
+static bool codeindex_rebuild_internal(struct codeindex *ci,
+                                       bool coalesce_if_fresh)
 {
     if (!ci) LOG_FAIL("codeindex", "null ci to rebuild");
 
     char dir[CI_PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/.codeindex", ci->root);
-    mkdir(dir, 0755);
+    int dirfd = -1, lockfd = -1;
+    if (!rebuild_lock_open(ci->root, dir, &dirfd, &lockfd))
+        return false;
 
-    char dbpath[CI_PATH_MAX], tmp[CI_PATH_MAX], wal[CI_PATH_MAX], shm[CI_PATH_MAX];
-    snprintf(dbpath, sizeof(dbpath), "%s/index.kv", dir);
-    snprintf(tmp, sizeof(tmp), "%s/index.kv.tmp", dir);
-    snprintf(wal, sizeof(wal), "%s/index.kv.tmp-wal", dir);
-    snprintf(shm, sizeof(shm), "%s/index.kv.tmp-shm", dir);
-    unlink(tmp); unlink(wal); unlink(shm);
-
-    struct ci_store *st = ci_store_open_path(tmp);
-    if (!st) LOG_FAIL("codeindex", "open tmp store");
-
+    const char *failure = "unknown rebuild failure";
+    bool success = false;
+    bool tx_open = false;
+    char stage_name[128] = "";
+    struct stage_identity stage_identity = {0};
+    int stagefd = -1;
+    struct ci_store *st = NULL;
     struct build_ctx b;
     memset(&b, 0, sizeof(b));
-    b.store = st;
 
-    bool ok = true;
-    if (!ci_store_begin(st)) { ci_store_close(st); LOG_FAIL("codeindex", "begin tmp"); }
-    if (!ci_store_clear(st)) ok = false;
-    if (ok && !ci_group_emit_all(st)) ok = false;
+    if (!cleanup_orphan_stages(dirfd)) {
+        failure = "orphan staging cleanup failed";
+        goto out;
+    }
+
+    /* A second cold opener may have waited while the first one published.
+     * Reopen the pathname under the lock and adopt that exact fresh store
+     * instead of redundantly rebuilding it. Explicit codeindex_rebuild()
+     * passes false and remains a forced deterministic recompute. */
+    if (coalesce_if_fresh) {
+        struct ci_store *fresh = ci_store_open(ci->root);
+        if (fresh) {
+            bool stale = true;
+            bool checked = store_is_stale(ci->root, fresh, &stale);
+            if (checked && !stale) {
+                struct ci_store *old = ci->store;
+                ci->store = fresh;
+                if (old) ci_store_close(old);
+                success = true;
+                goto out;
+            }
+            /* Missing/corrupt/stale derived state is rebuilt from source.
+             * It is never repaired or accepted as partial authority. */
+            ci_store_close(fresh);
+        }
+    }
+
+    if (!create_unique_stage(dirfd, stage_name, &stage_identity, &stagefd)) {
+        failure = "unique staging allocation failed";
+        goto out;
+    }
+    if (!codeindex_test_maybe_tamper_stage(dirfd, stage_name)) {
+        failure = "test staging substitution failed";
+        goto out;
+    }
+
+    /* Build in memory, then serialize through the still-open O_EXCL file
+     * descriptor. SQLite never receives a staging pathname, so a directory
+     * entry swap cannot redirect DDL/DELETE writes outside this capability. */
+    st = ci_store_open_path(":memory:");
+    if (!st) {
+        failure = "open staging store failed";
+        goto out;
+    }
+    b.store = st;
+    source_root_init(&b.source_root);
+
+    if (!ci_store_begin(st)) {
+        failure = "begin staging transaction failed";
+        goto out;
+    }
+    tx_open = true;
+    bool build_ok = ci_store_clear(st) && ci_group_emit_all(st);
 
     struct build_file_env env = { &b, ci->root };
-    if (ok && !ci_enumerate_sources(ci->root, build_file_cb2, &env)) ok = false;
-    if (b.err) ok = false;
+    if (build_ok && !ci_enumerate_sources(ci->root, build_file_cb2, &env))
+        build_ok = false;
+    if (b.err) build_ok = false;
 
-    /* include edges from build depfiles */
-    if (ok) {
+    if (build_ok)
         qsort(b.ids, b.nids, sizeof(b.ids[0]), idmap_cmp);
-        ci_deps_scan(ci->root, on_dep_cb, &b);
-        if (b.err) ok = false;
-    }
 
-    /* staleness stamp */
-    if (ok) {
-        uint8_t stamp[32];
-        if (codeindex_source_root_sha3(ci->root, stamp)) {
-            if (!ci_store_meta_set(st, "source_root_sha3", stamp, 32)) ok = false;
-        } else ok = false;
+    uint8_t built_source_root[32];
+    uint8_t built_dep_root[32];
+    uint8_t built_source_stat_root[32];
+    uint8_t built_dep_stat_root[32];
+    if (build_ok) {
+        sha3_256_finalize(&b.source_root, built_source_root);
+        if (!ci_store_meta_set(st, "source_root_sha3", built_source_root, 32))
+            build_ok = false;
     }
+    if (build_ok &&
+        (!ci_deps_scan(ci->root, on_dep_cb, &b, built_dep_root) || b.err))
+        build_ok = false;
+    if (build_ok &&
+        !ci_store_meta_set(st, "dep_root_sha3", built_dep_root, 32))
+        build_ok = false;
 
-    if (!ok) {
-        ci_store_rollback(st);
-        ci_store_close(st);
-        free(b.ids);
-        unlink(tmp); unlink(wal); unlink(shm);
-        LOG_FAIL("codeindex", "rebuild failed; tmp discarded");
+    /* Refuse a mixed source epoch and derive the metadata cache keys from the
+     * same opened inodes as the exact validation pass. */
+    uint8_t current_source_root[32], current_dep_root[32];
+    if (build_ok &&
+        (!ci_source_roots_sha3(ci->root, current_source_root,
+                               built_source_stat_root) ||
+         memcmp(built_source_root, current_source_root, 32) != 0 ||
+         !ci_deps_scan_roots(ci->root, NULL, NULL, current_dep_root,
+                             built_dep_stat_root) ||
+         memcmp(built_dep_root, current_dep_root, 32) != 0))
+        build_ok = false;
+    if (build_ok &&
+        !ci_store_meta_set(st, "source_stat_root_sha3",
+                           built_source_stat_root, 32))
+        build_ok = false;
+    if (build_ok &&
+        !ci_store_meta_set(st, "dep_stat_root_sha3",
+                           built_dep_stat_root, 32))
+        build_ok = false;
+    if (build_ok &&
+        !ci_store_meta_set(st, "store_format", ci_store_format,
+                           sizeof(ci_store_format) - 1))
+        build_ok = false;
+    if (!build_ok) {
+        (void)ci_store_rollback(st);
+        tx_open = false;
+        failure = "source scan or staging write failed";
+        goto out;
     }
     if (!ci_store_commit(st)) {
+        tx_open = false;
+        failure = "commit staging store failed";
+        goto out;
+    }
+    tx_open = false;
+
+    if (!ci_store_write_image_fd(st, stagefd)) {
+        failure = "serialize staging store failed";
+        goto out;
+    }
+    ci_store_close(st);
+    st = NULL;
+
+    /* Serialization can be non-trivial for a large index. Recheck only the
+     * cached metadata keys at the last boundary before fsync/publication; any
+     * byte change also changes inode/size/mtime/ctime on the supported local
+     * filesystems and forces a clean retry. */
+    uint8_t final_source_stat_root[32], final_dep_stat_root[32];
+    if (!ci_source_stat_root_sha3(ci->root, final_source_stat_root) ||
+        memcmp(built_source_stat_root, final_source_stat_root, 32) != 0 ||
+        !ci_deps_stat_root_sha3(ci->root, final_dep_stat_root) ||
+        memcmp(built_dep_stat_root, final_dep_stat_root, 32) != 0) {
+        failure = "source or depfile metadata changed during rebuild";
+        goto out;
+    }
+
+    struct stat stage_st;
+    struct stat stage_name_st;
+    if (fstat(stagefd, &stage_st) != 0 || !S_ISREG(stage_st.st_mode) ||
+        stage_st.st_nlink != 1 || stage_st.st_dev != stage_identity.dev ||
+        stage_st.st_ino != stage_identity.ino ||
+        fstatat(dirfd, stage_name, &stage_name_st, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(stage_name_st.st_mode) || stage_name_st.st_nlink != 1 ||
+        stage_name_st.st_dev != stage_st.st_dev ||
+        stage_name_st.st_ino != stage_st.st_ino) {
+        failure = "staging inode identity changed";
+        goto out;
+    }
+    unsigned char journal_versions[2];
+    if (pread(stagefd, journal_versions, sizeof(journal_versions), 18) !=
+            (ssize_t)sizeof(journal_versions) ||
+        journal_versions[0] != 1 || journal_versions[1] != 1) {
+        failure = "staging image is not rollback-journal format";
+        goto out;
+    }
+    if (fsync(stagefd) != 0) {
+        failure = "fsync staging inode failed";
+        goto out;
+    }
+
+    codeindex_test_maybe_crash(CODEINDEX_TEST_CRASH_BEFORE_RENAME);
+    if (renameat(dirfd, stage_name, dirfd, "index.kv") != 0) {
+        failure = "atomic staging publication failed";
+        goto out;
+    }
+    stage_name[0] = '\0';
+    struct stat published_st;
+    if (fstatat(dirfd, "index.kv", &published_st, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(published_st.st_mode) || published_st.st_nlink != 1 ||
+        published_st.st_uid != geteuid() ||
+        (published_st.st_mode & (S_IWGRP | S_IWOTH)) ||
+        published_st.st_dev != stage_st.st_dev ||
+        published_st.st_ino != stage_st.st_ino) {
+        failure = "published index inode identity changed";
+        goto out;
+    }
+    /* Make the rollback-journal main file durable before unlinking any WAL
+     * that an older generation might require. A power loss may therefore
+     * leave either (old main + old sidecars) or (new main + old sidecars),
+     * never old main with its WAL removed. Immutable readers safely ignore
+     * sidecars beside the new main. */
+    if (fsync(dirfd) != 0) {
+        failure = "fsync published index directory failed";
+        goto out;
+    }
+    codeindex_test_maybe_crash(CODEINDEX_TEST_CRASH_AFTER_RENAME);
+    if (!remove_legacy_sidecars(dirfd)) {
+        failure = "legacy sidecar cleanup failed";
+        goto out;
+    }
+    if (fsync(dirfd) != 0) {
+        failure = "fsync legacy sidecar cleanup failed";
+        goto out;
+    }
+    close(stagefd);
+    stagefd = -1;
+
+    struct ci_store *next = ci_store_open(ci->root);
+    if (!next) {
+        failure = "reopen published index failed";
+        goto out;
+    }
+    struct ci_store *old = ci->store;
+    ci->store = next;
+    if (old) ci_store_close(old);
+    success = true;
+
+out:
+    if (st) {
+        if (tx_open) (void)ci_store_rollback(st);
         ci_store_close(st);
-        free(b.ids);
-        unlink(tmp); unlink(wal); unlink(shm);
-        LOG_FAIL("codeindex", "commit tmp");
     }
-    ci_store_close(st);   /* checkpoint(TRUNCATE) + close: tmp is standalone */
+    if (stagefd >= 0) close(stagefd);
     free(b.ids);
-
-    /* swap into place */
-    char dwal[CI_PATH_MAX], dshm[CI_PATH_MAX];
-    snprintf(dwal, sizeof(dwal), "%s/index.kv-wal", dir);
-    snprintf(dshm, sizeof(dshm), "%s/index.kv-shm", dir);
-    if (ci->store) { ci_store_close(ci->store); ci->store = NULL; }
-    unlink(dbpath); unlink(dwal); unlink(dshm);
-    unlink(wal); unlink(shm);  /* orphan tmp sidecars, if any */
-    if (rename(tmp, dbpath) != 0) {
-        LOG_FAIL("codeindex", "rename tmp -> index.kv");
+    if (stage_name[0]) {
+        (void)unlinkat(dirfd, stage_name, 0);
     }
-
-    ci->store = ci_store_open(ci->root);
-    if (!ci->store) LOG_FAIL("codeindex", "reopen after rebuild");
+    rebuild_lock_close(dirfd, lockfd);
+    if (!success)
+        LOG_FAIL("codeindex", "rebuild failed: %s", failure);
     return true;
+}
+
+bool ci_codeindex_refresh(struct codeindex *ci)
+{
+    return codeindex_rebuild_internal(ci, true);
+}
+
+bool codeindex_rebuild(struct codeindex *ci)
+{
+    return codeindex_rebuild_internal(ci, false);
 }

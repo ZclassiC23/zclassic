@@ -4,6 +4,7 @@
 #include "config/consensus_state_producer_receipt.h"
 
 #include "storage/consensus_state_bundle_codec.h"
+#include "storage/cure_progress_read.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -28,6 +29,34 @@ static bool status_set_sqlite_err(char *err, size_t err_size,
              db ? sqlite3_errmsg(db) : "sqlite handle unavailable");
     return status_set_err(err, err_size, why);
 }
+
+/* Every projection in one status response must describe the same durable
+ * producer generation.  In WAL mode, an explicit read transaction pins the
+ * snapshot established by the first SELECT while the producer keeps writing. */
+static bool pkv_read_transaction(sqlite3 *db, const char *sql,
+                                 const char *operation,
+                                 char *err, size_t err_size)
+{
+    int rc = sqlite3_exec(db, sql, NULL, NULL, NULL); // raw-sql-ok:read-only-introspection
+    if (rc != SQLITE_OK)
+        return status_set_sqlite_err(err, err_size, db, operation);
+    return true;
+}
+
+#ifdef ZCL_TESTING
+static void (*g_status_after_first_cursor_hook)(void *ctx);
+static void *g_status_after_first_cursor_ctx;
+
+void consensus_state_producer_status_test_set_after_first_cursor_hook(
+    void (*hook)(void *), void *ctx);
+
+void consensus_state_producer_status_test_set_after_first_cursor_hook(
+    void (*hook)(void *), void *ctx)
+{
+    g_status_after_first_cursor_hook = hook;
+    g_status_after_first_cursor_ctx = ctx;
+}
+#endif
 
 enum pkv_read_result {
     PKV_READ_ERROR = -1,
@@ -125,6 +154,54 @@ static bool status_bytes_nonzero(const uint8_t *bytes, size_t len)
         any |= bytes[i];
     return any != 0;
 }
+
+static bool pkv_rate_window_is_current(
+    const struct producer_status_read *status,
+    const struct cure_progress_sample *older,
+    const struct cure_progress_sample *newer)
+{
+    if (!status || !older || !newer)
+        return false;
+    int64_t applied_height = status->receipt_finalized
+        ? status->fold_cursor - 1
+        : status->utxo_apply_cursor > 0
+            ? status->utxo_apply_cursor - 1 : -1;
+    if (newer->height != applied_height)
+        return false;
+    if (status->session_open) {
+        /* Session start is microseconds while apply rows are whole seconds.
+         * Flooring admits the first row written in the same wall-clock second
+         * but rejects residual timing evidence from an earlier generation. */
+        int64_t start_seconds = status->start_time_us / INT64_C(1000000);
+        if (status->start_time_us <= 0 || older->time_unix < start_seconds ||
+            newer->time_unix < start_seconds)
+            return false;
+    }
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool consensus_state_producer_status_rate_window_current_for_test(
+    const struct producer_status_read *status,
+    int64_t older_time_unix, int64_t newer_height,
+    int64_t newer_time_unix);
+
+bool consensus_state_producer_status_rate_window_current_for_test(
+    const struct producer_status_read *status,
+    int64_t older_time_unix, int64_t newer_height,
+    int64_t newer_time_unix)
+{
+    const struct cure_progress_sample older = {
+        .height = newer_height > 0 ? newer_height - 1 : 0,
+        .time_unix = older_time_unix,
+    };
+    const struct cure_progress_sample newer = {
+        .height = newer_height,
+        .time_unix = newer_time_unix,
+    };
+    return pkv_rate_window_is_current(status, &older, &newer);
+}
+#endif
 
 static bool status_schema_version(const char *schema, bool receipt,
                                   uint8_t *out_version)
@@ -441,6 +518,10 @@ bool consensus_state_producer_status_read(const char *datadir,
     out->utxo_apply_cursor = -1;
     out->tip_finalize_cursor = -1;
     out->fold_cursor = -1;
+    out->rate_older_height = -1;
+    out->rate_older_time_unix = -1;
+    out->rate_newer_height = -1;
+    out->rate_newer_time_unix = -1;
     out->validation_profile = -1;
     if (!datadir || !datadir[0])
         return status_set_err(err, err_size, "producer status: empty datadir");
@@ -480,6 +561,11 @@ bool consensus_state_producer_status_read(const char *datadir,
         return status_set_err(err, err_size, why);
     }
     out->progress_kv_present = true;
+    bool read_tx_open = false;
+    if (!pkv_read_transaction(db, "BEGIN DEFERRED",
+                              "begin read snapshot", err, err_size))
+        goto fail;
+    read_tx_open = true;
 
     int64_t value = 0;
     enum pkv_read_result read_result = pkv_query_i64(
@@ -488,16 +574,32 @@ bool consensus_state_producer_status_read(const char *datadir,
             &value, err, err_size);
     if (read_result == PKV_READ_ERROR)
         goto fail;
-    if (read_result == PKV_READ_PRESENT)
+    if (read_result == PKV_READ_PRESENT) {
+        if (value < 0 || value > INT32_MAX) {
+            status_set_err(err, err_size,
+                           "producer status: utxo_apply cursor is malformed");
+            goto fail;
+        }
         out->utxo_apply_cursor = value;
+    }
+#ifdef ZCL_TESTING
+    if (g_status_after_first_cursor_hook)
+        g_status_after_first_cursor_hook(g_status_after_first_cursor_ctx);
+#endif
     read_result = pkv_query_i64(
             db, "stage_cursor",
             "SELECT cursor FROM stage_cursor WHERE name='tip_finalize'",
             &value, err, err_size);
     if (read_result == PKV_READ_ERROR)
         goto fail;
-    if (read_result == PKV_READ_PRESENT)
+    if (read_result == PKV_READ_PRESENT) {
+        if (value < 0 || value > INT32_MAX) {
+            status_set_err(err, err_size,
+                           "producer status: tip_finalize cursor is malformed");
+            goto fail;
+        }
         out->tip_finalize_cursor = value;
+    }
     read_result = pkv_query_i64(
             db, "consensus_state_producer_session",
             "SELECT start_time_us FROM consensus_state_producer_session "
@@ -505,6 +607,11 @@ bool consensus_state_producer_status_read(const char *datadir,
     if (read_result == PKV_READ_ERROR)
         goto fail;
     if (read_result == PKV_READ_PRESENT) {
+        if (value <= 0) {
+            status_set_err(err, err_size,
+                           "producer status: session start time is malformed");
+            goto fail;
+        }
         out->session_open = true;
         out->start_time_us = value;
     }
@@ -530,12 +637,62 @@ bool consensus_state_producer_status_read(const char *datadir,
     if (read_result == PKV_READ_ABSENT &&
         !pkv_read_session_identity(db, out, err, err_size))
         goto fail;
+
+    bool apply_log_present = false;
+    if (!pkv_table_exists(db, "utxo_apply_log", &apply_log_present,
+                          err, err_size))
+        goto fail;
+    if (apply_log_present) {
+        struct cure_progress_sample older, newer;
+        int samples = cure_progress_read_eta_samples(db, 60, &older, &newer);
+        if (samples < 0) {
+            status_set_sqlite_err(err, err_size, db,
+                                  "read durable rate samples");
+            goto fail;
+        }
+        if (samples == 1) {
+            int64_t blocks = newer.height - older.height;
+            int64_t seconds = newer.time_unix - older.time_unix;
+            if (blocks <= 0 || seconds < 60 ||
+                blocks > INT64_MAX / 1000) {
+                status_set_err(
+                    err, err_size,
+                    "producer status: durable rate samples are malformed");
+                goto fail;
+            }
+            /* Residual rows above/below the current durable frontier are not
+             * evidence of the active producer's rate.  Rows predating the
+             * open producer session are likewise from a prior generation.
+             * Preserve status, but never expose an ETA from either. */
+            if (pkv_rate_window_is_current(out, &older, &newer)) {
+                out->durable_rate_available = true;
+                out->rate_older_height = older.height;
+                out->rate_older_time_unix = older.time_unix;
+                out->rate_newer_height = newer.height;
+                out->rate_newer_time_unix = newer.time_unix;
+                out->rate_blocks_per_second_milli = blocks * 1000 / seconds;
+                if (out->rate_blocks_per_second_milli <= 0) {
+                    status_set_err(
+                        err, err_size,
+                        "producer status: durable rate rounds to zero");
+                    goto fail;
+                }
+            }
+        }
+    }
+    if (!pkv_read_transaction(db, "COMMIT", "commit read snapshot",
+                              err, err_size))
+        goto fail;
+    read_tx_open = false;
     if (sqlite3_close(db) != SQLITE_OK)
         return status_set_err(err, err_size,
                               "producer status: close progress.kv failed");
     return true;
 
 fail:
+    if (read_tx_open) {
+        (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL); // raw-sql-ok:read-only-introspection
+    }
     sqlite3_close(db);
     return false;
 }

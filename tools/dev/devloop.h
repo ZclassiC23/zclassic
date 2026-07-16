@@ -14,7 +14,15 @@ extern "C" {
 #define ZCL_DEVLOOP_MAX_FILES 256
 #define ZCL_DEVLOOP_PATH_MAX 1024
 #define ZCL_DEVLOOP_OUTPUT_MAX 65536
+#define ZCL_DEVLOOP_FIRST_ERROR_MAX 512
+#define ZCL_DEVLOOP_CYCLE_JSON_MAX 8192
 #define ZCL_DEVLOOP_WATCH_LOCK_REL ".cache/zcl-dev-watch.lock"
+
+enum zcl_devloop_state_lookup {
+    ZCL_DEVLOOP_STATE_INVALID = -1,
+    ZCL_DEVLOOP_STATE_ABSENT = 0,
+    ZCL_DEVLOOP_STATE_FOUND = 1
+};
 
 enum zcl_devloop_action {
     ZCL_DEVLOOP_CHECK = 0,
@@ -105,6 +113,11 @@ bool zcl_devloop_process_run(const char *cwd,
                              const char *const argv[],
                              int timeout_ms,
                              struct zcl_devloop_process_result *out);
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+bool zcl_devloop_deterministic_compile_failure(
+    const struct zcl_devloop_process_result *result,
+    char out[ZCL_DEVLOOP_FIRST_ERROR_MAX]);
+#endif
 
 /* Detach-launch the generation-neutral initial ZVCS baseline: double-fork +
  * setsid, grandchild runs vcs_devloop_run_initial_baseline() with stdio
@@ -133,6 +146,19 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
  * is being watched; distinct worktrees consequently receive distinct locks. */
 bool zcl_devloop_watch_lock_path(const char *repo_root,
                                  char *out, size_t out_sz);
+/* Canonical-worktree identity and SHA3-sealed cycle state.  Readers never
+ * create state. ABSENT is an honest empty result; INVALID must fail closed. */
+bool zcl_devloop_workspace_id(const char *repo_root, char out[65]);
+bool zcl_devloop_workspace_resolve(const char *repo_root, char out_id[65],
+                                   char *out_dir, size_t out_dir_len);
+bool zcl_devloop_workspace_state_dir(const char *repo_root,
+                                     char *out, size_t out_len);
+bool zcl_devloop_cycle_state_write(const char *repo_root,
+                                   const char *cycle_json, size_t cycle_len,
+                                   char *why, size_t why_len);
+enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read(
+    const char *repo_root, char *out, size_t out_len, size_t *len_out,
+    int64_t *epoch_out, char *why, size_t why_len);
 int zcl_devloop_watch(const char *repo_root);
 int zcl_devloop_watch_mode(const char *repo_root,
                            enum zcl_devloop_publish_mode publish_mode);

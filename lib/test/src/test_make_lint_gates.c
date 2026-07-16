@@ -3108,183 +3108,68 @@ static int t_coins_guard_gate_recovers(void)
     return failures;
 }
 
-static int t_tools_z_mirror_fallback_contract(void)
+/* Return 0 when no tracked, active file refers to the retired tools/z path,
+ * 1 when git grep finds a reference, and -1 on a harness error. Dated work
+ * archives are evidence, not an active operator surface; this test source is
+ * excluded because it owns the tombstone assertion and search pattern. */
+static int tracked_active_tree_has_no_tools_z_reference(void)
+{
+    const char *root = repo_root();
+    if (!root)
+        return -1;
+
+    pid_t pid = fork_with_retry();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        if (chdir(root) != 0)
+            _exit(125);
+        execlp("git", "git", "grep", "-n", "-E",
+               "(^|[^[:alnum:]_-])tools/z([^[:alnum:]_.-]|$)", "--", ".",
+               ":!docs/work/archive/**",
+               ":!lib/test/src/test_make_lint_gates.c", (char *)NULL);
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        return -1;
+    }
+    if (!WIFEXITED(status))
+        return -1;
+    int rc = WEXITSTATUS(status);
+    if (rc == 1) /* git grep: no matches */
+        return 0;
+    if (rc == 0) /* a match was printed */
+        return 1;
+    return -1;
+}
+
+static int t_deprecated_tools_z_is_absent(void)
+{
+    int failures = 0;
+    TEST("deprecated tools/z control plane is absent") {
+        char path[PATH_MAX];
+        struct stat st;
+
+        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
+        errno = 0;
+        ASSERT(lstat(path, &st) == -1);
+        ASSERT(errno == ENOENT);
+        ASSERT(tracked_active_tree_has_no_tools_z_reference() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_canonical_operator_diagnostics_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
-    TEST("tools/z mirror fallback preserves local authority contract") {
+    TEST("canonical runbook and deploy diagnostics remain fail-closed") {
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf,
-                      "\"consensus_authority\":\"local_consensus_validation\"")
-               != NULL);
-        ASSERT(strstr(buf, "\"candidate_source\":\"legacy_advisory\"")
-               != NULL);
-        ASSERT(strstr(buf, "\"candidate_trust\":\"bounded_advisory_fallback\"")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "\"legacy_advisory_gated_by_native_retries\":false")
-               != NULL);
-        ASSERT(strstr(buf, "mirror_authorization_enabled") == NULL);
-        ASSERT(strstr(buf, "mirror_source_trust") == NULL);
-        ASSERT(strstr(buf, "\"blockers_total\":0") != NULL);
-        ASSERT(strstr(buf, "\"stalls_total\":0") != NULL);
-        ASSERT(strstr(buf, "\"unsafe_overrides_total\":0") != NULL);
-        ASSERT(strstr(buf, "\"last_override_safe\":false") != NULL);
-        ASSERT(strstr(buf, "\"last_override_scope\":\"\"") != NULL);
-        ASSERT(strstr(buf, "active_detail=\"\"") != NULL);
-        ASSERT(strstr(buf,
-                      "active_detail=\"$(json_field \"$json\" last_error)\"")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "active_error_detail \"$active_detail\"") != NULL);
-        ASSERT(strstr(buf, "ZCL_TOOLS_Z_SELFTEST") != NULL);
-        ASSERT(strstr(buf, "blocker_recovered_by_tip_agreement") != NULL);
-        ASSERT(strstr(buf, "tip_hashes_agree") != NULL);
-        ASSERT(strstr(buf, "stale same-hash active error not cleared")
-               != NULL);
-        ASSERT(run_gate_script_with_env("tools/z",
-                                        "ZCL_TOOLS_Z_SELFTEST",
-                                        "1") == 0);
-        ASSERT(strstr(buf,
-                      "LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}")
-               != NULL);
-        ASSERT(strstr(buf, "systemd_exec_arg()") != NULL);
-        ASSERT(strstr(buf, "systemd_exec_arg_service()") != NULL);
-        ASSERT(strstr(buf, "systemd_show_value()") != NULL);
-        ASSERT(strstr(buf, "systemctl --user show \"$service\" -p \"$prop\" --value")
-               != NULL);
-        ASSERT(strstr(buf, "systemd_exec_arg_service zclassicd port")
-               != NULL);
-        ASSERT(strstr(buf, "DATADIR=\"${ZCL_DATADIR:-$DEFAULT_DATADIR}\"")
-               != NULL);
-        ASSERT(strstr(buf, "SERVICE_DATADIR=\"$(systemd_exec_arg datadir || true)\"")
-               != NULL);
-        ASSERT(strstr(buf, "RPCPORT=\"${ZCL_RPCPORT:-18232}\"") != NULL);
-        ASSERT(strstr(buf, "SERVICE_RPCPORT=\"$(systemd_exec_arg rpcport || true)\"")
-               != NULL);
-        ASSERT(strstr(buf, "CLI_OPTS=(\"-datadir=$DATADIR\" \"-rpcport=$RPCPORT\")")
-               != NULL);
-        ASSERT(strstr(buf, "\"$CLI\" \"${CLI_OPTS[@]}\"") != NULL);
-        ASSERT(strstr(buf, "lag_display=unknown") != NULL);
-        ASSERT(strstr(buf, "candidate_lag_display=unknown") != NULL);
-        ASSERT(strstr(buf, "\"$lag_display\"") != NULL);
-        ASSERT(strstr(buf, "\"$candidate_lag_display\"") != NULL);
-        ASSERT(strstr(buf, "lag_valid=\"$(json_field \"$json\" lag_valid)\"")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "candidate_lag_valid=\"$(json_field \"$json\" candidate_lag_valid)\"")
-               != NULL);
-        ASSERT(strstr(buf, "lag_valid=false") != NULL);
-        ASSERT(strstr(buf, "lag_valid=true") != NULL);
-        ASSERT(strstr(buf, "json_put_bool \"$json\" lag_valid \"$lag_valid\"")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "json_put_bool \"$json\" candidate_lag_valid \"$candidate_lag_valid\"")
-               != NULL);
-        ASSERT(strstr(buf, "json_put_bool \"$json\" lag_valid \"$lag_known\"")
-               == NULL);
-        ASSERT(strstr(buf,
-                      "json_put_bool \"$json\" candidate_lag_valid \"$lag_known\"")
-               == NULL);
-        ASSERT(strstr(buf,
-                      "\"$reachable\" \"$reachable\" \"$lag_known\" \"$lag_valid\"")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "active_error_detail=\"$(json_field \"$JSON\" active_error_detail)\"")
-               != NULL);
-        ASSERT(strstr(buf, "active_error_detail=%s") != NULL);
-        ASSERT(strstr(buf, "blockers=%s") != NULL);
-        ASSERT(strstr(buf, "stalls=%s") != NULL);
-        ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);
-        ASSERT(strstr(buf, "last_override_safe=%s") != NULL);
-        ASSERT(strstr(buf, "legacy_advisory_gated=%s") != NULL);
-        ASSERT(strstr(buf, "mirror_gated=%s") == NULL);
-        ASSERT(strstr(buf, "\"consensus_authority\":\"zclassicd\"") == NULL);
-        PASS();
-    } _test_next:;
-    free(buf);
-    return failures;
-}
-
-static int t_service_tip_mutation_gate(void)
-{
-    int failures = 0;
-    TEST("[lint-gate] services do not bypass canonical tip publication") {
-        ASSERT(run_check_service_tip_mutation_gate() == 0);
-        PASS();
-    } _test_next:;
-    return failures;
-}
-
-static int t_legacy_candidate_source_has_no_override_scope(void)
-{
-    int failures = 0;
-    char *mirror = NULL;
-    TEST("legacy mirror monitor has no tip-mutation path") {
-        char mirror_path[PATH_MAX];
-        ASSERT(repo_path(mirror_path, sizeof(mirror_path),
-                         "app/services/src/legacy_mirror_sync_service.c") == 0);
-        ASSERT(read_entire_file(mirror_path, &mirror) == 0);
-        ASSERT(strstr(mirror, "CSR_ROLLBACK_SOURCE_MIRROR") == NULL);
-        ASSERT(strstr(mirror, "chain_set_active_tip(") == NULL);
-        ASSERT(strstr(mirror, "active_chain_set_tip(") == NULL);
-        PASS();
-    } _test_next:;
-    free(mirror);
-    return failures;
-}
-
-static int t_tools_z_operator_diagnostics_contract(void)
-{
-    int failures = 0;
-    char *buf = NULL;
-    TEST("tools/z exposes canonical operator diagnostics") {
-        char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "network|net)") != NULL);
-        ASSERT(strstr(buf, "rpc getnetworkinfo") != NULL);
-        ASSERT(strstr(buf, "status|health)") != NULL);
-        ASSERT(strstr(buf, "rpc healthcheck") != NULL);
-        ASSERT(strstr(buf, "case \"${1:-agent}\" in") != NULL);
-        ASSERT(strstr(buf, "agent|summary|operator|ok|doctor)") != NULL);
-        ASSERT(strstr(buf, "/api/v1/agent") != NULL);
-        ASSERT(strstr(buf, "Binary: zclassic23 agent") != NULL);
-        ASSERT(strstr(buf, "MCP:  zcl_agent") != NULL);
-        ASSERT(strstr(buf, "deprecated compatibility shim") != NULL);
-        ASSERT(strstr(buf, "do not add new operator logic here") != NULL);
-        ASSERT(strstr(buf, "topology|availability|uptime)") != NULL);
-        ASSERT(strstr(buf, "topology_status_json") != NULL);
-        ASSERT(strstr(buf, "zcl.operator_topology.v1") != NULL);
-        ASSERT(strstr(buf, "legacy_compatible_peers") != NULL);
-        ASSERT(strstr(buf, "zclassicd P2P port drift") != NULL);
-        ASSERT(strstr(buf, "advance|chain-advance)") != NULL);
-        ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
-        ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
-        ASSERT(strstr(buf, "rpc dumpstate peer_lifecycle") != NULL);
-        ASSERT(strstr(buf, "state|dumpstate)") != NULL);
-        ASSERT(strstr(buf, "rpc dumpstate \"$2\"") != NULL);
-        ASSERT(strstr(buf, "log|nodelog|node-log)") != NULL);
-        ASSERT(strstr(buf, "rpc getnodelog \"$2\"") != NULL);
-        ASSERT(strstr(buf, "sql|dbquery)") != NULL);
-        ASSERT(strstr(buf, "rpc dbquery \"$2\"") != NULL);
-        ASSERT(strstr(buf, "P2P reachability and handshake summary") != NULL);
-        ASSERT(strstr(buf,
-                      "Service ports, peer counts, mirror lag, and drift checks")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "Chain advance source scoring and selection blockers")
-               != NULL);
-        ASSERT(strstr(buf,
-                      "Peer lifecycle attempts, handshakes, failures by source")
-               != NULL);
-        ASSERT(strstr(buf, "Generic dumpstate diagnostics") != NULL);
-        ASSERT(strstr(buf, "Server-side node.log regex tail") != NULL);
-        ASSERT(strstr(buf, "SELECT-only node.db query") != NULL);
-        free(buf);
-        buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "docs/RUNBOOK.md") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "sources[].selectable=false") != NULL);
@@ -3300,6 +3185,7 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "last_override_scope") != NULL);
         free(buf);
         buf = NULL;
+
         ASSERT(repo_path(path, sizeof(path), "tools/deploy_verify.sh") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "canonical diagnostics ready") != NULL);
@@ -3332,6 +3218,34 @@ static int t_tools_z_operator_diagnostics_contract(void)
         PASS();
     } _test_next:;
     free(buf);
+    return failures;
+}
+
+static int t_service_tip_mutation_gate(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] services do not bypass canonical tip publication") {
+        ASSERT(run_check_service_tip_mutation_gate() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_legacy_candidate_source_has_no_override_scope(void)
+{
+    int failures = 0;
+    char *mirror = NULL;
+    TEST("legacy mirror monitor has no tip-mutation path") {
+        char mirror_path[PATH_MAX];
+        ASSERT(repo_path(mirror_path, sizeof(mirror_path),
+                         "app/services/src/legacy_mirror_sync_service.c") == 0);
+        ASSERT(read_entire_file(mirror_path, &mirror) == 0);
+        ASSERT(strstr(mirror, "CSR_ROLLBACK_SOURCE_MIRROR") == NULL);
+        ASSERT(strstr(mirror, "chain_set_active_tip(") == NULL);
+        ASSERT(strstr(mirror, "active_chain_set_tip(") == NULL);
+        PASS();
+    } _test_next:;
+    free(mirror);
     return failures;
 }
 
@@ -4061,7 +3975,6 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "healthcheck") != NULL);
         ASSERT(strstr(buf, ".checks.has_peers == true") != NULL);
         ASSERT(strstr(buf, "health probe summary") != NULL);
-        ASSERT(strstr(buf, "tools/z topology --json") == NULL);
         ASSERT(strstr(buf, "native service binary") != NULL);
         ASSERT(strstr(buf, "run make build-only or set ZCL_FAST_LIVE=0")
                != NULL);
@@ -4242,15 +4155,17 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, ".cache/zcl-agent-fast-ci") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
-        ASSERT(strstr(buf, "There is no `tools/z` fallback") != NULL);
+        ASSERT(strstr(buf, "There is no external shell-wrapper fallback")
+               != NULL);
         ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(buf, "`make immutable-history-canaries`") != NULL);
         ASSERT(strstr(buf, "h=478544") != NULL);
         ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
         ASSERT(strstr(buf, "MCP tools") != NULL);
-        ASSERT(strstr(buf, "`tools/z`") != NULL);
-        ASSERT(strstr(buf, "not an agent interface") != NULL);
+        ASSERT(strstr(buf,
+                      "Do not add Python, shell, or helper-binary")
+               != NULL);
         ASSERT(strstr(buf, "origin/main..HEAD") != NULL);
         ASSERT(strstr(buf, "cached focused fast-ci") != NULL);
         ASSERT(strstr(buf, "live node condition remains") != NULL);
@@ -4266,7 +4181,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(buf, "Public start here") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
-        ASSERT(strstr(buf, "600+ registered parallel groups") != NULL);
+        ASSERT(strstr(buf, "registered parallel groups") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 core sync diagnose")
                != NULL);
         ASSERT(strstr(buf, "| jq") == NULL);
@@ -4340,7 +4255,7 @@ static int t_zero_mcp_operator_docs_contract(void)
         ASSERT(strstr(readme, "build/bin/zclassic23 status") != NULL);
         ASSERT(strstr(readme, "core sync diagnose") != NULL);
         ASSERT(strstr(readme, "ops logs") != NULL);
-        ASSERT(strstr(readme, "MCP") == NULL);
+        ASSERT(strstr(readme, "legacy MCP bridge still works") != NULL);
         ASSERT(strstr(readme, "mcpcall") == NULL);
         ASSERT(strstr(readme, "agent-mcp-call") == NULL);
 
@@ -4839,9 +4754,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "params_storage") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--status\")") != NULL);
-        ASSERT(strstr(main_buf, "cli_runtime_rpc_method") != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"status\")") != NULL);
-        ASSERT(strstr(main_buf, "return \"agent\"") != NULL);
+        ASSERT(strstr(main_buf, "cli_runtime_rpc_method") == NULL);
+        ASSERT(strstr(main_buf, "zcl_native_command_is_root(method)") != NULL);
+        ASSERT(strstr(main_buf, "zcl_native_command_main(method") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--status\")") != NULL);
         ASSERT(strstr(main_buf, "cli_static_agent_method") != NULL);
@@ -5009,8 +4924,8 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(api_status_buf, "agent_push_readiness_contract_json")
                != NULL);
-        ASSERT(strstr(agent_summary_buf, "agent_push_security_posture_json")
-               != NULL);
+        ASSERT(strstr(agent_summary_buf,
+                      "agent_push_security_posture_snapshot_json") != NULL);
         ASSERT(strstr(api_status_buf, "agent_push_security_posture_json")
                != NULL);
         ASSERT(strstr(agent_readiness_buf, "agent_push_readiness_json")
@@ -5036,7 +4951,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "projection_catchup_active")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v2") != NULL);
         ASSERT(strstr(agent_lanes_buf, "zcl.agent_lanes.v1") != NULL);
         ASSERT(strstr(agent_liveness_buf, "zcl.agent_liveness.v1") != NULL);
         ASSERT(strstr(agent_liveness_buf, "agent_push_first_call_simple_json")
@@ -5120,9 +5035,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "runtime_status_alias")
-               != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 status")
-               != NULL);
+               == NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT(\"status\"")
+               == NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_interface.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_ops.v1") != NULL);
@@ -5286,7 +5201,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_capability_registry_buf,
                       "contract_source") != NULL);
         ASSERT(strstr(agent_iface_buf,
+                      "agent_push_contract_native_field_json(&loop")
+               != NULL);
+        ASSERT(strstr(agent_iface_buf,
                       "agent_push_contract_mcp_field_json(&loop")
+               == NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "\"preferred_transport\", \"native_cli\"")
+               != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "\"preferred_transport\", \"native_cli\"")
                != NULL);
         ASSERT(strstr(agent_iface_buf, "must_live_in_c") != NULL);
         ASSERT(strstr(agent_iface_buf,
@@ -5370,10 +5294,13 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_registry_buf, "\"events\", \"eventlog\"")
                != NULL);
-        ASSERT(strstr(agent_registry_buf, "\"command_center\"") != NULL);
+        ASSERT(strstr(agent_registry_buf, "\"compact_status\"") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "\"full_compatibility_status\"") != NULL);
         ASSERT(strstr(agent_registry_buf, "\"full_status\"") != NULL);
         ASSERT(strstr(agent_registry_buf, "\"quality_lanes\"") != NULL);
-        ASSERT(strstr(agent_registry_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_registry_buf, "zclassic23 status") != NULL);
+        ASSERT(strstr(agent_registry_buf, "zcl_operator_summary") == NULL);
         ASSERT(strstr(agent_registry_buf, "make quality-linger-status")
                != NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_probe_params_json")
@@ -5642,8 +5569,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 status") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "native compatibility alias for\n"
-                      "`zclassic23 agent`") != NULL);
+                      "registry-owned native first check") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "is not\ntransport-equivalent to the larger legacy")
+               != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentops") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_ops") != NULL);
@@ -5772,7 +5701,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl.background_quality_lane.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "source_id_freshness") != NULL);
         ASSERT(strstr(agent_doc_buf, "background_quality_stale") != NULL);
-        ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
+        ASSERT(strstr(agent_doc_buf,
+                      "Keep operator logic in typed native `zclassic23` commands")
                != NULL);
         PASS();
     } _test_next:;
@@ -7732,8 +7662,8 @@ int test_make_lint_gates(void)
     failures += t_raw_malloc_gate_recovers();
     failures += t_service_tip_mutation_gate();
     failures += t_legacy_candidate_source_has_no_override_scope();
-    failures += t_tools_z_mirror_fallback_contract();
-    failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_deprecated_tools_z_is_absent();
+    failures += t_canonical_operator_diagnostics_contract();
     failures += t_canonical_deploy_proof_binding_contract();
     failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();

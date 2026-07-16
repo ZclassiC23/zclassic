@@ -55,8 +55,9 @@ struct agent_contract_field_surface {
     { surface, rank, name, "", native, mcp, purpose }
 
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
-    CONTRACT_COMMAND("agentmap.commands.core", 1, "status", "agent",
-      "compact live health/status contract"),
+    DIRECT_COMMAND("agentmap.commands.core", 1, "compact_status",
+      "zclassic23 status", "",
+      "canonical terse zcl.core_status_brief.v1 first check"),
     CONTRACT_COMMAND("agentmap.commands.core", 2, "map", "agentmap",
       "where code, docs, and tests live"),
     CONTRACT_COMMAND("agentmap.commands.core", 3, "impact", "agentimpact",
@@ -79,9 +80,9 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "lane/service/supervisor/background-quality liveness"),
     CONTRACT_COMMAND("agentmap.commands.core", 12, "deploy_guard", "agentdeployguard",
       "C-native deploy/restart allow-refuse decision"),
-    DIRECT_COMMAND("agentmap.commands.core", 13, "command_center",
-      "zclassic23 agent", "zcl_operator_summary",
-      "one-shot live node status, blockers, next action, and drill-down tools"),
+    DIRECT_COMMAND("agentmap.commands.core", 13, "full_compatibility_status",
+      "zclassic23 agent", "zcl_agent",
+      "full zcl.public_status.v1 compatibility view during W2/W3 migration"),
     DIRECT_COMMAND("agentmap.commands.core", 14, "background_quality",
       "make quality-linger-status", "zcl_agent_build",
       "latest background fuzz/coverage lane verdicts"),
@@ -99,9 +100,9 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.drilldown", 6, "peer_incidents",
       "peerincidents", "bounded peer reconnect and duplicate-host incidents"),
 
-    DIRECT_COMMAND("agentmap.telemetry", 1, "summary",
-      "zclassic23 agent", "zcl_operator_summary",
-      "stable first-call status, blocker, next-action contract"),
+    DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
+      "zclassic23 status", "",
+      "stable terse first-call status, blocker, and next action"),
     DIRECT_COMMAND("agentmap.telemetry", 2, "full_status",
       "zclassic23 healthcheck", "zcl_status",
       "wide health packet with peers, sync, chain, validation, and memory"),
@@ -188,7 +189,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
 
     { "agentops.workflow", 1, "first_call",
       "Agents should start from the compact operator contract instead of browsing the full API catalog.",
-      "zclassic23 agentops / MCP zcl_agent_ops",
+      "zclassic23 status; then zclassic23 agentops (MCP zcl_agent_ops is transitional)",
       "zcl.agent_ops.v1 no_jq_required=true" },
     { "agentops.workflow", 2, "decide_lane_and_safety",
       "The same source tree can talk to canonical, soak, dev, and fixture lanes; restarts and deploys need lane context first.",
@@ -204,7 +205,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
       "agentbuild recommended_loop + fast-ci" },
     { "agentops.workflow", 5, "drill_down_only_when_needed",
       "Most one-off diagnostics should use primitive state/log/SQL/timeline tools before adding bespoke API routes.",
-      "zcl_state, zcl_node_log, zcl_sql, zcl_timeline, zclassic23 statecatalog",
+      "zclassic23 dumpstate, getnodelog, dbquery, timeline, and statecatalog",
       "diagnostics registry + zcl.timeline.v1" },
 
     { "agentops.top_next_work", 1,

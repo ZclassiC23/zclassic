@@ -276,7 +276,8 @@ static bool pr_seed_structure(sqlite3 *db)
         "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL,"
         "block_hash BLOB,source_epoch_digest BLOB);"
         "CREATE TABLE utxo_apply_log("
-        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL);"
+        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL,"
+        "applied_at INTEGER NOT NULL);"
         "CREATE TABLE utxo_apply_delta("
         "height INTEGER PRIMARY KEY,branch_hash BLOB NOT NULL,"
         "spent_blob BLOB NOT NULL,added_blob BLOB NOT NULL);"
@@ -289,7 +290,8 @@ static bool pr_seed_structure(sqlite3 *db)
         "('script_validate',2,1),('proof_validate',2,1),"
         "('utxo_apply',2,1),('tip_finalize',1,1);"
         "INSERT INTO body_persist_log VALUES(0,1),(1,1);"
-        "INSERT INTO utxo_apply_log VALUES(0,1,'verified'),(1,1,'verified');";
+        "INSERT INTO utxo_apply_log VALUES(0,1,'verified',1),"
+        "(1,1,'verified',1);";
     return pr_exec(db, schema) && coins_kv_ensure_schema(db) &&
            anchor_kv_initialize_history(db, 0) &&
            nullifier_kv_initialize_history(db, 0);

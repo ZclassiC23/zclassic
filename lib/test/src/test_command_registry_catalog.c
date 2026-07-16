@@ -258,10 +258,10 @@ static int test_bridge_bindings_reverse(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("every sampled bridge binding names a READY core/ops leaf") {
+    TEST("every sampled bridge binding names a READY native leaf") {
         const char *sample[] = {
-            "core.status", "core.chain.tip", "ops.health", "ops.metrics",
-            "core.storage.query", "core.chain.block.get",
+            "status", "core.status", "core.chain.tip", "ops.health",
+            "ops.metrics", "core.storage.query", "core.chain.block.get",
         };
         for (size_t i = 0; i < sizeof(sample) / sizeof(sample[0]); i++) {
             const char *tool = zcl_native_bridge_tool_for_path(sample[i]);
@@ -276,38 +276,231 @@ static int test_bridge_bindings_reverse(void)
     return failures;
 }
 
-/* Stubs the seven read-only RPCs core.status.brief composes from, so the
- * envelope test below runs without a live node (mcp_node_rpc's ZCL_TESTING
- * hook wins over both RPC backends — see tools/mcp/rpc_client.c). */
+/* Both mcp_node_rpc backends strip the JSON-RPC envelope on a node error and
+ * return the bare error object. Locally-generated transport failures retain
+ * the older {"error": {...}} wrapper. The native bridge must fail closed for
+ * both shapes; otherwise -32601 (runtime/source skew) is projected as passing
+ * command data. */
+static const char *g_bridge_rpc_error_fixture;
+static const char *g_bridge_rpc_method_fixture;
+
+static char *bridge_rpc_error_mock(const char *method,
+                                   const char *params_json)
+{
+    (void)params_json;
+    if (!g_bridge_rpc_method_fixture ||
+        strcmp(method, g_bridge_rpc_method_fixture) != 0 ||
+        !g_bridge_rpc_error_fixture)
+        return strdup("null");
+    return strdup(g_bridge_rpc_error_fixture);
+}
+
+static int test_bridge_rpc_errors_fail_closed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "core.chain.tip");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("native bridge rejects bare and wrapped JSON-RPC errors") {
+        static const struct {
+            const char *body;
+            const char *message;
+        } cases[] = {
+            {
+                "{\"code\":-32601,\"message\":\"Method not found\","
+                "\"method\":\"getchaintip\"}",
+                "Method not found",
+            },
+            {
+                "{\"error\":{\"code\":-32603,"
+                "\"message\":\"cannot connect to node\"}}",
+                "cannot connect to node",
+            },
+        };
+        ASSERT(s != NULL);
+        ASSERT(s->handler == zcl_native_bridge_command);
+        ASSERT(zcl_native_bridge_body_for_path(s->path) == NULL);
+        ASSERT_STR_EQ(zcl_native_bridge_rpc_for_path(s->path), "getchaintip");
+
+        g_bridge_rpc_method_fixture = "getchaintip";
+        mcp_rpc_client_set_test_hook(bridge_rpc_error_mock);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            g_bridge_rpc_error_fixture = cases[i].body;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+            ASSERT(strstr(out, "\"status\":\"failed\"") != NULL);
+            ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
+            ASSERT(strstr(out, cases[i].message) != NULL);
+        }
+        PASS();
+    } _test_next:;
+    g_bridge_rpc_error_fixture = NULL;
+    g_bridge_rpc_method_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+/* Direct-RPC leaves intentionally preserve zclassicd-compatible result bodies,
+ * which do not carry zclassic23 schema labels. Prove each binding instead
+ * checks its stable minimum field/type shape, and prove the three legitimate
+ * top-level arrays accept empty/valid lists while rejecting mixed elements. */
+static int test_bridge_rpc_success_shapes_fail_closed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    static const struct {
+        const char *path;
+        const char *valid;
+        const char *invalid;
+    } cases[] = {
+        { "core.chain.tip",
+          "{\"hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"height\":1}",
+          "{\"hash\":1,\"height\":\"1\"}" },
+        { "core.chain.mempool.status", "{\"size\":0,\"bytes\":0}",
+          "{}" },
+        { "core.chain.mempool.list",
+          "[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]",
+          "[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",7]" },
+        { "core.sync.status", "{\"state\":\"syncing\",\"state_id\":1}",
+          "{}" },
+        { "core.sync.validation", "{\"state\":\"not_initialized\"}",
+          "{\"state\":1}" },
+        { "core.consensus.integrity",
+          "{\"source\":\"persisted_consensus_tables\",\"master\":\"abc\"}",
+          "{}" },
+        { "core.consensus.utxo.commitment",
+          "{\"sha3_hash\":\"abc\",\"height\":1,\"utxo_count\":2}",
+          "{\"sha3_hash\":\"abc\",\"height\":1}" },
+        { "core.consensus.mmb", "{\"mmr_root\":\"abc\",\"num_leaves\":1}",
+          "{}" },
+        { "core.network.status", "{\"connections\":0,\"networks\":[]}",
+          "{\"connections\":\"0\",\"networks\":[]}" },
+        { "core.network.peers.list", "[{\"id\":1,\"addr\":\"peer\"}]",
+          "[{\"id\":1,\"addr\":\"peer\"},{}]" },
+        { "core.network.peers.latency",
+          "[{\"peer_id\":1,\"addr\":\"peer\"}]",
+          "[{\"peer_id\":1,\"addr\":7}]" },
+        { "core.network.onion.status",
+          "{\"status\":\"ok\",\"healthy\":true,\"serving\":true}",
+          "{}" },
+        { "core.wallet.status", "{\"balance\":\"1.0\",\"txcount\":0}",
+          "{}" },
+        { "core.wallet.balance",
+          "{\"transparent\":\"1.0\",\"total\":\"1.0\"}", "{}" },
+        { "core.wallet.backup.status", "{\"running\":false,\"total_runs\":0}",
+          "{}" },
+        { "core.wallet.audit", "{\"chain_height\":1,\"summary\":{}}",
+          "{\"chain_height\":1,\"summary\":[]}" },
+        { "core.storage.stats", "{\"tip_height\":1,\"utxo_count\":2}",
+          "{}" },
+        { "core.mining.status", "{\"blocks\":1,\"chain\":\"main\"}",
+          "{}" },
+        { "core.mining.benchmark",
+          "{\"primary_benchmark_source\":\"local\",\"primary_benchmarks\":[]}",
+          "{}" },
+        { "ops.health",
+          "{\"status\":\"blocked\",\"healthy\":false,\"serving\":false}",
+          "{\"status\":\"blocked\",\"healthy\":false}" },
+        { "ops.lanes", "{\"status\":\"ok\",\"lanes\":[]}", "{}" },
+        { "ops.recovery.status",
+          "{\"ready_for_refold\":false,\"primary_blocker\":\"missing\"}",
+          "{}" },
+    };
+
+    TEST("direct RPC bridge validates every legacy success shape") {
+        mcp_rpc_client_set_test_hook(bridge_rpc_error_mock);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, cases[i].path);
+            ASSERT(s != NULL);
+            ASSERT(s->handler == zcl_native_bridge_command);
+            ASSERT(zcl_native_bridge_body_for_path(s->path) == NULL);
+            g_bridge_rpc_method_fixture =
+                zcl_native_bridge_rpc_for_path(s->path);
+            ASSERT(g_bridge_rpc_method_fixture != NULL);
+
+            char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            g_bridge_rpc_error_fixture = cases[i].valid;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(out, "\"ok\":true") != NULL);
+
+            g_bridge_rpc_error_fixture = cases[i].invalid;
+            code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+            ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
+            ASSERT(strstr(out, "incompatible success body") != NULL);
+        }
+
+        /* Empty arrays are real no-data states, not schema failures. */
+        const char *empty_paths[] = {
+            "core.chain.mempool.list", "core.network.peers.list",
+            "core.network.peers.latency",
+        };
+        for (size_t i = 0;
+             i < sizeof(empty_paths) / sizeof(empty_paths[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, empty_paths[i]);
+            ASSERT(s != NULL);
+            g_bridge_rpc_method_fixture =
+                zcl_native_bridge_rpc_for_path(s->path);
+            g_bridge_rpc_error_fixture = "[]";
+            char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(out, "\"items\":[]") != NULL);
+            ASSERT(strstr(out, "\"total_items\":0") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    g_bridge_rpc_error_fixture = NULL;
+    g_bridge_rpc_method_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+/* Stubs the one bounded cached status document core.status.brief projects,
+ * so the envelope test below runs without a live node (mcp_node_rpc's
+ * ZCL_TESTING hook wins over both RPC backends). */
+static const char *g_status_brief_agent_fixture;
+
 static char *status_brief_mock_rpc(const char *method,
                                    const char *params_json)
 {
-    if (strcmp(method, "getblockcount") == 0)
-        return strdup("3117073");
-    if (strcmp(method, "getblockchaininfo") == 0)
-        return strdup("{\"best_header_height\":3117074}");
-    if (strcmp(method, "syncstate") == 0)
-        return strdup("{\"state\":\"at_tip\"}");
-    if (strcmp(method, "healthcheck") == 0)
-        return strdup("{\"healthy\":true,\"serving\":true,"
-                      "\"memory_rss_mb\":512,"
-                      "\"checks\":{\"tip_advance_age_seconds\":3}}");
-    if (strcmp(method, "getpeerinfo") == 0)
-        return strdup("[{\"inbound\":false,\"startingheight\":3117074}]");
-    if (strcmp(method, "dumpstate") == 0 && params_json &&
-        strstr(params_json, "condition_engine"))
-        return strdup("{\"subsystem\":\"condition_engine\","
-                      "\"captured_at\":1782240000,"
-                      "\"state\":{\"registered_count\":39,"
-                      "\"active_count\":2,\"unresolved_count\":0}}");
-    if (strcmp(method, "dumpstate") == 0)
-        return strdup("{\"subsystem\":\"blocker\","
-                      "\"captured_at\":1782240000,"
-                      "\"state\":{\"active_count\":0,"
-                      "\"permanent_count\":0,\"transient_count\":0,"
-                      "\"dependency_count\":0,\"resource_count\":0,"
-                      "\"escape_dispatched_total\":0,"
-                      "\"blockers\":[]}}");
+    (void)params_json;
+    if (strcmp(method, "agent") == 0 && g_status_brief_agent_fixture)
+        return strdup(g_status_brief_agent_fixture);
+    if (strcmp(method, "agent") == 0)
+        return strdup(
+            "{\"schema\":\"zcl.public_status.v1\","
+            "\"partial_result\":false,"
+            "\"served_height\":3117073,\"header_height\":3117074,"
+            "\"served_height_known\":true,"
+            "\"header_height_known\":true,"
+            "\"gap\":1,\"peer_best_height\":3117074,"
+            "\"peer_best_height_known\":true,"
+            "\"target_height\":3117074,\"target_height_known\":true,"
+            "\"chain_evidence_consistent\":true,"
+            "\"sync_state\":\"at_tip\",\"serving\":true,"
+            "\"healthy\":true,\"primary_blocker\":\"none\","
+            "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                "\"budget_ms\":250,\"partial_result\":false,"
+                "\"budget_exceeded\":false},"
+            "\"peers\":{\"total\":1},"
+            "\"conditions\":{"
+                "\"schema\":\"zcl.condition_engine_summary.v1\","
+                "\"active_count\":2},"
+            "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                "\"rss_mb\":512},"
+            "\"reducer\":{\"tip_advance_age_seconds\":3},"
+            "\"security_posture\":{"
+                "\"schema\":\"zcl.security_posture.v1\","
+                "\"anchor_backfill_gap\":false,"
+                "\"nullifier_backfill_gap\":false}}");
     return strdup("null");
 }
 
@@ -326,8 +519,17 @@ static int test_status_brief_flat_lean_envelope(void)
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
     TEST("core.status.brief: flat lean zcl.result.v1 body, thirteen "
         "sync/serving fields") {
+        const struct zcl_command_spec *root_status = find_spec(reg, "status");
         const struct zcl_command_spec *s =
             find_spec(reg, "core.status.brief");
+        ASSERT(root_status != NULL);
+        ASSERT_EQ(root_status->availability, ZCL_COMMAND_READY);
+        ASSERT(root_status->handler == zcl_native_bridge_command);
+        ASSERT_STR_EQ(root_status->output_schema,
+                      "zcl.core_status_brief.v1");
+        ASSERT((root_status->allowed_lanes & ZCL_COMMAND_LANE_LOCAL) != 0);
+        ASSERT(zcl_native_bridge_tool_for_path("status") != NULL);
+        ASSERT(zcl_native_bridge_body_for_path("status") != NULL);
         ASSERT(s != NULL);
         ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
         ASSERT(s->handler == zcl_native_bridge_command);
@@ -335,8 +537,14 @@ static int test_status_brief_flat_lean_envelope(void)
 
         mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
         enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        enum zcl_command_exit root_code = ZCL_COMMAND_EXIT_INTERNAL;
+        char root_out[ZCL_COMMAND_RESULT_BUDGET + 1];
+        bool root_dispatched = exec_leaf(reg, root_status, root_out,
+                                         sizeof(root_out), &root_code);
         bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
         mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(root_dispatched);
+        ASSERT_EQ(root_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(dispatched);
         ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
 
@@ -393,6 +601,216 @@ static int test_status_brief_flat_lean_envelope(void)
         json_free(&root);
         PASS();
     } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_status_brief_composite_fails_closed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status rejects RPC errors, schema skew, and wrong field types") {
+        static const char *const cases[] = {
+            "{\"code\":-32601,\"message\":\"Method not found\"}",
+            "{\"error\":{\"code\":-32603,"
+                "\"message\":\"cannot connect to node\"}}",
+            "{\"schema\":\"zcl.public_status.v2\"}",
+            "{\"schema\":\"zcl.public_status.v1\","
+                "\"served_height\":\"3117073\"}",
+        };
+        ASSERT(s != NULL);
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            g_status_brief_agent_fixture = cases[i];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+            ASSERT(strstr(out, "\"status\":\"failed\"") != NULL);
+            ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
+            ASSERT(strstr(out, "invalid zcl.public_status.v1") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static void status_brief_fixture_write(
+    char *out, size_t out_size,
+    int64_t served, bool served_known,
+    int64_t header, bool header_known,
+    int64_t peer_best, bool peer_best_known,
+    int64_t target, bool target_known,
+    int64_t gap, bool chain_consistent,
+    int64_t tip_age, bool partial, bool include_resources,
+    bool serving, bool healthy, bool budget_exceeded,
+    bool anchor_gap, bool nullifier_gap)
+{
+    (void)snprintf(
+        out, out_size,
+        "{\"schema\":\"zcl.public_status.v1\","
+        "\"partial_result\":%s%s,"
+        "\"served_height\":%lld,\"served_height_known\":%s,"
+        "\"header_height\":%lld,\"header_height_known\":%s,"
+        "\"gap\":%lld,\"peer_best_height\":%lld,"
+        "\"peer_best_height_known\":%s,"
+        "\"target_height\":%lld,\"target_height_known\":%s,"
+        "\"chain_evidence_consistent\":%s,"
+        "\"sync_state\":\"idle\",\"serving\":%s,\"healthy\":%s,"
+        "\"primary_blocker\":\"none\","
+        "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+        "\"budget_ms\":250,\"partial_result\":%s,"
+        "\"budget_exceeded\":%s},"
+        "\"peers\":{\"total\":0},"
+        "\"conditions\":{"
+        "\"schema\":\"zcl.condition_engine_summary.v1\","
+        "\"active_count\":0},%s"
+        "\"reducer\":{\"tip_advance_age_seconds\":%lld},"
+        "\"security_posture\":{"
+        "\"schema\":\"zcl.security_posture.v1\","
+        "\"anchor_backfill_gap\":%s,"
+        "\"nullifier_backfill_gap\":%s}}",
+        partial ? "true" : "false",
+        partial ? ",\"partial_reason\":\"optional_detail_budget_guard:resources\""
+                : "",
+        (long long)served, served_known ? "true" : "false",
+        (long long)header, header_known ? "true" : "false",
+        (long long)gap, (long long)peer_best,
+        peer_best_known ? "true" : "false", (long long)target,
+        target_known ? "true" : "false",
+        chain_consistent ? "true" : "false",
+        serving ? "true" : "false", healthy ? "true" : "false",
+        partial ? "true" : "false",
+        budget_exceeded ? "true" : "false",
+        include_resources
+            ? "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+              "\"rss_mb\":512},"
+            : "",
+        (long long)tip_age, anchor_gap ? "true" : "false",
+        nullifier_gap ? "true" : "false");
+}
+
+static int test_status_brief_valid_unknown_and_partial_contracts(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char fixture[2048];
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status preserves valid boot/no-peer/partial unknowns") {
+        ASSERT(s != NULL);
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+
+        /* Fresh boot: no selected frontier, header, peer height, or tip-age
+         * sample is a valid v1 response, not schema skew. */
+        status_brief_fixture_write(
+            fixture, sizeof(fixture), 0, false, -1, false, -1, false,
+            0, false, 0, false, -1, false, true,
+            false, false, false, false, false);
+        g_status_brief_agent_fixture = fixture;
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data && data->type == JSON_OBJ);
+        ASSERT(json_is_null(json_get(data, "hstar")));
+        ASSERT(json_is_null(json_get(data, "header_height")));
+        ASSERT(json_is_null(json_get(data, "gap")));
+        ASSERT(json_is_null(json_get(data, "peer_best")));
+        ASSERT(json_is_null(json_get(data, "tip_advance_age_seconds")));
+        ASSERT_EQ(json_get_int(json_get(data, "peer_count")), (int64_t)0);
+        json_free(&root);
+
+        /* The producer intentionally omits resources when its optional-detail
+         * guard fires before the 250ms first-call budget. */
+        status_brief_fixture_write(
+            fixture, sizeof(fixture), 100, true, 101, true, -1, false,
+            101, true, 1, true, 3, true, false,
+            true, true, false, false, false);
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT(data && json_is_null(json_get(data, "rss_mb")));
+        ASSERT_EQ(json_get_int(json_get(data, "hstar")), (int64_t)100);
+        json_free(&root);
+
+        /* Causal shielded gaps outrank the general latch without changing the
+         * honest unknown peer projection. */
+        status_brief_fixture_write(
+            fixture, sizeof(fixture), 100, true, 101, true, -1, false,
+            101, true, 1, true, 3, false, true,
+            true, false, false, true, true);
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "primary_blocker")),
+                      "utxo_apply.anchor_backfill_gap");
+        ASSERT(json_get_bool(json_get(data, "serving")));
+        ASSERT(!json_get_bool(json_get(data, "healthy")));
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_status_brief_rejects_contract_contradictions(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char fixture[2048];
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status rejects known/sentinel, gap, partial, and budget contradictions") {
+        ASSERT(s != NULL);
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        static const int cases = 4;
+        for (int i = 0; i < cases; i++) {
+            if (i == 0) {
+                /* known peer height may not carry the -1 sentinel. */
+                status_brief_fixture_write(
+                    fixture, sizeof(fixture), 100, true, 101, true, -1, true,
+                    101, true, 1, true, 3, false, true,
+                    true, true, false, false, false);
+            } else if (i == 1) {
+                /* A consistent chain's gap is exact header-H*. */
+                status_brief_fixture_write(
+                    fixture, sizeof(fixture), 100, true, 101, true, 101, true,
+                    101, true, 9, true, 3, false, true,
+                    true, true, false, false, false);
+            } else if (i == 2) {
+                /* Full results cannot silently omit the resources member. */
+                status_brief_fixture_write(
+                    fixture, sizeof(fixture), 100, true, 101, true, 101, true,
+                    101, true, 1, true, 3, false, false,
+                    true, true, false, false, false);
+            } else {
+                status_brief_fixture_write(
+                    fixture, sizeof(fixture), 100, true, 101, true, 101, true,
+                    101, true, 1, true, 3, false, true,
+                    true, true, true, false, false);
+            }
+            g_status_brief_agent_fixture = fixture;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+            ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
     mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
@@ -523,6 +941,7 @@ static int test_dev_branch_leaves(void)
             "dev.loop.wait", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",
             "dev.generation.history", "dev.diagnose.latest",
+            "dev.diagnose.show",
             "dev.vcs.revert", "dev.vcs.seal.grant",
         };
         for (size_t i = 0; i < sizeof(compat) / sizeof(compat[0]); i++) {
@@ -532,6 +951,19 @@ static int test_dev_branch_leaves(void)
             ASSERT(s->handler == NULL);
             ASSERT(s->compat_target != NULL && s->compat_target[0]);
         }
+
+        const struct zcl_command_spec *failure_latest =
+            find_spec(reg, "dev.diagnose.latest");
+        const struct zcl_command_spec *failure_show =
+            find_spec(reg, "dev.diagnose.show");
+        ASSERT(failure_latest != NULL && failure_show != NULL);
+        ASSERT_STR_EQ(failure_latest->output_schema,
+                      "zcl.dev_failure_latest_result.v1");
+        ASSERT_EQ(failure_latest->budget_bytes, (size_t)2048);
+        ASSERT_STR_EQ(failure_show->output_schema,
+                      "zcl.dev_failure_show.v1");
+        ASSERT_EQ(failure_show->budget_bytes, (size_t)6144);
+        ASSERT_STR_EQ(failure_show->positional_keys, "failure_id");
 
         PASS();
     } _test_next:;
@@ -588,7 +1020,8 @@ static int test_response_budget_views(void)
         zcl_command_reply_free(&reply);
         json_free(&body);
 
-        /* normal: truncate with an explicit retrieval next command. */
+        /* normal: truncate, expose an advancing cursor, and point at the
+         * command contract without emitting a self-loop. */
         make_large_body(&body);
         req = (struct zcl_command_request){ .spec = s, .view = "normal" };
         zcl_command_reply_init(&reply, s->output_schema);
@@ -601,7 +1034,8 @@ static int test_response_budget_views(void)
         ASSERT(trunc != NULL && trunc->type == JSON_BOOL && trunc->val.b);
         ASSERT(json_get(page, "next_cursor") != NULL);
         ASSERT(reply.next_count >= 1);
-        ASSERT(strstr(reply.next[0].input_json, "full") != NULL);
+        ASSERT_STR_EQ(reply.next[0].command, "discover.describe");
+        ASSERT(strstr(reply.next[0].input_json, "core.status") != NULL);
         zcl_command_reply_free(&reply);
         json_free(&body);
 
@@ -813,7 +1247,7 @@ static int test_ops_state_requires_subsystem(void)
 static int test_is_root_ownership(void)
 {
     int failures = 0;
-    TEST("is_root owns core/app/dev/ops/discover/code but not status") {
+    TEST("is_root owns terse status plus core/app/dev/ops/discover/code") {
         ASSERT(zcl_native_command_is_root("core"));
         ASSERT(zcl_native_command_is_root("app"));
         ASSERT(zcl_native_command_is_root("ops"));
@@ -821,7 +1255,7 @@ static int test_is_root_ownership(void)
         ASSERT(zcl_native_command_is_root("code"));
         ASSERT(zcl_native_command_is_root("help"));
         ASSERT(zcl_native_command_is_root("search"));
-        ASSERT(!zcl_native_command_is_root("status"));
+        ASSERT(zcl_native_command_is_root("status"));
         ASSERT(zcl_native_command_is_root("dev"));
         ASSERT(!zcl_native_command_is_root("getblockcount"));
         PASS();
@@ -945,6 +1379,82 @@ static int test_describe_emits_semantics(void)
     return failures;
 }
 
+static int g_bad_next_case;
+
+static void contract_bad_next_handler(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    if (g_bad_next_case == 0)
+        (void)zcl_command_reply_add_next(reply, request->spec->path, "{}",
+                                         "illegal self-loop");
+    else if (g_bad_next_case == 1)
+        (void)zcl_command_reply_add_next(reply, "discover.describe", "{}",
+                                         "missing required path");
+    else
+        (void)zcl_command_reply_add_next(reply, "unknown.command", "{}",
+                                         "unknown command");
+}
+
+static int test_next_actions_fail_closed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *catalog = zcl_command_catalog();
+    TEST("next actions reject self-loops, missing required input, and unknown leaves") {
+        const struct zcl_command_spec *base = find_spec(catalog, "core.status");
+        ASSERT(base != NULL);
+        struct zcl_command_spec executable = *base;
+        executable.handler = contract_bad_next_handler;
+        struct zcl_command_registry local = {
+            .commands = &executable,
+            .count = 1,
+        };
+        struct zcl_command_context context = {
+            .registry = catalog,
+            .operator_lane = "dev",
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        for (g_bad_next_case = 0; g_bad_next_case < 3; g_bad_next_case++) {
+            char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+            size_t n = zcl_command_registry_execute_json(
+                &local, &executable, &context, &input, false,
+                executable.path, "normal", 0, 0, NULL, out, sizeof(out),
+                &code);
+            ASSERT(n > 0);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+        }
+        json_free(&input);
+
+        char menu[ZCL_COMMAND_ROOT_BUDGET + 1];
+        size_t n = zcl_command_registry_menu_json(catalog, "", menu,
+                                                   sizeof(menu));
+        ASSERT(n > 0);
+        struct json_value root;
+        ASSERT(json_read(&root, menu, n));
+        const struct json_value *next = json_get(&root, "next");
+        ASSERT(next && next->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(next, "command")),
+                      "discover.describe");
+        const struct json_value *next_input = json_get(next, "input");
+        const struct zcl_command_spec *describe =
+            find_spec(catalog, "discover.describe");
+        char why[160] = {0};
+        ASSERT(describe && next_input &&
+               zcl_command_registry_input_validate(describe, next_input, why,
+                                                   sizeof(why)));
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
@@ -952,6 +1462,7 @@ int test_command_registry_catalog(void)
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();
     failures += test_describe_emits_semantics();
+    failures += test_next_actions_fail_closed();
     failures += test_domain_leaf_counts();
     failures += test_six_roots();
     failures += test_root_menu_budget();
@@ -960,7 +1471,12 @@ int test_command_registry_catalog(void)
     failures += test_search_multiword();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
+    failures += test_bridge_rpc_errors_fail_closed();
+    failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
+    failures += test_status_brief_composite_fails_closed();
+    failures += test_status_brief_valid_unknown_and_partial_contracts();
+    failures += test_status_brief_rejects_contract_contradictions();
     failures += test_bridge_mcp_free_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();

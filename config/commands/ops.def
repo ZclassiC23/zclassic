@@ -162,9 +162,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "ops.debug.producer", "ops.debug", "ops.producer.status",
     "Read a producer datadir's fold progress + receipt",
-    "One producer datadir's fold cursor, receipt, and ETA read straight off "
-    "disk (not from a running node); reflects that datadir's last durable "
-    "checkpoint.", 0,
+    "One producer datadir's fold cursor, receipt, and anchor ETA read from "
+    "progress.kv (not process memory or human logs); reflects successful "
+    "durable apply samples and names the compiled anchor as its target.", 0,
     "producer,mint,anchor,receipt,fold,progress,eta",
     "zcl.ops_producer_status.input.v1", "zcl.ops_producer_status.v1",
     "datadir", "datadir",

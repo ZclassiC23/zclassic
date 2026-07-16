@@ -119,15 +119,25 @@ static void pvla_timed_wait_locked(int ms)
 
 enum pvla_attempt {
     PVLA_STORED,   /* verdict cached (or an identical one already was) */
-    PVLA_RETRY,    /* transiently unavailable — hold the height */
+    /* This height's block/header/body is unavailable.  It is safe to scan
+     * later heights: proof verification is a pure function of the selected
+     * block bytes + verifier, and the serial drive still owns the missing
+     * height.  When the drive reaches it, a cache miss verifies inline. */
+    PVLA_HEIGHT_GAP,
+    /* The verifier is globally unavailable (currently: canonical Sapling
+     * parameters are still loading).  Later shielded heights would have the
+     * same precondition, so retain the old hold-and-retry behavior instead of
+     * burning the complete lookahead window as misses. */
+    PVLA_GLOBAL_RETRY,
     PVLA_SKIP,     /* internal_error — never cached; the drive resolves inline */
 };
 
 static enum pvla_attempt pvla_verify_height(int32_t h)
 {
     struct block_index *bi = active_chain_at(&g_ms->chain_active, h);
-    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA) || !bi->phashBlock)
-        return PVLA_RETRY;
+    if (!bi || !(block_index_status_load(bi) & BLOCK_HAVE_DATA) ||
+        !bi->phashBlock)
+        return PVLA_HEIGHT_GAP;
     struct uint256 hash = *bi->phashBlock;   /* value snapshot before reading */
 
     struct block blk;
@@ -137,16 +147,15 @@ static enum pvla_attempt pvla_verify_height(int32_t h)
         : read_block_from_disk_index_pread(&blk, bi, g_datadir);
     if (!got) {
         block_free(&blk);
-        return PVLA_RETRY;
+        return PVLA_HEIGHT_GAP;
     }
-    /* Mirror the stage's sapling-params wait gate: a shielded block before the
-     * keys finish loading is a transient hold there, so it is a RETRY here —
-     * caching the internal_error the built-in verifier would report could
-     * otherwise never become a hit anyway (internal_error is never cached). */
+    /* Mirror the stage's Sapling-params wait gate: a shielded block before the
+     * keys finish loading is a global transient hold there, so it is a global
+     * retry here.  Later shielded heights share that unavailable verifier. */
     if (!g_verifier && proof_verify_block_has_shielded_proofs(&blk) &&
         !sapling_params_loaded()) {
         block_free(&blk);
-        return PVLA_RETRY;
+        return PVLA_GLOBAL_RETRY;
     }
 
     struct pvla_deltas d = {0};
@@ -213,11 +222,12 @@ static void *pvla_worker_entry(void *arg)
         enum pvla_attempt r = pvla_verify_height((int32_t)h);
 
         pthread_mutex_lock(&g_mu);
-        if (r == PVLA_RETRY) {
+        if (r == PVLA_GLOBAL_RETRY) {
             /* Hold the height: pull the claim cursor back so it is retried
-             * (by this or any worker) once the transient clears. A concurrent
-             * duplicate re-verify of an in-flight sibling height is idempotent
-             * (verdicts are pure) — only transiently wasteful, never wrong. */
+             * (by this or any worker) once the global verifier precondition
+             * clears. A concurrent duplicate re-verify of an in-flight sibling
+             * height is idempotent (verdicts are pure) — only transiently
+             * wasteful, never wrong. */
             if (g_next_claim > h)
                 g_next_claim = h;
             pvla_timed_wait_locked(PVLA_RETRY_WAIT_MS);

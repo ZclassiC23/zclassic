@@ -1,19 +1,20 @@
 /* Canonical root and discovery branch. Consumer defines ZCL_COMMAND_*.
  * Root order is a wire contract: status, core, app, dev, ops, discover, code. */
 
-ZCL_COMMAND_COMPAT_READ(
-    "status", "", "agent", "Compact node status and next action",
+ZCL_COMMAND_READY_READ(
+    "status", "", "", "Compact node status and next action",
     "Live node health, tip height, peer count, and the single most useful next "
     "action, read from the running node at call time; a named blocker replaces "
-    "height when sync is stalled.", 0,
-    "health,sync,height,peers,blocker", "zcl.command.empty_input.v1",
-    "zcl.public_status.v1", "", "", "zclassic23 status",
+    "height when sync is stalled. This is the canonical terse entry point; "
+    "use `core status` only for the full diagnostic document.", 4096,
+    "health,sync,height,peers,blocker,brief", "zcl.command.empty_input.v1",
+    "zcl.core_status_brief.v1", "", "", "zclassic23 status",
     ZCL_COMMAND_LAYER_ROOT, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
-    ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_CHAIN_READ,
-    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_REST |
-        ZCL_COMMAND_TRANSPORT_RPC | ZCL_COMMAND_TRANSPORT_MCP_LEGACY,
-    "zclassic23 status")
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT, ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_bridge_command)
 
 ZCL_COMMAND_BRANCH("core", "", "Consensus-bound node capabilities",
                    ZCL_COMMAND_LAYER_CORE)

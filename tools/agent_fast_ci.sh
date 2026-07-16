@@ -32,6 +32,7 @@ NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/zclassic23}"
 DEV_NODE_BIN="${ZCL_FAST_DEV_NODE_BIN:-build/bin/zclassic23-dev}"
 FAST_JOBS="${ZCL_FAST_JOBS:-}"
 IMPACT_RULES_FILE="${ZCL_FAST_IMPACT_RULES_FILE:-app/controllers/include/controllers/agent_impact_rules.def}"
+FROZEN_SOURCE_RECORD="${ZCL_FAST_BUILD_SOURCE_RECORD:-}"
 
 log() {
     printf '[agent-fast-ci] %s\n' "$*"
@@ -122,7 +123,10 @@ show_cache_stats() {
 
 make_fast() {
     resolve_fast_jobs
-    make -j"$FAST_JOBS" CC="$FAST_CC" "$@"
+    [ -n "$FROZEN_SOURCE_RECORD" ] ||
+        fail "internal source record was not prepared before nested Make"
+    make -j"$FAST_JOBS" CC="$FAST_CC" \
+        BUILD_SOURCE_RECORD="$FROZEN_SOURCE_RECORD" "$@"
 }
 
 fast_changed_files_only() {
@@ -349,6 +353,37 @@ capture_source_identity_record() {
     printf '%s %s %s\n' "$source_id" "$clean" "$mutation"
 }
 
+prepare_frozen_source_record() {
+    local source_id clean mutation extra
+
+    if [ -z "$FROZEN_SOURCE_RECORD" ]; then
+        FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
+            fail "exact source record capture failed"
+    fi
+    read -r source_id clean mutation extra <<< "$FROZEN_SOURCE_RECORD"
+    if ! is_sha256_hex "$source_id" || [ "$clean" != "1" ] ||
+       ! is_sha256_hex "$mutation" || [ -n "${extra:-}" ]; then
+        fail "ZCL_FAST_BUILD_SOURCE_RECORD must be '<sha256> 1 <sha256>'"
+    fi
+    # Normalize whitespace before this value becomes one command-line Make
+    # assignment.  Build-session acquire/final verification still compare it
+    # with the exact current source inventory.
+    FROZEN_SOURCE_RECORD="$source_id $clean $mutation"
+}
+
+cycle_source_identity_record() {
+    [ -n "$FROZEN_SOURCE_RECORD" ] || return 2
+    printf '%s\n' "$FROZEN_SOURCE_RECORD"
+}
+
+verify_frozen_source_record() {
+    local source_id clean mutation extra
+    read -r source_id clean mutation extra <<< "$FROZEN_SOURCE_RECORD"
+    [ -z "${extra:-}" ] || return 1
+    "$ROOT/tools/dev/source-identity.sh" verify-record \
+        "$source_id" "$clean" "$mutation" >/dev/null 2>&1
+}
+
 cache_manifest_file() {
     local label="$1" path="$2"
     if [ -f "$path" ]; then
@@ -362,7 +397,7 @@ cache_manifest_file() {
 
 cache_manifest() {
     local file status_line node_stat cc_version source_record clean
-    source_record="$(capture_source_identity_record)" || return 2
+    source_record="$(cycle_source_identity_record)" || return 2
     read -r CACHE_SOURCE_ID clean CACHE_SOURCE_MUTATION <<< "$source_record"
     printf 'cache_schema\t%s\n' "$CACHE_SCHEMA"
     printf 'fast_schema\t%s\n' "$SCHEMA"
@@ -400,7 +435,7 @@ cache_manifest() {
             printf 'git_status\t%s\n' "$status_line"
         done
 
-    for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh tools/z \
+    for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
         tools/dev/agent-doctor.sh \
@@ -456,6 +491,10 @@ cache_authority_selftest() {
     CACHE_TOOL=none
     FAST_JOBS=1
 
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
     first="$(cache_manifest)" || {
         rm -rf "$sandbox"
         return 1
@@ -476,6 +515,10 @@ cache_authority_selftest() {
     cp "$backup" source.txt
     chmod 600 source.txt
     chmod 644 source.txt
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
     third="$(cache_manifest)" || {
         rm -rf "$sandbox"
         return 1
@@ -541,6 +584,10 @@ maybe_fast_cache_hit() {
         rm -f "$CACHE_RECORD"
         return 1
     fi
+    if ! verify_frozen_source_record; then
+        log "fast result cache input was superseded during lookup"
+        return 1
+    fi
     log "fast result cache hit key=$CACHE_KEY; skipping previously proven source-wide lint/compile/test scope"
     return 0
 }
@@ -549,6 +596,10 @@ record_fast_cache_pass() {
     local old_key tmp
     [ "$CACHE_AVAILABLE" = "1" ] || return 0
     old_key="$CACHE_KEY"
+    if ! verify_frozen_source_record; then
+        log "fast result cache not stored; exact source record was superseded"
+        return 0
+    fi
     compute_cache_key || return 0
     if [ "$CACHE_KEY" != "$old_key" ]; then
         log "fast result cache not stored; inputs changed during run"
@@ -730,7 +781,7 @@ run_shell_checks() {
     local script
     log "shell checks"
     git diff --check
-    for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push \
+    for script in tools/agent_fast_ci.sh tools/githooks/pre-push \
         tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
         tools/dev/agent-doctor.sh \
@@ -963,14 +1014,27 @@ main() {
             cache_authority_selftest
             return
             ;;
+    esac
+
+    # One exact capture per direct cycle.  A parent Make/watcher can supply its
+    # already-captured record; nested Makes receive it on their command line so
+    # parsing does not rescan the tree.  Artifact sessions independently verify
+    # it before compilation and before publication.
+    prepare_frozen_source_record
+
+    case "$mode" in
         plan|plan-json|doctor-json)
             emit_plan_json
             return
             ;;
     esac
 
-    log "schema=$SCHEMA"
     select_compiler
+    if [ "$mode" = failure-execution-id ]; then
+        make_fast dev-failure-execution-id
+        return
+    fi
+    log "schema=$SCHEMA"
     resolve_fast_jobs
     log "compiler=$FAST_CC cache=$CACHE_TOOL jobs=$FAST_JOBS compile=$FAST_COMPILE"
     validate_changed_files_only

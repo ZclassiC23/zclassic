@@ -804,7 +804,11 @@ int main(int argc, char **argv)
         reaped++;
     }
 
-    /* All children reaped — replay their output in group order. */
+    /* All children reaped. Full-suite green output is intentionally compact:
+     * replaying hundreds of passing group logs produced ~46k lines / ~1M LLM
+     * tokens with no diagnostic value. Focused runs retain their one group's
+     * output, failures always replay their captured diagnostics, and --verbose
+     * remains the explicit full transcript. */
     struct timespec t_end;
     platform_time_monotonic_timespec(&t_end);
     double wall =
@@ -824,12 +828,15 @@ int main(int argc, char **argv)
         if (results[i].skip_markers > 0)
             snprintf(skip_note, sizeof(skip_note), ", %d SKIP",
                      results[i].skip_markers);
-        printf("\n==================== %s (%s%s, %.0fs) ====================\n",
-               g_groups[i].name,
-               results[i].signaled ? "SIGNALED" : (pass ? "PASS" : "FAIL"),
-               skip_note, results[i].wall_seconds);
         if (!pass) failed_groups++;
-        print_captured(results[i].out_path);
+        if (verbose || only || !pass) {
+            printf("\n==================== %s (%s%s, %.0fs) ====================\n",
+                   g_groups[i].name,
+                   results[i].signaled ? "SIGNALED" :
+                   (pass ? "PASS" : "FAIL"),
+                   skip_note, results[i].wall_seconds);
+            print_captured(results[i].out_path);
+        }
         if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
 

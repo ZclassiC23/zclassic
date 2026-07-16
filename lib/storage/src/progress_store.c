@@ -387,6 +387,30 @@ bool progress_store_path(char *out, size_t cap)
     return ok;
 }
 
+sqlite3 *progress_store_open_reader(void)
+{
+    sqlite3 *reader = NULL;
+    pthread_mutex_lock(&g_lock);
+    /* g_path is rooted at the directory descriptor retained for the lifetime
+     * of the singleton, so this cannot be redirected by a pathname swap. Hold
+     * g_lock through sqlite3_open_v2 so shutdown cannot close that capability
+     * between the snapshot and the open. */
+    bool available = atomic_load_explicit(&g_db, memory_order_acquire) != NULL &&
+                     g_path[0] != '\0';
+    int rc = available
+        ? sqlite3_open_v2(g_path, &reader,
+                          SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL)
+        : SQLITE_CANTOPEN;
+    pthread_mutex_unlock(&g_lock);
+    if (rc != SQLITE_OK) {
+        if (reader)
+            sqlite3_close(reader);
+        return NULL;
+    }
+    (void)sqlite3_busy_timeout(reader, 25);
+    return reader;
+}
+
 bool progress_store_directory_matches_fd(sqlite3 *db, int dir_fd)
 {
     if (!db || dir_fd < 0)

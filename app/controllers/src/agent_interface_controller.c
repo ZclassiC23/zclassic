@@ -136,7 +136,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "JSON rules, native C ownership, and shell/Python anti-patterns.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_interface.v1\", "
-        "\"preferred_transport\":\"mcp\", ... }\n");
+        "\"preferred_transport\":\"native_cli\", ... }\n");
 
     struct json_value transports, capabilities, machine, runtime, loop,
                       native_owned, avoid, versioning;
@@ -147,23 +147,23 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(result, "source_id_sha256",
                      zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
-    json_push_kv_str(result, "preferred_transport", "mcp");
+    json_push_kv_str(result, "preferred_transport", "native_cli");
     json_push_kv_str(result, "preferred_payload", "json");
     json_push_kv_str(result, "canonical_implementation",
                      "app/controllers/src/agent_interface_controller.c");
     json_push_kv_str(result, "capabilities_schema",
                      "zcl.agent_capability.v1");
     json_push_kv_str(result, "summary",
-                     "Use MCP for typed interactive agent work, native zclassic23 JSON for scripts and humans, REST only for public read-only mirrors.");
+                     "Use typed native zclassic23 commands for AI, scripts, and humans; MCP remains transitional during W2/W3 and REST is public read-only.");
 
     json_init(&transports);
     json_set_array(&transports);
-    agent_interface_push_transport(&transports, 1, "mcp", "zcl_agent_*",
-        "zcl_agent_interface", "typed JSON",
-        "interactive AI operations, typed parameters, tool discovery, and drill-downs");
-    agent_interface_push_transport(&transports, 2, "native_cli",
+    agent_interface_push_transport(&transports, 1, "native_cli",
         "zclassic23 agent*", "zclassic23 agentinterface", "stdout JSON",
-        "local terminal use, scripts, and zero-wrapper diagnostics");
+        "primary typed AI/operator commands, scripts, and zero-wrapper diagnostics");
+    agent_interface_push_transport(&transports, 2, "mcp", "zcl_agent_*",
+        "zcl_agent_interface", "typed JSON",
+        "transitional W2/W3 compatibility only; no new agent workflows");
     agent_interface_push_transport(&transports, 3, "rest",
         "GET /api/v1/agent", "GET /api/v1/agent", "HTTP JSON",
         "public read-only status and explorer-facing discovery");
@@ -187,19 +187,19 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&machine);
     json_set_object(&machine);
-    json_push_kv_str(&machine, "schema", "zcl.agent_machine_contract.v1");
+    json_push_kv_str(&machine, "schema", "zcl.agent_machine_contract.v2");
     json_push_kv_str(&machine, "payload", "json_object");
     json_push_kv_bool(&machine, "schema_required", true);
     json_push_kv_bool(&machine, "api_version_required", true);
     json_push_kv_bool(&machine, "status_required", true);
-    json_push_kv_bool(&machine, "append_only_v1", true);
+    json_push_kv_bool(&machine, "append_only_v2", true);
     json_push_kv_bool(&machine, "transport_equivalent_payloads", true);
     json_push_kv_bool(&machine, "no_python_required", true);
-    json_push_kv_bool(&machine, "no_tools_z_required", true);
+    json_push_kv_bool(&machine, "typed_native_commands_required", true);
     json_push_kv_str(&machine, "preferred_error_style",
-                     "structured MCP error envelope or JSON object with schema/status/error");
+                     "zcl.result.v1 or another typed native JSON object; transitional MCP errors remain structured");
     json_push_kv_str(&machine, "compatibility_rule",
-                     "Agents may rely on existing field meanings; new optional fields are additive until v2.");
+                     "Agents may rely on existing field meanings; new optional fields are additive until v3.");
     json_push_kv(result, "machine_contract", &machine);
     json_free(&machine);
 
@@ -220,30 +220,32 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&loop);
     json_set_object(&loop);
+    json_push_kv_str(&loop, "status", "zclassic23 status");
+    agent_push_contract_native_field_json(&loop, "full_compatibility_status",
+                                          "agent");
     agent_push_contract_native_field_json(&loop, "discover",
                                           "agentinterface");
-    agent_push_contract_mcp_field_json(&loop, "status", "agent");
-    agent_push_contract_mcp_field_json(&loop, "mirror_status",
-                                       "getmirrorstatus");
-    agent_push_contract_mcp_field_json(&loop, "lane_topology",
-                                       "agentlanes");
-    agent_push_contract_mcp_field_json(&loop, "liveness",
-                                       "agentliveness");
-    agent_push_contract_mcp_field_json(&loop, "code_map", "agentmap");
-    agent_push_contract_mcp_field_json(&loop, "changed_files_to_tests",
-                                       "agentimpact");
-    agent_push_contract_mcp_field_json(&loop, "build_contract",
-                                       "agentbuild");
-    agent_push_contract_mcp_field_json(&loop, "ops_command_center",
-                                       "agentops");
-    agent_push_contract_mcp_field_json(&loop, "contract_registry",
-                                       "agentcontracts");
-    agent_push_contract_mcp_field_json(&loop, "deploy_guard",
-                                       "agentdeployguard");
-    agent_push_contract_mcp_field_json(&loop, "subsystem_state",
-                                       "dumpstate");
-    agent_push_contract_mcp_field_json(&loop, "logs", "getnodelog");
-    agent_push_contract_mcp_field_json(&loop, "database", "dbquery");
+    agent_push_contract_native_field_json(&loop, "mirror_status",
+                                          "getmirrorstatus");
+    agent_push_contract_native_field_json(&loop, "lane_topology",
+                                          "agentlanes");
+    agent_push_contract_native_field_json(&loop, "liveness",
+                                          "agentliveness");
+    agent_push_contract_native_field_json(&loop, "code_map", "agentmap");
+    agent_push_contract_native_field_json(&loop, "changed_files_to_tests",
+                                          "agentimpact");
+    agent_push_contract_native_field_json(&loop, "build_contract",
+                                          "agentbuild");
+    agent_push_contract_native_field_json(&loop, "ops_command_center",
+                                          "agentops");
+    agent_push_contract_native_field_json(&loop, "contract_registry",
+                                          "agentcontracts");
+    agent_push_contract_native_field_json(&loop, "deploy_guard",
+                                          "agentdeployguard");
+    agent_push_contract_native_field_json(&loop, "subsystem_state",
+                                          "dumpstate");
+    agent_push_contract_native_field_json(&loop, "logs", "getnodelog");
+    agent_push_contract_native_field_json(&loop, "database", "dbquery");
     json_push_kv_str(&loop, "quality_lanes", "make quality-linger-status");
     json_push_kv(result, "development_loop", &loop);
     json_free(&loop);
@@ -262,8 +264,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&avoid);
     json_set_array(&avoid);
-    agent_interface_push_str(&avoid,
-                             "do not add new operator logic to tools/z");
+    agent_interface_push_str(
+        &avoid,
+        "do not add external operator wrappers; use typed native "
+        "zclassic23 commands");
     agent_interface_push_str(&avoid,
                              "do not require Python to parse agent API JSON");
     agent_interface_push_str(&avoid,

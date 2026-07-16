@@ -4,7 +4,7 @@
  * implementation translation units. NOT a public header: nothing outside
  * lib/codeindex/src/ includes this.
  *
- * Holds the store handle API (a dedicated single-writer SQLite WAL below the
+ * Holds the store handle API (a dedicated derived SQLite store below the
  * AR layer, exactly like lib/vcs's index.kv), the source enumerator, the C
  * scanner, the depfile parser, and the group taxonomy — the pieces the public
  * query/build surfaces are assembled from.
@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 
 #define CI_PATH_MAX 4096
 
@@ -30,11 +31,17 @@ struct codeindex {
     char             root[CI_PATH_MAX];
 };
 
-/* ── store: derived SQLite WAL at <root>/.codeindex/index.kv ──────────
+/* ── store: derived SQLite DB at <root>/.codeindex/index.kv ───────────
  * Raw sqlite3_step in the store carries `// raw-sql-ok:codeindex-derived`. */
-struct ci_store *ci_store_open(const char *root);       /* the canonical db */
+/* Canonical generations are query-only. NULL also means "not published yet";
+ * only the rebuild path may create a writable staging database. */
+struct ci_store *ci_store_open(const char *root);
 struct ci_store *ci_store_open_path(const char *dbpath);/* an explicit path (tmp build) */
 void             ci_store_close(struct ci_store *s);
+
+/* Lazy-open refresh: coalesces concurrent stale opens under the cross-process
+ * rebuild lock. Public codeindex_rebuild() remains a forced recompute. */
+bool ci_codeindex_refresh(struct codeindex *ci);
 
 /* single-writer transaction control */
 bool ci_store_begin(struct ci_store *s);
@@ -54,6 +61,9 @@ bool ci_store_put_ref(struct ci_store *s, const char *callee,
 bool ci_store_put_group(struct ci_store *s, const struct ci_group *g);
 bool ci_store_meta_set(struct ci_store *s, const char *k, const void *v,
                        size_t vlen);
+/* Serialize a committed in-memory store directly into an already-open private
+ * regular-file capability. No pathname is opened or followed. */
+bool ci_store_write_image_fd(struct ci_store *s, int fd);
 
 /* reads (self-locking; no open txn required) */
 bool ci_store_meta_get(struct ci_store *s, const char *k, void *buf,
@@ -84,9 +94,15 @@ void ci_symbol_row_hash(const struct ci_symbol *sym, uint8_t out[32]);
  * Deterministic, sorted, repo-relative .c/.h paths across the configured
  * roots (lib/<mod>/{src,include}, app/<shape>/{src,include}, core, config/src,
  * tools, domain, adapters). cb returns false to abort. */
-typedef bool (*ci_enum_cb)(const char *relpath, int64_t mtime_ns,
-                           int64_t size, void *user);
+typedef bool (*ci_enum_cb)(const char *relpath, const struct stat *st,
+                           void *user);
 bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user);
+/* Fast freshness key for an exact source root already sealed in a generation.
+ * It binds path + inode + size + mtime + ctime and never reads file bytes. */
+bool ci_source_stat_root_sha3(const char *root, uint8_t out[32]);
+/* Exact bytes and their metadata cache key from the same opened inodes. */
+bool ci_source_roots_sha3(const char *root, uint8_t exact_out[32],
+                          uint8_t stat_out[32]);
 
 /* ── the C scanner (codeindex_scan.c) ─────────────────────────────────
  * Scan one in-tree file's text. Emits symbols and refs through callbacks.
@@ -116,7 +132,22 @@ void ci_scan_text(const char *src, size_t len, const char *relpath,
  * in-tree prerequisites. */
 typedef void (*ci_dep_cb)(const char *src_relpath, const char *dep_relpath,
                           void *user);
-bool ci_deps_scan(const char *root, ci_dep_cb cb, void *user);
+/* Deterministically scan sorted .d inputs below build/. `cb` may be NULL for a
+ * digest-only freshness check. out_root binds the exact depfile bytes parsed,
+ * including an explicit marker when build/ is absent. */
+bool ci_deps_scan(const char *root, ci_dep_cb cb, void *user,
+                  uint8_t out_root[32]);
+bool ci_deps_scan_roots(const char *root, ci_dep_cb cb, void *user,
+                        uint8_t exact_out[32], uint8_t stat_out[32]);
+/* Metadata cache key for ci_deps_scan's exact root. Historical compile epochs
+ * are excluded by both functions; this path reads no depfile content. */
+bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32]);
+
+#ifdef ZCL_TESTING
+void ci_test_note_exact_bytes(uint64_t bytes);
+#else
+#define ci_test_note_exact_bytes(...) ((void)0)
+#endif
 
 /* ── group taxonomy (codeindex_group.c) ───────────────────────────────*/
 /* Map a repo-relative path to its group id (e.g. "lib/net", "app/services",

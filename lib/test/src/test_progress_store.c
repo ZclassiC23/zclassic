@@ -113,6 +113,21 @@ int test_progress_store(void)
                  rc == SQLITE_OK);
         sqlite3_finalize(st_check);
 
+        /* Observational status readers use their own WAL connection rather
+         * than queueing behind the reducer's shared-handle transaction lock. */
+        sqlite3 *reader = progress_store_open_reader();
+        PS_CHECK("independent read-only connection opens",
+                 reader != NULL && reader != progress_store_db());
+        st_check = NULL;
+        rc = reader ? sqlite3_prepare_v2(
+            reader, "SELECT COUNT(*) FROM stage_cursor", -1, &st_check, NULL)
+                    : SQLITE_CANTOPEN;
+        PS_CHECK("independent reader sees stage_cursor", rc == SQLITE_OK);
+        if (st_check)
+            sqlite3_finalize(st_check);
+        if (reader)
+            sqlite3_close(reader);
+
         /* Different dir is rejected (one process, one store). */
         char dir2[256];
         ps_tmpdir(dir2, sizeof(dir2), "open_other");
@@ -208,6 +223,8 @@ int test_progress_store(void)
     {
         PS_CHECK("open(NULL) rejected", !progress_store_open(NULL));
         PS_CHECK("open(\"\") rejected", !progress_store_open(""));
+        PS_CHECK("reader unavailable while closed",
+                 progress_store_open_reader() == NULL);
         PS_CHECK("dump(NULL) rejected",
                  !progress_store_dump_state_json(NULL, NULL));
     }

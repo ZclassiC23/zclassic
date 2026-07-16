@@ -420,13 +420,12 @@ bool zcl_command_reply_add_next(struct zcl_command_reply *reply,
                                 const char *command, const char *input_json,
                                 const char *reason)
 {
-    if (!reply || !command || !command[0] ||
+    if (!reply || !command || !command[0] || !input_json || !input_json[0] ||
         reply->next_count >= ZCL_COMMAND_MAX_NEXT)
         return false;
     struct zcl_command_next *next = &reply->next[reply->next_count];
     if (!copy_string(next->command, sizeof(next->command), command) ||
-        !copy_string(next->input_json, sizeof(next->input_json),
-                     input_json && input_json[0] ? input_json : "{}") ||
+        !copy_string(next->input_json, sizeof(next->input_json), input_json) ||
         !copy_string(next->reason, sizeof(next->reason), reason))
         return false;
     reply->next_count++;
@@ -809,6 +808,27 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             return false;
         }
     }
+
+    /* Required discovery inputs appear in every error path, so accepting `{}`
+     * here would let a malformed next action false-green before failing on
+     * invocation. `discover.help` deliberately shares the path-input schema
+     * but makes path optional, so bind requiredness to the exact leaf until
+     * required-key metadata is promoted into the catalog. */
+    const char *required_key = NULL;
+    if (strcmp(spec->path, "discover.search") == 0)
+        required_key = "query";
+    else if (strcmp(spec->path, "discover.describe") == 0 ||
+             strcmp(spec->path, "discover.schema") == 0)
+        required_key = "path";
+    if (required_key) {
+        const char *value = json_get_str(json_get(input, required_key));
+        if (!value || !value[0]) {
+            if (why)
+                snprintf(why, why_size, "missing required input key '%s'",
+                         required_key);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -974,7 +994,7 @@ size_t zcl_command_registry_menu_json(const struct zcl_command_registry *registr
         json_init(&empty);
         json_set_object(&next);
         json_set_object(&empty);
-        ok = ok && json_push_kv_str(&next, "command", "discover.help") &&
+        ok = ok && json_push_kv_str(&next, "command", "discover.describe") &&
              json_push_kv_str(&empty, "path", next_path) &&
              json_push_kv(&next, "input", &empty) &&
              json_push_kv(&root, "next", &next);
@@ -1303,8 +1323,28 @@ static bool lane_allowed(const struct zcl_command_spec *spec,
     return false;
 }
 
+static bool reply_add_describe_next(struct zcl_command_reply *reply,
+                                    const struct zcl_command_spec *spec,
+                                    const char *reason)
+{
+    if (!reply || !spec || !spec->path)
+        return false;
+    if (strcmp(spec->path, "discover.describe") == 0)
+        return zcl_command_reply_add_next(
+            reply, "discover.help", "{}",
+            "inspect the discovery surface and choose a valid leaf");
+    char input[ZCL_COMMAND_MAX_PATH + 16];
+    int n = snprintf(input, sizeof(input), "{\"path\":\"%s\"}",
+                     spec->path);
+    return n > 0 && (size_t)n < sizeof(input) &&
+           zcl_command_reply_add_next(reply, "discover.describe", input,
+                                      reason);
+}
+
 static bool push_next_array(struct json_value *root,
-                            const struct zcl_command_reply *reply)
+                            const struct zcl_command_reply *reply,
+                            const struct zcl_command_registry *registry,
+                            const struct zcl_command_spec *current_spec)
 {
     struct json_value array;
     json_init(&array);
@@ -1319,8 +1359,19 @@ static bool push_next_array(struct json_value *root,
                        strlen(reply->next[i].input_json)) ||
             input.type != JSON_OBJ) {
             json_free(&input);
-            json_init(&input);
-            json_set_object(&input);
+            ok = false;
+            break;
+        }
+        const struct zcl_command_spec *next_spec =
+            zcl_command_registry_find(registry, reply->next[i].command, NULL);
+        char why[160] = {0};
+        if (!next_spec || command_is_branch(next_spec) ||
+            (current_spec && strcmp(next_spec->path, current_spec->path) == 0) ||
+            !zcl_command_registry_input_validate(next_spec, &input, why,
+                                                 sizeof(why))) {
+            json_free(&input);
+            ok = false;
+            break;
         }
         ok = json_push_kv_str(&item, "command", reply->next[i].command) &&
              json_push_kv(&item, "input", &input) &&
@@ -1359,7 +1410,8 @@ static bool push_error(struct json_value *root,
     return ok;
 }
 
-static size_t serialize_reply(const struct zcl_command_spec *spec,
+static size_t serialize_reply(const struct zcl_command_registry *registry,
+                              const struct zcl_command_spec *spec,
                               struct zcl_command_reply *reply,
                               bool invoked_by_alias,
                               uint64_t request_sequence,
@@ -1396,15 +1448,12 @@ static size_t serialize_reply(const struct zcl_command_spec *spec,
          * point the caller at this command's contract so a bare failure always
          * carries a next step. */
         if (reply->next_count == 0) {
-            char describe_input[ZCL_COMMAND_MAX_PATH + 16];
-            (void)snprintf(describe_input, sizeof(describe_input),
-                           "{\"path\":\"%s\"}", spec->path);
-            (void)zcl_command_reply_add_next(
-                reply, "discover.describe", describe_input,
+            (void)reply_add_describe_next(
+                reply, spec,
                 "inspect this command's contract and availability");
         }
     }
-    ok = ok && push_next_array(&root, reply);
+    ok = ok && push_next_array(&root, reply, registry, spec);
     size_t contract = successful
                           ? (spec->budget_bytes > 0
                                  ? (size_t)spec->budget_bytes
@@ -1429,10 +1478,10 @@ size_t zcl_command_registry_execute_json(
     size_t max_items, const char *cursor,
     char *out, size_t out_size, enum zcl_command_exit *exit_code)
 {
-    (void)registry;
     if (exit_code)
         *exit_code = ZCL_COMMAND_EXIT_INTERNAL;
-    if (!spec || command_is_branch(spec) || !input || input->type != JSON_OBJ)
+    if (!registry || !spec || command_is_branch(spec) || !input ||
+        input->type != JSON_OBJ)
         return 0;
 
     /* Consult the hot-swap override snapshot for this resolved leaf before
@@ -1460,8 +1509,8 @@ size_t zcl_command_registry_execute_json(
                                "dispatch", false, false,
                                "command is declared but not implemented",
                                spec->availability_reason);
-        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
-                                         "inspect availability and replacement");
+        (void)reply_add_describe_next(
+            &reply, spec, "inspect availability and replacement");
     } else if (!handler) {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED,
@@ -1469,8 +1518,8 @@ size_t zcl_command_registry_execute_json(
                                false,
                                "canonical adapter is not executable yet",
                                spec->compat_target);
-        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
-                                         "inspect the compatibility target");
+        (void)reply_add_describe_next(
+            &reply, spec, "inspect the compatibility target");
     } else if (!lane_allowed(spec, context)) {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_DENIED, "LANE_DENIED",
@@ -1478,8 +1527,8 @@ size_t zcl_command_registry_execute_json(
                                "command is not allowed in this lane",
                                context && context->operator_lane
                                    ? context->operator_lane : "unknown");
-        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
-                                         "inspect the declared lane scope");
+        (void)reply_add_describe_next(
+            &reply, spec, "inspect the declared lane scope");
     } else if (context && spec->authority > context->authority_ceiling) {
         /* Fail closed: the session's authority ceiling (derived once from its
          * role via the authz policy table) is below what this leaf requires.
@@ -1491,8 +1540,8 @@ size_t zcl_command_registry_execute_json(
                                "authorize", false, false,
                                "command authority exceeds the session ceiling",
                                zcl_command_authority_name(spec->authority));
-        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
-                                         "inspect the required authority");
+        (void)reply_add_describe_next(
+            &reply, spec, "inspect the required authority");
     } else if (context &&
                (spec->required_capabilities &
                 ~context->granted_capabilities) != 0) {
@@ -1501,8 +1550,8 @@ size_t zcl_command_registry_execute_json(
                                "CAPABILITY_DENIED", "authorize", false,
                                false, "required capability was not granted",
                                spec->path);
-        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
-                                         "inspect required capabilities");
+        (void)reply_add_describe_next(
+            &reply, spec, "inspect required capabilities");
     } else {
         struct zcl_command_request request = {
             .spec = spec,
@@ -1533,9 +1582,11 @@ size_t zcl_command_registry_execute_json(
     int64_t elapsed_us = platform_time_monotonic_us() - started_us;
     uint64_t sequence = atomic_fetch_add_explicit(&g_request_sequence, 1,
                                                    memory_order_relaxed);
-    size_t result = serialize_reply(spec, &reply, invoked_by_alias, sequence,
-                                    elapsed_us, budget_bytes,
-                                    out, out_size);
+    const struct zcl_command_registry *next_registry =
+        context && context->registry ? context->registry : registry;
+    size_t result = serialize_reply(next_registry, spec, &reply,
+                                    invoked_by_alias, sequence, elapsed_us,
+                                    budget_bytes, out, out_size);
     if (result == 0) {
         static const char fallback[] =
             "{\"schema\":\"zcl.result.v1\",\"command\":\"internal\","

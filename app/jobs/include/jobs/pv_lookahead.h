@@ -15,8 +15,12 @@
  *   - a verdict is consumed only on an exact (height, block_hash, verifier,
  *     verifier_user) match — a reorg or verifier swap is a cache MISS, never a
  *     wrong verdict; on any miss the stage verifies inline exactly as today;
- *   - internal_error results (params not loaded, alloc failure, read fault)
- *     are NEVER cached, so the stage's TL-2 HOLD path always runs inline;
+ *   - a body/data gap at one height does not stop workers from verifying later
+ *     readable heights in the same window.  The skipped height remains an
+ *     ordinary cache miss that the serial drive retries inline; globally
+ *     unavailable verifier parameters still hold the pool at that height;
+ *   - internal_error results (allocation/verifier faults) are NEVER cached, so
+ *     the stage's TL-2 HOLD path always runs inline;
  *   - the verdict carries the counter deltas of the serial stop-at-first-
  *     failure reduce, applied by the drive in serial height order.
  *

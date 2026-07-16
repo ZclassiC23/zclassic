@@ -34,11 +34,13 @@ holds the corrected checkpoint, so its terminal gate at the anchor will pass
 this time. Watch it:
 
 ```bash
-systemctl --user status zclassic23-mint.service
-tail -n 3 ~/.zclassic-c23-mint/mint-progress.log     # cm:/pv: telemetry, rate, ETA
+zclassic23 ops producer status --datadir="$HOME/.zclassic-c23-mint"
 ```
 
-Rate ≈32 blk/s, ETA ≈24 h, proof-verify (`pv`) dominant (~70% of block time) —
+The native command reports durable height and a successful-apply rate/ETA to
+the compiled anchor from `progress.kv`; it does not mistake the human log or
+the later replay/copy-proof/cutover work for sync authority. Proof-verify (`pv`)
+is currently dominant (~70% of block time) —
 `pv` cross-height parallelism is designed/in-flight to cut this to a few hours
 (plan `research-this-node-it-clever-dawn.md` W4-0). The OLD failed producer
 datadir `~/.zclassic-c23-mint-receipt` (binary
@@ -122,8 +124,9 @@ references historical `blk00049.dat` under the legacy block corpus while the
 canonical C23 block directory contains only `blk00000.dat`; repair must be
 proved on a datadir copy, never by live symlink/surgery. The complete shielded-
 state sovereign cure remains required. Verify live before trusting this file:
-`./tools/z mirror --json`, then `./tools/z state reducer_frontier` and
-`./tools/z advance`.
+`build/bin/zclassic23 getmirrorstatus`, then
+`build/bin/zclassic23 dumpstate reducer_frontier` and
+`build/bin/zclassic23 dumpstate chain_advance_coordinator`.
 
 The containment latch that §0-NEW's "how it lifts" describes is the resolution
 of the 2026-07-15 red-team finding that bundle provenance was self-asserted;

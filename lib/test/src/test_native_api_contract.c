@@ -25,12 +25,22 @@
 #include "test/test_helpers.h"
 
 #include "config/command_catalog.h"
+#include "dev_failure_store.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "json/json.h"
 
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static const struct zcl_command_spec *find_spec(
     const struct zcl_command_registry *reg, const char *path)
@@ -197,7 +207,6 @@ static int test_root_and_discover_aliases_resolve(void)
     const struct zcl_command_registry *reg = zcl_command_catalog();
     TEST("declared aliases resolve to their canonical leaf via CLI words") {
         struct { const char *word; const char *canonical; } cases[] = {
-            { "agent", "status" },
             { "help", "discover.help" },
             { "search", "discover.search" },
         };
@@ -254,6 +263,250 @@ static int test_missing_required_input_fails_closed_structured(void)
                            cases[c].expected_code);
             ASSERT(strstr(out, code_needle) != NULL);
         }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static size_t exec_dev_handler(
+    const char *path, zcl_command_handler_fn handler, const char *source_root,
+    const struct json_value *input, const char *view,
+    char *out, size_t out_size, enum zcl_command_exit *exit_code)
+{
+    const struct zcl_command_registry *catalog = zcl_command_catalog();
+    const struct zcl_command_spec *declared = find_spec(catalog, path);
+    if (!declared)
+        return 0;
+    struct zcl_command_spec executable = *declared;
+    executable.availability = ZCL_COMMAND_READY;
+    executable.availability_reason = "";
+    executable.compat_target = "";
+    executable.handler = handler;
+    struct zcl_command_registry local = {
+        .commands = &executable,
+        .count = 1,
+    };
+    struct zcl_command_context context = {
+        .registry = catalog,
+        .source_root = source_root,
+        .operator_lane = "dev",
+        .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        .dev_build = true,
+    };
+    return zcl_command_registry_execute_json(
+        &local, &executable, &context, input, false, path,
+        view ? view : "normal", 0, 0, NULL, out, out_size, exit_code);
+}
+
+static bool validate_emitted_next(const struct json_value *root,
+                                  size_t index, const char *expected_command)
+{
+    const struct json_value *next = json_get(root, "next");
+    if (!next || next->type != JSON_ARR || index >= next->num_children)
+        return false;
+    const struct json_value *item = &next->children[index];
+    const struct json_value *command = json_get(item, "command");
+    const struct json_value *input = json_get(item, "input");
+    if (!command || command->type != JSON_STR ||
+        strcmp(json_get_str(command), expected_command) != 0 ||
+        !input || input->type != JSON_OBJ)
+        return false;
+    const struct zcl_command_spec *next_spec =
+        find_spec(zcl_command_catalog(), expected_command);
+    char why[160] = {0};
+    return next_spec &&
+           zcl_command_registry_input_validate(next_spec, input, why,
+                                               sizeof(why));
+}
+
+static bool run_dev_failure_api_fixture(void)
+{
+    bool ok = false;
+    char home[PATH_MAX], repo[PATH_MAX];
+    char *saved_home = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
+    if (getenv("HOME") && !saved_home)
+        return false;
+    test_make_tmpdir(home, sizeof(home), "native_api", "dev_failure");
+    if (snprintf(repo, sizeof(repo), "%s/repo", home) <= 0 ||
+        mkdir(repo, 0700) != 0 || setenv("HOME", home, 1) != 0)
+        goto cleanup;
+
+#define API_REQUIRE(expr)                                                    \
+    do {                                                                     \
+        if (!(expr)) {                                                       \
+            fprintf(stderr, "dev-failure API fixture failed at %s:%d: %s\n", \
+                    __FILE__, __LINE__, #expr);                              \
+            goto cleanup;                                                    \
+        }                                                                    \
+    } while (0)
+
+    struct json_value empty;
+    json_init(&empty);
+    json_set_object(&empty);
+    char out[16384];
+    enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+    size_t len = exec_dev_handler(
+        "dev.diagnose.latest", zcl_native_handle_dev_diagnose_latest, repo,
+        &empty, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && len <= 2048 && exit_code == ZCL_COMMAND_EXIT_OK);
+    struct json_value root;
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    const struct json_value *data = json_get(&root, "data");
+    API_REQUIRE(data && data->type == JSON_OBJ);
+    API_REQUIRE(strcmp(json_get_str(json_get(data, "schema")),
+                       "zcl.dev_failure_latest_result.v1") == 0);
+    API_REQUIRE(json_get(data, "found") &&
+                !json_get(data, "found")->val.b);
+    API_REQUIRE(json_get(&root, "next")->num_children == 0);
+    json_free(&root);
+
+    char source[65], mutation[65], execution[65];
+    memset(source, 'a', 64);
+    memset(mutation, 'b', 64);
+    memset(execution, 'c', 64);
+    source[64] = mutation[64] = execution[64] = 0;
+    char first_error[511], capsule[1023];
+    first_error[0] = 'x';
+    for (size_t i = 1; i < sizeof(first_error) - 1; i++)
+        first_error[i] = i % 2 ? '"' : '\\';
+    first_error[sizeof(first_error) - 1] = 0;
+    for (size_t i = 0; i < sizeof(capsule) - 1; i++)
+        capsule[i] = i % 2 ? '"' : '\\';
+    capsule[sizeof(capsule) - 1] = 0;
+    struct zcl_dev_failure_record record;
+    char why[192] = {0};
+    API_REQUIRE(zcl_dev_failure_record_failure(
+        repo, source, mutation, execution, "verify.compile", first_error,
+        capsule, "dev.ff", &record, why, sizeof(why)));
+
+    len = exec_dev_handler(
+        "dev.diagnose.latest", zcl_native_handle_dev_diagnose_latest, repo,
+        &empty, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && len <= 2048 && exit_code == ZCL_COMMAND_EXIT_OK);
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    data = json_get(&root, "data");
+    API_REQUIRE(data && json_get(data, "found")->val.b);
+    API_REQUIRE(strcmp(json_get_str(json_get(data, "failure_id")),
+                       record.failure_id) == 0);
+    API_REQUIRE(validate_emitted_next(&root, 0, "dev.diagnose.show"));
+    const struct json_value *next = json_get(&root, "next");
+    const struct json_value *next_input =
+        json_get(&next->children[0], "input");
+    API_REQUIRE(strcmp(json_get_str(json_get(next_input, "failure_id")),
+                       record.failure_id) == 0);
+    json_free(&root);
+
+    struct json_value ref;
+    json_init(&ref);
+    json_set_object(&ref);
+    API_REQUIRE(json_push_kv_str(&ref, "failure_id", record.failure_id));
+    len = exec_dev_handler(
+        "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
+        &ref, "summary", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && len <= 2048 && exit_code == ZCL_COMMAND_EXIT_OK);
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    data = json_get(&root, "data");
+    API_REQUIRE(data && strcmp(json_get_str(json_get(data, "schema")),
+                               "zcl.dev_failure_show.v1") == 0);
+    API_REQUIRE(!json_get(data, "record_sha3"));
+    API_REQUIRE(!json_get(data, "failure_capsule"));
+    API_REQUIRE(validate_emitted_next(&root, 0, "dev.ff"));
+    json_free(&root);
+
+    len = exec_dev_handler(
+        "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
+        &ref, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && len <= 2048 && exit_code == ZCL_COMMAND_EXIT_OK);
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    data = json_get(&root, "data");
+    API_REQUIRE(json_get(data, "record_sha3") != NULL);
+    API_REQUIRE(json_get(data, "first_source_mutation_sha256") != NULL);
+    API_REQUIRE(json_get(data, "first_execution_id_sha3") != NULL);
+    API_REQUIRE(json_get(data, "capsule_available")->val.b);
+    API_REQUIRE(!json_get(data, "failure_capsule"));
+    json_free(&root);
+
+    len = exec_dev_handler(
+        "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
+        &ref, "full", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && len <= 6144 && exit_code == ZCL_COMMAND_EXIT_OK);
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    data = json_get(&root, "data");
+    API_REQUIRE(strcmp(json_get_str(json_get(data, "failure_capsule")),
+                       capsule) == 0);
+    API_REQUIRE(strcmp(json_get_str(json_get(data, "retry_command")),
+                       "dev.ff") == 0);
+    json_free(&root);
+
+    char uppercase[65];
+    memset(uppercase, 'A', 64);
+    uppercase[64] = 0;
+    json_free(&ref);
+    json_init(&ref);
+    json_set_object(&ref);
+    API_REQUIRE(json_push_kv_str(&ref, "failure_id", uppercase));
+    len = exec_dev_handler(
+        "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
+        &ref, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && exit_code == ZCL_COMMAND_EXIT_INVALID);
+    API_REQUIRE(strstr(out, "\"code\":\"INVALID_FAILURE_ID\"") != NULL);
+
+    char missing[65];
+    memset(missing, 'f', 64);
+    missing[64] = 0;
+    json_free(&ref);
+    json_init(&ref);
+    json_set_object(&ref);
+    API_REQUIRE(json_push_kv_str(&ref, "failure_id", missing));
+    len = exec_dev_handler(
+        "dev.diagnose.show", zcl_native_handle_dev_diagnose_show, repo,
+        &ref, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && exit_code == ZCL_COMMAND_EXIT_FAILED);
+    API_REQUIRE(strstr(out, "\"code\":\"FAILURE_NOT_FOUND\"") != NULL);
+    json_init(&root);
+    API_REQUIRE(json_read(&root, out, len));
+    API_REQUIRE(validate_emitted_next(&root, 0, "dev.diagnose.latest"));
+    json_free(&root);
+
+    char latest_path[PATH_MAX];
+    API_REQUIRE(snprintf(
+        latest_path, sizeof(latest_path),
+        "%s/.local/state/zclassic23-dev/workspaces/%s/latest-failure.json",
+        home, record.workspace_id) > 0);
+    int fd = open(latest_path, O_WRONLY | O_CLOEXEC);
+    API_REQUIRE(fd >= 0 && pwrite(fd, "X", 1, 0) == 1 && close(fd) == 0);
+    len = exec_dev_handler(
+        "dev.diagnose.latest", zcl_native_handle_dev_diagnose_latest, repo,
+        &empty, "normal", out, sizeof(out), &exit_code);
+    API_REQUIRE(len > 0 && exit_code == ZCL_COMMAND_EXIT_INTERNAL);
+    API_REQUIRE(strstr(out, "\"code\":\"FAILURE_STORE_INVALID\"") != NULL);
+
+    json_free(&ref);
+    json_free(&empty);
+    ok = true;
+
+cleanup:
+    if (saved_home) {
+        (void)setenv("HOME", saved_home, 1);
+        free(saved_home);
+    } else
+        (void)unsetenv("HOME");
+    test_rm_rf_recursive(home);
+#undef API_REQUIRE
+    return ok;
+}
+
+static int test_dev_failure_native_api(void)
+{
+    int failures = 0;
+    TEST("native API: compiler failure projections are bounded, typed, and fail closed") {
+        ASSERT(run_dev_failure_api_fixture());
         PASS();
     } _test_next:;
     return failures;
@@ -317,6 +570,7 @@ int test_native_api_contract(void)
     failures += test_every_leaf_dot_path_resolves_from_cli_words();
     failures += test_root_and_discover_aliases_resolve();
     failures += test_missing_required_input_fails_closed_structured();
+    failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;

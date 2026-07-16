@@ -24,6 +24,7 @@
 #include "json/json.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -185,6 +186,17 @@ static int test_profile_samples_threads(void)
 
 static bool producer_status_exec(sqlite3 *db, const char *sql);
 
+#ifdef ZCL_TESTING
+void consensus_state_producer_status_test_set_after_first_cursor_hook(
+    void (*hook)(void *), void *ctx);
+int64_t zcl_native_producer_applied_height_for_test(
+    const struct producer_status_read *st);
+bool consensus_state_producer_status_rate_window_current_for_test(
+    const struct producer_status_read *status,
+    int64_t older_time_unix, int64_t newer_height,
+    int64_t newer_time_unix);
+#endif
+
 static int test_producer_status_synthetic(void)
 {
     int failures = 0;
@@ -198,6 +210,20 @@ static int test_producer_status_synthetic(void)
         ASSERT(db != NULL);
         ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
         ASSERT(stage_set_named_cursor(db, "tip_finalize", 12300));
+        ASSERT(producer_status_exec(
+            db,
+            "CREATE TABLE utxo_apply_log("
+            "height INTEGER PRIMARY KEY,status TEXT NOT NULL,"
+            "ok INTEGER NOT NULL,spent_count INTEGER NOT NULL,"
+            "added_count INTEGER NOT NULL,total_value_delta INTEGER NOT NULL,"
+            "first_failure_kind TEXT,first_failure_detail BLOB,"
+            "applied_at INTEGER NOT NULL);"
+            "INSERT INTO utxo_apply_log VALUES("
+            "12000,'ok',1,0,0,0,NULL,NULL,"
+            "CAST(strftime('%s','now') AS INTEGER)-60);"
+            "INSERT INTO utxo_apply_log VALUES("
+            "12344,'ok',1,0,0,0,NULL,NULL,"
+            "CAST(strftime('%s','now') AS INTEGER));"));
         progress_store_close();
 
         struct producer_status_read st;
@@ -223,9 +249,24 @@ static int test_producer_status_synthetic(void)
         ASSERT(json_get_int(json_get(&reply.data, "height")) == 12344);
         ASSERT(json_get_int(json_get(&reply.data, "utxo_apply_cursor")) ==
                12345);
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "durable_rate_available")));
+        ASSERT(json_get_bool(json_get(&reply.data, "durable_rate_recent")));
+        ASSERT(json_get_int(json_get(&reply.data, "target_height")) ==
+               3056758);
+        ASSERT(json_get_int(json_get(&reply.data, "remaining_blocks")) ==
+               3044414);
+        ASSERT(json_get_int(json_get(
+            &reply.data, "rate_blocks_per_second_milli")) == 5733);
+        ASSERT(json_get_int(json_get(&reply.data, "eta_seconds")) ==
+               (INT64_C(3044414000) + 5732) / 5733);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "rate_source")),
+                      "progress.kv:utxo_apply_log.applied_at") == 0);
         const char *text = json_get_str(json_get(&reply.data, "text"));
-        ASSERT(text != NULL &&
-               strstr(text, "fold applied-through height: 12344") != NULL);
+        ASSERT(text != NULL && strchr(text, '\n') == NULL);
+        ASSERT(strstr(text, "height=12344") != NULL);
+        ASSERT(strstr(text, "target=3056758") != NULL);
+        ASSERT(strstr(text, "rate=5.7blk/s") != NULL);
         zcl_command_reply_free(&reply);
 
         ASSERT(progress_store_open(dir));
@@ -284,6 +325,226 @@ static bool producer_status_exec(sqlite3 *db, const char *sql)
     return ok;
 }
 
+struct producer_snapshot_writer {
+    char progress_path[320];
+    bool committed;
+};
+
+static void producer_snapshot_write_between_reads(void *opaque)
+{
+    struct producer_snapshot_writer *writer = opaque;
+    sqlite3 *db = NULL;
+    if (!writer || sqlite3_open_v2(writer->progress_path, &db,
+                                   SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return;
+    }
+    sqlite3_busy_timeout(db, 2000);
+    writer->committed = producer_status_exec(
+        db,
+        "BEGIN IMMEDIATE;"
+        "UPDATE stage_cursor SET cursor=190 WHERE name='tip_finalize';"
+        "INSERT INTO utxo_apply_log VALUES(200,1,1120);"
+        "COMMIT;");
+    sqlite3_close(db);
+}
+
+static int test_producer_status_uses_one_read_snapshot(void)
+{
+    int failures = 0;
+    TEST("producer status pins one WAL snapshot across all projections") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "snapshot");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 101));
+        ASSERT(stage_set_named_cursor(db, "tip_finalize", 90));
+        ASSERT(producer_status_exec(
+            db,
+            "CREATE TABLE utxo_apply_log("
+            "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,"
+            "applied_at INTEGER NOT NULL);"
+            "INSERT INTO utxo_apply_log VALUES(40,1,1000);"
+            "INSERT INTO utxo_apply_log VALUES(100,1,1060);"));
+        progress_store_close();
+
+        struct producer_snapshot_writer writer = {0};
+        ASSERT(snprintf(writer.progress_path, sizeof(writer.progress_path),
+                        "%s/progress.kv", dir) > 0);
+        consensus_state_producer_status_test_set_after_first_cursor_hook(
+            producer_snapshot_write_between_reads, &writer);
+        struct producer_status_read st;
+        char err[256] = {0};
+        bool read_ok = consensus_state_producer_status_read(
+            dir, &st, err, sizeof(err));
+        consensus_state_producer_status_test_set_after_first_cursor_hook(
+            NULL, NULL);
+        ASSERT(read_ok);
+        ASSERT(writer.committed);
+        ASSERT(st.utxo_apply_cursor == 101);
+        ASSERT(st.tip_finalize_cursor == 90);
+        ASSERT(st.rate_newer_height == 100);
+
+        struct producer_status_read after;
+        ASSERT(consensus_state_producer_status_read(dir, &after, err,
+                                                     sizeof(err)));
+        ASSERT(after.tip_finalize_cursor == 190);
+        /* The newly committed row is above the unchanged utxo_apply cursor;
+         * it belongs to no current durable frontier and cannot drive ETA. */
+        ASSERT(!after.durable_rate_available);
+        ASSERT(after.rate_newer_height == -1);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    consensus_state_producer_status_test_set_after_first_cursor_hook(NULL,
+                                                                     NULL);
+    return failures;
+}
+
+static int test_producer_status_final_receipt_cursor_wins(void)
+{
+    int failures = 0;
+    TEST("producer status gives a finalized receipt cursor precedence") {
+        struct producer_status_read st = {
+            .receipt_finalized = true,
+            .fold_cursor = 101,
+            .utxo_apply_cursor = 41,
+            .tip_finalize_cursor = 39,
+        };
+        ASSERT(zcl_native_producer_applied_height_for_test(&st) == 100);
+        st.receipt_finalized = false;
+        ASSERT(zcl_native_producer_applied_height_for_test(&st) == 40);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_rate_window_rejects_prior_session(void)
+{
+    int failures = 0;
+    TEST("producer ETA rejects rate rows predating the open session") {
+        struct producer_status_read st = {
+            .session_open = true,
+            .utxo_apply_cursor = 101,
+            .start_time_us = INT64_C(1060500000),
+        };
+        ASSERT(!consensus_state_producer_status_rate_window_current_for_test(
+            &st, 1000, 100, 1120));
+        /* Whole-second precision: a row in the floored start second belongs
+         * to this session even when start_time_us had a fractional second. */
+        ASSERT(consensus_state_producer_status_rate_window_current_for_test(
+            &st, 1060, 100, 1120));
+        /* The newest row must also coincide with the durable apply frontier. */
+        ASSERT(!consensus_state_producer_status_rate_window_current_for_test(
+            &st, 1060, 99, 1120));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_residual_row_integration(void)
+{
+    int failures = 0;
+    TEST("producer ETA ignores a current-height window that starts before session") {
+        static const char source_id[] =
+            "1111111111111111111111111111111111111111111111111111111111111111";
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "oldwindow");
+        mkdir(dir, 0700);
+        consensus_state_producer_receipt_test_set_identity(source_id, true);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        char receipt_err[256] = {0};
+        ASSERT(consensus_state_producer_receipt_begin(
+            db, CONSENSUS_STATE_VALIDATION_FULL,
+            receipt_err, sizeof(receipt_err)));
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
+        ASSERT(producer_status_exec(
+            db,
+            "CREATE TABLE utxo_apply_log("
+            "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,"
+            "applied_at INTEGER NOT NULL);"
+            "INSERT INTO utxo_apply_log VALUES(12000,1,"
+            "CAST(strftime('%s','now') AS INTEGER)-120);"
+            "INSERT INTO utxo_apply_log VALUES(12344,1,"
+            "CAST(strftime('%s','now') AS INTEGER));"));
+        progress_store_close();
+
+        struct producer_status_read status;
+        char err[256] = {0};
+        ASSERT(consensus_state_producer_status_read(dir, &status, err,
+                                                     sizeof(err)));
+        ASSERT(status.session_open);
+        ASSERT(!status.durable_rate_available);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    consensus_state_producer_receipt_test_set_identity(NULL, true);
+    progress_store_close();
+    return failures;
+}
+
+static int test_producer_status_rejects_future_rate_for_eta(void)
+{
+    int failures = 0;
+    TEST("producer ETA rejects a materially future durable rate sample") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "future");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
+        ASSERT(producer_status_exec(
+            db,
+            "CREATE TABLE utxo_apply_log("
+            "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,"
+            "applied_at INTEGER NOT NULL);"
+            "INSERT INTO utxo_apply_log VALUES(12000,1,"
+            "CAST(strftime('%s','now') AS INTEGER));"
+            "INSERT INTO utxo_apply_log VALUES(12344,1,"
+            "CAST(strftime('%s','now') AS INTEGER)+60);"));
+        progress_store_close();
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "datadir", dir));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.ops_producer_status.v1");
+        zcl_native_handle_ops_producer_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "durable_rate_available")));
+        ASSERT(!json_get_bool(json_get(
+            &reply.data, "rate_sample_clock_valid")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "durable_rate_recent")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "eta_available")));
+        ASSERT(json_get_int(json_get(
+            &reply.data, "rate_sample_age_seconds")) == -1);
+        ASSERT(json_get_int(json_get(
+            &reply.data, "rate_future_skew_tolerance_seconds")) == 5);
+        ASSERT(json_get_int(json_get(
+            &reply.data, "rate_future_skew_seconds")) > 5);
+        const char *text = json_get_str(json_get(&reply.data, "text"));
+        ASSERT(text != NULL && strstr(text, "rate=unknown") != NULL);
+        ASSERT(strstr(text, "eta=unknown") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_producer_status_rejects_malformed_store(void)
 {
     int failures = 0;
@@ -333,6 +594,106 @@ static int test_producer_status_rejects_malformed_store(void)
                                                       sizeof(err)));
         ASSERT(strstr(err, "source identity is malformed") != NULL);
 
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_rejects_malformed_rate_sample(void)
+{
+    int failures = 0;
+    TEST("producer status rejects a non-integer durable rate sample") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "badrate");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
+        ASSERT(producer_status_exec(
+            db,
+            "CREATE TABLE utxo_apply_log("
+            "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,"
+            "applied_at INTEGER NOT NULL);"
+            "INSERT INTO utxo_apply_log VALUES(12000,1,1000);"
+            "INSERT INTO utxo_apply_log VALUES(12344,1,'not-a-time');"));
+        progress_store_close();
+
+        struct producer_status_read st;
+        char err[256] = {0};
+        ASSERT(!consensus_state_producer_status_read(dir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "durable rate samples") != NULL);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_rejects_impossible_cursor(void)
+{
+    int failures = 0;
+    TEST("producer status rejects an out-of-range durable stage cursor") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "badcursor");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
+        ASSERT(producer_status_exec(
+            db, "UPDATE stage_cursor SET cursor=9223372036854775807 "
+                "WHERE name='utxo_apply'"));
+        progress_store_close();
+
+        struct producer_status_read st;
+        char err[256] = {0};
+        ASSERT(!consensus_state_producer_status_read(dir, &st, err,
+                                                      sizeof(err)));
+        ASSERT(strstr(err, "utxo_apply cursor is malformed") != NULL);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_producer_status_completed_target_needs_no_rate(void)
+{
+    int failures = 0;
+    TEST("producer status reports zero ETA at the anchor without rate evidence") {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "operator_ux_producer", "complete");
+        mkdir(dir, 0700);
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        /* utxo_apply is the NEXT height, so this is applied through the
+         * compiled sovereign anchor 3,056,758. */
+        ASSERT(stage_set_named_cursor(db, "utxo_apply", 3056759));
+        progress_store_close();
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "datadir", dir));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.ops_producer_status.v1");
+        zcl_native_handle_ops_producer_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "durable_rate_available")));
+        ASSERT(json_get_bool(json_get(&reply.data, "eta_available")));
+        ASSERT(json_get_int(json_get(&reply.data, "eta_seconds")) == 0);
+        ASSERT(json_get_int(json_get(&reply.data, "remaining_blocks")) == 0);
+        const char *text = json_get_str(json_get(&reply.data, "text"));
+        ASSERT(text && strstr(text, "rate=unknown eta=0s") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
         test_cleanup_tmpdir(dir);
         PASS();
     } _test_next:;
@@ -457,7 +818,7 @@ static int test_brief_status_unknown_fields_render_unknown(void)
 static int test_next_command_prioritizes_blocker_over_gap(void)
 {
     int failures = 0;
-    TEST("next-command names the blocker before the gap or a healthcheck") {
+    TEST("next-command names the blocker before the gap or native health") {
         struct json_value d;
         fixture_brief_body(&d, 100, 200, 100, "syncing", "anchor_gap", 10, 0,
                            4, 256, false);
@@ -474,7 +835,7 @@ static int test_next_command_prioritizes_blocker_over_gap(void)
         fixture_brief_body(&d, 200, 200, 0, "synced", "none", 0, 0, 4, 256,
                            true);
         ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
-                      "zclassic23 healthcheck") == 0);
+                      "zclassic23 ops health") == 0);
         json_free(&d);
         PASS();
     } _test_next:;
@@ -608,7 +969,15 @@ int test_operator_ux(void)
     failures += test_profile_samples_threads();
     failures += test_producer_status_synthetic();
     failures += test_producer_status_absent();
+    failures += test_producer_status_uses_one_read_snapshot();
+    failures += test_producer_status_final_receipt_cursor_wins();
+    failures += test_producer_status_rate_window_rejects_prior_session();
+    failures += test_producer_status_residual_row_integration();
+    failures += test_producer_status_rejects_future_rate_for_eta();
     failures += test_producer_status_rejects_malformed_store();
+    failures += test_producer_status_rejects_malformed_rate_sample();
+    failures += test_producer_status_rejects_impossible_cursor();
+    failures += test_producer_status_completed_target_needs_no_rate();
     failures += test_producer_status_rejects_long_datadir();
     failures += test_brief_status_one_line_contract();
     failures += test_brief_status_unknown_fields_render_unknown();

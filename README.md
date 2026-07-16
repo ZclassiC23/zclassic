@@ -169,58 +169,22 @@ A brand-new datadir is honestly empty. It does **not** report a fake height:
 
 ### Is it healthy?
 
-One native call answers it: `build/bin/zclassic23 status`. Direct RPC clients
-can query the same underlying facts through `getblockcount`, `getpeerinfo`,
-`syncstate`, and `healthcheck`. The key fields:
+One native call answers it: `build/bin/zclassic23 status`. It returns one line;
+`--format=json` returns the typed `zcl.result.v1` envelope with a compact
+`zcl.core_status_brief.v1` body. The key fields are:
 
 | Field | Fresh / syncing | Synced (at tip) |
 |---|---|---|
-| `height` | `0`, then rising | network tip height |
-| `peers` | `0`, then climbing | several connected |
-| `sync.state` | `finding_peers` → `headers_download` → `blocks_download` | `at_tip` |
-| `sync_gap` / `sync_behind` | validated-header gap / thresholded boolean | `0` / `false` |
-| `header_gap` | peer-advertised header hint (untrusted; `null` without a claim) | normally `0` |
-| `health.healthy` | `false` while catching up | `true` |
-| `health.checks.has_peers` | `false` | `true` |
-| `health.checks.onion_address` | absent until Tor onion is up | present (`…onion`) |
-| `blockers.active_count` / `dominant_blocker` | `0` / `null` on a healthy boot | `0` / `null` |
+| `hstar` | `0`, then rising | validated served frontier |
+| `header_height` / `gap` | validated target and distance remaining | equal / `0` |
+| `sync_state` | `finding_peers` → `headers_download` → `blocks_download` | `at_tip` |
+| `peer_count` / `peer_best` | peer availability and advisory height | several / near tip |
+| `healthy` / `serving` | health is false while blocked; serving may remain true at the proven frontier | true |
+| `primary_blocker` | the causal named blocker | `none` |
 
-Illustrative `zclassic23 status` data (**example values, not a live capture** —
-large diagnostic subtrees trimmed):
-
-```jsonc
-// Fresh node, still finding peers:
-{
-  "height": 0, "target_height": 0, "sync_gap": 0,
-  "sync_behind": false, "header_gap": null, "peers": 0,
-  "connections": {"known":true,"total":0,"inbound":0,"outbound":0,"zcl23":0,"magicbean":0},
-  "sync":   {"state":"finding_peers","state_id":1},
-  "health": {"healthy":false,
-             "checks":{"synced":false,"has_peers":false,"tor_ready":false,
-                       "peer_count":0,"tip_lag":0}},
-  "blockers": {"active_count":0,"dominant":null}, "dominant_blocker": null
-}
-
-// Synced node at tip, onion up:
-{
-  "height": 3160247, "target_height": 3160247, "sync_gap": 0,
-  "sync_behind": false, "header_gap": 0, "peers": 8,
-  "connections": {"known":true,"total":8,"inbound":2,"outbound":6,"zcl23":3,"magicbean":5},
-  "sync":   {"state":"at_tip","state_id":5},
-  "health": {"healthy":true,
-             "checks":{"synced":true,"has_peers":true,"tor_ready":true,
-                       "peer_count":8,"tip_lag":0,
-                       "onion_address":"…24qd.onion"}},
-  "blockers": {"active_count":0,"dominant":null}, "dominant_blocker": null
-}
-```
-
-A healthy node is **`sync.state: at_tip`, `health.healthy: true`,
-`peers > 0`, `blockers.active_count: 0`**. A stall is never silent: it surfaces
-as a growing authoritative `sync_gap` or a named entry in `blockers` /
-`dominant_blocker`. A single peer can influence `header_gap`, so treat that
-field only as an explicitly untrusted download hint. Missing target evidence is
-reported as `null` plus an error, never as a synthetic zero.
+A stall is never silent: `gap` grows or `primary_blocker` names the cause.
+Use `zclassic23 core status --format=json` only when the larger diagnostic tree
+is actually needed.
 
 ## Bootstrapping to tip
 
@@ -303,14 +267,14 @@ build/bin/zclassic23 discover help
 build/bin/zclassic23 code map          # source-code navigator
 ```
 
-Start with `status` (height, peers, sync, onion, health in one call);
+Start with `status` (height, peers, sync, blocker, health in one call);
 `discover help` / `discover search <q>` enumerates the full command
 catalog. Full doc: [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md);
 daily-driver reference in [`CLAUDE.md`](CLAUDE.md).
 
-A **legacy MCP server** (`-mcp`, the `zcl_*` tool surface) still works today
-but is being deleted — the zero-MCP program is making the native CLI the
-*only* agent interface; prefer native commands in new work.
+The typed native command registry is the primary AI/operator surface. The
+legacy MCP bridge still works during W2/W3 migration, but it is transitional;
+prefer native commands in new work.
 
 ## Block explorer
 
@@ -467,8 +431,8 @@ build/bin/zclassic23 status
 build/bin/zclassic23 core sync diagnose
 build/bin/zclassic23 dumpstate reducer_frontier
 build/bin/zclassic23 dumpstate supervisor
-build/bin/zclassic-cli syncstate       # sync FSM state
-build/bin/zclassic-cli healthcheck     # synced / has_peers / tip_stale / tip_lag
+build/bin/zclassic23 core sync status  # sync FSM state
+build/bin/zclassic23 ops health        # synced / has_peers / tip_stale / tip_lag
 ```
 Look at `blockers` / `dominant_blocker` in `zclassic23 status` for the named reason. A
 transient `sync.state: failed` often clears on `systemctl --user restart

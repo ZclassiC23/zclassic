@@ -62,10 +62,19 @@ endif
 # tree until the index is refreshed. Refreshing compares content and clears the
 # false positive, while a genuinely modified tree still reports -dirty.
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
+# A parent Make/watcher may freeze its already-captured record on the recursive
+# command line.  GNU Make gives command-line variables precedence, but an
+# unconditional `:= $(shell ...)` still executes the discarded shell RHS and
+# used to reread the complete source inventory in every nested Make.  Accept
+# only command-line provenance here: an ambient environment variable cannot
+# suppress capture.  Artifact sessions still verify-record before compilation
+# and again before aggregate/candidate publication.
+ifneq ($(origin BUILD_SOURCE_RECORD),command line)
 ifeq ($(ZCL_STANDALONE_CLEAN),1)
 BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
 else
 BUILD_SOURCE_RECORD := $(shell tools/dev/source-identity.sh capture-record 2>/dev/null || echo unknown 0 unknown)
+endif
 endif
 BUILD_SOURCE_ID := $(word 1,$(BUILD_SOURCE_RECORD))
 BUILD_CLEAN := $(word 2,$(BUILD_SOURCE_RECORD))
@@ -242,7 +251,7 @@ DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_process.c \
-	tools/dev/devloop_baseline.c
+	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
 # Stable public Core -> App ABI. App generations compile against this include
@@ -416,10 +425,36 @@ $(DEV_LEASE): FORCE
 	  "$(DEV_EPOCH_COMPILE_FLAGS)" "$(DEV_EPOCH_LINK_FLAGS)" \
 	  "$(CC)" "$(CXX)" "$$PPID"
 
+# Make normally imports four large immutable depfile graphs even when one
+# profile (or no compiler at all) is requested.  Narrow only an exact,
+# explicitly-known single goal.  Empty/default, mixed, and unknown goals keep
+# the conservative source-wide fallback so a new target cannot accidentally
+# lose header invalidation merely because this table was not updated.
+ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict
+ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
+ifeq ($(words $(MAKECMDGOALS)),1)
+ZCL_DEPFILE_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
+ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := build-only
+else ifneq ($(filter fast-compile dev-build-only dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := dev
+else ifneq ($(filter t-fast test_parallel_fast test-parallel-fast-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := test-fast
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := test-strict
+else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES :=
+endif
+endif
+
 # Header dependencies use -MD (including system headers) and live inside their
 # exact epoch. There is no mutable "current object directory" symlink.
+ifneq ($(filter build-only,$(ZCL_DEPFILE_PROFILES)),)
 -include $(ALL_OBJS:.o=.d)
+endif
+ifneq ($(filter dev,$(ZCL_DEPFILE_PROFILES)),)
 -include $(DEV_OBJS:.o=.d)
+endif
 
 # Vendored static archives the final link needs.  Only libsecp256k1.a is
 # committed to git; `make vendor` builds the rest from source (pinned URL +
@@ -490,7 +525,7 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
-TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c
+TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
@@ -517,7 +552,9 @@ TEST_PARALLEL_FAST_LINK_RSP = $(TEST_FAST_OBJ_DIR)/link-inputs.rsp
 TEST_PARALLEL_FAST_CANDIDATE = $(BIN_DIR)/test-fast/epochs/$(TEST_FAST_COMPILE_EPOCH)/test_parallel_fast
 TEST_PARALLEL_FAST_ACTIVE = $(TEST_PARALLEL_FAST_CANDIDATE)
 
+ifneq ($(filter test-fast,$(ZCL_DEPFILE_PROFILES)),)
 -include $(TEST_PARALLEL_FAST_OBJS:.o=.d)
+endif
 
 # ── Cached STRICT test_parallel (per-TU, depfile-tracked) ────────────────────
 # `test_parallel` (what `make t`/`make test` run) was one whole-program `cc`
@@ -601,7 +638,9 @@ $(error test compile-epoch derivation failed)
 endif
 endif
 
+ifneq ($(filter test-strict,$(ZCL_DEPFILE_PROFILES)),)
 -include $(TEST_PARALLEL_REL_OBJS:.o=.d)
+endif
 
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
@@ -763,7 +802,7 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-changed ff syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-changed ff watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -793,7 +832,8 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 # runs the exact source-wide fast candidate. Use `make t-fast ONLY=<g>` for a
 # manual focused run and `make pre-push-ci` as the pre-push gate.
 t-changed:
-	@tools/agent_fast_ci.sh test-changed
+	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  tools/agent_fast_ci.sh test-changed
 
 # Exact compile-check of the whole node (no link). Every source is resolved in
 # the current immutable epoch; ccache/sccache recovers unchanged TU work. The
@@ -832,7 +872,9 @@ $(DEV_OBJ_COMPLETE): $(VIEW_GEN_HEADERS) $(DEV_OBJS)
 # classification hints only: the proof always resolves every current dev source
 # in a mutation-keyed epoch via `fast-compile`.
 fast-changed-compile:
-	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh compile-changed
+	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" \
+	  tools/agent_fast_ci.sh compile-changed
 
 # Fail-fast edit-loop ladder: compile -> source-wide-tests -> lint-fast, cost-ordered
 # and short-circuiting, with a dense FIRST-ERROR[<rung>] line on the first break.
@@ -840,10 +882,27 @@ fast-changed-compile:
 # push is still `make lint && make build-only && relevant tests` / `make pre-push-ci`.
 # Checkout-locked (see CHECKOUT_LOCK above): the watcher's own `make ff` defers
 # instead of racing a foreground build/test run in the same checkout.
+# One exact goal keeps both mandatory watcher gates under one conservative
+# contract without turning their old mixed-goal invocation into a reason to
+# import unrelated compiler depfiles.
+watcher-safety-gates: check-core-seal check-consensus-parity
+
+# Cheap pre-execution identity for deterministic negative-receipt lookup.  The
+# dev compile epoch already binds the exact source+ABA record, compiler and
+# linker/search-root fingerprints, profile, flags, and link inputs.  Native
+# devloop hashes this value into its SHA3 execution identity before deciding
+# whether an unchanged compiler failure may be coalesced.  Callers must supply
+# the exact BUILD_SOURCE_RECORD on the Make command line; ambient values are
+# ignored by the source-record guard above.
+.PHONY: dev-failure-execution-id
+dev-failure-execution-id:
+	@printf '%s\n' '$(DEV_COMPILE_EPOCH)'
+
 ff:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
-	  env ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh ff
+	  env ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh ff
 
 # Fast local node executable for AI/operator development. `fast-rebuild` first
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
@@ -856,7 +915,8 @@ dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
 fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
-	  env ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
+	  env ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
 
 $(ZCLASSIC23_DEV_BIN): $(DEV_CANDIDATE_BIN) FORCE
 	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_CANDIDATE_BIN)" "$@" "$(DEV_SESSION)" \
@@ -1048,10 +1108,12 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   ZCL_FAST_COMPILE=dev make fast-ci  # force full dev-object fast-compile
 #   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
-	@tools/agent_fast_ci.sh
+	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  tools/agent_fast_ci.sh
 
 agent-plan:
-	@tools/agent_fast_ci.sh plan-json
+	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  tools/agent_fast_ci.sh plan-json
 
 immutable-history-canaries historical-canaries:
 	@echo "==> immutable history canaries: real ZClassic mainnet facts"
@@ -1067,7 +1129,8 @@ immutable-history-canaries historical-canaries:
 #   ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop
 #   ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop
 agent-loop agent-dev-loop:
-	@tools/agent_fast_ci.sh
+	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	  tools/agent_fast_ci.sh
 	@case "$${ZCL_AGENT_LOOP_DEPLOY:-}" in \
 	  "") \
 	    if [ "$${ZCL_AGENT_LOOP_BIN:-0}" = "1" ]; then \
@@ -1117,7 +1180,10 @@ hotswap-sim: $(TEST_PARALLEL_FAST_CANDIDATE)
 native-dev-loop-wait-selftest: dev-bin
 	@tools/dev/native-dev-loop-wait-selftest.sh
 
-dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest hotswap-sim
+native-dev-failure-selftest: dev-bin
+	@tools/dev/native-dev-failure-selftest.sh
+
+dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest native-dev-failure-selftest hotswap-sim
 	@echo "dev-loop-selftest: PASS"
 
 remote-node-plan:
@@ -4251,6 +4317,7 @@ check-%: export ZCL_LINT_PRODUCTION_SCAN := 1
 check-build-epoch-integrity:
 	@echo "══ LINT: mutation-keyed compile epochs + atomic publication ══"
 	@tools/dev/build-epoch-selftest.sh
+	@tools/dev/make-depfile-scope-selftest.sh
 
 check-checkout-lock:
 	@echo "══ LINT: checkout-wide watcher/foreground mutual exclusion ══"

@@ -4,10 +4,12 @@
  *
  * The build is a DETERMINISTIC full recompute: enumerate the source set in a
  * fixed sorted order, scan each file for symbols/refs, fold in include edges
- * from build depfiles, write the group hierarchy, all into a fresh `.tmp`
- * database, then atomically rename it over <root>/.codeindex/index.kv and
- * stamp meta.source_root_sha3 (a cheap stat-based tree hash used to detect a
- * changed tree on the next open). "Recompute, never repair."
+ * from build depfiles, write the group hierarchy, all into a fresh unique
+ * same-directory staging database, then atomically rename it over
+ * <root>/.codeindex/index.kv and
+ * stamp exact content roots plus metadata cache keys used to detect a changed
+ * tree without rereading every byte on each warm open. "Recompute, never
+ * repair."
  */
 
 #ifndef ZCL_CODEINDEX_BUILD_H
@@ -24,15 +26,43 @@ struct codeindex;
  * Reopens the handle's store on success. Returns false on any hard error. */
 bool codeindex_rebuild(struct codeindex *ci);
 
-/* Compute whether the on-disk store is stale w.r.t. the current tree (its
- * stored source_root_sha3 != the freshly recomputed one, or it is missing).
- * Returns false only on a hard error. */
+/* Compute whether the on-disk store is stale w.r.t. the current tree. Exact
+ * roots are sealed at rebuild; warm checks compare path/inode/size/mtime/ctime
+ * cache keys so a same-size edit with restored mtime still invalidates without
+ * making every query O(total source bytes). Returns false on a hard error. */
 bool codeindex_is_stale(struct codeindex *ci, bool *stale);
 
-/* Compute the cheap stat-based tree hash over the enumerated source set:
- * SHA3-256 over sorted (relpath || mtime_ns || size) tuples. Used as the
- * staleness stamp. Returns false on a hard error. */
+/* Compute the exact content-bound tree digest over the enumerated source set:
+ * SHA3-256 over sorted (relpath || file_sha3) tuples. Metadata-preserving and
+ * same-size edits therefore cannot reuse a stale index. Returns false on a
+ * hard error. */
 bool codeindex_source_root_sha3(const char *root, uint8_t out[32]);
+
+#ifdef ZCL_TESTING
+/* Deterministic process-death boundaries for the crash-publication proof.
+ * Test-only: production builds expose no fault-injection surface. */
+enum codeindex_test_crash_point {
+    CODEINDEX_TEST_CRASH_NONE = 0,
+    CODEINDEX_TEST_CRASH_BEFORE_RENAME = 1,
+    CODEINDEX_TEST_CRASH_AFTER_RENAME = 2,
+};
+void codeindex_test_set_crash_point(enum codeindex_test_crash_point point);
+
+enum codeindex_test_stage_tamper {
+    CODEINDEX_TEST_STAGE_TAMPER_NONE = 0,
+    CODEINDEX_TEST_STAGE_TAMPER_SYMLINK = 1,
+    CODEINDEX_TEST_STAGE_TAMPER_HARDLINK = 2,
+};
+/* Replace the staging name after its private inode is opened. The build must
+ * reject publication without writing through the substituted name. */
+void codeindex_test_set_stage_tamper(
+    enum codeindex_test_stage_tamper tamper, const char *victim_path);
+
+/* Warm-open proof: an unchanged metadata stamp must reuse the exact roots
+ * sealed by the published generation without rereading source/depfile bytes. */
+void codeindex_test_reset_exact_bytes_read(void);
+uint64_t codeindex_test_exact_bytes_read(void);
+#endif
 
 /* ── Canonical group taxonomy (mirrors the Makefile / shape layout) ──
  * These arrays are the SINGLE in-code mirror of the Makefile's LIB_MODULES

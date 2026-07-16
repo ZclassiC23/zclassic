@@ -542,7 +542,9 @@ classify_cycle()
 capture_impact_plan()
 {
     IMPACT_PLAN="$WORK/impact-plan.json"
-    if ! (cd "$ROOT" && tools/agent_fast_ci.sh plan-json) > "$IMPACT_PLAN" 2>/dev/null; then
+    if ! (cd "$ROOT" && \
+            ZCL_FAST_BUILD_SOURCE_RECORD="$SOURCE_ID $SOURCE_CLEAN $SOURCE_MUTATION" \
+            tools/agent_fast_ci.sh plan-json) > "$IMPACT_PLAN" 2>/dev/null; then
         printf '%s\n' '{"schema":"zcl.agent_fast_plan.v1","status":"error","reason":"plan_json_failed"}' > "$IMPACT_PLAN"
     fi
 }
@@ -625,10 +627,12 @@ wait_for_source_change()
 
 run_check_command()
 {
+    local source_record="$SOURCE_ID $SOURCE_CLEAN $SOURCE_MUTATION"
     # The wake list is not complete authority, so always run the two global
     # safety gates before the mapped fast lane. Neither is inferred from paths.
     (cd "$ROOT" && make --no-print-directory \
-        check-core-seal check-consensus-parity) || return $?
+        BUILD_SOURCE_RECORD="$source_record" \
+        watcher-safety-gates) || return $?
     if [ -n "$CHECK_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$CHECK_COMMAND")
     elif [ "$MODE" = "verify" ]; then
@@ -636,7 +640,8 @@ run_check_command()
         # defer-on-contention side (tools/dev/checkout-lock.sh via the `ff`
         # target) instead of racing a foreground build/test run; exit 99
         # means deferred, not failed. See CHECKOUT_LOCK in the Makefile.
-        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory ff)
+        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory \
+            BUILD_SOURCE_RECORD="$source_record" ff)
     else
         (cd "$ROOT" && tools/dev/checkout-lock.sh watcher \
             "$ROOT/build/.checkout.lock" -- tools/agent_fast_ci.sh)
@@ -645,10 +650,12 @@ run_check_command()
 
 run_rebuild_command()
 {
+    local source_record="$SOURCE_ID $SOURCE_CLEAN $SOURCE_MUTATION"
     if [ -n "$REBUILD_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$REBUILD_COMMAND")
     else
-        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory fast-rebuild)
+        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory \
+            BUILD_SOURCE_RECORD="$source_record" fast-rebuild)
     fi
 }
 
@@ -826,6 +833,7 @@ run_cycle()
         log "cycle=$CYCLE refused before checks: $SOURCE_GATE_DETAIL"
         return 1
     fi
+    export ZCL_FAST_BUILD_SOURCE_RECORD="$SOURCE_ID $SOURCE_CLEAN $SOURCE_MUTATION"
     capture_impact_plan
 
     phase_started="$(clock_ms)"
@@ -1055,7 +1063,9 @@ self_test()
         $'\t@test ! -e .fail-core' \
         'check-consensus-parity:' \
         $'\t@echo parity >> "$${ZCL_WATCH_TEST_LOG:?}"' \
-        $'\t@test ! -e .fail-parity' > "$ROOT/Makefile"
+        $'\t@test ! -e .fail-parity' \
+        'watcher-safety-gates: check-core-seal check-consensus-parity' \
+        > "$ROOT/Makefile"
     printf '/build/\n/.cache/\n' > "$ROOT/.gitignore"
     printf 'int a;\n' > "$ROOT/app/a.c"
     printf 'int consensus_value;\n' > "$ROOT/core/consensus/value.c"

@@ -117,5 +117,4 @@ void agent_push_contract_transport_summary_json(struct json_value *arr)
     agent_transport_push_str(arr,
                              rest_first ? "rest: no REST-only agent route"
                                         : rest);
-    agent_transport_push_str(arr, "deprecated: tools/z compatibility shim only");
 }

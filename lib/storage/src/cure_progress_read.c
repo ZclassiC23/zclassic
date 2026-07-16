@@ -23,8 +23,9 @@ static int read_sample(sqlite3 *db, const char *sql,
     }
     int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
     int found = 0;
-    if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL &&
-        sqlite3_column_type(st, 1) != SQLITE_NULL) {
+    if (rc == SQLITE_ROW &&
+        sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+        sqlite3_column_type(st, 1) == SQLITE_INTEGER) {
         out->height = sqlite3_column_int64(st, 0);
         out->time_unix = sqlite3_column_int64(st, 1);
         found = 1;
@@ -49,11 +50,15 @@ int cure_progress_read_eta_samples(
         0, 0, false, newer);
     if (got <= 0)
         return got;
+    if (newer->height < 0 || newer->height > INT32_MAX ||
+        newer->time_unix <= 0)
+        return -1;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT height, applied_at FROM utxo_apply_log "
-            "WHERE ok=1 AND height<?1 AND applied_at<=?2-?3 "
+            "WHERE ok=1 AND height<?1 AND applied_at>0 "
+            "AND applied_at<=?2-?3 "
             "ORDER BY height DESC LIMIT 1",
             -1, &st, NULL) != SQLITE_OK)
         return -1;
@@ -62,8 +67,9 @@ int cure_progress_read_eta_samples(
     sqlite3_bind_int64(st, 3, min_window_seconds);
     int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
     got = 0;
-    if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL &&
-        sqlite3_column_type(st, 1) != SQLITE_NULL) {
+    if (rc == SQLITE_ROW &&
+        sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+        sqlite3_column_type(st, 1) == SQLITE_INTEGER) {
         older->height = sqlite3_column_int64(st, 0);
         older->time_unix = sqlite3_column_int64(st, 1);
         got = 1;
@@ -71,6 +77,12 @@ int cure_progress_read_eta_samples(
         got = -1;
     }
     sqlite3_finalize(st);
+    if (got == 1 &&
+        (older->height < 0 || older->height > INT32_MAX ||
+         older->height >= newer->height || older->time_unix <= 0 ||
+         older->time_unix >= newer->time_unix ||
+         newer->time_unix - older->time_unix < min_window_seconds))
+        return -1;
     return got;
 }
 

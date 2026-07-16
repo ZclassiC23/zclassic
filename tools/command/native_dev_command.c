@@ -17,6 +17,7 @@
 #include "command/native_command.h"
 
 #include "dev_activation.h"
+#include "dev_failure_store.h"
 #include "devloop.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
@@ -81,28 +82,32 @@ static const char *dev_source_root(const struct zcl_command_request *request)
 void zcl_native_handle_dev_status(const struct zcl_command_request *request,
                                   struct zcl_command_reply *reply)
 {
-    (void)request;
-    const char *home = getenv("HOME");
-    char path[PATH_MAX];
-    if (home && home[0] &&
-        snprintf(path, sizeof(path),
-                 "%s/.local/state/zclassic23-dev/native-cycle.json", home) > 0) {
-        FILE *f = fopen(path, "r");
-        if (f) {
-            char buf[16384];
-            size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-            fclose(f);
-            buf[n] = 0;
-            struct json_value doc;
-            if (n > 0 && json_read(&doc, buf, n) && doc.type == JSON_OBJ) {
-                json_free(&reply->data);
-                json_init(&reply->data);
-                json_copy(&reply->data, &doc);
-                json_free(&doc);
-                return;
-            }
+    char body[16384], why[160] = {0};
+    size_t len = 0;
+    enum zcl_devloop_state_lookup lookup = zcl_devloop_cycle_state_read(
+        dev_source_root(request), body, sizeof(body), &len, NULL,
+        why, sizeof(why));
+    if (lookup == ZCL_DEVLOOP_STATE_FOUND) {
+        struct json_value doc;
+        json_init(&doc);
+        if (json_read(&doc, body, len) && doc.type == JSON_OBJ) {
+            json_free(&reply->data);
+            json_init(&reply->data);
+            json_copy(&reply->data, &doc);
             json_free(&doc);
+            return;
         }
+        json_free(&doc);
+        lookup = ZCL_DEVLOOP_STATE_INVALID;
+        (void)snprintf(why, sizeof(why), "%s", "cycle_state_decode_failed");
+    }
+    if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_CYCLE_STATE_INVALID", "read", false, false,
+            "workspace cycle state failed schema, SHA3, or inode validation",
+            why[0] ? why : "cycle_state_invalid");
+        return;
     }
     /* No durable verdict yet — a bounded, honest "unavailable" is passing. */
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_cycle.v1");
@@ -707,33 +712,24 @@ static bool dev_watcher_active(const char *repo_root,
     return true;
 }
 
-static int64_t dev_cycle_epoch(void)
+static enum zcl_devloop_state_lookup dev_read_cycle(
+    const char *repo_root, struct json_value *out, int64_t *epoch_out,
+    char *why, size_t why_len)
 {
-    char dir[PATH_MAX], path[PATH_MAX];
-    struct stat st;
-    if (!dev_state_dir(dir) ||
-        snprintf(path, sizeof(path), "%s/native-cycle.json", dir) <= 0 ||
-        stat(path, &st) != 0)
-        return 0;
-    return (int64_t)st.st_mtim.tv_sec * INT64_C(1000000000) +
-           (int64_t)st.st_mtim.tv_nsec;
-}
-
-static bool dev_read_cycle(struct json_value *out)
-{
-    char dir[PATH_MAX], path[PATH_MAX], body[16384];
+    char body[16384];
+    size_t len = 0;
     json_init(out);
-    if (!dev_state_dir(dir) ||
-        snprintf(path, sizeof(path), "%s/native-cycle.json", dir) <= 0)
-        return false;
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return false;
-    size_t n = fread(body, 1, sizeof(body) - 1, f);
-    bool complete = !ferror(f) && fgetc(f) == EOF;
-    fclose(f);
-    body[n] = 0;
-    return complete && n > 0 && json_read(out, body, n) && out->type == JSON_OBJ;
+    enum zcl_devloop_state_lookup lookup = zcl_devloop_cycle_state_read(
+        repo_root, body, sizeof(body), &len, epoch_out, why, why_len);
+    if (lookup != ZCL_DEVLOOP_STATE_FOUND)
+        return lookup;
+    if (!json_read(out, body, len) || out->type != JSON_OBJ) {
+        json_free(out);
+        if (why && why_len)
+            (void)snprintf(why, why_len, "%s", "cycle_state_decode_failed");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    return ZCL_DEVLOOP_STATE_FOUND;
 }
 
 /* `dev.loop.wait` declares zcl.dev_cycle.v1, so return that cycle directly.
@@ -742,19 +738,14 @@ static bool dev_read_cycle(struct json_value *out)
  * and spend an extra parse step to reach the verdict.  The file-generation
  * epoch is appended so the returned document can feed the next wait without
  * another status round trip. */
-static bool dev_emit_cycle_verdict(struct zcl_command_reply *reply,
-                                   int64_t epoch)
+static void dev_emit_cycle_verdict(struct zcl_command_reply *reply,
+                                   struct json_value *cycle, int64_t epoch)
 {
-    struct json_value cycle;
-    if (!dev_read_cycle(&cycle))
-        return false;
     json_free(&reply->data);
     json_init(&reply->data);
-    json_copy(&reply->data, &cycle);
-    json_free(&cycle);
+    json_copy(&reply->data, cycle);
     if (!json_get(&reply->data, "epoch"))
         (void)json_push_kv_int(&reply->data, "epoch", epoch);
-    return true;
 }
 
 static void dev_emit_loop_status(const char *repo_root,
@@ -770,12 +761,25 @@ static void dev_emit_loop_status(const char *repo_root,
     (void)json_push_kv_bool(
         &reply->data, "runtime_publication",
         active && zcl_devloop_publish_mode_applies(info.publish_mode));
-    (void)json_push_kv_int(&reply->data, "epoch", dev_cycle_epoch());
+    int64_t epoch = 0;
     struct json_value cycle;
-    if (dev_read_cycle(&cycle)) {
+    char why[160] = {0};
+    enum zcl_devloop_state_lookup lookup =
+        dev_read_cycle(repo_root, &cycle, &epoch, why, sizeof(why));
+    if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_CYCLE_STATE_INVALID", "read", false, false,
+            "workspace cycle state failed schema, SHA3, or inode validation",
+            why[0] ? why : "cycle_state_invalid");
+        return;
+    }
+    (void)json_push_kv_int(&reply->data, "epoch", epoch);
+    if (lookup == ZCL_DEVLOOP_STATE_FOUND) {
         (void)json_push_kv(&reply->data, "latest_verdict", &cycle);
         json_free(&cycle);
-    }
+    } else
+        json_free(&cycle);
 }
 
 static bool dev_requested_watch_mode(const struct json_value *input,
@@ -937,27 +941,43 @@ void zcl_native_handle_dev_loop_wait(
         return;
     }
     int64_t deadline_us = platform_time_monotonic_us() + timeout_ms * 1000;
+    const char *repo_root = dev_source_root(request);
+    int64_t current_epoch = 0;
     for (;;) {
-        int64_t epoch = dev_cycle_epoch();
-        if (epoch > after && dev_emit_cycle_verdict(reply, epoch))
+        struct json_value cycle;
+        char why[160] = {0};
+        int64_t epoch = 0;
+        enum zcl_devloop_state_lookup lookup =
+            dev_read_cycle(repo_root, &cycle, &epoch, why, sizeof(why));
+        current_epoch = epoch;
+        if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "DEV_CYCLE_STATE_INVALID", "read", false, false,
+                "workspace cycle state failed schema, SHA3, or inode validation",
+                why[0] ? why : "cycle_state_invalid");
             return;
+        }
+        if (lookup == ZCL_DEVLOOP_STATE_FOUND && epoch > after) {
+            dev_emit_cycle_verdict(reply, &cycle, epoch);
+            json_free(&cycle);
+            return;
+        }
+        json_free(&cycle);
         if (platform_time_monotonic_us() >= deadline_us)
             break;
         usleep(25000);
     }
-    int64_t current_epoch = dev_cycle_epoch();
-    char evidence[96], next_input[160];
+    char evidence[128];
     (void)snprintf(evidence, sizeof(evidence), "current_epoch=%lld",
-                   (long long)current_epoch);
-    (void)snprintf(next_input, sizeof(next_input),
-                   "{\"after_epoch\":%lld,\"timeout_ms\":30000}",
                    (long long)current_epoch);
     zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                            ZCL_COMMAND_EXIT_BLOCKED, "WAIT_TIMEOUT", "wait",
-                           true, false, "no newer source verdict before timeout",
+                           true, false, "no newer cycle verdict before timeout",
                            evidence);
-    (void)zcl_command_reply_add_next(reply, "dev.loop.wait", next_input,
-                                     "wait from the latest observed epoch");
+    (void)zcl_command_reply_add_next(
+        reply, "dev.loop.status", "{}",
+        "inspect the latest epoch before deciding whether to wait again");
 }
 
 void zcl_native_handle_dev_loop_stop(
@@ -1262,22 +1282,149 @@ void zcl_native_handle_dev_generation_history(
     }
 }
 
+#endif /* ZCL_DEV_BUILD */
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+
 void zcl_native_handle_dev_diagnose_latest(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    (void)request;
-    struct json_value cycle;
-    if (!dev_read_cycle(&cycle)) {
-        (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_failure.v1");
-        (void)json_push_kv_str(&reply->data, "status", "unavailable");
+    if (!reply)
+        return;
+    struct zcl_dev_failure_record record;
+    char why[192] = {0};
+    enum zcl_dev_failure_lookup lookup =
+        zcl_dev_failure_read_latest(dev_source_root(request), &record,
+                                    why, sizeof(why));
+    if (lookup == ZCL_DEV_FAILURE_LOOKUP_ABSENT) {
+        (void)json_push_kv_str(&reply->data, "schema",
+                               "zcl.dev_failure_latest_result.v1");
+        (void)json_push_kv_bool(&reply->data, "found", false);
         return;
     }
-    (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_failure.v1");
-    (void)json_push_kv(&reply->data, "latest_cycle", &cycle);
-    json_free(&cycle);
+    if (lookup != ZCL_DEV_FAILURE_LOOKUP_FOUND) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "FAILURE_STORE_INVALID", "read", false, false,
+            "latest failure state failed inode or SHA3 validation",
+            why[0] ? why : "latest_failure_invalid");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_failure_latest_result.v1");
+    (void)json_push_kv_bool(&reply->data, "found", true);
+    (void)json_push_kv_str(&reply->data, "failure_id", record.failure_id);
+    (void)json_push_kv_str(&reply->data, "phase", record.phase);
+    (void)json_push_kv_str(&reply->data, "first_error", record.first_error);
+    (void)json_push_kv_int(
+        &reply->data, "repeat_count",
+        record.repeat_count > INT64_MAX ? INT64_MAX
+                                        : (int64_t)record.repeat_count);
+    char input[96];
+    (void)snprintf(input, sizeof(input), "{\"failure_id\":\"%s\"}",
+                   record.failure_id);
+    (void)zcl_command_reply_add_next(
+        reply, "dev.diagnose.show", input,
+        "inspect the most recently recorded deterministic compiler failure");
 }
 
-#endif /* ZCL_DEV_BUILD */
+static bool dev_failure_id_valid(const char *failure_id)
+{
+    if (!failure_id || strlen(failure_id) != ZCL_DEV_FAILURE_HEX_LEN)
+        return false;
+    return strspn(failure_id, "0123456789abcdef") ==
+           ZCL_DEV_FAILURE_HEX_LEN;
+}
+
+void zcl_native_handle_dev_diagnose_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!reply)
+        return;
+    const struct json_value *id_value =
+        request && request->input ? json_get(request->input, "failure_id")
+                                  : NULL;
+    const char *failure_id =
+        id_value && id_value->type == JSON_STR ? json_get_str(id_value) : NULL;
+    if (!dev_failure_id_valid(failure_id)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INVALID_FAILURE_ID",
+                               "normalize", false, false,
+                               "failure_id must be 64 lowercase hex characters",
+                               "failure_id");
+        return;
+    }
+    struct zcl_dev_failure_record record;
+    char why[192] = {0};
+    enum zcl_dev_failure_lookup lookup =
+        zcl_dev_failure_read(dev_source_root(request), failure_id, &record,
+                             why, sizeof(why));
+    if (lookup == ZCL_DEV_FAILURE_LOOKUP_ABSENT) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "FAILURE_NOT_FOUND", "read", false, false,
+            "no durable failure exists for this workspace-scoped ID",
+            failure_id);
+        (void)snprintf(reply->error.failure_id,
+                       sizeof(reply->error.failure_id), "%s", failure_id);
+        (void)zcl_command_reply_add_next(
+            reply, "dev.diagnose.latest", "{}",
+            "inspect the most recently recorded failure for this workspace");
+        return;
+    }
+    if (lookup != ZCL_DEV_FAILURE_LOOKUP_FOUND) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "FAILURE_STORE_INVALID", "read", false, false,
+            "durable failure failed inode or SHA3 validation",
+            why[0] ? why : "failure_record_invalid");
+        (void)snprintf(reply->error.failure_id,
+                       sizeof(reply->error.failure_id), "%s", failure_id);
+        return;
+    }
+    const char *view = request && request->view && request->view[0]
+                           ? request->view : "normal";
+    bool summary = strcmp(view, "summary") == 0;
+    bool full = strcmp(view, "full") == 0;
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_failure_show.v1");
+    (void)json_push_kv_bool(&reply->data, "found", true);
+    (void)json_push_kv_str(&reply->data, "failure_id", record.failure_id);
+    (void)json_push_kv_str(&reply->data, "phase", record.phase);
+    (void)json_push_kv_str(&reply->data, "first_error", record.first_error);
+    (void)json_push_kv_int(
+        &reply->data, "repeat_count",
+        record.repeat_count > INT64_MAX ? INT64_MAX
+                                        : (int64_t)record.repeat_count);
+    if (!summary) {
+        (void)json_push_kv_str(&reply->data, "record_sha3",
+                               record.record_digest);
+        (void)json_push_kv_str(&reply->data, "workspace_id",
+                               record.workspace_id);
+        (void)json_push_kv_str(&reply->data, "source_id_sha256",
+                               record.source_id);
+        (void)json_push_kv_str(&reply->data,
+                               "first_source_mutation_sha256",
+                               record.first_source_mutation);
+        (void)json_push_kv_str(&reply->data, "first_execution_id_sha3",
+                               record.first_execution_id);
+        (void)json_push_kv_int(&reply->data, "first_seen_unix_ms",
+                               record.first_seen_unix_ms);
+        (void)json_push_kv_bool(&reply->data, "capsule_available",
+                                record.capsule[0] != 0);
+    }
+    if (full) {
+        (void)json_push_kv_str(&reply->data, "failure_capsule",
+                               record.capsule);
+        (void)json_push_kv_str(&reply->data, "retry_command",
+                               record.retry_command);
+    }
+    (void)zcl_command_reply_add_next(
+        reply, "dev.ff", "{}",
+        "rerun the current checkout's fail-fast ladder without coalescing");
+}
+
+#endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
 /* ── dev.vcs.revert — relink activator seam ──────────────────────────
  * These activators are retained for the future transactional implementation,

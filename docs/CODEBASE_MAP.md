@@ -216,9 +216,9 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
 
 ### Start here
 - `zclassic23 agentinterface` / `zcl_agent_interface` — preferred AI operator
-  interface contract. MCP is the primary interactive API, native CLI JSON is
-  the script/human fallback, REST is public read-only, and no Python or
-  `tools/z` logic is required. Its `capabilities[]` matrix and
+  interface contract. Typed native CLI JSON is primary, the legacy MCP route
+  remains during W2/W3 migration, REST is public read-only, and no external
+  wrapper logic is required. Its `capabilities[]` matrix and
   `machine_contract` block are the programmatic source for agent transport,
   schema, JSON, and compatibility expectations. Capability rows are emitted
   from `agent_contracts.def` via
@@ -263,10 +263,12 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
   `app/controllers/src/api_controller_service_catalog.c` and
   `app/controllers/src/api_controller_service_operations.c`; `/api/v1/services`
   remains runtime health.
-- `zclassic23 status` / `zclassic23 agent` / `zcl_agent` — bounded live status
-  from the running node. `status` is a native compatibility alias owned by
-  `agent_contracts.def`; it emits the same `zcl.public_status.v1` payload as
-  `agent` and `GET /api/v1/agent`. Its `security_posture` object is owned by
+- `zclassic23 status` — the native compact first check. It emits a bounded
+  `zcl.result.v1` envelope whose data schema is
+  `zcl.core_status_brief.v1`; it is owned by the command registry, not the
+  legacy agent-contract registry. `zclassic23 agent`, `zcl_agent`, and
+  `GET /api/v1/agent` remain the separate full `zcl.public_status.v1`
+  compatibility document. Its `security_posture` object is owned by
   `app/controllers/src/agent_security_posture.c` and names the borrowed
   snapshot/full-history-validation posture plus Sprout/Sapling anchor and
   nullifier history coverage. Public `serving` and `healthy` fail closed while
@@ -282,9 +284,10 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
   (`g_agent_command_surfaces`), including generic diagnostic primitives like
   `dumpstate`/`zcl_state`, `getnodelog`/`zcl_node_log`, and
   `dbquery`/`zcl_sql`, plus the raw event ring `eventlog`/`zcl_events`, not as
-  local string tables in the controllers. Non-method aliases such as
-  `command_center`, `full_status`, and `quality_lanes` also live there as
-  direct native/MCP command-surface rows. `agentops` first-call scalar fields
+  local string tables in the controllers. Non-method rows such as
+  `compact_status`, `full_compatibility_status`, `full_status`, and
+  `quality_lanes` also live there as direct native/MCP command-surface rows.
+  `agentops` first-call scalar fields
   such as `diagnose_tool`, `anchor_status_command`, and `peer_incidents_tool`
   live there too as `g_agent_field_surfaces`, while its top-level
   schema/method/native/MCP identity fields come from `agent_contracts.def`.
@@ -413,10 +416,6 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
   wallet, chain, network). Peer counts come from a parsed object array;
   malformed/error responses yield `peer_count=null` and
   `peer_count_known=false`.
-
-`tools/z` is a deprecated compatibility shim for terminal scripts. Keep it
-working, but do not add new operator logic there; add native C JSON contracts
-and expose them through MCP/REST instead.
 
 ### Catalog and primitives (prefer these over a new bespoke tool)
 - `zcl_state_catalog()` — discover the `zcl_state` subsystem list and metadata

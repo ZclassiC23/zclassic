@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hermetic contract test for the native dev-loop wait surface.  It uses a
-# private HOME and a synthetic durable verdict; it starts no watcher, contacts
-# no node, and has no runtime-publication path.
+# private HOME and a correctly workspace-bound SHA3-sealed verdict; it starts
+# no watcher, contacts no node, and has no runtime-publication path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -14,14 +14,27 @@ fi
 
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/zcl-native-loop-wait.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT HUP INT TERM
-STATE="$SANDBOX/.local/state/zclassic23-dev"
+umask 077
+WORKSPACE="$(
+    printf 'domain\0zcl.dev_workspace.v1\0canonical_root\0%s\0' "$ROOT" |
+        openssl dgst -sha3-256 | awk '{print $NF}'
+)"
+CYCLE='{"schema":"zcl.dev_cycle.v1","producer":"selftest","status":"passed","action":"check","reason":"contract_fixture","phase":"verified","runtime_published":false,"elapsed_ms":1,"files":["fixture.c"]}'
+EPOCH_VALUE=1
+DIGEST="$(
+    printf 'domain\0zcl.dev_cycle_record.v1\0workspace_id\0%s\0epoch\0%s\0cycle_json\0%s\0' \
+        "$WORKSPACE" "$EPOCH_VALUE" "$CYCLE" |
+        openssl dgst -sha3-256 | awk '{print $NF}'
+)"
+STATE="$SANDBOX/.local/state/zclassic23-dev/workspaces/$WORKSPACE"
 mkdir -p "$STATE"
-cat >"$STATE/native-cycle.json" <<'JSON'
-{"schema":"zcl.dev_cycle.v1","producer":"selftest","status":"passed","action":"check","reason":"contract_fixture","phase":"verified","runtime_published":false,"elapsed_ms":1,"files":["fixture.c"]}
-JSON
+: >"$STATE/cycle-state.lock"
+printf '{"schema":"zcl.dev_cycle_record.v1","workspace_id":"%s","epoch":%s,"cycle":%s,"cycle_sha3":"%s"}\n' \
+    "$WORKSPACE" "$EPOCH_VALUE" "$CYCLE" "$DIGEST" \
+    >"$STATE/native-cycle.json"
 
-OUT="$(HOME="$SANDBOX" "$BIN" dev loop wait \
-    --input='{"after_epoch":0,"timeout_ms":100,"view":"summary"}')"
+OUT="$(HOME="$SANDBOX" ZCL_DEV_SOURCE_ROOT="$ROOT" "$BIN" dev loop wait \
+    --input='{"after_epoch":0,"timeout_ms":100}' --view=summary)"
 
 [[ "$OUT" == *'"data_schema":"zcl.dev_cycle.v1"'* ]] || {
     echo "native-dev-loop-wait-selftest: declared data schema drifted" >&2
@@ -54,7 +67,8 @@ EPOCH="$(sed -n 's/.*"epoch":\([0-9][0-9]*\).*/\1/p' <<<"$OUT")"
     exit 1
 }
 set +e
-TIMEOUT_OUT="$(HOME="$SANDBOX" "$BIN" dev loop wait \
+TIMEOUT_OUT="$(HOME="$SANDBOX" ZCL_DEV_SOURCE_ROOT="$ROOT" \
+    "$BIN" dev loop wait \
     --input="{\"after_epoch\":$EPOCH,\"timeout_ms\":25}" 2>&1)"
 TIMEOUT_RC=$?
 set -e
@@ -62,8 +76,13 @@ set -e
     echo "native-dev-loop-wait-selftest: returned epoch did not chain to a bounded wait" >&2
     exit 1
 }
-[[ "$TIMEOUT_OUT" == *"\"after_epoch\":$EPOCH"* ]] || {
+[[ "$TIMEOUT_OUT" == *"current_epoch=$EPOCH"* ]] || {
     echo "native-dev-loop-wait-selftest: timeout recovery lost the current epoch" >&2
+    exit 1
+}
+[[ "$TIMEOUT_OUT" == *'"next":[{"command":"dev.loop.status"'* &&
+    "$TIMEOUT_OUT" != *'"next":[{"command":"dev.loop.wait"'* ]] || {
+    echo "native-dev-loop-wait-selftest: timeout emitted an invalid self-loop" >&2
     exit 1
 }
 

@@ -26,10 +26,12 @@
 #include "json/json.h"
 
 #include "chain/chainparams.h"
+#include "chain/checkpoints.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/boot_status.h"
 #include "controllers/native_handler_body.h"
+#include "controllers/status_native_helpers.h"
 #include "controllers/status_native_handlers.h"
 #include "controllers/chain_native_handlers.h"
 #include "controllers/wallet_native_handlers.h"
@@ -42,7 +44,6 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,14 +52,15 @@
 #include <unistd.h>
 
 /* ── root recognition ──────────────────────────────────────────────── */
-/* Canonical roots this adapter owns. `status` keeps its existing static-agent
- * path (the contract's compact status). */
+/* Canonical roots this adapter owns. `status` is the compact native entry
+ * point; the large diagnostic document remains explicit under core.status. */
 bool zcl_native_command_is_root(const char *word)
 {
     if (!word || !word[0])
         return false;
     static const char *const roots[] = {
-        "core", "app", "dev", "ops", "discover", "code", "help", "search",
+        "status", "core", "app", "dev", "ops", "discover", "code", "help",
+        "search",
         /* Operator-UX convenience roots: bare aliases of ops.explain /
          * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
          * work without the `ops` prefix (each leaf carries the matching
@@ -72,14 +74,15 @@ bool zcl_native_command_is_root(const char *word)
     return false;
 }
 
-/* ── path -> MCP tool bindings for READ-ONLY bridge leaves ─────────────
+/* ── path -> compatibility IDs for READ-ONLY native bridge leaves ──────
  * Transport binding lives here, never in registry metadata. Every entry MUST
- * name a READY core/ops leaf whose .handler is zcl_native_bridge_command; the
+ * name a READY native leaf whose .handler is zcl_native_bridge_command; the
  * golden catalog test proves the two sets agree. */
 static const struct {
     const char *path;
     const char *tool;
 } g_bridge_tools[] = {
+    { "status", "zcl_status_brief" },
     { "core.status", "zcl_status" },
     { "core.status.brief", "zcl_status_brief" },
     { "core.chain.tip", "zcl_chain_tip" },
@@ -148,6 +151,7 @@ static const struct {
     const char *path;
     zcl_native_body_fn body;
 } g_bridge_native_body[] = {
+    { "status", zcl_native_status_brief_body },
     { "core.status", zcl_native_status_body },
     { "core.status.brief", zcl_native_status_brief_body },
     { "core.chain.block.get", zcl_native_getblock_body },
@@ -170,33 +174,209 @@ static const struct {
     { "ops.postmortem.list", zcl_native_postmortem_list_body },
 };
 
-static const struct {
+enum bridge_rpc_array_kind {
+    BRIDGE_RPC_ARRAY_NONE = 0,
+    BRIDGE_RPC_ARRAY_TXIDS,
+    BRIDGE_RPC_ARRAY_PEERS,
+    BRIDGE_RPC_ARRAY_LATENCY,
+};
+
+struct bridge_rpc_required_field {
+    const char *name;
+    enum json_type type;
+};
+
+struct bridge_rpc_binding {
     const char *path;
     const char *rpc_method;
-} g_bridge_rpc_direct[] = {
-    { "core.chain.tip", "getchaintip" },
-    { "core.chain.mempool.status", "getmempoolinfo" },
-    { "core.chain.mempool.list", "getrawmempool" },
-    { "core.sync.status", "syncstate" },
-    { "core.sync.validation", "validationstatus" },
-    { "core.consensus.integrity", "getdataintegrity" },
-    { "core.consensus.utxo.commitment", "getutxocommitment" },
-    { "core.consensus.mmb", "getmmrroot" },
-    { "core.network.status", "getnetworkinfo" },
-    { "core.network.peers.list", "getpeerinfo" },
-    { "core.network.peers.latency", "getpeerlatency" },
-    { "core.network.onion.status", "healthcheck" },
-    { "core.wallet.status", "getwalletinfo" },
-    { "core.wallet.balance", "z_gettotalbalance" },
-    { "core.wallet.backup.status", "walletbackupstatus" },
-    { "core.wallet.audit", "walletaudit" },
-    { "core.storage.stats", "db_info" },
-    { "core.mining.status", "getmininginfo" },
-    { "core.mining.benchmark", "benchmark" },
-    { "ops.health", "healthcheck" },
-    { "ops.lanes", "agentlanes" },
-    { "ops.recovery.status", "refold" },
+    enum json_type top_type;
+    struct bridge_rpc_required_field required[3];
+    enum bridge_rpc_array_kind array_kind;
 };
+
+static const struct bridge_rpc_binding g_bridge_rpc_direct[] = {
+    { "core.chain.tip", "getchaintip", JSON_OBJ,
+      {{"hash", JSON_STR}, {"height", JSON_INT}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.chain.mempool.status", "getmempoolinfo", JSON_OBJ,
+      {{"size", JSON_INT}, {"bytes", JSON_INT}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.chain.mempool.list", "getrawmempool", JSON_ARR,
+      {{0}}, BRIDGE_RPC_ARRAY_TXIDS },
+    { "core.sync.status", "syncstate", JSON_OBJ,
+      {{"state", JSON_STR}, {"state_id", JSON_INT}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.sync.validation", "validationstatus", JSON_OBJ,
+      {{"state", JSON_STR}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.consensus.integrity", "getdataintegrity", JSON_OBJ,
+      {{"source", JSON_STR}, {"master", JSON_STR}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.consensus.utxo.commitment", "getutxocommitment", JSON_OBJ,
+      {{"sha3_hash", JSON_STR}, {"height", JSON_INT},
+       {"utxo_count", JSON_INT}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.consensus.mmb", "getmmrroot", JSON_OBJ,
+      {{"mmr_root", JSON_STR}, {"num_leaves", JSON_INT}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.network.status", "getnetworkinfo", JSON_OBJ,
+      {{"connections", JSON_INT}, {"networks", JSON_ARR}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.network.peers.list", "getpeerinfo", JSON_ARR,
+      {{0}}, BRIDGE_RPC_ARRAY_PEERS },
+    { "core.network.peers.latency", "getpeerlatency", JSON_ARR,
+      {{0}}, BRIDGE_RPC_ARRAY_LATENCY },
+    { "core.network.onion.status", "healthcheck", JSON_OBJ,
+      {{"status", JSON_STR}, {"healthy", JSON_BOOL}, {"serving", JSON_BOOL}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.wallet.status", "getwalletinfo", JSON_OBJ,
+      {{"balance", JSON_STR}, {"txcount", JSON_INT}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.wallet.balance", "z_gettotalbalance", JSON_OBJ,
+      {{"transparent", JSON_STR}, {"total", JSON_STR}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.wallet.backup.status", "walletbackupstatus", JSON_OBJ,
+      {{"running", JSON_BOOL}, {"total_runs", JSON_INT}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.wallet.audit", "walletaudit", JSON_OBJ,
+      {{"chain_height", JSON_INT}, {"summary", JSON_OBJ}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.storage.stats", "db_info", JSON_OBJ,
+      {{"tip_height", JSON_INT}, {"utxo_count", JSON_INT}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "core.mining.status", "getmininginfo", JSON_OBJ,
+      {{"blocks", JSON_INT}, {"chain", JSON_STR}}, BRIDGE_RPC_ARRAY_NONE },
+    { "core.mining.benchmark", "benchmark", JSON_OBJ,
+      {{"primary_benchmark_source", JSON_STR},
+       {"primary_benchmarks", JSON_ARR}}, BRIDGE_RPC_ARRAY_NONE },
+    { "ops.health", "healthcheck", JSON_OBJ,
+      {{"status", JSON_STR}, {"healthy", JSON_BOOL}, {"serving", JSON_BOOL}},
+      BRIDGE_RPC_ARRAY_NONE },
+    { "ops.lanes", "agentlanes", JSON_OBJ,
+      {{"status", JSON_STR}, {"lanes", JSON_ARR}}, BRIDGE_RPC_ARRAY_NONE },
+    { "ops.recovery.status", "refold", JSON_OBJ,
+      {{"ready_for_refold", JSON_BOOL}, {"primary_blocker", JSON_STR}},
+      BRIDGE_RPC_ARRAY_NONE },
+};
+
+static const struct bridge_rpc_binding *bridge_rpc_binding_for_path(
+    const char *path)
+{
+    if (!path)
+        return NULL;
+    for (size_t i = 0;
+         i < sizeof(g_bridge_rpc_direct) / sizeof(g_bridge_rpc_direct[0]);
+         i++) {
+        if (strcmp(g_bridge_rpc_direct[i].path, path) == 0)
+            return &g_bridge_rpc_direct[i];
+    }
+    return NULL;
+}
+
+static const char *bridge_json_type_name(enum json_type type)
+{
+    static const char *const names[] = {
+        "null", "bool", "int", "real", "string", "array", "object",
+    };
+    return (unsigned)type < sizeof(names) / sizeof(names[0])
+               ? names[type]
+               : "unknown";
+}
+
+static bool bridge_is_hex64(const char *s)
+{
+    if (!s || strlen(s) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (!isxdigit(c))
+            return false;
+    }
+    return true;
+}
+
+static bool bridge_validate_array_item(
+    const struct bridge_rpc_binding *binding,
+    const struct json_value *item, size_t index,
+    char *why, size_t why_cap)
+{
+    const char *field_a = NULL;
+    const char *field_b = NULL;
+    switch (binding->array_kind) {
+    case BRIDGE_RPC_ARRAY_TXIDS:
+        if (item->type == JSON_STR && bridge_is_hex64(json_get_str(item)))
+            return true;
+        (void)snprintf(why, why_cap,
+                       "item %zu must be a 64-hex transaction id", index);
+        return false;
+    case BRIDGE_RPC_ARRAY_PEERS:
+        field_a = "id";
+        field_b = "addr";
+        break;
+    case BRIDGE_RPC_ARRAY_LATENCY:
+        field_a = "peer_id";
+        field_b = "addr";
+        break;
+    case BRIDGE_RPC_ARRAY_NONE:
+        return true;
+    }
+    if (item->type != JSON_OBJ) {
+        (void)snprintf(why, why_cap, "item %zu must be an object", index);
+        return false;
+    }
+    const struct json_value *a = json_get(item, field_a);
+    const struct json_value *b = json_get(item, field_b);
+    if (!a || a->type != JSON_INT) {
+        (void)snprintf(why, why_cap, "item %zu field %s must be int",
+                       index, field_a);
+        return false;
+    }
+    if (!b || b->type != JSON_STR) {
+        (void)snprintf(why, why_cap, "item %zu field %s must be string",
+                       index, field_b);
+        return false;
+    }
+    return true;
+}
+
+/* A bare, parseable JSON value is not proof that the requested RPC exists or
+ * that the running node speaks this source epoch's contract. Direct-RPC
+ * leaves therefore validate the stable minimum of the legacy result shape.
+ * These checks intentionally do not require a synthetic `schema` member:
+ * zclassicd-compatible RPCs predate schema labels, but their field/type shape
+ * is stable. Empty list results remain valid; every populated element is
+ * checked so a mixed or arbitrary array fails closed. */
+static bool bridge_validate_rpc_success(
+    const struct bridge_rpc_binding *binding,
+    const struct json_value *doc, char *why, size_t why_cap)
+{
+    if (!binding || !doc) {
+        (void)snprintf(why, why_cap, "missing direct-RPC contract");
+        return false;
+    }
+    if (doc->type != binding->top_type) {
+        (void)snprintf(why, why_cap, "top level must be %s (got %s)",
+                       bridge_json_type_name(binding->top_type),
+                       bridge_json_type_name(doc->type));
+        return false;
+    }
+    for (size_t i = 0;
+         i < sizeof(binding->required) / sizeof(binding->required[0]); i++) {
+        const struct bridge_rpc_required_field *required =
+            &binding->required[i];
+        if (!required->name)
+            break;
+        const struct json_value *field = json_get(doc, required->name);
+        if (!field || field->type != required->type) {
+            (void)snprintf(why, why_cap, "field %s must be %s",
+                           required->name,
+                           bridge_json_type_name(required->type));
+            return false;
+        }
+    }
+    if (binding->top_type == JSON_ARR) {
+        for (size_t i = 0; i < doc->num_children; i++) {
+            if (!bridge_validate_array_item(binding, &doc->children[i], i,
+                                            why, why_cap))
+                return false;
+        }
+    }
+    return true;
+}
 
 zcl_native_body_fn zcl_native_bridge_body_for_path(const char *path)
 {
@@ -213,15 +393,9 @@ zcl_native_body_fn zcl_native_bridge_body_for_path(const char *path)
 
 const char *zcl_native_bridge_rpc_for_path(const char *path)
 {
-    if (!path)
-        return NULL;
-    for (size_t i = 0;
-         i < sizeof(g_bridge_rpc_direct) / sizeof(g_bridge_rpc_direct[0]);
-         i++) {
-        if (strcmp(g_bridge_rpc_direct[i].path, path) == 0)
-            return g_bridge_rpc_direct[i].rpc_method;
-    }
-    return NULL;
+    const struct bridge_rpc_binding *binding =
+        bridge_rpc_binding_for_path(path);
+    return binding ? binding->rpc_method : NULL;
 }
 
 /* ── one-shot RPC client bootstrap ──────────────────────────────────── */
@@ -287,26 +461,172 @@ static bool bridge_build_args(const char *path,
  *   summary — scalar top-level fields only (containers dropped);
  *   normal  — greedy top-level fields in order until the budget (default);
  *   full    — greedy from --cursor, honoring --max-items, paging via a cursor.
- * Truncation is always explicit: a `_page` object records it and the envelope
- * gets one structured retrieval command (same leaf, --view=full --cursor=N). */
+ * Truncation is always explicit: a `_page` object records the advancing
+ * cursor, while `next` points at the leaf contract instead of creating an
+ * executable self-loop. */
 enum { NC_ENVELOPE_RESERVE = 768 };
+
+static void nc_add_describe_next(struct zcl_command_reply *reply,
+                                 const char *path, const char *reason)
+{
+    if (!reply || !path || !path[0])
+        return;
+    char input[ZCL_COMMAND_MAX_PATH + 16];
+    int n = snprintf(input, sizeof(input), "{\"path\":\"%s\"}", path);
+    if (n > 0 && (size_t)n < sizeof(input))
+        (void)zcl_command_reply_add_next(reply, "discover.describe", input,
+                                         reason);
+}
+
+static void nc_add_string_next(struct zcl_command_reply *reply,
+                               const char *command, const char *key,
+                               const char *value, const char *reason)
+{
+    if (!reply || !command || !key || !value)
+        return;
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    char encoded[sizeof(reply->next[0].input_json)];
+    bool ok = json_push_kv_str(&input, key, value);
+    size_t n = ok ? json_write(&input, encoded, sizeof(encoded)) : 0;
+    json_free(&input);
+    if (n > 0 && n < sizeof(encoded))
+        (void)zcl_command_reply_add_next(reply, command, encoded, reason);
+}
 
 static bool nc_is_scalar(const struct json_value *v)
 {
     return v && v->type <= JSON_STR; /* NULL/BOOL/INT/REAL/STR */
 }
 
-static size_t nc_obj_size(const struct json_value *obj)
+static size_t nc_json_size(const struct json_value *value)
 {
     char scratch[ZCL_COMMAND_LIST_BUDGET + 1];
-    size_t n = json_write(obj, scratch, sizeof(scratch));
+    size_t n = json_write(value, scratch, sizeof(scratch));
     return (n == 0 || n >= sizeof(scratch)) ? sizeof(scratch) : n;
+}
+
+static void nc_project_array(const struct zcl_command_request *request,
+                             const struct json_value *body,
+                             struct zcl_command_reply *reply)
+{
+    const char *view = request->view && request->view[0] ? request->view
+                                                          : "normal";
+    bool summary = strcmp(view, "summary") == 0;
+    bool full = strcmp(view, "full") == 0;
+    size_t contract = ZCL_COMMAND_RESULT_BUDGET;
+    if (request->budget_bytes > 0 && request->budget_bytes < contract)
+        contract = request->budget_bytes;
+    size_t data_budget = contract > NC_ENVELOPE_RESERVE
+                             ? contract - NC_ENVELOPE_RESERVE
+                             : contract / 2;
+    /* Reserve room inside data for the stable page descriptor. */
+    size_t items_budget = data_budget > 256 ? data_budget - 256
+                                             : data_budget / 2;
+
+    size_t start = 0;
+    if (full && request->cursor && request->cursor[0]) {
+        char *end = NULL;
+        unsigned long long c = strtoull(request->cursor, &end, 10);
+        if (end && !*end)
+            start = (size_t)c;
+    }
+
+    struct json_value items;
+    json_init(&items);
+    json_set_array(&items);
+    size_t included = 0;
+    size_t next_cursor = body->num_children;
+    bool truncated = summary && body->num_children > 0;
+    bool skipped_oversize = false;
+    size_t skipped_index = 0;
+    if (summary)
+        next_cursor = 0;
+
+    for (size_t i = start; !summary && i < body->num_children; i++) {
+        if (full && request->max_items > 0 && included >= request->max_items) {
+            truncated = true;
+            next_cursor = i;
+            break;
+        }
+        struct json_value probe, copy;
+        json_init(&probe);
+        json_init(&copy);
+        json_copy(&probe, &items);
+        json_copy(&copy, &body->children[i]);
+        (void)json_push_back(&probe, &copy);
+        size_t sz = nc_json_size(&probe);
+        json_free(&probe);
+        if (sz <= items_budget) {
+            (void)json_push_back(&items, &copy);
+            included++;
+            json_free(&copy);
+            continue;
+        }
+        json_free(&copy);
+        truncated = true;
+        if (included == 0) {
+            skipped_oversize = true;
+            skipped_index = i;
+            next_cursor = i + 1;
+        } else {
+            next_cursor = i;
+        }
+        break;
+    }
+
+    struct json_value page, data;
+    json_init(&page);
+    json_init(&data);
+    json_set_object(&page);
+    json_set_object(&data);
+    (void)json_push_kv_str(&page, "view", view);
+    (void)json_push_kv_int(&page, "total_items",
+                           (int64_t)body->num_children);
+    (void)json_push_kv_int(&page, "included", (int64_t)included);
+    (void)json_push_kv_bool(&page, "truncated", truncated);
+    if (truncated)
+        (void)json_push_kv_int(&page, "next_cursor", (int64_t)next_cursor);
+    if (skipped_oversize)
+        (void)json_push_kv_int(&page, "skipped_oversize_index",
+                               (int64_t)skipped_index);
+    (void)json_push_kv(&data, "items", &items);
+    (void)json_push_kv(&data, "_page", &page);
+    json_free(&items);
+    json_free(&page);
+
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &data);
+    json_free(&data);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+
+    if (truncated)
+        nc_add_describe_next(
+            reply, request->spec->path,
+            summary ? "inspect paging controls before retrieving list items"
+                    : "inspect paging controls before continuing this list");
 }
 
 void zcl_native_bridge_project(const struct zcl_command_request *request,
                                const struct json_value *body,
                                struct zcl_command_reply *reply)
 {
+    if (body && body->type == JSON_ARR) {
+        nc_project_array(request, body, reply);
+        return;
+    }
+    if (!body || body->type != JSON_OBJ) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
+                               "serialize", false, false,
+                               "tool returned an unsupported body shape",
+                               request && request->spec
+                                   ? request->spec->path : "");
+        return;
+    }
     const char *view = request->view && request->view[0] ? request->view
                                                           : "normal";
     bool summary = strcmp(view, "summary") == 0;
@@ -352,7 +672,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
         json_copy(&probe, &acc);
         json_copy(&copy, val);
         (void)json_push_kv(&probe, body->keys[i], &copy);
-        size_t sz = nc_obj_size(&probe);
+        size_t sz = nc_json_size(&probe);
         json_free(&probe);
         if (sz <= data_budget) {
             (void)json_push_kv(&acc, body->keys[i], &copy);
@@ -398,17 +718,11 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 
-    if (truncated) {
-        char input_json[128];
-        if (summary)
-            (void)snprintf(input_json, sizeof(input_json), "{\"view\":\"full\"}");
-        else
-            (void)snprintf(input_json, sizeof(input_json),
-                           "{\"view\":\"full\",\"cursor\":%zu}", next_cursor);
-        (void)zcl_command_reply_add_next(
-            reply, request->spec->path, input_json,
-            summary ? "retrieve full fields" : "retrieve the remaining fields");
-    }
+    if (truncated)
+        nc_add_describe_next(
+            reply, request->spec->path,
+            summary ? "inspect paging controls before retrieving full fields"
+                    : "inspect paging controls before continuing these fields");
 }
 
 /* Run a bridged leaf with an EXPLICIT body function — everything
@@ -428,8 +742,9 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
     if (!request || !request->spec || !reply)
         return;
     const char *tool = zcl_native_bridge_tool_for_path(request->spec->path);
-    const char *rpc_method =
-        zcl_native_bridge_rpc_for_path(request->spec->path);
+    const struct bridge_rpc_binding *rpc_binding =
+        bridge_rpc_binding_for_path(request->spec->path);
+    const char *rpc_method = rpc_binding ? rpc_binding->rpc_method : NULL;
     if (!tool || (!body && !rpc_method)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "NO_BRIDGE_BINDING",
@@ -479,14 +794,13 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
                                "execute", false, false, msg, tool);
-        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
-                                         "confirm the node is running");
+        nc_add_describe_next(reply, request->spec->path,
+                             "inspect this command before retrying");
         return;
     }
 
     struct json_value body_doc;
-    if (!json_read(&body_doc, result, strlen(result)) ||
-        body_doc.type != JSON_OBJ) {
+    if (!json_read(&body_doc, result, strlen(result))) {
         json_free(&body_doc);
         free(result);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -497,13 +811,16 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
     }
     free(result);
 
-    const struct json_value *err = json_get(&body_doc, "error");
-    if (err && !json_is_null(err)) {
+    const struct json_value *err = body_doc.type == JSON_OBJ
+                                       ? json_get(&body_doc, "error") : NULL;
+    if (body_doc.type == JSON_OBJ && status_json_is_rpc_error(&body_doc)) {
         const char *msg = NULL;
-        if (err->type == JSON_OBJ)
+        if (err && err->type == JSON_OBJ)
             msg = json_get_str(json_get(err, "message"));
-        else if (err->type == JSON_STR)
+        else if (err && err->type == JSON_STR)
             msg = json_get_str(err);
+        else
+            msg = json_get_str(json_get(&body_doc, "message"));
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
                                "execute", false, false,
@@ -511,6 +828,31 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
                                tool);
         json_free(&body_doc);
         return;
+    }
+
+    if (body && body_doc.type != JSON_OBJ) {
+        json_free(&body_doc);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
+                               "serialize", false, false,
+                               "tool returned a non-object body", tool);
+        return;
+    }
+    if (!body) {
+        char why[160];
+        if (!bridge_validate_rpc_success(rpc_binding, &body_doc,
+                                         why, sizeof(why))) {
+            char msg[224];
+            (void)snprintf(msg, sizeof(msg),
+                           "RPC %s returned an incompatible success body: %s",
+                           rpc_method ? rpc_method : "(unbound)", why);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
+                                   "execute", false, false, msg,
+                                   request->spec->path);
+            json_free(&body_doc);
+            return;
+        }
     }
 
     /* Success: project the tool body into the result envelope's data, bounded
@@ -699,9 +1041,8 @@ void zcl_native_handle_ops_state(const struct zcl_command_request *request,
                                ZCL_COMMAND_EXIT_INVALID, "MISSING_SUBSYSTEM",
                                "normalize", false, false,
                                "subsystem is required", "ops.state");
-        (void)zcl_command_reply_add_next(reply, "ops.state",
-                                         "{\"subsystem\":\"supervisor\"}",
-                                         "name a subsystem to dump");
+        nc_add_describe_next(reply, request->spec->path,
+                             "inspect the subsystem input contract");
         return;
     }
     const char *key = json_get_str(json_get(request->input, "key"));
@@ -1003,9 +1344,8 @@ void zcl_native_handle_ops_explain(const struct zcl_command_request *request,
                                "resolve", false, false,
                                emsg && emsg[0] ? emsg : "unknown explain topic",
                                known);
-        (void)zcl_command_reply_add_next(reply, "ops.debug.explain",
-                                         "{\"topic\":\"sync\"}",
-                                         "explain a known topic");
+        nc_add_describe_next(reply, request->spec->path,
+                             "inspect the supported explain topics");
         json_free(&data);
         return;
     }
@@ -1155,27 +1495,38 @@ static void nc_read_log_tail(const char *datadir, char *out, size_t cap)
     (void)snprintf(out, cap, "%s", line);
 }
 
-/* Append without ever advancing beyond the last writable byte. snprintf()
- * returns the length it wanted to write, so adding that value after truncation
- * would make the next pointer/capacity pair invalid. */
-static void nc_text_append(char *out, size_t cap, size_t *len,
-                           const char *format, ...)
+/* A digest-verified finalized receipt is the immutable completion authority;
+ * live stage cursors may belong to a later/restarted writer and must not
+ * override its H*+1 fold cursor. */
+static int64_t nc_producer_applied_height(
+    const struct producer_status_read *st)
 {
-    if (!out || cap == 0 || !len || *len >= cap)
-        return;
-    va_list args;
-    va_start(args, format);
-    int n = vsnprintf(out + *len, cap - *len, format, args);
-    va_end(args);
-    if (n < 0)
-        return;
-    size_t available = cap - *len;
-    if ((size_t)n >= available) {
-        *len = cap - 1;
-        return;
-    }
-    *len += (size_t)n;
+    if (!st)
+        return -1;
+    if (st->receipt_finalized)
+        return st->fold_cursor > 0 ? st->fold_cursor - 1 : -1;
+    if (st->utxo_apply_cursor > 0)
+        return st->utxo_apply_cursor - 1;
+    if (st->utxo_apply_cursor == 0)
+        return -1;
+    return st->tip_finalize_cursor;
 }
+
+#ifdef ZCL_TESTING
+int64_t zcl_native_producer_applied_height_for_test(
+    const struct producer_status_read *st);
+
+int64_t zcl_native_producer_applied_height_for_test(
+    const struct producer_status_read *st)
+{
+    return nc_producer_applied_height(st);
+}
+#endif
+
+/* applied_at has one-second resolution.  Five seconds admits ordinary clock
+ * scheduling/NTP jitter, while a larger future timestamp is rejected as ETA
+ * evidence until wall time catches up. */
+enum { NC_PRODUCER_RATE_FUTURE_SKEW_TOLERANCE_SECONDS = 5 };
 
 void zcl_native_handle_ops_producer_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
@@ -1191,10 +1542,8 @@ void zcl_native_handle_ops_producer_status(
                                "normalize", false, false,
                                "no datadir given and no --datadir default",
                                "ops.debug.producer");
-        (void)zcl_command_reply_add_next(
-            reply, "ops.debug.producer",
-            "{\"datadir\":\"/home/you/.zclassic-c23-mint\"}",
-            "name the producer datadir to inspect");
+        nc_add_describe_next(reply, request->spec->path,
+                             "inspect the required producer datadir input");
         return;
     }
     if (strlen(datadir) >= CONSENSUS_STATE_PRODUCER_DATADIR_MAX) {
@@ -1224,49 +1573,79 @@ void zcl_native_handle_ops_producer_status(
     const char *receipt_state = st.receipt_finalized ? "finalized"
                               : st.session_open ? "open" : "absent";
     /* utxo_apply names the NEXT height to process; tip_finalize owns its
-     * already-served height. Keep both raw cursors and preserve that semantic
-     * difference when utxo telemetry is absent. */
-    int64_t height = st.utxo_apply_cursor > 0 ? st.utxo_apply_cursor - 1
-                   : st.utxo_apply_cursor == 0 ? -1
-                   : st.tip_finalize_cursor;
-
-    char t[4096];
-    size_t len = 0;
-    nc_text_append(t, sizeof(t), &len, "producer status — %s\n", datadir);
-    if (!st.progress_kv_present) {
-        nc_text_append(t, sizeof(t), &len,
-                       "  progress.kv: ABSENT (producer not started)\n");
-    } else {
-        nc_text_append(t, sizeof(t), &len, "  receipt state: %s\n",
-                       receipt_state);
-        nc_text_append(t, sizeof(t), &len,
-                       "  fold applied-through height: %lld\n",
-                       (long long)height);
-        nc_text_append(t, sizeof(t), &len,
-                       "  utxo_apply next-height cursor: %lld\n",
-                       (long long)st.utxo_apply_cursor);
-        nc_text_append(t, sizeof(t), &len,
-                       "  tip_finalize cursor: %lld  fold_cursor: %lld\n",
-                       (long long)st.tip_finalize_cursor,
-                       (long long)st.fold_cursor);
-        nc_text_append(t, sizeof(t), &len,
-                       "  source receipt: %s  profile: %d\n",
-                       st.receipt_schema[0] ? st.receipt_schema : "unknown",
-                       st.validation_profile);
-        nc_text_append(
-            t, sizeof(t), &len, "  source root: %s\n  source epoch: %s\n",
-            st.source_tree_root[0] ? st.source_tree_root : "unknown",
-            st.source_epoch_digest[0] ? st.source_epoch_digest : "unknown");
-        nc_text_append(t, sizeof(t), &len,
-                       "  legacy producer commit: %s\n",
-                       st.producer_commit[0] ? st.producer_commit : "unknown");
-        nc_text_append(t, sizeof(t), &len, "  last log: %s\n",
-                       log_tail[0] ? log_tail : "(no mint-progress.log)");
+     * already-served height. A finalized receipt supersedes both. */
+    int64_t height = nc_producer_applied_height(&st);
+    const struct sha3_utxo_checkpoint *checkpoint =
+        get_sha3_utxo_checkpoint();
+    int64_t target_height = checkpoint ? checkpoint->height : -1;
+    int64_t remaining = -1;
+    if (height >= 0 && target_height >= 0)
+        remaining = target_height > height ? target_height - height : 0;
+    int64_t rate_sample_age_seconds = -1;
+    int64_t rate_stale_after_seconds = -1;
+    int64_t rate_future_skew_seconds = 0;
+    bool rate_sample_clock_valid = false;
+    bool durable_rate_recent = false;
+    if (st.durable_rate_available) {
+        int64_t now = platform_time_wall_unix();
+        int64_t interval = st.rate_newer_time_unix - st.rate_older_time_unix;
+        rate_stale_after_seconds = interval > 43200 ? 86400 : interval * 2;
+        if (rate_stale_after_seconds < 300)
+            rate_stale_after_seconds = 300;
+        if (now > 0 && st.rate_newer_time_unix > now) {
+            rate_future_skew_seconds = st.rate_newer_time_unix - now;
+            rate_sample_clock_valid = rate_future_skew_seconds <=
+                NC_PRODUCER_RATE_FUTURE_SKEW_TOLERANCE_SECONDS;
+            if (rate_sample_clock_valid)
+                rate_sample_age_seconds = 0;
+        } else if (now > 0) {
+            rate_sample_clock_valid = true;
+            rate_sample_age_seconds = now - st.rate_newer_time_unix;
+        }
+        durable_rate_recent = rate_sample_clock_valid &&
+            rate_sample_age_seconds <= rate_stale_after_seconds;
     }
-    nc_text_append(
-        t, sizeof(t), &len,
-        "  note: rate/ETA and network target require the running node "
-        "(`ops profile`)");
+    bool target_reached = height >= 0 && target_height >= 0 &&
+                          height >= target_height;
+    bool eta_available = target_reached ||
+        (st.durable_rate_available && durable_rate_recent &&
+         height >= 0 && target_height >= 0);
+    int64_t eta_seconds = eta_available && remaining > 0
+        ? (remaining * INT64_C(1000) +
+           st.rate_blocks_per_second_milli - 1) /
+              st.rate_blocks_per_second_milli
+        : eta_available ? 0 : -1;
+
+    char t[2048];
+    if (!st.progress_kv_present) {
+        (void)snprintf(t, sizeof(t),
+                       "producer=%s state=not_started height=unknown",
+                       datadir);
+    } else if (eta_available && st.durable_rate_available) {
+        int64_t rate_whole = st.rate_blocks_per_second_milli / 1000;
+        int64_t rate_tenth =
+            (st.rate_blocks_per_second_milli % 1000) / 100;
+        (void)snprintf(
+            t, sizeof(t),
+            "producer=%s receipt=%s height=%lld target=%lld remaining=%lld "
+            "rate=%lld.%lldblk/s eta=%llds",
+            datadir, receipt_state, (long long)height,
+            (long long)target_height, (long long)remaining,
+            (long long)rate_whole, (long long)rate_tenth,
+            (long long)eta_seconds);
+    } else if (eta_available) {
+        (void)snprintf(t, sizeof(t),
+                       "producer=%s receipt=%s height=%lld target=%lld "
+                       "remaining=0 rate=unknown eta=0s",
+                       datadir, receipt_state, (long long)height,
+                       (long long)target_height);
+    } else {
+        (void)snprintf(t, sizeof(t),
+                       "producer=%s receipt=%s height=%lld target=%lld "
+                       "rate=unknown eta=unknown",
+                       datadir, receipt_state, (long long)height,
+                       (long long)target_height);
+    }
 
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     (void)json_push_kv_bool(&reply->data, "progress_kv_present",
@@ -1291,6 +1670,52 @@ void zcl_native_handle_ops_producer_status(
                            st.producer_commit);
     (void)json_push_kv_int(&reply->data, "validation_profile",
                            st.validation_profile);
+    (void)json_push_kv_int(&reply->data, "target_height", target_height);
+    (void)json_push_kv_str(&reply->data, "target_kind",
+                           "compiled_sovereign_anchor");
+    (void)json_push_kv_int(&reply->data, "remaining_blocks", remaining);
+    if (height >= 0 && target_height > 0) {
+        int64_t progress_ppm = height >= target_height
+            ? INT64_C(1000000)
+            : height * INT64_C(1000000) / target_height;
+        (void)json_push_kv_int(&reply->data, "progress_ppm", progress_ppm);
+    }
+    (void)json_push_kv_bool(&reply->data, "durable_rate_available",
+                            st.durable_rate_available);
+    (void)json_push_kv_bool(&reply->data, "durable_rate_recent",
+                            durable_rate_recent);
+    (void)json_push_kv_bool(&reply->data, "rate_sample_clock_valid",
+                            rate_sample_clock_valid);
+    (void)json_push_kv_int(
+        &reply->data, "rate_future_skew_tolerance_seconds",
+        NC_PRODUCER_RATE_FUTURE_SKEW_TOLERANCE_SECONDS);
+    (void)json_push_kv_str(&reply->data, "rate_source",
+                           "progress.kv:utxo_apply_log.applied_at");
+    if (st.durable_rate_available) {
+        (void)json_push_kv_int(&reply->data, "rate_older_height",
+                               st.rate_older_height);
+        (void)json_push_kv_int(&reply->data, "rate_older_time_unix",
+                               st.rate_older_time_unix);
+        (void)json_push_kv_int(&reply->data, "rate_newer_height",
+                               st.rate_newer_height);
+        (void)json_push_kv_int(&reply->data, "rate_newer_time_unix",
+                               st.rate_newer_time_unix);
+        (void)json_push_kv_int(&reply->data,
+                               "rate_blocks_per_second_milli",
+                               st.rate_blocks_per_second_milli);
+        (void)json_push_kv_int(&reply->data, "rate_sample_age_seconds",
+                               rate_sample_age_seconds);
+        (void)json_push_kv_int(&reply->data, "rate_stale_after_seconds",
+                               rate_stale_after_seconds);
+        (void)json_push_kv_int(&reply->data, "rate_future_skew_seconds",
+                               rate_future_skew_seconds);
+    }
+    (void)json_push_kv_bool(&reply->data, "eta_available", eta_available);
+    if (eta_available) {
+        (void)json_push_kv_int(&reply->data, "eta_seconds", eta_seconds);
+        (void)json_push_kv_str(&reply->data, "eta_target",
+                               "compiled_sovereign_anchor");
+    }
     (void)json_push_kv_str(&reply->data, "last_log", log_tail);
     (void)json_push_kv_str(&reply->data, "text", t);
 }
@@ -1343,10 +1768,8 @@ void zcl_native_handle_core_node_bootstatus(
                                "normalize", false, false,
                                "no datadir given and no --datadir default",
                                "core.node.bootstatus");
-        (void)zcl_command_reply_add_next(
-            reply, "core.node.bootstatus",
-            "{\"datadir\":\"/home/you/.zclassic-c23\"}",
-            "name the datadir to inspect");
+        nc_add_describe_next(reply, request->spec->path,
+                             "inspect the boot-status datadir input");
         return;
     }
 
@@ -1360,9 +1783,8 @@ void zcl_native_handle_core_node_bootstatus(
                                "execute", true, false,
                                why[0] ? why : "no boot_status.json yet",
                                datadir);
-        (void)zcl_command_reply_add_next(reply, "core.node.bootwait",
-                                         "{\"datadir\":\"\"}",
-                                         "wait for the beacon to appear");
+        nc_add_string_next(reply, "core.node.bootwait", "datadir", datadir,
+                           "wait for the beacon to appear");
         return;
     }
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
@@ -1552,25 +1974,40 @@ static char *nc_read_stdin(void)
     return buf;
 }
 
+static bool nc_next_input_valid(const char *current_command,
+                                const char *next_command,
+                                const struct json_value *input)
+{
+    const struct zcl_command_spec *next_spec =
+        zcl_command_registry_find(catalog(), next_command, NULL);
+    char why[160] = {0};
+    if (!next_spec || next_spec->mode == ZCL_COMMAND_MODE_BRANCH ||
+        (current_command && current_command[0] &&
+         strcmp(current_command, next_spec->path) == 0) ||
+        !zcl_command_registry_input_validate(next_spec, input, why,
+                                             sizeof(why)))
+        return false;
+
+    return true;
+}
+
 static void nc_print_error(const char *command, const char *code,
                            const char *phase, const char *message,
                            const char *evidence,
                            const char *next_command,
                            const char *next_input, const char *next_reason)
 {
-    struct json_value root, error, blockers, next, item, input;
+    struct json_value root, error, blockers, next, item;
     json_init(&root);
     json_init(&error);
     json_init(&blockers);
     json_init(&next);
     json_init(&item);
-    json_init(&input);
     json_set_object(&root);
     json_set_object(&error);
     json_set_array(&blockers);
     json_set_array(&next);
     json_set_object(&item);
-    json_set_object(&input);
 
     (void)json_push_kv_str(&root, "schema", "zcl.result.v1");
     (void)json_push_kv_str(&root, "command", command ? command : "");
@@ -1589,9 +2026,10 @@ static void nc_print_error(const char *command, const char *code,
     (void)json_push_kv(&root, "error", &error);
     if (next_command && next_command[0]) {
         struct json_value parsed;
-        if (json_read(&parsed, next_input ? next_input : "{}",
-                      next_input ? strlen(next_input) : 2) &&
-            parsed.type == JSON_OBJ) {
+        if (next_input && next_input[0] &&
+            json_read(&parsed, next_input, strlen(next_input)) &&
+            parsed.type == JSON_OBJ &&
+            nc_next_input_valid(command, next_command, &parsed)) {
             (void)json_push_kv_str(&item, "command", next_command);
             (void)json_push_kv(&item, "input", &parsed);
             (void)json_push_kv_str(&item, "reason",
@@ -1609,12 +2047,30 @@ static void nc_print_error(const char *command, const char *code,
     else
         printf("{\"schema\":\"zcl.result.v1\",\"ok\":false,"
                "\"status\":\"failed\",\"error\":{\"code\":\"%s\"}}\n", code);
-    json_free(&input);
     json_free(&item);
     json_free(&next);
     json_free(&blockers);
     json_free(&error);
     json_free(&root);
+}
+
+static void nc_print_error_next_string(
+    const char *command, const char *code, const char *phase,
+    const char *message, const char *evidence, const char *next_command,
+    const char *next_key, const char *next_value, const char *next_reason)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    char encoded[512];
+    bool ok = next_key && next_value &&
+              json_push_kv_str(&input, next_key, next_value);
+    size_t n = ok ? json_write(&input, encoded, sizeof(encoded)) : 0;
+    json_free(&input);
+    nc_print_error(command, code, phase, message, evidence,
+                   n > 0 && n < sizeof(encoded) ? next_command : NULL,
+                   n > 0 && n < sizeof(encoded) ? encoded : NULL,
+                   next_reason);
 }
 
 /* Print a branch menu. Returns a contract exit code. */
@@ -1624,9 +2080,10 @@ static int nc_emit_menu(const char *path)
     size_t n = zcl_command_registry_menu_json(catalog(), path, out,
                                               sizeof(out));
     if (n == 0) {
-        nc_print_error(path, "MENU_BUDGET", "serialize",
-                       "menu exceeded its byte budget", path, "discover.help",
-                       "{}", "retry discovery");
+        nc_print_error_next_string(
+            path, "MENU_BUDGET", "serialize",
+            "menu exceeded its byte budget", path, "discover.describe",
+            "path", path, "inspect this branch contract");
         return ZCL_COMMAND_EXIT_INTERNAL;
     }
     printf("%s\n", out);
@@ -1687,10 +2144,18 @@ static int nc_run_discover(const struct zcl_command_spec *spec,
         json_free(&input);
     }
     if (n == 0) {
-        nc_print_error(spec->path, "UNKNOWN_PATH", "resolve",
-                       "no such command path or budget exceeded",
-                       arg ? arg : "", "discover.help", "{}",
-                       "browse the tree first");
+        if (strcmp(spec->path, "discover.describe") == 0) {
+            nc_print_error(spec->path, "UNKNOWN_PATH", "resolve",
+                           "no such command path or budget exceeded",
+                           arg ? arg : "", "discover.help", "{}",
+                           "browse the tree first");
+        } else {
+            nc_print_error_next_string(
+                spec->path, "UNKNOWN_PATH", "resolve",
+                "no such command path or budget exceeded", arg ? arg : "",
+                "discover.describe", "path", spec->path,
+                "inspect this discovery command");
+        }
         return ZCL_COMMAND_EXIT_INVALID;
     }
     printf("%s\n", out);
@@ -1702,7 +2167,8 @@ static int nc_run_discover(const struct zcl_command_spec *spec,
 static bool nc_is_prose_leaf(const char *path)
 {
     return path &&
-           (strcmp(path, "ops.debug.explain") == 0 ||
+           (strcmp(path, "status") == 0 ||
+            strcmp(path, "ops.debug.explain") == 0 ||
             strcmp(path, "ops.debug.profile") == 0 ||
             strcmp(path, "ops.debug.producer") == 0 ||
             strcmp(path, "core.status.brief") == 0);
@@ -1783,7 +2249,7 @@ void zcl_native_status_brief_render(const struct json_value *d, char *buf,
 }
 
 /* Pick one short, deterministic next step from the same brief body: a named
- * blocker outranks "still behind" outranks "just run a healthcheck". Never
+ * blocker outranks "still behind" outranks the native health leaf. Never
  * allocates. */
 const char *zcl_native_status_brief_next_command(const struct json_value *d)
 {
@@ -1794,7 +2260,7 @@ const char *zcl_native_status_brief_next_command(const struct json_value *d)
     const struct json_value *gapv = json_get(d, "gap");
     if (gapv && gapv->type == JSON_INT && json_get_int(gapv) > 0)
         return "zclassic23 explain sync";
-    return "zclassic23 healthcheck";
+    return "zclassic23 ops health";
 }
 
 /* ── CLI UX contract: field selector ─────────────────────────────────
@@ -1999,7 +2465,8 @@ static bool nc_prose_text(const char *path, const struct json_value *data,
         (void)snprintf(buf, cap, "%s", text);
         return true;
     }
-    if (strcmp(path, "core.status.brief") == 0) {
+    if (strcmp(path, "status") == 0 ||
+        strcmp(path, "core.status.brief") == 0) {
         zcl_native_status_brief_render(data, buf, cap);
         return true;
     }
@@ -2037,9 +2504,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     const struct zcl_command_spec *spec = zcl_command_registry_resolve_words(
         reg, words, count, &consumed, &was_alias, invoked, sizeof(invoked));
     if (!spec) {
-        nc_print_error(root_word, "UNKNOWN_COMMAND", "resolve",
-                       "unknown command root", root_word, "discover.search",
-                       "{}", "search for the intended command");
+        nc_print_error_next_string(
+            root_word, "UNKNOWN_COMMAND", "resolve", "unknown command root",
+            root_word, "discover.search", "query", root_word,
+            "search for the intended command");
         return ZCL_COMMAND_EXIT_INVALID;
     }
 
@@ -2191,9 +2659,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     }
     if (flag_error) {
         json_free(&flags);
-        nc_print_error(spec->path, "BAD_FLAG", "normalize",
-                       flag_why, spec->path,
-                       "discover.describe", "{}", "inspect the input schema");
+        nc_print_error_next_string(
+            spec->path, "BAD_FLAG", "normalize", flag_why, spec->path,
+            "discover.describe", "path", spec->path,
+            "inspect the input schema");
         return ZCL_COMMAND_EXIT_INVALID;
     }
 
@@ -2212,14 +2681,12 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             char attempted[ZCL_COMMAND_MAX_PATH];
             (void)snprintf(attempted, sizeof(attempted), "%s.%s", spec->path,
                            positional[0]);
-            char query[160];
-            (void)snprintf(query, sizeof(query), "{\"query\":\"%s\"}",
-                           positional[0]);
             json_free(&flags);
-            nc_print_error(attempted, "UNKNOWN_COMMAND", "resolve",
-                           "no such command under this branch", attempted,
-                           "discover.search", query,
-                           "search for the intended command");
+            nc_print_error_next_string(
+                attempted, "UNKNOWN_COMMAND", "resolve",
+                "no such command under this branch", attempted,
+                "discover.search", "query", positional[0],
+                "search for the intended command");
             return ZCL_COMMAND_EXIT_INVALID;
         }
         int rc = nc_emit_menu(spec->path);
@@ -2239,19 +2706,22 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             if (!ok) {
                 json_free(&input);
                 json_free(&flags);
-                nc_print_error(spec->path, "BAD_INPUT", "normalize",
-                               "stdin --input=- must be one JSON object",
-                               spec->path, "discover.schema", "{}",
-                               "inspect the input schema");
+                nc_print_error_next_string(
+                    spec->path, "BAD_INPUT", "normalize",
+                    "stdin --input=- must be one JSON object", spec->path,
+                    "discover.schema", "path", spec->path,
+                    "inspect the input schema");
                 return ZCL_COMMAND_EXIT_INVALID;
             }
         } else if (!json_read(&input, input_flag, strlen(input_flag)) ||
                    input.type != JSON_OBJ) {
             json_free(&input);
             json_free(&flags);
-            nc_print_error(spec->path, "BAD_INPUT", "normalize",
-                           "--input must be one JSON object", spec->path,
-                           "discover.schema", "{}", "inspect the input schema");
+            nc_print_error_next_string(
+                spec->path, "BAD_INPUT", "normalize",
+                "--input must be one JSON object", spec->path,
+                "discover.schema", "path", spec->path,
+                "inspect the input schema");
             return ZCL_COMMAND_EXIT_INVALID;
         }
     } else {
@@ -2276,10 +2746,11 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         for (size_t i = 0; i < npos; i++) {
             if (!at || !*at) {
                 json_free(&input);
-                nc_print_error(spec->path, "TOO_MANY_ARGS", "normalize",
-                               "more positional arguments than the leaf accepts",
-                               spec->path, "discover.schema", "{}",
-                               "inspect the input schema");
+                nc_print_error_next_string(
+                    spec->path, "TOO_MANY_ARGS", "normalize",
+                    "more positional arguments than the leaf accepts",
+                    spec->path, "discover.schema", "path", spec->path,
+                    "inspect the input schema");
                 return ZCL_COMMAND_EXIT_INVALID;
             }
             const char *end = strchr(at, ',');
@@ -2310,9 +2781,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     /* Reject unknown keys and duplicates before any side effect. */
     if (!zcl_command_registry_input_validate(spec, &input, why, sizeof(why))) {
         json_free(&input);
-        nc_print_error(spec->path, "INVALID_INPUT", "normalize", why,
-                       spec->path, "discover.schema", "{}",
-                       "inspect the input schema");
+        nc_print_error_next_string(
+            spec->path, "INVALID_INPUT", "normalize", why, spec->path,
+            "discover.schema", "path", spec->path,
+            "inspect the input schema");
         return ZCL_COMMAND_EXIT_INVALID;
     }
 
@@ -2324,10 +2796,11 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     if (input_view) {
         if (seen_view) {
             json_free(&input);
-            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
-                           "view was supplied both inside --input and as a flag",
-                           "view", "discover.schema", "{}",
-                           "supply each response control once");
+            nc_print_error_next_string(
+                spec->path, "DUPLICATE_CONTROL", "normalize",
+                "view was supplied both inside --input and as a flag", "view",
+                "discover.schema", "path", spec->path,
+                "supply each response control once");
             return ZCL_COMMAND_EXIT_INVALID;
         }
         view = json_get_str(input_view);
@@ -2336,10 +2809,11 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     if (input_max_items) {
         if (seen_max_items) {
             json_free(&input);
-            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
-                           "max_items was supplied both inside --input and as a flag",
-                           "max_items", "discover.schema", "{}",
-                           "supply each response control once");
+            nc_print_error_next_string(
+                spec->path, "DUPLICATE_CONTROL", "normalize",
+                "max_items was supplied both inside --input and as a flag",
+                "max_items", "discover.schema", "path", spec->path,
+                "supply each response control once");
             return ZCL_COMMAND_EXIT_INVALID;
         }
         max_items = (size_t)json_get_int(input_max_items);
@@ -2348,10 +2822,11 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     if (input_cursor_value) {
         if (seen_cursor) {
             json_free(&input);
-            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
-                           "cursor was supplied both inside --input and as a flag",
-                           "cursor", "discover.schema", "{}",
-                           "supply each response control once");
+            nc_print_error_next_string(
+                spec->path, "DUPLICATE_CONTROL", "normalize",
+                "cursor was supplied both inside --input and as a flag",
+                "cursor", "discover.schema", "path", spec->path,
+                "supply each response control once");
             return ZCL_COMMAND_EXIT_INVALID;
         }
         if (input_cursor_value->type == JSON_STR) {
@@ -2446,7 +2921,9 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             const struct json_value *data = json_get(&env, "data");
             if (nc_prose_text(spec->path, data, text, sizeof(text))) {
                 printf("%s\n", text);
-                if (suggest_next && strcmp(spec->path, "core.status.brief") == 0)
+                if (suggest_next &&
+                    (strcmp(spec->path, "status") == 0 ||
+                     strcmp(spec->path, "core.status.brief") == 0))
                     printf("next: %s\n",
                           zcl_native_status_brief_next_command(data));
                 json_free(&env);

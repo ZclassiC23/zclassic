@@ -2,7 +2,9 @@
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "dev_failure_store.h"
 
+#include "crypto/sha3.h"
 #include "platform/time_compat.h"
 #include "vcs/vcs_devloop.h"
 
@@ -59,71 +61,6 @@ static bool append_string(char *out, size_t cap, size_t *pos,
     return appendf(out, cap, pos, "\"");
 }
 
-static bool mkdirs(const char *path)
-{
-    char tmp[PATH_MAX];
-    if (!path || !path[0] || strlen(path) >= sizeof(tmp))
-        return false;
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p != '/')
-            continue;
-        *p = 0;
-        if (mkdir(tmp, 0700) != 0 && errno != EEXIST)
-            return false;
-        *p = '/';
-    }
-    return mkdir(tmp, 0700) == 0 || errno == EEXIST;
-}
-
-static bool native_state_path(char out[PATH_MAX])
-{
-    const char *home = getenv("HOME");
-    if (!home || !home[0])
-        return false;
-    int n = snprintf(out, PATH_MAX,
-                     "%s/.local/state/zclassic23-dev/native-cycle.json",
-                     home);
-    return n > 0 && n < PATH_MAX;
-}
-
-static bool write_atomic(const char *path, const char *body, size_t len)
-{
-    char dir[PATH_MAX], tmp[PATH_MAX];
-    if (!path || !body || strlen(path) >= sizeof(dir))
-        return false;
-    snprintf(dir, sizeof(dir), "%s", path);
-    char *slash = strrchr(dir, '/');
-    if (!slash)
-        return false;
-    *slash = 0;
-    if (!mkdirs(dir))
-        return false;
-    int n = snprintf(tmp, sizeof(tmp), "%s/.native-cycle.%ld.tmp",
-                     dir, (long)getpid());
-    if (n <= 0 || (size_t)n >= sizeof(tmp))
-        return false;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0)
-        return false;
-    size_t off = 0;
-    while (off < len) {
-        ssize_t wrote = write(fd, body + off, len - off);
-        if (wrote < 0 && errno == EINTR)
-            continue;
-        if (wrote <= 0) {
-            close(fd);
-            unlink(tmp);
-            return false;
-        }
-        off += (size_t)wrote;
-    }
-    bool ok = fsync(fd) == 0 && close(fd) == 0 && rename(tmp, path) == 0;
-    if (!ok)
-        unlink(tmp);
-    return ok;
-}
-
 /* Scan [out, out+len) FORWARD line-by-line for the first ACTIONABLE line —
  * a compiler diagnostic (a line containing ": error:") or a test failure (a
  * line containing "FAIL", "Assertion", or "EXPECT") — and copy it (newline
@@ -175,6 +112,87 @@ bool zcl_devloop_distill_first_error(const char *out, size_t len,
 }
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+static bool compiler_error_shape(const char *line, size_t len)
+{
+    static const char marker[] = ": error:";
+    static const char *const transient[] = {
+        "No space left", "Input/output error", "I/O error", "Killed",
+        "out of memory", "Out of memory", "cannot allocate memory",
+        "Cannot allocate memory", "internal compiler error",
+        "Internal compiler error", "resource temporarily unavailable",
+        "Resource temporarily unavailable", "Permission denied",
+        "Operation not permitted", "Read-only file system", "ccache",
+        "sccache"
+    };
+    for (size_t i = 0; i < sizeof(transient) / sizeof(transient[0]); i++)
+        if (memmem(line, len, transient[i], strlen(transient[i])) != NULL)
+            return false;
+    const char *end = line + len;
+    for (const char *p = line; p < end; p++) {
+        if (*p != ':' || p + 1 >= end || !isdigit((unsigned char)p[1]))
+            continue;
+        const char *q = p + 1;
+        while (q < end && isdigit((unsigned char)*q))
+            q++;
+        if (q >= end || *q != ':' || q + 1 >= end ||
+            !isdigit((unsigned char)q[1]))
+            continue;
+        q++;
+        while (q < end && isdigit((unsigned char)*q))
+            q++;
+        if ((size_t)(end - q) >= sizeof(marker) - 1 &&
+            memcmp(q, marker, sizeof(marker) - 1) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Initial negative-cache allowlist: deterministic compiler diagnostics only.
+ * Tests, lint, timeouts, signals, infrastructure/lock failures, and malformed
+ * output always execute again. The exact marker must be a line emitted by the
+ * fail-fast driver and its body must retain a compiler path/line/column
+ * diagnostic after explicit infrastructure exclusions. */
+bool zcl_devloop_deterministic_compile_failure(
+    const struct zcl_devloop_process_result *result,
+    char out[ZCL_DEVLOOP_FIRST_ERROR_MAX])
+{
+    _Static_assert(ZCL_DEVLOOP_FIRST_ERROR_MAX == ZCL_DEV_FAILURE_ERROR_MAX,
+                   "failure classifier and store limits must agree");
+    if (!result || result->timed_out || result->term_signal != 0 ||
+        result->output_truncated || result->exit_code == 0)
+        return false;
+    static const char marker[] =
+        "[agent-fast-ci] FIRST-ERROR[compile]: ";
+    const char *p = result->output;
+    const char *end_output = result->output + result->output_len;
+    const char *match = NULL;
+    while (p < end_output) {
+        const char *found = memmem(p, (size_t)(end_output - p), marker,
+                                   sizeof(marker) - 1);
+        if (!found)
+            break;
+        if (found == result->output || found[-1] == '\n' || found[-1] == '\r')
+            match = found;
+        p = found + sizeof(marker) - 1;
+    }
+    if (!match)
+        return false;
+    p = match + sizeof(marker) - 1;
+    const char *end = p;
+    while (end < end_output && *end != '\r' && *end != '\n')
+        end++;
+    size_t len = (size_t)(end - p);
+    if (len == 0 || len >= ZCL_DEV_FAILURE_ERROR_MAX ||
+        !compiler_error_shape(p, len))
+        return false;
+    char raw[ZCL_DEV_FAILURE_ERROR_MAX];
+    memcpy(raw, p, len);
+    raw[len] = 0;
+    return zcl_dev_failure_normalize_error(raw, out);
+}
+#endif
+
 bool zcl_devloop_watch_lock_path(const char *repo_root,
                                  char *out, size_t out_sz)
 {
@@ -186,6 +204,11 @@ bool zcl_devloop_watch_lock_path(const char *repo_root,
 }
 
 #ifdef ZCL_DEV_BUILD
+struct dev_source_record {
+    char source_id[65];
+    char mutation_id[65];
+};
+
 static void output_capsule(const struct zcl_devloop_process_result *result,
                            char out[1024])
 {
@@ -224,6 +247,30 @@ static void output_capsule(const struct zcl_devloop_process_result *result,
     out[pos + len] = 0;
 }
 
+struct cycle_failure_context {
+    struct dev_source_record source;
+    char execution_id[65];
+    char failure_id[65];
+    char failure_phase[ZCL_DEV_FAILURE_PHASE_MAX];
+    char first_error[ZCL_DEV_FAILURE_ERROR_MAX];
+    char store_error[192];
+    uint64_t repeat_count;
+    bool source_ready;
+    bool execution_ready;
+    bool cacheable;
+    bool coalesced;
+};
+
+/* A cycle is synchronous, but the native dispatcher can be called by more
+ * than one dev process/thread.  Thread-local evidence avoids a process-global
+ * latest-failure race while keeping the many finish_cycle() exits compact. */
+static _Thread_local struct cycle_failure_context g_cycle_failure;
+
+static void cycle_failure_reset(void)
+{
+    memset(&g_cycle_failure, 0, sizeof(g_cycle_failure));
+}
+
 static bool result_ok(const struct zcl_devloop_process_result *result)
 {
     return result && !result->timed_out && result->term_signal == 0 &&
@@ -244,10 +291,24 @@ static bool repo_root_resolve(const char *requested, char out[PATH_MAX])
            stat(makefile, &st) == 0 && stat(git, &st) == 0;
 }
 
-static bool parse_source_identity(const struct zcl_devloop_process_result *r,
-                                  char out[65], char *why, size_t why_len)
+static bool lower_hex64(const char *input, char out[65])
 {
-    out[0] = 0;
+    if (!input || strlen(input) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!isxdigit((unsigned char)input[i]))
+            return false;
+        out[i] = (char)tolower((unsigned char)input[i]);
+    }
+    out[64] = 0;
+    return true;
+}
+
+static bool parse_source_record(const struct zcl_devloop_process_result *r,
+                                struct dev_source_record *out,
+                                char *why, size_t why_len)
+{
+    memset(out, 0, sizeof(*out));
     if (!r || !result_ok(r) || r->output_truncated) {
         (void)snprintf(why, why_len, "source_identity_command_failed");
         return false;
@@ -256,18 +317,21 @@ static bool parse_source_identity(const struct zcl_devloop_process_result *r,
     while (len > 0 && (r->output[len - 1] == '\n' ||
                        r->output[len - 1] == '\r'))
         len--;
-    if (len != 64) {
+    if (len == 0 || len >= 160) {
         (void)snprintf(why, why_len, "source_identity_output_invalid");
         return false;
     }
-    for (size_t i = 0; i < len; i++) {
-        if (!isxdigit((unsigned char)r->output[i])) {
-            (void)snprintf(why, why_len, "source_identity_output_invalid");
-            return false;
-        }
-        out[i] = (char)tolower((unsigned char)r->output[i]);
+    char body[160], source[65], complete[8], mutation[65], extra[2];
+    memcpy(body, r->output, len);
+    body[len] = 0;
+    int fields = sscanf(body, "%64s %7s %64s %1s",
+                        source, complete, mutation, extra);
+    if (fields != 3 || strcmp(complete, "1") != 0 ||
+        !lower_hex64(source, out->source_id) ||
+        !lower_hex64(mutation, out->mutation_id)) {
+        (void)snprintf(why, why_len, "source_identity_output_invalid");
+        return false;
     }
-    out[64] = 0;
     return true;
 }
 
@@ -275,7 +339,8 @@ static bool parse_source_identity(const struct zcl_devloop_process_result *r,
  * gate used by the shell watcher and the final deploy boundary.  The helper
  * hashes the canonical current source inventory independently of Git history
  * identifiers and refuses hidden index state. */
-static bool source_identity_capture(const char *root, char out[65],
+static bool source_identity_capture(const char *root,
+                                    struct dev_source_record *out,
                                     char *why, size_t why_len)
 {
     char tool[PATH_MAX];
@@ -286,12 +351,12 @@ static bool source_identity_capture(const char *root, char out[65],
         return false;
     }
     struct zcl_devloop_process_result r = {0};
-    const char *argv[] = { tool, "capture", NULL };
+    const char *argv[] = { tool, "capture-record", NULL };
     if (!zcl_devloop_process_run(root, argv, 30000, &r)) {
         (void)snprintf(why, why_len, "source_identity_capture_failed");
         return false;
     }
-    if (!parse_source_identity(&r, out, why, why_len)) {
+    if (!parse_source_record(&r, out, why, why_len)) {
         if (r.output_len > 0 && why && why_len > 0) {
             size_t copy = r.output_len < why_len - 1 ? r.output_len
                                                       : why_len - 1;
@@ -303,7 +368,8 @@ static bool source_identity_capture(const char *root, char out[65],
     return true;
 }
 
-static bool source_identity_verify(const char *root, const char expected[65],
+static bool source_identity_verify(const char *root,
+                                   const struct dev_source_record *expected,
                                    char *why, size_t why_len)
 {
     char tool[PATH_MAX];
@@ -314,14 +380,100 @@ static bool source_identity_verify(const char *root, const char expected[65],
         return false;
     }
     struct zcl_devloop_process_result r = {0};
-    const char *argv[] = { tool, "verify", expected, NULL };
+    const char *argv[] = { tool, "verify-record", expected->source_id, "1",
+                           expected->mutation_id, NULL };
     if (!zcl_devloop_process_run(root, argv, 30000, &r) || !result_ok(&r)) {
         (void)snprintf(why, why_len, "source_epoch_superseded");
         return false;
     }
-    char actual[65];
-    return parse_source_identity(&r, actual, why, why_len) &&
-           strcmp(actual, expected) == 0;
+    struct dev_source_record actual;
+    return parse_source_record(&r, &actual, why, why_len) &&
+           strcmp(actual.source_id, expected->source_id) == 0 &&
+           strcmp(actual.mutation_id, expected->mutation_id) == 0;
+}
+
+static void sha3_hex(const unsigned char digest[32], char out[65])
+{
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[2 * i] = digits[digest[i] >> 4];
+        out[2 * i + 1] = digits[digest[i] & 15];
+    }
+    out[64] = 0;
+}
+
+/* Resolve the exact Make-owned dev compile epoch without executing a compiler
+ * or test.  It binds source+ABA, compiler/search roots, flags/profile, and
+ * link inputs; SHA3 domain separation additionally binds this lookup to the
+ * compile rung of the fixed `make ff` proof. */
+static bool failure_source_record_arg(
+    const struct dev_source_record *source, char out[160],
+    char *why, size_t why_len)
+{
+    int n = snprintf(out, 160, "BUILD_SOURCE_RECORD=%s 1 %s",
+                     source->source_id, source->mutation_id);
+    if (n <= 0 || n >= 160) {
+        (void)snprintf(why, why_len, "failure_execution_record_invalid");
+        return false;
+    }
+    return true;
+}
+
+static bool failure_execution_id(const char *root,
+                                 const struct dev_source_record *source,
+                                 char out[65], char *why, size_t why_len)
+{
+    char record[160], record_env[192], tool[PATH_MAX];
+    if (!failure_source_record_arg(source, record, why, why_len))
+        return false;
+    const char *value = strchr(record, '=');
+    int en = value ? snprintf(record_env, sizeof(record_env),
+                              "ZCL_FAST_BUILD_SOURCE_RECORD=%s", value + 1)
+                   : -1;
+    int tn = snprintf(tool, sizeof(tool), "%s/tools/agent_fast_ci.sh", root);
+    if (en <= 0 || (size_t)en >= sizeof(record_env) || tn <= 0 ||
+        (size_t)tn >= sizeof(tool)) {
+        (void)snprintf(why, why_len, "failure_execution_tool_path_invalid");
+        return false;
+    }
+    /* Use the same compiler-selection path as the actual ff ladder. This binds
+     * explicit ZCL_FAST_CC plus automatic ccache/sccache selection instead of
+     * probing Make's unrelated default CC. */
+    const char *argv[] = { "env", record_env, tool,
+                           "failure-execution-id", NULL };
+    struct zcl_devloop_process_result r = {0};
+    if (!zcl_devloop_process_run(root, argv, 120000, &r) || !result_ok(&r) ||
+        r.output_truncated) {
+        (void)snprintf(why, why_len, "failure_execution_identity_failed");
+        return false;
+    }
+    size_t len = r.output_len;
+    while (len > 0 && (r.output[len - 1] == '\n' ||
+                       r.output[len - 1] == '\r'))
+        len--;
+    char epoch[65];
+    if (len != 64) {
+        (void)snprintf(why, why_len, "failure_execution_identity_invalid");
+        return false;
+    }
+    char raw[65];
+    memcpy(raw, r.output, 64);
+    raw[64] = 0;
+    if (!lower_hex64(raw, epoch)) {
+        (void)snprintf(why, why_len, "failure_execution_identity_invalid");
+        return false;
+    }
+    static const char domain[] = "zcl.dev_failure_execution.v1";
+    static const char proof[] = "make_ff_compile";
+    struct sha3_256_ctx ctx;
+    unsigned char digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)domain, sizeof(domain) - 1);
+    sha3_256_write(&ctx, (const unsigned char *)epoch, strlen(epoch));
+    sha3_256_write(&ctx, (const unsigned char *)proof, sizeof(proof) - 1);
+    sha3_256_finalize(&ctx, digest);
+    sha3_hex(digest, out);
+    return true;
 }
 
 static bool find_artifact(const char *root, const char *output,
@@ -592,6 +744,62 @@ struct vcs_anchor_fields {
     bool deferred;        /* generation-neutral first baseline is out of band */
 };
 
+#define CYCLE_FILE_PREVIEW_MAX 2
+#define CYCLE_FILE_PREVIEW_BYTES 160
+#define CYCLE_CAPSULE_PREVIEW_BYTES 384
+#define CYCLE_ERROR_PREVIEW_BYTES 256
+
+static void cycle_files_sha3(const char *const *files, size_t file_count,
+                             char out[65])
+{
+    static const unsigned char domain[] = "zcl.dev_cycle_files.v1";
+    const unsigned char zero = 0;
+    char count[32];
+    (void)snprintf(count, sizeof(count), "%zu", file_count);
+    struct sha3_256_ctx ctx;
+    unsigned char digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, domain, sizeof(domain) - 1);
+    sha3_256_write(&ctx, &zero, 1);
+    sha3_256_write(&ctx, (const unsigned char *)count, strlen(count));
+    sha3_256_write(&ctx, &zero, 1);
+    for (size_t i = 0; i < file_count; i++) {
+        const char *path = files[i] ? files[i] : "";
+        sha3_256_write(&ctx, (const unsigned char *)path, strlen(path));
+        sha3_256_write(&ctx, &zero, 1);
+    }
+    sha3_256_finalize(&ctx, digest);
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out[2 * i] = digits[digest[i] >> 4];
+        out[2 * i + 1] = digits[digest[i] & 15];
+    }
+    out[64] = 0;
+}
+
+static bool cycle_text_preview(const char *input, size_t max_bytes,
+                               char *out, size_t out_len,
+                               bool *truncated_out)
+{
+    if (!input || !out || out_len == 0 || max_bytes + 1 > out_len)
+        return false;
+    size_t pos = 0;
+    bool truncated = false;
+    const unsigned char *p = (const unsigned char *)input;
+    while (*p) {
+        if (pos >= max_bytes) {
+            truncated = true;
+            break;
+        }
+        unsigned char c = *p++;
+        out[pos++] = c >= 0x20 && c < 0x7f ? (char)c : '?';
+    }
+    out[pos] = 0;
+    if (truncated_out)
+        *truncated_out = truncated;
+    return true;
+}
+
 static size_t cycle_json(const struct zcl_devloop_plan *plan,
                          const char *const *files, size_t file_count,
                          const char *status, const char *phase,
@@ -600,6 +808,15 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
                          char *out, size_t out_sz)
 {
     size_t pos = 0;
+    char files_digest[65];
+    char capsule_preview[CYCLE_CAPSULE_PREVIEW_BYTES + 1];
+    bool capsule_truncated = false;
+    cycle_files_sha3(files, file_count, files_digest);
+    if (!cycle_text_preview(capsule ? capsule : "",
+                            CYCLE_CAPSULE_PREVIEW_BYTES,
+                            capsule_preview, sizeof(capsule_preview),
+                            &capsule_truncated))
+        return 0;
     if (!appendf(out, out_sz, &pos,
                  "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"native\",\"status\":") ||
         !append_string(out, out_sz, &pos, status) ||
@@ -610,28 +827,103 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !appendf(out, out_sz, &pos, ",\"phase\":") ||
         !append_string(out, out_sz, &pos, phase) ||
         !appendf(out, out_sz, &pos,
-                 ",\"runtime_published\":%s,\"elapsed_ms\":%lld,\"files\":[",
+                 ",\"runtime_published\":%s,\"elapsed_ms\":%lld,"
+                 "\"file_count\":%zu,\"files_sha3\":\"%s\",\"files\":[",
                  strcmp(status, "passed") == 0 &&
                          (strcmp(phase, "resident_commit") == 0 ||
                           strcmp(phase, "transactional_reload") == 0)
                      ? "true" : "false",
-                 (long long)elapsed_ms))
+                 (long long)elapsed_ms, file_count, files_digest))
         return 0;
-    for (size_t i = 0; i < file_count; i++) {
+    size_t preview_count = file_count < CYCLE_FILE_PREVIEW_MAX
+                               ? file_count : CYCLE_FILE_PREVIEW_MAX;
+    bool files_truncated = preview_count < file_count;
+    for (size_t i = 0; i < preview_count; i++) {
+        char path_preview[CYCLE_FILE_PREVIEW_BYTES + 1];
+        bool path_truncated = false;
+        if (!cycle_text_preview(files[i] ? files[i] : "",
+                                CYCLE_FILE_PREVIEW_BYTES, path_preview,
+                                sizeof(path_preview), &path_truncated))
+            return 0;
+        files_truncated = files_truncated || path_truncated;
         if ((i && !appendf(out, out_sz, &pos, ",")) ||
-            !append_string(out, out_sz, &pos, files[i]))
+            !append_string(out, out_sz, &pos, path_preview))
             return 0;
     }
-    if (!appendf(out, out_sz, &pos, "],\"failure_capsule\":") ||
-        !append_string(out, out_sz, &pos, capsule ? capsule : "") ||
+    if (!appendf(out, out_sz, &pos,
+                 "],\"files_truncated\":%s,\"failure_capsule\":",
+                 files_truncated ? "true" : "false") ||
+        !append_string(out, out_sz, &pos, capsule_preview) ||
+        (capsule_truncated &&
+         !appendf(out, out_sz, &pos, ",\"failure_capsule_truncated\":true")) ||
         !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
-        !append_string(out, out_sz, &pos,
-                       strcmp(status, "passed") != 0
-                           ? "zclassic23-dev dev diagnose latest"
-                           : strcmp(plan->action_name, "verify") == 0
-                               ? "run dev change apply explicitly to publish this verified edit"
-                               : "keep editing; native watch owns the next cycle"))
+        !append_string(
+            out, out_sz, &pos,
+#ifdef ZCL_DEV_BUILD
+            g_cycle_failure.failure_id[0]
+                ? "zclassic23-dev dev diagnose show <failure_id>"
+                :
+#endif
+            strcmp(status, "passed") != 0
+                ? "inspect this cycle's failure capsule; no durable compiler failure ID was issued"
+                : strcmp(plan->action_name, "verify") == 0
+                    ? "verification complete; runtime publication remains owner-contained"
+                    : "keep editing; native watch owns the next cycle"))
         return 0;
+#ifdef ZCL_DEV_BUILD
+    if (g_cycle_failure.source_ready &&
+        (!appendf(out, out_sz, &pos, ",\"source_id_sha256\":") ||
+         !append_string(out, out_sz, &pos,
+                        g_cycle_failure.source.source_id) ||
+         !appendf(out, out_sz, &pos, ",\"source_mutation_sha256\":") ||
+         !append_string(out, out_sz, &pos,
+                        g_cycle_failure.source.mutation_id)))
+        return 0;
+    if (g_cycle_failure.execution_ready &&
+        (!appendf(out, out_sz, &pos, ",\"execution_id_sha3\":") ||
+         !append_string(out, out_sz, &pos,
+                        g_cycle_failure.execution_id)))
+        return 0;
+    if (g_cycle_failure.failure_id[0]) {
+        char first_error_preview[CYCLE_ERROR_PREVIEW_BYTES + 1];
+        bool first_error_truncated = false;
+        if (!cycle_text_preview(g_cycle_failure.first_error,
+                                CYCLE_ERROR_PREVIEW_BYTES,
+                                first_error_preview,
+                                sizeof(first_error_preview),
+                                &first_error_truncated))
+            return 0;
+        if (!appendf(out, out_sz, &pos, ",\"failure_id\":") ||
+            !append_string(out, out_sz, &pos,
+                           g_cycle_failure.failure_id) ||
+            !appendf(out, out_sz, &pos, ",\"failure_phase\":") ||
+            !append_string(out, out_sz, &pos,
+                           g_cycle_failure.failure_phase) ||
+            !appendf(out, out_sz, &pos, ",\"first_error\":") ||
+            !append_string(out, out_sz, &pos, first_error_preview) ||
+            (first_error_truncated &&
+             !appendf(out, out_sz, &pos,
+                      ",\"first_error_truncated\":true")) ||
+            !appendf(out, out_sz, &pos,
+                     ",\"repeat_count\":%llu,\"coalesced\":%s,"
+                     "\"next\":[{\"command\":\"dev.diagnose.show\","
+                     "\"input\":{\"failure_id\":",
+                     (unsigned long long)g_cycle_failure.repeat_count,
+                     g_cycle_failure.coalesced ? "true" : "false") ||
+            !append_string(out, out_sz, &pos,
+                           g_cycle_failure.failure_id) ||
+            !appendf(out, out_sz, &pos,
+                     "},\"reason\":\"read the durable failure once; edit "
+                     "source to retry automatically or run dev.ff for an "
+                     "explicit unchanged retry\"}]"))
+            return 0;
+    }
+    if (g_cycle_failure.store_error[0] &&
+        (!appendf(out, out_sz, &pos, ",\"failure_store_error\":") ||
+         !append_string(out, out_sz, &pos,
+                        g_cycle_failure.store_error)))
+        return 0;
+#endif
     if (vcs && vcs->attempted) {
         if (vcs->commit_hex[0] &&
             (!appendf(out, out_sz, &pos, ",\"vcs_commit\":") ||
@@ -659,8 +951,36 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
                         int64_t started_us, const char *capsule,
                         const char *repo_root, const char *generation_hex)
 {
-    char body[16384], path[PATH_MAX];
+    char body[16384];
     int64_t elapsed_ms = (platform_time_monotonic_us() - started_us) / 1000;
+
+#ifdef ZCL_DEV_BUILD
+    /* Persist only an allowlisted deterministic red.  Store failure never
+     * changes the proof verdict: an unavailable/corrupt diagnostic store is
+     * named in the cycle and the next wake executes again (safe miss). */
+    if (strcmp(status, "passed") != 0 && g_cycle_failure.cacheable &&
+        !g_cycle_failure.failure_id[0] && g_cycle_failure.source_ready &&
+        g_cycle_failure.execution_ready && repo_root && repo_root[0]) {
+        struct zcl_dev_failure_record record;
+        char why[sizeof(g_cycle_failure.store_error)] = {0};
+        if (zcl_dev_failure_record_failure(
+                repo_root, g_cycle_failure.source.source_id,
+                g_cycle_failure.source.mutation_id,
+                g_cycle_failure.execution_id,
+                g_cycle_failure.failure_phase,
+                g_cycle_failure.first_error, capsule ? capsule : "",
+                "dev.ff", &record, why, sizeof(why))) {
+            (void)snprintf(g_cycle_failure.failure_id,
+                           sizeof(g_cycle_failure.failure_id), "%s",
+                           record.failure_id);
+            g_cycle_failure.repeat_count = record.repeat_count;
+        } else {
+            (void)snprintf(g_cycle_failure.store_error,
+                           sizeof(g_cycle_failure.store_error), "%s",
+                           why[0] ? why : "failure_store_write_failed");
+        }
+    }
+#endif
 
     /* Auto-anchor on green (Wave 2.3): every "passed" verdict gets a ZVCS
      * snapshot binding the source tree to this verdict + the binary
@@ -720,18 +1040,58 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
 #endif
 
     size_t len = cycle_json(plan, files, file_count, status, phase,
-                            elapsed_ms, capsule, &vcsf, body, sizeof(body));
+                            elapsed_ms, capsule, &vcsf, body,
+                            sizeof(body) - 2);
     if (len == 0) {
         fprintf(stderr, "[devloop] cycle verdict exceeded its bounded buffer\n");
+#ifdef ZCL_DEV_BUILD
+        cycle_failure_reset();
+#endif
         return 1;
     }
     body[len++] = '\n';
     body[len] = 0;
-    if (native_state_path(path) && !write_atomic(path, body, len))
-        fprintf(stderr, "[devloop] could not persist native cycle verdict\n");
+    char state_why[160] = {0};
+    bool state_persisted = true;
+    if (repo_root && repo_root[0])
+        state_persisted = zcl_devloop_cycle_state_write(
+            repo_root, body, len, state_why, sizeof(state_why));
+    if (!state_persisted) {
+        fprintf(stderr,
+                "[devloop] could not persist native cycle verdict: %s\n",
+                state_why[0] ? state_why : "unknown");
+        /* Never print a passing current-cycle claim when durable publication
+         * failed and dev.status would still expose the prior generation. */
+        size_t pos = 0;
+        if (!appendf(body, sizeof(body) - 2, &pos,
+                     "{\"schema\":\"zcl.dev_cycle.v1\","
+                     "\"producer\":\"native\",\"status\":\"rejected\","
+                     "\"action\":\"verify\","
+                     "\"reason\":\"cycle_state_publication_failed\","
+                     "\"phase\":\"state_publish\","
+                     "\"runtime_published\":false,"
+                     "\"state_persisted\":false,\"failure_capsule\":") ||
+            !append_string(body, sizeof(body) - 2, &pos,
+                           state_why[0] ? state_why : "unknown") ||
+            !appendf(body, sizeof(body) - 2, &pos,
+                     ",\"agent_next_action\":"
+                     "\"repair workspace state storage and rerun the cycle\"}")) {
+            fprintf(stderr, "[devloop] state failure envelope overflow\n");
+            pos = 0;
+        }
+        if (pos > 0) {
+            body[pos++] = '\n';
+            body[pos] = 0;
+            len = pos;
+        }
+    }
     fwrite(body, 1, len, stdout);
     fflush(stdout);
-    return strcmp(status, "passed") == 0 ? 0 : 1;
+    int rc = state_persisted && strcmp(status, "passed") == 0 ? 0 : 1;
+#ifdef ZCL_DEV_BUILD
+    cycle_failure_reset();
+#endif
+    return rc;
 }
 
 /* Wave 2.4 core refusal: emit the structured sealed-core refusal envelope
@@ -740,9 +1100,10 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
  * path and the persistent watcher — both funnel through
  * zcl_devloop_run_cycle(). No subprocess is launched: the caller returns here
  * BEFORE any hotswap/reload publish step. */
-static int emit_refusal(const char *const *files, size_t file_count)
+static int emit_refusal(const char *repo_root, const char *const *files,
+                        size_t file_count)
 {
-    char body[16384], path[PATH_MAX];
+    char body[16384];
     size_t len = zcl_devloop_refusal_json(files, file_count, body,
                                           sizeof(body) - 2);
     if (len == 0) {
@@ -752,8 +1113,12 @@ static int emit_refusal(const char *const *files, size_t file_count)
     }
     body[len++] = '\n';
     body[len] = 0;
-    if (native_state_path(path) && !write_atomic(path, body, len))
-        fprintf(stderr, "[devloop] could not persist refusal verdict\n");
+    char state_why[160] = {0};
+    if (repo_root && repo_root[0] &&
+        !zcl_devloop_cycle_state_write(repo_root, body, len, state_why,
+                                       sizeof(state_why)))
+        fprintf(stderr, "[devloop] could not persist refusal verdict: %s\n",
+                state_why[0] ? state_why : "unknown");
     fwrite(body, 1, len, stdout);
     fflush(stdout);
     return 3;
@@ -789,6 +1154,9 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
 {
     struct zcl_devloop_plan plan;
     int64_t started_us = platform_time_monotonic_us();
+#ifdef ZCL_DEV_BUILD
+    cycle_failure_reset();
+#endif
     if (!zcl_devloop_publish_mode_name(publish_mode)) {
         fprintf(stderr, "[devloop] cycle: invalid publication mode\n");
         return 2;
@@ -806,20 +1174,22 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
     }
 #ifdef ZCL_DEV_BUILD
     char root[PATH_MAX] = {0};
-    char expected_source_identity[65] = {0};
+    struct dev_source_record expected_source = {0};
     if (!repo_root_resolve(repo_root, root))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "source_identity", started_us,
                             "repository root is not a real Git checkout",
                             NULL, NULL);
     char source_why[512] = {0};
-    if (!source_identity_capture(root, expected_source_identity,
+    if (!source_identity_capture(root, &expected_source,
                                  source_why, sizeof(source_why)))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "source_identity", started_us,
                             source_why[0] ? source_why
                                           : "source identity capture failed",
                             root, NULL);
+    g_cycle_failure.source = expected_source;
+    g_cycle_failure.source_ready = true;
     if (file_count > 0) {
         /* No HEAD-relative dirty set participates in proof authority. Until a
          * signed prior source epoch can produce an authenticated content diff,
@@ -851,7 +1221,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
             started_us,
             "runtime publication is contained until the source epoch, proof "
             "receipts, resident CAS, and rollback are durably bound",
-            NULL, NULL);
+            repo_root, NULL);
         return 3;
     }
     /* Core refusal, BEFORE any publish and BEFORE the dev-build gate (a
@@ -871,7 +1241,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
      * envelope always names the elevated procedure. */
     if (plan.sealed_core) {
         if (!zcl_devloop_unseal_token_present(repo_root))
-            return emit_refusal(files, file_count);
+            return emit_refusal(repo_root, files, file_count);
         fprintf(stderr,
                 "[devloop] sealed consensus core: unseal token present at "
                 "%s/.core-unseal-token — seal lifted for THIS cycle; routing "
@@ -964,7 +1334,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         if (!zcl_devloop_publish_mode_applies(publish_mode)) {
             plan.action_name = "verify";
             char source_why[256] = {0};
-            if (!source_identity_verify(root, expected_source_identity,
+            if (!source_identity_verify(root, &expected_source,
                                         source_why, sizeof(source_why)))
                 return finish_cycle(
                     &plan, files, file_count, "superseded",
@@ -981,7 +1351,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         }
 
         char source_why[256] = {0};
-        if (!source_identity_verify(root, expected_source_identity,
+        if (!source_identity_verify(root, &expected_source,
                                     source_why, sizeof(source_why))) {
             return finish_cycle(&plan, files, file_count, "superseded",
                                 "source_epoch_cas", started_us,
@@ -1025,22 +1395,161 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
     if (plan.action == ZCL_DEVLOOP_RELOAD &&
         !zcl_devloop_publish_mode_applies(publish_mode)) {
         plan.action_name = "verify";
+        char execution_why[192] = {0};
+        if (failure_execution_id(root, &expected_source,
+                                 g_cycle_failure.execution_id,
+                                 execution_why, sizeof(execution_why))) {
+            g_cycle_failure.execution_ready = true;
+            char source_why[256] = {0};
+            if (!source_identity_verify(root, &expected_source,
+                                        source_why, sizeof(source_why)))
+                return finish_cycle(
+                    &plan, files, file_count, "superseded",
+                    "source_epoch_cas", started_us,
+                    source_why[0] ? source_why
+                                  : "source epoch changed before failure lookup",
+                    root, NULL);
+
+            struct zcl_dev_failure_record prior;
+            char failure_why[192] = {0};
+            if (zcl_dev_failure_match_latest(
+                    root, expected_source.source_id,
+                    expected_source.mutation_id,
+                    g_cycle_failure.execution_id, "verify.compile", &prior,
+                    failure_why, sizeof(failure_why))) {
+                if (!source_identity_verify(root, &expected_source,
+                                            source_why,
+                                            sizeof(source_why)))
+                    return finish_cycle(
+                        &plan, files, file_count, "superseded",
+                        "source_epoch_cas", started_us,
+                        source_why[0] ? source_why
+                                      : "source epoch changed during failure lookup",
+                        root, NULL);
+                char before_append_execution[65] = {0};
+                bool execution_still_exact = failure_execution_id(
+                    root, &expected_source, before_append_execution,
+                    failure_why, sizeof(failure_why)) &&
+                    strcmp(before_append_execution,
+                           g_cycle_failure.execution_id) == 0;
+                struct zcl_dev_failure_record repeated;
+                if (execution_still_exact &&
+                    zcl_dev_failure_note_coalesced(
+                        root, prior.failure_id, expected_source.source_id,
+                        expected_source.mutation_id,
+                        g_cycle_failure.execution_id, "verify.compile",
+                        &repeated, failure_why, sizeof(failure_why))) {
+                    if (!source_identity_verify(root, &expected_source,
+                                                source_why,
+                                                sizeof(source_why)))
+                        return finish_cycle(
+                            &plan, files, file_count, "superseded",
+                            "source_epoch_cas", started_us,
+                            source_why[0]
+                                ? source_why
+                                : "source epoch changed after failure lookup",
+                            root, NULL);
+                    char after_append_execution[65] = {0};
+                    bool execution_remains_exact = failure_execution_id(
+                        root, &expected_source, after_append_execution,
+                        failure_why, sizeof(failure_why)) &&
+                        strcmp(after_append_execution,
+                               g_cycle_failure.execution_id) == 0;
+                    if (execution_remains_exact) {
+                        (void)snprintf(g_cycle_failure.failure_id,
+                                       sizeof(g_cycle_failure.failure_id), "%s",
+                                       repeated.failure_id);
+                        (void)snprintf(g_cycle_failure.failure_phase,
+                                       sizeof(g_cycle_failure.failure_phase), "%s",
+                                       repeated.phase);
+                        (void)snprintf(g_cycle_failure.first_error,
+                                       sizeof(g_cycle_failure.first_error), "%s",
+                                       repeated.first_error);
+                        g_cycle_failure.repeat_count = repeated.repeat_count;
+                        g_cycle_failure.coalesced = true;
+                        fprintf(stderr,
+                                "[devloop] unchanged compiler failure coalesced "
+                                "failure_id=%s repeat_count=%llu\n",
+                                repeated.failure_id,
+                                (unsigned long long)repeated.repeat_count);
+                        return finish_cycle(
+                            &plan, files, file_count, "unchanged_failure",
+                            "verify", started_us, "", root, NULL);
+                    }
+                    fprintf(stderr,
+                            "[devloop] compiler execution epoch changed during "
+                            "coalescing; running make ff\n");
+                }
+            }
+            if (failure_why[0])
+                fprintf(stderr,
+                        "[devloop] failure receipt unavailable (safe miss): "
+                        "%s\n", failure_why);
+        } else {
+            /* Negative caching is an optimization, never proof authority. */
+            fprintf(stderr,
+                    "[devloop] failure execution identity unavailable "
+                    "(safe miss): %s\n",
+                    execution_why[0] ? execution_why : "unknown");
+        }
+        char ff_record_arg[160];
+        if (!failure_source_record_arg(&expected_source, ff_record_arg,
+                                       execution_why,
+                                       sizeof(execution_why)))
+            return finish_cycle(
+                &plan, files, file_count, "rejected", "verify",
+                started_us, execution_why[0]
+                    ? execution_why : "could not bind source record to make ff",
+                root, NULL);
         const char *ff_argv[] = {
-            "make", "--no-print-directory", "ff", NULL
+            "make", "--no-print-directory", ff_record_arg, "ff", NULL
         };
         if (!zcl_devloop_process_run(root, ff_argv, 900000, &result) ||
             !result_ok(&result)) {
             output_capsule(&result, capsule);
+            char post_source_why[256] = {0};
+            if (!source_identity_verify(root, &expected_source,
+                                        post_source_why,
+                                        sizeof(post_source_why)))
+                return finish_cycle(
+                    &plan, files, file_count, "superseded",
+                    "source_epoch_cas", started_us,
+                    post_source_why[0]
+                        ? post_source_why
+                        : "source epoch changed during failed verification",
+                    root, NULL);
+            char post_execution[65] = {0};
+            char post_execution_why[192] = {0};
+            bool execution_stable =
+                g_cycle_failure.execution_ready &&
+                failure_execution_id(root, &expected_source, post_execution,
+                                     post_execution_why,
+                                     sizeof(post_execution_why)) &&
+                strcmp(post_execution, g_cycle_failure.execution_id) == 0;
+            if (execution_stable &&
+                zcl_devloop_deterministic_compile_failure(
+                    &result, g_cycle_failure.first_error)) {
+                g_cycle_failure.cacheable = true;
+                (void)snprintf(g_cycle_failure.failure_phase,
+                               sizeof(g_cycle_failure.failure_phase),
+                               "verify.compile");
+            } else if (g_cycle_failure.execution_ready && !execution_stable) {
+                fprintf(stderr,
+                        "[devloop] failure execution epoch changed or could "
+                        "not be revalidated (safe miss): %s\n",
+                        post_execution_why[0] ? post_execution_why
+                                              : "execution_epoch_changed");
+            }
             fprintf(stderr,
                     "[devloop] verify (make ff) failed — fix, then run "
-                    "`dev change apply` to deploy\n");
+                    "`dev ff` for an explicit unchanged retry\n");
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "verify", started_us,
                                 capsule[0] ? capsule : "make ff failed",
                                 root, NULL);
         }
         char source_why[256] = {0};
-        if (!source_identity_verify(root, expected_source_identity,
+        if (!source_identity_verify(root, &expected_source,
                                     source_why, sizeof(source_why)))
             return finish_cycle(
                 &plan, files, file_count, "superseded", "source_epoch_cas",
@@ -1049,8 +1558,8 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                               : "source epoch changed during verification",
                 root, NULL);
         fprintf(stderr,
-                "[devloop] verified in %llds — run `dev change apply` "
-                "to deploy\n",
+                "[devloop] verified in %llds — runtime publication remains "
+                "owner-contained\n",
                 (long long)((platform_time_monotonic_us() - started_us) /
                             1000000));
         return finish_cycle(&plan, files, file_count, "passed", "verify",
@@ -1082,7 +1591,7 @@ transactional_reload:
          * alter an activation verdict. */
         if (dev_activation_request_from_cycle(root, "", &creq)) {
             char source_why[256] = {0};
-            if (!source_identity_verify(root, expected_source_identity,
+            if (!source_identity_verify(root, &expected_source,
                                         source_why, sizeof(source_why))) {
                 return finish_cycle(&plan, files, file_count, "superseded",
                                     "source_epoch_cas", started_us,
@@ -1090,7 +1599,7 @@ transactional_reload:
                                                   : "source epoch changed before activation",
                                     root, NULL);
             }
-            creq.req.source_identity = expected_source_identity;
+            creq.req.source_identity = expected_source.source_id;
             struct dev_activation_ops ops;
             dev_activation_default_ops(&creq.req, &ops);
             struct dev_activation_result ar = {0};
@@ -1122,14 +1631,14 @@ transactional_reload:
     char source_arg[96];
     int source_arg_n = snprintf(source_arg, sizeof(source_arg),
                                 "ZCL_DEV_SOURCE_ID=%s",
-                                expected_source_identity);
+                                expected_source.source_id);
     if (source_arg_n <= 0 || (size_t)source_arg_n >= sizeof(source_arg))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "source_epoch_cas", started_us,
                             "could not bind source identity to activation",
                             root, NULL);
     char source_verify_why[256] = {0};
-    if (!source_identity_verify(root, expected_source_identity,
+    if (!source_identity_verify(root, &expected_source,
                                 source_verify_why,
                                 sizeof(source_verify_why))) {
         return finish_cycle(&plan, files, file_count, "superseded",
@@ -1174,23 +1683,23 @@ int zcl_devloop_run_cycle(const char *repo_root,
 
 int zcl_devloop_print_status(void)
 {
-    char path[PATH_MAX];
-    if (!native_state_path(path)) {
-        fprintf(stderr, "[devloop] status: HOME is unavailable\n");
-        return 1;
-    }
-    FILE *f = fopen(path, "r");
-    if (!f) {
+    char body[16384], why[160] = {0};
+    size_t len = 0;
+    enum zcl_devloop_state_lookup lookup =
+        zcl_devloop_cycle_state_read(".", body, sizeof(body), &len, NULL,
+                                     why, sizeof(why));
+    if (lookup == ZCL_DEVLOOP_STATE_ABSENT) {
         printf("{\"schema\":\"zcl.dev_cycle.v1\",\"status\":\"unavailable\","
                "\"agent_next_action\":\"keep editing or run dev loop watch\"}\n");
         return 0;
     }
-    char buf[16384];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = 0;
-    fwrite(buf, 1, n, stdout);
-    if (n == 0 || buf[n - 1] != '\n')
+    if (lookup != ZCL_DEVLOOP_STATE_FOUND) {
+        fprintf(stderr, "[devloop] status: invalid cycle state: %s\n",
+                why[0] ? why : "unknown");
+        return 1;
+    }
+    fwrite(body, 1, len, stdout);
+    if (len == 0 || body[len - 1] != '\n')
         fputc('\n', stdout);
     return 0;
 }

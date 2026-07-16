@@ -749,7 +749,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         health.served_height, health.tip_height, health.header_height,
         health.peer_best_height, health.target_height, health.gap,
         health.log_head, health.log_head_gap);
-    agent_push_security_posture_json(result, "security_posture", NULL);
+    agent_push_security_posture_snapshot_json(result, "security_posture",
+                                               &posture);
     agent_summary_push_detail_json(
         result, &health, first_call_budget.partial_result);
     return true;

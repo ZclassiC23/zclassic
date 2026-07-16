@@ -66,8 +66,9 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
 
 /* Read-only producer status. Opens <datadir>/progress.kv READONLY (no writes,
  * no migrations — safe against a running producer over WAL) and reports the
- * fold session/receipt lifecycle plus the reducer stage cursors, for the
- * `zclassic23 ops producer status` operator command. NEVER mutates state. */
+ * fold session/receipt lifecycle, reducer stage cursors, and a bounded
+ * successful-apply rate window for the `zclassic23 ops producer status`
+ * command. NEVER mutates state; human log text is not rate authority. */
 struct producer_status_read {
     bool    progress_kv_present;   /* <datadir>/progress.kv exists and opened */
     bool    session_open;          /* a producer session row exists (fold started) */
@@ -76,6 +77,12 @@ struct producer_status_read {
     int64_t tip_finalize_cursor;   /* stage_cursor 'tip_finalize' (-1 if absent) */
     int64_t fold_cursor;           /* receipt fold cursor H*+1 (-1 if not finalized) */
     int64_t start_time_us;         /* session start (0 if no session) */
+    bool    durable_rate_available; /* >=60s of successful apply-log evidence */
+    int64_t rate_older_height;     /* older successful durable sample */
+    int64_t rate_older_time_unix;
+    int64_t rate_newer_height;     /* newest successful durable sample */
+    int64_t rate_newer_time_unix;
+    int64_t rate_blocks_per_second_milli; /* fixed point; never log-derived */
     int     validation_profile;    /* session/receipt validation profile (-1 if none) */
     char    receipt_schema[64];    /* exact v1/v2 session or receipt schema */
     char    source_tree_root[65];  /* lowercase hex source claim ("" if none) */

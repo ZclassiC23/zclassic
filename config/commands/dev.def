@@ -6,7 +6,7 @@ ZCL_COMMAND_READY_READ(
     "the local dev-state store at call time; reports status=unavailable "
     "if no cycle has run yet.", 0,
     "dev,status,cycle,verdict", "zcl.command.empty_input.v1",
-    "zcl.dev_status.v1", "", "", "zclassic23 dev status",
+    "zcl.dev_cycle.v1", "", "", "zclassic23 dev status",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -350,12 +350,12 @@ ZCL_COMMAND_DEV_READ(
     "zclassic23-dev dev loop heartbeat")
 
 ZCL_COMMAND_DEV_READ(
-    "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a source epoch",
+    "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a cycle epoch",
     "The next native cycle verdict newer than after_epoch, blocking up "
     "to timeout_ms; on timeout returns a typed WAIT_TIMEOUT failure "
     "instead of stale data.", 0,
     "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
-    "zcl.dev_cycle.v1", "after_epoch,timeout_ms,view", "",
+    "zcl.dev_cycle.v1", "after_epoch,timeout_ms", "",
     "zclassic23 dev loop wait --input='{\"after_epoch\":41}'",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
@@ -534,12 +534,15 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "native lease-aware compaction is not implemented")
 
 ZCL_COMMAND_DEV_READ(
-    "dev.diagnose.latest", "dev.diagnose", "", "Read the latest failure capsule",
-    "The latest native cycle verdict from the local dev-state store, "
-    "wrapped as a failure capsule; reports status=unavailable if no "
-    "cycle has run yet.", 0,
+    "dev.diagnose.latest", "dev.diagnose", "", "Read the latest compiler failure",
+    "Resolves the workspace-scoped most recently recorded deterministic "
+    "compiler failure and returns its ID, phase, first error, observation "
+    "count, and typed show action. found=false is valid only when no record "
+    "exists; integrity errors fail closed. It is not the current-cycle "
+    "authority.", 2048,
     "diagnose,failure,capsule,latest", "zcl.command.empty_input.v1",
-    "zcl.dev_failure.v1", "", "", "zclassic23 dev diagnose latest",
+    "zcl.dev_failure_latest_result.v1", "", "",
+    "zclassic23 dev diagnose latest",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -548,15 +551,21 @@ ZCL_COMMAND_DEV_READ(
     zcl_native_handle_dev_diagnose_latest,
     "failure capsules are available through the dev binary",
     "zclassic23-dev dev diagnose latest")
-ZCL_COMMAND_PLANNED_READ(
-    "dev.diagnose.show", "dev.diagnose", "", "Show one durable failure artifact",
-    "Will show one durable failure artifact by id from a persistent "
-    "failure store; today the handler is NULL and every call fails "
-    "closed with exit 3.", 0,
+ZCL_COMMAND_DEV_READ(
+    "dev.diagnose.show", "dev.diagnose", "", "Show one compiler failure record",
+    "Reads one workspace-scoped immutable first-observation record by its "
+    "SHA3 ID, verifies its seal/private inode, and returns a bounded summary "
+    "plus a typed dev.ff retry action. Normal view omits the capsule; full "
+    "view includes the bounded capsule and retry command. The observation "
+    "count includes executed and safely coalesced observations. It never "
+    "executes the retry.", 6144,
     "diagnose,failure,artifact", "zcl.dev_failure_ref_input.v1",
-    "zcl.dev_failure.v1", "failure_id", "failure_id",
-    "zclassic23 dev diagnose show <failure-id>", ZCL_COMMAND_LAYER_DEV,
+    "zcl.dev_failure_show.v1", "failure_id", "failure_id",
+    "zclassic23-dev dev diagnose show <failure-id>",
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "durable failure artifact store is not implemented")
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_diagnose_show,
+    "durable failure artifacts are available through the dev binary",
+    "zclassic23-dev dev diagnose show <failure-id>")

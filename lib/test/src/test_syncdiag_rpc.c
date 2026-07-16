@@ -5449,10 +5449,9 @@ syncdiag_net_split_done:
         const struct json_value *telemetry =
             json_get(&result, "telemetry_drilldowns");
         const struct json_value *subsystems = json_get(&result, "subsystems");
-        const struct json_value *shim = json_get(&result, "deprecated_shim");
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.agent_map.v1") == 0;
+                          "zcl.agent_map.v2") == 0;
         ok = ok &&
             agent_contract_command_surface_count("agentmap.commands.core") ==
                 14;
@@ -5491,14 +5490,23 @@ syncdiag_net_split_done:
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "peerincidents")
                          != NULL;
-        const struct json_value *map_command_center =
-            find_object_with_str(commands, "name", "command_center");
-        ok = ok && map_command_center &&
-            strcmp(json_get_str(json_get(map_command_center, "native")),
+        const struct json_value *map_compact_status =
+            find_object_with_str(commands, "name", "compact_status");
+        ok = ok && map_compact_status &&
+            strcmp(json_get_str(json_get(map_compact_status, "native")),
+                   "zclassic23 status") == 0;
+        ok = ok && map_compact_status &&
+            strcmp(json_get_str(json_get(map_compact_status, "mcp")),
+                   "") == 0;
+        const struct json_value *map_full_compatibility =
+            find_object_with_str(commands, "name",
+                                 "full_compatibility_status");
+        ok = ok && map_full_compatibility &&
+            strcmp(json_get_str(json_get(map_full_compatibility, "native")),
                    "zclassic23 agent") == 0;
-        ok = ok && map_command_center &&
-            strcmp(json_get_str(json_get(map_command_center, "mcp")),
-                   "zcl_operator_summary") == 0;
+        ok = ok && map_full_compatibility &&
+            strcmp(json_get_str(json_get(map_full_compatibility, "mcp")),
+                   "zcl_agent") == 0;
         const struct json_value *map_background_quality =
             find_object_with_str(commands, "name", "background_quality");
         ok = ok && map_background_quality &&
@@ -5523,11 +5531,14 @@ syncdiag_net_split_done:
         ok = ok && map_peer_incidents &&
             strcmp(json_get_str(json_get(map_peer_incidents, "mcp")),
                    "zcl_peer_incidents") == 0;
-        const struct json_value *map_summary =
-            find_object_with_str(telemetry, "name", "summary");
-        ok = ok && map_summary &&
-            strcmp(json_get_str(json_get(map_summary, "mcp")),
-                   "zcl_operator_summary") == 0;
+        const struct json_value *map_telemetry_status =
+            find_object_with_str(telemetry, "name", "compact_status");
+        ok = ok && map_telemetry_status &&
+            strcmp(json_get_str(json_get(map_telemetry_status, "native")),
+                   "zclassic23 status") == 0;
+        ok = ok && map_telemetry_status &&
+            strcmp(json_get_str(json_get(map_telemetry_status, "mcp")),
+                   "") == 0;
         const struct json_value *map_full_status =
             find_object_with_str(telemetry, "name", "full_status");
         ok = ok && map_full_status &&
@@ -5577,11 +5588,6 @@ syncdiag_net_split_done:
                    "zcl_agent_build") == 0;
         ok = ok && subsystems && subsystems->type == JSON_ARR;
         ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
-        ok = ok && shim && shim->type == JSON_OBJ;
-        ok = ok && !json_get_bool(json_get(shim, "primary"));
-        ok = ok && strcmp(json_get_str(json_get(shim, "status")),
-                          "deprecated_compatibility_shim") == 0;
-
         json_free(&params);
         json_free(&result);
 
@@ -5857,21 +5863,7 @@ syncdiag_net_split_done:
             strcmp(json_get_str(json_get(contract_agentdevstatus,
                                          "ops_surface")),
                    "direct") == 0;
-        ok = ok && contract_status &&
-            strcmp(json_get_str(json_get(contract_status, "capability")),
-                   "runtime_status_alias") == 0;
-        ok = ok && contract_status &&
-            strcmp(json_get_str(json_get(contract_status, "schema")),
-                   "zcl.public_status.v1") == 0;
-        ok = ok && contract_status &&
-            strcmp(json_get_str(json_get(contract_status, "native")),
-                   "zclassic23 status") == 0;
-        ok = ok && contract_status &&
-            strcmp(json_get_str(json_get(contract_status, "mcp")),
-                   "zcl_agent") == 0;
-        ok = ok && contract_status &&
-            strcmp(json_get_str(json_get(contract_status, "rest")),
-                   "GET /api/v1/agent") == 0;
+        ok = ok && contract_status == NULL;
         ok = ok && contract_diagnose &&
             strcmp(json_get_str(json_get(contract_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -6130,7 +6122,7 @@ syncdiag_net_split_done:
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_capability.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
-                                        "zcl.agent_machine_contract.v1")
+                                        "zcl.agent_machine_contract.v2")
             != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_deploy_guard.v1") != NULL;
@@ -6160,7 +6152,7 @@ syncdiag_net_split_done:
         ok = ok && json_array_has_substr(transports, "zcl_milestone");
         ok = ok && json_array_has_substr(transports, "zcl_refold_status");
         ok = ok && json_array_has_substr(transports, "zcl_proof_bundle");
-        ok = ok && json_array_has_substr(transports, "zclassic23 status");
+        ok = ok && !json_array_has_substr(transports, "zclassic23 status");
 
         struct json_value ops;
         json_init(&ops);
@@ -6376,9 +6368,15 @@ syncdiag_net_split_done:
                                         "change_with_impact") != NULL;
         ok = ok && find_object_with_str(ops_workflow, "name",
                                         "drill_down_only_when_needed") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "preferred_transport")),
+                          "native_cli") == 0;
         ok = ok && ops_api_ux &&
             strstr(json_get_str(json_get(ops_api_ux, "preferred_drilldowns")),
-                   "zcl_state") != NULL;
+                   "zclassic23 dumpstate") != NULL;
+        ok = ok && ops_api_ux &&
+            strstr(json_get_str(json_get(ops_api_ux, "start_here")),
+                   "zclassic23 status") != NULL;
         ok = ok && ops_api_ux &&
             strstr(json_get_str(json_get(ops_api_ux, "add_new_api_rule")),
                    "registry-owned primitives") != NULL;
@@ -7533,6 +7531,9 @@ syncdiag_net_split_done:
         const struct json_value *avoid = json_get(&interface, "avoid");
         const struct json_value *capabilities =
             json_get(&interface, "capabilities");
+        const struct json_value *full_compatibility_status =
+            find_object_with_str(capabilities, "name",
+                                 "full_compatibility_status");
         const struct json_value *runtime_status =
             find_object_with_str(capabilities, "name", "runtime_status");
         const struct json_value *runtime_status_alias =
@@ -7588,7 +7589,7 @@ syncdiag_net_split_done:
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&interface,
                                                 "preferred_transport")),
-                          "mcp") == 0;
+                          "native_cli") == 0;
         ok = ok && strcmp(json_get_str(json_get(&interface,
                                                 "capabilities_schema")),
                           "zcl.agent_capability.v1") == 0;
@@ -7623,24 +7624,14 @@ syncdiag_net_split_done:
         ok = ok && unified_liveness &&
             strcmp(json_get_str(json_get(unified_liveness, "mcp")),
                    "zcl_agent_liveness") == 0;
-        ok = ok && runtime_status &&
-            strcmp(json_get_str(json_get(runtime_status, "mcp")),
+        ok = ok && full_compatibility_status &&
+            strcmp(json_get_str(json_get(full_compatibility_status, "mcp")),
                    "zcl_agent") == 0;
-        ok = ok && runtime_status &&
-            strcmp(json_get_str(json_get(runtime_status, "schema")),
+        ok = ok && full_compatibility_status &&
+            strcmp(json_get_str(json_get(full_compatibility_status, "schema")),
                    "zcl.public_status.v1") == 0;
-        ok = ok && runtime_status_alias &&
-            strcmp(json_get_str(json_get(runtime_status_alias, "method")),
-                   "status") == 0;
-        ok = ok && runtime_status_alias &&
-            strcmp(json_get_str(json_get(runtime_status_alias, "native")),
-                   "zclassic23 status") == 0;
-        ok = ok && runtime_status_alias &&
-            strcmp(json_get_str(json_get(runtime_status_alias, "mcp")),
-                   "zcl_agent") == 0;
-        ok = ok && runtime_status_alias &&
-            strcmp(json_get_str(json_get(runtime_status_alias, "schema")),
-                   "zcl.public_status.v1") == 0;
+        ok = ok && runtime_status == NULL;
+        ok = ok && runtime_status_alias == NULL;
         ok = ok && mirror_status &&
             strcmp(json_get_str(json_get(mirror_status, "schema")),
                    "zcl.mirror_status.v1") == 0;
@@ -7715,18 +7706,25 @@ syncdiag_net_split_done:
         ok = ok && select_sql_cap &&
             json_get_bool(json_get(select_sql_cap, "registry_alias"));
         ok = ok && development_loop &&
+            strcmp(json_get_str(json_get(development_loop, "status")),
+                   "zclassic23 status") == 0;
+        ok = ok && development_loop &&
+            strcmp(json_get_str(json_get(development_loop,
+                                         "full_compatibility_status")),
+                   "zclassic23 agent") == 0;
+        ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop,
                                          "subsystem_state")),
-                   "zcl_state") == 0;
+                   "zclassic23 dumpstate <subsystem> [key]") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "logs")),
-                   "zcl_node_log") == 0;
+                   "zclassic23 getnodelog <pattern>") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "database")),
-                   "zcl_sql") == 0;
+                   "zclassic23 dbquery <SELECT>") == 0;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
-                   "zcl.agent_machine_contract.v1") == 0;
+                   "zcl.agent_machine_contract.v2") == 0;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "payload")),
                    "json_object") == 0;
@@ -7734,7 +7732,8 @@ syncdiag_net_split_done:
         ok = ok && json_get_bool(json_get(machine,
                                           "transport_equivalent_payloads"));
         ok = ok && json_get_bool(json_get(machine, "no_python_required"));
-        ok = ok && json_get_bool(json_get(machine, "no_tools_z_required"));
+        ok = ok && json_get_bool(
+            json_get(machine, "typed_native_commands_required"));
         ok = ok && runtime &&
             strcmp(json_get_str(json_get(runtime, "schema")),
                    "zcl.agent_runtime_identity.v1") == 0;

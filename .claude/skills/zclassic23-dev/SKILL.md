@@ -1,14 +1,14 @@
 ---
 name: zclassic23-dev
 description: Use when developing on the ZClassic23 codebase (this repo) — onboarding, understanding the architecture, or making any code change. Covers the verify-only native dev loop, runtime-publication containment, typed-commands-over-bash, workflows of tiered subagents, the push traps, the node's state-machine model, the eight code shapes / where things live, the inviolable rules (consensus parity, copy-prove before live, defensive-coding gates), build/test/deploy, and the don't-re-chase traps. Invoke for "how does this codebase work", "how do I develop efficiently here", "how do I add or change X here", "be a zclassic23 developer", or before editing zclassic23 source.
-version: 1.2.0
 ---
 
 # Being a ZClassic23 developer
 
 ZClassic23 is one ~15 MB C23 binary that is a full ZClassic node (Equihash 200,9 PoW,
-Sapling shielded txs) plus wallet, explorer, embedded Tor, MCP server, and more. It
-must stay **bit-for-bit consensus-compatible with `zclassicd`**.
+Sapling shielded txs) plus wallet, explorer, embedded Tor, and more. Its native
+command registry is replacing the legacy MCP server. It must stay **bit-for-bit
+consensus-compatible with `zclassicd`**.
 
 The codebase looks big; the idea underneath is small. This skill is the compressed
 operating manual. The **canonical, verified docs** are the source of truth — read them,
@@ -38,7 +38,10 @@ The index is derived and read-only. The current efficient loop is **`code sym`/`
 The platform exists so you **drop in C and let the machine classify, build, and test it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
 
 1. **Persistent watcher (default loop):** `zclassic23-dev dev loop ensure` (or `make dev-watch`) once. Then just **Edit `.c`** — it runs classify→prove→build in verify-only mode and never changes the running generation; read the verdict with `zclassic23-dev dev status` (`dev.status`) or block on `dev loop wait`. Publication watcher modes and direct generation-application commands are containment probes: they refuse before compilation, loader activity, service control, or generation relinking.
-2. **Two verification tiers — know which proof you need:** eligible stateless handler changes may build a candidate shared object and run `dev.hotswap.probe` without changing the resident registry. Everything else uses the mapped compile/test/replay lane and produces a reload candidate only. Neither tier currently publishes or restarts a process.
+2. **Two verification tiers — know which proof you need:** eligible stateless handler changes may build a candidate shared object and run `dev.hotswap.probe` without changing the resident registry. Everything else uses the mapped compile/test proof lane and produces a reload candidate only. Neither tier currently publishes or restarts a process.
+   The Make/dev-loop control plane captures one exact source record and reuses it across nested Makes. Exact single-profile goals load only their depfiles; mixed, unknown, and default goals load every profile. Use `make ff`, `make t-fast ONLY=<group>`, and `make fast-compile` for iteration, then run the strict gates below. Full-suite success is summary-only; focused runs and failures retain diagnostics, and `--verbose` requests the transcript. **Never fabricate or manually pass `BUILD_SOURCE_RECORD` / `ZCL_FAST_BUILD_SOURCE_RECORD`**—the parent Make or watcher owns capture, and every artifact session verifies it.
+
+   The watcher coalesces only an exact, deterministic compiler diagnostic. Source bytes, ABA mutation token, execution/toolchain epoch, flags, and phase must all match; any change forces execution. Tests, lint, timeouts, signals, locks, infrastructure failures, and malformed receipts always execute. The current cycle verdict's `failure_id` is authoritative; `dev.diagnose.latest` is only the most recently recorded compiler failure and can be stale after an edit or green cycle. Inspect the returned ID with `zclassic23-dev dev diagnose show <failure_id>`; use `--view=full` only for the bounded capsule. `zclassic23-dev dev ff` deliberately reruns the current checkout without coalescing—it is not historical replay. Cycle and failure state are worktree-scoped and SHA3-sealed. Never edit or delete their files to influence a verdict.
 3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `dumpstate <subsystem>` (= old `zcl_state`), `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the ONLY agent interface going forward (zero-MCP; MCP is deleted in W3).
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).

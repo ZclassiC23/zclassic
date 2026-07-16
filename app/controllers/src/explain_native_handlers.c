@@ -167,7 +167,7 @@ void explain_compose_sync(const struct explain_inputs *in,
         action = "inspect the next-height blocker's stage "
                  "(`ops state subsystem=<stage>`)";
     else
-        action = "let the reducer advance; watch H* climb via `status brief`";
+        action = "let the reducer advance; watch H* climb via `status`";
     tline(t, sizeof(t), &len, "  next action: %s", action);
 
     json_push_kv_str(out, "topic", "sync");

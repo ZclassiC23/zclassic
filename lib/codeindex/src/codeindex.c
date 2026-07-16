@@ -28,19 +28,18 @@ struct codeindex *codeindex_open(const char *root)
         LOG_NULL("codeindex", "root too long");
     }
 
-    ci->store = ci_store_open(root);
-    if (!ci->store) {
-        free(ci);
-        LOG_NULL("codeindex", "store open failed");
-    }
-
     bool stale = true;
-    if (!codeindex_is_stale(ci, &stale)) {
-        codeindex_close(ci);
-        LOG_NULL("codeindex", "staleness check failed");
+    ci->store = ci_store_open(root);
+    if (ci->store && !codeindex_is_stale(ci, &stale)) {
+        /* A derived store with a damaged/unreadable freshness record is not
+         * authority. Drop that reader and recompute under the single-flight
+         * publication lock instead of failing or repairing in place. */
+        ci_store_close(ci->store);
+        ci->store = NULL;
+        stale = true;
     }
-    if (stale) {
-        if (!codeindex_rebuild(ci)) {
+    if (!ci->store || stale) {
+        if (!ci_codeindex_refresh(ci)) {
             codeindex_close(ci);
             LOG_NULL("codeindex", "rebuild failed");
         }

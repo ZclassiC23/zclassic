@@ -188,12 +188,6 @@ static const char *agent_classify_path(const char *path,
         subsystem = "fast_ci_and_gates";
         docs = "docs/work/fast-path.md";
         acc->code_changed = true;
-    } else if (strcmp(path, "tools/z") == 0) {
-        subsystem = "deprecated_tools_z_shim";
-        risk = "operator_api";
-        docs = "docs/AGENT_API.md";
-        acc->agent_api_changed = true;
-        acc->code_changed = true;
     } else if (agent_str_starts(path, "tools/mcp/")) {
         subsystem = "mcp_agent_api";
         risk = "operator_api";
@@ -296,19 +290,21 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "agentmap\n"
-        "\nReturn the AI-coder map: primary native/MCP commands, where the\n"
-        "operator API lives, which docs explain it, and which tests cover it.\n"
+        "\nReturn the native-first AI-coder map and transitional MCP metadata:\n"
+        "where the operator API lives, which docs explain it, and which tests cover it.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_map.v1\", \"commands\":[...], "
+        "  { \"schema\":\"zcl.agent_map.v2\", \"commands\":[...], "
         "\"subsystems\":[...] }\n");
 
-    struct json_value commands, subsystems, telemetry, shim;
+    struct json_value commands, subsystems, telemetry;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_map.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_map.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
-    json_push_kv_str(result, "summary",
-                     "Use the zclassic23 binary or MCP directly; tools/z is a deprecated shim.");
+    json_push_kv_str(
+        result, "summary",
+        "Use typed native zclassic23 commands; discover them with "
+        "zclassic23 discover help.");
 
     json_init(&commands);
     json_set_array(&commands);
@@ -367,15 +363,6 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_push_kv(result, "subsystems", &subsystems);
     json_free(&subsystems);
 
-    json_init(&shim);
-    json_set_object(&shim);
-    json_push_kv_str(&shim, "name", "tools/z");
-    json_push_kv_bool(&shim, "primary", false);
-    json_push_kv_str(&shim, "status", "deprecated_compatibility_shim");
-    json_push_kv_str(&shim, "replacement",
-                     "zclassic23 agent, zclassic23 agentmap, MCP zcl_agent_*");
-    json_push_kv(result, "deprecated_shim", &shim);
-    json_free(&shim);
     return true;
 }
 

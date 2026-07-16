@@ -64,17 +64,17 @@ restart). Either way it is named.
 
 ## 3. Watch the machine live
 
-These are the literal MCP calls. Start at the top and stop when you have your
-answer.
+These are typed operator calls. Prefer the native `zclassic23` command and stop
+when you have your answer.
 
 | Call | Shows |
 |------|-------|
-| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
+| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Typed native CLI JSON is first, the legacy MCP `zcl_agent_interface` route remains during W2/W3 migration, and REST is read-only. No external wrapper logic is required. |
 | `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/MCP/REST calls. Start here when choosing an interface. |
 | `zclassic23 appprotocols` | Native application-protocol catalog. Same contract as MCP `zcl_app_protocols` and `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
 | `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
 | `zclassic23 agentliveness` | Compact lane/service/supervisor/background-quality liveness. Same contract as MCP `zcl_agent_liveness`; use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. Use `agentliveness full` only for embedded method/lane/domain arrays. |
-| `zclassic23 status` / `zcl_agent` | The simple first check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, security posture, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `status` is the no-wrapper native alias, and `zcl_operator_summary` is the longer MCP compatibility alias. Start here when checking live state. |
+| `zclassic23 status` | The native first check: one line by default, or a bounded `zcl.result.v1` / `zcl.core_status_brief.v1` document with H*, gap, peers, health, and the causal blocker. Use `zclassic23 core status` for the larger diagnostic tree. The legacy `zclassic23 agent` / `zcl_agent` / REST document is separate. |
 | `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
 | `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
 | `zcl_syncdiag` | Sync state, header-sync counters, watchdog (= condition-engine health), chain/header heights, peer max height, download stats. **It does NOT list the eight stage cursors** — use `reducer_frontier` for those. |
@@ -152,8 +152,8 @@ this page.)
    `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop,
    `zclassic23 api` for interface discovery, and `zclassic23 appprotocols` or
    `zcl_app_protocols` for the ZCL L1 / zclassic23 application-layer catalog.
-   Then use `zclassic23 agent` or
-   `zclassic23 status` or `zcl_agent` for compact live state, and `zclassic23 milestone` or
+   Then use native `zclassic23 status` for compact live state; the larger
+   compatibility document remains at `zclassic23 agent` / `zcl_agent`. Use `zclassic23 milestone` or
    `zcl_milestone` for v1 progress bars. Drill down with `zcl_status` and
    `zcl_state subsystem=reducer_frontier` only if needed. A doc can be stale;
    the node cannot.

@@ -88,7 +88,7 @@ metadata, not a second implementation.
 
 | Path | CLI | Avail | Risk / Auth | Summary |
 |---|---|---|---|---|
-| `status` | `zclassic23 status` | compat → `zclassic23 status` (alias `agent`; dispatches via the pre-existing native `agent` status path, not yet the registry handler) | read / public | Compact node status and next action |
+| `status` | `zclassic23 status` | ready; native-only `zcl.core_status_brief.v1` data in a `zcl.result.v1` envelope | read / public | Compact node status and next action |
 | `core` | `zclassic23 core` | ready (branch) | read / public | Consensus-bound node capabilities |
 | `app` | `zclassic23 app` | ready (branch) | read / public | Capability-scoped sovereign applications |
 | `dev` | `zclassic23 dev` | ready (branch) | read / public | Native edit and proof loop; runtime publication is contained |
@@ -259,7 +259,7 @@ generation activation.
 
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
-| `dev.status` | `dev status` | ready (every build — reads a state file from disk, not gated by `ZCL_DEV_BUILD`) | none | `zcl.dev_status.v1` | Read the latest bounded native cycle verdict |
+| `dev.status` | `dev status` | ready (every build — reads a state file from disk, not gated by `ZCL_DEV_BUILD`) | none | `zcl.dev_cycle.v1` | Read the latest bounded native cycle verdict |
 | `dev.core.boundary` | `dev core boundary` | ready | none | `zcl.core_app_boundary.v1` | Show the enforced Core/App ownership law |
 | `dev.core.proof` | `dev core proof` | planned | `files` | `zcl.dev_core_proof.v1` | Run mandatory Core parity proof lanes — *native proof job extraction incomplete* |
 
@@ -305,7 +305,7 @@ contained. Native probing is contained too.
 |---|---|---|---|---|---|
 | `dev.loop.ensure` 🔧 | `dev loop ensure --input='{"root":".","mode":"verify"}'` (alias `dev.loop.watch`) | compat → `zclassic23-dev dev loop ensure` | optional `root,mode`; idempotent | `zcl.dev_loop_status.v1` | Ensure one verify-only watcher; `auto`/`apply` modes are rejected while publication is contained |
 | `dev.loop.status` 🔧 | `dev loop status` (alias `dev.loop.heartbeat`) | compat → `zclassic23-dev dev loop heartbeat` | none | `zcl.dev_loop_status.v1` | Read watcher identity, epoch, latest verdict |
-| `dev.loop.wait` 🔧 | `dev loop wait --input='{"after_epoch":41}'` | compat → `zclassic23-dev dev loop wait` | `after_epoch,timeout_ms,view` | `zcl.dev_cycle.v1` | Wait for one verdict after a source epoch (persistent latency) |
+| `dev.loop.wait` 🔧 | `dev loop wait --input='{"after_epoch":41}' --view=summary` | compat → `zclassic23-dev dev loop wait` | `after_epoch,timeout_ms`; universal `--view` | `zcl.dev_cycle.v1` | Wait for one verdict after a sealed cycle epoch (persistent latency) |
 | `dev.loop.events` | `dev loop events --format=jsonl` | planned | `after,heartbeat_ms`, stream | `zcl.dev_loop_event.v1` | Stream resumable source and cycle events — *resumable NDJSON journal not implemented* |
 | `dev.loop.stop` 🔧 | `dev loop stop <watcher-id>` | compat → `zclassic23-dev dev loop stop` | **`watcher_id`** | `zcl.dev_loop_status.v1` | Stop one identified native watcher |
 
@@ -327,10 +327,24 @@ contained. Native probing is contained too.
 | `dev.generation.history` 🔧 | `dev generation history` | compat → `zclassic23-dev dev generation history` | `cursor,max_items` | `zcl.dev_generation_history.v1` | Page accepted and rejected generations |
 | `dev.generation.rollback` | `dev generation rollback --input='<intent>'` | planned | `intent_id,effect_digest`, job, plan-commit, reversible | `zcl.dev_generation_rollback.v1` | Restore verified last-good in the dev lane — *native activation engine not implemented* |
 | `dev.generation.compact` | `dev generation compact --input='<intent>'` | planned | `intent_id,effect_digest`, job, plan-commit | `zcl.dev_generation_compact.v1` | Compact unleased old generations — *native lease-aware compaction not implemented* |
-| `dev.diagnose.latest` 🔧 | `dev diagnose latest` | compat → `zclassic23-dev dev diagnose latest` | none | `zcl.dev_failure.v1` | Read the latest failure capsule |
-| `dev.diagnose.show` | `dev diagnose show <failure-id>` | planned | **`failure_id`** | `zcl.dev_failure.v1` | Show one durable failure artifact — *durable failure artifact store not implemented* |
+| `dev.diagnose.latest` 🔧 | `dev diagnose latest` | compat → `zclassic23-dev dev diagnose latest` | none | `zcl.dev_failure_latest_result.v1` | Read the most recently recorded deterministic compiler-failure summary; not current-cycle authority |
+| `dev.diagnose.show` 🔧 | `dev diagnose show <failure-id> [--view=summary\|normal\|full]` | compat → `zclassic23-dev dev diagnose show <failure-id>` | **`failure_id`** | `zcl.dev_failure_show.v1` | Verify and show one workspace-scoped durable compiler-failure artifact |
 
 ---
+
+The current `dev.status` / `dev.loop.wait` verdict is the authority for that
+cycle's `failure_id`. `dev.diagnose.latest` is a workspace-local convenience
+pointer; an edit or later green cycle does not erase it, so it may be stale.
+A failure ID binds the source identity, proof phase, and normalized first error.
+The mutation and execution IDs returned by `show` describe the first
+observation, while `repeat_count` includes both executed and safely coalesced
+observations. Normal output stays below 2 KiB and omits the capsule; explicit
+`--view=full` is bounded by 6 KiB and adds the capsule and `retry_command`.
+That command is `dev.ff`, which retries the current checkout and does not replay
+the historical first-observation epoch. Per-worktree records are SHA3-sealed;
+schema, inode, or digest corruption fails closed.
+Every dev-state digest uses its schema domain plus labeled, NUL-delimited
+field/value pairs. It is an integrity seal, not a claim of authorship.
 
 ## Envelope shapes (quick reference)
 

@@ -45,6 +45,10 @@ bool agent_security_posture_allows_public_serving(
     const struct agent_security_posture *posture);
 void agent_push_security_posture_json(struct json_value *out, const char *key,
                                       struct node_db *ndb);
+/* Render an already-collected posture without repeating its SQLite reads. */
+void agent_push_security_posture_snapshot_json(
+    struct json_value *out, const char *key,
+    const struct agent_security_posture *posture);
 
 #ifdef ZCL_TESTING
 void agent_security_posture_test_override_review_required(int required);

@@ -135,6 +135,12 @@ platform is complete.
 - [x] The verify-only native dev loop can classify changes, run proofs, persist a
   verdict, and refuse runtime publication.
   Evidence: `tools/dev/`, [`DEV-WATCH-PLAN.md`](./DEV-WATCH-PLAN.md).
+- [x] The watcher and native diagnostics share worktree-scoped, SHA3-sealed
+  cycle state plus durable deterministic compiler-failure IDs. Exact unchanged
+  compiler failures coalesce; every other red reruns.
+  Evidence: `tools/dev/dev_workspace.c`, `tools/dev/dev_failure_store.c`,
+  `tools/command/native_dev_command.c`, `lib/test/src/test_dev_platform.c`,
+  `lib/test/src/test_native_api_contract.c`.
 - [x] A public App ABI skeleton declares capabilities, routes, topics, state,
   migration, self-test, quiescence, and leases without exposing consensus or
   private keys.
@@ -149,7 +155,8 @@ platform is complete.
 Known gaps that remain unchecked:
 
 - [ ] One authoritative, worktree-scoped development receipt history.
-- [ ] Durable failure IDs and a useful `dev.diagnose.show` implementation.
+- [ ] Durable failure IDs and diagnosis for every red proof phase; the narrow
+  deterministic compiler-failure slice is complete.
 - [ ] One C-owned proof DAG shared by watcher, CLI, CI, and code navigation.
 - [ ] Concurrent-reader-safe, daemon-owned semantic index snapshots.
 - [ ] Typed, durable, correlated telemetry across node, dev loop, Apps, games,
@@ -169,8 +176,8 @@ registry with `discover describe` because readiness can change by source epoch.
 | Status | Current surface |
 |---|---|
 | `ready` | `discover.*`; `code.*`; `dev app list/describe/plan/simulate`; `dev change plan`; `dev test plan/background`; `app list/inspect`; primary `ops health/diagnose/state/logs/timeline/metrics/selftest/debug/recovery` reads |
-| `compat-contained` | verify-only `dev loop ensure/status/wait/stop`; `dev diagnose latest`; generation reads; apply/hot-swap compatibility leaves, which confer no publication authority |
-| `planned` | `dev app scaffold/inspect/publish`; `dev loop events`; `dev diagnose show`; `dev test replay`; general `ops jobs`; App package/content commands; out-of-process App runtime; generic Game SDK |
+| `compat-contained` | verify-only `dev loop ensure/status/wait/stop`; `dev diagnose latest/show`; generation reads; apply/hot-swap compatibility leaves, which confer no publication authority |
+| `planned` | `dev app scaffold/inspect/publish`; `dev loop events`; `dev test replay`; general `ops jobs`; App package/content commands; out-of-process App runtime; generic Game SDK |
 | `blocked` | canonical/dev publication and resident dynamic loading while Phase-0 containment applies |
 
 The current Social App is useful prototype evidence: its deterministic
@@ -321,8 +328,10 @@ Use this loop while the later platform items remain incomplete.
 - [ ] Edit only the owned files.
 - [ ] Read the bounded verdict with `zclassic23-dev dev loop status`,
   `zclassic23-dev dev status`, or `zclassic23-dev dev loop wait`.
-- [ ] On failure, use `zclassic23-dev dev diagnose latest`; retrieve raw output
-  only when the bounded capsule is insufficient.
+- [ ] On failure, follow the current cycle verdict's structured
+  `dev.diagnose.show` action. Use `dev diagnose latest` only as a fallback for
+  the most recently recorded compiler failure; it may be stale after an edit or
+  green cycle. Request `--view=full` only when normal metadata is insufficient.
 - [ ] Run the mapped focused test groups, `make build-only`, and `make lint` in
   proportion to the change. Use the canonical test runner, never `test_zcl`
   directly.
@@ -377,14 +386,16 @@ owner cannot express the operation honestly.
 | `code.room` | Definition, callers/callees, routes, commands, schemas, invariants, owners, tests, confidence gaps | 4 KiB |
 | `dev.change.plan` | Complete ordered proof DAG, cost estimate, reusable receipts, coverage gaps | 2 KiB |
 | `dev.loop.wait` | One green/red proof receipt for a newer immutable epoch | 1 KiB green / 2 KiB red |
-| `dev.diagnose.show` | Normalized failure by durable ID, replay command, bounded artifact cursor | 2 KiB |
+| `dev.diagnose.show` | Sealed compiler failure by durable ID; normal metadata and typed current-checkout retry, optional full capsule | 2 KiB normal / 6 KiB full |
 | `ops.diagnose` | Causal capsule selected by request/trace/job/app/session/match/height ID | 4 KiB |
 | `ops.timeline` | Typed transition deltas with resumable sequence cursor | 8 KiB page |
 | `app.inspect` | Manifest, grants, generation, health, resource/session/match state and replay references | 4 KiB |
 
-`dev.diagnose.show` is a target extension and is still `planned`; use the
-bounded `dev.diagnose.latest` compatibility read until the durable-ID handler
-exists. The other rows are extension targets, not claims that all target fields
+`dev.diagnose.show` now serves workspace-scoped SHA3-sealed deterministic
+compiler-failure artifacts from the dev binary, and `dev.diagnose.latest`
+returns the compact ID/summary. Expanding durable receipts to every red proof
+phase, exact group/seed replay, pagination, and the full proof-DAG store remains
+open. The other rows are extension targets, not claims that all target fields
 already exist.
 
 Every compact response must include, when applicable:
@@ -475,15 +486,20 @@ evidence without weakening the required proof set.
   into typed records.
 - [ ] Store passing raw logs out of band; return counts/digests/durations only.
 - [ ] Assign every red receipt a durable `failure_id` and populate the command
-  result envelope's existing failure field.
-- [ ] Implement `dev.diagnose.show <failure_id>` with fields/view/cursor and an
-  exact epoch/group/seed replay command.
-- [ ] Make `dev.diagnose.latest` return the failure ID and summary rather than
-  recursively nesting the same cycle.
+  result envelope's existing failure field. Deterministic compiler failures are
+  the implemented first slice.
+- [x] Implement bounded summary/normal/full `dev.diagnose.show <failure_id>` for
+  sealed deterministic compiler failures with a typed current-checkout
+  `dev.ff` retry.
+- [ ] Extend `dev.diagnose.show` to all red phases, field selection/cursors, and
+  exact epoch/group/seed replay.
+- [x] Make `dev.diagnose.latest` return the most recently recorded compiler
+  failure ID and summary rather than recursively nesting the cycle.
 - [ ] Bind reusable green receipts to source, toolchain, flags, test binary,
   proof set, seed/corpus, relevant environment, and artifact digests.
 - [ ] Make a newer edit supersede older work and publish zero stale receipts.
-- [ ] Prove concurrent worktrees cannot overwrite each other's latest receipt.
+- [x] Prove concurrent worktrees cannot overwrite each other's latest compiler
+  failure or sealed cycle verdict.
 - [ ] Prove every unmapped code change fails closed as `coverage_gap`.
 
 **Exit gate:** an exact source epoch produces one bounded green receipt or one
@@ -849,10 +865,13 @@ changing consensus, restarting a node, or touching the protected producer.
 - [ ] Capture the LLM task-corpus baseline under `zcl.quality_evidence.v1`.
 - [ ] Instrument canonical native dispatch with response bytes, budget,
   truncation, latency, result code, request ID, and trace ID.
-- [ ] Select one worktree-scoped append-only receipt store and migrate both
-  native and shell-cycle readers toward it.
-- [ ] Populate durable `failure_id` and implement useful
-  `dev.diagnose.show`/non-recursive `latest` responses.
+- [x] Add shared worktree-scoped sealed cycle state and an append-only
+  deterministic compiler-failure store for watcher and native readers.
+- [ ] Extend that store into one authoritative history for every proof receipt
+  and remaining compatibility reader.
+- [x] Populate durable deterministic compiler `failure_id` values and bounded
+  `dev.diagnose.show` / non-recursive `latest` responses.
+- [ ] Extend durable IDs and diagnosis to every red proof phase.
 - [ ] Apply summary/normal/full projection universally so a small requested
   budget reduces data instead of causing an avoidable overflow error.
 - [ ] Make code-index rebuild single-flight/concurrent-reader-safe and add

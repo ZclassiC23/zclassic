@@ -18,7 +18,7 @@
  * header forward-declares that prototype; every including TU must supply
  * a matching definition (even a thin one) or leave `apply_pragmas`
  * uncalled. znam_projection.c / peers_projection.c (via
- * storage/projection_consumer.c, the shared event-log consumer skeleton
+ * storage/projection_consumer.c, the shared event-log consumer implementation
  * they're built on) and every other caller of
  * `projection_consumer_exec_sql()` (storage/projection_consumer.h) share
  * ONE tagged exec-and-log body instead of each keeping a private copy —

@@ -42,7 +42,7 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 10, "zcl.agent_capability.v1",
       "nested in zcl.agent_interface.v1 capabilities[]",
       "one machine-readable agent operation and its transports" },
-    { 11, "zcl.agent_machine_contract.v1",
+    { 11, "zcl.agent_machine_contract.v2",
       "nested in zcl.agent_interface.v1 machine_contract",
       "JSON/schema/version compatibility requirements for agents" },
     { 12, "zcl.agent_runtime_identity.v1",

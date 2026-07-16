@@ -78,23 +78,14 @@ static bool gdc_write(const char *dir, const char *rel, const char *content)
     return true;
 }
 
-/* Read the persisted native-cycle verdict from <home>/.local/state/... into
- * buf; returns byte count or 0. Same shape as
- * test_dev_platform.c:read_native_cycle. */
-static size_t read_native_cycle(const char *home, char *buf, size_t cap)
+/* Read and verify the worktree-scoped SHA3-sealed cycle verdict. */
+static size_t read_native_cycle(const char *repo_root, char *buf, size_t cap)
 {
-    char path[PATH_MAX];
-    int n = snprintf(path, sizeof(path),
-                     "%s/.local/state/zclassic23-dev/native-cycle.json", home);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return 0;
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return 0;
-    size_t rn = fread(buf, 1, cap - 1, f);
-    fclose(f);
-    buf[rn] = 0;
-    return rn;
+    size_t len = 0;
+    return zcl_devloop_cycle_state_read(repo_root, buf, cap, &len, NULL,
+                                        NULL, 0) ==
+                   ZCL_DEVLOOP_STATE_FOUND
+               ? len : 0;
 }
 
 struct captured_commit {

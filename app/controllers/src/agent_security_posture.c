@@ -109,29 +109,26 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
     }
 }
 
-static void posture_collect_anchors(struct agent_security_posture *out)
+static void posture_collect_anchors(struct agent_security_posture *out,
+                                    sqlite3 *db)
 {
     bool sprout_found = false;
     bool sapling_found = false;
-    struct sqlite3 *db;
 
     if (!out)
         return;
-    db = progress_store_db();
     if (!db) {
         posture_str(out->anchor_history_state,
                     sizeof(out->anchor_history_state),
                     "unknown_no_progress_store");
         return;
     }
-    progress_store_tx_lock();
     bool read_ok = anchor_kv_activation_cursor(
         db, ANCHOR_POOL_SPROUT,
         &out->sprout_anchor_activation_cursor, &sprout_found) &&
         anchor_kv_activation_cursor(
             db, ANCHOR_POOL_SAPLING,
             &out->sapling_anchor_activation_cursor, &sapling_found);
-    progress_store_tx_unlock();
     if (!read_ok) {
         posture_str(out->anchor_history_state,
                     sizeof(out->anchor_history_state),
@@ -156,15 +153,14 @@ static void posture_collect_anchors(struct agent_security_posture *out)
                         : "complete_from_genesis_or_backfilled");
 }
 
-static void posture_collect_nullifiers(struct agent_security_posture *out)
+static void posture_collect_nullifiers(struct agent_security_posture *out,
+                                       sqlite3 *db)
 {
     bool found = false;
     int64_t cursor = -1;
-    struct sqlite3 *db;
 
     if (!out)
         return;
-    db = progress_store_db();
     out->progress_store_available = db != NULL;
     if (!out->progress_store_available) {
         posture_str(out->nullifier_history_state,
@@ -172,9 +168,7 @@ static void posture_collect_nullifiers(struct agent_security_posture *out)
                     "unknown_no_progress_store");
         return;
     }
-    progress_store_tx_lock();
     bool read_ok = nullifier_kv_activation_cursor(db, &cursor, &found);
-    progress_store_tx_unlock();
     if (!read_ok) {
         posture_str(out->nullifier_history_state,
                     sizeof(out->nullifier_history_state),
@@ -243,6 +237,7 @@ void agent_security_posture_collect(struct agent_security_posture *out,
                                     struct node_db *ndb)
 {
     struct agent_security_posture empty = {0};
+    sqlite3 *progress_reader = NULL;
 
     if (!out)
         return;
@@ -252,9 +247,12 @@ void agent_security_posture_collect(struct agent_security_posture *out,
     out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
     posture_collect_bootstrap(out, ndb);
-    out->progress_store_available = progress_store_db() != NULL;
-    posture_collect_anchors(out);
-    posture_collect_nullifiers(out);
+    progress_reader = progress_store_open_reader();
+    out->progress_store_available = progress_reader != NULL;
+    posture_collect_anchors(out, progress_reader);
+    posture_collect_nullifiers(out, progress_reader);
+    if (progress_reader)
+        sqlite3_close(progress_reader);
     posture_finalize(out);
 #ifdef ZCL_TESTING
     int override = atomic_load(&g_test_review_required);
@@ -274,74 +272,83 @@ bool agent_security_posture_allows_public_serving(
     return posture && !posture->review_required;
 }
 
-void agent_push_security_posture_json(struct json_value *out, const char *key,
-                                      struct node_db *ndb)
+void agent_push_security_posture_snapshot_json(
+    struct json_value *out, const char *key,
+    const struct agent_security_posture *posture)
 {
-    struct agent_security_posture p;
     struct json_value obj = {0};
 
-    if (!out)
+    if (!out || !posture)
         return;
-    agent_security_posture_collect(&p, ndb);
     json_set_object(&obj);
     json_push_kv_str(&obj, "schema", "zcl.security_posture.v1");
     json_push_kv_int(&obj, "schema_version", 1);
-    json_push_kv_str(&obj, "status", p.status);
-    json_push_kv_bool(&obj, "review_required", p.review_required);
+    json_push_kv_str(&obj, "status", posture->status);
+    json_push_kv_bool(&obj, "review_required", posture->review_required);
     json_push_kv_bool(&obj, "public_serving_allowed",
-        agent_security_posture_allows_public_serving(&p));
-    json_push_kv_bool(&obj, "node_db_available", p.node_db_available);
+        agent_security_posture_allows_public_serving(posture));
+    json_push_kv_bool(&obj, "node_db_available", posture->node_db_available);
     json_push_kv_bool(&obj, "progress_store_available",
-                      p.progress_store_available);
-    json_push_kv_str(&obj, "bootstrap_model", p.bootstrap_model);
+                      posture->progress_store_available);
+    json_push_kv_str(&obj, "bootstrap_model", posture->bootstrap_model);
     json_push_kv_bool(&obj, "snapshot_evidence_present",
-                      p.snapshot_evidence_present);
+                      posture->snapshot_evidence_present);
     json_push_kv_bool(&obj, "trusted_state_present",
-                      p.trusted_state_present);
+                      posture->trusted_state_present);
     json_push_kv_int(&obj, "snapshot_anchor_height",
-                     p.snapshot_anchor_height);
+                     posture->snapshot_anchor_height);
     json_push_kv_bool(&obj, "snapshot_full_validation_complete",
-                      p.snapshot_full_validation_complete);
+                      posture->snapshot_full_validation_complete);
     json_push_kv_bool(&obj, "full_history_validation_complete",
-                      p.full_history_validation_complete);
+                      posture->full_history_validation_complete);
     json_push_kv_str(&obj, "full_history_validation_origin",
-                     p.full_history_validation_origin);
+                     posture->full_history_validation_origin);
     json_push_kv_bool(&obj, "snapshot_utxo_sha3_verified",
-                      p.snapshot_utxo_sha3_verified);
+                      posture->snapshot_utxo_sha3_verified);
     json_push_kv_bool(&obj, "snapshot_flyclient_verified",
-                      p.snapshot_flyclient_verified);
+                      posture->snapshot_flyclient_verified);
     json_push_kv_bool(&obj, "snapshot_chunk_hash_coverage_verified",
-                      p.snapshot_chunk_hash_coverage_verified);
+                      posture->snapshot_chunk_hash_coverage_verified);
     json_push_kv_str(&obj, "full_history_validation_state",
-                     p.full_history_validation_state);
+                     posture->full_history_validation_state);
     json_push_kv_bool(&obj, "anchor_cursor_known",
-                      p.anchor_cursor_known);
+                      posture->anchor_cursor_known);
     json_push_kv_int(&obj, "sprout_anchor_activation_cursor",
-                     p.sprout_anchor_activation_cursor);
+                     posture->sprout_anchor_activation_cursor);
     json_push_kv_int(&obj, "sapling_anchor_activation_cursor",
-                     p.sapling_anchor_activation_cursor);
+                     posture->sapling_anchor_activation_cursor);
     json_push_kv_bool(&obj, "anchor_history_complete",
-                      p.anchor_history_complete);
+                      posture->anchor_history_complete);
     json_push_kv_bool(&obj, "anchor_backfill_gap",
-                      p.anchor_backfill_gap);
+                      posture->anchor_backfill_gap);
     json_push_kv_str(&obj, "anchor_history_state",
-                     p.anchor_history_state);
+                     posture->anchor_history_state);
     json_push_kv_bool(&obj, "nullifier_cursor_known",
-                      p.nullifier_cursor_known);
+                      posture->nullifier_cursor_known);
     json_push_kv_int(&obj, "nullifier_activation_cursor",
-                     p.nullifier_activation_cursor);
+                     posture->nullifier_activation_cursor);
     json_push_kv_bool(&obj, "nullifier_history_complete",
-                      p.nullifier_history_complete);
+                      posture->nullifier_history_complete);
     json_push_kv_bool(&obj, "nullifier_backfill_gap",
-                      p.nullifier_backfill_gap);
+                      posture->nullifier_backfill_gap);
     json_push_kv_str(&obj, "nullifier_history_state",
-                     p.nullifier_history_state);
-    json_push_kv_str(&obj, "next_action", p.next_action);
+                     posture->nullifier_history_state);
+    json_push_kv_str(&obj, "next_action", posture->next_action);
     json_push_kv_str(&obj, "semantics",
                      "public serving and healthy fail closed while bootstrap "
                      "or shielded-history trust requires review");
     json_push_kv(out, key && key[0] ? key : "security_posture", &obj);
     json_free(&obj);
+}
+
+void agent_push_security_posture_json(struct json_value *out, const char *key,
+                                      struct node_db *ndb)
+{
+    struct agent_security_posture posture;
+    if (!out)
+        return;
+    agent_security_posture_collect(&posture, ndb);
+    agent_push_security_posture_snapshot_json(out, key, &posture);
 }
 
 #ifdef ZCL_TESTING

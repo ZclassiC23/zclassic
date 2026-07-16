@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 
 #include "dev_activation.h"
+#include "dev_failure_store.h"
 #include "devloop.h"
 #include "framework/app_definition.h"
 #include "framework/app_platform.h"
@@ -12,10 +13,19 @@
 #include "util/safe_alloc.h"
 #include "wallet/wallet.h"
 
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static int route_handler(const struct zcl_app_request_v1 *request,
                          struct zcl_app_mut_bytes *response,
@@ -182,22 +192,14 @@ static int test_change_classification(void)
     return failures;
 }
 
-/* Read the persisted native-cycle verdict from <home>/.local/state/... into
- * buf; returns byte count or 0. */
-static size_t read_native_cycle(const char *home, char *buf, size_t cap)
+/* Read and verify the worktree-scoped SHA3-sealed cycle verdict. */
+static size_t read_native_cycle(const char *repo_root, char *buf, size_t cap)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path),
-                     "%s/.local/state/zclassic23-dev/native-cycle.json", home);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return 0;
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return 0;
-    size_t rn = fread(buf, 1, cap - 1, f);
-    fclose(f);
-    buf[rn] = 0;
-    return rn;
+    size_t len = 0;
+    return zcl_devloop_cycle_state_read(repo_root, buf, cap, &len, NULL,
+                                        NULL, 0) ==
+                   ZCL_DEVLOOP_STATE_FOUND
+               ? len : 0;
 }
 
 static int test_core_classification(void)
@@ -1229,6 +1231,344 @@ static int test_watch_relevance(void)
     return failures;
 }
 
+static void fill_hex(char out[65], char digit)
+{
+    memset(out, digit, 64);
+    out[64] = 0;
+}
+
+static bool failure_record_path(char out[PATH_MAX], const char *home,
+                                const struct zcl_dev_failure_record *record,
+                                const char *leaf)
+{
+    int n = snprintf(
+        out, PATH_MAX,
+        "%s/.local/state/zclassic23-dev/workspaces/%s/failures/%s/%s",
+        home, record->workspace_id, record->failure_id, leaf);
+    return n > 0 && n < PATH_MAX;
+}
+
+static bool run_failure_store_fixture(void)
+{
+    bool ok = false;
+    char home[PATH_MAX], repo1[PATH_MAX], repo2[PATH_MAX], repo3[PATH_MAX];
+    char *saved_home = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
+    if (getenv("HOME") && !saved_home)
+        return false;
+    test_make_tmpdir(home, sizeof(home), "dev_platform", "failure_store");
+    if (snprintf(repo1, sizeof(repo1), "%s/repo1", home) <= 0 ||
+        snprintf(repo2, sizeof(repo2), "%s/repo2", home) <= 0 ||
+        snprintf(repo3, sizeof(repo3), "%s/repo3", home) <= 0 ||
+        mkdir(repo1, 0700) != 0 || mkdir(repo2, 0700) != 0 ||
+        mkdir(repo3, 0700) != 0 || setenv("HOME", home, 1) != 0)
+        goto cleanup;
+
+#define FS_REQUIRE(expr)                                                     \
+    do {                                                                     \
+        if (!(expr)) {                                                       \
+            fprintf(stderr, "failure-store fixture failed at %s:%d: %s\n", \
+                    __FILE__, __LINE__, #expr);                              \
+            goto cleanup;                                                    \
+        }                                                                    \
+    } while (0)
+
+    char source[65], mutation1[65], mutation2[65], execution1[65],
+         execution2[65], why[192] = {0};
+    fill_hex(source, 'a');
+    fill_hex(mutation1, 'b');
+    fill_hex(mutation2, 'd');
+    fill_hex(execution1, 'c');
+    fill_hex(execution2, 'e');
+
+    struct zcl_dev_failure_record record, readback;
+    FS_REQUIRE(zcl_dev_failure_read_latest(repo1, &readback, why,
+                                           sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_ABSENT);
+    char state_dir[PATH_MAX];
+    FS_REQUIRE(zcl_devloop_workspace_state_dir(repo1, state_dir,
+                                               sizeof(state_dir)));
+    FS_REQUIRE(access(state_dir, F_OK) != 0); /* reads create no state */
+
+    char normalized[ZCL_DEV_FAILURE_ERROR_MAX], pinned[65];
+    FS_REQUIRE(zcl_dev_failure_normalize_error(
+        " \tfoo.c:1: error: bad   token \r\nignored",
+        normalized));
+    FS_REQUIRE(strcmp(normalized, "foo.c:1: error: bad token") == 0);
+    FS_REQUIRE(zcl_dev_failure_compute_id(
+        source, "verify.compile", "foo.c:1: error: bad", pinned));
+    FS_REQUIRE(strcmp(
+        pinned,
+        "be4309e5f776d702bf96a5ed6d36b5be1dfd559176bb7b767860ffd00af14b37")
+        == 0);
+
+    const char *error = "foo.c:12:5: error: bad token";
+    const char *capsule =
+        "first_error=foo.c:12:5: error: bad token\n\"quoted\"\\tail";
+    FS_REQUIRE(zcl_dev_failure_record_failure(
+        repo1, source, mutation1, execution1, "verify.compile", error,
+        capsule, "dev.ff", &record, why, sizeof(why)));
+    FS_REQUIRE(record.repeat_count == 1);
+    FS_REQUIRE(strcmp(record.first_source_mutation, mutation1) == 0);
+    FS_REQUIRE(strcmp(record.first_execution_id, execution1) == 0);
+    FS_REQUIRE(strcmp(record.retry_command, "dev.ff") == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo1, record.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_FOUND);
+    FS_REQUIRE(strcmp(readback.record_digest, record.record_digest) == 0);
+    FS_REQUIRE(zcl_dev_failure_match_latest(
+        repo1, source, mutation1, execution1, "verify.compile", &readback,
+        why, sizeof(why)));
+    FS_REQUIRE(!zcl_dev_failure_match_latest(
+        repo1, source, mutation2, execution1, "verify.compile", &readback,
+        why, sizeof(why)) && why[0] == 0);
+    FS_REQUIRE(!zcl_dev_failure_note_coalesced(
+        repo1, record.failure_id, source, mutation2, execution1,
+        "verify.compile", &readback, why, sizeof(why)));
+    FS_REQUIRE(zcl_dev_failure_note_coalesced(
+        repo1, record.failure_id, source, mutation1, execution1,
+        "verify.compile", &readback, why, sizeof(why)));
+    FS_REQUIRE(readback.repeat_count == 2);
+
+    struct zcl_dev_failure_record observed;
+    FS_REQUIRE(zcl_dev_failure_record_failure(
+        repo1, source, mutation2, execution2, "verify.compile", error,
+        capsule, "dev.ff", &observed, why, sizeof(why)));
+    FS_REQUIRE(strcmp(observed.failure_id, record.failure_id) == 0);
+    FS_REQUIRE(observed.repeat_count == 3);
+    FS_REQUIRE(strcmp(observed.first_source_mutation, mutation1) == 0);
+    FS_REQUIRE(strcmp(observed.first_execution_id, execution1) == 0);
+    FS_REQUIRE(zcl_dev_failure_match_latest(
+        repo1, source, mutation2, execution2, "verify.compile", &readback,
+        why, sizeof(why)));
+
+    pid_t children[8];
+    for (size_t i = 0; i < 8; i++) {
+        children[i] = fork();
+        FS_REQUIRE(children[i] >= 0);
+        if (children[i] == 0) {
+            struct zcl_dev_failure_record child_record;
+            char child_why[128] = {0};
+            bool child_ok = zcl_dev_failure_note_coalesced(
+                repo1, record.failure_id, source, mutation2, execution2,
+                "verify.compile", &child_record, child_why,
+                sizeof(child_why));
+            _exit(child_ok ? 0 : 90);
+        }
+    }
+    for (size_t i = 0; i < 8; i++) {
+        int status = 0;
+        FS_REQUIRE(waitpid(children[i], &status, 0) == children[i]);
+        FS_REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    FS_REQUIRE(zcl_dev_failure_read(repo1, record.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_FOUND);
+    FS_REQUIRE(readback.repeat_count == 11);
+    FS_REQUIRE(zcl_dev_failure_read_latest(repo2, &readback, why,
+                                           sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_ABSENT);
+
+    /* Cycle verdicts share the exact worktree scope and distinguish absent,
+     * found, and invalid sealed state. */
+    static const char cycle[] =
+        "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"test\","
+        "\"status\":\"passed\",\"action\":\"check\","
+        "\"reason\":\"fixture\",\"phase\":\"verify\","
+        "\"runtime_published\":false,\"elapsed_ms\":1,\"files\":[]}";
+    FS_REQUIRE(zcl_devloop_cycle_state_write(
+        repo1, cycle, sizeof(cycle) - 1, why, sizeof(why)));
+    char cycle_out[4096];
+    size_t cycle_len = 0;
+    int64_t cycle_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &cycle_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(cycle_len == sizeof(cycle) - 1 &&
+               memcmp(cycle_out, cycle, cycle_len) == 0 && cycle_epoch > 0);
+    int64_t first_cycle_epoch = cycle_epoch;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo2, cycle_out, sizeof(cycle_out), &cycle_len, &cycle_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_ABSENT);
+
+    char path[PATH_MAX];
+    FS_REQUIRE(snprintf(path, sizeof(path), "%s/native-cycle.json",
+                        state_dir) > 0);
+    char sealed_cycle_record[32768];
+    FILE *cycle_file = fopen(path, "r");
+    FS_REQUIRE(cycle_file != NULL);
+    size_t sealed_cycle_len =
+        fread(sealed_cycle_record, 1, sizeof(sealed_cycle_record), cycle_file);
+    FS_REQUIRE(!ferror(cycle_file) && fclose(cycle_file) == 0 &&
+               sealed_cycle_len > 0 &&
+               sealed_cycle_len < sizeof(sealed_cycle_record));
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    FS_REQUIRE(fd >= 0 && pwrite(fd, "X", 1, 0) == 1 && close(fd) == 0);
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &cycle_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_INVALID);
+    FS_REQUIRE(!zcl_devloop_cycle_state_write(
+        repo1, cycle, sizeof(cycle) - 1, why, sizeof(why)));
+
+    /* Publication fails closed on corrupt current state. Physical restoration
+     * of the exact prior sealed generation recovers without lowering epoch. */
+    cycle_file = fopen(path, "w");
+    FS_REQUIRE(cycle_file != NULL &&
+               fwrite(sealed_cycle_record, 1, sealed_cycle_len, cycle_file) ==
+                   sealed_cycle_len &&
+               fflush(cycle_file) == 0 && fsync(fileno(cycle_file)) == 0 &&
+               fclose(cycle_file) == 0);
+    int64_t restored_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &restored_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(restored_epoch == first_cycle_epoch);
+    FS_REQUIRE(zcl_devloop_cycle_state_write(
+        repo1, cycle, sizeof(cycle) - 1, why, sizeof(why)));
+    int64_t second_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &second_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(second_epoch == restored_epoch + 1);
+
+    /* Inode timestamp changes are not wait authority. */
+    struct timespec times[2] = {
+        { .tv_sec = 1, .tv_nsec = 0 }, { .tv_sec = 1, .tv_nsec = 0 }
+    };
+    FS_REQUIRE(utimensat(AT_FDCWD, path, times, 0) == 0);
+    int64_t timestamp_tamper_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len,
+        &timestamp_tamper_epoch, why, sizeof(why)) ==
+               ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(timestamp_tamper_epoch == second_epoch);
+
+    /* Concurrent writers serialize through the workspace capability lock. */
+    pid_t cycle_children[8];
+    for (size_t i = 0; i < 8; i++) {
+        cycle_children[i] = fork();
+        FS_REQUIRE(cycle_children[i] >= 0);
+        if (cycle_children[i] == 0) {
+            char child_why[128] = {0};
+            bool child_ok = zcl_devloop_cycle_state_write(
+                repo1, cycle, sizeof(cycle) - 1, child_why,
+                sizeof(child_why));
+            _exit(child_ok ? 0 : 91);
+        }
+    }
+    for (size_t i = 0; i < 8; i++) {
+        int status = 0;
+        FS_REQUIRE(waitpid(cycle_children[i], &status, 0) ==
+                   cycle_children[i]);
+        FS_REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    int64_t concurrent_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &concurrent_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(concurrent_epoch == second_epoch + 8);
+
+    /* A syntactically valid-looking counter edit still breaks its SHA3 seal. */
+    FS_REQUIRE(failure_record_path(path, home, &record,
+                                   "observations.json"));
+    char observation_body[1024];
+    FILE *observation_file = fopen(path, "r");
+    FS_REQUIRE(observation_file != NULL);
+    size_t observation_len = fread(observation_body, 1,
+                                   sizeof(observation_body) - 1,
+                                   observation_file);
+    FS_REQUIRE(!ferror(observation_file) && fclose(observation_file) == 0 &&
+               observation_len > 0);
+    observation_body[observation_len] = 0;
+    char *count_value = strstr(observation_body, "\"count\":11");
+    FS_REQUIRE(count_value != NULL);
+    fd = open(path, O_WRONLY | O_CLOEXEC);
+    off_t count_digit = (off_t)(count_value - observation_body) +
+                        (off_t)strlen("\"count\":1");
+    FS_REQUIRE(fd >= 0 && pwrite(fd, "2", 1, count_digit) == 1 &&
+               close(fd) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo1, record.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_INVALID);
+
+    /* A second workspace proves private-mode, hardlink, and symlink rejection
+     * without relying on the now-intentionally-corrupt first record. */
+    struct zcl_dev_failure_record record2;
+    FS_REQUIRE(zcl_dev_failure_record_failure(
+        repo2, source, mutation1, execution1, "verify.compile", error,
+        capsule, "dev.ff", &record2, why, sizeof(why)));
+    FS_REQUIRE(failure_record_path(path, home, &record2, "base.json"));
+    FS_REQUIRE(chmod(path, 0644) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo2, record2.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_INVALID);
+    FS_REQUIRE(chmod(path, 0600) == 0);
+    char alias[PATH_MAX];
+    FS_REQUIRE(snprintf(alias, sizeof(alias), "%s.hardlink", path) > 0);
+    FS_REQUIRE(link(path, alias) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo2, record2.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_INVALID);
+    FS_REQUIRE(unlink(alias) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo2, record2.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_FOUND);
+    FS_REQUIRE(unlink(path) == 0 && symlink("/etc/passwd", path) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo2, record2.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_INVALID);
+
+    /* Third workspace: an unsealed extra JSON field is rejected. */
+    struct zcl_dev_failure_record record3;
+    FS_REQUIRE(zcl_dev_failure_record_failure(
+        repo3, source, mutation1, execution1, "verify.compile", error,
+        capsule, "dev.ff", &record3, why, sizeof(why)));
+    FS_REQUIRE(failure_record_path(path, home, &record3, "base.json"));
+    char json_body[4096];
+    FILE *f = fopen(path, "r");
+    FS_REQUIRE(f != NULL);
+    size_t json_len = fread(json_body, 1, sizeof(json_body) - 1, f);
+    FS_REQUIRE(!ferror(f) && fclose(f) == 0 && json_len > 2);
+    while (json_len > 0 &&
+           (json_body[json_len - 1] == '\n' ||
+            json_body[json_len - 1] == '\r'))
+        json_len--;
+    FS_REQUIRE(json_len > 0 && json_body[json_len - 1] == '}');
+    json_len--;
+    static const char extra[] = ",\"unsealed_extra\":true}\n";
+    FS_REQUIRE(json_len + sizeof(extra) < sizeof(json_body));
+    memcpy(json_body + json_len, extra, sizeof(extra) - 1);
+    json_len += sizeof(extra) - 1;
+    fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC);
+    FS_REQUIRE(fd >= 0 &&
+               write(fd, json_body, json_len) == (ssize_t)json_len &&
+               fsync(fd) == 0 && close(fd) == 0);
+    FS_REQUIRE(zcl_dev_failure_read(repo3, record3.failure_id, &readback,
+                                    why, sizeof(why)) ==
+               ZCL_DEV_FAILURE_LOOKUP_INVALID);
+
+    ok = true;
+
+cleanup:
+    if (saved_home) {
+        (void)setenv("HOME", saved_home, 1);
+        free(saved_home);
+    } else
+        (void)unsetenv("HOME");
+    test_rm_rf_recursive(home);
+#undef FS_REQUIRE
+    return ok;
+}
+
+static int test_failure_store(void)
+{
+    int failures = 0;
+    TEST("dev platform: failure receipts are scoped, sealed, concurrent, and fail closed") {
+        ASSERT(run_failure_store_fixture());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* A4: distill_first_error picks the first actionable line (compiler
  * ": error:" or test FAIL/Assertion/EXPECT) and falls back cleanly when no
  * pattern matches. Exercised via the thin zcl_devloop_distill_first_error
@@ -1291,6 +1631,45 @@ static int test_distill_first_error(void)
         ASSERT(!zcl_devloop_distill_first_error(NULL, 0, dst, sizeof(dst)));
         ASSERT(!zcl_devloop_distill_first_error(compiler, strlen(compiler),
                                                 dst, 0));
+
+        struct zcl_devloop_process_result result;
+        memset(&result, 0, sizeof(result));
+        result.exit_code = 1;
+        (void)snprintf(
+            result.output, sizeof(result.output),
+            "raw compiler output\n"
+            "[agent-fast-ci] FIRST-ERROR[compile]: "
+            "foo.c:12:5: error: bad token\n"
+            "[agent-fast-ci] FAIL: rung compile failed (exit 2)\n");
+        result.output_len = strlen(result.output);
+        char classified[512];
+        ASSERT(zcl_devloop_deterministic_compile_failure(
+            &result, classified));
+        ASSERT(strcmp(classified, "foo.c:12:5: error: bad token") == 0);
+
+        (void)snprintf(
+            result.output, sizeof(result.output),
+            "source.c:9:1: error: literal says "
+            "[agent-fast-ci] FIRST-ERROR[compile]: "
+            "fake.c:1:1: error: fake\n");
+        result.output_len = strlen(result.output);
+        ASSERT(!zcl_devloop_deterministic_compile_failure(
+            &result, classified)); /* marker is not at a line boundary */
+
+        (void)snprintf(
+            result.output, sizeof(result.output),
+            "[agent-fast-ci] FIRST-ERROR[compile]: "
+            "foo.c:12:5: error: Killed\n");
+        result.output_len = strlen(result.output);
+        ASSERT(!zcl_devloop_deterministic_compile_failure(
+            &result, classified));
+        result.timed_out = true;
+        ASSERT(!zcl_devloop_deterministic_compile_failure(
+            &result, classified));
+        result.timed_out = false;
+        result.term_signal = 9;
+        ASSERT(!zcl_devloop_deterministic_compile_failure(
+            &result, classified));
         PASS();
     } _test_next:;
     return failures;
@@ -1299,6 +1678,7 @@ static int test_distill_first_error(void)
 int test_dev_platform(void)
 {
     int failures = 0;
+    failures += test_failure_store();
     failures += test_distill_first_error();
     failures += test_menu_and_search();
     failures += test_change_classification();

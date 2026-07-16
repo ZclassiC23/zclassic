@@ -286,7 +286,7 @@ resident mutation RPC are contained too. Full mechanism, ABI, and prerequisites
 for disposable probing/publication: `docs/work/HOTSWAP.md`.
 
 The ordinary agent runs `loop ensure` in verify mode once, edits files, then
-optionally calls `loop wait` for the new source epoch. The persistent loop owns
+optionally calls `loop wait` for the next sealed cycle epoch. The persistent loop owns
 classification, dependency selection, compilation, proofs, and durable
 verification verdicts. `auto`/`apply` watcher modes and `dev.change.apply`
 currently refuse before publication; use `dev.change.plan`, the verify watcher,
@@ -420,6 +420,8 @@ Default compact JSON budgets are part of the interface contract:
 | Search | 5 matches |
 
 Large results require `--view=full`, `--fields=...`, `--max-items`, and a cursor.
+Legacy RPCs that return a top-level array are normalized as
+`data.items` plus a typed `data._page`; empty arrays remain valid results.
 Default responses omit nulls, defaults, redundant aliases, repeated
 descriptions, and transport metadata.
 
@@ -604,20 +606,44 @@ rollback are one transaction. A newer save supersedes an older candidate.
 
 ```bash
 # Idempotent session/bootstrap call.
-zclassic23 dev loop ensure \
+zclassic23-dev dev loop ensure \
   --input='{"root":"/home/rhett/github/zclassic23"}'
 
 # The LLM now edits any number of C files directly.
 
 # Optional synchronization when it needs the verdict before continuing.
-zclassic23 dev loop wait \
-  --input='{"after_epoch":41,"timeout_ms":30000,"view":"summary"}'
+zclassic23-dev dev loop wait \
+  --input='{"after_epoch":41,"timeout_ms":30000}' --view=summary
 ```
 
-`ensure` returns watcher ID, registry digest, and baseline source epoch. `wait`
-returns exactly one bounded cycle verdict for a newer epoch. On failure, the
+`ensure` returns watcher ID, registry digest, and baseline source identity. `wait`
+returns exactly one bounded cycle verdict for a newer monotonic cycle epoch. On failure, the
 agent follows the structured `dev.diagnose.show` command using the returned
 failure ID. It never chooses a Make or shell command.
+
+The current negative-receipt boundary is deliberately narrow: only a
+deterministic compile-rung diagnostic may be coalesced, and only when the exact
+source bytes, ABA mutation token, compiler/linker/search-root epoch, flags, and
+proof phase match. Tests, lint, timeouts, signals, lock/infrastructure errors,
+and malformed receipts always execute. `dev.diagnose.latest` returns the ID and
+one-line summary for the most recently recorded compiler failure; it is not
+current-cycle authority and may remain after an edit or green verdict. Follow
+the current cycle's returned ID with
+`zclassic23-dev dev diagnose show <failure_id>`. The default normal view omits
+the capsule and stays below 2 KiB; `--view=full` adds the bounded capsule and
+retry command within the 6 KiB command budget. The ID binds source identity,
+phase, and normalized first error; first mutation/execution fields describe the
+first observation, and the repeat count includes executed and coalesced
+observations. `zclassic23-dev dev ff` always executes the current checkout's
+ladder. It is a fresh retry, not an exact historical replay.
+
+Cycle verdicts live under
+`$HOME/.local/state/zclassic23-dev/workspaces/<workspace-id>/native-cycle.json`
+as an embedded `zcl.dev_cycle.v1` inside a workspace-bound, SHA3-sealed
+`zcl.dev_cycle_record.v1`. Immutable failure bases and bounded,
+SHA3-sealed atomic observation counters use the same workspace directory.
+Readers reject schema, ownership, inode, and digest
+violations; agents must never edit or delete these files to affect a verdict.
 
 Ordinary App development requires at most one binary call after an edit batch;
 when the agent does not need to synchronize immediately, it requires none.
@@ -856,9 +882,8 @@ Unlike the migration plan above, this section describes what the CLI does
 follow — the concrete answer to "98% fewer IO tokens between an operator/AI
 and the node" than the ~15 KB `core.status` JSON.
 
-**Brief line.** `zclassic23 status brief=1` (also `brief` / `brief=true`)
-prints exactly ONE line, <=200 bytes, stable `key=value` pairs separated by
-single spaces, no JSON braces:
+**Brief line.** `zclassic23 status` prints exactly ONE line, <=200 bytes,
+stable `key=value` pairs separated by single spaces, no JSON braces:
 
 ```
 hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
@@ -900,11 +925,11 @@ An unknown field name is a typed error (below) naming the bad field and up
 to 12 known field names; nothing is printed on partial failure. `field=` also
 works as a normal dashed flag (`--field=a,b`) on any native registry leaf.
 
-**Agent-terse default.** `ZCL_BRIEF=1` in the environment makes `status` and
-`dumpstate` default to this brief/selector behavior without typing
-`brief=1`; pass `--format=json` to get the full structured envelope even
-when `ZCL_BRIEF=1` is set. (Full JSON is always available via
-`--format=json` regardless of `ZCL_BRIEF`.)
+**Terse by construction.** `status` always uses the compact native body;
+`--format=json` returns that same bounded body in `zcl.result.v1`. The large
+diagnostic document is explicit as `zclassic23 core status --format=json`.
+`ZCL_BRIEF=1` remains only as a compatibility formatting option for raw
+`dumpstate` output.
 
 **No-arg entry point.** Bare `zclassic23` (zero arguments — the real node
 service never invokes the binary this way; `deploy/zclassic23.service`
@@ -914,12 +939,12 @@ suggested next command, never a wall of text:
 ```
 $ zclassic23
 hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
-next: zclassic23 healthcheck
+next: zclassic23 ops health
 ```
 
 The next-command hint is deterministic: a named dominant blocker wins
 (`zclassic23 explain blockers`), else a positive gap wins
-(`zclassic23 explain sync`), else `zclassic23 healthcheck`.
+(`zclassic23 explain sync`), else `zclassic23 ops health`.
 
 **Unknown-command diagnostic.** An unrecognized top-level command (confirmed
 by the RPC layer, not a version-skew symptom) prints one typed error line
@@ -950,5 +975,5 @@ Implementation: `zcl_native_status_brief_render`,
 `zcl_native_status_brief_next_command`, `zcl_native_render_field_selection`,
 and `zcl_native_render_unknown_command` (`tools/command/native_command.c`) —
 one implementation each, called from both the native registry path
-(`status brief=1`, `--field=`) and the raw-RPC CLI path (`dumpstate ...
+(`status`, `--field=`) and the raw-RPC CLI path (`dumpstate ...
 field=`, the no-arg entry point, unrecognized commands in `src/main.c`).

@@ -55,6 +55,13 @@ sqlite3 *progress_store_db(void);
  * its whole duration (which would stall the reducer drive on that lock). */
 bool progress_store_path(char *out, size_t cap);
 
+/* Open an independent READONLY connection to the exact retained-directory
+ * capability backing the singleton.  Observational surfaces use this instead
+ * of waiting behind a long reducer transaction on the shared handle.  The
+ * caller owns the returned handle and must sqlite3_close() it.  A 25 ms busy
+ * timeout bounds WAL/schema contention; NULL means unavailable/busy. */
+sqlite3 *progress_store_open_reader(void);
+
 /* Prove that `db` is the process singleton opened through the exact directory
  * capability `dir_fd`.  The store retains its own directory descriptor for
  * the lifetime of the SQLite handle, so this comparison is by device/inode,

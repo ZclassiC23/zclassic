@@ -30,8 +30,9 @@ static void acc_fail(struct zcl_command_reply *reply, enum zcl_command_exit exit
                                               : ZCL_COMMAND_STATUS_FAILED;
     zcl_command_reply_fail(reply, status, exit_code, code, "handle",
                            false, false, message, evidence ? evidence : "");
-    (void)zcl_command_reply_add_next(reply, "discover.describe", "{}",
-                                     "inspect the required input");
+    /* The registry serializer adds a schema-valid discover.describe action
+     * for this exact command. Keeping that construction at the authority
+     * boundary prevents handlers from emitting an unbound `{}` path. */
 }
 
 static struct node_db *acc_db(struct zcl_command_reply *reply)

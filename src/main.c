@@ -9,8 +9,7 @@
  *   zclassic23 servicecatalog         — sovereign service UX catalog
  *   zclassic23 serviceoperations      — sovereign operation UX catalog
  *   zclassic23 mcpcall <tool> [json]  — typed MCP tool call from this binary
- *   zclassic23 agent                  — compact status from running node
- *   zclassic23 status                 — compatibility alias for agent
+ *   zclassic23 status                 — compact native status + next action
  *   zclassic23 proofbundle            — single read-only proof artifact
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
@@ -1427,13 +1426,6 @@ static void cli_probe_record_response(const char *method, const char *resp,
     json_free(&root);
 }
 
-static const char *cli_runtime_rpc_method(const char *method)
-{
-    if (method && strcmp(method, "status") == 0)
-        return "agent";
-    return method;
-}
-
 static void cli_probe_static_agent_target(const char *datadir)
 {
     agent_runtime_availability_begin_probe("cli_target_rpc", datadir,
@@ -1445,7 +1437,6 @@ static void cli_probe_static_agent_target(const char *datadir)
     agent_runtime_availability_set_probe_status("probing");
     for (size_t i = 0; i < agent_runtime_probe_method_count(); i++) {
         const char *method = agent_runtime_probe_method_name(i);
-        const char *runtime_method = cli_runtime_rpc_method(method);
         const char *probe_params = agent_contract_probe_params_json(method);
         if (!probe_params || !probe_params[0])
             probe_params = "[]";
@@ -1453,7 +1444,7 @@ static void cli_probe_static_agent_target(const char *datadir)
         int blen = snprintf(body, sizeof(body),
             "{\"jsonrpc\":\"1.0\",\"id\":\"agent-availability\","
             "\"method\":\"%s\",\"params\":%s}",
-            runtime_method, probe_params);
+            method, probe_params);
         if (blen <= 0 || (size_t)blen >= sizeof(body)) {
             agent_runtime_availability_record_method(method, "unknown",
                                                      RPC_INTERNAL_ERROR,
@@ -1977,55 +1968,11 @@ static int cli_main(int argc, char **argv)
              strcmp(method, "-summary") == 0)
         method = "summary";
 
-    /* `zclassic23 status brief[=1]` → the native brief prose leaf
-     * (core.status.brief): the CLI UX contract's ONE-LINE synced/gap/
-     * blocker/peers/rss rendering instead of the ~15KB full status JSON.
-     * `zclassic23 status field=a,b` selects just those fields (same flat
-     * body, one source of truth — see zcl_native_status_brief_body).
-     * --format=json and --next forward through as-is. */
-    if (strcmp(method, "status") == 0) {
-        bool want_brief = false;
-        bool saw_format_json = false;
-        const char *fwd[6];
-        int nf = 0;
-        fwd[nf++] = "status";
-        fwd[nf++] = "brief";
-        char field_flag[300];
-        for (int i = 0; i < nparams; i++) {
-            const char *p = params_storage[i];
-            if (!p)
-                continue;
-            if (strcmp(p, "brief") == 0 || strcmp(p, "brief=1") == 0 ||
-                strcmp(p, "brief=true") == 0) {
-                want_brief = true;
-            } else if (strncmp(p, "field=", 6) == 0 && nf < 6) {
-                want_brief = true;
-                (void)snprintf(field_flag, sizeof(field_flag), "--%s", p);
-                fwd[nf++] = field_flag;
-            } else if ((strcmp(p, "--format=json") == 0 ||
-                       strcmp(p, "--next") == 0) && nf < 6) {
-                if (strcmp(p, "--format=json") == 0)
-                    saw_format_json = true;
-                fwd[nf++] = p;
-            }
-        }
-        /* CLI UX contract: ZCL_BRIEF=1 defaults `status` to brief without
-         * typing brief=1; an explicit --format=json still escapes to the
-         * full structured body. */
-        if (!want_brief && !saw_format_json) {
-            const char *env_brief = getenv("ZCL_BRIEF");
-            if (env_brief && env_brief[0] && strcmp(env_brief, "0") != 0)
-                want_brief = true;
-        }
-        if (want_brief)
-            return zcl_native_command_main("core", fwd, nf, datadir, cli_port);
-    }
-
-    /* Canonical registry roots (core/app/dev/ops/discover + the help/search
-     * aliases) resolve through the native command registry BEFORE the
+    /* Canonical registry roots (status/core/app/dev/ops/discover plus aliases)
+     * resolve through the native command registry BEFORE the
      * arbitrary RPC-method fallback further down. A typo under a canonical
      * branch returns the structured unknown-command error (exit 2) and never
-     * becomes an RPC method. `status` keeps its static-agent path. */
+     * becomes an RPC method. */
     if (zcl_native_command_is_root(method))
         return zcl_native_command_main(method,
                                        (const char *const *)params_storage,
@@ -2073,8 +2020,7 @@ static int cli_main(int argc, char **argv)
     /* CLI UX contract: ZCL_BRIEF=1 makes `dumpstate` default to the flat
      * field-selected rendering (every top-level key of the subsystem's own
      * `.state`) without typing `field=`; --format=json still escapes it. The
-     * `status` equivalent lives in the "status" block above (core.status.brief
-     * already covers select-vs-brief; this is the raw-RPC-path twin for
+     * `status` is always compact native output; this is the raw-RPC-path twin for
      * dumpstate, which has no separate brief body to fetch). */
     const char *env_brief = getenv("ZCL_BRIEF");
     bool zcl_brief_on = env_brief && env_brief[0] && strcmp(env_brief, "0") != 0;
@@ -2082,8 +2028,7 @@ static int cli_main(int argc, char **argv)
                            strcmp(method, "dumpstate") == 0;
 
     struct json_value jp;
-    const char *runtime_method = cli_runtime_rpc_method(method);
-    if (!rpc_convert_values(runtime_method, rpc_params_storage,
+    if (!rpc_convert_values(method, rpc_params_storage,
                             (size_t)rpc_nparams, &jp)) {
         fprintf(stderr, "Bad parameters\n");
         return 1;
@@ -2096,7 +2041,7 @@ static int cli_main(int argc, char **argv)
     char body[65536];
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":\"z\",\"method\":\"%s\",\"params\":%s}",
-        runtime_method, pbuf);
+        method, pbuf);
 
     char *resp = cli_rpc_call(body, (size_t)blen);
     if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
@@ -2125,7 +2070,7 @@ static int cli_main(int argc, char **argv)
         bool handled = false;
         if (json_read(&root, resp, strlen(resp)) && root.type == JSON_OBJ) {
             const struct json_value *result = json_get(&root, "result");
-            if (result && strcmp(runtime_method, "dumpstate") == 0) {
+            if (result && strcmp(method, "dumpstate") == 0) {
                 const struct json_value *state = json_get(result, "state");
                 if (state && state->type == JSON_OBJ)
                     result = state;
@@ -2607,14 +2552,14 @@ int main(int argc, char **argv)
      * brief + one suggested next command instead of silently booting a
      * default-config node underfoot. Delegates to cli_main with a synthetic
      * argv so datadir/rpcport resolution (cookie lookup, service exec-arg
-     * fallback) is the exact same code path `zclassic23 status brief=1`
+     * fallback) is the exact same code path `zclassic23 status --next`
      * already uses — no duplicated logic. */
     if (argc == 1) {
         char *synthetic[] = {
-            argv[0], (char *)"status", (char *)"brief", (char *)"--next",
+            argv[0], (char *)"status", (char *)"--next",
             NULL,
         };
-        return cli_main(4, synthetic);
+        return cli_main(3, synthetic);
     }
 
     /* CLI mode: zclassic23 getblockcount */
