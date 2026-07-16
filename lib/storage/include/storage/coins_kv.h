@@ -29,6 +29,7 @@
 #include <stdint.h>
 
 struct sqlite3;
+struct sqlite3_stmt;
 struct coins;
 struct utxo_projection;
 
@@ -134,6 +135,41 @@ bool    coins_kv_exists_sqlite(struct sqlite3 *db, const uint8_t txid[32],
                                uint32_t vout);
 bool    coins_kv_get_coins_sqlite(struct sqlite3 *db, const uint8_t txid[32],
                                   struct coins *out);
+
+/* ── CACHED point-read variants (single-owner prepared-statement reuse) ──────
+ *
+ * Byte-identical query + column extraction to the _sqlite variants above, but
+ * the caller owns a persistent prepared statement (*cache) that is prepared
+ * lazily on the first call and REUSED (reset + rebind + step) on every
+ * subsequent call — hoisting the per-call sqlite3_prepare_v2 SQL compilation
+ * (measured ~2 us, ≈half of a ~4 us point query) out of the fold hot loop.
+ * Results are bit-for-bit the same as the fresh-prepare path, so terminal
+ * state is unchanged (a pure HOW-not-WHAT change).
+ *
+ * NOT thread-safe on *cache: a prepared statement is single-owner. Use ONLY
+ * where one thread owns *cache — the coins_ram single-writer bulk-fold read-
+ * through (storage/coins_ram.h: reads gate on coins_ram_writer_thread() ||
+ * coins_ram_mint_drive_thread(), both entered on the one fold/drive thread).
+ * The owner MUST finalize *cache (sqlite3_finalize) before `db` is closed or
+ * rebound — coins_ram_shutdown / the coins_ram_init rebind path do this. A
+ * prepare failure leaves *cache NULL and returns false. */
+bool    coins_kv_get_sqlite_cached(struct sqlite3 *db,
+                                   struct sqlite3_stmt **cache,
+                                   const uint8_t txid[32], uint32_t vout,
+                                   int64_t *value_out, uint8_t *script_out,
+                                   size_t script_cap, size_t *script_len_out);
+bool    coins_kv_get_prevout_sqlite_cached(struct sqlite3 *db,
+                                           struct sqlite3_stmt **cache,
+                                           const uint8_t txid[32], uint32_t vout,
+                                           int64_t *value_out,
+                                           uint8_t *script_out,
+                                           size_t script_cap,
+                                           size_t *script_len_out,
+                                           int32_t *height_out,
+                                           bool *is_coinbase_out);
+bool    coins_kv_exists_sqlite_cached(struct sqlite3 *db,
+                                      struct sqlite3_stmt **cache,
+                                      const uint8_t txid[32], uint32_t vout);
 int64_t coins_kv_count_sqlite(struct sqlite3 *db);
 bool    coins_kv_setinfo_sqlite(struct sqlite3 *db, int64_t *num_txs,
                                 int64_t *num_txouts, int64_t *total_amount);

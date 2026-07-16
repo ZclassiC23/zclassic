@@ -80,7 +80,27 @@ static struct {
     uint32_t         since_flush;   /* heights applied since last flush */
     int32_t          last_applied;  /* highest height noted, -1 = none */
     size_t           max_slots;     /* live-slot high-water flush cap (0=off) */
+    /* Read-through prepared-statement cache. The overlay's cold-miss reads
+     * (coins_ram_get / _get_prevout / _exists → coins_kv_*_sqlite_cached) run
+     * ONLY on the single fold/drive thread (coins_kv_overlay_safe gates on
+     * coins_ram_writer_thread || coins_ram_mint_drive_thread), so a single-
+     * owner cached statement is safe here and hoists the per-read SQL compile
+     * (~half of every ~4 us durable point query) out of the fold hot loop.
+     * Prepared lazily against G.db; finalized in shutdown + on a db rebind. */
+    sqlite3_stmt    *rd_get;
+    sqlite3_stmt    *rd_prevout;
+    sqlite3_stmt    *rd_exists;
 } G;
+
+/* Finalize the read-through statement cache (idempotent). Called before the
+ * bound db handle can change (init rebind) or be freed (shutdown). Safe to call
+ * on the fold thread only — the same single-owner contract as the cache use. */
+static void coins_ram_read_cache_finalize(void)
+{
+    if (G.rd_get)     { sqlite3_finalize(G.rd_get);     G.rd_get = NULL; }
+    if (G.rd_prevout) { sqlite3_finalize(G.rd_prevout); G.rd_prevout = NULL; }
+    if (G.rd_exists)  { sqlite3_finalize(G.rd_exists);  G.rd_exists = NULL; }
+}
 
 /* ── flag ─────────────────────────────────────────────────────────────── */
 
@@ -239,6 +259,8 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
 {
     if (!coins_ram_enabled()) return true;  /* flag off: no-op */
     if (G.active) {
+        if (G.db != db)
+            coins_ram_read_cache_finalize();  /* stale vs the old handle */
         G.db = db;  /* re-bind handle (idempotent) */
         return true;
     }
@@ -301,6 +323,7 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
 
 void coins_ram_shutdown(void)
 {
+    coins_ram_read_cache_finalize();  /* before the bound db handle closes */
     if (G.slots) {
         for (size_t i = 0; i < G.cap; i++) slot_release_script(&G.slots[i]);
         free(G.slots);
@@ -413,9 +436,10 @@ bool coins_ram_get(const uint8_t txid[32], uint32_t vout,
         }
         return true;
     }
-    /* cold miss → read through to the durable set */
-    return coins_kv_get_sqlite(G.db, txid, vout, value_out, script_out,
-                               script_cap, script_len_out);
+    /* cold miss → read through to the durable set (cached statement — the
+     * single-owner fold thread; see the G.rd_* note above). */
+    return coins_kv_get_sqlite_cached(G.db, &G.rd_get, txid, vout, value_out,
+                                      script_out, script_cap, script_len_out);
 }
 
 bool coins_ram_get_prevout(const uint8_t txid[32], uint32_t vout,
@@ -439,10 +463,12 @@ bool coins_ram_get_prevout(const uint8_t txid[32], uint32_t vout,
         }
         return true;
     }
-    /* cold miss → point read-through to the durable set */
-    return coins_kv_get_prevout_sqlite(G.db, txid, vout, value_out,
-                                       script_out, script_cap, script_len_out,
-                                       height_out, is_coinbase_out);
+    /* cold miss → point read-through to the durable set (cached statement —
+     * the fold's per-input/per-output hot path; see the G.rd_* note above). */
+    return coins_kv_get_prevout_sqlite_cached(G.db, &G.rd_prevout, txid, vout,
+                                              value_out, script_out, script_cap,
+                                              script_len_out, height_out,
+                                              is_coinbase_out);
 }
 
 bool coins_ram_exists(const uint8_t txid[32], uint32_t vout)
@@ -452,7 +478,7 @@ bool coins_ram_exists(const uint8_t txid[32], uint32_t vout)
     size_t i = probe(txid, vout, &found);
     if (found)
         return G.slots[i].state == SLOT_LIVE;
-    return coins_kv_exists_sqlite(G.db, txid, vout);
+    return coins_kv_exists_sqlite_cached(G.db, &G.rd_exists, txid, vout);
 }
 
 bool coins_ram_get_coins(const uint8_t txid[32], struct coins *out)
