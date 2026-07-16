@@ -520,7 +520,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest
 
-CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
+CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/util/src/log_level.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
