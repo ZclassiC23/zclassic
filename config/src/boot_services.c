@@ -28,6 +28,7 @@
 #include "config/boot_fast_restart.h"  /* boot_fast_restart_capture_shutdown_facts (P2) */
 #include "services/chain_tip_watchdog.h"
 #include "services/sticky_escalator.h"
+#include "services/recovery_coordinator.h"
 #include "services/invariant_sentinel.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/domains.h"
@@ -419,15 +420,14 @@ static void boot_register_core_liveness_and_reducer(
      * advance, emits a named stall event, and lets the operator-needed /
      * condition loop handle recovery. */
     chain_tip_watchdog_register(svc->state);
-    /* Top-level always-terminating remedy escalator (sticky-node-plan #1, the
-     * keystone of S2). Consumes the watchdog's deterministic-stall signal +
-     * condition_engine_get_unresolved_count() and drives an ordered rung ladder
-     * that NEVER latches a permanent operator-needed state on a recoverable
-     * class. Register AFTER the watchdog (whose deterministic branch now hands
-     * the wedge to the escalator instead of dead-ending) and BEFORE
-     * self_heal_register (the self-heal tick drives the ladder). */
+    /* Top-level always-terminating remedy escalator (sticky-node-plan #1): it
+     * consumes the watchdog stall signal + unresolved-condition count and drives
+     * an ordered rung ladder. Register AFTER the watchdog, BEFORE self_heal. */
     sticky_escalator_set_datadir(svc->datadir);
     sticky_escalator_register(svc->state);
+    /* Unified recovery organ (chain domain): cheapest-sufficient-rung selector. */
+    recovery_coordinator_set_datadir(svc->datadir);
+    recovery_coordinator_register(svc->state);
     condition_registry_register_all();
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
     /* Close the alert loop: install the event->sink routing (incl. the
