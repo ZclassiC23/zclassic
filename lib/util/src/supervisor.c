@@ -17,6 +17,7 @@
  *     invoking any callback — callbacks may freely call back into the
  *     supervisor API. */
 
+#include "platform/os_sandbox.h"
 #include "platform/time_compat.h"
 #include "util/supervisor.h"
 
@@ -479,6 +480,13 @@ static void *supervisor_thread_main(void *arg)
     while (atomic_load(&g_running) &&
            !thread_registry_shutdown_requested())
     {
+        /* Landlock retrofit join (see os_sandbox_landlock_apply_to_self()):
+         * this thread predates -sandbox=steady's late SERVICES_RUNNING entry,
+         * so it must join that domain itself. Idempotent no-op once joined;
+         * cheap (one atomic load) while the sandbox is inactive. */
+        if (os_sandbox_active())
+            (void)os_sandbox_landlock_apply_to_self();
+
         sweep_once();
         int ms = atomic_load(&g_tick_ms);
         if (ms < 1) ms = 1;

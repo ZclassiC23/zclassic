@@ -1012,24 +1012,18 @@ static struct zcl_result sr_services_running(void *ctx)
 }
 
 /* Late confinement: enter the os_sandbox node steady-state profile once every
- * thread is spawned and every late fd is open. Runs at SERVICES_RUNNING with a
- * higher `order` than services_running so it is the LAST record before READY.
- * A no-op unless -sandbox=steady (main.c already refused steady off-systemd).
- *
- * fs grants: the datadir tree (rw) — one path-beneath rule covers the
- * late-opened <datadir>/ssl and SQLite WAL/shm/tmp — plus the agent-test status
- * dir when present. Landlock restrict_self is one-way; the deny-set forbids
- * execve/ptrace/mount/namespace-escape but keeps socket/clone the node needs.
- *
- * Fail-closed: if confinement was requested but cannot be applied (old kernel,
- * missing datadir, seccomp/Landlock error) this returns non-ok and boot exits
- * rather than run unconfined after the operator asked for a sandbox.
- *
- * Thread coverage (see `dumpstate sandbox`): seccomp installs via TSYNC
- * (SECCOMP_FILTER_FLAG_TSYNC), covering EVERY thread atomically — incl. the ~30
- * already-running service threads. Landlock has no TSYNC and full retrofit is
- * unsound (a thread predates the datadir lock; boot/steady threads read outside
- * it), so it stays on this thread; the rest are the seccomp-only residual. */
+ * thread is spawned and every late fd is open (SERVICES_RUNNING, highest
+ * `order` — last record before READY). No-op unless -sandbox=steady.
+ * fs grants: the datadir tree (rw, covers <datadir>/ssl + SQLite WAL/shm/tmp),
+ * the agent-test status dir when present, and a read-only OS_SANDBOX_PROC_
+ * SELF_STATUS_PATH grant (metrics RSS — see os_sandbox_landlock_apply_to_self
+ * in platform/os_sandbox.h for the full Landlock-retrofit design/scope note).
+ * Fail-closed: an applicable-but-failed confinement request FATALs boot
+ * rather than run unconfined. Thread coverage (`dumpstate sandbox`): seccomp
+ * installs via TSYNC (every thread, atomically); Landlock has no TSYNC
+ * equivalent, so os_sandbox_landlock_apply_to_self() is the retrofit join an
+ * already-running thread calls from its own loop — wired into the
+ * supervisor, health-sweep and metrics loops today. */
 static struct zcl_result sr_sandbox_enter(void *ctx)
 {
     const struct app_context *actx = ctx;
@@ -1040,7 +1034,7 @@ static struct zcl_result sr_sandbox_enter(void *ctx)
     if (!datadir || !datadir[0])
         return ZCL_ERR(-1, "-sandbox=steady: no datadir to grant");
 
-    struct os_sandbox_path_rule rules[2];
+    struct os_sandbox_path_rule rules[3];
     size_t n = 0;
     rules[n++] = (struct os_sandbox_path_rule){
         .path = datadir, .allow_read = true, .allow_write = true };
@@ -1055,6 +1049,10 @@ static struct zcl_result sr_sandbox_enter(void *ctx)
             rules[n++] = (struct os_sandbox_path_rule){
                 .path = agent_status, .allow_read = true, .allow_write = true };
     }
+
+    /* Self-introspection only (getrusage/sysinfo already cover this ground). */
+    rules[n++] = (struct os_sandbox_path_rule){
+        .path = OS_SANDBOX_PROC_SELF_STATUS_PATH, .allow_read = true };
 
     struct os_sandbox_profile prof =
         os_sandbox_node_steady_state_profile(rules, n);

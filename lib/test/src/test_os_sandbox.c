@@ -18,6 +18,10 @@
  *     socket -> SIGSYS
  *   - os_sandbox_landlock_restrict(): outside open -> EACCES; inside -> ok;
  *     pre-opened fd survives restrict
+ *   - os_sandbox_landlock_apply_to_self(): a thread that PREDATES the domain
+ *     (spawned before landlock_restrict) is unconfined until it calls this
+ *     itself, confined after; idempotent (a 2nd call doesn't double-count);
+ *     calling it before ANY domain exists is a non-fatal non-ok
  *   - os_sandbox_userns_available(): reports the box's true verdict
  *   - os_sandbox_write_userns_maps(): a userns child sees the mapped uid
  *   - os_sandbox_enter(SANDBOX_SESSION_CHILD): child is alive-but-confined
@@ -175,6 +179,96 @@ static int c_landlock(void)
     return 0;
 }
 
+/* ── Landlock retrofit join: os_sandbox_landlock_apply_to_self() ────────────
+ *
+ * The retrofit's whole point (the seccomp analogue is
+ * c_tsync_covers_preexisting_thread below): a thread spawned BEFORE
+ * os_sandbox_landlock_restrict() runs is NOT confined by it (no TSYNC
+ * equivalent for Landlock). It stays unconfined until it calls
+ * os_sandbox_landlock_apply_to_self() on ITSELF, from inside its own loop —
+ * exactly how supervisor_thread_main / the health sweeper / the metrics
+ * printer use it. This child proves both halves: unconfined before the join,
+ * confined after, idempotent on a repeat call, and the witness count moves by
+ * exactly one per distinct joining thread. */
+
+static char g_ll2_dir[128];
+static _Atomic int g_retro_thread_ready;
+static _Atomic int g_retro_go;
+static _Atomic int g_retro_before;  /* 0 = unconfined (expected pre-join) */
+static _Atomic int g_retro_after;   /* 0 = confined + idempotent (expected) */
+
+static void *retro_preexisting_thread(void *arg)
+{
+    (void)arg;
+    atomic_store(&g_retro_thread_ready, 1);
+    while (atomic_load(&g_retro_go) == 0) { /* spin until the domain exists */ }
+
+    /* Pre-join: this thread predates the domain, so an outside-grant open
+     * must still SUCCEED (the retrofit gap, proven present). */
+    int f = open("/etc/hostname", O_RDONLY);
+    atomic_store(&g_retro_before, (f >= 0) ? 0 : 1);
+    if (f >= 0) close(f);
+
+    struct zcl_result r1 = os_sandbox_landlock_apply_to_self();
+    if (!r1.ok) { atomic_store(&g_retro_after, 2); return NULL; }
+    /* Idempotent: a second join call from the same thread must still be ok
+     * (and must not be observable as a second confinement layer failing). */
+    struct zcl_result r2 = os_sandbox_landlock_apply_to_self();
+    if (!r2.ok) { atomic_store(&g_retro_after, 3); return NULL; }
+
+    /* Post-join: the same outside-grant open must now be denied. */
+    int f2 = open("/etc/hostname", O_RDONLY);
+    if (f2 >= 0) { close(f2); atomic_store(&g_retro_after, 4); return NULL; }
+    atomic_store(&g_retro_after, (errno == EACCES) ? 0 : 5);
+    return NULL;
+}
+
+static int c_landlock_retrofit_join(void)
+{
+    atomic_store(&g_retro_thread_ready, 0);
+    atomic_store(&g_retro_go, 0);
+    atomic_store(&g_retro_before, -1);
+    atomic_store(&g_retro_after, -1);
+
+    pthread_t th;
+    if (pthread_create(&th, NULL, retro_preexisting_thread, NULL) != 0)
+        return 70;
+    while (atomic_load(&g_retro_thread_ready) == 0) { /* spin */ }
+
+    int before_count = os_sandbox_landlock_restricted_count();
+
+    struct os_sandbox_path_rule rules[] = {{ g_ll2_dir, true, true }};
+    if (!os_sandbox_no_new_privs()) return 71;
+    struct zcl_result r = os_sandbox_landlock_restrict(rules, 1);
+    if (!r.ok) return 72;
+
+    /* The entering (this) thread's own join is counted once. */
+    if (os_sandbox_landlock_restricted_count() != before_count + 1) return 73;
+
+    atomic_store(&g_retro_go, 1);
+    pthread_join(th, NULL);
+
+    if (atomic_load(&g_retro_before) != 0) return 74;  /* was NOT confined pre-join */
+    if (atomic_load(&g_retro_after) != 0) return 75;   /* IS confined post-join */
+
+    /* Exactly one MORE join counted for the retrofitting thread — the
+     * idempotent second call must not have double-counted. */
+    if (os_sandbox_landlock_restricted_count() != before_count + 2) return 76;
+
+    return 0;
+}
+
+/* Calling the retrofit join before ANY Landlock domain exists in this process
+ * is a non-fatal non-ok (OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE) — never a crash,
+ * since supervisor/health/metrics call it unconditionally on every tick from
+ * boot onward, long before -sandbox=steady (if ever) enters one. */
+static int c_landlock_apply_before_any_domain(void)
+{
+    struct zcl_result r = os_sandbox_landlock_apply_to_self();
+    if (r.ok) return 1;
+    return (r.code == OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE) ? 0 : 2;
+}
+
 /* ── enter(SANDBOX_SESSION_CHILD) children ─────────────────────────────── */
 
 static char g_sess_dir[128];
@@ -234,9 +328,11 @@ static int c_enter_socket(void)
  * node opens peer sockets + spawns threads) while still denying execve and the
  * escape family. These children prove that distinction. The record-registration
  * half of the wiring lives in config/src/boot.c and is pinned by
- * tools/lint/check_sandbox_wired.sh (a full boot in a unit test is impractical;
- * multi-thread seccomp/Landlock retrofit is deferred to soak per
- * BOOT_INVARIANTS.md). */
+ * tools/lint/check_sandbox_wired.sh (a full boot in a unit test is
+ * impractical). Multi-thread coverage is proven at the primitive level here:
+ * seccomp TSYNC below, and the Landlock retrofit join
+ * (os_sandbox_landlock_apply_to_self, tested above) — end-to-end proof that
+ * the wired-in threads actually join at boot is a soak/live-node concern. */
 
 static char g_node_dir[128];
 
@@ -381,6 +477,7 @@ int test_os_sandbox(void)
     int failures = 0;
 
     test_make_tmpdir(g_ll_dir, sizeof g_ll_dir, "os_sandbox", "ll");
+    test_make_tmpdir(g_ll2_dir, sizeof g_ll2_dir, "os_sandbox", "ll2");
     test_make_tmpdir(g_sess_dir, sizeof g_sess_dir, "os_sandbox", "sess");
     test_make_tmpdir(g_node_dir, sizeof g_node_dir, "os_sandbox", "node");
     test_fmt_tmpdir(g_fsize_path, sizeof g_fsize_path, "os_sandbox", "fsize");
@@ -405,6 +502,13 @@ int test_os_sandbox(void)
     /* Landlock: outside denied, inside allowed, pre-opened fd survives */
     SB_CHECK("landlock: deny outside / allow inside / preopened-fd survives",
              sb_run_child(c_landlock) == 0);
+
+    /* Landlock retrofit join: the whole point of this ticket */
+    SB_CHECK("landlock retrofit: apply_to_self before any domain -> non-ok, non-fatal",
+             sb_run_child(c_landlock_apply_before_any_domain) == 0);
+    SB_CHECK("landlock retrofit: pre-existing thread unconfined pre-join, "
+             "confined post-join, idempotent 2nd call, count +2 total",
+             sb_run_child(c_landlock_retrofit_join) == 0);
 
     /* ── the composed profile ──────────────────────────────────────── */
     SB_CHECK("enter(SESSION_CHILD): alive, reads grant, /etc/passwd EACCES",
@@ -473,6 +577,7 @@ int test_os_sandbox(void)
     }
 
     test_rm_rf_recursive(g_ll_dir);
+    test_rm_rf_recursive(g_ll2_dir);
     test_rm_rf_recursive(g_sess_dir);
     test_rm_rf_recursive(g_node_dir);
     unlink(g_fsize_path);

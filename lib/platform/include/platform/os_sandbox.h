@@ -84,6 +84,14 @@ struct os_sandbox_path_rule {
     bool        allow_write;
 };
 
+/* The metrics thread's steady-state RSS-sample path, named here (not as a
+ * bare string literal in config/src/boot.c or any other non-lib/platform
+ * .c file) so tools/lint/check_proc_self_shim.sh's raw-/proc/self-outside-
+ * lib/platform ratchet does not flag the Landlock path-GRANT construction as
+ * an unshimmed read — os_sandbox never opens this path itself, it only names
+ * it in a struct os_sandbox_path_rule for the boot thread to grant. */
+#define OS_SANDBOX_PROC_SELF_STATUS_PATH "/proc/self/status"
+
 /* Sentinel for "leave this resource limit untouched". A real limit of 0
  * (e.g. RLIMIT_CORE = 0 to disable core dumps) is set explicitly; only this
  * sentinel means keep. */
@@ -211,12 +219,57 @@ const char *os_sandbox_seccomp_install_method(void);
 bool os_sandbox_seccomp_tsync_active(void);
 
 /* Number of threads that have PROVABLY entered a Landlock domain in this
- * process (one per successful landlock_restrict_self). Unlike seccomp, Landlock
- * has no TSYNC-style all-thread install and is not retroactive, so this is the
- * honest Landlock thread-coverage count. Inherited children of a restricted
- * thread are covered but NOT counted, so this is a conservative floor. Backs
- * the `sandbox` witness's landlock_covered_threads field. */
+ * process (one per successful landlock_restrict_self — whether via
+ * os_sandbox_landlock_restrict() or a later os_sandbox_landlock_apply_to_
+ * self() retrofit join). Unlike seccomp, Landlock has no TSYNC-style
+ * all-thread install and is not retroactive, so this is the honest Landlock
+ * thread-coverage count. Inherited children of a restricted thread are
+ * covered but NOT counted, so this is a conservative floor. Backs the
+ * `sandbox` witness's landlock_covered_threads field. */
 int os_sandbox_landlock_restricted_count(void);
+
+/* Retrofit primitive: make the CALLING thread join the Landlock domain the
+ * most recent os_sandbox_landlock_restrict() call installed (typically the
+ * boot thread's os_sandbox_enter(node_steady_state) at SERVICES_RUNNING).
+ *
+ * Why this is needed: Landlock's restrict-self only ever confines the
+ * calling thread — there is no TSYNC-style all-thread install like seccomp
+ * has (os_sandbox_seccomp_deny). So a domain entered by the boot thread does
+ * NOT retroactively cover threads that were already running at that point.
+ * This lets one of those already-running threads close that gap for itself,
+ * from inside its own loop, on its own next tick — call it once per
+ * iteration; it is a cheap idempotent no-op (a single thread-local branch)
+ * after the first successful join on that thread. Threads SPAWNED after
+ * os_sandbox_enter() need no such call: Landlock domains are inherited across
+ * pthread_create/clone from an already-restricted parent.
+ *
+ * Also sets no_new_privs on the CALLING thread first: it is a per-thread
+ * kernel attribute (unlike seccomp's TSYNC install, nothing retroactively
+ * propagates it to sibling threads), and landlock_restrict_self(2) requires
+ * it on the calling thread. Idempotent to call twice.
+ *
+ * Correctness requirement on the CALLER: only call this from a thread whose
+ * remaining filesystem accesses (for the rest of the process's life) stay
+ * within the grants the active profile's fs_rules cover (steady-state: the
+ * datadir tree + the agent-test status dir + OS_SANDBOX_PROC_SELF_STATUS_
+ * PATH). A thread that later needs to open a path outside those grants will
+ * get EACCES after joining — do not wire this into a thread that does
+ * arbitrary/user-configured file I/O. Wired today (config/src/boot.c) into
+ * the supervisor, health-sweep and metrics loops — audited pure, no file I/O
+ * beyond the grants above. Deliberately NOT wired into file_service (market
+ * transfers read user-configured paths), wallet_backup_service (configurable
+ * backup_dir), disk_monitor (probes arbitrary mount paths), or event_async
+ * (fans out to unaudited observer callbacks) — those remain the documented
+ * Landlock-unconfined-but-seccomp-confined residual.
+ *
+ * Returns ZCL_OK (including the idempotent no-op case). Returns non-ok with
+ * OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE if no steady-state Landlock domain is
+ * active yet (os_sandbox_enter() with a Landlock-enabled profile hasn't run,
+ * or this kernel/build lacks Landlock — never fatal, callers should just skip
+ * retrying until sandbox state changes) or OS_SANDBOX_ERR_LANDLOCK_SYSCALL on
+ * a genuine syscall failure. On success, increments the count read by
+ * os_sandbox_landlock_restricted_count(). */
+struct zcl_result os_sandbox_landlock_apply_to_self(void);
 
 /* The session child's default resource caps: AS≈256 MiB, NPROC=1,
  * FSIZE≈64 MiB, NOFILE=16, CORE=0, CPU=KEEP (caller sets a wall/CPU budget

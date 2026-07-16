@@ -12,6 +12,7 @@
 #include "core/utiltime.h"
 #include "util/timedata.h"
 #include "event/event.h"
+#include "platform/os_sandbox.h"
 #include "sync/sync_state.h"
 #include "util/thread_liveness.h"
 #include "util/thread_registry.h"
@@ -333,6 +334,15 @@ static void *metrics_thread_fn(void *arg)
     int64_t metrics_beats = 0;
     while (atomic_load(&ctx->running)) {
         int lines = 1;
+
+        /* Landlock retrofit join — see os_sandbox_landlock_apply_to_self().
+         * This thread predates -sandbox=steady's late sandbox entry, so it
+         * must join that domain itself; idempotent no-op once joined (or
+         * while the sandbox is inactive). Its one FS dependency beyond the
+         * datadir grant — fopen("/proc/self/status") below, for RSS — is
+         * covered by the extra read-only grant sr_sandbox_enter adds. */
+        if (os_sandbox_active())
+            (void)os_sandbox_landlock_apply_to_self();
 
         /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
          * change). Loop count is the progress marker. */

@@ -326,10 +326,14 @@ static bool sandbox_dump_state_json(struct json_value *out, const char *key)
      * witness proves ACTUAL coverage, not intent:
      *  - seccomp_tsync: the filter was installed via seccomp(2)+TSYNC, so it is
      *    on EVERY thread of the process atomically (pre-existing + future).
-     *  - landlock_covered_threads: threads that have run landlock_restrict_self.
-     *    Landlock has no TSYNC and is not retroactive, so the ~30 service
-     *    threads spawned before the late SERVICES_RUNNING sandbox entry are the
-     *    documented residual (Landlock-unconfined but seccomp-confined). */
+     *  - landlock_covered_threads: threads that have run landlock_restrict_self
+     *    — either the entering boot thread itself, or an already-running
+     *    thread that later joined via os_sandbox_landlock_apply_to_self()
+     *    (the supervisor/health-sweep/metrics loops do this on every tick;
+     *    see config/src/boot.c:sr_sandbox_enter). Landlock has no TSYNC and
+     *    is not retroactive, so any service thread NOT wired to that retrofit
+     *    join is the documented residual (Landlock-unconfined but still
+     *    seccomp-confined). */
     json_push_kv_str(out, "seccomp_install_method",
                      os_sandbox_seccomp_install_method());
     json_push_kv_bool(out, "seccomp_tsync", os_sandbox_seccomp_tsync_active());
