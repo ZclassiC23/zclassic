@@ -18,17 +18,23 @@
 // one-result-type-ok:owner-gated-boot-import
 
 #include "services/shielded_history_import_service.h"
+#include "services/utxo_recovery_service.h"
 
 #include "core/serialize.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "models/database.h"
 #include "platform/time_compat.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/chainstate_legacy_reader.h"
+#include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+
+#include "utxo_recovery_internal.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>
@@ -683,5 +689,73 @@ bool shielded_history_import_from_chainstate(
 
     if (out)
         *out = report;
+    return true;
+}
+
+bool shielded_history_import_register_cured_tip_trust_anchor(
+    sqlite3 *progress_db, struct node_db *ndb)
+{
+    if (!progress_db || !ndb)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: null args (progress_db=%p ndb=%p)",
+                   (void *)progress_db, (void *)ndb);
+
+    /* Derive the cured coins tip authoritatively from progress.kv's own
+     * co-committed state: height = coins_applied_height - 1, hash = the
+     * validate_headers_log own-hash at that height (the Invariant A trust
+     * root). This is the import's OWN header-committed value, never a peer's. */
+    int32_t h = -1;
+    uint8_t hash[32];
+    bool hash_found = false, found = false;
+    if (!reducer_frontier_derive_coins_best(progress_db, &h, hash,
+                                            &hash_found, &found))
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best derive failed "
+                   "(progress.kv read error)");
+    if (!found)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best not derivable "
+                   "(coins_applied_height absent / not proven-authority) — "
+                   "leaving the coins tip un-anchored");
+    if (h <= 0)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best height non-positive "
+                   "(h=%d)", h);
+    if (!hash_found)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best hash not resolvable "
+                   "from validate_headers_log at h=%d — refusing to register a "
+                   "heightless trust anchor", h);
+
+    struct uint256 tip_hash;
+    memcpy(tip_hash.data, hash, 32);
+
+    /* In-memory: effective THIS process (the copy-prove harness / unit test
+     * drive the Invariant A install without a reboot). */
+    utxo_recovery_set_cold_import_trust_anchor(&tip_hash, h);
+
+    /* Durable: the boot restore path (utxo_recovery_restore.c) re-reads these
+     * node_db seed keys every boot and re-registers the anchor, so the coins
+     * tip installs on the next NORMAL boot after the owner-gated import exits.
+     * The count is the seed's cross-check PROVENANCE token — the coins_kv row
+     * count the restore consumer verifies against the live store; the shielded
+     * import never touches coins_kv, so it stays consistent. */
+    int64_t utxo_count = coins_kv_count(progress_db);
+    if (utxo_count <= 0)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins_kv empty (count=%lld) — "
+                   "cannot write the durable seed provenance token; the "
+                   "in-memory anchor is registered for this process only",
+                   (long long)utxo_count);
+    utxo_recovery_write_cold_import_seed(ndb, (int)h, &tip_hash, utxo_count);
+
+    char hex[65];
+    uint256_get_hex(&tip_hash, hex);
+    LOG_INFO(SHI_SUBSYS,
+             "cured-tip trust anchor registered: h=%d hash=%s "
+             "(in-memory + durable node_db seed, utxo_count=%lld) — Invariant A "
+             "will install the coins tip into the active chain so getheaders is "
+             "built from the real tip, not genesis",
+             h, hex, (long long)utxo_count);
     return true;
 }

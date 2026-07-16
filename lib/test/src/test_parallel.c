@@ -227,6 +227,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
     X(shielded_history_import) \
+    X(shielded_import_cured_tip_anchor) \
     X(shielded_gap_remedy) \
     X(utxo_recovery_shielded_backfill) \
     X(reducer_drive_guard) \

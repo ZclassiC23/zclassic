@@ -2753,6 +2753,32 @@ static int import_complete_shielded_mode(int argc, char **argv)
     struct shielded_import_report rep = {0};
     bool ok = shielded_history_import_from_chainstate(
         progress_store_db(), snap_path, tip_height, &tip_sapling_root, &rep);
+
+    /* On success, register the cured coins tip as a cold-import TRUST anchor so
+     * the next normal boot's Invariant A gate installs it into the active chain
+     * (instead of refusing the detached island and stalling getheaders at
+     * genesis). Durable node_db seed + in-memory; best-effort — a derive miss
+     * logs but never undoes the committed import. progress_store stays open so
+     * the coins-best derivation + the durable count token read the canonical
+     * store. */
+    if (ok) {
+        char ndb_path[600];
+        int nn = snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", target);
+        struct node_db ndb2;
+        if (nn > 0 && (size_t)nn < sizeof(ndb_path) &&
+            node_db_open(&ndb2, ndb_path)) {
+            (void)shielded_history_import_register_cured_tip_trust_anchor(
+                progress_store_db(), &ndb2);
+            node_db_close(&ndb2);
+        } else {
+            fprintf(stderr,
+                    "WARNING: import committed but could not reopen %s to "
+                    "persist the cured-tip trust anchor; the coins tip may need "
+                    "one extra boot to install into the active chain.\n",
+                    ndb_path);
+        }
+    }
+
     progress_store_close();
     ldb_snapshot_destroy(snap_path);
 
