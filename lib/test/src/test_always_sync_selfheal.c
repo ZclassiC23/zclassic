@@ -189,6 +189,22 @@ static bool ash_seed_cursor(sqlite3 *db, const char *name, int cursor)
     return ok;
 }
 
+/* Read a stage cursor back (−1 if absent). */
+static int ash_read_cursor(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name=?", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int c = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:test-read
+        c = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return c;
+}
+
 static bool ash_seed_all_cursors(sqlite3 *db, int cursor)
 {
     return ash_seed_cursor(db, "validate_headers", cursor) &&
@@ -407,31 +423,6 @@ static int ash_cursor_value(sqlite3 *db, const char *name)
     return value;
 }
 
-/* Read back the script_validate_log row at `height` as a comparable blob
- * (ok flag + status text) so two calls of a repair primitive can be checked
- * for a byte-identical verdict (G1's idempotency proof). */
-static bool ash_script_row(sqlite3 *db, int height, int *ok_out,
-                          char *status_out, size_t status_cap)
-{
-    sqlite3_stmt *st = NULL;
-    bool found = false;
-    if (sqlite3_prepare_v2(db,
-            "SELECT ok,status FROM script_validate_log WHERE height=?",
-            -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int(st, 1, height);
-        if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:test-readback
-            found = true;
-            if (ok_out) *ok_out = sqlite3_column_int(st, 0);
-            if (status_out) {
-                const unsigned char *s = sqlite3_column_text(st, 1);
-                snprintf(status_out, status_cap, "%s", s ? (const char *)s : "");
-            }
-        }
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
 /* Total rows across every reducer log — the "no log row is ever deleted"
  * invariant witness (test_sticky_escalator.c pattern). */
 static int64_t ash_total_log_rows(sqlite3 *db)
@@ -553,33 +544,43 @@ static int ash_test_stage_rederive_range(void)
              ash_setup_hole_fixture(&fx, "g1_rederive"));
     sqlite3 *db = progress_store_db();
 
+    /* Contract (app/jobs/src/stage_rederive_range.c): the primitive REWINDS the
+     * body-dependent stage cursors down to from_height and deletes the stale
+     * suffix rows, so the reducer drive can re-fold the range forward to
+     * byte-identical verdicts. It does NOT itself re-fold (that needs the real
+     * on-disk bodies, which the drive reads) — this is the "readied for
+     * re-derivation" half. The fixture seeds every cursor at A+4 with a hole at
+     * A+2. After rederive(A+2,A+2): the body-dependent cursors sit at A+2, and
+     * utxo_apply (already at A+2) is never moved UP. */
     bool r1 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: first call succeeds", r1);
-    int ok1 = -1; char status1[64] = {0};
-    ASH_CHECK("G1: hole at A+2 now has a real ok=1 row",
-             ash_script_row(db, A + 2, &ok1, status1, sizeof(status1)) &&
-             ok1 == 1);
+    ASH_CHECK("G1: script_validate cursor rewound to the hole at A+2",
+             ash_read_cursor(db, "script_validate") == A + 2);
+    ASH_CHECK("G1: proof_validate cursor rewound to A+2",
+             ash_read_cursor(db, "proof_validate") == A + 2);
+    ASH_CHECK("G1: tip_finalize cursor rewound to A+2 (rows kept, cursor lowered)",
+             ash_read_cursor(db, "tip_finalize") == A + 2);
+    ASH_CHECK("G1: utxo_apply cursor NOT moved up (LCC — stays at A+2)",
+             ash_read_cursor(db, "utxo_apply") == A + 2);
 
     bool r2 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: second immediate call also succeeds (idempotent)", r2);
-    int ok2 = -1; char status2[64] = {0};
-    ASH_CHECK("G1: re-run reproduces a byte-identical verdict (no duplicate work)",
-             ash_script_row(db, A + 2, &ok2, status2, sizeof(status2)) &&
-             ok2 == ok1 && strcmp(status1, status2) == 0);
+    ASH_CHECK("G1: idempotent — cursors unchanged at A+2 on re-run",
+             ash_read_cursor(db, "script_validate") == A + 2 &&
+             ash_read_cursor(db, "proof_validate") == A + 2);
 
-    /* Crash-mid-way proxy: close and reopen the progress store between
-     * calls. A single-transaction primitive must survive this with the same
-     * durable verdict; a partially-committed one would not. */
+    /* Crash-mid-way proxy: close and reopen the progress store between calls. A
+     * single-transaction primitive must survive this with the same durable
+     * cursor state; a partially-committed one would not. */
     progress_store_close();
     ASH_CHECK("G1: progress store reopens after simulated restart",
              progress_store_open(fx.dir));
     db = progress_store_db();
     bool r3 = stage_rederive_range(db, &fx.ms, A + 2, A + 2, NULL);
     ASH_CHECK("G1: call after simulated crash+restart succeeds", r3);
-    int ok3 = -1; char status3[64] = {0};
-    ASH_CHECK("G1: post-restart verdict identical (durable, not partial)",
-             ash_script_row(db, A + 2, &ok3, status3, sizeof(status3)) &&
-             ok3 == ok1 && strcmp(status1, status3) == 0);
+    ASH_CHECK("G1: post-restart cursor state identical (durable, not partial)",
+             ash_read_cursor(db, "script_validate") == A + 2 &&
+             ash_read_cursor(db, "proof_validate") == A + 2);
 
     ash_teardown_fixture(&fx);
     printf("always_sync_selfheal: G1 %d failures\n", failures);
