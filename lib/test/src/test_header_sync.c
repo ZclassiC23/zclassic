@@ -168,7 +168,7 @@ int test_header_sync(void)
         memset(&genesis, 0x01, sizeof(genesis));
 
         struct block_locator loc;
-        struct zcl_result _r = syncsvc_build_getheaders_locator(&loc, NULL, NULL, &genesis);
+        struct zcl_result _r = syncsvc_build_getheaders_locator(&loc, NULL, NULL, NULL, &genesis);
         bool ok = _r.ok;
         ok = ok && (loc.num_hashes == 1);
         ok = ok && uint256_eq(&loc.vhave[0], &genesis);

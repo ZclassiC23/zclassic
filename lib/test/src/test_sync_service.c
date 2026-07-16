@@ -1107,7 +1107,7 @@ static int test_sync_service_builds_getheaders_locator_from_chain(void)
         b2.phashBlock = &h2; b2.nHeight = 2; b2.pprev = &b1;
         ASSERT(active_chain_move_window_tip(&chain, &b2));
 
-        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg).ok);
+        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, NULL, &hg).ok);
         ASSERT(loc.num_hashes >= 2);
         ASSERT(uint256_eq(&loc.vhave[0], &h2));
         ASSERT(uint256_eq(&loc.vhave[1], &h1));
@@ -1134,10 +1134,57 @@ static int test_sync_service_builds_getheaders_locator_empty_chain(void)
         active_chain_init(&chain);
         hg.data[0] = 60;
 
-        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg).ok);
+        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, NULL, &hg).ok);
         ASSERT(loc.num_hashes == 1);
         ASSERT(uint256_eq(&loc.vhave[0], &hg));
         block_locator_free(&loc);
+        active_chain_free(&chain);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* THE LINCHPIN regression: a full-index boot leaves the active_chain window
+ * empty (active_chain_tip()==NULL) even though the header frontier is known.
+ * The locator must anchor at that frontier (best_header_fallback), NEVER
+ * collapse to a genesis-only locator that pins header sync near genesis. */
+static int test_sync_service_locator_uses_best_header_when_window_empty(void)
+{
+    int failures = 0;
+
+    TEST("sync_service anchors locator at best_header when active window empty") {
+        struct active_chain chain;
+        struct uint256 hg = {0}, h1 = {0}, h2 = {0};
+        struct block_index genesis, b1, b2;
+        struct block_locator loc;
+
+        memset(&chain, 0, sizeof(chain));
+        memset(&genesis, 0, sizeof(genesis));
+        memset(&b1, 0, sizeof(b1));
+        memset(&b2, 0, sizeof(b2));
+        block_index_init(&genesis);
+        block_index_init(&b1);
+        block_index_init(&b2);
+        active_chain_init(&chain);
+
+        hg.data[0] = 70; h1.data[0] = 71; h2.data[0] = 72;
+        genesis.phashBlock = &hg; genesis.nHeight = 0;
+        b1.phashBlock = &h1; b1.nHeight = 1; b1.pprev = &genesis;
+        b2.phashBlock = &h2; b2.nHeight = 2; b2.pprev = &b1;
+
+        /* Deliberately DO NOT seat the active_chain window — active_chain_tip()
+         * is NULL, exactly the full-index-boot state. b2 is the header
+         * frontier (max height) supplied as the fallback anchor. */
+        ASSERT(active_chain_tip(&chain) == NULL);
+        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &b2, &hg).ok);
+        /* Anchored at the frontier, not a bare genesis-only locator. */
+        ASSERT(loc.num_hashes >= 2);
+        ASSERT(uint256_eq(&loc.vhave[0], &h2));
+        ASSERT(!uint256_eq(&loc.vhave[0], &hg));
+        ASSERT(uint256_eq(&loc.vhave[loc.num_hashes - 1], &hg));
+        block_locator_free(&loc);
+
         active_chain_free(&chain);
         PASS();
     } _test_next:;
@@ -1828,6 +1875,7 @@ int test_sync_service(void)
     failures += test_sync_service_band_producer_derives_from_ancestry();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
     failures += test_sync_service_builds_getheaders_locator_empty_chain();
+    failures += test_sync_service_locator_uses_best_header_when_window_empty();
     failures += test_sync_service_header_log_policy();
     failures += test_sync_service_progress_snapshot();
     failures += test_sync_service_tip_stale_threshold();
