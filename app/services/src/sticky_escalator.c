@@ -154,8 +154,10 @@ static int64_t observe_tip(void)
  * lib/net/src/tor_integration.c's dynhost_client_fetch weak reference. */
 struct sqlite3;
 struct main_state;
+struct stage_rederive_range_result;
 extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
-                                 int lowest_stage, int32_t height)
+                                 int from_height, int to_height,
+                                 struct stage_rederive_range_result *out)
     __attribute__((weak));
 
 /* ── Default rung actions ──────────────────────────────────────────────
@@ -358,7 +360,13 @@ static enum sticky_rung_result rung_resnapshot_default(void)
      * base: it rewinds the stage cursors to base_h and re-derives forward from
      * PoW-verified on-disk bodies. Detected at runtime via the weak symbol. */
     if (stage_rederive_range) {
-        bool ran = stage_rederive_range(db, ms, /*lowest_stage=*/0, base_h);
+        /* Rewind to the self-verified base and re-derive [base_h, tip] from
+         * PoW-verified on-disk bodies. from_height=base_h, to_height=the tip we
+         * observed (H* / active height); the primitive refuses cleanly if the
+         * tip is not above the base. out=NULL: we only need the ran/refused
+         * signal, which the boolean return carries. */
+        bool ran = stage_rederive_range(db, ms, base_h, (int)observe_tip(),
+                                        NULL);
         LOG_WARN("sticky_escalator",
                  "[sticky_escalator] resnapshot: in-process re-derive from %s "
                  "base_h=%d ran=%d", base_kind, base_h, (int)ran);
