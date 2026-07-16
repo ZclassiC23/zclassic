@@ -28,4 +28,17 @@ enum sapling_anchor_gap_class sapling_anchor_frontier_classify(struct sqlite3 *d
 
 void register_sapling_anchor_frontier_unavailable(void);
 
+#ifdef ZCL_TESTING
+/* Zero this condition's module-static episode bookkeeping (at-detect H*,
+ * episode kind, at-detect blocker flags, the tier1b borrow-attempt counter,
+ * and the remedy-call counter). condition_engine_reset_for_testing() clears
+ * the SHARED condition_state atoms; this clears the module's OWN statics —
+ * a test must call both between cases. */
+void sapling_anchor_frontier_test_reset(void);
+
+/* Number of times remedy_sapling_anchor_frontier() has run since the last
+ * sapling_anchor_frontier_test_reset(). */
+int sapling_anchor_frontier_test_remedy_calls(void);
+#endif
+
 #endif /* ZCL_CONDITIONS_SAPLING_ANCHOR_FRONTIER_UNAVAILABLE_H */
