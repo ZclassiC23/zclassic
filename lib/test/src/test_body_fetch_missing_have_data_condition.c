@@ -24,6 +24,12 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+/* Test seams for the mid-chain (utxo_apply select-idle) candidate — see
+ * body_fetch_missing_have_data_test_set_select_idle_stubs(). */
+static int64_t g_bfmhd_stub_height = -1;
+static int64_t bfmhd_stub_select_idle_height(void) { return g_bfmhd_stub_height; }
+static bool bfmhd_stub_select_idle_is_read_failure(void) { return true; }
+
 struct bfmhd_fixture {
     char dir[256];
     struct main_state ms;
@@ -333,6 +339,40 @@ int test_body_fetch_missing_have_data_condition(void)
         ok = ok && !stage_repair_body_fetch_observed(progress_store_db(),
                                                      fx.target);
         BFMHD_CHECK("cursor advance without row does not witness", ok);
+        teardown_fixture(&fx);
+    }
+
+    /* An ARBITRARY mid-chain height (not the body_fetch frontier cursor) —
+     * utxo_apply's select-idle record naming a height the sibling
+     * have_data_unreadable Condition already cleared HAVE_DATA for. The
+     * frontier-cursor candidate here still names fx.target (h=2); the
+     * mid-chain candidate (h=1, fx.tip) is LOWER, so it must win and the
+     * queued fetch must be for fx.tip's hash, not fx.child's. */
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "mid_chain_select_idle");
+
+        fx.tip->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+        fx.tip->nFile = -1;
+        fx.tip->nDataPos = 0;
+        g_bfmhd_stub_height = fx.tip_h; /* h=1, below fx.target=2 */
+        body_fetch_missing_have_data_test_set_select_idle_stubs(
+            bfmhd_stub_select_idle_height,
+            bfmhd_stub_select_idle_is_read_failure);
+
+        condition_engine_tick();
+
+        uint64_t queued = 0;
+        dl_get_stats(&fx.dm, NULL, NULL, NULL, NULL, &queued);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && queued == 1 && fx.dm.queue_len == 1;
+        ok = ok && fx.dm.queue_heights[0] == fx.tip_h;
+        ok = ok && uint256_eq(&fx.dm.queue[0], fx.tip->phashBlock);
+        BFMHD_CHECK("mid-chain select-idle height (below the frontier "
+                    "cursor) is targeted over the frontier candidate", ok);
+
+        g_bfmhd_stub_height = -1;
         teardown_fixture(&fx);
     }
 

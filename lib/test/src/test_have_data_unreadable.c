@@ -24,8 +24,16 @@
  *   witness: the tip advanced past the target (re-fetch + connect succeeded),
  *            or the block became readable.
  * Anti-thrash: the Condition engine bounds this at max_attempts=3 with a
- *   backoff_secs=30 window; after exhaustion it pages the operator instead
- *   of looping.
+ *   backoff_secs=30 window; after exhaustion it re-arms on a 600s cooldown
+ *   (unbounded re-arms) instead of latching permanently — this is an
+ *   external-resource-dependent remedy (the sibling body_fetch_missing_
+ *   have_data Condition drives the actual re-fetch).
+ *
+ * Also covers the GENERALIZED detect target (2026-07): the LOWEST read-failed
+ * height across the reducer stages, not just tip+1 — utxo_apply's own
+ * select-idle record of an ARBITRARY mid-chain height it is stuck re-reading
+ * (e.g. a stale-script/coin-backfill replay that rewinds its cursor), read via
+ * the test-only stub seam (have_data_unreadable_test_set_select_idle_stubs).
  *
  * Fixture pattern mirrors test_orphan_utxo_above_tip.c: a minimal in-RAM
  * main_state chain, the engine driven via condition_engine_tick(), tip
@@ -38,14 +46,21 @@
 
 #include "conditions/have_data_unreadable.h"
 #include "core/arith_uint256.h"
+#include "core/serialize.h"
 #include "framework/condition.h"
+#include "platform/clock.h"
 #include "platform/time_compat.h"
+#include "primitives/block.h"
 #include "services/sync_monitor.h"
+#include "storage/disk_block_io.h"
+#include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define HDU_CHECK(name, expr) do {                   \
     printf("have_data_unreadable: %s... ", (name));  \
@@ -108,6 +123,122 @@ static struct block_index *hdu_insert_torn(struct main_state *ms, int h,
     pi->pprev = prev;
     arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
     return pi;
+}
+
+/* Same as hdu_insert_torn but distinguished from siblings AT THE SAME HEIGHT
+ * by `salt` — target_index() matches by height alone, so several distinct
+ * (distinct-hash) torn entries can coexist at one height, each requiring its
+ * own remedy call to clear. Models several stale/retried candidate bodies
+ * left behind at one height. */
+static struct block_index *hdu_insert_torn_variant(struct main_state *ms,
+                                                    int h, uint8_t salt,
+                                                    struct uint256 *hash,
+                                                    struct block_index *prev)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)(h & 0xFF);
+    hash->data[1] = (uint8_t)((h >> 8) & 0xFF);
+    hash->data[3] = 0xCD;
+    hash->data[4] = salt;
+
+    struct block_index *pi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!pi)
+        return NULL;
+    pi->nHeight = h;
+    pi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+    pi->nFile = -1;
+    pi->nDataPos = 0;
+    pi->nChainTx = 0;
+    pi->pprev = prev;
+    arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+    return pi;
+}
+
+/* Test seams for the mid-chain (utxo_apply select-idle) candidate — see
+ * have_data_unreadable_test_set_select_idle_stubs(). */
+static int64_t g_hdu_stub_height = -1;
+static int64_t hdu_stub_select_idle_height(void) { return g_hdu_stub_height; }
+static bool hdu_stub_select_idle_is_read_failure(void) { return true; }
+
+/* Insert a block_index entry at an EXPLICIT (already-computed, real) hash —
+ * the "witness clears on readability" test needs a genuine on-disk block a
+ * real pread can hash-verify, unlike hdu_insert_torn's fabricated hash. */
+static struct block_index *hdu_insert_torn_at_hash(struct main_state *ms,
+                                                    int h,
+                                                    const struct uint256 *hash,
+                                                    struct block_index *prev)
+{
+    struct block_index *pi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!pi)
+        return NULL;
+    pi->nHeight = h;
+    pi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+    pi->nFile = -1;
+    pi->nDataPos = 0;
+    pi->nChainTx = 0;
+    pi->pprev = prev;
+    arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+    return pi;
+}
+
+/* Write a minimal real block to `netdir` and return its on-disk position +
+ * true hash — mirrors test_disk_block_io.c's write_test_block. `pos->nFile`
+ * must be -1 on entry (append mode); write_block_to_disk fills in the real
+ * (nFile,nPos) it chose. */
+static bool hdu_write_real_block(const char *netdir, uint32_t ntime,
+                                 struct disk_block_pos *pos,
+                                 struct uint256 *hash_out)
+{
+    struct block b;
+    block_init(&b);
+    b.header.nVersion = 4;
+    b.header.nTime = ntime;
+    b.header.nBits = 0x2000ffff;
+    b.num_vtx = 1;
+    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+    if (!b.vtx) {
+        block_free(&b);
+        return false;
+    }
+    transaction_init(&b.vtx[0]);
+    transaction_alloc(&b.vtx[0], 1, 1);
+    b.vtx[0].vin[0].sequence = 0xffffffff;
+    b.vtx[0].vout[0].value = 10 * COIN;
+
+    unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+    bool ok = write_block_to_disk(&b, pos, netdir, msg_start);
+    if (ok)
+        block_get_hash(&b, hash_out);
+    block_free(&b);
+    return ok;
+}
+
+struct fake_clock {
+    _Atomic int64_t wall_ms;
+};
+
+static int64_t hdu_fake_now_mono(void *self) { (void)self; return 1; }
+static int64_t hdu_fake_now_wall(void *self)
+{
+    struct fake_clock *c = (struct fake_clock *)self;
+    return atomic_load(&c->wall_ms);
+}
+
+static void hdu_fake_clock_install(struct fake_clock *c, int64_t unix_s)
+{
+    atomic_store(&c->wall_ms, unix_s * 1000);
+    static clock_iface_t iface;
+    iface.now_monotonic_ns = hdu_fake_now_mono;
+    iface.now_wall_ms = hdu_fake_now_wall;
+    iface.self = c;
+    clock_set_default(&iface);
+}
+
+static void hdu_fake_clock_set(struct fake_clock *c, int64_t unix_s)
+{
+    atomic_store(&c->wall_ms, unix_s * 1000);
 }
 
 int test_have_data_unreadable(void)
@@ -295,6 +426,251 @@ int test_have_data_unreadable(void)
         condition_engine_reset_for_testing();
         have_data_unreadable_test_reset();
         sync_monitor_test_set_tip_advance_ts(0);
+        main_state_free(&ms);
+    }
+
+    /* ── 4. GENERALIZED target: a read-fail at an ARBITRARY mid-chain height
+     *      (not tip+1) is detected and targeted. tip+1 does not even exist
+     *      (so the legacy candidate cannot fire); the ONLY signal is
+     *      utxo_apply's select-idle record (the test stub) naming h=5 — well
+     *      below the tip — with a read-failure reason. This is the live
+     *      class the generalization heals: a stale-script/coin-backfill
+     *      replay rewinds utxo_apply's cursor to re-derive an OLDER height
+     *      whose local body has since bit-rotted. ── */
+    {
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        hdu_build_chain(&ms, 10, hashes); /* tip h=9, all blocks readable */
+        condition_engine_set_main_state(&ms);
+        register_have_data_unreadable();
+
+        /* Corrupt an ALREADY-APPLIED mid-chain block's on-disk location —
+         * simulates bit rot discovered long after the block was folded, not
+         * a torn just-fetched tip+1 candidate. */
+        struct block_index *mid = block_map_find(&ms.map_block_index,
+                                                  &hashes[5]);
+        mid->nFile = -1;
+        mid->nDataPos = 0;
+
+        int64_t now = platform_time_wall_unix();
+        sync_monitor_test_set_tip_advance_ts(now - 120); /* tip stalled */
+        g_hdu_stub_height = 5;
+        have_data_unreadable_test_set_select_idle_stubs(
+            hdu_stub_select_idle_height, hdu_stub_select_idle_is_read_failure);
+
+        struct condition_runtime_snapshot pre;
+        int cleared_before = 0;
+        if (condition_engine_get_registered_snapshot("have_data_unreadable",
+                                                      &pre))
+            cleared_before = pre.cleared_count;
+
+        condition_engine_tick();
+
+        bool ok = have_data_unreadable_test_remedy_calls() == 1;
+        /* TEETH: the mid-chain height (h=5), NOT some phantom tip+1 (h=10,
+         * which does not exist in this 10-block chain), was targeted. */
+        ok = ok && (mid->nStatus & BLOCK_HAVE_DATA) == 0;
+        ok = ok && mid->nFile == -1 && mid->nDataPos == 0;
+        /* Every OTHER block stays untouched — only the named height heals. */
+        for (int h = 0; h < 10 && ok; h++) {
+            if (h == 5) continue;
+            struct block_index *bi =
+                block_map_find(&ms.map_block_index, &hashes[h]);
+            ok = ok && bi && (bi->nStatus & BLOCK_HAVE_DATA) != 0;
+        }
+        HDU_CHECK("mid-chain read-fail height (not tip+1) is detected and "
+                  "targeted", ok);
+
+        struct condition_runtime_snapshot snap;
+        bool ok2 = condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &snap);
+        ok2 = ok2 && condition_engine_get_active_count() == 0;
+        ok2 = ok2 && snap.cleared_count == cleared_before + 1;
+        HDU_CHECK("mid-chain heal witnessed/cleared", ok2);
+
+        g_hdu_stub_height = -1;
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        sync_monitor_test_set_tip_advance_ts(0);
+        main_state_free(&ms);
+    }
+
+    /* ── 5. Witness clears on readability (not just "flag gone"): TWO
+     *      candidates at the same height, each backed by a REAL on-disk
+     *      block (so block_index_have_data_readable() does a genuine
+     *      pread + hash-verify, not just an nFile>=0 check). Both start
+     *      torn (nFile=-1); the first remedy clears whichever one
+     *      target_index scans first, leaving the episode active. The
+     *      SURVIVING one is then pointed at its real on-disk position (as
+     *      if a P2P re-fetch landed a good copy under a flag this
+     *      Condition never touched) — the top-of-tick witness check must
+     *      clear the episode via the readability branch, WITHOUT another
+     *      remedy call. ── */
+    {
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "have_data_unreadable", "readable");
+        SetDataDir(dir);
+        char netdir[512];
+        GetDataDir(true, netdir, sizeof(netdir));
+        char blocksdir[560];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos_a, pos_b;
+        struct uint256 hash_a, hash_b;
+        disk_block_pos_init(&pos_a);
+        disk_block_pos_init(&pos_b);
+        bool wrote = hdu_write_real_block(netdir, 91001, &pos_a, &hash_a) &&
+                     hdu_write_real_block(netdir, 91002, &pos_b, &hash_b);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        hdu_build_chain(&ms, 10, hashes); /* tip h=9 */
+        condition_engine_set_main_state(&ms);
+        register_have_data_unreadable();
+
+        struct block_index *tip = block_map_find(&ms.map_block_index,
+                                                 &hashes[9]);
+        struct block_index *a =
+            hdu_insert_torn_at_hash(&ms, 10, &hash_a, tip);
+        struct block_index *b =
+            hdu_insert_torn_at_hash(&ms, 10, &hash_b, tip);
+
+        int64_t now = platform_time_wall_unix();
+        sync_monitor_test_set_tip_advance_ts(now - 120);
+
+        struct condition_runtime_snapshot pre;
+        int cleared_before = 0;
+        if (condition_engine_get_registered_snapshot("have_data_unreadable",
+                                                      &pre))
+            cleared_before = pre.cleared_count;
+
+        condition_engine_tick(); /* clears whichever of A/B target_index scans
+                                   * first; the other remains -> still active
+                                   * (block_map iteration order is not this
+                                   * test's concern, only that exactly one
+                                   * clears). */
+
+        bool a_have = (a->nStatus & BLOCK_HAVE_DATA) != 0;
+        bool b_have = (b->nStatus & BLOCK_HAVE_DATA) != 0;
+        bool ok = wrote;
+        ok = ok && have_data_unreadable_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && (a_have != b_have); /* exactly one cleared, one remains */
+        HDU_CHECK("first remedy clears one candidate, second keeps episode "
+                  "active", ok);
+
+        /* The still-flagged one is independently repaired (NOT by this
+         * Condition) — a real re-fetch landed a valid copy under the flag,
+         * at ITS OWN real on-disk position. */
+        struct block_index *remaining = a_have ? a : b;
+        struct disk_block_pos *remaining_pos = a_have ? &pos_a : &pos_b;
+        remaining->nFile = remaining_pos->nFile;
+        remaining->nDataPos = remaining_pos->nPos;
+
+        condition_engine_tick();
+        bool ok2 = have_data_unreadable_test_remedy_calls() == 1; /* no 2nd
+                                                                    * remedy */
+        struct condition_runtime_snapshot snap;
+        ok2 = ok2 && condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &snap);
+        ok2 = ok2 && condition_engine_get_active_count() == 0;
+        ok2 = ok2 && snap.cleared_count == cleared_before + 1;
+        HDU_CHECK("witness clears on readability, without a remedy call", ok2);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        sync_monitor_test_set_tip_advance_ts(0);
+        main_state_free(&ms);
+        SetDataDir(""); ClearDataDirCache();
+        test_rm_rf(dir);
+    }
+
+    /* ── 6. Exhaustion re-arms after cooldown (never latches permanently):
+     *      four independently-torn candidates at the same height each need
+     *      their own remedy call. The first three exhaust max_attempts=3 and
+     *      page the operator; the engine's continue-with-cooldown tier
+     *      (cooldown_secs=600, cooldown_max_rearms=0) re-arms the attempt
+     *      budget on the very next eligible tick (the first re-arm in an
+     *      episode is free — see condition.c's condition_cooldown_rearm) so a
+     *      4th remedy call runs and finally clears the last candidate. ── */
+    {
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        hdu_build_chain(&ms, 10, hashes); /* tip h=9 */
+        condition_engine_set_main_state(&ms);
+        register_have_data_unreadable();
+
+        struct condition_runtime_snapshot cfg;
+        bool ok = condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &cfg);
+        ok = ok && cfg.max_attempts == 3;
+        ok = ok && cfg.cooldown_secs == 600;
+        ok = ok && cfg.cooldown_max_rearms == 0;
+        HDU_CHECK("cooldown tier configured (never latches at max_attempts)",
+                  ok);
+
+        struct block_index *tip = block_map_find(&ms.map_block_index,
+                                                 &hashes[9]);
+        struct uint256 h1, h2, h3, h4;
+        hdu_insert_torn_variant(&ms, 10, 0x11, &h1, tip);
+        hdu_insert_torn_variant(&ms, 10, 0x22, &h2, tip);
+        hdu_insert_torn_variant(&ms, 10, 0x33, &h3, tip);
+        hdu_insert_torn_variant(&ms, 10, 0x44, &h4, tip);
+
+        int cleared_before = cfg.cleared_count;
+
+        struct fake_clock clock;
+        hdu_fake_clock_install(&clock, 1000);
+        sync_monitor_test_set_tip_advance_ts(1000 - 120);
+
+        hdu_fake_clock_set(&clock, 1000); condition_engine_tick(); /* clears
+                                                                     * #1 */
+        hdu_fake_clock_set(&clock, 1031); condition_engine_tick(); /* #2 */
+        hdu_fake_clock_set(&clock, 1062); condition_engine_tick(); /* #3 */
+
+        struct condition_runtime_snapshot mid;
+        bool okm = condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &mid);
+        okm = okm && have_data_unreadable_test_remedy_calls() == 3;
+        okm = okm && mid.attempts == 3;
+        okm = okm && mid.currently_active;
+        okm = okm && mid.operator_needed_emitted;
+        okm = okm && mid.cleared_count == cleared_before; /* not cleared yet */
+        HDU_CHECK("three attempts exhaust the budget and page the operator",
+                  okm);
+
+        /* The 4th tick: cooldown re-arms the budget (free first re-arm) so
+         * the remedy runs again — never a permanent latch — and clears the
+         * last torn candidate. */
+        hdu_fake_clock_set(&clock, 1093);
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot post;
+        bool okp = condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &post);
+        okp = okp && have_data_unreadable_test_remedy_calls() == 4;
+        okp = okp && !post.currently_active;
+        okp = okp && post.cleared_count == cleared_before + 1;
+        HDU_CHECK("cooldown re-arm fires a 4th remedy that finally clears",
+                  okp);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        sync_monitor_test_set_tip_advance_ts(0);
+        clock_reset_default();
         main_state_free(&ms);
     }
 

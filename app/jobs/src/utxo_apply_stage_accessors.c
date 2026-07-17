@@ -101,3 +101,15 @@ uint64_t utxo_apply_stage_outputs_spent_total(void)
 {
     return atomic_load(&g_ua_total_outputs_spent);
 }
+
+int64_t utxo_apply_stage_select_idle_height(void)
+{
+    return atomic_load(&g_ua_select_idle_height);
+}
+
+bool utxo_apply_stage_select_idle_is_read_failure(void)
+{
+    int64_t reason = atomic_load(&g_ua_select_idle_reason);
+    return reason == UA_SELECT_IDLE_INDEXED_BODY_READ_FAILED ||
+           reason == UA_SELECT_IDLE_STAGE_READ_FAILED;
+}
