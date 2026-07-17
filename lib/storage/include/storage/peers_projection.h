@@ -60,6 +60,32 @@ bool peers_projection_emit_fork_observed(int64_t height, int64_t observed_unix,
                                          const char *tip_hash_a,
                                          const char *tip_hash_b);
 
+/* Bank a node-census observation from a completed (or failed) version
+ * handshake — real peer (source=EV_CENSUS_SOURCE_PEER) OR crawler contact
+ * (source=EV_CENSUS_SOURCE_CRAWLER). Folds into the durable node_census table
+ * (keyed by ip/port; first_seen stays stable across re-observation) plus the
+ * append-only, retention-capped census_observations time-series.
+ *
+ * PEDANTIC INPUT DISCIPLINE (fails closed, never corrupts a row):
+ *  - user_agent is validated byte-by-byte: any non-printable byte (outside
+ *    ASCII 0x20..0x7E) makes the observation MALFORMED — it is REJECTED
+ *    (returns false, bumps the reject counter), never stored.
+ *  - a UA longer than EV_CENSUS_UA_MAX is TRUNCATED to the cap WITH the
+ *    ua_overflow flag set (partial-with-flag, never a silent truncation).
+ *  - success=false records a failed dial: it only bumps dial_fail_count on an
+ *    EXISTING census row and never inserts a new one nor appends a time-series
+ *    row (a failed dial carries no identity).
+ *
+ * user_agent may be NULL/"" (treated as empty, valid). NULL/absent event log
+ * → no-op returning false (fail-open). */
+bool peers_projection_emit_census_observed(const uint8_t ip[16], uint16_t port,
+                                           uint8_t source, bool success,
+                                           const char *user_agent,
+                                           int32_t protocol_version,
+                                           uint64_t services,
+                                           int64_t reported_height,
+                                           int64_t observed_unix);
+
 /* Durable per-peer reputation, folded from the session ledger. All fields are
  * 0 (bandwidth_score/latency) or the accumulated totals for a known address;
  * a missing/never-banked address reads all-zero via the `false` return. */
@@ -95,15 +121,46 @@ size_t peers_projection_for_each_reputation_global(size_t max,
 struct json_value;
 bool peers_projection_dump_state_json(struct json_value *out, const char *key);
 
+/* Durable network census introspection: population, reachable-in-last-24h,
+ * top-N user-agent distribution, protocol-version distribution, and a height
+ * distribution summary. See CLAUDE.md "Adding state introspection". */
+bool census_dump_state_json(struct json_value *out, const char *key);
+
+/* Count node_census rows (the durable network population). */
+uint64_t peers_projection_census_count(peers_projection_t *p);
+
 #ifdef ZCL_TESTING
 /* Lower the append-only ledger retention caps so the delete-oldest path is
  * provable without inserting 50,000 rows. */
 void peers_projection_test_set_retention_caps(uint64_t sessions_cap,
                                               uint64_t forks_cap);
 void peers_projection_test_reset_retention_caps(void);
-/* Row count of a ledger table ("peer_sessions" / "fork_events"), -1 on error. */
+/* Lower the census_observations time-series retention cap. */
+void peers_projection_test_set_census_cap(uint64_t census_cap);
+/* Row count of a ledger table ("peer_sessions" / "fork_events" /
+ * "node_census" / "census_observations"), -1 on error. */
 int64_t peers_projection_test_ledger_count(peers_projection_t *p,
                                            const char *table);
+
+/* Read back one census row for assertions. Any out param may be NULL.
+ * user_agent (if non-NULL) receives up to ua_cap bytes, NUL-terminated.
+ * Returns false when no row exists for (ip,port). */
+struct census_row_view {
+    int32_t  protocol_version;
+    uint64_t services;
+    int64_t  last_reported_height;
+    int64_t  first_seen;
+    int64_t  last_seen;
+    int64_t  last_success;
+    int64_t  dial_success_count;
+    int64_t  dial_fail_count;
+    int32_t  source;
+    int32_t  ua_overflow;
+};
+bool peers_projection_test_census_row(peers_projection_t *p,
+                                      const uint8_t ip[16], uint16_t port,
+                                      struct census_row_view *out,
+                                      char *user_agent, size_t ua_cap);
 #endif
 
 #endif /* ZCL_STORAGE_PEERS_PROJECTION_H */

@@ -2,10 +2,12 @@
 
 #include "test/test_helpers.h"
 
+#include "json/json.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/peers_projection.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -446,6 +448,287 @@ static int t_replace_collision(void)
     return failures;
 }
 
+/* ── node census (EV_NODE_CENSUS_OBSERVED) ──────────────────────────────── */
+
+static int t_census_payload_roundtrip(void)
+{
+    int failures = 0;
+    struct ev_node_census_observed in, out;
+    uint8_t buf[EV_NODE_CENSUS_OBSERVED_FIXED_LEN + EV_CENSUS_UA_MAX];
+    size_t len = 0;
+    memset(&in, 0, sizeof(in));
+    fill_ip(in.ip_v4_or_v6, 30);
+    in.port = 8033;
+    in.source = EV_CENSUS_SOURCE_CRAWLER;
+    in.success = 1;
+    in.ua_overflow = 1;
+    in.protocol_version = 170008;
+    in.services = 0x0123456789abcdefULL;
+    in.reported_height = 3176325;
+    in.observed_unix = 1700000000LL;
+    const char *ua = "/MagicBean:2.1.1-1/";
+    in.ua_len = (uint16_t)strlen(ua);
+    memcpy(in.user_agent, ua, in.ua_len);
+    PP_CHECK("census serialize",
+             ev_node_census_observed_serialize(&in, buf, sizeof(buf), &len));
+    PP_CHECK("census len is fixed+ua",
+             len == EV_NODE_CENSUS_OBSERVED_FIXED_LEN + in.ua_len);
+    PP_CHECK("census parse", ev_node_census_observed_parse(buf, len, &out));
+    PP_CHECK("census roundtrip",
+             memcmp(in.ip_v4_or_v6, out.ip_v4_or_v6, 16) == 0 &&
+             out.port == in.port && out.source == in.source &&
+             out.success == in.success && out.ua_overflow == in.ua_overflow &&
+             out.protocol_version == in.protocol_version &&
+             out.services == in.services &&
+             out.reported_height == in.reported_height &&
+             out.observed_unix == in.observed_unix &&
+             out.ua_len == in.ua_len &&
+             memcmp(out.user_agent, in.user_agent, in.ua_len) == 0);
+    /* short payload rejected; ua_len > cap rejected on serialize. */
+    PP_CHECK("census rejects short",
+             !ev_node_census_observed_parse(buf,
+                 EV_NODE_CENSUS_OBSERVED_FIXED_LEN - 1, &out));
+    struct ev_node_census_observed over = in;
+    over.ua_len = EV_CENSUS_UA_MAX + 1;
+    PP_CHECK("census serialize rejects over-cap ua_len",
+             !ev_node_census_observed_serialize(&over, buf, sizeof(buf), &len));
+    /* a length-mismatched buffer is rejected on parse. */
+    PP_CHECK("census rejects len mismatch",
+             !ev_node_census_observed_parse(buf, len + 1, &out));
+    return failures;
+}
+
+/* Success upserts (first_seen stable, success count accumulates, latest UA/
+ * proto/height win); a failed dial only bumps an existing row's fail count and
+ * NEVER inserts; the time-series appends one row per success only. */
+static int t_census_fold_upsert(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t ip1[16], ip2[16];
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "census_fold");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
+    fill_ip(ip1, 100);
+    fill_ip(ip2, 101);
+    event_log_t *log = event_log_open(elog_path);
+    peers_projection_t *p = peers_projection_open(proj_path, log);
+    peers_projection_set_event_log(log);
+
+    PP_CHECK("emit success #1",
+             peers_projection_emit_census_observed(ip1, 8033,
+                 EV_CENSUS_SOURCE_PEER, true, "/MagicBean:1/", 170008, 1,
+                 1000, 1700000000LL));
+    PP_CHECK("catch up #1", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("census count 1", peers_projection_census_count(p) == 1);
+
+    struct census_row_view row;
+    char uabuf[300];
+    PP_CHECK("read row #1",
+             peers_projection_test_census_row(p, ip1, 8033, &row, uabuf,
+                                              sizeof(uabuf)));
+    PP_CHECK("first_seen set", row.first_seen == 1700000000LL);
+    PP_CHECK("dial_success 1", row.dial_success_count == 1);
+    PP_CHECK("dial_fail 0", row.dial_fail_count == 0);
+    PP_CHECK("last_success set", row.last_success == 1700000000LL);
+    PP_CHECK("proto #1", row.protocol_version == 170008);
+    PP_CHECK("source peer", row.source == EV_CENSUS_SOURCE_PEER);
+    PP_CHECK("ua #1", strcmp(uabuf, "/MagicBean:1/") == 0);
+
+    /* re-observe (success) with newer identity: upsert, first_seen stable. */
+    PP_CHECK("emit success #2",
+             peers_projection_emit_census_observed(ip1, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/MagicBean:2/", 170009, 3,
+                 2000, 1700000100LL));
+    PP_CHECK("catch up #2", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("census still 1 (upsert)", peers_projection_census_count(p) == 1);
+    PP_CHECK("read row #2",
+             peers_projection_test_census_row(p, ip1, 8033, &row, uabuf,
+                                              sizeof(uabuf)));
+    PP_CHECK("first_seen STABLE", row.first_seen == 1700000000LL);
+    PP_CHECK("last_seen advanced", row.last_seen == 1700000100LL);
+    PP_CHECK("dial_success 2", row.dial_success_count == 2);
+    PP_CHECK("proto latest wins", row.protocol_version == 170009);
+    PP_CHECK("height latest wins", row.last_reported_height == 2000);
+    PP_CHECK("ua latest wins", strcmp(uabuf, "/MagicBean:2/") == 0);
+    PP_CHECK("source now crawler", row.source == EV_CENSUS_SOURCE_CRAWLER);
+
+    /* failed dial: bumps fail count only, preserves identity + first_seen. */
+    PP_CHECK("emit fail (known node)",
+             peers_projection_emit_census_observed(ip1, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, false, "", 0, 0, -1, 1700000200LL));
+    PP_CHECK("catch up fail", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("census still 1 after fail",
+             peers_projection_census_count(p) == 1);
+    PP_CHECK("read row #3",
+             peers_projection_test_census_row(p, ip1, 8033, &row, uabuf,
+                                              sizeof(uabuf)));
+    PP_CHECK("dial_fail 1", row.dial_fail_count == 1);
+    PP_CHECK("dial_success unchanged", row.dial_success_count == 2);
+    PP_CHECK("first_seen still stable", row.first_seen == 1700000000LL);
+    PP_CHECK("last_success unchanged", row.last_success == 1700000100LL);
+    PP_CHECK("ua preserved on fail", strcmp(uabuf, "/MagicBean:2/") == 0);
+
+    /* failed dial for a NEVER-SEEN node must NOT insert a row. */
+    PP_CHECK("emit fail (unknown node)",
+             peers_projection_emit_census_observed(ip2, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, false, "", 0, 0, -1, 1700000300LL));
+    PP_CHECK("catch up fail unknown", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("fail never inserts", peers_projection_census_count(p) == 1);
+    PP_CHECK("unknown row absent",
+             !peers_projection_test_census_row(p, ip2, 8033, NULL, NULL, 0));
+
+    /* now a success for ip2 creates the 2nd row. */
+    PP_CHECK("emit success ip2",
+             peers_projection_emit_census_observed(ip2, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/MagicBean:2/", 170009, 4,
+                 2100, 1700000400LL));
+    PP_CHECK("catch up ip2", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("census count 2", peers_projection_census_count(p) == 2);
+
+    /* the time-series appended exactly one row per SUCCESS (3 successes). */
+    PP_CHECK("observations == 3 (successes only)",
+             peers_projection_test_ledger_count(p, "census_observations") == 3);
+
+    peers_projection_set_event_log(NULL);
+    peers_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* Pedantic UA gate: control/high bytes are rejected (no row, no crash); an
+ * over-long UA is stored truncated WITH the ua_overflow flag (never silently). */
+static int t_census_pedantic_ua(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t ip1[16], ip2[16], ip3[16];
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "census_ua");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
+    fill_ip(ip1, 110);
+    fill_ip(ip2, 111);
+    fill_ip(ip3, 112);
+    event_log_t *log = event_log_open(elog_path);
+    peers_projection_t *p = peers_projection_open(proj_path, log);
+    peers_projection_set_event_log(log);
+
+    /* control byte (0x01) → malformed → rejected, no row. */
+    PP_CHECK("control-byte UA rejected",
+             !peers_projection_emit_census_observed(ip1, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\x01Bean/", 1, 1, 1,
+                 1700000000LL));
+    /* high byte (0xFF) → malformed → rejected. */
+    PP_CHECK("high-byte UA rejected",
+             !peers_projection_emit_census_observed(ip2, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\xffBean/", 1, 1, 1,
+                 1700000000LL));
+    PP_CHECK("catch up (no rows)", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("malformed produced no rows",
+             peers_projection_census_count(p) == 0);
+
+    /* over-long (400 printable chars) → accepted, truncated to cap WITH flag. */
+    char big[400];
+    memset(big, 'x', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+    PP_CHECK("oversized UA accepted (truncate+flag)",
+             peers_projection_emit_census_observed(ip3, 8033,
+                 EV_CENSUS_SOURCE_CRAWLER, true, big, 170008, 1, 500,
+                 1700000000LL));
+    PP_CHECK("catch up oversized", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("oversized inserted one row",
+             peers_projection_census_count(p) == 1);
+    struct census_row_view row;
+    char uabuf[512];
+    PP_CHECK("read oversized row",
+             peers_projection_test_census_row(p, ip3, 8033, &row, uabuf,
+                                              sizeof(uabuf)));
+    PP_CHECK("ua_overflow flag set", row.ua_overflow == 1);
+    PP_CHECK("ua truncated to cap (not silent)",
+             strlen(uabuf) == EV_CENSUS_UA_MAX);
+
+    /* the gate does not wedge: a normal UA still lands afterward. */
+    PP_CHECK("normal UA still works after reject",
+             peers_projection_emit_census_observed(ip1, 8033,
+                 EV_CENSUS_SOURCE_PEER, true, "/MagicBean:ok/", 170008, 1, 1,
+                 1700000000LL));
+    PP_CHECK("catch up normal", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("census count 2 after normal",
+             peers_projection_census_count(p) == 2);
+
+    peers_projection_set_event_log(NULL);
+    peers_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* The census_observations time-series honors its delete-oldest retention cap;
+ * node_census (the durable book) is NOT capped. */
+static int t_census_retention(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t ip[16];
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "census_ret");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
+    fill_ip(ip, 120);
+    event_log_t *log = event_log_open(elog_path);
+    peers_projection_t *p = peers_projection_open(proj_path, log);
+    peers_projection_set_event_log(log);
+
+    peers_projection_test_set_census_cap(3);
+    for (int i = 0; i < 5; i++)
+        PP_CHECK("emit success (retention)",
+                 peers_projection_emit_census_observed(ip, (uint16_t)(9000 + i),
+                     EV_CENSUS_SOURCE_CRAWLER, true, "/MagicBean:r/", 170008,
+                     1, 1000 + i, 1700000000LL + i));
+    PP_CHECK("catch up retention", peers_projection_catch_up(p) != UINT64_MAX);
+    PP_CHECK("observations capped to 3",
+             peers_projection_test_ledger_count(p, "census_observations") == 3);
+    PP_CHECK("node_census NOT capped (5 distinct nodes)",
+             peers_projection_census_count(p) == 5);
+
+    peers_projection_test_reset_retention_caps();
+    peers_projection_set_event_log(NULL);
+    peers_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* The census dumper produces a well-formed object without crashing. */
+static int t_census_dumper_smoke(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t ip[16];
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "census_dump");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
+    fill_ip(ip, 130);
+    event_log_t *log = event_log_open(elog_path);
+    peers_projection_t *p = peers_projection_open(proj_path, log);
+    peers_projection_set_event_log(log);
+    (void)peers_projection_emit_census_observed(ip, 8033,
+        EV_CENSUS_SOURCE_PEER, true, "/MagicBean:dump/", 170008, 1, 4242,
+        1700000000LL);
+    (void)peers_projection_catch_up(p);
+
+    struct json_value out;
+    json_init(&out);
+    PP_CHECK("census dump ok", census_dump_state_json(&out, NULL));
+    json_free(&out);
+
+    peers_projection_set_event_log(NULL);
+    peers_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_peers_projection(void)
 {
     int failures = 0;
@@ -457,6 +740,11 @@ int test_peers_projection(void)
     failures += t_reputation_roundtrip();
     failures += t_reputation_fallback_clean();
     failures += t_ledger_retention();
+    failures += t_census_payload_roundtrip();
+    failures += t_census_fold_upsert();
+    failures += t_census_pedantic_ua();
+    failures += t_census_retention();
+    failures += t_census_dumper_smoke();
     printf("peers_projection: %d failures\n", failures);
     return failures;
 }

@@ -9,6 +9,7 @@
 #include "net/download.h"
 #include "net/fast_sync.h"
 #include "storage/peers_projection.h"
+#include "storage/event_log_payloads.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -667,6 +668,23 @@ void peer_lifecycle_note_handshake_complete(const struct p2p_node *node)
                     "addr=%s duration=%llds services=%llu subver=%s",
                     node->addr_name, (long long)duration,
                     (unsigned long long)node->services, node->sub_ver);
+
+        /* Bank the node-identity census from this completed handshake (source =
+         * real peer). Key onions on their torv3 head (their ip[16] is a
+         * placeholder that would collide); clearnet keeps its real IP. The emit
+         * fails closed on a malformed user-agent and is a no-op if no event log
+         * is wired — so this never blocks or corrupts on bad input. Called
+         * OUTSIDE g_pl.lock: the emit does event-log I/O. */
+        const struct net_addr *na = &node->addr.svc.addr;
+        uint8_t census_key[16];
+        if (na->has_torv3)
+            memcpy(census_key, na->torv3, 16);
+        else
+            memcpy(census_key, na->ip, 16);
+        (void)peers_projection_emit_census_observed(
+            census_key, node->addr.svc.port, EV_CENSUS_SOURCE_PEER,
+            /*success=*/true, node->sub_ver, node->version, node->services,
+            (int64_t)node->starting_height, GetTime());
     }
 }
 
