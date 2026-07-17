@@ -660,6 +660,18 @@ bool boot_refold_body_span_contiguous(struct main_state *ms,
 bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
                                         struct sqlite3 *progress_db);
 
+/* Pure predicate (impl in config/src/boot_legacy_import.c):
+ * decide whether boot should auto-pull zclassicd's LevelDB block index.
+ * Fires on the ratio trigger (local_index_size below 90% of chain_h) OR
+ * the empty-datadir trigger (local_index_size == 0) — the latter exists
+ * because on a genuinely fresh datadir chain_h is ALSO 0, so the ratio
+ * test alone degenerates to `0 < 0` and never fires. Either trigger still
+ * requires legacy_source_present (caller stat()s ~/.zclassic/blocks/index
+ * and passes the result in) — -nolegacyimport short-circuits the caller
+ * before this is even evaluated. */
+bool boot_need_legacy_header_pull(int64_t local_index_size, int64_t chain_h,
+                                  bool legacy_source_present);
+
 bool app_is_running(void);
 void app_add_node(const char *host, int port);
 
