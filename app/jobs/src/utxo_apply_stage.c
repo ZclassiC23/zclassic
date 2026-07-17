@@ -366,12 +366,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     struct block blk;
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
-        utxo_apply_select_idle_note(next_h, UA_SELECT_IDLE_STAGE_READ_FAILED,
-                                    bi);
+        utxo_apply_select_idle_note(next_h, UA_SELECT_IDLE_STAGE_READ_FAILED, bi);
         block_free(&blk);
-        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
+        /* body_persist already verified this body — names a typed blocker (see stage_body_read_hold). */
+        return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock, &g_ua_last_blocked_unix);
     }
+    stage_body_read_hold_clear(STAGE_NAME);
 
     struct delta_summary summary;
     utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
@@ -855,10 +855,10 @@ void utxo_apply_stage_shutdown(void)
     coins_ram_shutdown();
 
     pthread_mutex_lock(&g_lock);
-    /* Registry hygiene (tests re-init in-process): init re-registers the
-     * gap blocker from the durable marker, so clearing here loses nothing. */
+    /* Registry hygiene: init re-registers the gap blocker from the durable marker, so clearing here loses nothing. */
     blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
     utxo_apply_evidence_clear();
+    stage_body_read_hold_clear(STAGE_NAME);
     if (g_stage) {
         stage_destroy(g_stage);
         g_stage = NULL;

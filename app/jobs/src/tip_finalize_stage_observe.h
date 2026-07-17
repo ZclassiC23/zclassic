@@ -37,6 +37,7 @@ void tip_finalize_observe_mark_step(void);
 void tip_finalize_observe_mark_blocked(
     enum tip_finalize_blocked_class cls);
 void tip_finalize_observe_note_cursor_gap(int next_h, uint64_t uv_cursor);
+void tip_finalize_observe_clear_cursor_gap(void);
 void tip_finalize_observe_note_reorg_rewind(void);
 void tip_finalize_observe_record_precondition_block(int height,
                                                     const char *reason);

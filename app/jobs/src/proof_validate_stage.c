@@ -227,9 +227,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     int found = proof_validate_script_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* Row missing despite floor — a durable upstream-log hole, not
+         * "not yet" (see stage_upstream_log_hole_note). JOB_IDLE, never
+         * JOB_BLOCKED: reducer_frontier_reconcile_light is the healer. */
+        stage_upstream_log_hole_note(STAGE_NAME, "script_validate_log",
+                                     next_h, sv_cursor, &g_last_blocked_unix);
         return JOB_IDLE;
     }
+    stage_upstream_log_hole_clear(STAGE_NAME);
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -296,14 +301,18 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                          cached.binding_sig_verified);
         if (!cached.ok)
             add_failure_counter(cached.first_failure_proof_type, NULL);
+        stage_body_read_hold_clear(STAGE_NAME);
     } else {
     struct block blk;
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
         block_free(&blk);
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
+        /* body_persist already hash+merkle verified this body — a later
+         * read failure is not a normal wait (see stage_body_read_hold). */
+        return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock,
+                                    &g_last_blocked_unix);
     }
+    stage_body_read_hold_clear(STAGE_NAME);
     /* The sapling-params wait gate is a VERIFICATION precondition; in the
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
      * params need not be loaded. Keep the gate ONLY when actually verifying. */
@@ -483,6 +492,11 @@ void proof_validate_stage_shutdown(void)
     proof_validate_upstream_hash_clear();
     proof_validate_upstream_verdict_clear();
     proof_validate_upstream_evidence_clear();
+    /* Registry hygiene (tests re-init in-process): both are re-derived from
+     * live state the next time the condition fires, so clearing here loses
+     * nothing. */
+    stage_upstream_log_hole_clear(STAGE_NAME);
+    stage_body_read_hold_clear(STAGE_NAME);
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);
