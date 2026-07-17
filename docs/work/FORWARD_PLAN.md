@@ -13,8 +13,9 @@
 
 ## #1 PRIORITY — cure canonical shielded state, then earn clean evidence
 
-> **Canonical is wedged now.** As of 2026-07-12 the public node is held at
-> H\*=3,176,325 by incomplete historical shielded anchors and nullifiers.
+> **Canonical is wedged now**, below tip, by incomplete historical shielded
+> anchors and nullifiers (verify the live H\* via `zcl_status` / `dumpstate
+> reducer_frontier`; `docs/HANDOFF.md` holds current state).
 > `ab512d577` repaired an earlier transparent snapshot-loader failure; it did
 > not prove or install complete shielded history. A snapshot payload digest and
 > a matching validated anchor header authenticate the artifact and its chain

@@ -42,11 +42,13 @@ higher one.
 7. **Owner authority:** canonical deployment, stable publication, capability
    increases, and irreversible migrations stay explicitly owner-gated.
 
-## Current red baseline — 2026-07-12
+## Current red baseline
 
-- Canonical is wedged at H\*=3,176,325 (`coins_applied=3,176,326`) on missing
-  historical shielded anchors/nullifiers. Downstream peer, download, script,
-  mirror, or operator-latch symptoms must not outrank that causal gap.
+- Canonical is wedged below tip on missing historical shielded
+  anchors/nullifiers (verify the live H\* via `zcl_status` / `dumpstate
+  reducer_frontier`; `docs/HANDOFF.md` holds current state). Downstream peer,
+  download, script, mirror, or operator-latch symptoms must not outrank that
+  causal gap.
 - The previous borrowed snapshot path repaired a transparent-loader failure and
   once reached tip. Its payload digest and matching local header do not make its
   state contents PoW- or consensus-bound.

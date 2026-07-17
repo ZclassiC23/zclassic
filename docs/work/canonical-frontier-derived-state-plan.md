@@ -1,4 +1,4 @@
-> **2026-07-12 correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged at H*=3,176,325 on incomplete shielded anchors/nullifiers. The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
+> **Correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged below tip on incomplete shielded anchors/nullifiers (verify the live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 

@@ -136,7 +136,9 @@ The robust path for a known-good datadir is to copy one onto the target lane.
 The historical deployed path is `-load-snapshot-at-own-height`: it loads a
 digest-verified borrowed UTXO snapshot above coins-best and folds forward. It
 previously reached tip from the h=3,156,809 artifact (count 1,344,918), but
-canonical is now wedged at H*=3,176,325 on incomplete shielded history. The
+canonical is now wedged below tip on incomplete shielded history (verify the
+live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md`
+holds current state). The
 snapshot's `anchor_block_hash` must
 byte-equal this node's in-binary PoW header at the seed height or boot FATALs —
 a wrong-chain or missing anchor still fails closed (`config/src/boot_refold_staged.c`,

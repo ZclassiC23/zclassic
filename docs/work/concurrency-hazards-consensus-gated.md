@@ -1,7 +1,8 @@
-> **CORRECTION 2026-07-12:** `ab512d577` repaired the earlier transparent
+> **CORRECTION:** `ab512d577` repaired the earlier transparent
 > coins-loader failure, but the borrowed snapshot did not prove complete state.
-> Canonical is now held at H*=3,176,325 by incomplete shielded anchor/nullifier
-> history. These hazards remain valid analysis, but live validation waits for
+> Canonical is now held below tip by incomplete shielded anchor/nullifier
+> history (verify the live H* via `zcl_status` / `dumpstate reducer_frontier`;
+> `docs/HANDOFF.md` holds current state). These hazards remain valid analysis, but live validation waits for
 > the complete-state cure and copy proof.
 
 # Consensus-gated concurrency hazards (boot-validation blocked)

@@ -120,8 +120,10 @@ the single trusted UTXO commitment).
 
 ## 7. Sequencing
 
-1. **Live-wedge precondition — NOT MET.** Canonical is held at H*=3,176,325 on
-   incomplete shielded state. `ab512d577` repaired only the earlier transparent
+1. **Live-wedge precondition — NOT MET.** Canonical is held below tip on
+   incomplete shielded state (verify the live H* via `zcl_status` /
+   `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state).
+   `ab512d577` repaired only the earlier transparent
    loader. No shadow/soak promotion may treat the borrowed snapshot as a
    consensus binding or the current chain as healthy.
 2. **After fork single-sourcing** — this rides `reorg_is_allowed` /

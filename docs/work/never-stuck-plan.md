@@ -1,7 +1,9 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
-> **STATUS (2026-07-12): canonical is wedged at H*=3,176,325** on incomplete
-> shielded anchor/nullifier history. Commit `ab512d577` repaired the earlier
+> **STATUS: canonical is wedged below tip** on incomplete
+> shielded anchor/nullifier history (verify the live H* via `zcl_status` /
+> `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state).
+> Commit `ab512d577` repaired the earlier
 > transparent-loader failure and temporarily reached tip from the borrowed
 > h=3,156,809 artifact; it did not prove complete state. This doc is retained
 > as historical diagnosis and as input to the current sovereign cure, but the
@@ -145,8 +147,9 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 ## 3. Step 0 — immediate live recovery (no new code, copy-prove first)
 
 The 2026-06-23 node briefly reached tip after `ab512d577` repaired the
-transparent loader, but canonical is now wedged at H*=3,176,325 on incomplete
-shielded history. This Step-0 recipe remains only a fallback. On a COPY first
+transparent loader, but canonical is now wedged below tip on incomplete
+shielded history (verify the live H* via `zcl_status` / `dumpstate
+reducer_frontier`; `docs/HANDOFF.md` holds current state). This Step-0 recipe remains only a fallback. On a COPY first
 (`cp -a`, `--importblockindex` then normal boot), verify tip==network + healthy + hash-match
 vs zclassicd at ≥2 heights, then deploy to live. `rm -f build/bin/zclassic23` + verify
 build_commit. Band-aid to unblock soak, NOT the cure.

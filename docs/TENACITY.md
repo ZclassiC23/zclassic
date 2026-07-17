@@ -12,9 +12,10 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
 Commit `ab512d577` fixed the earlier transparent coins-above-seed loader failure,
-but it did **not** close the wedge class. As of 2026-07-12 canonical is held at
-H\*=3,176,325 because historical shielded anchors and nullifiers are incomplete.
-The borrowed h=3,156,809 artifact's payload SHA3 proves file integrity and its
+but it did **not** close the wedge class. Canonical is held below tip because
+historical shielded anchors and nullifiers are incomplete (verify the live H\*
+via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
+state). The borrowed h=3,156,809 artifact's payload SHA3 proves file integrity and its
 anchor hash identifies a validated local header; neither proves that its UTXO,
 Sapling/Sprout, or nullifier contents were derived from the chain because
 ZClassic headers commit none of those state roots. The **sovereign cure** is a

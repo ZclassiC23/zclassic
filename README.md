@@ -5,7 +5,7 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint%20(83%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
 
-One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
+One self-contained pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
 explorer, a shielded wallet, a P2P file marketplace, a ZNAM on-chain name
 registry, ZCL messaging, cross-chain atomic-swap scaffolding, and a native
@@ -25,7 +25,9 @@ none are yet end-to-end CI-verified across a live soak. Don't rely on it as your
 only mainnet node yet.
 
 It runs on ZClassic mainnet on the `zclassicd` consensus floor, but the public
-canonical node is currently **wedged at H\*=3,176,325** by incomplete historical
+canonical node is currently **wedged below tip** (verify the live H\* via
+`zcl_status` / `dumpstate reducer_frontier`; [`docs/HANDOFF.md`](docs/HANDOFF.md)
+holds current state) by incomplete historical
 shielded anchors/nullifiers. A borrowed snapshot previously brought its
 transparent state to tip. Its anchor hash is checked against a validated local
 header, but ZClassic headers do not commit the snapshot's UTXO or shielded-state
@@ -313,7 +315,7 @@ through pure projections, and chain progress is a stage cursor on disk** — so
 silent halts are unreachable by construction.
 
 ```
-zclassic23 (~15 MB, static)
+zclassic23 (single static binary)
 ├── Full node      P2P 8033, RPC 18232, Equihash 200,9, Sapling
 ├── Tor            in-process .onion (no SOCKS)
 ├── MVC            Models (SQLite) · Controllers (C23) · Views (HTML/JSON)
