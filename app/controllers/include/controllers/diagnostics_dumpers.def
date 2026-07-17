@@ -383,6 +383,18 @@
                "app/controllers/src/chain_segment_controller.c",
                "filesystem_snapshot", "bounded_lookup", NULL, NULL, NULL,
                "lib/test/src/test_chain_segment.c", true),
+    DIAG_ENTRY("rom", rom_dump_state_json,
+               "L0-L3 trust machine catalog: compiled SHA3 UTXO checkpoint "
+               "(height/block_hash/sha3_hash/utxo_count), what ZClassic "
+               "headers commit vs NOT commit per field, per-layer coverage "
+               "(L0 ROM height, L1 sealed-segment range, L2 reducer H*/floor, "
+               "L3 active+external tip), and cheaply-readable projection "
+               "cursors (MMB leaves/mountains, utxo_root_ladder rung/dense "
+               "height). See docs/ROM.md",
+               "storage", "controller",
+               "app/controllers/src/diagnostics_registry_rom.c",
+               "in_process_snapshot", "cheap", NULL, NULL, NULL,
+               "lib/test/src/test_rom_dump.c", true),
     DIAG_LOCAL("publication_cas",
                consensus_state_publication_cas_dump_state_json,
                "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "

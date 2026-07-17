@@ -24,6 +24,7 @@ points in order; dated evidence and backlog material are intentionally omitted.
 ## Mental model (read before touching code)
 
 - [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) — the node as a state machine: append-only log → reducer stages → projections → health.
+- [`ROM.md`](./ROM.md) — the L0-L3 trust machine: what the compiled checkpoint commits, what each layer guarantees, how to read `dumpstate rom`.
 - [`CODEBASE_MAP.md`](./CODEBASE_MAP.md) — where things live + how to do each thing.
 - [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) — things that look broken but are intentional or already-done; read before "fixing" or re-proposing anything.
 - [`AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md) — the required feature-slice recipe: REST resources, ActiveRecord models, validations, relationships, schema, services, MCP/native surfaces.
