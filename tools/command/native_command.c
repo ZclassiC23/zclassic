@@ -37,6 +37,7 @@
 #include "controllers/wallet_native_handlers.h"
 #include "controllers/diagnostics_native_handlers.h"
 #include "controllers/net_native_handlers.h"
+#include "controllers/app_native_handlers.h"
 #include "controllers/meta_native_handlers.h"
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"
@@ -128,6 +129,15 @@ static const struct {
     { "ops.metrics", "zcl_metrics" },
     { "ops.postmortem.list", "zcl_postmortem_list" },
     { "ops.recovery.status", "zcl_refold_status" },
+    /* app features (ZCL app controller port — read surface) */
+    { "app.names.resolve", "zcl_name_resolve" },
+    { "app.names.list", "zcl_name_list" },
+    { "app.tokens.list", "zcl_tokens" },
+    { "app.messaging.inbox", "zcl_msg_inbox" },
+    { "app.market.list", "zcl_market_list" },
+    { "app.market.status", "zcl_market_status" },
+    { "app.swap.chains", "zcl_swap_chains" },
+    { "app.swap.list", "zcl_swap_list" },
 };
 
 const char *zcl_native_bridge_tool_for_path(const char *path)
@@ -175,6 +185,15 @@ static const struct {
     { "ops.timeline", zcl_native_timeline_body },
     { "ops.metrics", zcl_native_metrics_body },
     { "ops.postmortem.list", zcl_native_postmortem_list_body },
+    /* app features (ZCL app controller port — read surface) */
+    { "app.names.resolve", zcl_native_name_resolve_body },
+    { "app.names.list", zcl_native_name_list_body },
+    { "app.tokens.list", zcl_native_zslp_listtokens_body },
+    { "app.messaging.inbox", zcl_native_msg_inbox_body },
+    { "app.market.list", zcl_native_zmarket_list_body },
+    { "app.market.status", zcl_native_zmarket_status_body },
+    { "app.swap.chains", zcl_native_swap_chains_body },
+    { "app.swap.list", zcl_native_swap_list_body },
 };
 
 enum bridge_rpc_array_kind {
