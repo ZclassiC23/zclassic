@@ -76,6 +76,7 @@
 #include "services/chain_tip_watchdog.h"
 #include "services/sticky_escalator.h"
 #include "services/authority_projection_audit.h"
+#include "services/address_index_service.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
 #include "conditions/reducer_drive_watchdog.h"

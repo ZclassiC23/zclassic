@@ -312,6 +312,16 @@
                     "cross-check: runs/checks/passes/divergences, skip "
                     "reasons, streak, last roots+counts+height, blocker latch",
                     DIAG_OWNER_LOCAL, DIAG_TEST_DEFAULT),
+    DIAG_ENTRY("address_index", address_index_dump_state_json,
+               "script-appearance projection (-addressindex): enabled, cursor, "
+               "H*, gap, rows, SHA3 digest, coverage blocker; "
+               "key=<64-hex scripthash>[:from_height] -> appearances + balance",
+               "projection", "projection",
+               "app/services/src/address_index_service.c",
+               "persisted_projection_snapshot", "bounded_lookup",
+               "64-hex scripthash [:from_height]", "<64-hex scripthash>",
+               "<64-hex scripthash>:3170000",
+               "lib/test/src/test_address_index.c", true),
     DIAG_SERVICE("soak", soak_dump_state_json,
                  "soak attestation log: lines_written, last_ts, "
                  "last_healthy, rotations, write_failures, file_bytes",
