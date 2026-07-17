@@ -3713,6 +3713,8 @@ int main(int argc, char **argv)
                 argv[i] + sizeof("-verify-consensus-bundle=") - 1;
         else if (strcmp(argv[i], "-ratify-mint-anchor") == 0)
             ctx.ratify_mint_anchor = true;
+        else if (strcmp(argv[i], "-verify-rom") == 0)
+            ctx.verify_rom = true;
         else if (strcmp(argv[i], "-export-consensus-bundle") == 0)
             ctx.export_consensus_bundle = true;
         else if (strncmp(argv[i], "-promote-shielded-history=",

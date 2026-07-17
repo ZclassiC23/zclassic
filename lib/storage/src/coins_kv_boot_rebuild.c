@@ -119,7 +119,18 @@ bool coins_kv_boot_rebuild_if_needed(sqlite3 *progress_db,
  * The symptom is prevout_unresolved at the first post-anchor block
  * with a spend: the anchor candidate is rejected and the tip pins
  * at the import anchor. Same ATTACH-copy + done-stamp shape;
- * idempotent via the same migration key. */
+ * idempotent via the same migration key.
+ *
+ * DELIBERATELY HEIGHT-AGNOSTIC — it copies whatever UTXO set the source node.db
+ * holds and does NOT re-check the compiled SHA3 UTXO checkpoint here. It is
+ * called at the checkpoint height (boot_refold_from_anchor_reset, the anchor
+ * reseed) AND at the TIP (reindex_epilogue after a genesis..tip replay,
+ * utxo_recovery_restore after a cold import), where the checkpoint's cp->height
+ * commitment legitimately does not apply. The checkpoint content re-check lives
+ * at the checkpoint-positioned install sites: the -refold-from-anchor hard-assert
+ * (which calls coins_kv_verify_against_checkpoint on this seed's output) and the
+ * bundle installer's activate_verify_destination. Operators can re-derive the
+ * commitment against the baked checkpoint on demand with the -verify-rom verb. */
 bool coins_kv_seed_from_node_db(sqlite3 *progress_db,
                                 const char *node_db_path)
 {

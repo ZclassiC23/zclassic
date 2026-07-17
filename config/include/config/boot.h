@@ -130,6 +130,15 @@ struct app_context {
                                  * DURABLE set (never the coins_ram overlay); no
                                  * fold. Exits after RATIFIED or a typed REFUSED.
                                  * Default false. */
+    bool verify_rom;           /* -verify-rom : TERMINAL read-only verifier. Re-
+                                 * derives the canonical coins_kv commitment + count
+                                 * (coins_kv_verify_against_checkpoint) and compares
+                                 * them to the compiled SHA3 UTXO checkpoint, then
+                                 * prints PASS/FAIL with the derived vs baked digests
+                                 * and _exit()s (0 PASS / 1 FAIL). Reads only; stamps
+                                 * NOTHING. A PASS is expected only on a datadir
+                                 * positioned AT the checkpoint (applied == cp->height
+                                 * + 1). Default false. */
     bool export_consensus_bundle; /* -export-consensus-bundle : TERMINAL offline
                                  * checkpoint-content exporter. Emits the
                                  * zcl.consensus_state_bundle.v1 from a finished
@@ -463,6 +472,15 @@ struct boot_ratify_result {
  * after printing RATIFIED (0) or a typed REFUSED (1). Reads the OPEN progress
  * store's DURABLE coins_kv (refuses if the coins_ram overlay is active). */
 void boot_ratify_mint_anchor(const char *datadir);
+
+/* -verify-rom=(no arg, acts on -datadir) (impl in config/src/boot_verify_rom.c):
+ * TERMINAL — NEVER returns; it _exit()s after printing PASS (0) or FAIL (1). It
+ * re-derives the canonical coins_kv commitment + count against the compiled SHA3
+ * UTXO checkpoint (coins_kv_verify_against_checkpoint) on demand and prints the
+ * derived-vs-baked digests. Read-only: reads the OPEN progress store's DURABLE
+ * coins_kv (refuses if the coins_ram overlay is active); stamps NOTHING. A PASS is
+ * only expected on a datadir positioned AT the checkpoint height. */
+void boot_verify_rom(const char *datadir);
 
 /* -export-consensus-bundle=(no arg, acts on -datadir) (impl in
  * config/src/boot_export_consensus_bundle.c): TERMINAL — NEVER returns; it

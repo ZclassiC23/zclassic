@@ -485,23 +485,22 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     (void)node_db_state_set(ndb, "sapling_tree_rescan_height", NULL, 0);
 
     /* (ii) HARD-ASSERT the re-seeded anchor set against the compiled checkpoint
-     * BEFORE arming any cursor. A height-correct/state-wrong set must FATAL
-     * here — never advance the fold on an unproven base. (pattern from
-     * utxo_recovery_restore.c:298-322.) */
+     * BEFORE arming any cursor. Routed through the ONE shared checkpoint verifier
+     * coins_kv_verify_against_checkpoint (also used by -verify-rom) so the
+     * digest/count comparison has a single impl; a wrong set must FATAL here. */
     uint8_t got_root[32] = {0};
-    int crc = reseed_ok ? coins_kv_commitment(rpdb, got_root) : -1;
-    int64_t got_count = reseed_ok ? coins_kv_count(rpdb) : -1;
-    bool anchor_proven = reseed_ok && crc == 0 &&
-                         memcmp(got_root, cp->sha3_hash, 32) == 0 &&
-                         got_count == (int64_t)cp->utxo_count;
+    int64_t got_count = -1;
+    char vreason[256] = {0};
+    bool anchor_proven =
+        reseed_ok && coins_kv_verify_against_checkpoint(rpdb, cp, got_root,
+                                                        &got_count, vreason,
+                                                        sizeof vreason);
     if (!anchor_proven) {
         fprintf(stderr,
                 "FATAL: -refold-from-anchor: re-seeded anchor set FAILED the "
-                "SHA3/count check (count=%lld want=%llu, commitment_match=%d, "
-                "reseed_ok=%d) — refusing to fold from an unproven anchor\n",
-                (long long)got_count, (unsigned long long)cp->utxo_count,
-                (crc == 0 && memcmp(got_root, cp->sha3_hash, 32) == 0) ? 1 : 0,
-                reseed_ok ? 1 : 0);
+                "SHA3/count check (%s, reseed_ok=%d) — refusing to fold from an "
+                "unproven anchor\n",
+                reseed_ok ? vreason : "reseed failed", reseed_ok ? 1 : 0);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "check=refold_from_anchor anchor_h=%d reseed anchor set "
                     "mismatch (count=%lld want=%llu) — the node.db `utxos` "
