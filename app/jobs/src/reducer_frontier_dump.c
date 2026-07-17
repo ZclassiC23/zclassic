@@ -684,6 +684,12 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)active_chain_extend_window_have_data_fast_count());
     json_push_kv_int(out, "window_extend_slow",
                      (int64_t)active_chain_extend_window_have_data_slow_count());
+    /* Heights the fast path unwedged by merging BLOCK_HAVE_DATA across a
+     * bodiless best-header ancestry twin and its body-bearing block_map copy
+     * (the live H+1 duplicate-object window wedge). A nonzero value is the
+     * rescue firing, not a fault — see chainstate.c have_data_by_hash. */
+    json_push_kv_int(out, "window_dup_data_rescued",
+                     (int64_t)active_chain_extend_window_dup_data_rescued_count());
 
     /* Rolling self-verified rewind bases (Pillar 3): every currently-available
      * safe rewind target and the O(delta) distance from H* to the nearest

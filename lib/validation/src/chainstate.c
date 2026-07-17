@@ -6,7 +6,9 @@
 
 #include "validation/chainstate.h"
 #include "validation/chain_linkage_check.h"
+#include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "storage/progress_store.h"
 #include <limits.h>
 #include <sqlite3.h>
@@ -19,6 +21,12 @@
  * active_chain_extend_window_have_data_{fast,slow}_count(). */
 static _Atomic uint64_t g_window_extend_fast_hits = 0;
 static _Atomic uint64_t g_window_extend_slow_hits = 0;
+/* Times the have-data merge recognized a body on a same-hash block_map twin of
+ * a bodiless best-header ancestry object (the live H+1 duplicate wedge). A live
+ * climb on this counter names the heights the duplicate-body merge rescued —
+ * see active_chain_extend_window_have_data / have_data_by_hash. */
+static _Atomic uint64_t g_window_dup_data_rescued = 0;
+static struct log_throttle g_dup_data_throttle = LOG_THROTTLE_INIT;
 
 uint64_t active_chain_extend_window_have_data_fast_count(void)
 {
@@ -29,6 +37,12 @@ uint64_t active_chain_extend_window_have_data_fast_count(void)
 uint64_t active_chain_extend_window_have_data_slow_count(void)
 {
     return atomic_load_explicit(&g_window_extend_slow_hits,
+                                memory_order_relaxed);
+}
+
+uint64_t active_chain_extend_window_dup_data_rescued_count(void)
+{
+    return atomic_load_explicit(&g_window_dup_data_rescued,
                                 memory_order_relaxed);
 }
 
@@ -519,6 +533,46 @@ bool active_chain_extend_window(struct active_chain *c,
     return active_chain_fill_window(c, candidate);
 }
 
+/* Resolve the object that actually HOLDS the body for `anc`'s block, merging
+ * BLOCK_HAVE_DATA across same-hash duplicates. best_header's ancestry can
+ * reference a DUPLICATE block_index that stayed bodiless while body_persist
+ * release-published BLOCK_HAVE_DATA onto the block_map's canonical object for
+ * the SAME hash (the live H+1 window wedge: the ancestry twin never gets the
+ * bit, so a raw `anc->nStatus & BLOCK_HAVE_DATA` read no data and the walk
+ * stopped one block short of a body-present successor). Return the body-bearing
+ * object — `anc` itself when it carries the body, else the block_map entry for
+ * anc's hash when THAT does — or NULL when neither does.
+ *
+ * This admits NOTHING unverified: `anc` is already on best_header's proven-
+ * continuous ancestry (the caller's hash guard), and the twin is the SAME
+ * consensus block (identical hash => identical hashPrevBlock and height); we
+ * only recognize which copy the body landed on. A genuinely bodiless height (no
+ * same-hash twin carries the body) still returns NULL and stops the walk, so a
+ * header-only / missing-body successor is never exposed. */
+static struct block_index *have_data_by_hash(struct block_map *m,
+                                             struct block_index *anc)
+{
+    if (!anc)
+        return NULL;
+    if (block_index_status_load(anc) & BLOCK_HAVE_DATA)
+        return anc;
+    struct block_index *twin = m ? block_map_find(m, &anc->hashBlock) : NULL;
+    if (!twin || twin == anc || twin->nHeight != anc->nHeight ||
+        block_has_any_failure(twin) ||
+        !(block_index_status_load(twin) & BLOCK_HAVE_DATA))
+        return NULL;
+    atomic_fetch_add_explicit(&g_window_dup_data_rescued, 1,
+                              memory_order_relaxed);
+    uint64_t reps = 0;
+    if (log_throttle_should_emit(&g_dup_data_throttle, (uint64_t)anc->nHeight,
+                                 platform_time_wall_unix(), 60, &reps))
+        LOG_WARN("chainstate",
+                 "window extend: bodiless best-header ancestry at height %d "
+                 "rescued via same-hash block_map body twin (suppressed=%llu)",
+                 anc->nHeight, (unsigned long long)reps);
+    return twin;
+}
+
 /* Upper bound on how far a single anchored extend reaches above the window —
  * keeps the bounded map scan and the contiguity walk cheap. ~a few days of
  * blocks; the lookahead lead is normally a handful. */
@@ -627,10 +681,16 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
         struct block_index *cand = tip;
         for (int h = lo; h <= hi; h++) {
             struct block_index *anc = block_index_get_ancestor(best_header, h);
-            if (!anc || block_has_any_failure(anc) ||
-                !(anc->nStatus & BLOCK_HAVE_DATA))
+            if (!anc || block_has_any_failure(anc))
                 break;
-            cand = anc;
+            /* Merge BLOCK_HAVE_DATA across same-hash duplicates: a bodiless
+             * ancestry twin whose block_map body copy exists must not stop the
+             * walk one block short. Fill with the body-bearing object so every
+             * body-dependent stage reading active_chain_at(h) sees the body. */
+            struct block_index *have = have_data_by_hash(m, anc);
+            if (!have)
+                break;
+            cand = have;
         }
         if (cand == tip || cand->nHeight <= c->height)
             return true; /* no contiguous have-data successor on the header path */

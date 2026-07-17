@@ -177,6 +177,14 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
  * from any MCP/diagnostics thread. See chainstate.c. */
 uint64_t active_chain_extend_window_have_data_fast_count(void);
 uint64_t active_chain_extend_window_have_data_slow_count(void);
+/* Cumulative count of heights the fast path rescued by merging BLOCK_HAVE_DATA
+ * across same-hash duplicates: best_header's ancestry object at a height was
+ * bodiless but the block_map's canonical same-hash object carried the body, so
+ * the walk fills with the body twin instead of stopping short (the live H+1
+ * duplicate-object window wedge). Surfaced as `window_dup_data_rescued` via
+ * `zcl_state subsystem=reducer_frontier`. Same atomic contract as the counts
+ * above. See chainstate.c have_data_by_hash. */
+uint64_t active_chain_extend_window_dup_data_rescued_count(void);
 struct most_work_selection_stats {
     int skipped_no_chaintx;
     int skipped_failed;
