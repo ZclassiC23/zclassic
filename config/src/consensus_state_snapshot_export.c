@@ -28,7 +28,7 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
                            enum consensus_state_export_status status,
                            const char *fmt, ...)
 {
-    char reason[192];
+    char reason[384];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(reason, sizeof(reason), fmt, ap);
@@ -719,8 +719,12 @@ bool consensus_state_snapshot_export(
     if (request->expected_height < 0 ||
         request->expected_height >= INT32_MAX ||
         !consensus_export_digest_nonzero(request->expected_block_hash))
-        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
-                                     "invalid expected source height/hash");
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_REFUSED,
+            "invalid expected source height/hash (height=%d hash_nonzero=%d)",
+            request->expected_height,
+            consensus_export_digest_nonzero(request->expected_block_hash)
+                ? 1 : 0);
 
     struct consensus_export_output_binding *output = zcl_calloc(
         1, sizeof(*output), "consensus_export_output_binding");

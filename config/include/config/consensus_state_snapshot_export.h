@@ -59,7 +59,10 @@ struct consensus_state_export_result {
     uint64_t anchor_count;
     uint64_t nullifier_count;
     uint8_t artifact_digest[32];
-    char reason[192];
+    /* Wide enough for a refusal that names both compared 32-byte hex
+     * digests plus a height (e.g. the checkpoint-content Sapling-root
+     * mismatch) — a refusal message you cannot debug from is a defect. */
+    char reason[384];
 };
 
 /* Export one zcl.consensus_state_bundle.v1 from an already-quiesced
