@@ -5,6 +5,7 @@
 #include "jobs/stage_repair.h"
 #include "primitives/block.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/stage.h"
 
 #include <sqlite3.h>
@@ -692,6 +693,186 @@ int test_stage_repair(void)
         ok = ok && row_exists(db, "proof_validate_log", 3);
         ok = ok && cursor_for(db, "proof_validate") == 5;
         STR_CHECK("one-shot marker bounds the proof rewind to one attempt", ok);
+        teardown_case(dir);
+    }
+
+    /* === tip_finalize rewind-churn refusal (Lane 1C — defence-in-depth
+     * under the L1A coins-frontier clamp) ===
+     *
+     * Live 2026-07-16: the reconcile APPLY pass rewound tip_finalize
+     * 3183332->3183331 six-plus times in a row, each rewind "succeeding"
+     * while H* never moved — a livelock that reads as progress. The witness
+     * below drives the apply-only tip_finalize clamp directly (bypassing
+     * the full frontier snapshot) at a fixed height with flat H*: the first
+     * 3 asks must rewind normally, the 4th must refuse and name the
+     * "tip_finalize.rewind_churn" blocker instead, and an H* advance must
+     * reset the memo (and clear the blocker) so progress resumes. */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("tip_finalize_rewind_churn", dir, sizeof(dir),
+                             &db);
+        ok = ok && seed_cursors(db, 5, 5);
+        blocker_module_init();
+        blocker_clear("tip_finalize.rewind_churn");
+        stage_reducer_frontier_reset_rewind_churn_memo_for_testing();
+
+        /* hstar pinned at 18 the whole time; the cursor is fixed at 25 (>
+         * hstar+1), so every pass is asked to rewind to hstar+1=19
+         * (simulating something else re-advancing the served cursor back to
+         * 25 between reconcile ticks — the exact live shape). */
+        struct stage_reducer_frontier_reconcile_result out;
+        bool rv;
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 18;
+        out.tip_finalize_cursor_before = 25;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 19 &&
+             cursor_for(db, "tip_finalize") == 19 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: 1st rewind applies normally", ok);
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 18;
+        out.tip_finalize_cursor_before = 25;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 19 &&
+             cursor_for(db, "tip_finalize") == 19 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: 2nd rewind applies normally", ok);
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 18;
+        out.tip_finalize_cursor_before = 25;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 19 &&
+             cursor_for(db, "tip_finalize") == 19 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: 3rd rewind applies normally", ok);
+
+        /* 4th ask at the SAME target height with the SAME flat hstar must
+         * be refused: no further write, the cursor stays at 19 (from the
+         * 3rd apply), and the typed blocker is named. */
+        memset(&out, 0, sizeof(out));
+        out.hstar = 18;
+        out.tip_finalize_cursor_before = 25;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && !out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 25 &&
+             cursor_for(db, "tip_finalize") == 19 &&
+             blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: 4th consecutive ask is refused and names "
+                  "the blocker",
+                  ok);
+
+        /* H* advancing to 19 (still pinned relative to the fixed cursor 25)
+         * changes the clamp target from 19 to hstar+1=20 — a different
+         * target height, so the streak is fresh: the rewind is allowed
+         * again (proving progress resumes) and the stale blocker clears. */
+        memset(&out, 0, sizeof(out));
+        out.hstar = 19;
+        out.tip_finalize_cursor_before = 25;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 20 &&
+             cursor_for(db, "tip_finalize") == 20 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: an H* advance resets the memo and clears "
+                  "the blocker",
+                  ok);
+
+        /* A wholly independent fresh pin (hstar=20, cursor fixed at 30,
+         * target=21) churns the same way: 3 rewinds apply, the 4th is
+         * refused again — the guard re-arms per-streak, it does not
+         * permanently latch after firing once. */
+        memset(&out, 0, sizeof(out));
+        out.hstar = 20;
+        out.tip_finalize_cursor_before = 30;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 21 &&
+             cursor_for(db, "tip_finalize") == 21 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 20;
+        out.tip_finalize_cursor_before = 30;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 21 &&
+             cursor_for(db, "tip_finalize") == 21 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 20;
+        out.tip_finalize_cursor_before = 30;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 21 &&
+             cursor_for(db, "tip_finalize") == 21 &&
+             !blocker_exists("tip_finalize.rewind_churn");
+
+        memset(&out, 0, sizeof(out));
+        out.hstar = 20;
+        out.tip_finalize_cursor_before = 30;
+        rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+            db, true, &out);
+        ok = ok && rv && !out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 30 &&
+             cursor_for(db, "tip_finalize") == 21 &&
+             blocker_exists("tip_finalize.rewind_churn");
+        STR_CHECK("rewind-churn: a fresh pin re-arms the same 3-strike "
+                  "refusal",
+                  ok);
+
+        blocker_clear("tip_finalize.rewind_churn");
+        stage_reducer_frontier_reset_rewind_churn_memo_for_testing();
+        teardown_case(dir);
+    }
+
+    /* --- A dry-run (apply=false) never engages the churn gate: it never
+     * writes, so it must never refuse or count toward the streak, no matter
+     * how many times it is polled at the same pinned height. --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("tip_finalize_rewind_churn_dryrun", dir,
+                             sizeof(dir), &db);
+        ok = ok && seed_cursors(db, 5, 5);
+        blocker_module_init();
+        blocker_clear("tip_finalize.rewind_churn");
+        stage_reducer_frontier_reset_rewind_churn_memo_for_testing();
+
+        struct stage_reducer_frontier_reconcile_result out;
+        bool rv = true;
+        for (int i = 0; i < 6 && ok; i++) {
+            memset(&out, 0, sizeof(out));
+            out.hstar = 18;
+            out.tip_finalize_cursor_before = 20;
+            rv = stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+                db, false, &out);
+            ok = ok && rv && out.clamped_tip_finalize &&
+                 out.tip_finalize_cursor_after == 19 &&
+                 !blocker_exists("tip_finalize.rewind_churn");
+        }
+        /* The cursor itself was never written by a dry-run. */
+        ok = ok && cursor_for(db, "tip_finalize") == 5;
+        STR_CHECK("rewind-churn: a dry-run never engages the gate", ok);
+
+        blocker_clear("tip_finalize.rewind_churn");
+        stage_reducer_frontier_reset_rewind_churn_memo_for_testing();
         teardown_case(dir);
     }
 #endif /* ZCL_TESTING */
