@@ -30,6 +30,23 @@ struct consensus_state_snapshot_export_request {
      * exporting the wrong quiesced generation, but are not chain authority. */
     int32_t expected_height;
     uint8_t expected_block_hash[32];
+    /* Checkpoint-content export: admit the export by a cryptographic content
+     * proof instead of the fold-binary-identity receipt gate. When true,
+     * consensus_export_prove_source additionally REQUIRES the frozen coins set
+     * to reproduce the compiled SHA3 UTXO checkpoint (sha3 + count) at
+     * expected_height == checkpoint height, and the Sapling tip frontier to
+     * Pedersen-root to checkpoint_sapling_root — the block header's committed
+     * hashFinalSaplingRoot at expected_height, read by the caller from this
+     * node's own validated header chain. That transparent-SHA3 + PoW-header
+     * pair is a stronger, protocol-aligned content proof than "a specific
+     * binary folded this": it relaxes ONLY the export-side requirement that the
+     * receipt's running-binary digest equal the running binary (a fold-process
+     * provenance claim no downstream gate re-checks), never any downstream
+     * crypto gate. The emitted bundle is byte-identical in shape to a
+     * fold-produced bundle and passes the same install/verify re-derivation.
+     * Default false = unchanged fold-binary-bound export. */
+    bool checkpoint_content_export;
+    uint8_t checkpoint_sapling_root[32];
 };
 
 struct consensus_state_export_result {

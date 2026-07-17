@@ -35,9 +35,10 @@ app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
 # ADR-0006 (always-sync spine): the reindex-executability verb check +
 # body-coverage gate + O(delta) wallet-scan cursor + the -ratify-mint-anchor
-# dispatch raise the boot recovery-selection owner's baseline; boot_index.c
-# gains the genesis-readability verb-check probe.
-config/src/boot.c 4123
+# and -export-consensus-bundle terminal-verb dispatches raise the boot
+# recovery-selection owner's baseline; boot_index.c gains the
+# genesis-readability verb-check probe.
+config/src/boot.c 4126
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1659

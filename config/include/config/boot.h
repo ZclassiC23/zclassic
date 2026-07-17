@@ -130,6 +130,19 @@ struct app_context {
                                  * DURABLE set (never the coins_ram overlay); no
                                  * fold. Exits after RATIFIED or a typed REFUSED.
                                  * Default false. */
+    bool export_consensus_bundle; /* -export-consensus-bundle : TERMINAL offline
+                                 * checkpoint-content exporter. Emits the
+                                 * zcl.consensus_state_bundle.v1 from a finished
+                                 * genesis->checkpoint datadir whose coins
+                                 * reproduce the compiled SHA3 UTXO checkpoint and
+                                 * whose Sapling tip frontier Pedersen-roots to
+                                 * the anchor header's committed
+                                 * hashFinalSaplingRoot — a cryptographic content
+                                 * proof that replaces the fold-binary-identity
+                                 * receipt bind, so a foreign binary that did not
+                                 * itself fold this datadir can still export the
+                                 * (byte-identical-shape) bundle. Exits after
+                                 * EXPORTED or a typed REFUSED. Default false. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -440,6 +453,14 @@ struct boot_ratify_result {
  * after printing RATIFIED (0) or a typed REFUSED (1). Reads the OPEN progress
  * store's DURABLE coins_kv (refuses if the coins_ram overlay is active). */
 void boot_ratify_mint_anchor(const char *datadir);
+
+/* -export-consensus-bundle=(no arg, acts on -datadir) (impl in
+ * config/src/boot_export_consensus_bundle.c): TERMINAL — NEVER returns; it
+ * _exit()s after printing EXPORTED (0) or a typed REFUSED (1). Reads the
+ * compiled SHA3 UTXO checkpoint, reads the header-committed final Sapling root
+ * at the checkpoint height from `ndb`'s validated block index, and runs the
+ * checkpoint-content export against the OPEN progress store into the datadir. */
+void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir);
 
 /* Testable core of the ratify verb: re-derive commitment/count/applied-height
  * from `pdb`'s durable tables, compare against `cp`, and — only on full
