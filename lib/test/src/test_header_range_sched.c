@@ -22,6 +22,18 @@
  *   7. The scheduler is inert without cooperation — it never touches the
  *      header-band contiguity machinery (band closure stays required):
  *      partition/assign are pure span bookkeeping over heights.
+ *   8. Cross-peer sweep demotion (regression for the net-wiring defect
+ *      fixed alongside this test): hrs_sweep_expired() is GLOBAL — one
+ *      peer's periodic tick can sweep a DIFFERENT peer's expired span.
+ *      The net wiring (msg_try_range_parallel_getheaders in msg_headers.c)
+ *      used to check only "does the CALLING peer's own span own an
+ *      expired deadline" and then throw away the sweep's stalled-owner
+ *      buffer (NULL, 0) — so a healthy peer's tick silently freed another
+ *      peer's expired span without ever reporting it for demotion. This
+ *      proves the scheduler's sweep-report primitive that the fix now
+ *      reads: a peer whose OWN span has not expired still sees another
+ *      peer's expired span reported by the very sweep its own tick
+ *      triggers, exactly once, while its own live span is untouched.
  */
 
 #include "test/test_helpers.h"
@@ -230,6 +242,51 @@ int test_header_range_sched(void)
         ok = ok && (hrs_span_count(g) == 2);
         header_range_scheduler_reset_for_testing();
         ok = ok && (hrs_span_count(g) == 0);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── 8. Cross-peer sweep demotion (net-wiring defect regression) ── */
+    printf("header_range_sched: one peer's tick sweeps ANOTHER peer's "
+           "expired span... ");
+    {
+        struct header_range_scheduler s = {0};
+        hrs_init(&s, 30 * 1000000);           /* 30s span budget */
+        int32_t anchors[] = {50000};
+        hrs_plan(&s, 0, 100000, anchors, 1);  /* 2 spans */
+
+        /* Peer B (22) claims a span FIRST -> its deadline is earlier.
+         * Peer A (11) claims the other span 10s later -> its deadline is
+         * still 20s out when we sample. */
+        int64_t t0 = 1000 * 1000000LL;
+        int b = hrs_assign(&s, 22, t0);              /* B: deadline t0+30s */
+        int64_t t1 = t0 + 10 * 1000000LL;
+        int a = hrs_assign(&s, 11, t1);              /* A: deadline t0+40s */
+        bool ok = (a >= 0 && b >= 0 && a != b);
+
+        /* Sample at t0+31s: B's deadline has passed, A's has not. */
+        int64_t t2 = t0 + 31 * 1000000LL;
+
+        /* The defective wiring's own-peer pre-check: from A's perspective
+         * (the peer whose periodic tick is about to run), A does NOT own
+         * an expired span -> the old code's "if (self_stalled)" branch
+         * would never fire, and it swept with (NULL, 0), so B's timeout
+         * was silently dropped. */
+        ok = ok && !hrs_peer_owns_expired_span(&s, 11, t2);
+
+        /* A's tick still runs the (global) sweep. With a real buffer
+         * wired — the fix — B's id comes back from THIS sweep even
+         * though A triggered it and A itself is not stalled. */
+        int32_t stalled[HRS_MAX_SPANS];
+        size_t nst = hrs_sweep_expired(&s, t2, stalled, HRS_MAX_SPANS);
+        ok = ok && (nst == 1);
+        ok = ok && (stalled[0] == 22);   /* B reported exactly once */
+
+        /* A's own live span is untouched by the sweep A's tick triggered. */
+        ok = ok && hrs_peer_span(&s, 11, t2, NULL, NULL);
+        /* B's span was freed. */
+        ok = ok && !hrs_peer_span(&s, 22, t2, NULL, NULL);
+        ok = ok && (hrs_free_span_count(&s) == 1);
+        hrs_reset(&s);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

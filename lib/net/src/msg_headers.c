@@ -1204,15 +1204,41 @@ bool msg_try_range_parallel_getheaders(struct msg_processor *mp,
     if (ms->pindex_best_header)
         hrs_note_frontier(sched, ms->pindex_best_header->nHeight);
 
-    /* Demote THIS peer if its own span missed its deadline (read before the
-     * sweep frees it — no cross-peer node lookup, so no cs_nodes lock-order
-     * hazard), then sweep every expired span back into the free pool so a
-     * stalling peer never stalls the whole sync. */
-    bool self_stalled = hrs_peer_owns_expired_span(sched, node->id, now_us);
-    hrs_sweep_expired(sched, now_us, NULL, 0);
-    if (self_stalled)
-        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_TIMEOUT,
-                            "header span deadline missed");
+    /* Sweep every expired span back into the free pool so a stalling peer
+     * never stalls the whole sync, and demote EVERY reported stalling
+     * owner — not just this peer. hrs_sweep_expired() is GLOBAL: it frees
+     * every expired span in the table regardless of who is calling. A
+     * "demote self, then discard the sweep's stalled-owner buffer"
+     * pattern silently drops other peers' timeouts whenever some OTHER
+     * peer's periodic tick happens to run the sweep first — by the time
+     * the actually-stalled peer gets its own turn, hrs_peer_owns_expired_
+     * span() is already false (its span was freed by someone else's
+     * sweep) and it is never demoted. Reading the whole stalled-owner
+     * buffer here means whichever peer's tick performs the sweep
+     * correctly demotes every owner it evicted, including itself. */
+    int32_t stalled_ids[HRS_MAX_SPANS];
+    size_t n_stalled = hrs_sweep_expired(sched, now_us, stalled_ids, HRS_MAX_SPANS);
+    if (n_stalled > 0) {
+        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+        for (size_t si = 0; si < n_stalled; si++) {
+            int32_t sid = stalled_ids[si];
+            bool dup = false;
+            for (size_t sj = 0; sj < si; sj++) {
+                if (stalled_ids[sj] == sid) { dup = true; break; }
+            }
+            if (dup)
+                continue;
+            for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                struct p2p_node *sn = mp->net_mgr->nodes[pi];
+                if (sn && sn->id == sid) {
+                    peer_scoring_record(mp->net_mgr, sn, PEER_OFFENCE_TIMEOUT,
+                                        "header span deadline missed");
+                    break;
+                }
+            }
+        }
+        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+    }
 
     /* This peer's span: keep an existing live one, else claim a free span. */
     int32_t lo, hi;
