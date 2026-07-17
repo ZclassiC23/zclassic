@@ -650,6 +650,7 @@ int test_seal_rewind(void);
 int test_nullifier_kv(void);
 int test_nullifier_backfill_service(void);
 int test_body_crosscheck(void);
+int test_shielded_history_promote(void);
 int test_shielded_import_cured_tip_anchor(void);
 int test_utxo_recovery_shielded_backfill(void);
 int test_reducer_drive_guard(void);

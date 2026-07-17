@@ -228,6 +228,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(nullifier_kv) X(nullifier_backfill_service) \
     X(body_crosscheck) \
     X(shielded_history_import) \
+    X(shielded_history_promote) \
     X(shielded_import_cured_tip_anchor) \
     X(shielded_gap_remedy) \
     X(utxo_recovery_shielded_backfill) \
