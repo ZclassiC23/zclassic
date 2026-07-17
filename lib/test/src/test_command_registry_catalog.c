@@ -12,7 +12,7 @@
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "json/json.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include <string.h>
 

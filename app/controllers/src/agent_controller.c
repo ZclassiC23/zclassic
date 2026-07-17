@@ -188,13 +188,6 @@ static const char *agent_classify_path(const char *path,
         subsystem = "fast_ci_and_gates";
         docs = "docs/work/fast-path.md";
         acc->code_changed = true;
-    } else if (agent_str_starts(path, "tools/mcp/")) {
-        subsystem = "mcp_agent_api";
-        risk = "operator_api";
-        docs = "docs/AGENT_API.md";
-        acc->mcp_changed = true;
-        acc->agent_api_changed = true;
-        acc->code_changed = true;
     } else if (agent_path_is_native_agent_api(path)) {
         subsystem = "native_agent_api";
         risk = "operator_api";
@@ -290,7 +283,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "agentmap\n"
-        "\nReturn the native-first AI-coder map and transitional MCP metadata:\n"
+        "\nReturn the native-first AI-coder map with MCP tool-name taxonomy:\n"
         "where the operator API lives, which docs explain it, and which tests cover it.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_map.v2\", \"commands\":[...], "
@@ -328,14 +321,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "first-call binary JSON contracts",
                          "app/controllers/src/agent_controller.c, app/controllers/src/agent_contracts_controller.c, app/controllers/src/agent_anchor_status_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lane_runtime.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_liveness_controller.c, app/controllers/src/agent_runtime_controller.c, app/controllers/include/controllers/agent_contracts.def, src/main.c",
                          "docs/AGENT_API.md",
-                         "syncdiag_rpc, mcp_controllers, make_lint_gates",
+                         "syncdiag_rpc, command_registry_catalog, make_lint_gates",
                          "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map");
-    agent_push_subsystem(&subsystems, "mcp_agent_api",
-                         "typed AI tool routes over the same native RPC truth",
-                         "tools/mcp/controllers/ops_controller.c",
-                         "docs/CODEBASE_MAP.md",
-                         "mcp_controllers",
-                         "zcl_tools_list, zcl_openapi");
     agent_push_subsystem(&subsystems, "rest_agent_api",
                          "public HTTP status/discovery mirror",
                          "app/controllers/src/api_controller_status.c",
@@ -460,7 +447,6 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
     json_push_kv_bool(result, "docs_only", acc.docs_only);
     json_push_kv_bool(result, "consensus_risk", acc.consensus_risk);
     json_push_kv_bool(result, "agent_api_changed", acc.agent_api_changed);
-    json_push_kv_bool(result, "mcp_changed", acc.mcp_changed);
     json_push_kv_str(result, "mapping_source",
                      "app/controllers/include/controllers/agent_impact_rules.def");
     json_push_kv_int(result, "shared_rule_count",
@@ -510,7 +496,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "language", "c23");
     json_push_kv_str(result, "summary",
-                     "Use make agent-plan to inspect the exact fast-lane decision without building, make agent-loop or make fast-ci for the cheapest guarded edit loop, make immutable-history-canaries for fast real-chain consensus KATs, make agent-doctor for the combined next-command check, make agent-dev-status before touching the dev lane, make fast-rebuild when a runnable non-LTO dev node is needed, make agent-mcp-call-hot or make agent-mcp-call-dev for no-build API reads, compiler caches when available, and make ci-reproducible for byte identity.");
+                     "Use make agent-plan to inspect the exact fast-lane decision without building, make agent-loop or make fast-ci for the cheapest guarded edit loop, make immutable-history-canaries for fast real-chain consensus KATs, make agent-doctor for the combined next-command check, make agent-dev-status before touching the dev lane, make fast-rebuild when a runnable non-LTO dev node is needed, build/bin/zclassic23-dev <command> for no-build API reads, compiler caches when available, and make ci-reproducible for byte identity.");
 
     json_init(&loop);
     json_set_object(&loop);
@@ -544,14 +530,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                      "ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop");
     json_push_kv_str(&loop, "stage_dev_binary_no_restart",
                      "make agent-stage-dev");
-    json_push_kv_str(&loop, "one_binary_mcp",
-                     "make agent-mcp-call TOOL=<tool> [ARGS='{}']");
-    json_push_kv_str(&loop, "hot_mcp",
-                     "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']");
-    json_push_kv_str(&loop, "dev_lane_mcp",
-                     "make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']");
-    json_push_kv_str(&loop, "direct_binary_mcp",
-                     "build/bin/zclassic23 mcpcall <tool> [json] after make zclassic23");
     json_push_kv_str(&loop, "fast_ci_compile_default",
                      "ZCL_FAST_COMPILE=changed -> source-wide make fast-compile in an exact compile epoch");
     json_push_kv_str(&loop, "pre_push_compile_default",
@@ -612,8 +590,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&dev, "binary", "build/bin/zclassic23-dev");
     json_push_kv_str(&dev, "installed_linger_binary",
                      "$HOME/.local/bin/zclassic23-dev");
-    json_push_kv_str(&dev, "dev_lane_mcp",
-                     "make agent-mcp-call-dev TOOL=zcl_status");
     json_push_kv_str(&dev, "object_dir", "build/dev-obj/epochs/<compile_epoch>");
     json_push_kv_bool(&dev, "lto", false);
     json_push_kv_bool(&dev, "stripped", false);
@@ -687,13 +663,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_knob(&knobs, "ZCL_FAST_CACHE_DIR",
                           ".cache/zcl-agent-fast-ci",
                           "override green-input cache directory");
-    agent_push_build_knob(&knobs, "ZCL_AGENT_MCP_BUILD", "1",
-                          "set to 0 for no-build native MCP calls when the chosen binary already exists");
-    agent_push_build_knob(&knobs, "ZCL_AGENT_BIN",
-                          "build/bin/zclassic23-dev",
-                          "binary used by make agent-mcp-call");
-    agent_push_build_knob(&knobs, "ZCL_AGENT_MCP_ARGS", "",
-                          "extra binary flags before mcpcall, for example -datadir=... -rpcport=...");
     agent_push_build_knob(&knobs, "ZCL_USE_CCACHE", "1",
                           "Makefile auto-wraps CC with sccache/ccache when available; set 0 to disable");
     agent_push_build_knob(&knobs, "ZCL_DEV_OPT", "-Og",
@@ -734,7 +703,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_init(&commands);
     json_set_array(&commands);
     agent_push_build_command(&commands, "agent_plan", "make agent-plan",
-                             "read-only fast-lane decision packet: changed files, selected tests, compile plan, cache hit/miss, and MCP shortcuts");
+                             "read-only fast-lane decision packet: changed files, selected tests, compile plan, cache hit/miss, and native command shortcuts");
     agent_push_build_command(&commands, "fast_changed_compile",
                              "make fast-changed-compile",
                              "source-wide dev compile in an exact mutation-keyed epoch; changed paths are hints only");
@@ -776,15 +745,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_command(&commands, "agent_dev_status_mcp",
                              "zcl_agent_dev_status",
                              "MCP typed dev-lane status contract");
-    agent_push_build_command(&commands, "agent_mcp_call",
-                             "make agent-mcp-call TOOL=zcl_status",
-                             "fresh source-tree one-binary typed MCP call through zclassic23 mcpcall");
-    agent_push_build_command(&commands, "agent_mcp_call_hot",
-                             "make agent-mcp-call-hot TOOL=zcl_status",
-                             "no-build typed MCP call through the existing source-tree dev binary");
-    agent_push_build_command(&commands, "agent_dev_lane_mcp_call",
-                             "make agent-mcp-call-dev TOOL=zcl_status",
-                             "no-build typed MCP call against the installed zcl23-dev linger lane");
     agent_push_build_command(&commands, "stage_dev_binary",
                              "make agent-stage-dev",
                              "contained entrypoint: refuses until the complete publication transaction exists");

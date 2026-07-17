@@ -272,9 +272,8 @@ Start with `status` (height, peers, sync, blocker, health in one call);
 catalog. Full doc: [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md);
 daily-driver reference in [`CLAUDE.md`](CLAUDE.md).
 
-The typed native command registry is the primary AI/operator surface. The
-legacy MCP bridge still works during W2/W3 migration, but it is transitional;
-prefer native commands in new work.
+The typed native command registry is the sole AI/operator surface. The legacy
+MCP stdio server has been removed.
 
 ## Block explorer
 

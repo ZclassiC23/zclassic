@@ -29,7 +29,7 @@
 #include "hotswap/hotswap_module.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
 

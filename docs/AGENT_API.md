@@ -272,12 +272,11 @@ commands such as `build/bin/zclassic23 status`, `build/bin/zclassic23 dumpstate
 supervisor`, or `build/bin/zclassic23 discover help`. Against the dev lane,
 `build/bin/zclassic23-dev status` queries the installed dev binary at
 `~/.zclassic-c23-dev` on RPC port `18252`. The native command registry is the
-sole agent interface going forward (zero-MCP track); the `make agent-mcp-call*`
-family and `zclassic23 mcpcall <tool>` are the legacy typed-MCP path and are
-being removed in zero-MCP W3.
+sole agent interface; the legacy MCP stdio server (the `-mcp` mode and the
+`mcpcall` CLI subcommand) has been removed.
 Use `make agent-plan` before a build when you need the exact no-build fast-lane
 decision: changed-path/test classification hints, source-wide compile plan, cache
-hit/miss, dev-lane stage/deploy commands, and MCP shortcuts.
+hit/miss, dev-lane stage/deploy commands, and native command shortcuts.
 `build/bin/zcl-rpc getblockcount` and an explicit
 `build/bin/zclassic-cli -rpcport=18232 getblockcount` are legacy/debug checks,
 not the preferred agent interface. Do not use bare `build/bin/zclassic-cli` as
@@ -1195,15 +1194,13 @@ This is a C23 project, so the edit loop should compile only what changed.
   Use `make hotswap-sim` for the focused
   deterministic simulated-network proof; `make sim-fast` remains the broader
   checked-in scenario and seeded replay suite.
-- `make agent-mcp-call TOOL=<tool>` is the legacy fresh source-tree MCP smoke
-  path (removed in zero-MCP W3; prefer native commands like `zclassic23 status`
-  / `zclassic23 dumpstate <subsystem>`). It refreshes `build/bin/zclassic23-dev`
-  before dispatch. Use `make agent-mcp-call-hot TOOL=<tool>` when the existing
-  source-tree dev binary is good enough, and `make agent-mcp-call-dev
-  TOOL=<tool>` for the installed `zcl23-dev` linger lane. Set
-  `ZCL_AGENT_MCP_BUILD=0`,
-  `ZCL_AGENT_BIN=...`, or `ZCL_AGENT_MCP_ARGS='-datadir=... -rpcport=...'`
-  for custom no-build terminal probes.
+- For no-build terminal probes, prefer native commands like `zclassic23 status`
+  / `zclassic23 dumpstate <subsystem>` run directly against a binary that
+  already exists: `build/bin/zclassic23 <command>` for the source-tree node, or
+  `build/bin/zclassic23-dev <command>` for the installed `zcl23-dev` linger
+  lane (pass `-datadir=... -rpcport=...` for a custom target). The legacy
+  `make agent-mcp-call*` family and the `mcpcall` CLI subcommand have been
+  removed with the MCP server.
 - `make t-fast ONLY=<group>` uses
   `build/test-obj/epochs/<compile-epoch>/` and the exact candidate under
   `build/bin/test-fast/epochs/<compile-epoch>/`, a cached non-LTO test harness

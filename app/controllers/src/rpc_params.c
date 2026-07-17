@@ -1,6 +1,9 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * JSON-RPC parameter builder: accumulates positional args into a JSON array
+ * for the node RPC client. See rpc_params.h for the public API. */
 
-#include "rpc_params.h"
+#include "controllers/rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"

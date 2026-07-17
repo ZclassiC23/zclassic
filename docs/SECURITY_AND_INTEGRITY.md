@@ -2,7 +2,7 @@
 
 ZClassic23's security model is built around operator ownership: one local
 full-node binary, explicit network listeners, private wallet state, an
-onion-hosted explorer, and a typed local MCP operator surface. Tor support
+onion-hosted explorer, and a typed local native command operator surface. Tor support
 publishes the operator's own service, wallet/key code stays inside the
 operator's datadir, and fuzz/chaos harnesses exercise isolated recovery paths.
 This document states the boundary, safeguards, and evidence that make those
@@ -28,12 +28,12 @@ This repository supports authorized operation and development of a ZClassic
 node and its local operator surfaces:
 
 - validating and serving the ZClassic P2P protocol;
-- running an operator-owned wallet, block explorer, onion service, and RPC/MCP
+- running an operator-owned wallet, block explorer, onion service, and RPC
   interface;
 - testing this implementation with local unit tests, fuzzers, simulators,
   isolated regtest nodes, and consenting peers.
 
-All network, wallet, MCP, fuzz, and chaos workflows are scoped to resources the
+All network, wallet, fuzz, and chaos workflows are scoped to resources the
 operator controls or has explicit permission to use. If a test needs a live
 process, peer, datadir, network, or wallet, use operator-owned resources,
 isolated fixtures, or consenting peers.
@@ -45,7 +45,7 @@ isolated fixtures, or consenting peers.
 | Embedded Tor | Publish the operator's own explorer/API as a hidden service | `-tor` is explicit; opt-in build (default links a stub, onion off); test harnesses disable Tor |
 | P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy protects consensus and network health |
 | Wallet and key code | Local transparent/Sapling wallet operation | Diagnostics must not return private key material |
-| MCP tools | Local typed operator API for AI-assisted node operation | Destructive tools are explicit and middleware-gated |
+| Native commands | Local typed operator API for AI-assisted node operation | Destructive commands are explicit and privilege-gated |
 | `zcl_sql` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |
 | Fuzzers, chaos, kill-9 harnesses | Find crashes and recovery bugs in this codebase | Isolated datadirs and ports; no live-node mutation |
 | Atomic swap and market code | Application protocol scaffolding | Settlement gaps are documented; scaffolding is not claimed complete |
@@ -109,7 +109,7 @@ item, not a claimed property.
 ## Concrete safeguards
 
 - **Defensive-coding gates:** `make lint` checks raw SQLite writes, raw
-  allocation use, silent error paths, MCP error bodies, supervisor liveness,
+  allocation use, silent error paths, native command error bodies, supervisor liveness,
   app-shape boundaries, one-write-path rules, and no-silent-ready rules. The
   detailed contract is [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md).
 - **Local integration gate:** `make ci` runs lint before tests, then the test
@@ -119,22 +119,6 @@ item, not a claimed property.
   `pr-security-comment.yml`) that run an automated, fork-safe security
   review/comment on pull requests; there is no hosted build/test CI workflow
   (CI runs locally via `make ci`).
-- **MCP middleware:** tool routes carry destructive flags, destructive tools
-  are rate-limited separately, tool calls emit events, and bearer auth is
-  opt-in via two env vars. `ZCL_MCP_BEARER_TOKEN` is the **normal** token;
-  `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` is an **escalated** token for tools
-  flagged destructive (the same set that drains the destructive rate-limit
-  bucket). The destructive token is strictly opt-in and backward-compatible:
-  when UNSET, the normal token governs ALL tools (destructive included) —
-  identical to the single-token behavior. When SET, destructive tools
-  REQUIRE the destructive token and REJECT the normal one, and
-  non-destructive tools REQUIRE the normal token and REJECT the destructive
-  one (least-privilege in both directions — an ops/destructive credential
-  cannot be reused to read introspection or run normal RPC, and vice-versa).
-  Both tiers use a constant-time compare; 401 error bodies name the tier
-  that was required without disclosing token material. Auth tier is
-  independent of the rate-limit tier. The default `-mcp` mode is a local
-  stdio operator interface (no auth).
 - **Operator-private HTTP routes:** wallet, message, and swap API routes are
   blocked on the clearnet listener as recorded in the June 2026 audit response.
 - **Data-integrity discipline:** application writes go through the ActiveRecord
@@ -179,7 +163,6 @@ Evidence files worth reading first:
 - [`MVP.md`](./MVP.md) - v1 acceptance criteria and readiness score.
 - [`work/archive/security-audit-response-2026-06-09.md`](./work/archive/security-audit-response-2026-06-09.md) - audit disposition.
 - [`RUNBOOK.md`](./RUNBOOK.md) - operational safety rails.
-- [`../tools/mcp/middleware.c`](../tools/mcp/middleware.c) - MCP destructive-tool policy.
 - [`../tools/scripts/isolated_node_env.sh`](../tools/scripts/isolated_node_env.sh) - isolated process/datadir guardrails.
 - [`../tools/release.sh`](../tools/release.sh) - reproducible release and signing logic.
 

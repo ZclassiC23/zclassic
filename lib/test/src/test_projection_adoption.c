@@ -4,7 +4,7 @@
 #include "test/test_helpers.h"
 
 #include "controllers/chain_projection.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "util/projection.h"
 
 #include <pthread.h>

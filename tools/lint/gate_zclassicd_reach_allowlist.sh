@@ -14,7 +14,7 @@
 #
 # Exit 0 = pass. Non-zero + message on stderr = fail.
 #
-# Scope: NON-TEST source only — app/ lib/ config/ src/ tools/mcp.
+# Scope: NON-TEST source only — app/ lib/ config/ src/.
 # Excluded: lib/test, tools/soak, *_test.c, tools/crash_recovery_test.c.
 #
 set -u
@@ -35,7 +35,7 @@ source tools/lint/scan_exclusions.sh
 PAT='legacy_chain_rpc_|legacy_chain_oracle|zclassicd_oracle|127\.0\.0\.1:8232|:8034|:8232|getblock-from-mirror'
 
 # --- Search roots (non-test source) ----------------------------------------
-SEARCH_DIRS="app lib config src tools/mcp"
+SEARCH_DIRS="app lib config src"
 
 # --- Exclusions (test / soak harness code is allowed to reach freely) ------
 EXCLUDE_RE='(^|/)lib/test/|(^|/)tools/soak/|_test\.c$|(^|/)tools/crash_recovery_test\.c$'

@@ -381,8 +381,8 @@ void metrics_prometheus_set_peer_kinds(int64_t magicbean_count,
  * "name=... severity=..." vehicle the condition-engine healers already
  * use (lib/framework/src/condition.c) — with a `metric_alert.` name
  * prefix so it is distinguishable from a healer's own detection. That
- * event type must be present in mcp_notify.c's k_operator_events[]
- * allow-list for it to reach the push channel; see that file. */
+ * event type must be present in operator_events.c's k_operator_events[]
+ * allow-list to be treated as operator-class; see that file. */
 
 enum mcp_alert_cmp { MCP_ALERT_GT, MCP_ALERT_LT, MCP_ALERT_GE, MCP_ALERT_LE };
 

@@ -263,8 +263,6 @@ tools/dev/devloop.h
 tools/dev/devloop_plan.c
 tools/dev/devloop_process.c
 tools/dev/devloop_watch.c
-tools/mcp/dev_rpc_bridge.h
-tools/mcp/rpc_params.c
 tools/sim/sim_peer.c
 tools/sim/sim_peer.h
 tools/wal_checkpoint.c

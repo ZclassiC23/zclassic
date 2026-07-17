@@ -4885,29 +4885,18 @@ int test_api(void)
                           "zcl.agent_impact.v1") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
         ok = ok && json_get_int(json_get(&result,
-                                         "relevant_test_groups_count")) == 4;
+                                         "relevant_test_groups_count")) == 3;
         const struct json_value *groups =
             json_get(&result, "relevant_test_groups");
         ok = ok && api_test_array_has_str(groups,
                                           "chain_advance_coordinator");
         ok = ok && api_test_array_has_str(groups,
                                           "block_source_policy_status_json");
-        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): this
-         * asserts a real, still-accurate impact-rule row (block_source_
-         * policy* -> mcp_controllers, agent_impact_rules.def:94) — left
-         * as-is, it guards live classification behavior until W3 retires
-         * the row. The native successor shape (a *_native_handlers.c
-         * change classifying into command_registry_catalog) already has
-         * dedicated coverage: test_syncdiag_rpc.c "api: native RPC maps a
-         * native-handlers file change to command_registry_catalog". */
-        ok = ok && api_test_array_has_str(groups, "mcp_controllers");
         ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         const struct json_value *commands =
             json_get(&result, "recommended_commands");
         ok = ok && api_test_array_has_str(
             commands, "make t ONLY=chain_advance_coordinator");
-        ok = ok && api_test_array_has_str(commands,
-                                          "make t ONLY=mcp_controllers");
         json_free(&params);
         json_free(&result);
 
@@ -4960,17 +4949,13 @@ int test_api(void)
                           "zcl.agent_impact.v1") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
         ok = ok && json_get_int(json_get(&result,
-                                         "relevant_test_groups_count")) == 6;
+                                         "relevant_test_groups_count")) == 5;
         const struct json_value *groups =
             json_get(&result, "relevant_test_groups");
         ok = ok && api_test_array_has_str(groups, "json");
         ok = ok && api_test_array_has_str(groups, "rpc");
         ok = ok && api_test_array_has_str(groups, "api");
         ok = ok && api_test_array_has_str(groups, "syncdiag_rpc");
-        /* mcp_controllers here: same zero-MCP note as above (still-live
-         * impact rule, native-analog coverage lives in
-         * test_syncdiag_rpc.c). */
-        ok = ok && api_test_array_has_str(groups, "mcp_controllers");
         ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         json_free(&params);
         json_free(&result);

@@ -32,46 +32,17 @@
  *
  * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
 
-/* Stateless MCP router pilot: stages k_routes[] via host->mcp_stage; the
- * resident router validates all entries and commits one immutable snapshot. */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c") HOTSWAP_PROBE("zcl_name_list")
-
-/* Wave 3.1 eligibility expansion. Each TU below is a single-k_routes[]
- * stateless MCP controller: all handlers marshal args then call resident
- * kernel symbols (mcp_node_rpc, service fns) that bind against the -rdynamic
- * host at dlopen; file scope is all-const (no mutable file-scope statics ⇒
- * check-hotswap-static-state clean) and each invokes ZCL_HOTSWAP_EXPORT_ROUTES
- * (⇒ genuinely generation-exportable, enforced by check-hotswap-eligible-scope).
- * Each is built into its OWN single-provider .so — this expands the set of
- * independently swappable TUs, NOT multiple providers per generation (still a
- * v2 non-goal). Proven per-TU by tools/scripts/hotswap_demo.sh. */
-/* meta: read/introspection tools (status, kpi, tools_list, self_test, ...). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/meta_controller.c") HOTSWAP_PROBE("zcl_tools_list")
-/* chain: read-only block/tx/replay-verify tools; no mutable statics (the old
- * function-local default-legacy-dir scratch was hoisted to a stack buffer). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/chain_controller.c") HOTSWAP_PROBE("zcl_getblockchaininfo")
-/* net: read-only network-introspection tools (peers, networkinfo, onion). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/net_controller.c") HOTSWAP_PROBE("zcl_networkinfo")
-/* wallet: wallet tools. Includes wallet-mutating routes (send, importprivkey)
- * — admitted on the same footing as the app_controller pilot's destructive
- * routes: swap safety is statelessness, not read-vs-write, and the loader
- * admits only the ephemeral ~/.zclassic-c23-dev node. */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/wallet_controller.c") HOTSWAP_PROBE("zcl_balance")
-
-/* native.leaves dual-run pilot (Wave W1-B/C, ZERO-MCP): the same v3-host
- * provider class as the mcp.routes rows above but for the MCP-free native
- * command bridge (tools/command/native_command.c). Each TU below invokes
+/* native.leaves provider class (ZERO-MCP): the MCP-free native command bridge
+ * (tools/command/native_command.c). Each TU below invokes
  * ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, ...) inside `#ifdef ZCL_HOTSWAP_GEN`,
  * staging {dotted_leaf_path, trampoline} pairs — a trampoline calls
  * zcl_native_bridge_run(request, <this TU's freshly-compiled body fn>,
  * reply), the same MCP-free composition the resident bridge already uses.
  * The resident native command router dispatches the manifest's declared
- * probe leaf with NO input before committing the batch (mirroring the
- * mcp.routes probe discipline above), so the probe for a native TU MUST be
- * a leaf whose body TOLERATES EMPTY ARGS — verified per-TU by reading the
- * body function (and its backing RPC handler's param-arity check), not
- * assumed from the leaf name. Kept alongside the mcp.routes rows above
- * (dual-run through W2/W3) — do NOT delete those. */
+ * probe leaf with NO input before committing the batch, so the probe for a
+ * native TU MUST be a leaf whose body TOLERATES EMPTY ARGS — verified per-TU
+ * by reading the body function (and its backing RPC handler's param-arity
+ * check), not assumed from the leaf name. */
 HOTSWAP_ELIGIBLE("app/controllers/src/status_native_handlers.c") HOTSWAP_PROBE("core.status")
 HOTSWAP_ELIGIBLE("app/controllers/src/wallet_native_handlers.c") HOTSWAP_PROBE("core.wallet.address.list")
 HOTSWAP_ELIGIBLE("app/controllers/src/net_native_handlers.c") HOTSWAP_PROBE("core.network.peers.incidents")
@@ -88,13 +59,8 @@ HOTSWAP_ELIGIBLE("app/controllers/src/chain_native_handlers.c") HOTSWAP_PROBE("c
 /* Still reload-required (NOT eligible), by design:
  *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics
  *     (diagnostics_registry.c) carry ZCL_HOTSWAP_EXPORT_PROVIDER: their legacy
- *     direct-provider atomics cannot join the MCP router's single
- *     immutable-snapshot commit (fail closed on ZCL_HOTSWAP_CAP_DIRECT_PROVIDER).
- *   - diagnostics_controller.c holds mutable file-scope statics
+ *     direct-provider atomics cannot join a single immutable-snapshot commit
+ *     (fail closed on ZCL_HOTSWAP_CAP_DIRECT_PROVIDER).
+ *   - diagnostics_registry.c holds mutable file-scope statics
  *     (g_state_subsystems_csv, non-const p_state[]).
- *   - ops_controller.c registers TWO route tables (g_agent_mcp_routes + k_routes);
- *     the single-array macro emits one gen_init/manifest, so it cannot export
- *     both without an aggregator (a v2 non-goal).
- *   - dev_hotswap_controller.c IS the swap driver — swapping the swapper is
- *     circular.
  * Re-enable REST/diagnostics only behind one unified resident provider table. */

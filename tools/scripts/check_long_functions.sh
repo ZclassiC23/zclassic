@@ -12,7 +12,7 @@
 set -euo pipefail
 LIMIT=500
 fail=0
-for f in app/controllers/src/*.c app/services/src/*.c tools/mcp/controllers/*.c; do
+for f in app/controllers/src/*.c app/services/src/*.c; do
     awk -v file="$f" -v limit="$LIMIT" '
       /^[a-zA-Z_].*\(.*\)/ && !/;/ && !/^\s/ { sig=$0; start=NR; long_ok=0 }
       sig && /\/\/ *long-function-ok:[A-Za-z][A-Za-z0-9_-]*/ { long_ok=1 }

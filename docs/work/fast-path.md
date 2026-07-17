@@ -74,12 +74,12 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
-| `make agent-plan` | no-build JSON decision packet: changed-path/test classification hints, source-wide compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and MCP shortcuts |
+| `make agent-plan` | no-build JSON decision packet: changed-path/test classification hints, source-wide compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and native command shortcuts |
 | `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + exact source-wide compile/test proofs + native linger-service probe; identical green inputs skip repeated proven scope |
 | `make immutable-history-canaries` | fast real-chain consensus KATs: h=478544 oversized canonical transaction plus consensus parity pins |
-| `zclassic23 status` / `zclassic23 dumpstate <subsystem>` | native node reads (registry replaces MCP; `make agent-mcp-call-hot` is the legacy MCP path, removed in W3) |
-| `zclassic23-dev status` | dev-lane native read (legacy: `make agent-mcp-call-dev TOOL=<tool>`) |
+| `zclassic23 status` / `zclassic23 dumpstate <subsystem>` | native node reads (the native command registry is the sole agent interface) |
+| `zclassic23-dev status` | dev-lane native read against the installed dev binary |
 | `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files with `ZCL_FAST_COMPILE=strict` |
 | `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
 | `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
@@ -89,7 +89,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 `make agent-plan` is the read-only preview of the loop: it emits
 `zcl.agent_fast_plan.v1` with changed-file classification hints, mapped test
 hints, the source-wide compile decision, green-input cache verdict, dev-lane stage/deploy
-commands, and the no-build MCP shortcuts. `make agent-doctor` embeds that same
+commands, and the no-build native command shortcuts. `make agent-doctor` embeds that same
 plan alongside dev-lane health and recent focused-test failures.
 
 `make immutable-history-canaries` is the fast consensus-risk lane for the
@@ -116,7 +116,7 @@ proof. Changed paths are classification hints only. Use
 `ZCL_FAST_COMPILE=dev` for that same dev profile, or
 `ZCL_FAST_COMPILE=strict` when you want `make build-only`; `make pre-push-ci`
 sets that automatically. Provide mapped test hints with
-`ZCL_FAST_TESTS=make_lint_gates,mcp_controllers` for routing diagnostics;
+`ZCL_FAST_TESTS=make_lint_gates,api` for routing diagnostics;
 the automated proof remains source-wide. Use `ZCL_FAST_STRICT_TESTS=1` to pay
 the strict exact-candidate proof. Set parallelism with `ZCL_FAST_JOBS=N`
 (default caps at 16). Set
@@ -142,7 +142,7 @@ changes fail closed until you either add a focused-test mapping or pass
 `ZCL_FAST_TESTS=...`. The focused-test map is shared with native
 `zclassic23 agentimpact` in
 `app/controllers/include/controllers/agent_impact_rules.def`; keep new mappings
-there so the CLI, MCP tool, and fast-CI shell lane do not drift.
+there so the CLI and fast-CI shell lane do not drift.
 
 Use `make dev-bin` when you need to run a changed node/agent CLI locally without
 paying the release build's whole-program LTO pass. It emits
@@ -157,28 +157,24 @@ local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.
 
 The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
-or MCP `zcl_agent_build`; it advertises `make agent-plan`, the stage-without-restart
-path, and the same MCP shortcuts.
+(agent contract `mcp_tool` taxonomy name: `zcl_agent_build`); it advertises
+`make agent-plan`, the stage-without-restart path, and the same native command
+shortcuts.
 
 Native commands are the agent interface. In the source tree, prefer
 `build/bin/zclassic23 status` and
 `build/bin/zclassic23 dumpstate supervisor` for fresh-code smoke checks, and
 `build/bin/zclassic23 discover help` to enumerate the command registry. Against
-the dev lane use `build/bin/zclassic23-dev status`. The legacy typed-MCP
-one-shots (`make agent-mcp-call*`, `zclassic23 mcpcall <tool>`) are the MCP path
-and are being removed in zero-MCP W3. Do not add Python, shell, or helper-binary
-wrappers for new agent workflows.
+the dev lane use `build/bin/zclassic23-dev status`. The legacy MCP stdio server
+has been removed; the native command registry is the sole agent interface.
+Do not add Python, shell, or helper-binary wrappers for new agent workflows.
 
 Canonical operator APIs, in priority order:
 
 1. `build/bin/zclassic23 agentmap`, `agentlanes`, `agentliveness`, `agentimpact`,
-   `agentbuild`, `agent`, `healthcheck`, `mcpcall <tool> [json]`, and raw RPC
-   methods — native C binary client to the running linger service.
-2. MCP tools (`zcl_agent_map`, `zcl_agent_lanes`, `zcl_agent_liveness`,
-   `zcl_agent_impact`, `zcl_agent_build`, `zcl_agent`, `zcl_status`,
-   `zcl_state`, `zcl_node_log`, `zcl_sql`) — typed agent interface over the
-   same node RPC truth.
-3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
+   `agentbuild`, `agent`, `healthcheck`, and raw RPC methods — native C binary
+   client to the running linger service.
+2. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
 
 `make agent-loop` is the normal AI/operator edit gate. Before pushing `main`, the
 tracked pre-push hook computes the exact `origin/main..HEAD` changed-file set,

@@ -111,7 +111,7 @@ static int t_classify_hotswap(void)
     int failures = 0;
     TEST("golden dev cycle: eligible-TU edit classifies to hotswap, not full rebuild") {
         struct zcl_devloop_plan plan;
-        const char *files[] = { "tools/mcp/controllers/wallet_controller.c" };
+        const char *files[] = { "app/controllers/src/wallet_native_handlers.c" };
         ASSERT(zcl_devloop_plan_files(files, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
         ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
@@ -339,10 +339,10 @@ static int t_strict_timing(void)
          * build and is out of scope for this hermetic harness). */
         char hdir[512];
         test_make_tmpdir(hdir, sizeof(hdir), "golden_dev_cycle", "timing_hotswap");
-        ASSERT(gdc_write(hdir, "tools/mcp/controllers/wallet_controller.c",
+        ASSERT(gdc_write(hdir, "app/controllers/src/wallet_native_handlers.c",
                          "/* golden timing */\n"));
         struct zcl_devloop_plan plan;
-        const char *files[] = { "tools/mcp/controllers/wallet_controller.c" };
+        const char *files[] = { "app/controllers/src/wallet_native_handlers.c" };
         platform_time_monotonic_timespec(&a);
         ASSERT(zcl_devloop_plan_files(files, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);

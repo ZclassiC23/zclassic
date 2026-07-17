@@ -12,8 +12,6 @@
 
 #include "test/test_helpers.h"
 #include "hotswap/hotswap.h"
-#include "mcp/controllers.h"
-#include "mcp/router.h"
 #include "json/json.h"
 #include "util/clientversion.h"
 
@@ -98,30 +96,7 @@ static bool manifest_self_test_ok(const struct zcl_hotswap_host *host,
     return true;
 }
 
-static struct zcl_hotswap_manifest_v2 valid_manifest(void)
-{
-    return (struct zcl_hotswap_manifest_v2) {
-        .schema_version = ZCL_HOTSWAP_MANIFEST_SCHEMA_V2,
-        .struct_size = sizeof(struct zcl_hotswap_manifest_v2),
-        .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V2,
-        .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,
-        .required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
-        .provider_id = "mcp.routes",
-        .build_identity = zcl_build_source_id_sha256(),
-        .source_identity = "tools/mcp/controllers/app_controller.c",
-        .input_digest =
-            "0123456789abcdef0123456789abcdef"
-            "0123456789abcdef0123456789abcdef",
-        .state_schema_version = 0,
-        .stateless = true,
-        .quiescence = ZCL_HOTSWAP_QUIESCENCE_NONE,
-        .mapped_tests_csv = "hotswap_loader,mcp_router",
-        .probe_tools_csv = "zcl_name_list",
-        .self_test = manifest_self_test_ok,
-    };
-}
-
-/* Wave W1-B/C: the `native.leaves` provider class (V3 host: same manifest
+/* The `native.leaves` provider class (V3 host: same manifest
  * schema, host vtable adds leaf_stage; see hotswap.h / hotswap_loader.c
  * hotswap_manifest_v2_validate()'s provider_id branch). source_identity /
  * probe_tools_csv below mirror the real native.leaves eligibility row in
@@ -185,39 +160,29 @@ static int test_hotswap_leaf_manifest_v3_contract(void)
         manifest.provider_id = NULL;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "unknown") != NULL);
-        PASS();
-    } _test_next:;
-    return failures;
-}
 
-static int test_hotswap_manifest_v2_contract(void)
-{
-    int failures = 0;
-    TEST("hotswap manifest v2 validates ABI/provenance/stateless eligibility") {
-        char why[256];
-        struct zcl_hotswap_manifest_v2 manifest = valid_manifest();
-        ASSERT(hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-
+        /* Provider-agnostic provenance/eligibility checks (run after the
+         * provider branch): schema/struct bump, build-identity binding,
+         * source runtime-eligibility, probe metadata, digest shape, and the
+         * stateless/self-test contract. */
+        manifest = valid_leaf_manifest();
         manifest.schema_version++;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.host_struct_size++;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
-        manifest.required_host_capabilities = ZCL_HOTSWAP_CAP_DIRECT_PROVIDER;
-        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.build_identity = "wrong-build";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "build source identity mismatch") != NULL);
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         char dirty_suffix_identity[72];
         snprintf(dirty_suffix_identity, sizeof(dirty_suffix_identity),
                  "%s-dirty", zcl_build_source_id_sha256());
         manifest.build_identity = dirty_suffix_identity;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "build source identity mismatch") != NULL);
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         char different_source_id[65];
         snprintf(different_source_id, sizeof(different_source_id), "%s",
                  zcl_build_source_id_sha256());
@@ -225,31 +190,31 @@ static int test_hotswap_manifest_v2_contract(void)
         manifest.build_identity = different_source_id;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "build source identity mismatch") != NULL);
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.source_identity = "app/controllers/src/api_controller_routes.c";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
-        manifest.probe_tools_csv = "zcl_tools_list";
+        manifest = valid_leaf_manifest();
+        manifest.probe_tools_csv = "ops.metrics";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "probe metadata mismatch") != NULL);
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.input_digest =
-            "0123456789abcdef0123456789abcdef"
-            "0123456789abcdef0123456789abcde";
+            "abcdef0123456789abcdef0123456789"
+            "abcdef0123456789abcdef012345678";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.input_digest =
-            "0123456789abcdef0123456789abcdef"
-            "0123456789abcdef0123456789abcdeF";
+            "abcdef0123456789abcdef0123456789"
+            "abcdef0123456789abcdef01234567zz";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.stateless = false;
         manifest.state_schema_version = 1;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.mapped_tests_csv = "";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
-        manifest = valid_manifest();
+        manifest = valid_leaf_manifest();
         manifest.self_test = NULL;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         PASS();
@@ -312,166 +277,6 @@ static int test_hotswap_dump_state(void)
     return failures;
 }
 
-/* ── mcp_router_replace: the publish seam the loader drives ──────────
- *
- * hotswap_load() stages each generation route via a caller-supplied
- * zcl_hotswap_replace_cb — in production that callback is mcp_router_replace.
- * The loader is a release stub in this (non-ZCL_DEV_BUILD) test binary, so we
- * exercise the replace seam it depends on directly: an atomic re-point that
- * dispatch observes, plus the structural refusals that keep a malformed
- * generation from publishing a bad slot. (Test groups run in forked processes,
- * so touching the global router here is isolated.) */
-
-static int h_orig(const struct mcp_request *req, struct mcp_response *res)
-{
-    (void)req;
-    res->body = strdup("{\"gen\":\"ORIGINAL\"}");
-    return res->body ? 0 : -1;
-}
-
-static int h_swapped(const struct mcp_request *req, struct mcp_response *res)
-{
-    (void)req;
-    res->body = strdup("{\"gen\":\"SWAPPED\"}");
-    return res->body ? 0 : -1;
-}
-
-static const struct mcp_tool_route k_route_orig = {
-    "t.hotswap_probe", "ops", "original", NULL, 0, h_orig, 0, NULL
-};
-static const struct mcp_tool_route k_route_swapped = {
-    "t.hotswap_probe", "ops", "swapped", NULL, 0, h_swapped, 0, NULL
-};
-/* Same handler, DIFFERENT name — a structural mismatch replace must refuse. */
-static const struct mcp_tool_route k_route_mismatch = {
-    "t.other_name", "ops", "mismatch", NULL, 0, h_swapped, 0, NULL
-};
-static const struct mcp_tool_route k_route_destructive = {
-    "t.hotswap_probe", "ops", "destructive", NULL, 0, h_swapped,
-    MCP_TOOL_FLAG_DESTRUCTIVE, NULL
-};
-
-static int test_hotswap_probe_safety(void)
-{
-    int failures = 0;
-    TEST("candidate probe is replaced-only, non-destructive, and error-free") {
-        struct hotswap_load_report rep = {0};
-        snprintf(rep.replaced[0], sizeof(rep.replaced[0]),
-                 "t.hotswap_probe");
-        rep.replaced_count = 1;
-        const char *code = NULL;
-
-        ASSERT(mcp_dev_hotswap_probe_allowed(
-            "t.hotswap_probe", &rep, &k_route_orig, &code));
-        ASSERT(code == NULL);
-
-        ASSERT(!mcp_dev_hotswap_probe_allowed(
-            "t.not_replaced", &rep, &k_route_orig, &code));
-        ASSERT(strcmp(code, "not_replaced") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_allowed(
-            "t.hotswap_probe", &rep, NULL, &code));
-        ASSERT(strcmp(code, "route_missing") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_allowed(
-            "t.hotswap_probe", &rep, &k_route_mismatch, &code));
-        ASSERT(strcmp(code, "route_changed") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_allowed(
-            "t.hotswap_probe", &rep, &k_route_destructive, &code));
-        ASSERT(strcmp(code, "destructive_route") == 0);
-
-        rep.replaced_overflow = true;
-        ASSERT(!mcp_dev_hotswap_probe_allowed(
-            "t.hotswap_probe", &rep, &k_route_orig, &code));
-        ASSERT(strcmp(code, "invalid_report") == 0);
-
-        char body_error_code[64], body_error_message[256];
-        ASSERT(mcp_dev_hotswap_probe_body_ok(
-            "{\"result\":\"ready\"}", body_error_code,
-            sizeof(body_error_code), body_error_message,
-            sizeof(body_error_message)));
-        ASSERT(body_error_code[0] == '\0');
-        ASSERT(!mcp_dev_hotswap_probe_body_ok(
-            "{\"error\":{\"code\":-32603,\"message\":\"cannot connect\"}}",
-            body_error_code, sizeof(body_error_code), body_error_message,
-            sizeof(body_error_message)));
-        ASSERT(strcmp(body_error_code, "handler_error") == 0);
-        ASSERT(strstr(body_error_message, "cannot connect") != NULL);
-        ASSERT(!mcp_dev_hotswap_probe_body_ok(
-            "not-json", body_error_code, sizeof(body_error_code),
-            body_error_message, sizeof(body_error_message)));
-        ASSERT(strcmp(body_error_code, "unparseable_response") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_body_ok(
-            "[]", body_error_code, sizeof(body_error_code),
-            body_error_message, sizeof(body_error_message)));
-        ASSERT(strcmp(body_error_code, "invalid_response_shape") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_body_ok(
-            "{\"ok\":false}", body_error_code, sizeof(body_error_code),
-            body_error_message, sizeof(body_error_message)));
-        ASSERT(strcmp(body_error_code, "unsuccessful_response") == 0);
-        ASSERT(!mcp_dev_hotswap_probe_body_ok(
-            "{\"status\":\"blocked\"}", body_error_code,
-            sizeof(body_error_code), body_error_message,
-            sizeof(body_error_message)));
-        ASSERT(strcmp(body_error_code, "unsuccessful_status") == 0);
-
-        /* A route captured after the policy check remains the route invoked
-         * even if a later generation changes the active slot. */
-        mcp_router_reset();
-        ASSERT(mcp_router_register(&k_route_orig));
-        const struct mcp_tool_route *captured =
-            mcp_router_find("t.hotswap_probe");
-        ASSERT(captured == &k_route_orig);
-        ASSERT(mcp_router_replace("t.hotswap_probe", &k_route_destructive));
-        ASSERT(mcp_router_find("t.hotswap_probe") == &k_route_destructive);
-        char *body = mcp_router_dispatch_route(captured, NULL);
-        ASSERT(body != NULL);
-        ASSERT(strstr(body, "ORIGINAL") != NULL);
-        free(body);
-        mcp_router_reset();
-        PASS();
-    } _test_next:;
-    return failures;
-}
-
-static int test_hotswap_router_replace_semantics(void)
-{
-    int failures = 0;
-    TEST("mcp_router_replace re-points a slot dispatch observes; refuses malformed") {
-        mcp_router_reset();
-        ASSERT(mcp_router_register(&k_route_orig) == true);
-
-        /* Original handler is live. */
-        char *b0 = mcp_router_dispatch("t.hotswap_probe", NULL);
-        ASSERT(b0 != NULL);
-        ASSERT(strstr(b0, "ORIGINAL") != NULL);
-        free(b0);
-
-        /* Replace with the swapped handler; dispatch now hits the new fn. */
-        ASSERT(mcp_router_replace("t.hotswap_probe", &k_route_swapped) == true);
-        char *b1 = mcp_router_dispatch("t.hotswap_probe", NULL);
-        ASSERT(b1 != NULL);
-        ASSERT(strstr(b1, "SWAPPED") != NULL);
-        free(b1);
-
-        /* A replace is not a new slot — count is unchanged. */
-        ASSERT(mcp_router_count() == 1);
-
-        /* Structural refusals: unknown slot, name!=slot mismatch, NULLs. */
-        ASSERT(mcp_router_replace("t.absent", &k_route_swapped) == false);
-        ASSERT(mcp_router_replace("t.hotswap_probe", &k_route_mismatch) == false);
-        ASSERT(mcp_router_replace("t.hotswap_probe", NULL) == false);
-        ASSERT(mcp_router_replace(NULL, &k_route_swapped) == false);
-
-        /* A refused replace leaves the swapped handler in place. */
-        char *b2 = mcp_router_dispatch("t.hotswap_probe", NULL);
-        ASSERT(b2 != NULL);
-        ASSERT(strstr(b2, "SWAPPED") != NULL);
-        free(b2);
-
-        mcp_router_reset();
-        PASS();
-    } _test_next:;
-    return failures;
-}
 
 int test_hotswap_loader(void);
 
@@ -480,11 +285,8 @@ int test_hotswap_loader(void)
     int failures = 0;
     failures += test_hotswap_path_acceptance();
     failures += test_hotswap_datadir_guard();
-    failures += test_hotswap_manifest_v2_contract();
     failures += test_hotswap_leaf_manifest_v3_contract();
     failures += test_hotswap_load_stub_and_registry();
     failures += test_hotswap_dump_state();
-    failures += test_hotswap_probe_safety();
-    failures += test_hotswap_router_replace_semantics();
     return failures;
 }

@@ -3,7 +3,7 @@
  * MCP RPC client: speaks HTTP+JSON-RPC to the local zclassic23 node.
  * See rpc_client.h for the public API. */
 
-#include "rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include "json/json.h"
 #include "rpc/server.h"
@@ -255,6 +255,7 @@ char *mcp_node_rpc_inproc(const char *method, const char *params_json)
          * fprintf, not LOG_FAIL, because LOG_FAIL returns false — wrong for
          * a pointer-returning function — and we must still hand back a
          * proper error body.) */
+        // obs-ok:inproc-rpc-not-ready (best-effort stderr; returns a JSON -32603 error envelope)
         fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC for '%s' before "
                 "rpc_table is live\n", __FILE__, __LINE__, __func__, mname);
         return strdup("{\"error\":{\"code\":-32603,"
@@ -269,6 +270,7 @@ char *mcp_node_rpc_inproc(const char *method, const char *params_json)
     if (params_json && params_json[0]) {
         if (!json_read(&params, params_json, strlen(params_json))) {
             json_free(&params);
+            // obs-ok:inproc-rpc-bad-params (best-effort stderr; returns a JSON -32602 error envelope)
             fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC '%s' bad "
                     "params JSON\n", __FILE__, __LINE__, __func__, mname);
             return strdup("{\"error\":{\"code\":-32602,"
@@ -308,6 +310,7 @@ char *mcp_node_rpc_inproc(const char *method, const char *params_json)
             if (out)
                 json_write(pick, out, need);
             else
+                // obs-ok:inproc-rpc-alloc-fail (best-effort stderr; returns NULL, caller emits its own error)
                 fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC '%s' "
                         "result alloc failed\n", __FILE__, __LINE__,
                         __func__, mname);

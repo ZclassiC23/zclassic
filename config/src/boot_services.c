@@ -101,7 +101,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
-#include "mcp/dev_rpc_bridge.h"
+#include "command/native_dev_hotswap.h"
 #include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
@@ -1240,7 +1240,7 @@ bool app_init_services(struct app_context *ctx,
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
 
-    if (!register_dev_mcp_rpc_commands(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
+    if (!register_dev_native_hotswap_rpc(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
 
     /* Pre-compute fast sync snapshot offer in background */
     {

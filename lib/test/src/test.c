@@ -605,27 +605,6 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "mcp_controllers") == 0) {
-        printf("[test] ZCL_TEST_ONLY=mcp_controllers — running MCP controller subset\n");
-        failures += test_mcp_controllers();
-        printf("\n=== mcp_controllers subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
-    if (only && strcmp(only, "mcp_e2e") == 0) {
-        printf("[test] ZCL_TEST_ONLY=mcp_e2e — running MCP e2e only\n");
-        failures += test_mcp_e2e();
-        printf("\n=== mcp_e2e subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
-    if (only && strcmp(only, "mcp_fuzz") == 0) {
-        printf("[test] ZCL_TEST_ONLY=mcp_fuzz — running MCP fuzz only\n");
-        failures += test_mcp_fuzz();
-        printf("\n=== mcp_fuzz subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
     if (only && strcmp(only, "make_lint_gates") == 0) {
         printf("[test] ZCL_TEST_ONLY=make_lint_gates — running lint gate subset\n");
         failures += test_make_lint_gates();
@@ -1144,21 +1123,13 @@ int main(int argc, char **argv)
     failures += test_chain_restore_planner();
     failures += test_chain_restore_service();
     failures += test_chain_activation_controller();
-    failures += test_mcp_router();
-    failures += test_dev_mcp_rpc_bridge();
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_hotswap_module();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
     failures += test_native_api_contract();
-    failures += test_mcp_controllers();
-    failures += test_mcp_middleware();
-    failures += test_mcp_metrics();
-    failures += test_mcp_baseline();
     failures += test_metric_alerts();
-    failures += test_mcp_e2e();
-    failures += test_mcp_notify();
     failures += test_db_validators();
     failures += test_peer_scoring();
     failures += test_peer_bandwidth();
@@ -1540,7 +1511,6 @@ int main(int argc, char **argv)
     failures += test_zslp_store_port();
     failures += test_make_lint_gates();
     failures += test_multisig();
-    failures += test_mcp_fuzz();
     failures += test_rpc_auth_hardening();
     failures += test_disk_block_io();
     failures += test_msg_handlers();
