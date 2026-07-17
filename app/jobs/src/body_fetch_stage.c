@@ -89,10 +89,14 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
                                         vh_reason, sizeof(vh_reason));
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        /* Row missing despite floor — surface as IDLE (will retry). */
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* Row missing despite floor — a durable upstream-log hole, not
+         * "not yet" (see stage_upstream_log_hole_note). JOB_IDLE, never
+         * JOB_BLOCKED: reducer_frontier_reconcile_light is the healer. */
+        stage_upstream_log_hole_note(STAGE_NAME, "validate_headers_log",
+                                     next_h, vh_cursor, &g_last_blocked_unix);
         return JOB_IDLE;
     }
+    stage_upstream_log_hole_clear(STAGE_NAME);
 
     /* Look up the in-memory block_index entry — we need the hash and
      * the BLOCK_HAVE_DATA flag. */
@@ -194,6 +198,10 @@ STAGE_DRAIN_IMPL(body_fetch)
 
 void body_fetch_stage_shutdown(void)
 {
+    /* Registry hygiene (tests re-init in-process): re-derived from live
+     * state the next time the condition fires, so clearing here loses
+     * nothing. */
+    stage_upstream_log_hole_clear(STAGE_NAME);
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

@@ -236,6 +236,25 @@ struct consensus_state_activate_request {
      * datadir_display is never authority and is used only in operator text. */
     int datadir_fd;
     const char *datadir_display;
+    /* ── CHECKPOINT_CONTENT ACTIVATE authority (additive to the independent
+     *    replay-receipt authority) ──────────────────────────────────────────
+     * A checkpoint-content bundle proves its own content is the compiled SHA3
+     * UTXO checkpoint: its coins re-fold to get_sha3_utxo_checkpoint()'s
+     * sha3_hash + utxo_count at that height, and its Sapling tip frontier
+     * Pedersen-roots to the block header's PoW-committed hashFinalSaplingRoot.
+     * That binds the state to the compiled binary + PoW — cryptographically
+     * stronger than a fold-process receipt. The Sapling root is NOT baked into
+     * the checkpoint, so it must come from THIS datadir's own validated header
+     * chain. When the caller has a validated header at the checkpoint height
+     * whose hash equals the checkpoint block hash, it reads that header's
+     * hashFinalSaplingRoot into checkpoint_sapling_root and sets
+     * checkpoint_sapling_root_from_validated_header = true; the install then
+     * activates via CHECKPOINT_CONTENT when the receipt authority is absent.
+     * With the flag false (no validated header at the checkpoint height) a
+     * content-matching bundle can only report VERIFIED_CONTAINED — the install
+     * never activates on a Sapling root it cannot bind to PoW. */
+    bool checkpoint_sapling_root_from_validated_header;
+    uint8_t checkpoint_sapling_root[32];
 };
 
 struct consensus_state_activate_result {

@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define SS_CHECK(name, expr) do {                                         \
     if (expr) { printf("  segment_sealer: %s... OK\n", (name)); }          \
@@ -79,6 +80,73 @@ int test_segment_sealer(void)
                  !segment_sealer_next_range(SEG + 3, store, &first, &count));
 
         chain_segment_store_close(store);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* ── Bounded backfill catch-up + never-seal-above-frontier ─────────────
+     * segment_sealer_seal_next is the primitive the background catch-up loops
+     * (run_catchup calls it up to catchup_batch times per tick). Prove it seals
+     * exactly ONE segment per call, oldest-first (so looping walks the backlog
+     * forward), and NEVER writes a segment whose top exceeds the finalized
+     * frontier. Driven with a synthetic body source — no node fixture needed. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "segment_sealer", "sealnext");
+        char err[256] = {0};
+        /* Heights 0 .. 3*SEG-1 are finalized; the top of segment 2 == frontier. */
+        const uint32_t frontier = SEG * 3 - 1;
+
+        /* Call 1: seals the oldest unsealed segment (segment 0). */
+        uint32_t f0 = 999;
+        int r0 = segment_sealer_seal_next(dir, frontier, tiny_body, NULL,
+                                          &f0, err, sizeof(err));
+        SS_CHECK("seal_next #1 seals segment 0", r0 == 1 && f0 == 0);
+
+        /* After call 1 exactly ONE segment is sealed (bounded: not two). */
+        {
+            struct chain_segment_store *st1 = NULL;
+            enum cseg_status o1 = chain_segment_store_open(dir, &st1, err, sizeof(err));
+            SS_CHECK("one segment sealed per call",
+                     o1 == CSEG_OK && st1 &&
+                     chain_segment_store_segment_count(st1) == 1 &&
+                     !chain_segment_store_covers(st1, SEG));
+            if (st1) chain_segment_store_close(st1);
+        }
+
+        /* Call 2: segment 0 sealed -> seals segment 1 (oldest-first advance). */
+        uint32_t f1 = 999;
+        int r1 = segment_sealer_seal_next(dir, frontier, tiny_body, NULL,
+                                          &f1, err, sizeof(err));
+        SS_CHECK("seal_next #2 seals segment 1", r1 == 1 && f1 == SEG);
+
+        /* Call 3: seals segment 2 whose top == frontier (inclusive, eligible). */
+        uint32_t f2 = 999;
+        int r2 = segment_sealer_seal_next(dir, frontier, tiny_body, NULL,
+                                          &f2, err, sizeof(err));
+        SS_CHECK("seal_next #3 seals segment 2 (top == frontier)",
+                 r2 == 1 && f2 == SEG * 2);
+
+        /* Call 4: segment 3 is entirely ABOVE the frontier -> nothing sealed. */
+        int r3 = segment_sealer_seal_next(dir, frontier, tiny_body, NULL,
+                                          NULL, err, sizeof(err));
+        SS_CHECK("seal_next #4 refuses to seal above frontier", r3 == 0);
+
+        /* The store covers exactly [0, frontier]; nothing above was written. */
+        struct chain_segment_store *store = NULL;
+        enum cseg_status ost = chain_segment_store_open(dir, &store, err, sizeof(err));
+        SS_CHECK("sealed_max == frontier, nothing above",
+                 ost == CSEG_OK && store &&
+                 chain_segment_store_covers(store, frontier) &&
+                 !chain_segment_store_covers(store, frontier + 1) &&
+                 chain_segment_store_sealed_max(store) == frontier);
+        if (store) chain_segment_store_close(store);
+
+        /* And no seg file for the above-frontier segment exists on disk. */
+        char above[512];
+        snprintf(above, sizeof(above), "%s/seg-%u-%u.dat", dir, SEG * 3, SEG);
+        struct stat sb;
+        SS_CHECK("no segment file above frontier on disk", stat(above, &sb) != 0);
+
         test_rm_rf_recursive(dir);
     }
 

@@ -1194,8 +1194,8 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_select_chain_and_datadir(ctx))
         return false;
     if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
-        !ctx->export_consensus_bundle &&
-        !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
+        !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
+        !ctx->verify_rom && !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
         return false;
     if (!boot_refold_staged_preflight(ctx->refold_staged)) return false;
     const struct chain_params *params = chain_params_get();
@@ -1560,8 +1560,8 @@ bool app_init(struct app_context *ctx)
     boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
     if (progress_open) {
         if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
-            !ctx->export_consensus_bundle &&
-            !boot_mint_anchor_normal_boot_gate(progress_store_db()))
+            !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
+            !ctx->verify_rom && !boot_mint_anchor_normal_boot_gate(progress_store_db()))
             return false;
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
@@ -2140,11 +2140,20 @@ bool app_init(struct app_context *ctx)
                 int64_t db_h = g_node_db.open ? db_block_max_height(&g_node_db) : 0;
                 if (db_h > chain_h) chain_h = (int)db_h;
             }
-            /* Always try zclassicd LDB if our index has far fewer entries
-             * than the chain height. After snapshot sync, our own LDB has
-             * only a handful of entries with scrambled heights. */
-            bool need_zcd = ((int64_t)g_state.map_block_index.size <
-                             (int64_t)chain_h * 9 / 10);
+            /* Legacy source probe, hoisted: feeds need_zcd + the LevelDB open. */
+            const char *home = getenv("HOME");
+            char zcd_idx_path[1024];
+            if (home)
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         "%s/.zclassic/blocks/index", home);
+            else
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         ".zclassic/blocks/index");
+            struct stat zcd_st;
+            bool legacy_source_present = (stat(zcd_idx_path, &zcd_st) == 0);
+            /* Ratio or empty-datadir trigger — see boot_need_legacy_header_pull. */
+            bool need_zcd = boot_need_legacy_header_pull(
+                (int64_t)g_state.map_block_index.size, (int64_t)chain_h, legacy_source_present);
         if (need_zcd) {
             /* Derive our OWN coins frontier up front. The zclassicd LevelDB
              * index tops out at zclassicd's own tip; if our derived frontier
@@ -2161,17 +2170,8 @@ bool app_init(struct app_context *ctx)
              * normally. */
             struct boot_derived_coins_best ndcb;
             bool have_ndcb = boot_derive_coins_best(&ndcb);
-            const char *home = getenv("HOME");
-            char zcd_idx_path[1024];
-            if (home)
-                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
-                         "%s/.zclassic/blocks/index", home);
-            else
-                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
-                         ".zclassic/blocks/index");
 
-            struct stat zcd_st;
-            if (stat(zcd_idx_path, &zcd_st) == 0) {
+            if (legacy_source_present) {
                 printf("Loading block index from zclassicd LevelDB: %s\n",
                        zcd_idx_path);
                 fflush(stdout);
@@ -3516,6 +3516,8 @@ sapling_tree_boot_check_done:
                                       ctx->datadir);
     if (ctx->ratify_mint_anchor)
         boot_ratify_mint_anchor(ctx->datadir);
+    if (ctx->verify_rom)
+        boot_verify_rom(ctx->datadir);
     if (ctx->export_consensus_bundle)
         boot_export_consensus_bundle(&g_node_db, &g_state, ctx->datadir);
     if (ctx->promote_shielded_history)  /* -> wedged COPY, header-bound Sapling */

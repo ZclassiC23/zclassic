@@ -29,10 +29,27 @@
  *      identical bytes is idempotent: accepted again (not an error) but
  *      counted as already-known (not newly-added), no duplicate block-tree
  *      entries, and no misbehaviour score for replaying old data.
+ *   F. A legal-sized `addr` batch entirely of non-routable (RFC1918)
+ *      addresses — accepted at the envelope level (under the cap, so no
+ *      misbehaviour) but every entry is silently filtered by addrman's own
+ *      net_addr_is_routable() gate; none are ever inserted.
+ *   G. A `ping` with a deliberately wrong checksum — dropped before
+ *      dispatch (bounded cost: one hash256 over the capped payload),
+ *      connection NOT penalized. Pins the intentional Bitcoin-Core-parity
+ *      choice (same reasoning as case D) rather than leaving it
+ *      undocumented/untested.
+ *   H. A `reject` message with a declared msg_type length that exceeds
+ *      the fixed local buffer — pins that the fields after it (code,
+ *      reason_len, reason) are read from the correct wire offset (a
+ *      real fix: the old code silently skipped storing the oversized
+ *      string but forgot to advance the read cursor past it, misaligning
+ *      every field that followed). H2 covers the same field but with a
+ *      declared length that exceeds the actual remaining message bytes
+ *      ("claimed > actual").
  *
- * Sections A/B/E use a stack p2p_node + memset (mirrors
+ * Sections A/B/E/F/H/H2 use a stack p2p_node + memset (mirrors
  * test_process_headers_adversarial.c) since the code paths under test
- * return before touching any node mutex. Sections C/D touch
+ * return before touching any node mutex. Sections C/D/G touch
  * mutex-guarded node/dispatch machinery and use a heap node from
  * p2p_node_create (properly mutex-initialized). */
 
@@ -461,6 +478,201 @@ int test_net_msg_dos(void)
             DOS_CHECK("replay: no misbehaviour for replaying old data",
                      atomic_load(&node.misbehavior) == 0 && !node.disconnect);
             stream_free(&s2);
+        }
+    }
+
+    /* ── F. addr: batch of non-routable addresses -> legal envelope
+     *      (under MAX_ADDR_TO_SEND, no misbehaviour), but every entry is
+     *      silently filtered by addrman_add()'s net_addr_is_routable()
+     *      gate — none are ever inserted. A flood of RFC1918/loopback
+     *      junk cannot grow addrman or otherwise cost more than the
+     *      per-entry deserialize itself. ── */
+    {
+        const struct msg_dispatch_entry *e = dos_find_entry("addr");
+        DOS_CHECK("addr dispatch entry found (non-routable case)", e != NULL);
+        if (e) {
+            struct p2p_node node;
+            dos_setup_stack_node(&node);
+            size_t before = addrman_size(&nm.addrman);
+
+            struct byte_stream s;
+            stream_init(&s, 50 * 30 + 16);
+            stream_write_compact_size(&s, 50); /* well under the cap */
+            for (int i = 0; i < 50; i++) {
+                struct net_address addr;
+                net_address_init(&addr);
+                /* 10.0.0.0/8 — RFC1918, never routable. */
+                unsigned char ip4[4] = {10, 0,
+                                        (unsigned char)(i >> 8),
+                                        (unsigned char)i};
+                net_addr_set_ipv4(&addr.svc.addr, ip4);
+                addr.svc.port = 8033;
+                net_address_serialize(&addr, &s, true);
+            }
+            bool ret = e->handler(&mp, &node, &s);
+            DOS_CHECK("non-routable addr: handler still returns true "
+                     "(legal envelope)", ret == true);
+            DOS_CHECK("non-routable addr: not treated as misbehaviour",
+                     atomic_load(&node.misbehavior) == 0 &&
+                     !node.disconnect);
+            DOS_CHECK("non-routable addr: none inserted into addrman",
+                     addrman_size(&nm.addrman) == before);
+            stream_free(&s);
+        }
+    }
+
+    /* ── G. framing: checksum mismatch -> message dropped BEFORE dispatch,
+     *      no crash, no allocation growth. Pins the intentional (Bitcoin
+     *      Core parity) choice not to score a checksum failure as
+     *      misbehaviour: unlike a bad start-magic or an oversized
+     *      declared size, a bad checksum alone does not prove the sender
+     *      is malicious rather than corrupt/buggy — same reasoning as
+     *      case D's "unknown command is not misbehaviour". The cost is
+     *      still bounded: one hash256 over the (already framing-capped)
+     *      payload, no allocation beyond the message's own capped
+     *      recv_alloc. Connection stays open and honest traffic
+     *      afterward on the SAME connection still dispatches. ── */
+    {
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {198, 51, 100, 24};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+
+        int sv[2];
+        bool have_sv = socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0;
+        DOS_CHECK("checksum: socketpair created", have_sv);
+        struct p2p_node *node = p2p_node_create(
+            &nm, have_sv ? sv[0] : ZCL_INVALID_SOCKET, &addr,
+            "dos-bad-checksum", true);
+        DOS_CHECK("checksum: node created", node != NULL);
+        if (node) {
+            node->version = PROTOCOL_VERSION;
+
+            /* "ping" with an 8-byte nonce payload but a deliberately wrong
+             * checksum (all-zero instead of hash256(nonce)). */
+            uint64_t nonce = 0xdeadbeefcafef00dULL;
+            unsigned char nonce_le[8];
+            for (int i = 0; i < 8; i++)
+                nonce_le[i] = (unsigned char)(nonce >> (8 * i));
+            struct msg_header hdr;
+            msg_header_init_full(&hdr, magic, "ping", 8);
+            hdr.nChecksum = 0; /* wrong on purpose */
+
+            unsigned char buf[MSG_HEADER_SIZE + 8];
+            memcpy(buf, &hdr, MSG_HEADER_SIZE);
+            memcpy(buf + MSG_HEADER_SIZE, nonce_le, 8);
+
+            bool recv_ok = p2p_node_receive_bytes(node, (const char *)buf,
+                                                  sizeof(buf), magic);
+            DOS_CHECK("checksum: bad-checksum message still reassembles "
+                     "(framing doesn't check checksum)", recv_ok);
+
+            bool loop_ok = msg_process_messages(&mp, node);
+            DOS_CHECK("checksum: msg_process_messages completes", loop_ok);
+            DOS_CHECK("checksum: message dropped (queue drained, no crash)",
+                     node->recv_msg_count == 0);
+            DOS_CHECK("checksum: connection NOT penalized "
+                     "(intentional, not a gap)",
+                     atomic_load(&node->misbehavior) == 0 &&
+                     !node->disconnect);
+
+            /* Honest ping (correct checksum) on the SAME connection still
+             * dispatches normally afterward. */
+            struct msg_header ping_hdr;
+            msg_header_init_full(&ping_hdr, magic, "ping", 8);
+            unsigned char ping_hash[32];
+            hash256(nonce_le, 8, ping_hash);
+            memcpy(&ping_hdr.nChecksum, ping_hash, 4);
+
+            unsigned char ping_buf[MSG_HEADER_SIZE + 8];
+            memcpy(ping_buf, &ping_hdr, MSG_HEADER_SIZE);
+            memcpy(ping_buf + MSG_HEADER_SIZE, nonce_le, 8);
+
+            bool ping_recv_ok = p2p_node_receive_bytes(
+                node, (const char *)ping_buf, sizeof(ping_buf), magic);
+            DOS_CHECK("checksum: honest ping after bad-checksum noise "
+                     "queued", ping_recv_ok && node->recv_msg_count == 1);
+            bool ping_loop_ok = msg_process_messages(&mp, node);
+            DOS_CHECK("checksum: honest ping dispatches normally "
+                     "afterward",
+                     ping_loop_ok && node->recv_msg_count == 0 &&
+                     !node->disconnect &&
+                     atomic_load(&node->misbehavior) == 0);
+
+            p2p_node_free(node);
+        }
+        if (have_sv)
+            close(sv[1]);
+    }
+
+    /* ── H. reject: oversized declared msg_type length -> the fields that
+     *      follow (code, reason_len, reason) are read from the CORRECT
+     *      wire offset. Before the fix, an oversized msg_type length was
+     *      silently skipped WITHOUT advancing the read cursor, so `code`
+     *      and `reason` were parsed from the tail of msg_type's own bytes
+     *      instead of their real position — a misparse, not just a
+     *      truncation. process_reject never surfaces its parsed fields
+     *      (advisory-only, printf'd), so this pins the fix via the read
+     *      cursor's final position instead. ── */
+    {
+        const struct msg_dispatch_entry *e = dos_find_entry("reject");
+        DOS_CHECK("reject dispatch entry found", e != NULL);
+        if (e) {
+            struct p2p_node node;
+            dos_setup_stack_node(&node);
+
+            struct byte_stream s;
+            stream_init(&s, 1100);
+            stream_write_compact_size(&s, 1000); /* msg_type len >= 32 */
+            unsigned char filler[1000];
+            /* 0xAB decodes as a compact-size marker (>=253) if misread as
+             * a length prefix, so an old-code misparse would NOT land on
+             * the expected offset by coincidence. */
+            memset(filler, 0xAB, sizeof(filler));
+            stream_write_bytes(&s, filler, sizeof(filler));
+            stream_write_u8(&s, 0x42); /* code */
+            stream_write_compact_size(&s, 5); /* reason_len */
+            stream_write_bytes(&s, (const unsigned char *)"hello", 5);
+
+            bool ret = e->handler(&mp, &node, &s);
+            DOS_CHECK("reject oversized msg_type: handler returns true "
+                     "(advisory, non-fatal)", ret == true);
+            /* 3 (compact_size for 1000) + 1000 (skipped msg_type) +
+             * 1 (code) + 1 (compact_size for 5) + 5 (reason) = 1010. */
+            DOS_CHECK("reject oversized msg_type: read cursor lands "
+                     "exactly past the reason field (fields aligned)",
+                     s.read_pos == 1010);
+            DOS_CHECK("reject oversized msg_type: entire message consumed",
+                     stream_remaining(&s) == 0);
+            stream_free(&s);
+        }
+    }
+
+    /* ── H2. reject: declared msg_type length exceeds the actual message
+     *      body ("claimed > actual") -> rejected cleanly, no misparse,
+     *      no crash, no allocation proportional to the lie. ── */
+    {
+        const struct msg_dispatch_entry *e = dos_find_entry("reject");
+        if (e) {
+            struct p2p_node node;
+            dos_setup_stack_node(&node);
+
+            struct byte_stream s;
+            stream_init(&s, 16);
+            /* Claims a 1000-byte msg_type but delivers only 4 more bytes. */
+            stream_write_compact_size(&s, 1000);
+            unsigned char short_tail[4] = {0x11, 0x22, 0x33, 0x44};
+            stream_write_bytes(&s, short_tail, sizeof(short_tail));
+
+            bool ret = e->handler(&mp, &node, &s);
+            DOS_CHECK("reject claimed>actual: handler returns true "
+                     "(advisory, non-fatal)", ret == true);
+            DOS_CHECK("reject claimed>actual: not treated as misbehaviour",
+                     atomic_load(&node.misbehavior) == 0 &&
+                     !node.disconnect);
+            stream_free(&s);
         }
     }
 

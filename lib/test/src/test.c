@@ -1328,6 +1328,7 @@ int main(int argc, char **argv)
     failures += test_fee_estimation();
     failures += test_header_sync();
     failures += test_header_sync_stall();
+    failures += test_header_range_sched();
     failures += test_hd_keychain();
     failures += test_mnemonic();
     failures += test_bip44();
@@ -1408,6 +1409,8 @@ int main(int argc, char **argv)
     failures += test_event_log();
     failures += test_mempool_projection();
     failures += test_peers_projection();
+    { extern int test_topology_store(void);
+      failures += test_topology_store(); }
     failures += test_wallet_projection();
     failures += test_small_projections();
     failures += test_utxo_projection();
@@ -1454,6 +1457,8 @@ int main(int argc, char **argv)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    { extern int test_hstar_integrity(void);
+      failures += test_hstar_integrity(); }
     failures += test_always_sync_chaos();
     { extern int test_reindex_sparse_bodies(void);
       failures += test_reindex_sparse_bodies(); }

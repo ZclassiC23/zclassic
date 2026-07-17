@@ -8,6 +8,7 @@
 #define ZCL_NET_CONNMAN_H
 
 #include "net/net.h"
+#include "net/anchor_peers.h"
 #include "net/onion_discovery.h"
 #include "chain/chainparams.h"
 #include <stdatomic.h>
@@ -56,6 +57,7 @@ enum connman_outbound_target_source {
     CONNMAN_TARGET_NONE = 0,
     CONNMAN_TARGET_ADDNODE,
     CONNMAN_TARGET_ADDRMAN,
+    CONNMAN_TARGET_ANCHOR,   /* persisted anchors.dat, dialed first at boot */
 };
 
 enum connman_addnode_failure_kind {
@@ -122,6 +124,16 @@ struct connman {
     int addnode_backoff_sec[MAX_ADDNODES];
     int64_t addnode_tcp_failures[MAX_ADDNODES];
     int64_t addnode_protocol_failures[MAX_ADDNODES];
+    /* Anchor peers (net/anchor_peers.h): the healthy outbound set persisted to
+     * anchors.dat on shutdown + every addrman flush, reloaded at boot and
+     * dialed FIRST (before the addrman random walk). `anchors_tried[i]` gives
+     * each loaded anchor exactly one priority attempt; once all are tried the
+     * dialer falls into the normal addnode/addrman flow. */
+    struct anchor_peer_set anchors;
+    bool                   anchors_tried[ANCHOR_PEERS_MAX];
+    /* Feeler cadence: wall-clock seconds of the last feeler dial initiated
+     * (0 = none yet). One feeler per ZCL_FEELER_INTERVAL_SECS. */
+    int64_t                last_feeler_ts;
     /* Data directory for persisting addrman (peers.dat) */
     const char *datadir;
     const char *onion_peer_datadir;
@@ -237,6 +249,33 @@ bool connman_pick_next_outbound_target(
     struct addr_info *result,
     enum connman_outbound_target_source *source,
     size_t *addnode_index);
+
+/* One outbound dial target chosen for a parallel batch. */
+struct connman_dial_candidate {
+    struct net_address                   addr;
+    enum connman_outbound_target_source  source;
+    size_t                               addnode_index; /* only for ADDNODE */
+    bool                                 is_feeler;      /* transient probe */
+};
+
+/* Gather up to `max` (clamped to MAX_OUTBOUND_CONNECTIONS) distinct outbound
+ * dial candidates for one non-blocking batch, in PRIORITY order:
+ *   1. un-tried persisted anchors (each dialed once, marked tried), then
+ *   2. addnode / addrman via connman_pick_next_outbound_target.
+ * Every candidate passes the same per-candidate gates the serial dialer used
+ * (reachable port, not already connected, not is_local, /16+/32+onion
+ * diversity), PLUS an in-batch dedupe + diversity tally so a single batch
+ * cannot itself breach a diversity cap. Returns the number written to `out`.
+ * Exposed so the anchors-before-addrman ordering is unit-testable. */
+size_t connman_gather_dial_candidates(struct connman *cm,
+                                      struct connman_dial_candidate *out,
+                                      size_t max);
+
+/* Snapshot the currently healthy (handshaked, NODE_NETWORK, non-disconnecting,
+ * non-feeler) outbound peers into `set` (capped at ANCHOR_PEERS_MAX). This is
+ * what gets persisted to anchors.dat. Exposed for tests. */
+void connman_collect_healthy_anchors(struct connman *cm,
+                                     struct anchor_peer_set *set);
 
 /* addnode reconnection backoff trio. All three stamp
  * addnode_last_attempt[i] with wall time so the dialer's cooldown can

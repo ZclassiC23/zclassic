@@ -362,6 +362,19 @@ void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn)
     g_precommit_hook = fn;
 }
 
+/* Test-only commit-boundary hook (see util/stage.h). NULL in production —
+ * `stage_run_once`'s call site below is one pointer load + branch when
+ * unset, and `g_boundary_seq` is only ever incremented inside that same
+ * branch, so an unset hook costs nothing beyond the check itself. */
+static stage_commit_boundary_fn g_boundary_hook = NULL;
+static uint64_t                 g_boundary_seq  = 0;
+
+void stage_set_test_commit_boundary_hook(stage_commit_boundary_fn fn)
+{
+    g_boundary_hook = fn;
+    g_boundary_seq  = 0;
+}
+
 /* Wall time of the outer batch COMMIT — the one fsync point a batched drain
  * still pays per batch. Process-global like g_batch_open (at most one batch
  * commits at a time), same seeded 1/16 EWMA + floor-to-1 idiom as
@@ -575,6 +588,12 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
             pthread_mutex_unlock(&s->lock);
             return stage_note_fatal(s, "cursor_write failed (sqlite)");
         }
+        /* Test-only crash-point seam (see util/stage.h): the cursor write and
+         * this step's output are staged but NOT yet committed. A hook that
+         * kills the process here simulates a real kill -9 landing exactly at
+         * this commit boundary, deterministically (by ordinal, not timing). */
+        if (g_boundary_hook)
+            g_boundary_hook(s->name, g_boundary_seq++);
         if (stage_step_commit(db, batched, &err) != SQLITE_OK) {
             fprintf(stderr, "[stage] COMMIT: %s\n",  // obs-ok:stage-commit-failure
                     err ? err : "(no message)");

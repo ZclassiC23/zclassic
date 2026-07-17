@@ -165,6 +165,22 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
 bool node_health_chain_advance_synced(const struct cac_decision *decision);
+
+/* Pure resolution of the Prime-Directive "network tip" used for the health lag
+ * number, hardened against a single lying peer (see NODE_HEALTH_PLAUSIBLE_TIP_BAND
+ * in node_health_service.c):
+ *   - raw_max          : MAX advertised height over connected peers (-1 if none).
+ *   - peers_above_band : how many connected peers claim > header_tip+band.
+ *   - header_tip       : our validated header tip (-1 if unknown → no clamp).
+ *   - modal_ready      : network_monitor has a folded view.
+ *   - modal_height     : its modal advertised height (-1 if none).
+ *   - modal_count      : peers agreeing on modal_height.
+ * A lone above-band claim is clamped to header_tip+band; a modal agreed by
+ * >= 3 peers wins over the clamped MAX. Health READ only — never chain
+ * selection. */
+int64_t node_health_resolve_network_tip(int64_t raw_max, int peers_above_band,
+                                        int64_t header_tip, bool modal_ready,
+                                        int64_t modal_height, int modal_count);
 #ifdef ZCL_TESTING
 void node_health_test_set_log_head_override(int log_head);
 void node_health_test_set_chain_advance_decision_override(

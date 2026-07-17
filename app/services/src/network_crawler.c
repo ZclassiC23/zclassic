@@ -21,9 +21,12 @@
 #include "services/network_monitor.h"
 
 #include "net/addrman.h"
+#include "storage/peers_projection.h"
+#include "storage/event_log_payloads.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "storage/topology_store.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
 #include "util/sync.h"
@@ -85,7 +88,12 @@ void network_crawler_config_defaults(struct network_crawler_config *cfg)
 {
     if (!cfg)
         return;
-    cfg->enabled = false;   /* dials the public net → opt-in only */
+    /* NET-2: ON by default — the eclipse blocker (net_eclipse_suspected) needs
+     * the wider-network census to detect that our connected peers are a small
+     * minority. The existing rate limits (bounded probe batches on short-lived
+     * measurement sockets outside connman) are unchanged. Opt OUT with
+     * ZCL_NETWORK_CRAWLER=0. */
+    cfg->enabled = true;
     cfg->round_interval_secs = NCRAWL_ROUND_INTERVAL_SECS_DEFAULT;
     cfg->max_per_round = NCRAWL_MAX_PER_ROUND;
     cfg->max_concurrent = NCRAWL_MAX_CONCURRENT;
@@ -99,9 +107,21 @@ static bool ncrawl_env_truthy(const char *e)
                  e[0] == 'y' || e[0] == 'Y');
 }
 
+/* Explicit opt-out truthiness: 0/f/F/n/N disables. */
+static bool ncrawl_env_falsy(const char *e)
+{
+    return e && (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                 e[0] == 'n' || e[0] == 'N');
+}
+
 static void ncrawl_config_from_env(struct network_crawler_config *cfg)
 {
-    if (ncrawl_env_truthy(getenv("ZCL_NETWORK_CRAWLER")))
+    /* ON by default; ZCL_NETWORK_CRAWLER is now the opt-OUT knob. An explicit
+     * falsy value disables; any truthy value re-enables (idempotent). */
+    const char *en = getenv("ZCL_NETWORK_CRAWLER");
+    if (ncrawl_env_falsy(en))
+        cfg->enabled = false;
+    else if (ncrawl_env_truthy(en))
         cfg->enabled = true;
     const char *iv = getenv("ZCL_NETCRAWL_INTERVAL_SECS");
     if (iv && iv[0]) {
@@ -308,11 +328,23 @@ static void *ncrawl_worker_fn(void *arg)
 
 /* Dial addrs[0..n) through fn with at most `concurrent` (<=NCRAWL_MAX_CONCURRENT)
  * in-flight at once; ingest each recordable result into the bounded census.
- * Returns the count of recorded probes. */
+ * Every REACHABLE result also feeds one topology-graph "self" edge (our own
+ * node directly reached this address this round — the crawler-results half
+ * of storage/topology_store.h's two edge sources; the other half is
+ * addr-message ingestion in lib/net/src/msgprocessor_inv.c). The three
+ * out-params (nullable) accumulate this round's sweep-summary counters:
+ * out_reachable = count of REACHABLE results, out_edges_seen = count of
+ * topology edges actually recorded, out_new_nodes = count of those edges
+ * whose advertised address had never been seen in the topology graph before.
+ * Returns the count of recorded probes (reachable + known-unreachable). */
 static int ncrawl_run_round(const struct net_address *addrs, int n,
                             ncrawl_probe_fn fn, int concurrent,
-                            int ct_ms, int ht_ms)
+                            int ct_ms, int ht_ms, int *out_reachable,
+                            int *out_edges_seen, int *out_new_nodes)
 {
+    if (out_reachable) *out_reachable = 0;
+    if (out_edges_seen) *out_edges_seen = 0;
+    if (out_new_nodes) *out_new_nodes = 0;
     if (!addrs || n <= 0 || !fn)
         return 0;
     if (n > NCRAWL_MAX_PER_ROUND)
@@ -322,6 +354,7 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
     if (concurrent > NCRAWL_MAX_CONCURRENT)
         concurrent = NCRAWL_MAX_CONCURRENT;
 
+    int64_t topo_now = platform_time_wall_unix();
     int probed = 0;
     for (int base = 0; base < n; base += concurrent) {
         int wave = n - base;
@@ -357,7 +390,39 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
                 zcl_mutex_lock(&g_ncrawl.lock);
                 ncrawl_census_ingest_locked(&items[t].out);
                 zcl_mutex_unlock(&g_ncrawl.lock);
+
+                /* Bank the durable node-identity census from this crawler
+                 * contact (source = crawler), OUTSIDE the crawler lock (the
+                 * emit does event-log I/O). A reachable contact carries an
+                 * identity (success upsert); an unreachable one only bumps an
+                 * existing node's dial_fail_count. The emit fails closed on a
+                 * malformed user-agent and no-ops if no event log is wired. */
+                const struct net_addr *na = &items[t].addr->svc.addr;
+                uint8_t census_key[16];
+                if (na->has_torv3)
+                    memcpy(census_key, na->torv3, 16);
+                else
+                    memcpy(census_key, na->ip, 16);
+                int64_t obs = items[t].out.last_probe_us > 0
+                                  ? items[t].out.last_probe_us
+                                  : platform_time_wall_unix();
+                (void)peers_projection_emit_census_observed(
+                    census_key, items[t].addr->svc.port,
+                    EV_CENSUS_SOURCE_CRAWLER, items[t].out.reachable,
+                    items[t].out.subver, items[t].out.version,
+                    items[t].out.services, items[t].out.best_height, obs);
                 probed++;
+
+                if (items[t].out.reachable) {
+                    if (out_reachable) (*out_reachable)++;
+                    bool is_new = false;
+                    if (topology_store_record_self_edge(
+                            &items[t].addr->svc.addr, items[t].addr->svc.port,
+                            topo_now, &is_new)) {
+                        if (out_edges_seen) (*out_edges_seen)++;
+                        if (is_new && out_new_nodes) (*out_new_nodes)++;
+                    }
+                }
             }
         }
     }
@@ -365,7 +430,10 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
 }
 
 /* One full crawl round: pull a bounded address batch from addrman, probe it,
- * refold. Worker-thread-only (the batch buffer is thread-owned). */
+ * refold. Worker-thread-only (the batch buffer is thread-owned). Each round
+ * is also this crawler's "sweep boundary" for storage/topology_store.h's
+ * topology_sweeps ledger: one bounded batch, a definite start/end, appended
+ * unconditionally (best-effort — a not-open topology store just no-ops). */
 static void ncrawl_do_round(void)
 {
     struct addr_man *am = g_ncrawl.addrman;
@@ -378,12 +446,18 @@ static void ncrawl_do_round(void)
     size_t got = addrman_get_addr(am, batch, want);
     int n = (int)(got > NCRAWL_MAX_PER_ROUND ? NCRAWL_MAX_PER_ROUND : got);
 
+    int64_t sweep_started = platform_time_wall_unix();
+    int reachable = 0, edges_seen = 0, new_nodes = 0;
     int probed = ncrawl_run_round(batch, n, g_ncrawl.probe_fn,
                                   g_ncrawl.max_concurrent,
                                   g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms);
+                                  g_ncrawl.handshake_timeout_ms, &reachable,
+                                  &edges_seen, &new_nodes);
+    int64_t sweep_finished = platform_time_wall_unix();
+    (void)topology_store_record_sweep(sweep_started, sweep_finished, n,
+                                      reachable, edges_seen, new_nodes);
 
-    int64_t now = platform_time_wall_unix();
+    int64_t now = sweep_finished;
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;
@@ -497,8 +571,8 @@ struct zcl_result network_crawler_start(const struct network_crawler_config *cfg
     g_ncrawl.started = true;
     if (!g_ncrawl.enabled)
         LOG_WARN("network_crawler",
-                 "crawler registered but IDLE (opt-in: set ZCL_NETWORK_CRAWLER=1 "
-                 "or -netcrawl to map the public network)");
+                 "crawler registered but IDLE (disabled via ZCL_NETWORK_CRAWLER=0; "
+                 "it is ON by default — the eclipse census is off while disabled)");
     return ZCL_OK;
 }
 
@@ -570,7 +644,7 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
     if (!v.ready) {
         diag_push_health(out, true,
                          enabled ? "no census yet"
-                                 : "crawler disabled (opt-in: ZCL_NETWORK_CRAWLER=1)");
+                                 : "crawler disabled (opt-out: ZCL_NETWORK_CRAWLER=0)");
         return true;
     }
 
@@ -663,13 +737,28 @@ void network_crawler_test_set_own_modal(int64_t h)
     atomic_store(&g_ncrawl.test_own_modal, h);
 }
 
+void network_crawler_test_set_view(const struct network_census_view *v)
+{
+    if (!v)
+        return;
+    zcl_mutex_lock(&g_ncrawl.lock);
+    g_ncrawl.view = *v;
+    g_ncrawl.view.ready = true;
+    zcl_mutex_unlock(&g_ncrawl.lock);
+}
+
 int network_crawler_test_probe_round(const struct net_address *addrs, int n)
 {
+    int64_t sweep_started = platform_time_wall_unix();
+    int reachable = 0, edges_seen = 0, new_nodes = 0;
     int probed = ncrawl_run_round(addrs, n, g_ncrawl.probe_fn,
                                   g_ncrawl.max_concurrent,
                                   g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms);
+                                  g_ncrawl.handshake_timeout_ms, &reachable,
+                                  &edges_seen, &new_nodes);
     int64_t now = platform_time_wall_unix();
+    (void)topology_store_record_sweep(sweep_started, now, n, reachable,
+                                      edges_seen, new_nodes);
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;

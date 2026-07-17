@@ -5,6 +5,7 @@
 #include "tip_finalize_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_row_itag.h"
 #include "core/arith_uint256.h"
 #include "util/log_macros.h"
 
@@ -41,7 +42,21 @@ bool ensure_log_schema(sqlite3 *db)
         }
         sqlite3_free(err);
     }
-    return true;
+    /* Per-row integrity tag (see stage_row_itag.h): status is NOT folded in for
+     * tip_finalize_log — its reducer verdict is ok-only (status='anchor' feeds a
+     * separately-vetted anchor-selection path). The tag covers (height, ok). */
+    err = NULL;
+    if (sqlite3_exec(db,
+        "ALTER TABLE tip_finalize_log ADD COLUMN itag BLOB",
+        NULL, NULL, &err) != SQLITE_OK) {
+        if (!err || strstr(err, "duplicate column name") == NULL) {
+            LOG_WARN("tip_finalize", "[tip_finalize] itag alter failed: %s", err ? err : "(no message)");
+            if (err) sqlite3_free(err);
+            return false;
+        }
+        sqlite3_free(err);
+    }
+    return stage_row_itag_backfill(db, "tip_finalize_log");
 }
 
 int utxo_apply_log_at(sqlite3 *db, int height,
@@ -115,12 +130,16 @@ bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
                 int64_t utxo_size_after, int reorg_depth,
                 const struct uint256 *tip_hash)
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    stage_row_itag_compute("tip_finalize_log", (int64_t)height, ok ? 1 : 0,
+                           NULL, 0, itag);
+
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO tip_finalize_log "
         "(height, status, ok, work_delta_high, work_delta_low, "
-        " utxo_size_after, reorg_depth, finalized_at, tip_hash) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        " utxo_size_after, reorg_depth, finalized_at, tip_hash, itag) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("tip_finalize", "[tip_finalize] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -145,6 +164,7 @@ bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         sqlite3_bind_blob(stmt, 9, tip_hash->data, 32, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 9);
+    sqlite3_bind_blob(stmt, 10, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {

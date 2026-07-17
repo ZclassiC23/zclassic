@@ -38,9 +38,10 @@ Plain meaning: the **sovereign cure** is the self-verified UTXO rebuild that
 starts from the in-binary SHA3/PoW checkpoint, folds real block bodies forward,
 then deletes the borrowed `zclassicd`-minted seed path.
 
-**Current canonical state is wedged, not synced.** As of 2026-07-12 the public
-daily-driver is held at H\*=3,176,325 by incomplete historical shielded anchors
-and nullifiers; verify the live value before acting. The consolidated loader did
+**Current canonical state is wedged, not synced.** The public daily-driver is
+held below tip by incomplete historical shielded anchors and nullifiers; verify
+the live H\* via `zcl_status` / `dumpstate reducer_frontier` before acting
+(`docs/HANDOFF.md` holds current state). The consolidated loader did
 previously seed transparent `coins_kv` from a `zclassicd`-minted snapshot and
 reach tip, but matching that artifact's anchor hash to a validated local header
 binds only its height/hash location. ZClassic headers do **not** commit the UTXO,
@@ -80,7 +81,7 @@ is a regression floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 > **Check the live node before treating MVP/soak as the active mission.** The
-> canonical node is currently wedged at H\*=3,176,325 on the permanent
+> canonical node is currently wedged below tip (live H\* via `zcl_status`) on the permanent
 > `utxo_apply.anchor_backfill_gap` / nullifier-history dependency. A prior
 > transparent borrowed seed reaching tip did not prove complete shielded state.
 > No canonical soak time is clean evidence while this gap exists; cure and

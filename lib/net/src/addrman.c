@@ -113,6 +113,10 @@ bool addr_info_is_terrible(const struct addr_info *info, int64_t nNow)
     return false;
 }
 
+/* Defined below; used by addrman_set_reputation_weight() above its definition. */
+static struct addr_info *find_addr(struct addr_man *am,
+                                   const struct net_addr *addr, int *pnId);
+
 double addr_info_get_chance(const struct addr_info *info, int64_t nNow)
 {
     double fChance = 1.0;
@@ -122,7 +126,34 @@ double addr_info_get_chance(const struct addr_info *info, int64_t nNow)
         fChance *= 0.01;
     int n = info->attempts < 8 ? info->attempts : 8;
     fChance *= pow(0.66, n);
+    /* NET-2: banked reputation raises (never lowers) the dial chance for a
+     * proven-fast peer. Bounded and fail-open — an unset weight (0.0) or any
+     * weight <= 1.0 leaves the classic behavior byte-identical. */
+    double w = info->reputation_weight;
+    if (w > 1.0) {
+        if (w > ADDRMAN_REPUTATION_MAX_MULT)
+            w = ADDRMAN_REPUTATION_MAX_MULT;
+        fChance *= w;
+    }
     return fChance;
+}
+
+bool addrman_set_reputation_weight(struct addr_man *am,
+                                   const struct net_addr *addr, double weight)
+{
+    if (!am || !addr)
+        return false;
+    if (weight < 1.0)
+        weight = 1.0;
+    if (weight > ADDRMAN_REPUTATION_MAX_MULT)
+        weight = ADDRMAN_REPUTATION_MAX_MULT;
+    zcl_mutex_lock(&am->cs);
+    struct addr_info *info = find_addr(am, addr, NULL);
+    bool found = info != NULL;
+    if (found)
+        info->reputation_weight = weight;
+    zcl_mutex_unlock(&am->cs);
+    return found;
 }
 
 static bool addrman_find_occupied_slot(const int *table,

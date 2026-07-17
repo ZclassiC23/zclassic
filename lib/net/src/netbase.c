@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <netinet/tcp.h>
 #include <errno.h>
+#include <poll.h>
 #include <sys/select.h>
 
 #ifndef MSG_NOSIGNAL
@@ -178,21 +179,24 @@ static bool net_service_get_sockaddr(const struct net_service *svc,
     return true;
 }
 
-bool connect_socket_directly(const struct net_service *addr,
-                             zcl_socket_t *sock_out,
-                             int timeout_ms)
+enum zcl_connect_start connect_socket_start(const struct net_service *addr,
+                                            zcl_socket_t *sock_out)
 {
     *sock_out = ZCL_INVALID_SOCKET;
 
     struct sockaddr_storage ss;
     socklen_t len = sizeof(ss);
-    if (!net_service_get_sockaddr(addr, &ss, &len))
-        LOG_FAIL("net", "connect_socket_directly: failed to get sockaddr");
+    if (!net_service_get_sockaddr(addr, &ss, &len)) {
+        LOG_RETURN(ZCL_CONNECT_START_ERROR, "net",
+                   "connect_socket_start: failed to get sockaddr");
+    }
 
     zcl_socket_t sock = socket(((struct sockaddr *)&ss)->sa_family,
                                SOCK_STREAM, IPPROTO_TCP);
-    if (sock == ZCL_INVALID_SOCKET)
-        LOG_FAIL("net", "connect_socket_directly: socket() creation failed, errno=%d", errno);
+    if (sock == ZCL_INVALID_SOCKET) {
+        LOG_RETURN(ZCL_CONNECT_START_ERROR, "net",
+                   "connect_socket_start: socket() failed, errno=%d", errno);
+    }
 
     int set = 1;
 #ifdef SO_NOSIGPIPE
@@ -202,34 +206,57 @@ bool connect_socket_directly(const struct net_service *addr,
 
     if (!set_socket_nonblocking(sock, true)) {
         close_socket(&sock);
-        LOG_FAIL("net", "connect_socket_directly: set_socket_nonblocking failed");
+        LOG_RETURN(ZCL_CONNECT_START_ERROR, "net",
+                   "connect_socket_start: set_socket_nonblocking failed");
     }
 
     if (connect(sock, (struct sockaddr *)&ss, len) == ZCL_SOCKET_ERROR) {
         int err = errno;
         if (err == EINPROGRESS || err == EWOULDBLOCK) {
-            struct timeval tv = millis_to_timeval(timeout_ms);
-            fd_set fdset;
-            FD_ZERO(&fdset);
-            FD_SET(sock, &fdset);
-            int nRet = select(sock + 1, NULL, &fdset, NULL, &tv);
-            if (nRet <= 0) {
-                close_socket(&sock);
-                return false;
-            }
-            int so_err = 0;
-            socklen_t so_len = sizeof(so_err);
-            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0 ||
-                so_err != 0) {
-                close_socket(&sock);
-                return false;
-            }
-        } else {
-            close_socket(&sock);
-            return false;
+            *sock_out = sock;
+            return ZCL_CONNECT_START_IN_PROGRESS;
         }
+        close_socket(&sock);
+        return ZCL_CONNECT_START_ERROR;
     }
 
+    /* Connected synchronously (rare on non-blocking sockets, e.g. loopback). */
+    *sock_out = sock;
+    return ZCL_CONNECT_START_CONNECTED;
+}
+
+bool connect_socket_check(zcl_socket_t sock)
+{
+    if (sock == ZCL_INVALID_SOCKET)
+        return false;
+    int so_err = 0;
+    socklen_t so_len = sizeof(so_err);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0)
+        return false;
+    return so_err == 0;
+}
+
+bool connect_socket_directly(const struct net_service *addr,
+                             zcl_socket_t *sock_out,
+                             int timeout_ms)
+{
+    zcl_socket_t sock = ZCL_INVALID_SOCKET;
+    enum zcl_connect_start st = connect_socket_start(addr, &sock);
+    if (st == ZCL_CONNECT_START_ERROR)
+        return false;
+    if (st == ZCL_CONNECT_START_CONNECTED) {
+        *sock_out = sock;
+        return true;
+    }
+
+    /* IN_PROGRESS: wait for writability up to timeout_ms, then confirm. */
+    struct pollfd pfd = { .fd = sock, .events = POLLOUT, .revents = 0 };
+    int nRet = poll(&pfd, 1, timeout_ms);
+    if (nRet <= 0 || !connect_socket_check(sock)) {
+        close_socket(&sock);
+        *sock_out = ZCL_INVALID_SOCKET;
+        return false;
+    }
     *sock_out = sock;
     return true;
 }

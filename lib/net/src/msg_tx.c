@@ -13,6 +13,7 @@
 #include "net/peer_scoring.h"
 #include "net/dandelion.h"
 #include "net/download.h"
+#include "sync/sync_state.h"
 #include "validation/check_transaction.h"
 #include "validation/accept_to_mempool.h"
 #include "consensus/validation.h"
@@ -356,5 +357,44 @@ bool process_mempool(struct msg_processor *mp, struct p2p_node *node)
         p2p_node_push_inventory(node, &inv);
     }
     free(hashes);
+    return true;
+}
+
+/* ── mempool sync-on-connect ──────────────────────────────────────
+ *
+ * A fresh node never proactively pulls a peer's mempool — it only
+ * serves others' "mempool" requests (process_mempool above) and waits
+ * for passive inv/tx relay. That leaves a freshly (re)connected node's
+ * mempool view cold until the first spontaneous inv arrives. Pull once,
+ * right after handshake, from any peer that told us it will relay. */
+static bool msg_tx_deep_in_ibd(void)
+{
+    enum sync_state st = sync_get_state();
+    return st == SYNC_HEADERS_DOWNLOAD ||
+           st == SYNC_BLOCKS_DOWNLOAD ||
+           st == SYNC_CONNECTING_BLOCKS;
+}
+
+bool msg_tx_maybe_request_mempool(struct msg_processor *mp,
+                                  struct p2p_node *node)
+{
+    if (!mp || !node || !mp->params)
+        return false;
+    if (node->mempool_requested)
+        return false;
+    if (!node->relay_txes)
+        return false;
+    /* Bulk historical sync: mempool inventory is irrelevant and would
+     * only compete with header/block bandwidth. */
+    if (msg_tx_deep_in_ibd())
+        return false;
+
+    /* Set the guard before queuing the send so this stays exactly-once
+     * per peer even if the caller somehow re-enters (e.g. a peer that
+     * resends verack). */
+    node->mempool_requested = true;
+
+    p2p_node_begin_message(node, "mempool", mp->params->pchMessageStart);
+    p2p_node_end_message(node);
     return true;
 }

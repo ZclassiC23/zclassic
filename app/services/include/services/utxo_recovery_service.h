@@ -249,10 +249,22 @@ bool utxo_recovery_heal_torn_legacy_coins_anchor(
 
 /* ── UTXO cleanup ────────────────────────────────────────── */
 
+/* Typed-blocker id (see util/blocker.h) raised when utxo_recovery_clean_
+ * above_tip's guard REFUSES a proposed rewind — either a multi-block
+ * overshoot or a single-block overshoot past UTXO_BOOT_REWIND_MAX_ROWS.
+ * Advance-or-named-blocker law: this refusal is a no-op an operator must
+ * investigate (block_index/coins drift), never a log line alone. Carries
+ * tip_height/max_height/row_count/guard in its reason text. Cleared the
+ * next time the function runs and finds nothing above tip, or successfully
+ * auto-heals a bounded overshoot — see utxo_recovery_service.c. */
+#define UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID "utxo_recovery.rewind_overshoot"
+
 /* Delete UTXOs with height above chain tip.
  * SAFETY: only a single-block overshoot of <= UTXO_BOOT_REWIND_MAX_ROWS (32)
  * rows is auto-healable; a larger proposed wipe is refused (tip is likely
- * wrong — investigate block_index/coins drift instead).
+ * wrong — investigate block_index/coins drift instead). A refusal raises
+ * UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID (dumpstate blocker / zcl_state
+ * subsystem=blocker).
  * Returns count of UTXOs deleted (0 if refused or none found).
  * NOTE: this is also the single heal mechanism reused by the continuous
  * orphan_utxo_above_tip Condition; the boot.c one-shot caller is a

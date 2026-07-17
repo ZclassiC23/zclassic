@@ -9,6 +9,17 @@
  *                               block_index entry (HAVE_DATA guarded).
  *   stage_log_row_count       — SELECT COUNT(*) over a stage's log table
  *                               for the *_dump_state_json observability.
+ *   stage_upstream_log_hole_note/_clear — name a typed blocker when a
+ *                               stage's floor check proves an upstream
+ *                               *_log row SHOULD exist but a SELECT at
+ *                               that height finds none (a torn co-commit
+ *                               invariant, not "not yet" — see the
+ *                               lane/stall-taxonomy audit).
+ *   stage_body_read_hold/_clear — name a typed blocker when a block body
+ *                               that body_persist already hash+merkle
+ *                               verified fails to re-read at a later
+ *                               stage (on-disk bytes vanished/corrupted
+ *                               after that verification).
  *
  * Each takes a `tag` argument so LOG_WARN attribution stays with the calling
  * stage name ("body_persist", "script_validate", ...). */
@@ -18,9 +29,11 @@
 
 #include "core/uint256.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "validation/chainstate.h"
@@ -186,6 +199,146 @@ static inline bool stage_read_block(struct block *out,
         return false;
     return block_parse_cache_get((int32_t)height, bi->phashBlock->data,
                                  bi, datadir, out);
+}
+
+/* ── Durable upstream-log-row hole (silent-hold audit, lane/stall-taxonomy) ──
+ *
+ * Every stage's floor check reads an upstream stage's DURABLY persisted
+ * cursor and only proceeds when `next_h` is BELOW it — i.e. the upstream
+ * stage has already committed a *_log row at `next_h` (the F-2 per-block
+ * co-commit invariant: cursor + log row land in the SAME transaction). A
+ * SELECT at `next_h` that then finds no row is therefore not "not yet" — it
+ * is durable internal damage (the residue of a noncanonical-row purge or a
+ * stale-replay artifact that deleted the row without rewinding the
+ * cursor). It self-heals via the reducer_frontier_reconcile_light Condition
+ * (its own 5 s cadence, independent of this stage), which is why the
+ * correct verdict here stays JOB_IDLE, never JOB_BLOCKED — JOB_BLOCKED
+ * would feed the supervisor restart-escalation ladder against a dependency
+ * this stage cannot resolve itself.
+ *
+ * Before this helper existed only utxo_apply_stage.c named this exact class
+ * (utxo_apply_upstream_hole_note, "reducer_frontier.upstream_log_hole") —
+ * after a rowless hole at height 3166989 in script_validate_log AND
+ * proof_validate_log pinned H* for THREE HOURS on 2026-07-02 with
+ * zcl_blockers reporting nothing (only a bare last_blocked_unix
+ * timestamp — see reducer_frontier_reconcile_light.c's detect function for
+ * the incident and its now-generic refill-hole scan). body_fetch,
+ * body_persist, script_validate, and proof_validate had the exact same shape
+ * unfixed; this generalizes the utxo_apply fix so every stage names the
+ * same class of hole immediately instead of relying solely on
+ * staged_sync_supervisor's 60-minute stage-freeze backstop. */
+static inline void stage_upstream_log_hole_note(const char *stage_name,
+                                                const char *upstream_log_name,
+                                                int height,
+                                                uint64_t upstream_cursor,
+                                                _Atomic int64_t *last_blocked_unix)
+{
+    const char *sn = (stage_name && stage_name[0]) ? stage_name : "stage";
+    char id[BLOCKER_ID_MAX];
+    snprintf(id, sizeof(id), "%s.upstream_log_hole", sn);
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "%s row ABSENT at height=%d while the upstream cursor=%llu is "
+             "already past it (torn co-commit invariant, not \"not yet\"); "
+             "%s holds below the hole until "
+             "reducer_frontier_reconcile_light refills the row",
+             upstream_log_name ? upstream_log_name : "upstream_log", height,
+             (unsigned long long)upstream_cursor, sn);
+    struct blocker_record rec;
+    int set_rc = -1;
+    if (blocker_init(&rec, id, sn, BLOCKER_DEPENDENCY, reason)) {
+        snprintf(rec.escape_action, sizeof(rec.escape_action),
+                 "reducer_frontier_reconcile_light");
+        set_rc = blocker_set(&rec);
+    }
+    /* blocker_set's own token bucket already dedups a re-fire within its
+     * rate-limit window (return 1); only log on a fresh write (0) so a
+     * persistent hole logs at that same bounded cadence instead of once per
+     * 2 s supervisor tick. */
+    if (set_rc == 0)
+        LOG_WARN(sn,
+                 "[%s] durable upstream hole: %s row ABSENT at height=%d "
+                 "while upstream cursor=%llu is already past it — holding "
+                 "(cursor unchanged), see blocker %s",
+                 sn, upstream_log_name ? upstream_log_name : "upstream_log",
+                 height, (unsigned long long)upstream_cursor, id);
+    if (last_blocked_unix)
+        atomic_store(last_blocked_unix, platform_time_wall_unix());
+}
+
+/* Clear the typed hole blocker for `stage_name`. No-op if never raised (or
+ * already clear) — safe to call unconditionally on the "row found" path,
+ * mirroring utxo_apply_upstream_hole_healed(). */
+static inline void stage_upstream_log_hole_clear(const char *stage_name)
+{
+    char id[BLOCKER_ID_MAX];
+    snprintf(id, sizeof(id), "%s.upstream_log_hole",
+             (stage_name && stage_name[0]) ? stage_name : "stage");
+    blocker_clear(id);
+}
+
+/* ── Body-read HOLD (silent-hold audit, lane/stall-taxonomy) ──────────────
+ *
+ * A stage_read_block() failure for a height whose upstream (body_persist)
+ * ALREADY verified hash+merkle before setting BLOCK_HAVE_DATA means the
+ * on-disk bytes vanished or were corrupted AFTER that verification (a
+ * blk*.dat rotation bug, disk corruption, a deleted/truncated file, a
+ * poisoned block_parse_cache slot) — not a "body not fetched yet" wait
+ * (that case is body_fetch's own BLOCK_HAVE_DATA gate, unaffected). Unlike
+ * body_persist's requeue_body_for_refetch, this stage did not do the
+ * hash/merkle verification itself and must not clear BLOCK_HAVE_DATA or
+ * trigger a network refetch — it can only wait and let an operator repair
+ * the file or reindex. Before this helper, script_validate and
+ * proof_validate held the cursor here with NOTHING beyond a bare
+ * last_blocked_unix timestamp (relying solely on the 60-minute generic
+ * stage-freeze backstop); utxo_apply already names this exact condition
+ * via utxo_apply_select_idle_note(UA_SELECT_IDLE_STAGE_READ_FAILED) — this
+ * helper ports that same visibility (and adds a registry-visible typed
+ * blocker) to every caller. HOLD the cursor (JOB_IDLE; the read is retried
+ * every tick). Caller must call stage_body_read_hold_clear(stage_name) on
+ * the next successful read of the SAME height (mirrors sv_unresolved_clear
+ * / pv_unresolved_clear's clear-on-resolve contract). */
+static inline job_result_t stage_body_read_hold(const char *stage_name,
+                                                 int height,
+                                                 const struct uint256 *hash,
+                                                 _Atomic int64_t *last_blocked_unix)
+{
+    const char *sn = (stage_name && stage_name[0]) ? stage_name : "stage";
+    char id[BLOCKER_ID_MAX];
+    snprintf(id, sizeof(id), "%s.body_read_failed", sn);
+    char hashhex[65] = "(unknown)";
+    if (hash)
+        uint256_get_hex(hash, hashhex);
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d hash=%s: body_persist already verified this body's "
+             "hash+merkle root, but %s's own read failed — the on-disk "
+             "block bytes vanished or were corrupted after body_persist "
+             "advanced; investigate blk*.dat and the block_index "
+             "(nFile,nDataPos) for this height",
+             height, hashhex, sn);
+    struct blocker_record rec;
+    int set_rc = -1;
+    if (blocker_init(&rec, id, sn, BLOCKER_TRANSIENT, reason))
+        set_rc = blocker_set(&rec);
+    if (set_rc == 0)
+        LOG_WARN(sn,
+                 "[%s] body read failed height=%d hash=%s (body_persist "
+                 "already verified it) — holding cursor, see blocker %s",
+                 sn, height, hashhex, id);
+    if (last_blocked_unix)
+        atomic_store(last_blocked_unix, platform_time_wall_unix());
+    return JOB_IDLE;
+}
+
+/* Clear the typed body-read-hold blocker for `stage_name`. No-op if never
+ * raised — safe to call unconditionally right after a successful read. */
+static inline void stage_body_read_hold_clear(const char *stage_name)
+{
+    char id[BLOCKER_ID_MAX];
+    snprintf(id, sizeof(id), "%s.body_read_failed",
+             (stage_name && stage_name[0]) ? stage_name : "stage");
+    blocker_clear(id);
 }
 
 /* SELECT COUNT(*) FROM <table>, for the *_dump_state_json log_rows field.

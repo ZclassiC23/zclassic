@@ -19,6 +19,7 @@
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_log_store.h"
 #include "utxo_apply_log_store.h"
+#include "jobs/stage_row_itag.h"
 
 #include "config/runtime.h"
 #include "core/uint256.h"
@@ -345,12 +346,18 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
             progress_store_tx_unlock();
             return false;
         }
+        /* Tag the seed anchor row like every other utxo_apply_log write so the
+         * reducer fold can integrity-check it (status='anchor' IS folded in —
+         * utxo_apply_log is status-covered). See stage_row_itag.h. */
+        uint8_t seed_itag[STAGE_ROW_ITAG_LEN];
+        stage_row_itag_compute("utxo_apply_log", (int64_t)height, 1,
+                               "anchor", 6, seed_itag);
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(db,
                 "INSERT OR IGNORE INTO utxo_apply_log"
                 "(height,status,ok,spent_count,added_count,"
-                " total_value_delta,applied_at) "
-                "VALUES(?,'anchor',1,0,0,0,0)",
+                " total_value_delta,applied_at,itag) "
+                "VALUES(?,'anchor',1,0,0,0,0,?)",
                 -1, &st, NULL) != SQLITE_OK) {
             LOG_WARN("tip_finalize",
                      "[tip_finalize] seed utxo_apply anchor row prepare "
@@ -359,6 +366,7 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
             return false;
         }
         sqlite3_bind_int(st, 1, height);
+        sqlite3_bind_blob(st, 2, seed_itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) {

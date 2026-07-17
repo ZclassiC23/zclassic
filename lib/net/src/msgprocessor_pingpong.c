@@ -75,16 +75,35 @@ static bool process_reject(struct p2p_node *node, struct byte_stream *s)
     if (!stream_read_compact_size(s, &msg_len))
         return true;
     char msg_type[32] = {0};
-    if (msg_len > 0 && msg_len < sizeof(msg_type))
-        stream_read_bytes(s, (unsigned char *)msg_type, msg_len);
+    if (msg_len > 0) {
+        if (msg_len < sizeof(msg_type)) {
+            stream_read_bytes(s, (unsigned char *)msg_type, msg_len);
+        } else {
+            /* Oversized message-type string: the old code silently skipped
+             * storing it but left the read cursor behind, so `code` and
+             * `reason` below were read from the WRONG offset (the tail of
+             * msg_type's own bytes) instead of their real wire position —
+             * a truncate-without-consuming bug, not just a truncate. reject
+             * is advisory-only (no consequence beyond a log line), so a
+             * bounds-checked skip keeps the rest of the parse aligned
+             * without needing to keep the string around. */
+            if (msg_len > stream_remaining(s))
+                return true;  /* declared length exceeds the message body */
+            s->read_pos += (size_t)msg_len;
+        }
+    }
     uint8_t code = 0;
     if (!stream_read_u8(s, &code))
         return true;  /* truncated reject is non-fatal */
     uint64_t reason_len = 0;
     char reason[256] = {0};
-    if (stream_read_compact_size(s, &reason_len) && reason_len > 0 &&
-        reason_len < sizeof(reason))
-        stream_read_bytes(s, (unsigned char *)reason, reason_len);
+    if (stream_read_compact_size(s, &reason_len) && reason_len > 0) {
+        if (reason_len < sizeof(reason))
+            stream_read_bytes(s, (unsigned char *)reason, reason_len);
+        /* else: reason is the last field on the wire — an oversized one
+         * cannot misalign anything further, so leaving it unread (and
+         * `reason` empty) is a safe truncation, not a misparse. */
+    }
     printf("Peer %s: reject %s (code=%d) %s\n",
            node->addr_name, msg_type, code, reason);
     return true;

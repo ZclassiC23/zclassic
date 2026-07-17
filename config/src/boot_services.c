@@ -27,6 +27,7 @@
 #include "jobs/refold_progress.h"      /* refold_from_anchor_active (-load-verify-boot skip) */
 #include "config/boot_fast_restart.h"  /* boot_fast_restart_capture_shutdown_facts (P2) */
 #include "services/chain_tip_watchdog.h"
+#include "services/address_index_service.h"
 #include "services/sticky_escalator.h"
 #include "services/recovery_coordinator.h"
 #include "services/invariant_sentinel.h"
@@ -95,6 +96,8 @@
 #include "controllers/file_market_controller.h"
 #include "controllers/name_controller.h"
 #include "controllers/anchor_controller.h"
+#include "controllers/op_return_index_controller.h"
+#include "services/op_return_backfill_service.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
@@ -338,9 +341,9 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
             return false;
     }
     return boot_utxo_parity_register(svc) && boot_soak_attestation_register(svc) &&
-           boot_canary_watch_register(svc) && /* parity + soak log + canary pager */
-           boot_utxo_mirror_sync_register(svc) && boot_mem_pressure_register(svc) &&
-           boot_supervisor_backstop_register(svc); /* Pillar 7 sweep-heartbeat watcher */
+           boot_canary_watch_register(svc) && boot_mem_pressure_register(svc) &&
+           boot_utxo_mirror_sync_register(svc) && boot_supervisor_backstop_register(svc) &&
+           boot_segment_sealer_register(svc); /* parity/soak/canary/mem/mirror/backstop/seal */
 }
 
 bool boot_running(const struct boot_svc_ctx *svc)
@@ -421,9 +424,7 @@ static void boot_register_core_liveness_and_reducer(
      * advance, emits a named stall event, and lets the operator-needed /
      * condition loop handle recovery. */
     chain_tip_watchdog_register(svc->state);
-    /* Top-level always-terminating remedy escalator (sticky-node-plan #1): it
-     * consumes the watchdog stall signal + unresolved-condition count and drives
-     * an ordered rung ladder. Register AFTER the watchdog, BEFORE self_heal. */
+    /* Always-terminating remedy escalator (sticky-node #1): register AFTER the watchdog, BEFORE self_heal. */
     sticky_escalator_set_datadir(svc->datadir);
     sticky_escalator_register(svc->state);
     /* Unified recovery organ (chain domain): cheapest-sufficient-rung selector. */
@@ -431,6 +432,9 @@ static void boot_register_core_liveness_and_reducer(
     recovery_coordinator_register(svc->state);
     condition_registry_register_all();
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
+    op_return_backfill_set_datadir(svc->datadir);
+    op_return_backfill_register(); /* op_return_index: bounded backfill to H* */
+    address_index_service_register(); /* opt-in -addressindex backfill; no-op when off */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health
@@ -1215,6 +1219,10 @@ bool app_init_services(struct app_context *ctx,
     rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state,
                           svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
+
+    /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
+    rpc_op_return_index_set_state(boot_node_db(svc));
+    register_op_return_index_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — P2P messages (plaintext on the wire) */
     rpc_msg_set_state(boot_node_db(svc), svc->connman);

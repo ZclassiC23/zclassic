@@ -124,6 +124,12 @@ bool diag_header_band_dump_state_json(struct json_value *out,
 bool sapling_checkpoint_dump_state_json(struct json_value *out,
                                         const char *key);
 
+/* diagnostics_registry_rom.c — the "rom" g_dumpers[] entry: L0-L3 trust
+ * machine catalog (compiled checkpoint, header commitment enumeration,
+ * per-layer coverage, MMB/utxo_root_ladder projection cursors). See
+ * docs/ROM.md. */
+bool rom_dump_state_json(struct json_value *out, const char *key);
+
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,
                          struct json_value *result);
@@ -158,5 +164,15 @@ bool diag_rpc_profile(const struct json_value *params, bool help,
  * key (see the file header for the { ok, reason } convention) and reports
  * only the ones with ok == false. */
 bool unhealthy_dump_state_json(struct json_value *out, const char *key);
+
+/* diagnostics_network.c — "network" rollup, registered in g_dumpers.
+ * Answers "what does the node know about the ZClassic network": connman
+ * counts + addrman size, the net.outbound_floor peer-floor liveness
+ * contract, the network_monitor chain view, the (opt-in) network_census
+ * whole-network observatory, a derived tip-vs-modal comparison, and
+ * peer_lifecycle connect/handshake/timeout counters. Every field is read
+ * from an existing owner's dump/snapshot function — this file computes
+ * nothing new. */
+bool network_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_DIAGNOSTICS_INTERNAL_H */

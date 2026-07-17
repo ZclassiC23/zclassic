@@ -124,6 +124,57 @@ static void cse_retain_staging_writer(void *opaque)
     }
 }
 
+/* Mirrors log_level_capture() in test_log_level.c / csa_mint_capture() in
+ * test_coinbase_subsidy_adversarial.c: redirect stderr to a scratch file for
+ * the duration of one consensus_state_snapshot_export() call, then hand back
+ * whatever landed in it so the test can grep for the "[export] ..." progress
+ * markers (config/src/consensus_state_snapshot_export_proof.c /
+ * _write.c) that make the otherwise-silent 30-60+ minute prove/write path
+ * observable. Best-effort on capture-plumbing failure: still runs the export
+ * (uncaptured) so the caller's status/result assertions remain meaningful. */
+static bool cse_capture_export_stderr(
+    sqlite3 *db, const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result, bool *exported,
+    char *out, size_t out_len)
+{
+    if (out && out_len > 0)
+        out[0] = '\0';
+    mkdir("./test-tmp", 0755);
+    char path[256];
+    snprintf(path, sizeof(path), "./test-tmp/cse_export_stderr_%d.log",
+             (int)getpid());
+
+    fflush(stderr);
+    int saved_fd = dup(STDERR_FILENO);
+    FILE *capf = (saved_fd >= 0) ? fopen(path, "w+") : NULL;
+    if (!capf) {
+        if (saved_fd >= 0)
+            close(saved_fd);
+        *exported = consensus_state_snapshot_export(db, request, result);
+        return false;
+    }
+    dup2(fileno(capf), STDERR_FILENO);
+
+    *exported = consensus_state_snapshot_export(db, request, result);
+
+    fflush(stderr);
+    dup2(saved_fd, STDERR_FILENO);
+    close(saved_fd);
+
+    if (out && out_len > 0) {
+        long sz = ftell(capf);
+        if (sz > 0) {
+            rewind(capf);
+            size_t want = (size_t)sz < out_len - 1 ? (size_t)sz : out_len - 1;
+            size_t got = fread(out, 1, want, capf);
+            out[got] = '\0';
+        }
+    }
+    fclose(capf);
+    unlink(path);
+    return true;
+}
+
 static bool cse_exec(sqlite3 *db, const char *sql)
 {
     char *error = NULL;
@@ -533,7 +584,11 @@ int test_consensus_state_snapshot_export(void)
     };
     memcpy(request.expected_block_hash, hash[1], 32);
     struct consensus_state_export_result result;
-    bool exported = consensus_state_snapshot_export(db, &request, &result);
+    char export_capture[16384];
+    bool exported;
+    bool capture_ran = cse_capture_export_stderr(
+        db, &request, &result, &exported, export_capture,
+        sizeof(export_capture));
     struct stat st;
     CSE_CHECK("complete generation exports", exported &&
               result.status == CONSENSUS_EXPORT_EXPORTED &&
@@ -543,6 +598,31 @@ int test_consensus_state_snapshot_export(void)
                   CONSENSUS_STATE_VALIDATION_FULL &&
               result.utxo_count == 1 && result.anchor_count == 2 &&
               result.nullifier_count == 1);
+    /* Observability: the named prove/write passes each emit a "[export] ..."
+     * start marker (config/src/consensus_state_snapshot_export_proof.c's
+     * consensus_export_progress_emit() and the copy_coins/copy_anchors/
+     * copy_nullifiers passes in _export_write.c) — a human watching a
+     * multi-minute -export-consensus-bundle run must never see silence
+     * between boot completion and the final verdict. This fixture is far too
+     * small to cross the 500k-row progress-line threshold, so this asserts
+     * the unconditional start/done pass markers, not the per-500k-row lines. */
+    CSE_CHECK("export prove/write passes emit progress markers (never silent)",
+              capture_ran &&
+              strstr(export_capture,
+                     "[export] consensus_export_prove_source start") != NULL &&
+              strstr(export_capture, "[export] prove_header_chain start") !=
+                  NULL &&
+              strstr(export_capture, "[export] prove_header_chain done") !=
+                  NULL &&
+              strstr(export_capture,
+                     "[export] prove_stage_rows(utxo_apply) start") != NULL &&
+              strstr(export_capture,
+                     "[export] prove_stage_rows(utxo_apply) done") != NULL &&
+              strstr(export_capture, "[export] copy_coins start") != NULL &&
+              strstr(export_capture, "[export] copy_coins done") != NULL &&
+              strstr(export_capture, "[export] copy_anchors start") != NULL &&
+              strstr(export_capture, "[export] copy_nullifiers start") !=
+                  NULL);
     CSE_CHECK("final artifact is immutable", lstat(output, &st) == 0 &&
               S_ISREG(st.st_mode) &&
               (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0);
@@ -1044,6 +1124,9 @@ int test_consensus_state_snapshot_export(void)
               strstr(mint_disagree_result.reason,
                      "durable served tip does not own") != NULL &&
               access(mint_disagree_output, F_OK) != 0);
+    CSE_CHECK("served-tip refusal names both the derived and expected hash",
+              strstr(mint_disagree_result.reason, "derived=") != NULL &&
+              strstr(mint_disagree_result.reason, "expected=") != NULL);
     CSE_CHECK("restore the anchor's own-hash witness",
               cse_insert_hash_row(db,
                   "UPDATE tip_finalize_log SET tip_hash=?2 WHERE height=?1",
@@ -1170,6 +1253,15 @@ int test_consensus_state_snapshot_export(void)
               bad_saroot_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
               strstr(bad_saroot_result.reason, "Sapling tip frontier") != NULL &&
               access(bad_saroot_output, F_OK) != 0);
+    /* A refusal you cannot debug from its message is a defect: the derived
+     * root, the expected (header-committed) root, and the sapling anchor
+     * height it used must all be present, in hex, one line. */
+    CSE_CHECK("Sapling-root refusal names the derived root, expected root, "
+              "and anchor height",
+              strstr(bad_saroot_result.reason, "derived=") != NULL &&
+              strstr(bad_saroot_result.reason, "expected=") != NULL &&
+              strstr(bad_saroot_result.reason, "sapling_anchor_height=") !=
+                  NULL);
     memcpy(request.checkpoint_sapling_root, cse_sapling_root.data, 32);
 
     /* (b) NEGATIVE — coins that miss the compiled checkpoint SHA3 refuse. */
@@ -1183,6 +1275,10 @@ int test_consensus_state_snapshot_export(void)
               bad_sha3_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
               strstr(bad_sha3_result.reason, "reproduce the compiled") != NULL &&
               access(bad_sha3_output, F_OK) != 0);
+    CSE_CHECK("coins-checkpoint refusal names both the derived and expected "
+              "SHA3 + count",
+              strstr(bad_sha3_result.reason, "derived=") != NULL &&
+              strstr(bad_sha3_result.reason, "expected=") != NULL);
     checkpoints_set_sha3_override_for_test(&checkpoint);
 
     /* (c) NEGATIVE — an export height off the compiled checkpoint refuses. */

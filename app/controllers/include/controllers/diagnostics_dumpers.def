@@ -85,6 +85,10 @@
                  "header band backfill: derived island root, current getheaders anchor, remaining span, and blocker state",
                  "app/controllers/src/diagnostics_block_index.c",
                  "lib/test/src/test_block_index_integrity.c"),
+    DIAG_SERVICE("header_range_sched", header_range_scheduler_dump_state_json,
+                 "range-parallel header acquisition: partitioned range, per-span assignment/completion counts, and assign/reassign/timeout stats",
+                 "app/services/src/header_range_scheduler.c",
+                 "lib/test/src/test_header_range_sched.c"),
     DIAG_SERVICE("utxo_parity", utxo_parity_dump_state_json,
                  "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag",
                  "app/services/src/utxo_parity_service.c",
@@ -213,6 +217,28 @@
                  "eclipse_suspected signal + evidence (our modal vs network modal)",
                  "app/services/src/network_crawler.c",
                  "lib/test/src/test_network_crawler.c"),
+    DIAG_LOCAL("network", network_dump_state_json,
+               "network rollup: what the node knows about the ZClassic "
+               "network in one call — connman {wired, connected_peers, "
+               "outbound_healthy, addrman_size}, peer_floor (the "
+               "net.outbound_floor supervisor contract: registered, "
+               "healthy_outbound, last_tick_age_us, deadline_secs, "
+               "ticks_run, stall_fires), chain_view (network_monitor: "
+               "modal/max height, our delta, fork clusters), census "
+               "(network_census: reachable count, version histogram, "
+               "onion/clearnet split, eclipse_suspected + evidence), "
+               "tip_comparison (our height vs. peer-modal and "
+               "network-modal height), and peer_lifecycle connect/"
+               "handshake/timeout/reject counters. Rolls up existing "
+               "dumpers only — computes nothing new"),
+    DIAG_SERVICE("topology", topology_store_dump_state_json,
+                 "P2P topology graph (who advertises whom): bounded "
+                 "edge_count/cap, distinct_observers, "
+                 "distinct_advertised_nodes, top_advertised in-degree "
+                 "top-10, and the most recent crawler sweep summary "
+                 "(nodes_contacted/reachable, edges_seen, new_nodes)",
+                 "lib/storage/src/topology_store.c",
+                 "lib/test/src/test_topology_store.c"),
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",
@@ -248,12 +274,29 @@
     DIAG_SERVICE("crypto_registry", crypto_registry_dump_state_json,
                  "registered crypto schemes, statuses, implementations, and kind counts",
                  "lib/crypto_registry/src/crypto_registry.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("rom_seed", rom_seed_dump_state_json,
+                 "ROM artifact seeding (free/capped P2P delivery of the "
+                 "consensus-state bundle + header seed): registered artifacts "
+                 "(kind, size, digest, chunks), chunks/bytes served, unique "
+                 "peers served, current bytes/sec vs per-peer + global caps, "
+                 "enabled flag",
+                 "lib/net/src/rom_seed.c",
+                 "lib/test/src/test_rom_seed.c"),
     DIAG_PROJECTION("mempool_projection", mempool_projection_dump_state_json,
                     "mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL",
                     "lib/storage/src/mempool_projection.c",
                     "lib/test/src/test_mempool_projection.c"),
     DIAG_PROJECTION("peers_projection", peers_projection_dump_state_json,
                     "peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED",
+                    "lib/storage/src/peers_projection.c",
+                    "lib/test/src/test_peers_projection.c"),
+    DIAG_PROJECTION("census", census_dump_state_json,
+                    "durable network census (node_census over "
+                    "EV_NODE_CENSUS_OBSERVED, real-peer + crawler): population, "
+                    "reachable-in-last-24h, top-10 user-agent distribution, "
+                    "protocol-version distribution, and a height distribution "
+                    "summary (modal/max/min). Distinct from the crawler's live "
+                    "network_census rollup.",
                     "lib/storage/src/peers_projection.c",
                     "lib/test/src/test_peers_projection.c"),
     DIAG_PROJECTION("utxo_projection", utxo_projection_dump_state_json,
@@ -269,6 +312,13 @@
                     "counters, last_consumed_offset, last_catch_up_ms.",
                     "lib/storage/src/znam_projection.c",
                     "lib/test/src/test_znam_projection.c"),
+    DIAG_PROJECTION("op_return_index", op_return_index_dump_state_json,
+                    "OP_RETURN catalog: backfill cursor height + running "
+                    "digest, provable_tip, blocks_remaining, ticks/holes/"
+                    "oversize_blocks counters, total_rows, and "
+                    "rows-by-known-tag counts (znam/zslp/zanc/other).",
+                    "app/services/src/op_return_backfill_service.c",
+                    "lib/test/src/test_op_return_index.c"),
     DIAG_PROJECTION("wallet_projection", wallet_projection_dump_state_json,
                     "wallet view projection: public-only "
                     "address/tx/UTXO/note counts, total value, cursor, "
@@ -312,6 +362,16 @@
                     "cross-check: runs/checks/passes/divergences, skip "
                     "reasons, streak, last roots+counts+height, blocker latch",
                     DIAG_OWNER_LOCAL, DIAG_TEST_DEFAULT),
+    DIAG_ENTRY("address_index", address_index_dump_state_json,
+               "script-appearance projection (-addressindex): enabled, cursor, "
+               "H*, gap, rows, SHA3 digest, coverage blocker; "
+               "key=<64-hex scripthash>[:from_height] -> appearances + balance",
+               "projection", "projection",
+               "app/services/src/address_index_service.c",
+               "persisted_projection_snapshot", "bounded_lookup",
+               "64-hex scripthash [:from_height]", "<64-hex scripthash>",
+               "<64-hex scripthash>:3170000",
+               "lib/test/src/test_address_index.c", true),
     DIAG_SERVICE("soak", soak_dump_state_json,
                  "soak attestation log: lines_written, last_ts, "
                  "last_healthy, rotations, write_failures, file_bytes",
@@ -383,6 +443,18 @@
                "app/controllers/src/chain_segment_controller.c",
                "filesystem_snapshot", "bounded_lookup", NULL, NULL, NULL,
                "lib/test/src/test_chain_segment.c", true),
+    DIAG_ENTRY("rom", rom_dump_state_json,
+               "L0-L3 trust machine catalog: compiled SHA3 UTXO checkpoint "
+               "(height/block_hash/sha3_hash/utxo_count), what ZClassic "
+               "headers commit vs NOT commit per field, per-layer coverage "
+               "(L0 ROM height, L1 sealed-segment range, L2 reducer H*/floor, "
+               "L3 active+external tip), and cheaply-readable projection "
+               "cursors (MMB leaves/mountains, utxo_root_ladder rung/dense "
+               "height). See docs/ROM.md",
+               "storage", "controller",
+               "app/controllers/src/diagnostics_registry_rom.c",
+               "in_process_snapshot", "cheap", NULL, NULL, NULL,
+               "lib/test/src/test_rom_dump.c", true),
     DIAG_LOCAL("publication_cas",
                consensus_state_publication_cas_dump_state_json,
                "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "
@@ -428,3 +500,16 @@
                  "elevated/high/critical_pct thresholds, polling_active, and "
                  "per-sink {name, last_shrink_unix, shrink_calls}",
                  "lib/util/src/mem_pressure.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("rom_seed_policy", rom_seed_policy_dump_state_json,
+                 "free-tier ROM/sync-artifact seeding policy (docs/ROM_DELIVERY.md): "
+                 "enabled, bandwidth/concurrency caps, generosity-boost window, "
+                 "consensus-preempt signal, and live upload counters. Deliberately "
+                 "a DIFFERENT subsystem than the seed engine's own `rom_seed` "
+                 "artifact registry, so the two can never collide.",
+                 "lib/net/src/rom_seed_policy.c",
+                 "lib/test/src/test_rom_seed_policy.c"),
+    DIAG_SERVICE("rom_seed_ledger", rom_seed_ledger_dump_state_json,
+                 "free-tier ROM/sync-artifact serve-log ledger: open flag, row "
+                 "count, and the retention cap it prunes to.",
+                 "lib/net/src/rom_seed_ledger.c",
+                 "lib/test/src/test_rom_seed_ledger.c"),

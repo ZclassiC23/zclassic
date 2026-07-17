@@ -81,7 +81,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(agent_test) \
     X(db_txn) X(sync_service) X(node_db_catchup_service) X(catchup_lifecycle_service) \
     X(utxo_mirror_sync) X(snapshot_sync_service) \
-    X(file_controller) X(file_ops) X(file_service_pow_gate) \
+    X(file_controller) X(file_ops) X(file_service_pow_gate) X(rom_seed) \
     X(file_tree_ops) X(spawn) X(integrity) X(rolling_anchor_service) \
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
@@ -141,7 +141,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
     X(coin_selection) X(disk_monitor) X(network_monitor) X(network_crawler) X(db_maintenance) \
-    X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
+    X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(sprout_phgr13_kat) \
@@ -166,7 +166,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rpc_error_envelope) X(tx_property) \
     X(workpool) X(bip113_bip65) X(block_timestamp_adversarial) \
     X(mempool_orphan) X(fee_estimation) \
-    X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
+    X(header_sync) X(header_sync_stall) X(header_range_sched) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(addrman_eclipse) \
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
@@ -210,7 +210,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(storage_coins_utxo) \
     X(clock) X(rng) X(os_proc) X(os_sandbox) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(projection_consumer) X(progress_store) X(event_log) \
-    X(mempool_projection) X(peers_projection) X(znam_projection) \
+    X(mempool_projection) X(peers_projection) X(topology_store) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
     X(utxo_projection) X(utxo_apply_authorship) X(coins_view_projection) \
     X(coins_view_kv) \
@@ -219,9 +219,10 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(projection_replay_invariant) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
-    X(body_persist_stage) X(created_outputs_index) X(coins_kv) X(coins_ram) \
+    X(body_persist_stage) X(created_outputs_index) X(address_index) \
+    X(coins_kv) X(coins_ram) \
     X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_devloop) X(codeindex) \
-    X(chain_segment) X(segment_sealer) X(segment_corruption) \
+    X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
     X(body_crosscheck) \
@@ -239,7 +240,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_skip_crypto) X(mint_anchor_preflight) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
-    X(reducer_frontier_self_anchor) \
+    X(reducer_frontier_self_anchor) X(hstar_integrity) \
     X(always_sync_chaos) \
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_cadence) X(refold_premature_clear) \
@@ -276,6 +277,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_fold_livelock) \
     X(mint_anchor_fresh_datadir) \
     X(fold_inram_crash_proof) \
+    X(stage_crash_sweep) \
     X(coins_kv_read_cache) \
     X(parallel_range_fold) \
     X(psc_real_range) \
@@ -335,6 +337,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_forward_progress_gate) X(parity_slice) \
     X(parity_lockin_anchor_membership) X(parity_lockin_contextual_header) \
     X(coins_kv_reset_for_reseed) X(coins_kv_sovereign_gate) X(reindex_epilogue) \
+    X(ckpt_recheck) \
     X(sovereignty_guard) \
     X(snapshot_boot_seed) \
     X(replay_canary_verdict) \
@@ -346,7 +349,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_parse_cache) \
     X(storage_reclaim) \
     X(chain_frontier_snapshot_service) \
-    X(health_rollup) X(operator_ux)
+    X(health_rollup) X(operator_ux) \
+    X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

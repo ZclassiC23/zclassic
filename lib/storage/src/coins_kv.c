@@ -23,6 +23,7 @@
  */
 #include "storage/coins_kv.h"
 
+#include "chain/checkpoints.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
@@ -653,6 +654,76 @@ int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
 
     sha3_256_finalize(&ctx, out);
     return 0;
+}
+
+static void coins_kv_hex32(char out[65], const uint8_t in[32])
+{
+    for (int i = 0; i < 32; i++)
+        snprintf(out + 2 * i, 3, "%02x", in[i]);
+}
+
+bool coins_kv_verify_against_checkpoint(sqlite3 *db,
+                                        const struct sha3_utxo_checkpoint *cp,
+                                        uint8_t out_got_root[32],
+                                        int64_t *out_got_count,
+                                        char *reason, size_t reason_cap)
+{
+    if (out_got_root)
+        memset(out_got_root, 0, 32);
+    if (out_got_count)
+        *out_got_count = -1;
+
+    if (!db || !cp) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "null args db=%p cp=%p",
+                     (void *)db, (const void *)cp);
+        LOG_FAIL("coins_kv", "verify_against_checkpoint: null args");
+    }
+
+    /* ONE digest: re-derive via coins_kv_commitment — the exact canonical-order
+     * SHA3 the ratify verb and the refold hard-assert use. No second fold. */
+    uint8_t got_root[32] = {0};
+    if (coins_kv_commitment(db, got_root) != 0) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap,
+                     "coins_kv sha3 commitment computation failed");
+        LOG_FAIL("coins_kv", "verify_against_checkpoint: commitment failed");
+    }
+    int64_t got_count = coins_kv_count(db);
+    if (got_count < 0) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "coins_kv count read failed");
+        LOG_FAIL("coins_kv", "verify_against_checkpoint: count read failed");
+    }
+    if (out_got_root)
+        memcpy(out_got_root, got_root, 32);
+    if (out_got_count)
+        *out_got_count = got_count;
+
+    bool sha3_ok = memcmp(got_root, cp->sha3_hash, 32) == 0;
+    bool count_ok = (uint64_t)got_count == cp->utxo_count;
+    if (sha3_ok && count_ok) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap,
+                     "coins_kv reproduces the compiled checkpoint at h=%d",
+                     (int)cp->height);
+        return true;
+    }
+
+    if (reason && reason_cap) {
+        /* Lead with the short count fields (the cheap discriminator) so both the
+         * "count" and "sha3" tokens survive even a small/truncated buffer; the
+         * long hex digests trail. */
+        char got_hex[65], want_hex[65];
+        coins_kv_hex32(got_hex, got_root);
+        coins_kv_hex32(want_hex, cp->sha3_hash);
+        snprintf(reason, reason_cap,
+                 "coins_kv does not reproduce the compiled checkpoint "
+                 "(count got=%lld want=%llu; sha3 got=%s want=%s)",
+                 (long long)got_count, (unsigned long long)cp->utxo_count,
+                 got_hex, want_hex);
+    }
+    return false;
 }
 
 /* ── Per-boundary UTXO root table (keystone reproducibility anchor) ──────

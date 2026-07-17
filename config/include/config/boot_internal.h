@@ -304,6 +304,17 @@ void boot_zclassicd_oracle_stop(void *ctx);  /* zclassicd oracle stop */
 bool boot_rolling_anchor_start(void *ctx);   /* rolling SHA3 anchor contract */
 void boot_rolling_anchor_stop(void *ctx);    /* rolling SHA3 anchor stop */
 
+/* ── segment_sealer (boot_runtime_sync_services.c) ──────────────
+ * Sealed-history ROM sealer: seals finalized (fully-below-frontier) 10k block
+ * segments into <datadir>/segments so the fold's block reader serves those
+ * bodies from the hash-verified segment store instead of an unverified blk*.dat
+ * re-read. OFF BY DEFAULT (ZCL_SEGMENT_SEALER=1 to enable) — the supervised
+ * thread still runs + heartbeats, but seals nothing, so default on-disk state
+ * is unchanged. Registered into the runtime kernel by boot_segment_sealer_register()
+ * (called from boot_register_runtime_services); the start/stop adapters + the
+ * file-static service instance are private to that TU. */
+bool boot_segment_sealer_register(struct boot_svc_ctx *svc);
+
 /* ── boot_bg_verification.c ─────────────────────────────────────
  * Runtime service-kernel start/stop adapters for the two background
  * re-verification services. Registered by boot_register_runtime_services()

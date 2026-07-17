@@ -350,6 +350,21 @@ void zcl_native_handle_account_unsuspend(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
+ * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
+void zcl_native_handle_rom_seed_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_rom_seed_enable(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_rom_seed_disable(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_rom_seed_artifacts(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
 #ifdef ZCL_DEV_BUILD

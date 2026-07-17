@@ -216,9 +216,14 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     int found = body_persist_body_fetch_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* Row missing despite floor — a durable upstream-log hole, not
+         * "not yet" (see stage_upstream_log_hole_note). JOB_IDLE, never
+         * JOB_BLOCKED: reducer_frontier_reconcile_light is the healer. */
+        stage_upstream_log_hole_note(STAGE_NAME, "body_fetch_log", next_h,
+                                     bf_cursor, &g_last_blocked_unix);
         return JOB_IDLE;
     }
+    stage_upstream_log_hole_clear(STAGE_NAME);
 
     if (upstream.ok == 0) {
         if (!body_persist_log_insert(db, next_h, "upstream_failed", false))
@@ -348,6 +353,10 @@ STAGE_DRAIN_IMPL(body_persist)
 
 void body_persist_stage_shutdown(void)
 {
+    /* Registry hygiene (tests re-init in-process): re-derived from live
+     * state the next time the condition fires, so clearing here loses
+     * nothing. */
+    stage_upstream_log_hole_clear(STAGE_NAME);
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

@@ -69,6 +69,7 @@ struct synth_chain_uv {
     int                 n;
     int                 upstream_fail_height;
     int                 read_calls;
+    int                 read_fail_height;  /* fake_reader() fails here */
     enum uv_fail_kind   fail_kind;
 };
 
@@ -198,6 +199,7 @@ static bool synth_chain_uv_build(struct synth_chain_uv *sc, int n)
                          "uv_ext");
     if (!sc->blocks || !sc->hashes || !sc->bodies || !sc->ext)
         return false;
+    sc->read_fail_height = -1;
     for (int i = 0; i < n; i++) {
         if (!make_body(sc, i)) return false;
         block_header_get_hash(&sc->bodies[i].header, &sc->hashes[i]);
@@ -235,6 +237,8 @@ static bool fake_reader(struct block *out, const struct block_index *bi,
     struct synth_chain_uv *sc = user;
     if (!out || !bi || !sc || bi->nHeight < 0 || bi->nHeight >= sc->n)
         return false;
+    if (bi->nHeight == sc->read_fail_height)
+        return false;  /* simulate on-disk bytes vanished/corrupted */
     sc->read_calls++;
     return test_block_copy(out, &sc->bodies[bi->nHeight], "uv_tx_copy");
 }
@@ -724,6 +728,57 @@ int test_utxo_apply_stage(void)
                  !utxo_apply_stage_succeeded_at(-1));
         UV_CHECK("happy: next step IDLE",
                  utxo_apply_stage_step_once() == JOB_IDLE);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* lane/stall-taxonomy audit: stage_body_read_hold. proof_validate /
+     * script_validate already verified this body's hash+merkle root (they
+     * co-sign height+hash before utxo_apply ever reads it), so a
+     * stage_read_block() failure here is on-disk damage, not a normal
+     * wait — it must name a typed TRANSIENT blocker
+     * "utxo_apply.body_read_failed" immediately, exactly like the sibling
+     * script_validate / proof_validate stages, instead of holding on only
+     * the WARN-throttled utxo_apply_select_idle_note diagnostic. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("body_read_failed: setup",
+                 uv_setup("body_read_failed", 3, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        sc.read_fail_height = 1;
+        UV_CHECK("body_read_failed: drains only up to the hole",
+                 utxo_apply_stage_drain(100) == 1);
+        UV_CHECK("body_read_failed: cursor held at the hole (1)",
+                 utxo_apply_stage_cursor() == 1);
+        UV_CHECK("body_read_failed: next step stays JOB_IDLE",
+                 utxo_apply_stage_step_once() == JOB_IDLE);
+
+        struct blocker_snapshot rf_snaps[16];
+        int rf_n = blocker_snapshot_all(rf_snaps, 16);
+        bool rf_found = false, rf_fields_ok = false;
+        for (int k = 0; k < rf_n; k++) {
+            if (strcmp(rf_snaps[k].id, "utxo_apply.body_read_failed") == 0) {
+                rf_found = true;
+                rf_fields_ok = strstr(rf_snaps[k].reason, "height=1") &&
+                               rf_snaps[k].class == BLOCKER_TRANSIENT;
+                break;
+            }
+        }
+        UV_CHECK("body_read_failed: typed blocker raised", rf_found);
+        UV_CHECK("body_read_failed: blocker names height + class TRANSIENT",
+                 rf_fields_ok);
+
+        int ok2 = -1; char status2[32]; char kind2[32];
+        UV_CHECK("body_read_failed: no terminal row written at the hole",
+                 !log_row_at(progress_store_db(), 1, &ok2, status2,
+                             sizeof(status2), kind2, sizeof(kind2)));
+
+        sc.read_fail_height = -1;
+        UV_CHECK("body_read_failed: resumes once the read succeeds again",
+                 utxo_apply_stage_drain(100) == 2);
+        UV_CHECK("body_read_failed: cursor advanced to tip (3)",
+                 utxo_apply_stage_cursor() == 3);
+        UV_CHECK("body_read_failed: blocker cleared on resolve",
+                 !blocker_exists("utxo_apply.body_read_failed"));
         uv_teardown(dir, &ms, &sc);
     }
 

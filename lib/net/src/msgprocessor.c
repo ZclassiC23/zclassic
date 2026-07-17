@@ -28,6 +28,7 @@
 #include "net/fast_sync.h"
 #include "net/file_manifest.h"
 #include "net/file_market.h"
+#include "net/rom_seed.h"
 #include "net/p2p_game.h"
 #include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
@@ -829,6 +830,36 @@ static bool handle_zfilechal(struct msg_processor *mp, struct p2p_node *node,
     struct file_challenge chal;
     if (!file_challenge_deserialize(&chal, s))
         return true;
+
+    /* Free-tier ROM artifact: answer the proof-of-possession challenge from the
+     * registered per-chunk SHA3 (the chunk's data digest). Keeps the challenge
+     * machinery intact for ROM artifacts, which aren't in the block-file
+     * manifest the priced path reads. */
+    struct rom_artifact rart;
+    if (rom_seed_find_by_root(chal.root_hash, &rart)) {
+        if (chal.chunk_index >= rart.num_chunks) {
+            printf("market: ROM challenge for invalid chunk %u/%u from peer %s\n",
+                   chal.chunk_index, rart.num_chunks, node->addr_name);
+            return true;
+        }
+        struct file_proof rproof;
+        memset(&rproof, 0, sizeof(rproof));
+        memcpy(rproof.root_hash, chal.root_hash, 32);
+        rproof.chunk_index = chal.chunk_index;
+        memcpy(rproof.chunk_hash, rart.chunk_sha3[chal.chunk_index], 32);
+
+        struct byte_stream ros;
+        stream_init(&ros, 128);
+        file_proof_serialize(&rproof, &ros);
+        p2p_node_begin_message(node, MSG_FILE_PROOF,
+                               mp->params->pchMessageStart);
+        p2p_node_write_message_data(node, ros.data, ros.size);
+        p2p_node_end_message(node);
+        stream_free(&ros);
+        printf("market: answered ROM chunk challenge %u for '%s' from peer %s\n",
+               chal.chunk_index, rart.filename, node->addr_name);
+        return true;
+    }
 
     /* Check if we're offering this file */
     struct file_offer offer;
@@ -2011,7 +2042,18 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             default:
                 break;
             }
-            exec_getheaders_action(mp, node, &periodic);
+            /* NET-3 range-parallel header acquisition: when >=2 fast-sync
+             * peers are connected and the header gap exceeds one batch,
+             * give this peer its own disjoint checkpoint-anchored span
+             * instead of racing every peer for the same next batch. Returns
+             * false (leaving the single-peer path below untouched) for a
+             * single peer, a small gap, a legacy peer, or an open header
+             * band — so existing behavior is a strict regression-safe
+             * fallback. Validation and band closure are unchanged; this
+             * only changes WHICH peer is asked for WHICH range. */
+            if (!msg_try_range_parallel_getheaders(mp, node, our_height,
+                                                   now_send))
+                exec_getheaders_action(mp, node, &periodic);
         }
     }
 

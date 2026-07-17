@@ -176,4 +176,16 @@ bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n);
  * byte or wall-time ceiling. */
 bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_time, int64_t now);
 
+/* ── Free-tier ROM artifact serving ──────────────────────────────────
+ *
+ * A ROM artifact chunk request rides the same fs_session transport but is
+ * recognized independently of the ALL/RNG bulk-stream path:
+ *   body = ["ROM"(3)][root_hash(32)][chunk_index(4, LE)]  (39 bytes)
+ * ROM chunks are served FREE (no payment gate) but bounded by the rom_seed
+ * per-peer concurrency + per-peer/global byte-rate caps — never the PoW/ALL
+ * gate. Parsing is pure/testable. Returns true on a well-formed ROM request. */
+#define FS_ROM_REQUEST_SIZE 39
+bool fs_parse_rom_request(const uint8_t *payload, uint32_t plen,
+                          uint8_t root_out[32], uint32_t *idx_out);
+
 #endif

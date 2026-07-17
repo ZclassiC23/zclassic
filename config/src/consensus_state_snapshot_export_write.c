@@ -113,6 +113,9 @@ static bool column_int64_exact(sqlite3_stmt *st, int column, int64_t *out)
 static bool copy_coins(sqlite3 *source, sqlite3 *destination,
                        struct consensus_state_bundle_manifest *manifest)
 {
+    int64_t t0 = consensus_export_clock_ms();
+    consensus_export_progress_emit("copy_coins start height=%d",
+                                   manifest->height);
     sqlite3_stmt *read = NULL;
     sqlite3_stmt *write = NULL;
     if (!prepare_pair(source,
@@ -167,11 +170,20 @@ static bool copy_coins(sqlite3 *source, sqlite3 *destination,
              step_insert(write);
         if (!ok)
             break;
+        if (count % 500000 == 0)
+            consensus_export_progress_emit(
+                "copy_coins: %llu rows, %llds elapsed",
+                (unsigned long long)count,
+                (long long)((consensus_export_clock_ms() - t0) / 1000));
     }
     if (rc != SQLITE_DONE)
         ok = false;
     sqlite3_finalize(read);
     sqlite3_finalize(write);
+    consensus_export_progress_emit(
+        "copy_coins done rows=%llu ok=%d elapsed=%lldms",
+        (unsigned long long)count, (ok && count != 0) ? 1 : 0,
+        (long long)(consensus_export_clock_ms() - t0));
     if (!ok || count == 0)
         return false;
     sha3_256_finalize(&digest, manifest->utxo_root);
@@ -183,6 +195,9 @@ static bool copy_coins(sqlite3 *source, sqlite3 *destination,
 static bool copy_anchors(sqlite3 *source, sqlite3 *destination,
                          struct consensus_state_bundle_manifest *manifest)
 {
+    int64_t t0 = consensus_export_clock_ms();
+    consensus_export_progress_emit("copy_anchors start height=%d",
+                                   manifest->height);
     sqlite3_stmt *read = NULL;
     sqlite3_stmt *write = NULL;
     if (!prepare_pair(source,
@@ -244,13 +259,23 @@ static bool copy_anchors(sqlite3 *source, sqlite3 *destination,
              step_insert(write);
         if (!ok)
             break;
+        if (count % 500000 == 0)
+            consensus_export_progress_emit(
+                "copy_anchors: %llu rows, %llds elapsed",
+                (unsigned long long)count,
+                (long long)((consensus_export_clock_ms() - t0) / 1000));
     }
     if (rc != SQLITE_DONE)
         ok = false;
     sqlite3_finalize(read);
     sqlite3_finalize(write);
-    if (!ok || frontier_height[ANCHOR_POOL_SPROUT] < 0 ||
-        frontier_height[ANCHOR_POOL_SAPLING] < 0)
+    bool anchors_ok = ok && frontier_height[ANCHOR_POOL_SPROUT] >= 0 &&
+                      frontier_height[ANCHOR_POOL_SAPLING] >= 0;
+    consensus_export_progress_emit(
+        "copy_anchors done rows=%llu ok=%d elapsed=%lldms",
+        (unsigned long long)count, anchors_ok ? 1 : 0,
+        (long long)(consensus_export_clock_ms() - t0));
+    if (!anchors_ok)
         return false;
     sha3_256_finalize(&digest, manifest->anchor_digest);
     manifest->anchor_count = count;
@@ -268,6 +293,9 @@ static bool copy_anchors(sqlite3 *source, sqlite3 *destination,
 static bool copy_nullifiers(sqlite3 *source, sqlite3 *destination,
                             struct consensus_state_bundle_manifest *manifest)
 {
+    int64_t t0 = consensus_export_clock_ms();
+    consensus_export_progress_emit("copy_nullifiers start height=%d",
+                                   manifest->height);
     sqlite3_stmt *read = NULL;
     sqlite3_stmt *write = NULL;
     if (!prepare_pair(source,
@@ -306,11 +334,20 @@ static bool copy_nullifiers(sqlite3 *source, sqlite3 *destination,
              step_insert(write);
         if (!ok)
             break;
+        if (count % 500000 == 0)
+            consensus_export_progress_emit(
+                "copy_nullifiers: %llu rows, %llds elapsed",
+                (unsigned long long)count,
+                (long long)((consensus_export_clock_ms() - t0) / 1000));
     }
     if (rc != SQLITE_DONE)
         ok = false;
     sqlite3_finalize(read);
     sqlite3_finalize(write);
+    consensus_export_progress_emit(
+        "copy_nullifiers done rows=%llu ok=%d elapsed=%lldms",
+        (unsigned long long)count, ok ? 1 : 0,
+        (long long)(consensus_export_clock_ms() - t0));
     if (!ok)
         return false;
     sha3_256_finalize(&digest, manifest->nullifier_digest);

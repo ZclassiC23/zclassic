@@ -31,10 +31,17 @@
 #include "storage/progress_store.h"
 #include "event/event.h"
 #include "util/blocker.h"
+#include "chain/chain.h"
+#include "core/arith_uint256.h"
+#include "core/uint256.h"
+#include "util/safe_alloc.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -73,6 +80,41 @@ static void wd_sim_boot(void)
 {
     chain_tip_watchdog_test_reset_runtime();
     chain_tip_watchdog_test_load_persisted();
+}
+
+/* ── Synthetic block-index fixture for the tip-extension SELECTION wedge ──
+ * Mirrors test_most_work_selector.c's mw_mk_idx: heap block_index + owned
+ * hash, inserted into the map, linked by pprev, VALID_SCRIPTS + HAVE_DATA. */
+static struct block_index *wd_mk_idx(struct main_state *ms, int height,
+                                     uint64_t work, uint8_t seed,
+                                     struct block_index *prev)
+{
+    struct block_index *bi = zcl_calloc(1, sizeof(*bi), "test_wd_block_index");
+    struct uint256 *hp = zcl_malloc(sizeof(*hp), "test_wd_hash");
+    if (!bi || !hp) { free(bi); free(hp); return NULL; }
+    memset(hp, seed, sizeof(*hp));
+    hp->data[0] = (uint8_t)height;
+    hp->data[1] = seed;
+    bi->nHeight = height;
+    bi->phashBlock = hp;
+    bi->pprev = prev;
+    bi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+    bi->nTx = 1;
+    bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
+    arith_uint256_set_u64(&bi->nChainWork, work);
+    if (!block_map_insert(&ms->map_block_index, hp, bi)) {
+        free((void *)(uintptr_t)bi->phashBlock);
+        free(bi);
+        return NULL;
+    }
+    return bi;
+}
+
+static void wd_free_idx(struct block_index *bi)
+{
+    if (!bi) return;
+    free((void *)(uintptr_t)bi->phashBlock);
+    free(bi);
 }
 
 int test_chain_tip_watchdog_bounded_restart(void)
@@ -548,6 +590,134 @@ int test_chain_tip_watchdog_bounded_restart(void)
         chain_tip_watchdog_test_set_thresholds(def.threshold_mirror_secs,
                                                def.threshold_reserved_secs,
                                                def.threshold_restart_secs);
+    }
+
+    /* ── (g) tip-extension SELECTION wedge: cause-probe classifies it and the
+     * watchdog drives a TARGETED revalidate of the specific successor height
+     * instead of a blind restart ──────────────────────────────────────────
+     *
+     * Shape: active tip a1(h1); a valid successor a2(h2) that builds DIRECTLY
+     * on a1 (a2->pprev == a1) is present on the best-header chain but carries a
+     * persisted BLOCK_FAILED_VALID mask, so find_most_work_chain skips it and
+     * the pure selector keeps returning the tip. A restart cannot clear an
+     * on-disk failure bit, so the cause-probe must name "tip_selection_wedge"
+     * and the tick must drive process_block_revalidate(h2) (suppressed here to
+     * stay hermetic) — NOT a power-cycle. Negative shapes (caught up, stale
+     * fork, clean/selectable successor) must NOT be classified as the wedge. */
+    {
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        chain_tip_watchdog_test_reset_runtime();
+
+        /* Positive: FAILED_VALID direct successor above a frozen tip. */
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        struct block_index *g  = wd_mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = wd_mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index *a2 = wd_mk_idx(&ms, 2, 20, 0x0B, a1);
+        WD_CHECK("selection-wedge fixture built", g && a1 && a2);
+        if (g && a1 && a2) {
+            active_chain_move_window_tip(&ms.chain_active, g);
+            active_chain_move_window_tip(&ms.chain_active, a1); /* tip = a1 */
+            ms.pindex_best_header = a2;                          /* header ahead */
+            a2->nStatus |= BLOCK_FAILED_VALID;                  /* skipped */
+
+            chain_tip_watchdog_test_set_main_state(&ms);
+            const char *cause = chain_tip_watchdog_test_stall_cause();
+            WD_CHECK("cause-probe classifies the tip-selection wedge",
+                     cause && strcmp(cause, "tip_selection_wedge") == 0);
+
+            /* Drive the real restart-threshold ladder over the tick body with
+             * the remedy suppressed: it must drive the targeted revalidate of
+             * a2's height and NOT request a restart. */
+            chain_tip_watchdog_test_set_suppress_selection_remedy(true);
+            chain_tip_watchdog_test_set_thresholds(/*mirror=*/100,
+                                                   /*reserved=*/150,
+                                                   /*restart=*/200);
+            const int64_t US = 1000000;
+            const int64_t T0 = 1000 * US;
+            const int64_t STUCK = 1; /* injected provable-tip for the ladder */
+            chain_tip_watchdog_test_tick(STUCK, T0, /*do_shutdown=*/false);
+            chain_tip_watchdog_test_tick(STUCK, T0 + 205 * US, false);
+
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("wedge drove the selection remedy (once)",
+                     s.fires_selection_remedy == 1);
+            WD_CHECK("selection remedy targeted the successor height (a1+1)",
+                     chain_tip_watchdog_test_selection_remedy_target() ==
+                         a1->nHeight + 1);
+            WD_CHECK("wedge did NOT blind-restart (0 restart fires)",
+                     s.fires_restart == 0);
+            WD_CHECK("wedge burned zero bounded restarts",
+                     s.no_progress_restarts == 0);
+            WD_CHECK("wedge handed off to the always-terminating escalator",
+                     sticky_escalator_test_armed());
+
+            /* Negative A — caught up (best-header == tip): not the wedge. */
+            chain_tip_watchdog_test_reset_runtime();
+            ms.pindex_best_header = a1;
+            WD_CHECK("caught-up tip is NOT classified as a selection wedge",
+                     !chain_tip_watchdog_test_stall_cause() ||
+                     strcmp(chain_tip_watchdog_test_stall_cause(),
+                            "tip_selection_wedge") != 0);
+
+            /* Negative B — clean, selectable successor (no FAILED mask): the
+             * reducer would advance; not a wedge. */
+            ms.pindex_best_header = a2;
+            a2->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
+            WD_CHECK("clean selectable successor is NOT a selection wedge",
+                     !chain_tip_watchdog_test_stall_cause() ||
+                     strcmp(chain_tip_watchdog_test_stall_cause(),
+                            "tip_selection_wedge") != 0);
+
+            chain_tip_watchdog_test_set_main_state(NULL);
+        }
+        wd_free_idx(a2);
+        wd_free_idx(a1);
+        wd_free_idx(g);
+        main_state_free(&ms);
+
+        /* Negative C — stale fork: the best-header's block at tip+1 does NOT
+         * build on our tip (pprev != tip), so it is not the extension class. */
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        main_state_init(&ms2);
+        struct block_index *g2 = wd_mk_idx(&ms2, 0, 1,  0x00, NULL);
+        struct block_index *c1 = wd_mk_idx(&ms2, 1, 10, 0x2A, g2);
+        struct block_index *c2 = wd_mk_idx(&ms2, 2, 20, 0x2B, c1); /* active tip */
+        struct block_index *f1 = wd_mk_idx(&ms2, 1, 11, 0x3A, g2); /* fork */
+        struct block_index *f2 = wd_mk_idx(&ms2, 2, 12, 0x3B, f1);
+        struct block_index *f3 = wd_mk_idx(&ms2, 3, 13, 0x3C, f2); /* header ahead */
+        WD_CHECK("stale-fork fixture built",
+                 g2 && c1 && c2 && f1 && f2 && f3);
+        if (g2 && c1 && c2 && f1 && f2 && f3) {
+            active_chain_move_window_tip(&ms2.chain_active, g2);
+            active_chain_move_window_tip(&ms2.chain_active, c1);
+            active_chain_move_window_tip(&ms2.chain_active, c2); /* tip = c2(h2) */
+            ms2.pindex_best_header = f3;                         /* fork h3 ahead */
+            f3->nStatus |= BLOCK_FAILED_VALID;
+            /* ancestor(f3, tip+1=3) == f3, but f3->pprev == f2 != c2 (tip): the
+             * direct-child guard rejects it as a stale fork. */
+            chain_tip_watchdog_test_set_main_state(&ms2);
+            WD_CHECK("stale fork ahead is NOT a selection wedge",
+                     !chain_tip_watchdog_test_stall_cause() ||
+                     strcmp(chain_tip_watchdog_test_stall_cause(),
+                            "tip_selection_wedge") != 0);
+            chain_tip_watchdog_test_set_main_state(NULL);
+        }
+        wd_free_idx(f3);
+        wd_free_idx(f2);
+        wd_free_idx(f1);
+        wd_free_idx(c2);
+        wd_free_idx(c1);
+        wd_free_idx(g2);
+        main_state_free(&ms2);
+
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        chain_tip_watchdog_test_reset_runtime();
     }
 
     /* Leave global state clean for the next test. */

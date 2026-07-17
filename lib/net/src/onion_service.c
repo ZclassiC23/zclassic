@@ -6,6 +6,7 @@
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
+#include "net/rom_seed.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
@@ -557,8 +558,16 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     sqlite3_finalize(s);
     sqlite3_close(db);
 
+    /* Advertise the free ROM/sync artifacts this node seeds (kind + digest +
+     * size + chunking) so a fresh node can discover WHO seeds WHAT without
+     * waiting for gossip warm-up. Only appended when there is room; the JSON
+     * stays well-formed either way. */
+    char arts[2560];
+    size_t an = rom_seed_directory_json(arts, sizeof(arts));
+    const char *arts_body = (an > 0 && off + an + 64 < sizeof(body))
+                                ? arts : "[]";
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "],\"count\":%d}", count);
+        "],\"count\":%d,\"artifacts\":%s}", count, arts_body);
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
