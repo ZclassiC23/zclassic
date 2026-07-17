@@ -27,6 +27,7 @@
 #include "event/event.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/stage_rederive_range.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/chain_segment.h"
 #include "storage/coins_kv.h"
@@ -897,3 +898,117 @@ bool chaos_fault_stall_single_stage(struct chaos_fault_result *out)
     return false;
 }
 #endif /* ZCL_TESTING */
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (f) kill/restart mid-RECOVERY (inside an open rederive/rewind window)
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Only test_fmt_tmpdir / test_cleanup_tmpdir (both `static inline` in
+ * test/test_helpers.h) are used below — no ZCL_TESTING guard needed, same
+ * as (a)/(b) (see the comment on (c) for why some faults DO need one). */
+
+bool chaos_fault_kill_restart_mid_recovery(struct chaos_fault_result *out)
+{
+    chaos_result_init(out);
+    const int32_t N = 40;     /* full consistent prefix [0, N] */
+    const int32_t HOLE = 25;  /* recovery-window target: rederive [HOLE,HOLE] */
+
+    char dir[256];
+    mkdir("./test-tmp", 0755);
+    test_fmt_tmpdir(dir, sizeof(dir), "chaos_kill_recovery", "main");
+    mkdir(dir, 0755);
+
+    progress_store_close();
+    if (!progress_store_open(dir)) {
+        chaos_note(out, "progress_store failed to open fixture dir");
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+    sqlite3 *db = progress_store_db();
+    if (!db || !chaos_stamp_prefix(db, N)) {
+        chaos_note(out, "fixture stamp failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+
+    /* Open the RECOVERY WINDOW: the real primitive a self-heal rung calls
+     * (app/jobs/src/stage_rederive_range.c) rewinds the body-dependent
+     * stage cursors to HOLE, deletes the stale suffix rows [HOLE, N], and
+     * (HOLE sits below the coins-applied frontier N+1) inverse-rewinds the
+     * coins-applied frontier to HOLE — all in one committed transaction.
+     * This is the state a real crash mid-recovery lands in: the window is
+     * open (rewound + committed) but the drive has NOT yet re-folded
+     * [HOLE, N] forward. `ms` may be NULL (see the header: the forward
+     * fold re-creates created_outputs itself). */
+    struct stage_rederive_range_result rr;
+    bool opened = stage_rederive_range(db, NULL, HOLE, HOLE, &rr);
+    if (!opened || !rr.ok) {
+        chaos_note(out,
+            "stage_rederive_range failed to open the recovery window "
+            "(opened=%d ok=%d refused_no_inverse=%d)",
+            opened, rr.ok, rr.refused_no_inverse);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+
+    int32_t hstar_mid = -1, served_mid = -1;
+    bool ok_mid = reducer_frontier_compute_hstar(db, &hstar_mid, &served_mid);
+    int32_t coins_mid = -1;
+    bool coins_found_mid = false;
+    bool coins_ok_mid =
+        coins_kv_get_applied_height(db, &coins_mid, &coins_found_mid);
+
+    /* THE FAULT: kill -9 INSIDE the open recovery window — abrupt close
+     * (nothing further ever committed) then the restart (fresh reopen; no
+     * in-RAM state survives, exactly like (b) but from a rewound state
+     * instead of a fully-folded one). */
+    progress_store_close();
+    bool reopened = progress_store_open(dir);
+    sqlite3 *db2 = reopened ? progress_store_db() : NULL;
+
+    int32_t hstar_after = -1, served_after = -1;
+    bool ok_after = db2 && reducer_frontier_compute_hstar(db2, &hstar_after,
+                                                           &served_after);
+    int32_t coins_after = -1;
+    bool coins_found_after = false;
+    bool coins_ok_after =
+        db2 && coins_kv_get_applied_height(db2, &coins_after,
+                                           &coins_found_after);
+
+    /* CONVERGES: the next boot pass calls the SAME primitive over the SAME
+     * range again — it must succeed idempotently (no error, no duplicate
+     * rewind) so the drive can resume folding [HOLE, N] forward instead of
+     * stalling or re-deriving a second time. */
+    struct stage_rederive_range_result rr2;
+    bool resumed = db2 && stage_rederive_range(db2, NULL, HOLE, HOLE, &rr2);
+
+    out->ok = ok_mid && coins_ok_mid && reopened && ok_after && coins_ok_after;
+    out->hstar_before = hstar_mid;
+    out->hstar_after = hstar_after;
+    /* NEVER a silent stall: hstar_after names the exact rewound height
+     * (HOLE-1) identically before/after the kill — never undefined, never a
+     * value ABOVE HOLE-1 (which would mean the log silently re-served rows
+     * it never actually re-derived). NEVER a wipe of seeded coins: the
+     * coins-applied frontier is FOUND (not reset to "absent") and reads
+     * back HOLE identically before/after the kill. resumed+rr2.ok is the
+     * "next boot converges" proof. */
+    out->recovered = out->ok && resumed && rr2.ok &&
+                     hstar_after == hstar_mid && hstar_after == HOLE - 1 &&
+                     coins_found_mid && coins_found_after &&
+                     coins_mid == HOLE && coins_after == HOLE;
+    chaos_note(out,
+        "kill mid-recovery: H* mid=%d after=%d (want %d) coins mid=%d "
+        "after=%d (want %d, found mid=%d after=%d) resumed=%d — %s",
+        hstar_mid, hstar_after, HOLE - 1, coins_mid, coins_after, HOLE,
+        coins_found_mid, coins_found_after, resumed,
+        out->recovered
+            ? "converges — cursor + coins frontier survive the kill "
+              "identically, next pass resumes cleanly"
+            : "DIVERGED or FAILED to converge across the kill");
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return true;
+}

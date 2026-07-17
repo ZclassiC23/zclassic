@@ -5,7 +5,7 @@
  * MISSION: the node must ALWAYS fold to the network tip and never silently
  * stall; a stall is always a NAMED, SELF-HEALED blocker at a known height,
  * never an operator page for a recoverable cause. This table-driven test
- * drives the five reusable fault injectors in sim/simnet_chaos_faults.h and
+ * drives the six reusable fault injectors in sim/simnet_chaos_faults.h and
  * asserts the mission property on each: the fixture recovers, and no
  * EV_OPERATOR_NEEDED (or equivalent named escalation) fires for what should
  * have been a recoverable cause.
@@ -135,6 +135,21 @@ int test_always_sync_chaos(void)
                   "cause, retry budget held)", asc_never_pages(&r));
         ASC_CHECK("single-stage stall: self-heals, blocker clears",
                   r.recovered);
+    }
+
+    /* ── (f) kill/restart mid-RECOVERY (inside an open rewind window) ──
+     * Unlike (b) — a kill BEFORE any repair action started — this kills
+     * AFTER stage_rederive_range() has committed a rewind (cursors
+     * lowered, stale rows deleted, coins inverse-rewound to the hole) but
+     * BEFORE the drive re-folds the range forward. */
+    {
+        bool harness_ok = chaos_fault_kill_restart_mid_recovery(&r);
+        printf("  note: %s\n", r.note);
+        ASC_CHECK("kill mid-recovery: harness fixture built", harness_ok);
+        ASC_CHECK("kill mid-recovery: never pages operator",
+                  asc_never_pages(&r));
+        ASC_CHECK("kill mid-recovery: H* + coins frontier survive the kill "
+                  "identically, next pass converges", r.recovered);
     }
 
     if (failures == 0)
