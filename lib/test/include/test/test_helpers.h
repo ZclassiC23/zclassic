@@ -267,6 +267,7 @@ int test_addrman_eclipse(void);
 int test_coins(void);
 int test_chainstate_legacy_reader(void);
 int test_importblockindex_roundtrip(void);
+int test_importblockindex_cli_dispatch(void);
 int test_chainstate_sapling_anchor(void);
 int test_utxo_import_pipeline(void);
 int test_ccoins_decoder_kat(void);
