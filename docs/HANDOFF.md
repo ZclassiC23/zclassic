@@ -137,12 +137,17 @@ finish the lane branch directly):
 - `lane/net-operator-surface2` — `net census/node/versions/graph` commands +
   `/network` explorer page over the REAL census/topology schemas (a prior
   attempt coded against imagined columns and was rejected). NOT done.
-- `lane/boot-odelta` — boot O(delta) complexity audit. A verifier found its
-  `chain_restore.disk_rebuild` counter is **misclassified**: an unclean
-  shutdown (kill-9/OOM, no clean marker) DOES run `utxo_recovery_restore_chain_tip`
-  on a warm restart (`config/src/boot.c` ~2744). Open question worth
-  answering: is that rebuild O(chain) or O(delta)? If O(chain) it's a real
-  slow-boot defect. A fix agent was mid-analysis. NOT landed.
+
+**KNOWN OPEN DEFECT (found + pinned this session, boot-path fix DEFERRED):**
+an **unclean restart** (kill-9/OOM, no clean-shutdown marker) runs
+`chain_restore_rebuild_active_chain` which walks tip→genesis **O(chain-height)**,
+not O(delta) — a real slow-boot defect (a dirty restart re-reads the whole
+chain). Proven by `test_rebuild_active_chain_is_o_chain_not_delta` and
+written up in `docs/AGENT_TRAPS.md` with the fix design (engage the
+trust-index fastpath around `config/src/boot.c` ~2744, mirroring the existing
+`finalize_verified` guard). The fix is consensus-adjacent — copy-prove it on a
+real datadir before landing. The audit infrastructure (`lib/util/boot_scan.c`
+counters) is on main.
 
 **THE plan of record + program context is unchanged below and in
 `docs/work/FORWARD_PLAN.md`.** The architecture verdict + best-possible-node
