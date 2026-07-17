@@ -48,8 +48,6 @@ static void stale_upstream_hash_blocker_set(int height)
              height);
     if (blocker_init(&rec, UTXO_APPLY_STALE_UPSTREAM_HASH_BLOCKER_ID,
                      "utxo_apply", BLOCKER_DEPENDENCY, reason)) {
-        snprintf(rec.escape_action, sizeof(rec.escape_action),
-                 "re-run script_validate and proof_validate for selected hash");
         (void)blocker_set(&rec);
     }
 }

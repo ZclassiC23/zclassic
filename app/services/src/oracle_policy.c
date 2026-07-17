@@ -243,6 +243,11 @@ static const char *op_state_name(enum oracle_policy_state s)
     return "unknown";
 }
 
+const char *oracle_policy_state_name(enum oracle_policy_state s)
+{
+    return op_state_name(s);
+}
+
 bool oracle_policy_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
