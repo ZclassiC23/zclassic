@@ -739,6 +739,33 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
     return requeued;
 }
 
+uint32_t dl_peer_bandwidth_score(struct download_manager *dm, uint32_t peer_id)
+{
+    if (!dm) return 0;
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
+    uint32_t score = ps ? ps->bandwidth_score : 0;
+    zcl_mutex_unlock(&dm->cs);
+    return score;
+}
+
+void dl_peer_seed_bandwidth_score(struct download_manager *dm,
+                                  uint32_t peer_id, uint32_t score)
+{
+    if (!dm || score == 0)
+        return;
+    if (score > 255) score = 255;
+    zcl_mutex_lock(&dm->cs);
+    /* Seed the INITIAL adaptive window from banked reputation only — never
+     * override a live measurement. A peer with no measured score yet starts at
+     * its historical band instead of the DL_MAX_IN_FLIGHT_PER_PEER minimum;
+     * once real deliveries land, dl_note_block_received recomputes the score. */
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
+    if (ps && ps->bandwidth_score == 0)
+        ps->bandwidth_score = score;
+    zcl_mutex_unlock(&dm->cs);
+}
+
 /* qsort comparator for the bulk-enqueue staging array. */
 struct dl_stage_item {
     struct uint256 hash;

@@ -130,6 +130,15 @@ struct app_context {
                                  * DURABLE set (never the coins_ram overlay); no
                                  * fold. Exits after RATIFIED or a typed REFUSED.
                                  * Default false. */
+    bool verify_rom;           /* -verify-rom : TERMINAL read-only verifier. Re-
+                                 * derives the canonical coins_kv commitment + count
+                                 * (coins_kv_verify_against_checkpoint) and compares
+                                 * them to the compiled SHA3 UTXO checkpoint, then
+                                 * prints PASS/FAIL with the derived vs baked digests
+                                 * and _exit()s (0 PASS / 1 FAIL). Reads only; stamps
+                                 * NOTHING. A PASS is expected only on a datadir
+                                 * positioned AT the checkpoint (applied == cp->height
+                                 * + 1). Default false. */
     bool export_consensus_bundle; /* -export-consensus-bundle : TERMINAL offline
                                  * checkpoint-content exporter. Emits the
                                  * zcl.consensus_state_bundle.v1 from a finished
@@ -464,6 +473,15 @@ struct boot_ratify_result {
  * store's DURABLE coins_kv (refuses if the coins_ram overlay is active). */
 void boot_ratify_mint_anchor(const char *datadir);
 
+/* -verify-rom=(no arg, acts on -datadir) (impl in config/src/boot_verify_rom.c):
+ * TERMINAL — NEVER returns; it _exit()s after printing PASS (0) or FAIL (1). It
+ * re-derives the canonical coins_kv commitment + count against the compiled SHA3
+ * UTXO checkpoint (coins_kv_verify_against_checkpoint) on demand and prints the
+ * derived-vs-baked digests. Read-only: reads the OPEN progress store's DURABLE
+ * coins_kv (refuses if the coins_ram overlay is active); stamps NOTHING. A PASS is
+ * only expected on a datadir positioned AT the checkpoint height. */
+void boot_verify_rom(const char *datadir);
+
 /* -export-consensus-bundle=(no arg, acts on -datadir) (impl in
  * config/src/boot_export_consensus_bundle.c): TERMINAL — NEVER returns; it
  * _exit()s after printing EXPORTED (0) or a typed REFUSED (1). Reads the
@@ -755,6 +773,18 @@ bool boot_refold_body_span_contiguous(struct main_state *ms,
  * snapshot read-only via uss_open/uss_close (no coins_kv mutation here). */
 bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
                                         struct sqlite3 *progress_db);
+
+/* Pure predicate (impl in config/src/boot_legacy_import.c):
+ * decide whether boot should auto-pull zclassicd's LevelDB block index.
+ * Fires on the ratio trigger (local_index_size below 90% of chain_h) OR
+ * the empty-datadir trigger (local_index_size == 0) — the latter exists
+ * because on a genuinely fresh datadir chain_h is ALSO 0, so the ratio
+ * test alone degenerates to `0 < 0` and never fires. Either trigger still
+ * requires legacy_source_present (caller stat()s ~/.zclassic/blocks/index
+ * and passes the result in) — -nolegacyimport short-circuits the caller
+ * before this is even evaluated. */
+bool boot_need_legacy_header_pull(int64_t local_index_size, int64_t chain_h,
+                                  bool legacy_source_present);
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);

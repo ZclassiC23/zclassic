@@ -30,7 +30,7 @@ if [[ -f "$BASELINE" ]]; then
 fi
 
 roots=()
-for root in app/controllers tools/mcp/controllers; do
+for root in app/controllers; do
     [[ -d "$root" ]] && roots+=("$root")
 done
 

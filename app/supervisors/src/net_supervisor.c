@@ -20,7 +20,15 @@ static struct connman          *g_peer_floor_cm        = NULL;
 static struct liveness_contract g_peer_floor_contract;
 static supervisor_child_id      g_peer_floor_id        = SUPERVISOR_INVALID_ID;
 
-#define PEER_FLOOR_TARGET 2
+/* Healthy-outbound floor: the single source of truth in net/net.h
+ * (ZCL_PEER_FLOOR_HEALTHY = 3). INTENTIONAL TIGHTENING (net-floor
+ * unification): this child previously used a lone value of 2 while the
+ * connman dialer, the peer_floor_violated condition, and the dns-seed loop
+ * all used 3, so the supervisor's on_stall fired one healthy peer LATER than
+ * every other floor surface. Raising it to the shared 3 makes the supervisor
+ * react at the same threshold the rest of the stack already treats as a
+ * breach. Pinned by lint gate check-peer-floor-single-source. */
+#define PEER_FLOOR_TARGET ZCL_PEER_FLOOR_HEALTHY
 /* progress-quiet window: if outbound_healthy stays below floor this
  * long, on_stall fires (supervisor edge-once). 60 s matches the
  * existing watchdog's PEER_FLOOR window. */

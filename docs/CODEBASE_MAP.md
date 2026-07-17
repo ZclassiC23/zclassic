@@ -69,10 +69,10 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 663
+test_groups: 655
 port_interfaces: 12
 persistence_adapters: 13
-condition_registrations: 41
+condition_registrations: 42
 <!-- DOC-COUNTS-END -->
 
 ### Composition root — `config/src/` (26 files)
@@ -84,14 +84,13 @@ job chain, plus `address_backfill`, `bg_workers`, `bg_verification`,
 
 ### Agent + dev tooling — `tools/`
 
-`mcp/` (MCP server — legacy dual-run surface, scheduled for removal in W3;
-controllers in `tools/mcp/controllers/`), `lint/` (gate
+`command/` (native command dispatch + dev hot-swap RPC), `lint/` (gate
 shell scripts), `fuzz/`, `soak/`, `sim/` (deterministic replay), `dev/`,
 `githooks/`, `scripts/`, `data/` (fixtures).
 
 The unified local loop is `tools/dev/watch-dev-lane.sh` (`make dev-watch`): it
 classifies a coalesced save, runs the shared impact plan, and selects check,
-stage, transactional reload, or the narrow stateless-MCP hot-swap path. Its
+stage, transactional reload, or the narrow stateless hot-swap path. Its
 public surface is currently verify/check only. `MODE=auto`/`apply`, direct
 `dev change apply`, runtime hot-swap, stage, reload, and generation relinking
 all fail closed during Phase-0 containment.
@@ -102,10 +101,9 @@ quarantine), but its public entry refuses before mutation. `tools/dev/agent-dev-
 read-only `zcl.agent_dev_status.v1` view; `generate-compdb.sh` owns exact dev
 compilation-database generation and freshness; `dev-loop-bench.sh` owns the
 machine-readable latency evidence. Runtime hot-swap loading lives below the app
-layer in `lib/hotswap/`, while `tools/mcp/router.{c,h}` owns the one-snapshot
-MCP route commit. `tools/mcp/dev_rpc_bridge.{c,h}` registers the dev-only
-bridge on the exact isolated dev datadir; mutation `dev_hotswap` is contained
-while read-only `dev_mcp_call` remains diagnostic. The release build keeps a
+layer in `lib/hotswap/`; the dev-only hot-swap RPC and generation commit are
+registered by `tools/command/native_dev_hotswap.{c,h}` on the exact isolated
+dev datadir. Mutation `dev_hotswap` is contained; the release build keeps a
 refusal stub.
 `tools/dev/hotswap-running-dev.sh` is a contained former persistent transport;
 it always refuses. There is no auto-reload fallback during containment.
@@ -129,17 +127,16 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    and relationship helpers such as `db_order_product()` or
    `db_name_text_records()`.
 4. Put workflow in `app/services/src/` with `struct zcl_result`; services own
-   transactions and call models, but do not parse HTTP/RPC/MCP inputs.
+   transactions and call models, but do not parse HTTP/RPC inputs.
 5. Add REST route metadata in `app/controllers/src/api_controller_routes.c`
    or the relevant dynamic/member controller: method, path, resource, action,
    response schema, query filter contract, freshness, alias, privacy.
 6. Add native command access only after the service/model contract exists.
    Terminal agents call it directly with `zclassic23 <leaf> [--input=json]`
-   (e.g. `zclassic23 status`, `zclassic23 dumpstate <subsystem>`). MCP routes
-   in `tools/mcp/controllers/*_controller.c` (`zclassic23 mcpcall <tool>
-   [json]`) still work today but are legacy — removed in W3.
+   (e.g. `zclassic23 status`, `zclassic23 dumpstate <subsystem>`). The native
+   typed command registry is the sole agent interface.
 7. Cover model validation, migration/schema, relationship failure, service
-   success/failure, REST contract, and MCP controller behavior with focused
+   success/failure, REST contract, and native command behavior with focused
    tests before running `make build-only` and `make lint`.
 
 ### Add a model
@@ -161,14 +158,15 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    `app/conditions/src/condition_registry.c`. Framework handles poll/backoff/
    witness/paging.
 
-### Add an MCP tool
-1. Static `int h_tool_name(req, res)` in the matching controller
-   (`tools/mcp/controllers/{app,chain,diagnostics,meta,net,ops,wallet}_controller.c`).
-   Must set an error body on failure (never bare `return -1`).
-2. Add a route (`.name`, `.handler`, `.description`, `.schema`) to that
-   controller's `k_routes[]`.
-3. The controller's init loop registers all routes via
-   `mcp_router_register()`. There is no central route registry file.
+### Add a native command
+1. Declare the command in the matching `config/commands/*.def` bundle
+   (`core`/`ops`/`dev`/`apps`/`accounts`/`code`/`root`): name, transports
+   (`ZCL_COMMAND_TRANSPORT_NATIVE`), and handler symbol.
+2. Implement the handler in the matching
+   `app/controllers/src/*_native_handlers.c`. Must set an error body on
+   failure (never bare `return -1`).
+3. The command registry loads every `.def` bundle at startup; there is no
+   central per-command registry file to edit.
 
 ### Add a reducer stage (Job)
 1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning
@@ -202,25 +200,23 @@ actually fires.
 
 ---
 
-## 3. The agent surface (MCP)
+## 3. The agent surface
 
-> **MCP is being phased out.** The owner directive is zero-MCP: delete the
-> MCP server entirely and make the native CLI the only agent interface — see
-> [`docs/work/MCP-REMOVAL-PLAN.md`](work/MCP-REMOVAL-PLAN.md). The durable
-> interface is [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md);
-> this section documents the current dual-run surface (both still work
-> today), not the target.
+> **Zero-MCP is complete.** The legacy MCP stdio server has been deleted; the
+> native typed command registry is the sole agent interface — see
+> [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md). The agent
+> contract still carries `mcp_tool` taxonomy metadata (the tool-name a command
+> maps to) as durable contract metadata, not a live server.
 
-100+ typed tools. Discover them natively with `zclassic23 discover help` /
-`zclassic23 discover search <q>`; the legacy MCP equivalent (`zcl_tools_list`,
-smoke-test `zcl_self_test`, schema dump `zcl_openapi`) still works today but
-is removed in W3. Source of truth is the controller `k_routes[]` arrays.
+100+ typed commands. Discover them natively with `zclassic23 discover help` /
+`zclassic23 discover search <q>`. Source of truth is the `config/commands/*.def`
+bundles + `app/controllers/src/*_native_handlers.c`.
 
 ### Start here
-- `zclassic23 agentinterface` / `zcl_agent_interface` — preferred AI operator
-  interface contract. Typed native CLI JSON is primary, the legacy MCP route
-  remains during W2/W3 migration, REST is public read-only, and no external
-  wrapper logic is required. Its `capabilities[]` matrix and
+- `zclassic23 agentinterface` — preferred AI operator
+  interface contract. Typed native CLI JSON is primary, REST is public
+  read-only, and no external wrapper logic is required. Its `capabilities[]`
+  matrix and
   `machine_contract` block are the programmatic source for agent transport,
   schema, JSON, and compatibility expectations. Capability rows are emitted
   from `agent_contracts.def` via
@@ -360,8 +356,8 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
   `make dev-watch`, `make agent-loop`, `make fast-compile`, `make build-only`,
   `make dev-bin`, `make agent-index`, `make dev-loop-bench`, `make t-fast`,
-  `make fast-ci`, cache knobs, strict gates, native command registry calls
-  (legacy typed `mcpcall`, removed in W3), transactional dev activation,
+  `make fast-ci`, cache knobs, strict gates, native command registry calls,
+  transactional dev activation,
   dev-lane status commands, and `make ci-reproducible`. The
   `indexing` and `dev_loop_benchmark` objects report current artifact freshness
   without requiring clangd or running an activation.
@@ -402,7 +398,7 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
   locus; blocker data comes from the target node's native `dumpstate blocker`
   snapshot and fails closed (`blockers=null` + `blockers_error`) if that
   snapshot is unavailable or internally contradictory. Never read node-owned
-  globals from the detached MCP proxy.
+  globals from a detached process.
 - `zcl_operator_summary` — compact fail-closed composite. `gap` and
   `served_gap` are validated-header target minus served H*; `index_gap` is
   separately target minus the corroborating indexed/active frontier. Known
@@ -551,12 +547,13 @@ The route metadata must keep the ZNAM `{name}` path contract in sync with
 `znam_validate_name`, and `test_api` pins the contract in both `/api/v1` and
 OpenAPI.
 
-### MCP target gotcha
-`mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
-For LIVE, use `mcp__zcl23-live__*` / curl port 18232 (`~/.zclassic-c23`).
+### Node target gotcha
+`build/bin/zclassic23-dev <command>` hits the DEV node (`~/.zclassic-c23-dev`,
+RPC port 18252). For LIVE, use `build/bin/zclassic23 <command>` /
+curl port 18232 (`~/.zclassic-c23`).
 Confirm the target before acting.
 
-### Add state introspection (no new MCP route needed)
+### Add state introspection (no new command needed)
 1. In the subsystem header:
    `bool <name>_dump_state_json(struct json_value *out, const char *key);`
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
@@ -609,14 +606,11 @@ Confirm the target before acting.
 | `make remote-node-plan ZCL_REMOTE_HOST=<host>` | Read-only `zcl.remote_node_update.v1` source/service plan using `git ls-remote`; no fetch, merge, build, install, or restart authority. Legacy `remote-node-update*` targets refuse. |
 | `make lane-recover LANE=dev` | Read-only bounded recovery plan as `zcl.lane_recovery_plan.v1`. Public `--apply` / `ZCL_LANE_RECOVERY_APPLY=1` refuses before unit, datadir, snapshot-copy, header-import, drop-in, daemon-reload, or restart mutation; canonical/live/main is also refused. |
 | `build/bin/test_zcl` | Run all tests directly. |
-| `build/bin/zclassic23 status` / `zclassic23 dumpstate <subsystem>` | Native-first status/state calls against the release binary — no build, no MCP. |
-| `zclassic23 discover help` / `discover search <q>` | Native-first tool discovery — the `zcl_tools_list` replacement. |
-| `make agent-mcp-call TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): fresh source-tree typed MCP smoke call from a terminal agent; refreshes `build/bin/zclassic23-dev` first, for example `make agent-mcp-call TOOL=zcl_status` or `make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'`. |
-| `make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): no-build typed MCP call through the existing `build/bin/zclassic23-dev`; use for routine read-only status/schema checks when the binary is already current enough. |
-| `make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): no-build typed MCP call through the installed `~/.local/bin/zclassic23-dev` against the `zcl23-dev` linger lane (`~/.zclassic-c23-dev`, RPC `18252`). |
-| `build/bin/zclassic23 mcpcall <tool> [json]` | Legacy (removed in W3): direct release-binary typed MCP call after `make zclassic23` or deploy. |
+| `build/bin/zclassic23 status` / `zclassic23 dumpstate <subsystem>` | Native status/state calls against the release binary — no build required. |
+| `zclassic23 discover help` / `discover search <q>` | Native tool discovery over the command registry. |
+| `build/bin/zclassic23-dev <command>` | No-build native read against the installed `zcl23-dev` linger lane (`~/.zclassic-c23-dev`, RPC `18252`); pass `-datadir=... -rpcport=...` for a custom target. |
 | `build/bin/zcl-rpc <method>` | Legacy/debug RPC helper. Do not build new agent workflows around it; prefer `zclassic23` native commands. |
-| `build/bin/zclassic-cli -rpcport=18232 <method>` | Explicit zclassic23 RPC without MCP. Avoid bare `zclassic-cli` for stability diagnosis because local defaults may target another lane. |
+| `build/bin/zclassic-cli -rpcport=18232 <method>` | Explicit zclassic23 RPC. Avoid bare `zclassic-cli` for stability diagnosis because local defaults may target another lane. |
 
 ### Boot stages (`lib/util/include/util/boot_phase.h`)
 12 ordered stages; out-of-order advance aborts:

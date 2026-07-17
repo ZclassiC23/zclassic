@@ -17,8 +17,8 @@
  *      obviously be catastrophic if they appeared in any log output.
  *      These strings are never used as real keys, so any code path
  *      that echoes them has a genuine hygiene bug.
- *   2. Run the known-clean surfaces (MCP tools/list, error envelopes,
- *      event log after innocuous activity) and assert that none of
+ *   2. Run the known-clean surfaces (native command registry menu/describe
+ *      JSON, event log after innocuous activity) and assert that none of
  *      the corpus strings appear.
  *   3. Run the check_no_secret_printf.sh script via system(3) and
  *      require exit code 0.
@@ -28,7 +28,6 @@
  */
 
 #include "test/test_helpers.h"
-#include "mcp/router.h"
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
 
@@ -147,31 +146,9 @@ static int test_positive_control(void)
     return failures;
 }
 
-static int test_mcp_tools_list_clean(void)
-{
-    int failures = 0;
-    TEST("secrets_hygiene: mcp_router_tools_list_json has no corpus leaks") {
-        /* The tools/list surface is public and the most widely inspected
-         * JSON in the MCP surface. A leak here would be the loudest
-         * possible bug. */
-        char *buf = zcl_malloc(256 * 1024, "test_tools_list_buf");
-        ASSERT(buf != NULL);
-        size_t n = mcp_router_tools_list_json(buf, 256 * 1024);
-        ASSERT(n > 0);
-        int hits = scan_for_corpus(buf, n, "tools_list");
-        ASSERT_EQ(hits, 0);
-        free(buf);
-        PASS();
-    } _test_next:;
-    return failures;
-}
-
-/* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2): the
- * native command registry's menu/describe JSON is the successor to
- * mcp_router_tools_list_json() as "the most widely inspected JSON
- * surface" — added alongside test_mcp_tools_list_clean() above, not
- * instead of it (mcp_router_tools_list_json still runs in the live -mcp
- * binary until W3 deletes tools/mcp/ (entire tree)). */
+/* The native command registry's menu/describe JSON is the most widely
+ * inspected JSON surface the agent sees — a corpus leak here would be the
+ * loudest possible bug. */
 static int test_native_registry_clean(void)
 {
     int failures = 0;
@@ -210,28 +187,6 @@ static int test_native_registry_clean(void)
 
         ASSERT_EQ(hits, 0);
         free(buf);
-        PASS();
-    } _test_next:;
-    return failures;
-}
-
-static int test_mcp_error_envelopes_clean(void)
-{
-    int failures = 0;
-    TEST("secrets_hygiene: MCP error envelopes don't echo secrets") {
-        /* A rookie mistake is to copy an arbitrary `reason` into the
-         * error envelope. If a handler ever threaded a private key
-         * through the reason field, the scan would catch it. Here we
-         * just assert that a normal envelope with a benign reason
-         * doesn't spuriously contain any corpus string. */
-        char buf[1024];
-        size_t n = mcp_router_error_envelope(
-            buf, sizeof(buf),
-            MCP_ERR_MISSING_PARAM, "zcl_test",
-            "height", "required parameter missing");
-        ASSERT(n > 0);
-        int hits = scan_for_corpus(buf, n, "error_envelope");
-        ASSERT_EQ(hits, 0);
         PASS();
     } _test_next:;
     return failures;
@@ -334,9 +289,7 @@ int test_secrets_hygiene(void)
 
     failures += test_corpus_setup();
     failures += test_positive_control();
-    failures += test_mcp_tools_list_clean();
     failures += test_native_registry_clean();
-    failures += test_mcp_error_envelopes_clean();
     failures += test_check_no_secret_printf_script();
     failures += test_recover_tool_path_documented();
 

@@ -86,16 +86,14 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
-    X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
-    X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
+    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \
     X(principal_authz) X(auth_login) X(command_authority) \
     X(command_handler_snapshot) \
     X(metric_alerts) \
-    X(mcp_inproc_equiv) \
-    X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
+    X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(peer_identity_hostkey) \
     X(secrets_hygiene) X(block_index_integrity) \
     X(block_map_grow_phashblock) \
@@ -143,7 +141,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
     X(coin_selection) X(disk_monitor) X(network_monitor) X(network_crawler) X(db_maintenance) \
-    X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
+    X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(sprout_phgr13_kat) \
@@ -175,7 +173,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(coins_view_atomicity) X(coins_anchor_reconcile_all) \
     X(coins_best_derivation) \
     X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
-    X(mcp_fuzz) X(rpc_auth_hardening) \
+    X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
     X(net_msg_dos) \
     X(net_framing_dos) \
@@ -337,6 +335,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_forward_progress_gate) X(parity_slice) \
     X(parity_lockin_anchor_membership) X(parity_lockin_contextual_header) \
     X(coins_kv_reset_for_reseed) X(coins_kv_sovereign_gate) X(reindex_epilogue) \
+    X(ckpt_recheck) \
     X(sovereignty_guard) \
     X(snapshot_boot_seed) \
     X(replay_canary_verdict) \

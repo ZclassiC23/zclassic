@@ -93,6 +93,12 @@ struct chain_tip_watchdog_stats {
     int      max_restarts;               /* CHAIN_TIP_WD_MAX_RESTARTS */
     bool     operator_needed;            /* true once the cap is hit (paging) */
     uint64_t fires_operator_needed;      /* times we paged instead of restarting */
+    /* Times the cause-probe found a tip-extension SELECTION wedge (a valid
+     * direct successor on the best-header chain that find_most_work_chain
+     * skips on a persisted BLOCK_FAILED_VALID mask) and drove an
+     * evidence-based revalidate of that specific height INSTEAD of a blind
+     * restart. A restart cannot clear an on-disk failure bit. */
+    uint64_t fires_selection_remedy;
 };
 void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out);
 
@@ -166,6 +172,29 @@ void chain_tip_watchdog_test_set_thresholds(int64_t mirror_secs,
  * monotonic timestamp `now_us`, running the real escalation ladder.
  * do_shutdown=false suppresses the shutdown syscall. */
 void chain_tip_watchdog_test_tick(int64_t h, int64_t now_us, bool do_shutdown);
+
+/* Inject the main_state the cause-probe reads (tip / best-header / block map)
+ * WITHOUT the supervisor registration side effect of chain_tip_watchdog_register
+ * (idempotent register() would otherwise refuse to re-point g_ms once any prior
+ * test group registered the watchdog). Pass NULL to clear. */
+void chain_tip_watchdog_test_set_main_state(struct main_state *ms);
+
+/* Return the deterministic-stall cause-probe verdict for the injected
+ * main_state ("tip_selection_wedge", another named cause, or NULL). Lets a
+ * hermetic test assert the tip-extension SELECTION-wedge classification
+ * (successor present + direct child of tip + FAILED_VALID + not selected)
+ * against synthetic block-index shapes. */
+const char *chain_tip_watchdog_test_stall_cause(void);
+
+/* Suppress the real process_block_revalidate call in the selection-wedge
+ * remedy path (which would reach the quorum oracle / activation controller),
+ * so a test observes only that the remedy was DRIVEN (fires_selection_remedy)
+ * at the right target height. */
+void chain_tip_watchdog_test_set_suppress_selection_remedy(bool suppress);
+
+/* The target height (active tip + 1) of the last selection-wedge remedy the
+ * watchdog drove; -1 if none this process. */
+int64_t chain_tip_watchdog_test_selection_remedy_target(void);
 #endif
 
 #endif

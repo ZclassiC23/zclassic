@@ -242,9 +242,9 @@ void metrics_prometheus_set_header_gap(int64_t gap_blocks);
  * escape-dispatch rate-limit idea in util/blocker.h). Firing raises
  * EV_CONDITION_DETECTED (payload "name=metric_alert.<rule> severity=..
  * gauge=.. value=.. threshold=.."), the same generic event type the
- * condition-engine healers use, so it flows through the existing
- * mcp_notify push channel once "condition.detected" is allow-listed
- * there — no new event type, no new thread.
+ * condition-engine healers use, so it is treated as operator-class once
+ * "condition.detected" is in the operator-event allow-list
+ * (lib/metrics/src/operator_events.c) — no new event type, no new thread.
  *
  * Evaluated once per metrics tick from metrics_prometheus_set_peer_kinds()
  * (the last of the four gauge setters lib/metrics's 1-second thread

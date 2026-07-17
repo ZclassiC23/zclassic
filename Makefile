@@ -139,8 +139,6 @@ ZCL_AGENT_BIN ?= $(ZCLASSIC23_DEV_BIN)
 ZCL_AGENT_DEV_BIN ?= $(HOME)/.local/bin/zclassic23-dev
 ZCL_AGENT_DEV_DATADIR ?= $(HOME)/.zclassic-c23-dev
 ZCL_AGENT_DEV_RPCPORT ?= 18252
-ZCL_AGENT_MCP_BUILD ?= 1
-ZCL_AGENT_MCP_ARGS ?=
 ZCL_NODECTL_BIN = $(BIN_DIR)/zcl-nodectl
 WAL_CHECKPOINT_BIN = $(BIN_DIR)/wal_checkpoint
 SOAK_RUNNER_BIN = $(BIN_DIR)/soak_runner
@@ -224,17 +222,15 @@ APPLICATION_SRCS = $(call zcl_filter_ephemeral_sources,\
 
 # Adapters layer (port implementations).
 # Outbound adapters implement the port interfaces. Inbound surfaces currently
-# live in app/controllers, tools/mcp, and tools/cli until a real adapter shape
+# live in app/controllers and tools/command until a real adapter shape
 # is introduced.
 ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include
 ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard adapters/outbound/persistence/src/*.c))
 
-# MCP router + future controllers (schema-driven tool dispatch)
-MCP_INCLUDES = -Itools
-MCP_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
-	$(wildcard tools/mcp/views/*.c))
+# tools/ header root (the "command/" prefix for the native command adapter,
+# plus any other tools headers).
+TOOLS_INCLUDES = -Itools
 
 # Native development control plane.  These C adapters are the AI-facing
 # save -> classify -> prove -> publish loop; tools/dev/*.sh remain temporary
@@ -261,12 +257,12 @@ APP_SDK_INCLUDES = -Isdk/include
 
 # Native command adapter (registry-backed CLI). Release-visible: core/ops/
 # discover leaves ship in the release binary, so this is part of ALL_SRCS
-# rather than the dev-only lane. Header path -Itools is provided by MCP_INCLUDES.
+# rather than the dev-only lane. Header path -Itools is provided by TOOLS_INCLUDES.
 COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/command/*.c))
 
-NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
+NODE_ENTRY_SRCS = src/main.c
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 # The DEV binary keeps everything: the release source set plus the dev-only
@@ -297,7 +293,7 @@ BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUI
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
@@ -499,9 +495,9 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-plan remote-node-plan-json remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         install-replay-canary replay-canary-linger-status \
-        coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
+        coverage coverage-clean ci audit release \
         bench bench-crypto-verify bench-regress \
-	lint check-build-epoch-integrity check-checkout-lock check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
+	lint check-build-epoch-integrity check-checkout-lock check-malloc check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -510,7 +506,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
-        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-markdown-links \
+        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -802,7 +798,7 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-changed ff watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-changed ff watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -946,9 +942,10 @@ $(DEV_LINK_RSP): $(DEV_OBJS)
 $(DEV_CANDIDATE_BIN): $(DEV_LINK_RSP)
 
 # ── Tier-1 in-process hot-swap (DEV-ONLY) ──────────────────────────────
-# Compile named app-layer MCP controller TUs into a "generation" .so and
-# dlopen it into a running dev node via the zcl_agent_hotswap MCP tool — the
-# edited handler goes live with no restart. Uses ONLY the stock toolchain:
+# Compile named app-layer native-handler TUs into a "generation" .so and
+# dlopen it into a running dev node via the `dev change apply` native command
+# (dev_hotswap_native RPC) — the edited handler goes live with no restart.
+# Uses ONLY the stock toolchain:
 # a plain `$(CC) -shared` link and libc dlopen (-ldl, already in LIBS). The
 # RELEASE binary never links any of this (every dlopen sits behind
 # ZCL_DEV_BUILD). See docs/work/HOTSWAP.md.
@@ -956,7 +953,7 @@ HOTSWAP_OBJ_DIR = $(BUILD_DIR)/hotswap-obj
 HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
 
 .PHONY: hotswap-so hotswap
-# make hotswap-so FILES="tools/mcp/controllers/app_controller.c ..."
+# make hotswap-so FILES="app/controllers/src/status_native_handlers.c ..."
 # Compile one manifest-admitted stateless provider into a read-only,
 # input-addressed candidate. The digest covers the compiler identity, exact
 # C23/dev flags, source identity, and fully preprocessed source (therefore every
@@ -965,7 +962,7 @@ HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
 # reload_required until they share one generated aggregate manifest/entrypoint.
 hotswap-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	@if [ -z "$(FILES)" ]; then \
-	  echo "usage: make hotswap-so FILES=\"tools/mcp/controllers/app_controller.c\"" >&2; \
+	  echo "usage: make hotswap-so FILES=\"app/controllers/src/status_native_handlers.c\"" >&2; \
 	  exit 2; fi
 	@set -eu; \
 	count=0; selected=""; probe=""; \
@@ -1092,13 +1089,13 @@ syntax-check: $(VIEW_GEN_HEADERS)
 
 # The highest-signal lint gates for the inner loop. Run full `make lint` at
 # sub-wave boundaries / before commit.
-lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validation check-model-ar-lifecycle check-one-write-path check-vendor-provenance
+lint-fast: check-raw-sqlite check-malloc check-model-validation check-model-ar-lifecycle check-one-write-path check-vendor-provenance
 	@echo "lint-fast: OK"
 
 # Cache-aware agent/operator loop:
 #   make fast-ci
 #   ZCL_FAST_CC='ccache cc' make fast-ci
-#   ZCL_FAST_TESTS=make_lint_gates,mcp_controllers make fast-ci
+#   ZCL_FAST_TESTS=make_lint_gates,api make fast-ci
 #   ZCL_FAST_CACHE=0 make fast-ci      # force rerun even on identical input
 #   ZCL_FAST_CACHE_RESET=1 make fast-ci
 #   ZCL_FAST_LIVE=0 make fast-ci   # skip live linger-service probe
@@ -1811,7 +1808,7 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 
 # Read-only SQL query CLI over any sqlite db (progress.kv, node.db, fixture
 # datadirs). Python is banned and the host has no sqlite3 CLI; this is the
-# shell-side diagnostic primitive (zcl_sql covers node.db via MCP only).
+# shell-side diagnostic primitive (the native `sql` command covers node.db).
 SQLQ_BIN = $(BIN_DIR)/sqlq
 .PHONY: sqlq
 sqlq: $(SQLQ_BIN)
@@ -2173,15 +2170,12 @@ soak-evidence-selftest:
 	 fi; \
 	 echo "soak-evidence-selftest: PASS"'
 
-# Always-fresh end-to-end MCP test.
+# Always-fresh end-to-end test.
 #
-# `test_mcp_e2e` forks the real `build/bin/zclassic23 -mcp` binary and asserts
-# wire-level envelope shapes.  If the binary is older than the MCP
-# source files the in-suite test SKIPs with a clear message rather
-# than failing with a confusing tool-count mismatch — but that means a
-# bare `build/bin/test_zcl` after editing MCP code can silently skip the e2e
-# coverage.  Use `make test-e2e` to force a rebuild of zclassic23 (and
-# test_zcl) before running, so the e2e suite always runs against the
+# Some in-suite tests fork the real `build/bin/zclassic23` binary and assert
+# runtime behavior.  If the binary is older than its source files those tests
+# can SKIP or false-green, so `make test-e2e` forces a rebuild of zclassic23
+# (and test_zcl) before running, ensuring the suite always runs against the
 # current source.
 test-e2e: zclassic23 test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)
@@ -2555,7 +2549,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-Wno-deprecated-declarations \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
-	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(APP_SDK_INCLUDES) $(DEVLOOP_INCLUDES) \
+	$(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(APP_SDK_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
 	-DZCL_FUZZ_QUIET_LOG_MACROS -Ivendor/include \
 	-fsanitize=fuzzer,address,undefined \
@@ -3031,43 +3025,6 @@ deploy-dev-fast agent-deploy-fast:
 	@echo "agent-deploy-fast: REFUSING — runtime publication is contained pending transactional epoch/proof/rollback receipts" >&2
 	@exit 3
 
-agent-mcp-call:
-	@if [ -z "$(TOOL)" ]; then \
-	  echo "usage: make agent-mcp-call TOOL=zcl_status [ARGS='{}']"; \
-	  exit 2; \
-	fi
-	@bin="$(ZCL_AGENT_BIN)"; \
-	case "$${ZCL_AGENT_MCP_BUILD:-1}" in \
-	  1|true|yes|fresh) mcp_build=1 ;; \
-	  0|false|no|skip|hot) mcp_build=0 ;; \
-	  *) echo "agent-mcp-call: unsupported ZCL_AGENT_MCP_BUILD=$${ZCL_AGENT_MCP_BUILD} (use 1 or 0)"; exit 2 ;; \
-	esac; \
-	if [ "$$mcp_build" = "1" ] && [ "$$bin" = "$(ZCLASSIC23_DEV_BIN)" ]; then \
-	  $(MAKE) dev-bin >/dev/null; \
-	fi; \
-	if [ ! -x "$$bin" ]; then \
-	  if [ "$$mcp_build" = "0" ]; then \
-	    echo "agent-mcp-call: $$bin is not executable (set ZCL_AGENT_MCP_BUILD=1 or run make dev-bin / make agent-deploy-fast)"; \
-	    exit 2; \
-	  elif [ "$$bin" = "$(ZCLASSIC23_BIN)" ]; then \
-	    $(MAKE) zclassic23 >/dev/null; \
-	  else \
-	    echo "agent-mcp-call: $$bin is not executable"; \
-	    exit 2; \
-	  fi; \
-	fi; \
-	"$$bin" $(ZCL_AGENT_MCP_ARGS) mcpcall "$(TOOL)" '$(or $(ARGS),{})'
-
-agent-mcp-call-hot:
-	@$(MAKE) --no-print-directory agent-mcp-call ZCL_AGENT_MCP_BUILD=0 TOOL="$(TOOL)" ARGS='$(or $(ARGS),{})'
-
-agent-mcp-call-dev:
-	@$(MAKE) --no-print-directory agent-mcp-call \
-	  ZCL_AGENT_BIN="$(ZCL_AGENT_DEV_BIN)" \
-	  ZCL_AGENT_MCP_BUILD=0 \
-	  ZCL_AGENT_MCP_ARGS="-datadir=$(ZCL_AGENT_DEV_DATADIR) -rpcport=$(ZCL_AGENT_DEV_RPCPORT)" \
-	  TOOL="$(TOOL)" ARGS='$(or $(ARGS),{})'
-
 agent-dev-status:
 	@tools/dev/agent-dev-status.sh $(ARGS)
 
@@ -3518,34 +3475,6 @@ coverage-clean:
 	fi
 	@echo "Coverage artifacts removed."
 
-# ── docs-mcp ───────────────────────────────────────────────────
-# Regenerate MCP_REFERENCE.md by running the MCP server in stdio
-# mode and piping the tools/list JSON response through a small
-# Python formatter.  The formatter uses stdlib only — no pip install
-# required.  Use `make docs-mcp-check` in CI to fail when the
-# checked-in reference drifts from what the live router emits.
-docs-mcp: zclassic23
-	@echo "== Generating MCP_REFERENCE.md =="
-	@echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-		| $(ZCLASSIC23_BIN) -mcp 2>/dev/null \
-		| python3 tools/gen_mcp_reference.py > MCP_REFERENCE.md
-	@wc -l MCP_REFERENCE.md
-
-docs-mcp-check: zclassic23
-	@echo "== Verifying MCP_REFERENCE.md is up to date =="
-	@tmp=$$(mktemp); \
-	 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-		| $(ZCLASSIC23_BIN) -mcp 2>/dev/null \
-		| python3 tools/gen_mcp_reference.py > "$$tmp"; \
-	 if ! diff -q MCP_REFERENCE.md "$$tmp" >/dev/null; then \
-		echo "MCP_REFERENCE.md is STALE. Run: make docs-mcp"; \
-		diff -u MCP_REFERENCE.md "$$tmp" | head -40; \
-		rm -f "$$tmp"; \
-		exit 1; \
-	 fi; \
-	 rm -f "$$tmp"; \
-	 echo "MCP_REFERENCE.md is up to date."
-
 # ── ci ─────────────────────────────────────────────────────────
 # Single command for full verification: build, test, fuzz (short),
 # and coverage.  Fail-fast — stops at the first broken stage so
@@ -3585,18 +3514,6 @@ check-malloc:
 	    exit 1; \
 	fi
 	@echo "  OK: no raw allocations"
-
-check-silent-errors:
-	@echo "══ LINT: bare return -1 in MCP handlers ══"
-	@HITS=$$(grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
-	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok' \
-	    | grep -vE '// raw-return-ok:[A-Za-z][A-Za-z0-9_-]+'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: bare return -1 in MCP handlers (use LOG_ERR or mark // raw-return-ok:<tag>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all MCP error returns logged"
 
 check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
@@ -4062,6 +3979,16 @@ check-sandbox-wired:
 	@echo "→ Gate: sandbox_wired"
 	@./tools/lint/check_sandbox_wired.sh
 
+# Gate: peer-floor single source of truth (HARD). The healthy-outbound floor
+# is defined once in net/net.h as ZCL_PEER_FLOOR_HEALTHY; the connman dialer,
+# the net.outbound_floor supervisor child, and the peer_floor_violated
+# condition must all read it and never reintroduce a retired local literal
+# macro. Fails loud on an empty scan (repo law 10). See
+# check_peer_floor_single_source.sh.
+check-peer-floor-single-source:
+	@echo "→ Gate: peer_floor_single_source"
+	@./tools/lint/check_peer_floor_single_source.sh
+
 # os-substrate Rung 0: no system()/popen()/execlp() in the resident node
 # binary's own code — every shell-out migrated onto lib/util spawn +
 # file_tree_ops. HARD (FAIL); tools/ and lib/test/ are out of scope.
@@ -4266,6 +4193,23 @@ check-doc-counts:
 	@echo "══ LINT: doc counts vs code ══"
 	@./tools/scripts/check_doc_counts.sh
 
+# Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
+# classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
+# tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
+# HEIGHT PIN outside docs/HANDOFF.md (RATCHET; shrink-only baseline at
+# tools/lint/stale_pinned_facts_baseline.txt). Per-line escape hatch: a trailing
+# `<!-- stale-ok: <reason> -->` marker. Owner directive 2026-07-17: numeric
+# facts with a live source are DERIVED or GATED, never hand-pinned.
+check-no-stale-pinned-facts:
+	@echo "══ LINT: no stale pinned facts (binary size / live-state height) ══"
+	@./tools/lint/check_no_stale_pinned_facts.sh
+
+# Dev-UX: the DERIVED binary size (counterpart to the forbid gate above). Quote
+# this instead of hand-pinning a size in prose; a reviewer re-runs it to confirm.
+.PHONY: binary-size
+binary-size:
+	@./tools/scripts/binary_size.sh
+
 # Gate E2 — new service functions return struct zcl_result, not bare
 # bool/int (RATCHET at file granularity; baseline at
 # tools/scripts/one_result_type_baseline.txt may only shrink).
@@ -4407,7 +4351,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
+lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-peer-floor-single-source check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

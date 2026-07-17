@@ -73,6 +73,18 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  struct byte_stream *s);
 bool process_mempool(struct msg_processor *mp, struct p2p_node *node);
 
+/* Mempool sync-on-connect: after a successful handshake, pull the peer's
+ * mempool inventory ONCE by sending an outbound "mempool" message (no
+ * payload) — the peer answers via its own process_mempool() above. Gated
+ * on node->relay_txes (no point asking a peer that told us it won't relay)
+ * and on not being deep in IBD (bulk historical sync has no use for
+ * mempool inventory). node->mempool_requested makes this idempotent per
+ * peer regardless of how many times the caller invokes it (e.g. a
+ * misbehaving peer resending verack). Returns true iff the request was
+ * actually queued this call. */
+bool msg_tx_maybe_request_mempool(struct msg_processor *mp,
+                                  struct p2p_node *node);
+
 /* classification outcome for an incoming `tx` message. The
  * handler needs to differentiate malicious rejections (apply peer
  * ban-score) from non-malicious rejections (orphan, duplicate,

@@ -72,7 +72,7 @@ either live path by construction, see §2):
   commit the live cutover binary is built from (§2 item 3) before this
   runbook's steps are executable.
 - **No live-datadir mutation has occurred.** `$HOME/.zclassic-c23` remains
-  wedged at `H*=3,176,325` exactly as `docs/HANDOFF.md` describes. Nothing in
+  wedged at `H*=3,176,325` exactly as `docs/HANDOFF.md` describes. Nothing in <!-- stale-ok: authoring-time wedge height; re-derive live H* before running -->
   this session touched it.
 
 ---

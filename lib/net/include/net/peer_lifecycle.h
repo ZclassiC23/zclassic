@@ -16,6 +16,7 @@ enum peer_lifecycle_source {
     PEER_LIFECYCLE_SOURCE_ADDRMAN,
     PEER_LIFECYCLE_SOURCE_ZCL23_DB,
     PEER_LIFECYCLE_SOURCE_MANUAL,
+    PEER_LIFECYCLE_SOURCE_ANCHOR,   /* dialed from persisted anchors.dat (boot-first) */
 };
 
 struct peer_lifecycle_summary {

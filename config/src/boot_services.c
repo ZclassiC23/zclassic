@@ -101,7 +101,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
-#include "mcp/dev_rpc_bridge.h"
+#include "command/native_dev_hotswap.h"
 #include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
@@ -338,9 +338,9 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
             return false;
     }
     return boot_utxo_parity_register(svc) && boot_soak_attestation_register(svc) &&
-           boot_canary_watch_register(svc) && /* parity + soak log + canary pager */
-           boot_utxo_mirror_sync_register(svc) && boot_mem_pressure_register(svc) &&
-           boot_supervisor_backstop_register(svc); /* Pillar 7 sweep-heartbeat watcher */
+           boot_canary_watch_register(svc) && boot_mem_pressure_register(svc) &&
+           boot_utxo_mirror_sync_register(svc) && boot_supervisor_backstop_register(svc) &&
+           boot_segment_sealer_register(svc); /* parity/soak/canary/mem/mirror/backstop/seal */
 }
 
 bool boot_running(const struct boot_svc_ctx *svc)
@@ -1241,7 +1241,7 @@ bool app_init_services(struct app_context *ctx,
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
 
-    if (!register_dev_mcp_rpc_commands(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
+    if (!register_dev_native_hotswap_rpc(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
 
     /* Pre-compute fast sync snapshot offer in background */
     {

@@ -10,8 +10,7 @@
 # file-size-ceiling split (tools/scripts/check_file_size_ceiling.sh):
 #
 #   ENFORCED (fails the build) — app/controllers/src/*.c,
-#   app/services/src/*.c, tools/mcp/controllers/*.c (the legacy MCP bridge,
-#   until W3 deletes it), and config/src/*.c (the composition root — same
+#   app/services/src/*.c, and config/src/*.c (the composition root — same
 #   tier config/src/*.c sits in for E1). RATCHET-mode: grandfathered
 #   offenders (e.g. config/src/boot.c's app_init, a pre-existing
 #   single-function boot sequence) are recorded in
@@ -51,7 +50,7 @@ LIMIT=500
 # ZCL_LONGFN_LIB_ROOTS so the lint-gate self-test can point either tier at
 # an empty dir and prove the non-empty-scan-set preflight trips (exit 2)
 # instead of reporting "clean" off a hollow scan.
-ENFORCED_ROOTS="${ZCL_LONGFN_ENFORCED_ROOTS:-app/controllers/src app/services/src tools/mcp/controllers config/src}"
+ENFORCED_ROOTS="${ZCL_LONGFN_ENFORCED_ROOTS:-app/controllers/src app/services/src config/src}"
 LIB_ROOTS="${ZCL_LONGFN_LIB_ROOTS:-lib}"
 
 # Print every over-LIMIT, non-tagged function in $1 as "<name>\t<start>\t<len>".
@@ -127,7 +126,7 @@ check_functions_tier() {
 
 overall_fail=0
 
-# ── ENFORCED tier: controllers/services/mcp-bridge + config/src/ ─────────
+# ── ENFORCED tier: controllers/services + config/src/ ────────────────────
 
 ENFORCED_BASELINE="${ZCL_LONGFN_BASELINE:-tools/scripts/check_long_functions_baseline.txt}"
 [ -f "$ENFORCED_BASELINE" ] || touch "$ENFORCED_BASELINE"
@@ -141,7 +140,7 @@ enforced_baseline_count="${#enforced_baseline[@]}"
 mapfile -t enforced_files < <(find $ENFORCED_ROOTS -maxdepth 1 -type f -name '*.c' \
     "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 gate_require_scanned "${#enforced_files[@]}" 1 check_long_functions \
-    "roots: $ENFORCED_ROOTS — was app/controllers/src, app/services/src, tools/mcp/controllers, or config/src renamed/moved?"
+    "roots: $ENFORCED_ROOTS — was app/controllers/src, app/services/src, or config/src renamed/moved?"
 
 check_functions_tier enforced_files enforced_baseline \
     enforced_new enforced_grown enforced_shrink "$LIMIT"
@@ -149,7 +148,7 @@ check_functions_tier enforced_files enforced_baseline \
 if [ "${#enforced_new[@]}" -gt 0 ] || [ "${#enforced_grown[@]}" -gt 0 ]; then
     overall_fail=1
     echo ""
-    echo "check_long_functions: FAIL — long-function violations (gate #12, ratchet, controllers/services/mcp/config-src)"
+    echo "check_long_functions: FAIL — long-function violations (gate #12, ratchet, controllers/services/config-src)"
     echo ""
     for v in "${enforced_new[@]}"; do
         echo "  NEW long function (not in baseline): $v"
@@ -169,7 +168,7 @@ if [ "${#enforced_new[@]}" -gt 0 ] || [ "${#enforced_grown[@]}" -gt 0 ]; then
     echo "     current length (a reviewable line; shrink-only over time —"
     echo "     raising an existing entry needs an ADR, not this gate)."
 else
-    echo "check_long_functions: clean — ${enforced_baseline_count} baselined, no new/grown long functions (cap $LIMIT, controllers/services/mcp/config-src)"
+    echo "check_long_functions: clean — ${enforced_baseline_count} baselined, no new/grown long functions (cap $LIMIT, controllers/services/config-src)"
 fi
 if [ "${#enforced_shrink[@]}" -gt 0 ]; then
     echo ""

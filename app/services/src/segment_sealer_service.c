@@ -112,13 +112,71 @@ static bool seal_body_read(void *user, uint32_t height,
     return copy != NULL;
 }
 
-/* ── One seal pass ──────────────────────────────────────────────────────── */
+/* ── Pure single-seal primitive (no service state) ──────────────────────────
+ * Seal the single oldest unsealed, fully-below-frontier segment in `dir`. This
+ * re-opens the coverage table on every call, so looping it walks the backlog
+ * forward one segment at a time: after sealing [f, f+SEG) the next call sees
+ * that segment covered and returns the next one. The frontier gate lives in
+ * segment_sealer_next_range, which never returns a range whose top exceeds
+ * `frontier_incl`, so this NEVER writes a segment above the finalized frontier.
+ */
+int segment_sealer_seal_next(const char *dir, uint32_t frontier_incl,
+                             chain_segment_body_fn body, void *user,
+                             uint32_t *out_first, char *err, size_t errlen)
+{
+    if (err && errlen) err[0] = 0;
+    if (!dir || !dir[0] || !body)
+        LOG_ERR("segment_sealer", "seal_next: null dir/body");
 
-int segment_sealer_run_once(struct segment_sealer_service *svc, bool force)
+    struct chain_segment_store *store = NULL;
+    char oerr[256] = {0};
+    enum cseg_status ost = chain_segment_store_open(dir, &store, oerr, sizeof(oerr));
+    if (ost != CSEG_OK) {
+        LOG_WARN("segment_sealer", "[segment_sealer] store open %s: %s (%s)",
+                 dir, cseg_status_str(ost), oerr);
+        if (err && errlen) snprintf(err, errlen, "store open: %s", oerr);
+        return -1; // raw-return-ok:logged-warn-above; caller records last_status
+    }
+
+    uint32_t first = 0, count = 0;
+    bool have = segment_sealer_next_range(frontier_incl, store, &first, &count);
+    chain_segment_store_close(store);
+    if (!have)
+        return 0; /* nothing eligible at/below the frontier */
+
+    struct zcl_result mk = zcl_mkdir_p(dir, 0755);
+    if (!mk.ok) {
+        LOG_WARN("segment_sealer", "[segment_sealer] mkdir %s: %s",
+                 dir, mk.message);
+        if (err && errlen) snprintf(err, errlen, "mkdir: %s", mk.message);
+        return -1; // raw-return-ok:logged-warn-above; caller records last_status
+    }
+
+    enum cseg_status st =
+        chain_segment_seal_range(dir, body, user, first, count, err, errlen);
+    if (st != CSEG_OK) {
+        LOG_WARN("segment_sealer",
+                 "[segment_sealer] seal [%u,%u) failed: %s (%s)",
+                 first, first + count, cseg_status_str(st), err ? err : "");
+        return -1; // raw-return-ok:logged-warn-above; caller records last_status
+    }
+    if (out_first) *out_first = first;
+    return 1;
+}
+
+/* ── Bounded backfill catch-up (one tick's work) ────────────────────────────
+ * Seal up to `max_segments` oldest-unsealed segments below the finalized
+ * frontier this pass. One segment per iteration via segment_sealer_seal_next,
+ * bounded by max_segments so a single tick is O(max_segments) writes, never
+ * O(chain). Updates the service's atomics + emits a decision event per seal. */
+int segment_sealer_run_catchup(struct segment_sealer_service *svc,
+                               uint32_t max_segments, bool force)
 {
     if (!svc || !svc->ms || !svc->datadir)
         return 0;
     if (!force && !svc->enabled)
+        return 0;
+    if (max_segments == 0)
         return 0;
 
     int chain_height = active_chain_height(&svc->ms->chain_active);
@@ -132,51 +190,40 @@ int segment_sealer_run_once(struct segment_sealer_service *svc, bool force)
     char dir[3200];
     snprintf(dir, sizeof(dir), "%s/segments", svc->datadir);
 
-    /* Load the current coverage so we skip already-sealed segments. */
-    struct chain_segment_store *store = NULL;
-    char err[256] = {0};
-    enum cseg_status ost =
-        chain_segment_store_open(dir, &store, err, sizeof(err));
-    if (ost != CSEG_OK) {
-        LOG_WARN("segment_sealer", "[segment_sealer] store open %s: %s (%s)",
-                 dir, cseg_status_str(ost), err);
-        atomic_store(&svc->last_status, (int)ost);
-        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
-    }
-
-    uint32_t first = 0, count = 0;
-    bool have = segment_sealer_next_range(frontier, store, &first, &count);
-    chain_segment_store_close(store);
-    if (!have)
-        return 0; /* nothing to seal right now */
-
-    struct zcl_result mk = zcl_mkdir_p(dir, 0755);
-    if (!mk.ok) {
-        LOG_WARN("segment_sealer", "[segment_sealer] mkdir %s: %s",
-                 dir, mk.message);
-        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
-    }
-
     struct seal_body_ctx bctx = { .ms = svc->ms, .datadir = svc->datadir };
-    err[0] = 0;
-    enum cseg_status st = chain_segment_seal_range(dir, seal_body_read, &bctx,
-                                                   first, count, err, sizeof(err));
-    atomic_store(&svc->last_status, (int)st);
-    if (st != CSEG_OK) {
-        atomic_fetch_add(&svc->seal_failures, 1);
-        LOG_WARN("segment_sealer",
-                 "[segment_sealer] seal [%u,%u) failed: %s (%s)",
-                 first, first + count, cseg_status_str(st), err);
-        return -1; // raw-return-ok:logged-warn-above-nonfatal-retry-next-tick
+    int sealed = 0;
+    for (uint32_t i = 0; i < max_segments; i++) {
+        uint32_t first = 0;
+        char err[256] = {0};
+        int r = segment_sealer_seal_next(dir, frontier, seal_body_read, &bctx,
+                                         &first, err, sizeof(err));
+        if (r < 0) {
+            atomic_store(&svc->last_status, (int)CSEG_ERR_IO);
+            atomic_fetch_add(&svc->seal_failures, 1);
+            /* Keep any progress already made; stop this tick and retry next. */
+            return sealed > 0 ? sealed
+                              : -1; // raw-return-ok:logged-in-seal_next-above
+        }
+        if (r == 0)
+            break; /* backlog drained for now */
+        atomic_store(&svc->last_status, (int)CSEG_OK);
+        atomic_fetch_add(&svc->segments_sealed, 1);
+        atomic_store(&svc->last_sealed_first, (int64_t)first);
+        event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                    "source=chain.segment_sealer decision=sealed "
+                    "first=%u count=%u frontier=%u",
+                    first, first + CHAIN_SEGMENT_BLOCKS_PER_SEG, frontier);
+        LOG_INFO("segment_sealer",
+                 "[segment_sealer] sealed segment [%u,%u) frontier=%u",
+                 first, first + CHAIN_SEGMENT_BLOCKS_PER_SEG, frontier);
+        sealed++;
     }
-    atomic_fetch_add(&svc->segments_sealed, 1);
-    atomic_store(&svc->last_sealed_first, (int64_t)first);
-    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
-                "source=chain.segment_sealer decision=sealed "
-                "first=%u count=%u frontier=%u", first, count, frontier);
-    LOG_INFO("segment_sealer", "[segment_sealer] sealed segment [%u,%u) frontier=%u",
-             first, first + count, frontier);
-    return 1;
+    return sealed;
+}
+
+int segment_sealer_run_once(struct segment_sealer_service *svc, bool force)
+{
+    return segment_sealer_run_catchup(svc, 1, force);
 }
 
 /* ── Supervision ────────────────────────────────────────────────────────── */
@@ -258,8 +305,13 @@ static void *segment_sealer_thread(void *arg)
 
     while (!atomic_load(&svc->stop_requested)) {
         if (svc->enabled) {
-            /* Seal at most one segment per wake — bounded IO, no reducer race. */
-            (void)segment_sealer_run_once(svc, false);
+            /* Boundary backfill catch-up: seal up to catchup_batch oldest
+             * segments per wake — bounded IO, no reducer race, but a node with
+             * an existing backlog steps forward several segments per tick
+             * instead of one. */
+            int batch = svc->catchup_batch > 0
+                ? svc->catchup_batch : SEGMENT_SEALER_DEFAULT_CATCHUP_BATCH;
+            (void)segment_sealer_run_catchup(svc, (uint32_t)batch, false);
         }
         seal_heartbeat(svc);
 
@@ -292,6 +344,7 @@ void segment_sealer_init(struct segment_sealer_service *svc,
 
     svc->finality_depth = SEGMENT_SEALER_DEFAULT_FINALITY_DEPTH;
     svc->tick_seconds = SEGMENT_SEALER_DEFAULT_TICK_SECONDS;
+    svc->catchup_batch = SEGMENT_SEALER_DEFAULT_CATCHUP_BATCH;
 
     const char *env = getenv("ZCL_SEGMENT_SEALER");
     svc->enabled = env && env[0] == '1' && env[1] == '\0';
@@ -337,8 +390,10 @@ struct zcl_result segment_sealer_start(struct segment_sealer_service *svc)
         svc->thread_started = false;
         return sup;
     }
-    printf("[segment_sealer] started — enabled=%d finality_depth=%d tick=%ds\n",
-           svc->enabled, svc->finality_depth, svc->tick_seconds);
+    printf("[segment_sealer] started — enabled=%d finality_depth=%d tick=%ds "
+           "catchup_batch=%d\n",
+           svc->enabled, svc->finality_depth, svc->tick_seconds,
+           svc->catchup_batch);
     return ZCL_OK;
 }
 
@@ -376,6 +431,7 @@ bool segment_sealer_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "enabled", svc->enabled);
     json_push_kv_int(out, "finality_depth", svc->finality_depth);
     json_push_kv_int(out, "tick_seconds", svc->tick_seconds);
+    json_push_kv_int(out, "catchup_batch", svc->catchup_batch);
     json_push_kv_int(out, "segments_sealed", atomic_load(&svc->segments_sealed));
     json_push_kv_int(out, "seal_failures", atomic_load(&svc->seal_failures));
     json_push_kv_int(out, "last_sealed_first", atomic_load(&svc->last_sealed_first));

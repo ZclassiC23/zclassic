@@ -140,15 +140,15 @@ macros (each logs `error` with `file`/`line`/`func` + varargs):
 - `LOG_ERR(domain, fmt, ...)` — log + `return -1` (for MCP handlers).
 - `LOG_RETURN(val, domain, fmt, ...)` — log + `return (val)`.
 
-**CI lint:** `check-silent-errors` greps `app/ tools/mcp/` for `return -1;` not
-paired with `LOG_ERR`/`log_json`/`fprintf`.
+**CI lint:** the shape-tier `check-silent-errors-*` gates grep `app/` for
+`return -1;` not paired with `LOG_ERR`/`log_json`/`fprintf`.
 
 ---
 
-## 5. MCP handlers must log on every error path
+## 5. Native command handlers must log on every error path
 
-**Problem:** silent `return -1;` in MCP handlers leaves the caller with no
-diagnostic info.
+**Problem:** silent `return -1;` in a native command handler leaves the caller
+with no diagnostic info.
 
 **Status: enforced by lint.** `make lint` runs five shape-tier gates. Each
 requires a bare `return -1;` to be preceded by a logging call or carry an
@@ -156,7 +156,6 @@ explicit `// raw-return-ok:<reason>` marker (no space after the colon):
 
 | Gate | Surface |
 |------|---------|
-| `check-silent-errors` | `tools/mcp/controllers/*.c` |
 | `check-silent-errors-services` | `app/services/src/` |
 | `check-silent-errors-controllers` | `app/controllers/src/` |
 | `check-silent-errors-jobs` | `app/jobs/src/` |
@@ -230,7 +229,7 @@ assert green).
 | `check-blob-read-bounds` | HARD | Fixed-size SQLite blob reads in app models use `AR_READ_BLOB` or prove `sqlite3_column_bytes` before `memcpy`. |
 | `check-malloc`, `check-raw-malloc` | HARD | Raw malloc/calloc/realloc outside `zcl_*` wrappers (§3). Override `// raw-alloc-ok:<tag>`. |
 | `check-raw-sqlite` | HARD | Raw `sqlite3_step` outside `AR_STEP_*` (§1). Override `// raw-sql-ok:<tag>`. |
-| `check-silent-errors` (+ `-services`/`-controllers`/`-jobs`/`-conditions`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
+| `check-silent-errors-services` (+ `-controllers`/`-jobs`/`-conditions`/`-bool`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
 | `check-before-save-hooks` | HARD | `utxo`/`block`/`wallet_key`/`wallet_tx` keep before/after-save hooks (§6). |
 | `check-coins-lookup-nullcheck` | HARD | Coins lookups null-check the returned coin before use. |
 | `check-log-macro-return-type` | HARD | Returning `LOG_*` macros match the enclosing function return type (`LOG_FAIL` only in bool-returning functions, `LOG_ERR` only in int-returning functions, `LOG_NULL` only in pointer-returning functions). |
@@ -499,6 +498,7 @@ current green tree.
 | **P1-3: `check-systemd-memory-budget`** | HARD | Systemd service hard caps (`MemoryMax` plus finite `MemorySwapMax`) must stay below the host budget (default 70% of MemTotal); explicit `MemoryMax=infinity` fails. Prevents host-level OOM from cap drift. |
 | **E11: `check-doc-accuracy`** | HARD | The canonical gate block below matches the `check-*` prerequisites of the Makefile `lint:` target by count AND name set. On mismatch, fix the doc block — the Makefile is authoritative. No override. |
 | **`check-markdown-links`** | HARD | Every local file/directory target in tracked Markdown resolves inside the repository. Network/mail/app URIs, page anchors, images, code examples, and explicit generated placeholders are outside this filesystem-only contract. The gate fails loud on an empty scan/parser result and carries isolated positive/negative self-tests. No baseline or override. |
+| **`check-no-stale-pinned-facts`** | HARD (binary size) / RATCHET (height pin) | Owner directive 2026-07-17 "make staleness impossible": docs (CLAUDE.md + README.md + docs/\*\*/\*.md) must not hand-pin a fact with a live source. (A) A "\<N\> MB" size ADJACENT to "binary" fails HARD — de-pin to size-agnostic prose or quote `tools/scripts/binary_size.sh`; never baseline-exemptible (the stale "~15 MB" survived because it was hand-pinned). (B) A live-state HEIGHT PIN (`H*=`, "wedged at", "held at", "currently …at", "live tip", "stuck/pinned at" next to a height-shaped number) outside the one live-state page `docs/HANDOFF.md` fails RATCHET against the shrink-only `tools/lint/stale_pinned_facts_baseline.txt`. `docs/work/archive/**` (frozen narratives) is exempt. Per-line override `<!-- stale-ok: <reason> -->`. |
 | **E12: `check-honest-witness`** | FAIL | Law 7 ("heal in the open, page when stuck"): a Condition's `witness_<name>()` must observe the symptom MOVE, not a constant, the pure inverse of `detect`, or an FSM/poison-flag the remedy itself set. Fails if TRIVIAL (every return a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`), or NO-OBSERVABLE (references none of `active_chain_height`, reducer-frontier H\*, block_map iteration, a durable `SELECT`, a peer/inflight/staged/received progress counter). Exemplar: `app/conditions/src/block_failed_mask_at_tip.c`. Baseline `tools/lint/honest_witness_baseline.txt` (empty). Override `// honest-witness-ok:<reason>` (witness whose remedy returns `COND_REMEDY_FAILED` or re-verifies real structural state). |
 | **E14: `check-condition-cooldown`** | HARD | The 2026-07-13 27h-page bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
 
@@ -541,11 +541,13 @@ add/remove a gate.
 - `check-sandbox-wired`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-shellouts`
+- `check-peer-floor-single-source`
 - `check-proc-self-shim`
 - `check-no-authoritative-ram-state`
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
+- `check-no-stale-pinned-facts`
 - `check-route-command-parity`
 - `check-no-orphan-placement`
 - `check-no-silent-ready`
@@ -561,7 +563,6 @@ add/remove a gate.
 - `check-rpc-registrar`
 - `check-scanner-immunity`
 - `check-service-result-convergence`
-- `check-silent-errors`
 - `check-silent-errors-bool`
 - `check-wallet-raw-prepare-log`
 - `check-silent-errors-conditions`
@@ -612,7 +613,7 @@ mechanically hold:
 |--------|---------------|-----------|
 | `// obs-ok:<tag>` | line with `fprintf(stderr, …)` whose nearby code emits no event / does not terminally propagate | `check-observability-pairing` |
 | `// raw-sql-ok:<tag>` | line with `sqlite3_step(…)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
-| `// raw-return-ok:<tag>` | bare `return -1;` in MCP/service/controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
+| `// raw-return-ok:<tag>` | bare `return -1;` in service/controller code with no preceding log line | `check-silent-errors-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/mcp-bridge/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |

@@ -267,8 +267,12 @@ int test_supervisor_production_tree(void)
     struct connman cm;
     memset(&cm, 0, sizeof(cm));
     net_manager_init(&cm.manager);
+    /* At or above ZCL_PEER_FLOOR_HEALTHY (3) the floor is satisfied. Add three
+     * healthy outbound peers so the supervisor child takes its "healthy" branch
+     * (net-floor unification tightened this child's threshold from 2 to 3). */
     bool net_ok = spt_add_healthy_outbound(&cm, 10) != NULL;
     net_ok = net_ok && spt_add_healthy_outbound(&cm, 11) != NULL;
+    net_ok = net_ok && spt_add_healthy_outbound(&cm, 12) != NULL;
     net_supervisor_register(&cm);
 
     memset(&snap, 0, sizeof(snap));
@@ -285,7 +289,7 @@ int test_supervisor_production_tree(void)
     idx = find_child_snapshot("net.outbound_floor", &snap, &count);
     SPT_CHECK("healthy peer floor clears stale no-progress",
               idx >= 0 && snap.stall_reason == SUPERVISOR_STALL_NONE &&
-              snap.progress_marker == 2 && snap.ticks_run > 0);
+              snap.progress_marker == 3 && snap.ticks_run > 0);
     SPT_CHECK("healthy peer floor disables quiet gate",
               net_supervisor_test_peer_floor_quiet_us() == 0);
 

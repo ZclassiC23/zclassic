@@ -267,7 +267,7 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
 #define ZCL_HOTSWAP_INPUT_DIGEST ""
 #endif
 #ifndef ZCL_HOTSWAP_MAPPED_TESTS
-#define ZCL_HOTSWAP_MAPPED_TESTS "hotswap_loader,mcp_router"
+#define ZCL_HOTSWAP_MAPPED_TESTS "hotswap_loader,hotswap_simnet"
 #endif
 #ifndef ZCL_HOTSWAP_PROBE_TOOLS
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_name_list"

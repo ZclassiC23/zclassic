@@ -156,11 +156,11 @@ static int test_change_classification(void)
             const char *path;
             const char *probe;
         } hot[] = {
-            { "tools/mcp/controllers/app_controller.c", "zcl_name_list" },
-            { "tools/mcp/controllers/meta_controller.c", "zcl_tools_list" },
-            { "tools/mcp/controllers/chain_controller.c", "zcl_getblockchaininfo" },
-            { "tools/mcp/controllers/net_controller.c", "zcl_networkinfo" },
-            { "tools/mcp/controllers/wallet_controller.c", "zcl_balance" },
+            { "app/controllers/src/status_native_handlers.c", "core.status" },
+            { "app/controllers/src/meta_native_handlers.c", "ops.metrics" },
+            { "app/controllers/src/chain_native_handlers.c", "core.consensus.utxo.audit" },
+            { "app/controllers/src/net_native_handlers.c", "core.network.peers.incidents" },
+            { "app/controllers/src/wallet_native_handlers.c", "core.wallet.address.list" },
         };
         for (size_t i = 0; i < sizeof(hot) / sizeof(hot[0]); i++) {
             const char *files[] = { hot[i].path };
@@ -268,7 +268,7 @@ static int test_watcher_publication_containment(void)
         /* The containment decision is independent of classification. These
          * cover hot-swap, ordinary reload, consensus reload, and sealed-core
          * reload without granting any of them watcher publication authority. */
-        const char *hot[] = { "tools/mcp/controllers/app_controller.c" };
+        const char *hot[] = { "app/controllers/src/status_native_handlers.c" };
         const char *reload[] = { "app/services/src/node_health_service.c" };
         const char *consensus[] = { "lib/validation/src/sighash.c" };
         const char *sealed[] = { "core/consensus/src/check_block.c" };

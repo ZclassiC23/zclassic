@@ -16,6 +16,7 @@
 #include "models/database.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/ar_step_readonly.h"
+#include "util/blocker.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -640,12 +641,50 @@ int test_utxo_recovery_service(void)
             }
             node_db_commit(&ndb);
 
+            blocker_reset_for_testing();
+
             int64_t before = node_db_utxo_count(&ndb);
             int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
             int64_t after = node_db_utxo_count(&ndb);
 
             URS_CHECK("urs: clean above tip refuses >1000",
                       before == 1500 && cleaned == 0 && after == 1500);
+
+            /* Advance-or-named-blocker law: the multi-block overshoot
+             * refusal must raise a typed, dumpstate-visible blocker with
+             * the guard's own numbers, not just a log line. */
+            struct blocker_snapshot snaps[8];
+            int n = blocker_snapshot_all(snaps, 8);
+            bool found = false;
+            bool fields_ok = false;
+            for (int k = 0; k < n; k++) {
+                if (strcmp(snaps[k].id,
+                          UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID) == 0) {
+                    found = true;
+                    fields_ok =
+                        strstr(snaps[k].reason, "tip_height=9") &&
+                        strstr(snaps[k].reason, "max_height=1509") &&
+                        strstr(snaps[k].reason, "row_count=1500") &&
+                        strstr(snaps[k].reason, "guard=32") &&
+                        snaps[k].class == BLOCKER_PERMANENT;
+                    break;
+                }
+            }
+            URS_CHECK("urs: rewind overshoot refusal raises typed blocker",
+                      found);
+            URS_CHECK("urs: rewind overshoot blocker carries "
+                      "tip/max/row/guard fields", fields_ok);
+
+            /* Later pass finds the condition gone (the offending rows are
+             * removed out-of-band, e.g. by an operator) -> the next call
+             * must clear the blocker, matching the registry's lifecycle
+             * contract. */
+            node_db_exec(&ndb, "DELETE FROM utxos WHERE height > 9");
+            int cleaned2 = utxo_recovery_clean_above_tip(&ndb, &ms);
+            URS_CHECK("urs: rewind overshoot blocker clears once resolved",
+                      cleaned2 == 0 &&
+                      !blocker_exists(
+                          UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID));
 
             node_db_close(&ndb);
         } else {

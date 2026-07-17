@@ -24,6 +24,7 @@
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_security_posture.h"
 #include "controllers/diagnostics_controller.h"
+#include "controllers/diagnostics_internal.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -5611,7 +5612,7 @@ syncdiag_net_split_done:
             "app/controllers/src/agent_lanes_controller.c",
             "app/controllers/src/event_healthcheck_controller.c",
             "app/controllers/include/controllers/event_healthcheck_controller.h",
-            "tools/mcp/controllers/ops_controller.c",
+            "app/controllers/src/diagnostics_native_handlers.c",
             "docs/AGENT_API.md",
         };
         for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -5638,7 +5639,6 @@ syncdiag_net_split_done:
         ok = ok && json_get_bool(json_get(&result, "code_changed"));
         ok = ok && !json_get_bool(json_get(&result, "docs_only"));
         ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
-        ok = ok && json_get_bool(json_get(&result, "mcp_changed"));
         ok = ok && strcmp(json_get_str(json_get(&result, "mapping_source")),
                           "app/controllers/include/controllers/agent_impact_rules.def") == 0;
         ok = ok && json_get_int(json_get(&result, "shared_rule_count")) > 0;
@@ -5647,7 +5647,7 @@ syncdiag_net_split_done:
                      &result, "relevant_test_groups_count")) >= 3;
         ok = ok && out_files && json_size(out_files) == 6;
         ok = ok && json_array_has_str(groups, "syncdiag_rpc");
-        ok = ok && json_array_has_str(groups, "mcp_controllers");
+        ok = ok && json_array_has_str(groups, "command_registry_catalog");
         ok = ok && json_array_has_str(groups, "make_lint_gates");
         ok = ok && json_array_has_substr(commands,
                                          "ZCL_FAST_TESTS=syncdiag_rpc");
@@ -5666,15 +5666,9 @@ syncdiag_net_split_done:
         json_free(&result);
     }
 
-    /* zero-MCP native analog of the "mcp_changed"/"mcp_controllers" test
-     * above (docs/work/MCP-REMOVAL-WORKLIST.md W2): a change to a
-     * *_native_handlers.c file (the command-registry's handler surface,
-     * app/controllers/include/controllers/agent_impact_rules.def:234)
-     * classifies into "command_registry_catalog" — the native successor
-     * group to "mcp_controllers" for this migration. mcp_changed / the
-     * mcp_controllers group above stay untouched: they still describe
-     * real, currently-running -mcp behavior (a tools/mcp/ file changed)
-     * until W3 deletes tools/mcp/ (entire tree) and this rule row. */
+    /* A change to a *_native_handlers.c file (the command-registry's handler
+     * surface) classifies into "command_registry_catalog" — the native group
+     * that replaced the retired MCP-controller test group. */
     printf("api: native RPC maps a native-handlers file change to "
            "command_registry_catalog... ");
     {
@@ -7013,14 +7007,6 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "direct_changed_compile")),
                           "make fast-changed-compile") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "one_binary_mcp")),
-                          "make agent-mcp-call TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "hot_mcp")),
-                          "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "dev_lane_mcp")),
-                          "make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strstr(json_get_str(json_get(loop, "direct_binary_mcp")),
-                          "build/bin/zclassic23 mcpcall") != NULL;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "fast_no_link_compile")),
                           "make fast-compile") == 0;
@@ -7141,8 +7127,6 @@ syncdiag_net_split_done:
                                         "agent_clear_stale_dev_reindex") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "agent_dev_status_mcp") != NULL;
-        ok = ok && find_object_with_str(commands, "name",
-                                        "agent_mcp_call") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "fast_dev_deploy") != NULL;
         ok = ok && find_object_with_str(commands, "name",
@@ -8892,6 +8876,81 @@ syncdiag_net_split_done:
         json_free(&result);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
+    }
+
+    printf("dumpstate network: rolls up connman/peer_floor/chain_view/"
+           "census/peer_lifecycle on a minimal fixture... ");
+    {
+        struct json_value result = {0};
+
+        /* ── Part 1: nothing wired (the true minimal state — no connman,
+         * no network_monitor sample, no crawler round). The rollup must
+         * still return a well-formed object, never crash or fail. */
+        rpc_net_set_connman(NULL);
+        bool ok = network_dump_state_json(&result, NULL);
+        ok = ok && result.type == JSON_OBJ;
+
+        const struct json_value *connman_j = json_get(&result, "connman");
+        ok = ok && connman_j && connman_j->type == JSON_OBJ;
+        ok = ok && json_get(connman_j, "wired") &&
+            !json_get_bool(json_get(connman_j, "wired"));
+        ok = ok && json_get(connman_j, "connected_peers") &&
+            json_get_int(json_get(connman_j, "connected_peers")) == -1;
+        ok = ok && json_get(connman_j, "addrman_size") &&
+            json_get_int(json_get(connman_j, "addrman_size")) == -1;
+
+        const struct json_value *peer_floor_j = json_get(&result, "peer_floor");
+        ok = ok && peer_floor_j && peer_floor_j->type == JSON_OBJ;
+        ok = ok && json_get(peer_floor_j, "registered") != NULL;
+        ok = ok && json_get(peer_floor_j, "healthy_outbound") != NULL;
+
+        const struct json_value *chain_view_j = json_get(&result, "chain_view");
+        ok = ok && chain_view_j && chain_view_j->type == JSON_OBJ;
+        ok = ok && json_get(chain_view_j, "ready") != NULL;
+
+        const struct json_value *census_j = json_get(&result, "census");
+        ok = ok && census_j && census_j->type == JSON_OBJ;
+        ok = ok && json_get(census_j, "started") != NULL;
+
+        const struct json_value *tip_cmp_j = json_get(&result, "tip_comparison");
+        ok = ok && tip_cmp_j && tip_cmp_j->type == JSON_OBJ;
+        ok = ok && json_get(tip_cmp_j, "our_height") &&
+            json_get_int(json_get(tip_cmp_j, "our_height")) == -1;
+
+        const struct json_value *pl_j = json_get(&result, "peer_lifecycle");
+        ok = ok && pl_j && pl_j->type == JSON_OBJ;
+        ok = ok && json_get(pl_j, "summary") != NULL;
+
+        json_free(&result);
+
+        /* ── Part 2: a freshly-initialized connman with zero peers and an
+         * empty addrman wired in. connman.wired flips true and the two
+         * bare counters read back 0 (not -1), everything else unchanged. */
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        chain_params_select(CHAIN_MAIN);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        rpc_net_set_connman(&cm);
+
+        struct json_value result2 = {0};
+        ok = ok && network_dump_state_json(&result2, NULL);
+        const struct json_value *cm2 = json_get(&result2, "connman");
+        ok = ok && cm2 && json_get(cm2, "wired") &&
+            json_get_bool(json_get(cm2, "wired"));
+        ok = ok && json_get(cm2, "connected_peers") &&
+            json_get_int(json_get(cm2, "connected_peers")) == 0;
+        ok = ok && json_get(cm2, "outbound_healthy") &&
+            json_get_int(json_get(cm2, "outbound_healthy")) == 0;
+        ok = ok && json_get(cm2, "addrman_size") &&
+            json_get_int(json_get(cm2, "addrman_size")) == 0;
+        json_free(&result2);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+        rpc_net_set_connman(NULL);
+        connman_free(&cm);
     }
 
     syncdiag_reset_rpc_globals_for_test();

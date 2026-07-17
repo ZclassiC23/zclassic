@@ -3,12 +3,11 @@
  *
  * One binary, three operator modes:
  *   zclassic23 [node options]         — run as full node / linger service
- *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 appprotocols           — application protocol catalog
  *   zclassic23 servicecatalog         — sovereign service UX catalog
  *   zclassic23 serviceoperations      — sovereign operation UX catalog
- *   zclassic23 mcpcall <tool> [json]  — typed MCP tool call from this binary
+ *   zclassic23 <command> [--input=…]  — typed native command call
  *   zclassic23 status                 — compact native status + next action
  *   zclassic23 proofbundle            — single read-only proof artifact
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
@@ -75,9 +74,6 @@
 #include "util/clientversion.h"
 #include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
 #include "util/ar_step_readonly.h"
-#include "mcp/controllers.h"
-#include "mcp/middleware.h"
-#include "mcp/router.h"
 #include "controllers/rpc_client.h"
 #include "command/native_command.h"
 #include "config/command_catalog.h"
@@ -1740,117 +1736,6 @@ static int cli_run_static_agent_method(const char *method,
     return exit_code;
 }
 
-static void cli_mcp_register_all(void)
-{
-    mcp_router_reset();
-    mcp_register_ops();
-    mcp_register_diagnostics();
-    mcp_register_chain();
-    mcp_register_net();
-    mcp_register_wallet();
-    mcp_register_app();
-    mcp_register_meta();
-    mcp_register_dev_hotswap();
-}
-
-static bool cli_mcp_parse_args_object(const char *raw,
-                                      struct json_value *args)
-{
-    json_init(args);
-    if (!raw || !raw[0]) {
-        json_set_object(args);
-        return true;
-    }
-
-    if (!json_read(args, raw, strlen(raw))) {
-        json_free(args);
-        return false;
-    }
-    if (args->type != JSON_OBJ) {
-        json_free(args);
-        return false;
-    }
-    return true;
-}
-
-static bool cli_json_top_error(const char *raw)
-{
-    struct json_value root;
-    if (!raw)
-        return true;
-    if (!json_read(&root, raw, strlen(raw))) {
-        json_free(&root);
-        return true;
-    }
-    const struct json_value *err = json_get(&root, "error");
-    bool has_error = err && !json_is_null(err);
-    json_free(&root);
-    return has_error;
-}
-
-static int cli_run_mcp_call(const char *datadir,
-                            const char **params_storage,
-                            int nparams)
-{
-    if (nparams < 1 || nparams > 2) {
-        fprintf(stderr,
-                "usage: zclassic23 mcpcall <tool> [json-object]\n");
-        fprintf(stderr,
-                "example: zclassic23 mcpcall zcl_state "
-                "'{\"subsystem\":\"supervisor\"}'\n");
-        return 2;
-    }
-
-    const char *tool = params_storage[0];
-    const char *args_json = nparams >= 2 ? params_storage[1] : "{}";
-
-    struct json_value args;
-    if (!cli_mcp_parse_args_object(args_json, &args)) {
-        fprintf(stderr, "mcpcall arguments must be one JSON object\n");
-        return 2;
-    }
-
-    mcp_rpc_client_init(datadir, cli_port);
-    /* A one-shot MCP process does not boot app_init(), so no composition root
-     * has selected chain parameters. Most tools proxy to the running node, but
-     * read-only native tools such as zcl_replay_verify execute locally and
-     * call chain_params_get(). Select mainnet before ANY route can dispatch;
-     * CLI mode currently has no -testnet/-regtest spelling (those flags select
-     * node mode), and its canonical datadir/legacy verifier are mainnet. */
-    chain_params_select(CHAIN_MAIN);
-    cli_mcp_register_all();
-
-    struct mcp_middleware mw;
-    mcp_middleware_init(&mw);
-    mcp_middleware_load_from_env(&mw);
-    /* One-shot CLI dispatch must not leave a detached timeout worker holding
-     * pointers into this stack frame after the process is already printing. */
-    mw.default_timeout_ms = 0;
-
-    const char *bearer = getenv("ZCL_MCP_CALL_BEARER_TOKEN");
-    if (!bearer || !bearer[0]) {
-        if (mcp_middleware_is_destructive(&mw, tool))
-            bearer = getenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN");
-        if (!bearer || !bearer[0])
-            bearer = getenv("ZCL_MCP_BEARER_TOKEN");
-    }
-
-    char *result = mcp_middleware_dispatch(&mw, tool, &args,
-                                           bearer && bearer[0] ? bearer : NULL);
-    json_free(&args);
-    mcp_middleware_destroy(&mw);
-
-    if (!result) {
-        fprintf(stderr, "mcpcall failed: no result body\n");
-        return 1;
-    }
-
-    printf("%s\n", result);
-    int rc = cli_json_top_error(result) ? 1 : 0;
-    free(result);
-    return rc;
-}
-
 enum { CLI_MAX_PARAMS = 128 };
 
 static int cli_main(int argc, char **argv)
@@ -1986,9 +1871,6 @@ static int cli_main(int argc, char **argv)
         return zcl_native_command_main(method,
                                        (const char *const *)params_storage,
                                        nparams, datadir, cli_port);
-
-    if (strcmp(method, "mcpcall") == 0 || strcmp(method, "mcp") == 0)
-        return cli_run_mcp_call(datadir, params_storage, nparams);
 
     if (cli_static_agent_method(method)) {
         agent_runtime_availability_reset();
@@ -2193,25 +2075,6 @@ static void signal_handler(int sig)
     alarm(90);
 }
 
-/* Defined in tools/mcp_server.c — runs the MCP stdio protocol with the
- * in-process RPC transport selected. Returns when stdin closes. */
-extern int mcp_server_main_inprocess(const char *datadir, int rpc_port);
-
-/* Thread body for the -mcp-inprocess run mode. Runs the MCP stdio loop on
- * the live, fully-booted node, then requests a clean shutdown so the
- * process exits when the agent disconnects (stdin EOF) rather than
- * lingering as a headless node with no controller attached. */
-static void *mcp_inprocess_thread_main(void *arg)
-{
-    const struct app_context *ctx = (const struct app_context *)arg;
-    int rpc_port = ctx->rpc_port > 0 ? ctx->rpc_port : 18232;
-    mcp_server_main_inprocess(ctx->datadir ? ctx->datadir : "", rpc_port);
-    /* Agent disconnected — fall through to a normal node shutdown. */
-    g_shutdown_requested = 1;
-    thread_registry_request_shutdown();
-    return NULL;
-}
-
 static void print_usage(const char *prog)
 {
     printf("Usage:\n");
@@ -2219,8 +2082,6 @@ static void print_usage(const char *prog)
     printf("\nAgent/operator API commands (from agent_contracts.def):\n");
     agent_print_native_usage(stdout, prog);
     printf("  %s --agent                 Same compact status\n", prog);
-    printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
-    printf("  %s mcpcall <tool> [json]   Call one typed MCP tool\n", prog);
     printf("  %s dev [branch...]         Native shallow LLM development tree\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);
     printf("Node options:\n");
@@ -2235,7 +2096,7 @@ static void print_usage(const char *prog)
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
     printf("  -gui                Launch the WebKit wallet GUI instead of the\n");
     printf("                      headless node (needs a display; default is\n");
-    printf("                      headless node + MCP/REST/onion)\n");
+    printf("                      headless node + REST/onion)\n");
     printf("  -httpsdomain=<dom>  TLS servername / HTTPS-redirect host for the\n");
     printf("                      clearnet explorer (optional; defaults to the\n");
     printf("                      request Host header with a single cert)\n");
@@ -3599,26 +3460,9 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* MCP server mode: speaks Model Context Protocol on stdio.
-     * Install: claude mcp add zcl23 -- build/bin/zclassic23 -mcp */
-    extern int mcp_server_main(const char *datadir, int rpc_port);
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-mcp") == 0) {
-            const char *h = getenv("HOME");
-            char dd[512] = ".zclassic-c23";
-            int port = 18232;
-            if (h) snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h);
-            for (int j = 1; j < argc; j++) {
-                if (strncmp(argv[j], "-datadir=", 9) == 0) snprintf(dd, sizeof(dd), "%s", argv[j]+9);
-                if (strncmp(argv[j], "-rpcport=", 9) == 0) port = atoi(argv[j]+9);
-            }
-            return mcp_server_main(dd, port);
-        }
-    }
-
     /* Default boot is the headless node (north star: AI-as-interface, no GUI).
-     * The WebKit wallet GUI is opt-in via -gui; a plain `zclassic23`, -mcp,
-     * and -datadir all run the node, never wallet_gui_main.
+     * The WebKit wallet GUI is opt-in via -gui; a plain `zclassic23`
+     * and -datadir both run the node, never wallet_gui_main.
      *   build/bin/zclassic23          → headless node
      *   build/bin/zclassic23 -gui     → wallet GUI (needs a display)
      * --self-test is the GUI bot harness (runs the GUI under xvfb), so it
@@ -3667,13 +3511,6 @@ int main(int argc, char **argv)
 
     bool show_metrics = true;
 
-    /* Host the MCP server in-process on a thread of this booted node instead
-     * of the default out-of-process -mcp proxy. Default OFF — the proxy
-     * (handled far above, before any node boot) is unchanged. When set, the
-     * node boots normally and, once the RPC table is live, an MCP stdio loop
-     * runs with the in-process transport (no socket round-trip per tool). */
-    bool mcp_inprocess = false;
-
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) ctx.datadir = argv[i] + 9;
         else if (strncmp(argv[i], "-paramsdir=", 11) == 0) ctx.params_dir = argv[i] + 11;
@@ -3713,6 +3550,8 @@ int main(int argc, char **argv)
                 argv[i] + sizeof("-verify-consensus-bundle=") - 1;
         else if (strcmp(argv[i], "-ratify-mint-anchor") == 0)
             ctx.ratify_mint_anchor = true;
+        else if (strcmp(argv[i], "-verify-rom") == 0)
+            ctx.verify_rom = true;
         else if (strcmp(argv[i], "-export-consensus-bundle") == 0)
             ctx.export_consensus_bundle = true;
         else if (strncmp(argv[i], "-promote-shielded-history=",
@@ -3813,7 +3652,6 @@ int main(int argc, char **argv)
              * See hotswap_activation_authorized() (lib/hotswap). */
             hotswap_set_activate_flag(true);
         }
-        else if (strcmp(argv[i], "-mcp-inprocess") == 0) mcp_inprocess = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-allow-plaintext-wallet") == 0) {
             /* Explicit, loud opt-in to a plaintext wallet at rest. Read
@@ -4054,30 +3892,10 @@ int main(int argc, char **argv)
 
     if (show_metrics) app_start_metrics(ctx.gen);
 
-    /* In-process MCP server (default OFF). The node has finished app_init,
-     * so the RPC table is live (rpc_http started inside app_init_services).
-     * Run the MCP stdio loop on a dedicated thread with the in-process
-     * transport selected; when the agent disconnects (stdin closes), the
-     * thread returns and requests a clean node shutdown so the process
-     * exits rather than lingering headless. */
-    pthread_t mcp_thread;
-    bool mcp_thread_started = false;
-    if (mcp_inprocess) {
-        if (pthread_create(&mcp_thread, NULL, mcp_inprocess_thread_main,
-                           &ctx) == 0) {
-            mcp_thread_started = true;
-        } else {
-            fprintf(stderr, "[mcp] failed to start in-process MCP thread; "
-                            "continuing as a headless node\n");
-        }
-    }
-
     while (!g_shutdown_requested &&
            !thread_registry_shutdown_requested() &&
            app_is_running())
         sleep(1);
-    if (mcp_thread_started)
-        pthread_join(mcp_thread, NULL);
     if (thread_registry_shutdown_requested())
         g_shutdown_requested = 1;
 

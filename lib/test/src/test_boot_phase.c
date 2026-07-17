@@ -103,6 +103,31 @@ int test_boot_phase(void)
     BP_CHECK("non-mainnet params thread failure stays warning-only",
         !boot_test_params_thread_failure_is_fatal(true, false, false));
 
+    /* ── boot_need_legacy_header_pull (fresh-datadir need_zcd fix) ──
+     * MEMORY/bug: on a genuinely fresh/empty datadir both
+     * active_chain_height() and db_block_max_height() are 0, so the
+     * ratio-only test `local < chain_h*9/10` degenerates to `0 < 0` and
+     * never fires — the fresh node silently falls back to a slow P2P
+     * header crawl instead of the ~60s legacy import. The fix adds an
+     * explicit empty-datadir trigger (local_index_size == 0) gated on a
+     * legacy source actually being present. */
+    BP_CHECK("empty datadir + legacy present fires the pull (the fix)",
+        boot_need_legacy_header_pull(0, 0, true));
+    BP_CHECK("empty datadir + no legacy source does NOT fire",
+        !boot_need_legacy_header_pull(0, 0, false));
+    BP_CHECK("empty datadir + no legacy source, nonzero chain_h estimate",
+        !boot_need_legacy_header_pull(0, 3000000, false));
+    BP_CHECK("local at 90pct of chain height does not fire (at threshold)",
+        !boot_need_legacy_header_pull(2700000, 3000000, true));
+    BP_CHECK("local just below 90pct of chain height fires (ratio trigger)",
+        boot_need_legacy_header_pull(2699999, 3000000, true));
+    BP_CHECK("local far below chain height fires even with tiny local>0",
+        boot_need_legacy_header_pull(3, 3000000, true));
+    BP_CHECK("local at chain height does not fire",
+        !boot_need_legacy_header_pull(3000000, 3000000, true));
+    BP_CHECK("ratio trigger requires legacy source present",
+        !boot_need_legacy_header_pull(3, 3000000, false));
+
     /* ── forward-jump (legal, emits WARN) ──────────────────────── */
     boot_stage_reset_for_testing();
     boot_stage_advance_to(BOOT_STAGE_READY);
