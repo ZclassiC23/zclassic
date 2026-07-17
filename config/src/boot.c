@@ -3535,8 +3535,8 @@ sapling_tree_boot_check_done:
         /* No early return may continue with a journaled partial generation. */
         boot_snapshot_install_require_complete();
     }
-    /* The reset above ran anchor_kv_reset_in_tx(seed_h) with no initial
-     * frontier; pre-seed the verified Sapling frontier at the seed cursor when
+    /* The reset above ran anchor_kv_reset_mark_empty_below_in_tx(seed_h) with no
+     * initial frontier; pre-seed the verified Sapling frontier at the seed cursor when
      * the in-RAM frontier aligns (else the runtime condition seeds it). */
     if (ctx->load_snapshot_at_own_height)
         boot_seed_sapling_anchor_frontier_after_reset(&g_state);
@@ -3651,8 +3651,8 @@ sapling_tree_boot_check_done:
                     set_sapling_tree_for_flush(&g_state.sapling_tree);
             }
         }
-        /* The from-anchor reset ran anchor_kv_reset_in_tx(anchor) with no
-         * initial frontier; sapling_tree_rebuild just re-derived + verified the
+        /* The from-anchor reset ran anchor_kv_reset_mark_empty_below_in_tx(anchor)
+         * with no initial frontier; sapling_tree_rebuild just re-derived + verified the
          * Sapling frontier to the anchor (== activation cursor), so seed it now
          * and the first shielded block above the anchor folds without stalling
          * (else the runtime condition is the backstop). */

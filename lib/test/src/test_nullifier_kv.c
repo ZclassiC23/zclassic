@@ -55,6 +55,18 @@ static bool nk_marker_is(sqlite3 *db, const char *want)
            found && len == want_len && memcmp(buf, want, want_len) == 0;
 }
 
+static bool ak_both_anchor_cursors_are(sqlite3 *db, int64_t want)
+{
+    int64_t sprout = -1, sapling = -1;
+    bool sprout_found = false, sapling_found = false;
+    return anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SPROUT, &sprout, &sprout_found) &&
+           anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SAPLING, &sapling, &sapling_found) &&
+           sprout_found && sapling_found &&
+           sprout == want && sapling == want;
+}
+
 static bool nk_all_history_markers_are(sqlite3 *db, int64_t want)
 {
     int64_t sprout = -1, sapling = -1, nf = -1;
@@ -338,6 +350,44 @@ int test_nullifier_kv(void)
                  !nullifier_kv_activation_cursor(db, &cursor, &found) &&
                  !found);
     }
+
+    /* anchor_kv reset primitives: the two OPPOSITE marker semantics are named
+     * at the call site by distinct typed entry points (Hazard #1 split). Same
+     * tables, same tx, same rows cleared — they differ ONLY in the adoption
+     * cursor and therefore in how a later missing root is classified. Pinning
+     * both the cursor value AND the classification is the load-bearing guard:
+     * the empty-below cursor is the exact marker class behind the H* wedge. */
+    NK_CHECK("mark_complete stamps both anchor cursors zero",
+             anchor_kv_reset_mark_complete_in_tx(db) &&
+             ak_both_anchor_cursors_are(db, 0));
+    {
+        /* Complete (from-genesis) history: the empty sapling table resolves to
+         * the protocol-empty frontier as FOUND, so an output-only fold proceeds. */
+        struct incremental_merkle_tree t;
+        NK_CHECK("complete history: empty sapling table folds forward (FOUND)",
+                 anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &t, NULL, NULL)
+                     == ANCHOR_KV_FOUND);
+    }
+    NK_CHECK("mark_empty_below stamps both anchor cursors at N",
+             anchor_kv_reset_mark_empty_below_in_tx(db, 4242) &&
+             ak_both_anchor_cursors_are(db, 4242));
+    {
+        /* Empty-below-N history: the same empty sapling table now fails closed
+         * as HISTORY_INCOMPLETE (the wedge blocker), never a false empty root. */
+        struct incremental_merkle_tree t;
+        NK_CHECK("empty-below history: empty sapling table fails closed "
+                 "(HISTORY_INCOMPLETE)",
+                 anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &t, NULL, NULL)
+                     == ANCHOR_KV_HISTORY_INCOMPLETE);
+    }
+    /* Argument validation is preserved from the pre-split primitive: a negative
+     * below-height is refused; a zero below-height is accepted and behaves as
+     * mark_complete (byte-identical to the old reset_in_tx(db, 0)). */
+    NK_CHECK("mark_empty_below refuses a negative height",
+             !anchor_kv_reset_mark_empty_below_in_tx(db, -1));
+    NK_CHECK("mark_empty_below(0) is equivalent to mark_complete",
+             anchor_kv_reset_mark_empty_below_in_tx(db, 0) &&
+             ak_both_anchor_cursors_are(db, 0));
 
     progress_store_close();
     test_cleanup_tmpdir(dir);

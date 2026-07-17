@@ -3,8 +3,9 @@
  * sapling_anchor_frontier_unavailable -- auto-terminating cure for the empty
  * Sapling anchor-frontier stall.
  *
- * The defect (live P0): a snapshot/refold seed runs anchor_kv_reset_in_tx with
- * a nonzero activation_cursor but WITHOUT an initial frontier row, so the first
+ * The defect (live P0): a snapshot/refold seed runs
+ * anchor_kv_reset_mark_empty_below_in_tx with a nonzero activation_cursor but
+ * WITHOUT an initial frontier row, so the first
  * shielded-output block above the seed finds an empty sapling_anchors table.
  * anchor_kv_latest_tree then falls through to the activation gate and returns
  * HISTORY_INCOMPLETE (lib/storage/src/anchor_kv.c), fold_sapling fails closed

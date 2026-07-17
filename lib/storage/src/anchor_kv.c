@@ -485,7 +485,11 @@ bool anchor_kv_delete_range(sqlite3 *db, int64_t first_height,
     return true;
 }
 
-bool anchor_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
+/* Shared reset body for both typed entry points below.  They differ ONLY in
+ * the adoption cursor they stamp — 0 for a from-genesis COMPLETE history, a
+ * positive height for an EMPTY-BELOW-N gap — so the SQL, transaction scope, and
+ * markers are identical regardless of which caller invoked it. */
+static bool anchor_kv_reset_impl_in_tx(sqlite3 *db, int64_t activation_cursor)
 {
     if (!db || activation_cursor < 0) {
         LOG_WARN(ANCHOR_SUBSYS, "reset: invalid args cursor=%lld",
@@ -505,6 +509,16 @@ bool anchor_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
     }
     if (err) sqlite3_free(err);
     return anchor_kv_initialize_history(db, activation_cursor);
+}
+
+bool anchor_kv_reset_mark_complete_in_tx(sqlite3 *db)
+{
+    return anchor_kv_reset_impl_in_tx(db, 0);
+}
+
+bool anchor_kv_reset_mark_empty_below_in_tx(sqlite3 *db, int64_t below_height)
+{
+    return anchor_kv_reset_impl_in_tx(db, below_height);
 }
 
 bool anchor_kv_publish_full_replay_complete_in_tx(

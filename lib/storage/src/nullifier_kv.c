@@ -315,7 +315,7 @@ bool shielded_history_begin_full_replay(sqlite3 *db, int64_t target_height)
 
     int64_t boundary = target_height + 1;
     bool ok = progress_meta_table_ensure(db) &&
-              anchor_kv_reset_in_tx(db, boundary) &&
+              anchor_kv_reset_mark_empty_below_in_tx(db, boundary) &&
               nullifier_kv_reset_in_tx(db, boundary) &&
               marker_set_i64_in_tx(db, SHIELDED_REPLAY_TARGET_KEY,
                                    target_height) &&
@@ -493,7 +493,7 @@ bool shielded_history_reset_to_boundary(sqlite3 *db,
     }
     if (err) { sqlite3_free(err); err = NULL; }
 
-    bool ok = anchor_kv_reset_in_tx(db, activation_cursor);
+    bool ok = anchor_kv_reset_mark_empty_below_in_tx(db, activation_cursor);
     if (ok && !nullifier_kv_reset_in_tx(db, activation_cursor))
         ok = false;
     /* Any assisted/general reset cancels a prior full-replay session in the
