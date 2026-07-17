@@ -14,8 +14,7 @@
 
 #include "reducer_frontier_evidence.h"
 #include "reducer_frontier_self_anchor.h"  /* self-derived anchor sourcing */
-#include "reducer_frontier_itag.h"         /* watermark + column probe + warn */
-#include "jobs/stage_row_itag.h"           /* per-row integrity tag (W4-4) */
+#include "reducer_frontier_itag.h"         /* watermark, probe, per-row verdict */
 #include "jobs/mint_skip_crypto.h"
 #include "jobs/refold_progress.h"
 #include "chain/chainparams.h"
@@ -264,20 +263,18 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
             row_ok = status &&
                 mint_validation_evidence_parse(status, status_len) ==
                     MINT_VALIDATION_EVIDENCE_VERIFIED;
-        /* Integrity tag: a MISMATCH forces the row to FAIL (corruption LOWERS
-         * H*); ABSENT (untagged / pre-migration) trusts ok as before. */
-        if (have_itag) {
+        /* Integrity tag (only for a row that would otherwise count): a MISMATCH
+         * forces FAIL (corruption LOWERS H*); ABSENT trusts ok but WARNs+counts.
+         * UNTAGGED-ROW POLICY lives in reducer_frontier_itag.[ch]. */
+        if (have_itag && row_ok) {
             int itag_col = profile_bound ? 2 : 1;
             const void *tag = sqlite3_column_type(st, itag_col) == SQLITE_BLOB
                                   ? sqlite3_column_blob(st, itag_col) : NULL;
-            size_t tag_len = tag ? (size_t)sqlite3_column_bytes(st, itag_col)
-                                 : 0;
-            if (stage_row_itag_verify(log_table, (int64_t)height, ok_raw,
-                                      status, status_len, tag, tag_len) ==
-                STAGE_ROW_ITAG_MISMATCH) {
-                reducer_frontier_itag_mismatch_warn(log_table, (int64_t)height);
+            size_t tag_len = tag ? (size_t)sqlite3_column_bytes(st, itag_col) : 0;
+            if (reducer_frontier_itag_row_fails(log_table, (int64_t)height,
+                                                ok_raw, status, status_len,
+                                                tag, tag_len))
                 row_ok = false;
-            }
         }
         *out = row_ok ? LOG_ROW_OK : LOG_ROW_FAIL;
     } else if (rc != SQLITE_DONE) {
@@ -360,20 +357,18 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
                     mint_validation_evidence_parse(status, status_len) ==
                         MINT_VALIDATION_EVIDENCE_VERIFIED;
             /* Integrity tag: verify rows above the per-boot watermark. A
-             * MISMATCH terminates contiguity exactly like an ok=0 row, so a
-             * flipped verdict byte caps H* here — it can never raise it. */
+             * MISMATCH terminates contiguity exactly like an ok=0 row (caps H*,
+             * never raises it); an ABSENT (NULL) tag is trusted but WARNed +
+             * counted (UNTAGGED-ROW POLICY, reducer_frontier_itag.[ch]). */
             if (row_ok && have_itag && h > (int64_t)verify_above) {
                 const void *tag =
                     sqlite3_column_type(st, itag_col) == SQLITE_BLOB
                         ? sqlite3_column_blob(st, itag_col) : NULL;
                 size_t tag_len =
                     tag ? (size_t)sqlite3_column_bytes(st, itag_col) : 0;
-                if (stage_row_itag_verify(log_table, h, ok_raw, status,
-                                          status_len, tag, tag_len) ==
-                    STAGE_ROW_ITAG_MISMATCH) {
-                    reducer_frontier_itag_mismatch_warn(log_table, h);
+                if (reducer_frontier_itag_row_fails(log_table, h, ok_raw, status,
+                                                    status_len, tag, tag_len))
                     row_ok = false;
-                }
             }
             if (h != expect || !row_ok)
                 break;  /* hole, ok=0, or tag mismatch — contiguity ends */

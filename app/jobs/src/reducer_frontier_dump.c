@@ -6,6 +6,7 @@
 #include "jobs/reducer_frontier.h"
 
 #include "reducer_frontier_rewind_bases.h"
+#include "reducer_frontier_itag.h"
 
 #include "json/json.h"
 #include "net/connman.h"
@@ -482,6 +483,11 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "served_gap",
                      served_floor > hstar ? (int64_t)served_floor - hstar : 0);
     json_push_kv_bool(out, "served_above_hstar", served_floor > hstar);
+    /* Untagged-row visibility: ABSENT (NULL-itag) rows the last fold trusted but
+     * flagged (UNTAGGED-ROW POLICY, reducer_frontier_itag.h). Nonzero after
+     * migration means a writer is still emitting untagged rows. */
+    json_push_kv_int(out, "itag_null_rows_seen",
+                     (int64_t)reducer_frontier_itag_null_count());
 
     /* Tail-fold progress: H* against the network's best-known tip (the
      * highest starting_height any handshake-complete NODE_NETWORK peer

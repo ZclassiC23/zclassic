@@ -338,14 +338,19 @@ static int case_flipped_ok_does_not_raise(void)
     for (int32_t h = A + 1; h <= tip; h++) {
         if (h == bad) {
             /* body_persist FAILS here: baseline H* = bad-1. The row is tagged
-             * over ok=0 (its true, honest verdict). */
+             * over ok=0 (its true, honest verdict). status is passed NULL to
+             * mirror production EXACTLY: body_persist_log has no `status` column
+             * and body_persist_log_insert() computes its itag with status=NULL
+             * (body_persist is not a status-covered log, so the value never
+             * enters the tag). A non-NULL status here made put_tagged_row emit
+             * an INSERT naming a `status` column that does not exist. */
             uint8_t hh[32];
             synth_hash(hh, h, 0);
             built = built
                 && put_header_admit(db, h, hh)
                 && put_tagged_row(db, "validate_headers_log", "hash", h, 1, hh, NULL)
                 && put_tagged_row(db, "script_validate_log", "block_hash", h, 1, hh, "ok")
-                && put_tagged_row(db, "body_persist_log", NULL, h, 0, NULL, "upstream_failed")
+                && put_tagged_row(db, "body_persist_log", NULL, h, 0, NULL, NULL)
                 && put_tagged_row(db, "proof_validate_log", "block_hash", h, 1, hh, NULL)
                 && put_tagged_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
                 && put_utxo_delta(db, h, hh)
