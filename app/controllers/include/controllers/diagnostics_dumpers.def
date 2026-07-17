@@ -227,6 +227,14 @@
                "network-modal height), and peer_lifecycle connect/"
                "handshake/timeout/reject counters. Rolls up existing "
                "dumpers only — computes nothing new"),
+    DIAG_SERVICE("topology", topology_store_dump_state_json,
+                 "P2P topology graph (who advertises whom): bounded "
+                 "edge_count/cap, distinct_observers, "
+                 "distinct_advertised_nodes, top_advertised in-degree "
+                 "top-10, and the most recent crawler sweep summary "
+                 "(nodes_contacted/reachable, edges_seen, new_nodes)",
+                 "lib/storage/src/topology_store.c",
+                 "lib/test/src/test_topology_store.c"),
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",

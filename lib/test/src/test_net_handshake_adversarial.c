@@ -38,6 +38,7 @@
 #include "net/version.h"
 #include "platform/time_compat.h"
 #include "sync/sync_state.h"
+#include "storage/topology_store.h"
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
@@ -563,6 +564,54 @@ static int test_getaddr_bounded_and_answered_once(void)
     return failures;
 }
 
+/* ── 6b. a real addr message drives the topology graph, not just
+ * addrman: process_addr() (msgprocessor_inv.c) records one
+ * storage/topology_store.h edge per deserialized entry, keyed on the
+ * already-handshaked peer as observer. The fixture's baked-in node addr
+ * (198.51.100.7, an RFC5737 documentation address) is deliberately
+ * non-routable for the other handshake cases in this file, but
+ * topology_store's own net_addr_is_routable() gate would silently
+ * reject every edge with it as observer — override it with a genuine
+ * public address (mirrors hs_make_pub_addr's convention) so this test
+ * exercises the accept path, not the reject path. */
+
+static int test_addr_message_records_topology_edge(void)
+{
+    int failures = 0;
+    TEST("addr: a real addr message records a topology graph edge") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "hs_topology", "edge");
+        ASSERT(topology_store_open(dir));
+        topology_store_test_reset();
+
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        f.node.version = PROTOCOL_VERSION; /* already-handshaked peer,
+                                             * matching the other addr
+                                             * cases in this file */
+        uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
+        f.node.addr = hs_make_pub_addr(60, 9, 9, 1, 8033, recent);
+
+        struct net_address advertised[2] = {
+            hs_make_pub_addr(60, 10, 1, 1, 8033, recent),
+            hs_make_pub_addr(60, 10, 2, 1, 8033, recent),
+        };
+        struct byte_stream payload;
+        hs_build_addr_payload(&payload, advertised, 2);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(!f.node.disconnect);
+
+        ASSERT_EQ(topology_store_test_edge_count(), 2);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        topology_store_close();
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 7. addr timestamp sanitization: far-future / far-past timestamps
  * are the real "terrible" predicate (addrman.c::addr_info_is_terrible)
  * that addrman_get_addr() filters the getaddr response through. Tested
@@ -848,6 +897,7 @@ int test_net_handshake_adversarial(void)
     failures += test_self_connection_detected();
     failures += test_addr_over_cap_rejected();
     failures += test_getaddr_bounded_and_answered_once();
+    failures += test_addr_message_records_topology_edge();
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();

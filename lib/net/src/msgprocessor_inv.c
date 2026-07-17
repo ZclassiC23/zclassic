@@ -17,6 +17,7 @@
 #include "net/peer_scoring.h"
 #include "core/uint256.h"
 #include "core/utiltime.h"
+#include "storage/topology_store.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
@@ -136,6 +137,15 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
     net_addr_init(&source);
     memcpy(source.ip, node->addr.svc.addr.ip, 16);
 
+    /* Topology graph edge: node (the observer — our already-connected,
+     * already-handshaked peer) told us about each address below. now stamped
+     * once per message (not per address) — plenty precise for a
+     * first-seen/last-seen graph edge. topology_store_record_edge()
+     * independently PEDANTIC-validates (net_addr_is_routable) and renders
+     * BOTH endpoints before storage; a not-open store or a rejected address
+     * is a silent no-op here (observational only, never gates addrman). */
+    int64_t topo_now = GetTime();
+
     for (uint64_t i = 0; i < count; i++) {
         struct net_address addr;
         net_address_init(&addr);
@@ -145,6 +155,9 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
 
         if (mp->net_mgr)
             addrman_add(&mp->net_mgr->addrman, &addr, &source, 0);
+        (void)topology_store_record_edge(&node->addr.svc.addr,
+                                         node->addr.svc.port, &addr.svc.addr,
+                                         addr.svc.port, topo_now, NULL);
     }
     return true;
 }
