@@ -38,6 +38,7 @@
 #include "controllers/diagnostics_native_handlers.h"
 #include "controllers/net_native_handlers.h"
 #include "controllers/meta_native_handlers.h"
+#include "controllers/ops_native_handlers.h"
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"
 #include "command/rom_compile_render.h"
@@ -128,6 +129,12 @@ static const struct {
     { "ops.metrics", "zcl_metrics" },
     { "ops.postmortem.list", "zcl_postmortem_list" },
     { "ops.recovery.status", "zcl_refold_status" },
+    { "ops.debug.dash.kpi", "zcl_kpi" },
+    { "ops.debug.dash.snapshot", "zcl_operator_snapshot" },
+    { "ops.debug.dash.summary", "zcl_operator_summary" },
+    { "ops.debug.dash.milestone", "zcl_milestone" },
+    { "ops.debug.dash.mirror", "zcl_mirror_status" },
+    { "ops.debug.dash.selfheal", "zcl_self_heal_stats" },
 };
 
 const char *zcl_native_bridge_tool_for_path(const char *path)
@@ -175,6 +182,12 @@ static const struct {
     { "ops.timeline", zcl_native_timeline_body },
     { "ops.metrics", zcl_native_metrics_body },
     { "ops.postmortem.list", zcl_native_postmortem_list_body },
+    { "ops.debug.dash.kpi", zcl_native_kpi_body },
+    { "ops.debug.dash.snapshot", zcl_native_operator_snapshot_body },
+    { "ops.debug.dash.summary", zcl_native_operator_summary_body },
+    { "ops.debug.dash.milestone", zcl_native_milestone_body },
+    { "ops.debug.dash.mirror", zcl_native_mirror_status_body },
+    { "ops.debug.dash.selfheal", zcl_native_self_heal_stats_body },
 };
 
 enum bridge_rpc_array_kind {

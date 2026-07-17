@@ -210,6 +210,101 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_debug_backtrace)
 
+/* Operator rollup dashboards live under ops.debug (not new top-level ops.*
+ * children) for the same reason ops.debug.explain/profile do: the top-level
+ * ops menu is within ~70 bytes of ZCL_COMMAND_BRANCH_BUDGET (proven by
+ * test_branch_menus_shallow), so a new top-level branch would overflow it.
+ * Each leaf carries short bare-root aliases (kpi, milestone, selfheal) so the
+ * deep canonical path barely shows in practice. */
+ZCL_COMMAND_BRANCH("ops.debug.dash", "ops.debug", "Operator rollup dashboards",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.kpi", "ops.debug.dash", "kpi,ops.kpi",
+    "One-shot subsystem KPI dashboard",
+    "Every subsystem KPI — height, peers, sync, validation, health, mempool, "
+    "wallet, chain, network — read live in one shot; each nested field is the "
+    "raw result of the corresponding read RPC at call time.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "kpi,dashboard,pulse,overview,subsystems", "zcl.command.empty_input.v1",
+    "zcl.ops_kpi.v1", "", "", "zclassic23 kpi",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.snapshot", "ops.debug.dash", "ops.snapshot",
+    "Operator snapshot payload",
+    "The exact native operator snapshot: bounded target-owned component "
+    "snapshots, capture coherence, height/hash/work evidence, typed blockers, "
+    "invariants, and the summary projection, forwarded as captured.", 0,
+    "operator,snapshot,coherence,invariants,evidence",
+    "zcl.command.empty_input.v1",
+    "zcl.operator_snapshot.v2", "", "", "zclassic23 ops snapshot",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.summary", "ops.debug.dash", "ops.summary",
+    "Fail-closed operator summary",
+    "The operator summary projection — the `summary` sub-object of the native "
+    "operator snapshot — a one-glance never-optimistic verdict read live at "
+    "call time.", 0,
+    "operator,summary,verdict,rollup", "zcl.command.empty_input.v1",
+    "zcl.operator_summary.v1", "", "", "zclassic23 ops summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.milestone", "ops.debug.dash", "milestone,ops.milestone",
+    "Version milestone progress",
+    "Node-computed progress toward the next version milestone — "
+    "systems/goals/subgoals bars and MVP acceptance criteria — computed live "
+    "at call time.", 0,
+    "milestone,mvp,progress,version,goals", "zcl.command.empty_input.v1",
+    "zcl.milestone.v1", "", "", "zclassic23 milestone",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.mirror", "ops.debug.dash", "ops.mirror",
+    "zclassicd mirror lockstep",
+    "Canonical zclassic23/zclassicd mirror lockstep status — both heights and "
+    "hashes, lag, reachability, running state, and catch-up counters — read "
+    "live at call time.", 0,
+    "mirror,lockstep,zclassicd,lag,parity", "zcl.command.empty_input.v1",
+    "zcl.mirror_status.v1", "", "", "zclassic23 ops mirror",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.dash.selfheal", "ops.debug.dash", "selfheal,ops.selfheal",
+    "Self-heal recovery counters",
+    "Self-heal UTXO recovery counters — tx-index hits, bounded scan "
+    "hits/exhaustion, total scanned blocks, and the active scan depth limit — "
+    "sampled live at call time.", 0,
+    "selfheal,recovery,utxo,scan,counters", "zcl.command.empty_input.v1",
+    "zcl.self_heal_stats.v1", "", "", "zclassic23 ops selfheal",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
 ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Postmortems",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(

@@ -1747,6 +1747,52 @@ static int test_describe_emits_observed_p99(void)
     return failures;
 }
 
+/* The operator rollup dashboards ported from the legacy MCP ops controller
+ * (tools/mcp/controllers/ops_controller.c) that had no native twin. Each is a
+ * READY read leaf under ops.debug.dash, dispatched by the MCP-free bridge via a
+ * re-homed body function (never an RPC-shape binding), and named by a
+ * tool-for-path entry so the selftest sweep and the "exactly one dispatch"
+ * invariant both accept it. */
+static int test_ops_dash_dashboards_ported(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("ops.debug.dash operator dashboards are bridged READY leaves") {
+        const struct {
+            const char *path;
+            const char *tool;
+        } leaves[] = {
+            { "ops.debug.dash.kpi", "zcl_kpi" },
+            { "ops.debug.dash.snapshot", "zcl_operator_snapshot" },
+            { "ops.debug.dash.summary", "zcl_operator_summary" },
+            { "ops.debug.dash.milestone", "zcl_milestone" },
+            { "ops.debug.dash.mirror", "zcl_mirror_status" },
+            { "ops.debug.dash.selfheal", "zcl_self_heal_stats" },
+        };
+        const struct zcl_command_spec *branch =
+            find_spec(reg, "ops.debug.dash");
+        ASSERT(branch != NULL);
+        ASSERT_EQ(branch->mode, ZCL_COMMAND_MODE_BRANCH);
+        ASSERT_STR_EQ(branch->parent, "ops.debug");
+        for (size_t i = 0; i < sizeof(leaves) / sizeof(leaves[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, leaves[i].path);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+            ASSERT_STR_EQ(s->parent, "ops.debug.dash");
+            ASSERT(s->handler == zcl_native_bridge_command);
+            const char *tool = zcl_native_bridge_tool_for_path(leaves[i].path);
+            ASSERT(tool != NULL);
+            ASSERT_STR_EQ(tool, leaves[i].tool);
+            /* body-backed composition, never an RPC-shape binding */
+            ASSERT(zcl_native_bridge_body_for_path(leaves[i].path) != NULL);
+            ASSERT(zcl_native_bridge_rpc_for_path(leaves[i].path) == NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
@@ -1781,6 +1827,7 @@ int test_command_registry_catalog(void)
     failures += test_response_budget_views();
     failures += test_typo_stays_branch();
     failures += test_ops_selftest_registry();
+    failures += test_ops_dash_dashboards_ported();
     failures += test_ops_state_requires_subsystem();
     failures += test_dev_vcs_revert_release_stub();
     failures += test_dev_vcs_seal_grant_release_stub();
