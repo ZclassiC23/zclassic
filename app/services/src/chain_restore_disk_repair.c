@@ -20,8 +20,10 @@
 #include "chain/chainparams.h"
 #include "core/serialize.h"
 #include "primitives/block.h"
+#include "util/boot_scan.h"
 #include "util/safe_alloc.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -115,7 +117,15 @@ int chain_restore_rebuild_active_chain_from_disk(
     char stop_reason[160] = "";
     int stop_height = -1;
 
+    /* O(chain) witness (util/boot_scan.h): the disk-backed active-chain rebuild
+     * walks tip->genesis reading each header. It is a cold-seed/repair path
+     * (only when the active-chain projection is missing), never a warm boot —
+     * a non-zero count on a warm restart means boot fell back to a full
+     * O(chain) rebuild. Registered once; bumped per height read. */
+    atomic_uint_least64_t *scan_ctr =
+        boot_scan_counter("chain_restore.disk_rebuild_rows");
     for (int h = tip->nHeight; h >= 0 && cur; h--) {
+        boot_scan_bump(scan_ctr);
         if (cur->nHeight != h) {
             read_errors++;
             break;
@@ -439,7 +449,12 @@ int chain_restore_rebuild_active_chain_from_block_files(
     int populated = 0;
     int repaired = 0;
 
+    /* Same O(chain) witness as _from_disk: this block-file variant also walks
+     * tip->genesis. Shares the counter so the total names the boot's rebuild. */
+    atomic_uint_least64_t *scan_ctr =
+        boot_scan_counter("chain_restore.disk_rebuild_rows");
     for (int h = tip->nHeight; h >= 0; h--) {
+        boot_scan_bump(scan_ctr);
         const struct chain_restore_disk_pos_entry *pos =
             chain_restore_disk_pos_map_find(&pos_map, &want);
         if (!pos)

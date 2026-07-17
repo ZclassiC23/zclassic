@@ -60,6 +60,7 @@
 #include "util/sync.h"
 #include "util/safe_alloc.h"
 #include "util/boot_phase.h"
+#include "util/boot_scan.h"
 #include "util/sysinit.h"
 #include "platform/os_sandbox.h"
 #include "util/util.h"
@@ -4035,6 +4036,8 @@ sapling_tree_boot_check_done:
            (long long)(boot_clock_ms() - t_phase));
     printf("[boot] %-30s %lldms\n", "total",
            (long long)(boot_clock_ms() - t_boot_start));
+    /* Per-scanner O(delta) row counts, next to the timing (see util/boot_scan.h). */
+    boot_scan_log_summary("boot-complete");
     if (svc_ok) {
         /* SERVICES_RUNNING boundary: background maintenance services
          * (disk_monitor/ibd_throttle already up; db_maintenance/wallet_backup/

@@ -15,6 +15,7 @@
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_planner.h"
 #include "platform/time_compat.h"
+#include "util/boot_scan.h"
 #include "json/json.h"
 
 #include <string.h>
@@ -196,5 +197,16 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "fast_restart_tip_height",
                      s->fast_restart_tip_height);
     json_push_kv_str(out, "fast_restart_reason", s->fast_restart_reason);
+
+    /* O(delta) witness — per-step boot data-scan iteration counts (see
+     * util/boot_scan.h). Each key is a named boot scanner; the value is how
+     * many rows/entries it touched. A step whose count tracks chain length
+     * instead of the delta is an O(chain) boot regression the operator can see
+     * here without attaching a profiler. */
+    struct json_value scan;
+    json_init(&scan);
+    boot_scan_dump_json(&scan);
+    json_push_kv(out, "scan_counters", &scan);
+    json_free(&scan);
     return true;
 }
