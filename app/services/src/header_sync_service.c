@@ -321,8 +321,8 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
                                            int our_height)
 {
     int64_t base;
-    if (syncsvc_is_initial_block_download(node, our_height))
-        base = 10;
+    if (syncsvc_is_initial_block_download(node, our_height) || syncsvc_header_band_hole_open())
+        base = 10;   /* S8: band hole (island-anchored tip) also forces IBD */
     else if (node->starting_height > 0 && our_height < node->starting_height)
         base = 30;   /* tighter than old 60s for faster catch-up */
     else
@@ -499,6 +499,7 @@ bool syncsvc_should_scan_block_files_after_headers(size_t accepted,
 struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
+                                      const struct block_index *best_header_fallback,
                                       const struct uint256 *genesis_hash)
 {
     bool has_genesis = false;
@@ -516,6 +517,17 @@ struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
         syncsvc_build_locator_from_tip(loc, active_chain_tip(chain),
                                        "header_sync locator chain",
                                        "header_sync.locator_chain");
+    }
+
+    /* Full-index boot: the active_chain window / authority is not yet seated so
+     * active_chain_tip() gave nothing. Anchor at the known header frontier
+     * rather than collapsing to a genesis-only locator (which pins header sync
+     * near genesis). NEVER genesis when a frontier header exists. */
+    if (loc->num_hashes == 0 && best_header_fallback &&
+        best_header_fallback->phashBlock) {
+        syncsvc_build_locator_from_tip(loc, best_header_fallback,
+                                       "header_sync locator best_header",
+                                       "header_sync.locator_best_header");
     }
 
     if (loc->num_hashes == 0) {

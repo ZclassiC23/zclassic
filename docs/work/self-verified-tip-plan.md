@@ -8,10 +8,11 @@
 This is the canonical statement of the **sovereign cure** that
 [`FRAMEWORK.md`](../FRAMEWORK.md) §0 names as "the destination in flight, not
 the proven present." It is the same plan referenced by
-[`FORWARD_PLAN.md`](./FORWARD_PLAN.md) #1 (sovereign cure),
-[`never-stuck-plan.md`](./never-stuck-plan.md), and
-[`archive/sync-fix-plan-2026-06-21.md`](./archive/sync-fix-plan-2026-06-21.md) — restated in the
-language of the Prime Directive and the Ten Laws.
+[`FORWARD_PLAN.md`](./FORWARD_PLAN.md) #1 (sovereign cure) and
+[`never-stuck-plan.md`](./never-stuck-plan.md) — restated in the
+language of the Prime Directive and the Ten Laws. (The predecessor
+`archive/sync-fix-plan-2026-06-21.md` was removed from the tree; recover
+with `git log --follow -- docs/work/archive/sync-fix-plan-2026-06-21.md`.)
 
 Drafted, then adversarially stress-tested against the repo (ordering
 feasibility, false-green gates, already-shipped work, deletion/parity safety) —
@@ -167,7 +168,8 @@ a borrowed copy.**
      borrowed seed via `utxo_recovery_import_ldb`, `config/src/boot.c:2487`).
   3. **Delete the borrow** — remove the `coins_kv` seed copy
      (`utxo_recovery_restore.c:369`) and the ~9k-LOC carve in dependency order
-     per [`archive/architecture-deletion-plan.md`](./archive/architecture-deletion-plan.md).
+     per the removed `archive/architecture-deletion-plan.md` (recover with
+     `git log --follow -- docs/work/archive/architecture-deletion-plan.md`).
 - **9-caller caution (corrected from 5):** `tip_finalize_stage_seed_anchor` has
   **9 production callers**. KEEP the consensus-critical ones
   (`app/services/src/reducer_ingest_service.c` live fold; the from-anchor
@@ -202,7 +204,7 @@ a borrowed copy.**
   (`test_make_lint_gates.c`, `FRAMEWORK.md` §5). Re-audit `check_one_write_path`,
   `check_stage_log_reorg_unsafe_ratchet`, `check_projections_pure` **before** the
   Act-3 deletions, so a hollow gate can't let a forbidden pattern back in via a
-  renamed symbol. Doc: [`lint-gate-hollowness-audit.md`](./archive/lint-gate-hollowness-audit.md).
+  renamed symbol. Doc: [`lint-gate-hollowness-audit.md`](./lint-gate-hollowness-audit.md).
 - **(c) Delete confirmed-dead scaffolding** — `lib/validation/src/verify_queue.c:130`
   is `additive_unwired` (no non-test callers) + the other confirmed-dead paths.
 - **(d) CI invariant:** no path advances `coins_applied_height` without the

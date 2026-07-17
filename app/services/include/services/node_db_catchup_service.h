@@ -58,6 +58,15 @@ int node_db_catchup_test_sparse_prefix_target(int indexed,
                                               int first_missing_index_h,
                                               bool proven_authority,
                                               int32_t proven_applied);
+
+/* Direct entry to the per-block lean-index writer so a torn block_index
+ * (BLOCK_HAVE_DATA set but phashBlock == NULL) can be proven to fail-closed
+ * with a named log instead of dereferencing NULL. */
+struct block;
+struct block_index;
+bool node_db_catchup_test_sync_block_lean(struct node_db *ndb,
+                                          const struct block *blk,
+                                          const struct block_index *pindex);
 #endif
 
 /* Indexes blocks from (sqlite_tip+1) to chain_tip into SQLite. Also scans

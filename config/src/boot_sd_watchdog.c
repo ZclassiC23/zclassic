@@ -9,6 +9,17 @@
  * health degrades the heartbeat stops and systemd's WatchdogSec timer trips,
  * restarting the unit. No-op when NOTIFY_SOCKET is absent (e.g. CLI use).
  *
+ * Pillar 7 — "supervise the supervisor": the ping is ALSO gated on the root
+ * supervisor's sweep heartbeat (util/supervisor.h) being fresh. The
+ * node-health snapshot below is collected independently of the supervisor
+ * tree, so a wedged/dead zcl_supervisor thread would otherwise leave every
+ * supervisor-driven stage frozen while this tick kept pinging happily
+ * (health looking fine from a stale-but-not-yet-detected angle) — this is
+ * the PREFERRED escalation path from the design: a frozen sweep stops the
+ * ping, systemd's own WatchdogSec timer then kills + restarts the unit. The
+ * independent off-systemd fallback (no ping to stop) is
+ * lib/util/src/supervisor_backstop.c.
+ *
  * Owns: the two file-statics g_sd_watchdog_id / g_sd_watchdog_ctx that track
  * the registered health-ring periodic. The tick runs on the lib/health
  * periodic ring (no thread spawn here), so there is no separate supervisor
@@ -24,6 +35,8 @@
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
 #include "util/boot_progress.h"
+#include "util/supervisor.h"
+#include "util/supervisor_backstop.h"
 #include <stdio.h>
 #include <time.h>
 
@@ -36,6 +49,23 @@
  * No-op when NOTIFY_SOCKET is absent (e.g. CLI invocation). */
 static health_subsystem_id g_sd_watchdog_id = HEALTH_INVALID_ID;
 static struct boot_svc_ctx *g_sd_watchdog_ctx;
+
+/* Pillar 7: true unless the root supervisor's sweep heartbeat
+ * (util/supervisor.h) has gone stale. A heartbeat of 0 means the
+ * supervisor hasn't completed its first sweep yet this boot (normal
+ * during very early startup, before app_init_services starts it) —
+ * that is NOT a wedge, so it does not block the ping. Uses the same
+ * freeze threshold as the off-systemd fallback watcher
+ * (lib/util/src/supervisor_backstop.c) so the two escalation paths
+ * agree on what "frozen" means. */
+static bool boot_sd_watchdog_supervisor_alive(void)
+{
+    uint64_t hb = supervisor_sweep_heartbeat();
+    if (hb == 0)
+        return true;
+    int64_t age_us = platform_time_monotonic_us() - supervisor_sweep_last_us();
+    return age_us < SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US;
+}
 
 static void boot_sd_watchdog_tick(void *ctx)
 {
@@ -66,22 +96,26 @@ static void boot_sd_watchdog_tick(void *ctx)
                 recent_progress = true;
         }
     }
-    if (snap.healthy || recent_progress) {
+    bool supervisor_alive = boot_sd_watchdog_supervisor_alive();
+    if ((snap.healthy || recent_progress) && supervisor_alive) {
         sd_notify_watchdog_ping();
     }
     /* Refresh status line — useful for `systemctl status zclassic23`.
      * Include the recent-progress label so operators can see which
-     * subsystem is keeping the watchdog alive during bulk ops. */
+     * subsystem is keeping the watchdog alive during bulk ops, and a
+     * supervisor=FROZEN marker when Pillar 7's gate is the reason the
+     * ping stopped (as opposed to a plain health/progress lapse). */
     char status[320];
     const char *label = recent_progress ? boot_progress_last_label() : NULL;
     snprintf(status, sizeof(status),
-             "h=%d peers=%zu mirror_lag=%lld sev=%s%s%s",
+             "h=%d peers=%zu mirror_lag=%lld sev=%s%s%s%s",
              snap.tip_height, snap.peer_count,
              (long long)snap.mirror_lag_blocks,
              snap.mirror_lag_breach_severity[0]
                  ? snap.mirror_lag_breach_severity : "none",
              label ? " busy=" : "",
-             label ? label : "");
+             label ? label : "",
+             supervisor_alive ? "" : " supervisor=FROZEN");
     sd_notify_status(status);
 }
 

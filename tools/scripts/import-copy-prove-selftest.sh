@@ -398,7 +398,47 @@ test_skip_header_refresh_bypasses_step() {
     printf '[import-copy-prove-selftest] PASS: --skip-header-refresh bypasses step 1b\n'
 }
 
-# ── test 10: --skip-zclassicd-check yields PASS-INCOMPLETE, never a bare PASS ──
+# ── test 10: a stale auto_reindex_request in the source is cleared before boot ──
+
+test_stale_auto_reindex_request_is_cleared() {
+    OUTPUT="$SANDBOX/out-staleautoreindex"
+    COPY_DIR="$(fresh_copy_dir)"
+    echo ok > "$IMPORT_BEHAVIOR_FILE"
+    TEST_BLOCKER_RESPONSE="$BLOCKER_CLEAR"
+    TEST_FRONTIER_RESPONSE="$FRONTIER_CONTINUOUS"
+    TEST_COPY_HASHES="$COPY_HASHES_MATCH"
+    printf '%d 2\n' "$WEDGE" > "$SRC_FIXTURE/auto_reindex_request"
+    EXTRA_ARGS=(--expect-climb-past="$WEDGE")
+    local rc; rc="$(run_script)"
+    rm -f "$SRC_FIXTURE/auto_reindex_request"
+    unset TEST_BLOCKER_RESPONSE TEST_FRONTIER_RESPONSE TEST_COPY_HASHES
+    assert_rc "$rc" 0 "a run with a stale auto_reindex_request in the source did not still PASS"
+    assert_contains "$OUTPUT" "stale auto_reindex_request found in the copy — clearing before boot" \
+        "the stale auto_reindex_request was not reported as cleared"
+    [ ! -e "$COPY_DIR/auto_reindex_request" ] || \
+        fail "auto_reindex_request still present in \$COPY_DIR after the run — it was not actually cleared"
+    printf '[import-copy-prove-selftest] PASS: a stale auto_reindex_request carried in cp -a is cleared before the proving boot\n'
+}
+
+# ── test 11: no stale request present — step 3b is a documented no-op ───
+
+test_no_auto_reindex_request_is_a_documented_noop() {
+    OUTPUT="$SANDBOX/out-noautoreindex"
+    COPY_DIR="$(fresh_copy_dir)"
+    echo ok > "$IMPORT_BEHAVIOR_FILE"
+    TEST_BLOCKER_RESPONSE="$BLOCKER_CLEAR"
+    TEST_FRONTIER_RESPONSE="$FRONTIER_CONTINUOUS"
+    TEST_COPY_HASHES="$COPY_HASHES_MATCH"
+    EXTRA_ARGS=(--expect-climb-past="$WEDGE")
+    local rc; rc="$(run_script)"
+    unset TEST_BLOCKER_RESPONSE TEST_FRONTIER_RESPONSE TEST_COPY_HASHES
+    assert_rc "$rc" 0 "a clean run with no stale auto_reindex_request did not PASS"
+    assert_contains "$OUTPUT" "no stale auto_reindex_request present — nothing to clear" \
+        "the no-op case was not reported"
+    printf '[import-copy-prove-selftest] PASS: no stale auto_reindex_request is a documented no-op\n'
+}
+
+# ── test 12: --skip-zclassicd-check yields PASS-INCOMPLETE, never a bare PASS ──
 
 test_skip_zclassicd_check_is_incomplete_not_pass() {
     OUTPUT="$SANDBOX/out-skipzd"
@@ -426,5 +466,7 @@ test_continuity_gap_fails_gate_b
 test_hash_mismatch_fails_gate_c
 test_header_refresh_failure_fails_before_phase1
 test_skip_header_refresh_bypasses_step
+test_stale_auto_reindex_request_is_cleared
+test_no_auto_reindex_request_is_a_documented_noop
 test_skip_zclassicd_check_is_incomplete_not_pass
 printf '[import-copy-prove-selftest] PASS: all import-copy-prove.sh driver-logic proofs\n'

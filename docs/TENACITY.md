@@ -1,11 +1,14 @@
 # TENACITY — Standing Engineering Doctrine for a Tenacious Binary
 
 *Adopted 2026-06-11 from the information-theory diagnosis. This is the
-**doctrine** (timeless rules). The live status boards — the divergence-surface
-audit, the failure-rate budget (F1–F11), and the verification gates (G1–G5) —
-live in `docs/work/archive/tenacity-roadmap.md` (which now carries the merged
-rock-solid recovery-program L1/L2 items); the active hardening task board is
-`docs/work/archive/stability-improvements-2026-06-16.md`.*
+**doctrine** (timeless rules). The dated status board this doctrine was
+distilled from — the divergence-surface audit, the failure-rate budget
+(F1–F11), the verification gates (G1–G5), and the merged rock-solid
+recovery-program L1/L2 items — is [`docs/work/tenacity-roadmap.md`](work/tenacity-roadmap.md),
+superseded as a roadmap (see `docs/work/ROADMAPS.md`) but retained on disk
+because reindex/replay-canary/seal_kv code still cites its numbered items by
+name. Near-term hardening sequencing is in
+[`stability-improvements-2026-06-16.md`](work/stability-improvements-2026-06-16.md).*
 
 Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
@@ -125,7 +128,7 @@ unit (`StartLimitIntervalSec=0`, stepped backoff, `0b45e93a5`).
 floor, not a liveness proof. 0 of the 2026-06-11 session's 4 live failures were
 catchable by any gate as configured (`0/430 green` coexisted with `node down
 6+ hours`). Gates must sample real crash/import/repair histories and real chain
-content — see the G1–G5 gate program in `docs/work/archive/tenacity-roadmap.md`.
+content — see the G1–G5 gate program in [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
 ---
 
@@ -137,7 +140,7 @@ LevelDB and the block_index.bin flat file), no atomic cross-commit between
 stores. Per-encoding authority verdicts (which is CANONICAL, which is a demote /
 delete target) live in the audit table in
 `docs/work/canonical-frontier-derived-state-plan.md` Phase 1/2 and
-`docs/work/archive/tenacity-roadmap.md`.
+[`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
 The single canonical writer per fact:
 
@@ -176,7 +179,7 @@ Defense in depth: each failure mode is absorbed by the innermost layer that can;
 outer layers are backstops; the residue pages the operator via
 EV_OPERATOR_NEEDED / Conditions / supervisor — **never a silent halt, never a
 FATAL loop.** The live F1–F11 status board (absorbing layer + landed/open per
-mode) is in `docs/work/archive/tenacity-roadmap.md`.
+mode) is in [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
 **Page-the-operator residue** (everything the layers do NOT absorb): consensus
 divergence vs zclassicd at identical height (parity break — never auto-heal),
@@ -195,7 +198,7 @@ existing 32-core box. Each must emit a verdict sentinel (never exit-0 alone —
 repro-on-copy proved it fires). The five-gate program (G1 full-history replay
 canary, G2 chain-derived golden extremals, G3 crash-boot soak, G4 recipe smokes,
 G5 push-time execution) and its land status are in
-`docs/work/archive/tenacity-roadmap.md`.
+[`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
 **What exists today (honest):** 36 lint gates (source-text greps), 430 hermetic
 test_parallel groups (synthetic regtest 48,5 fixtures), `make ci`

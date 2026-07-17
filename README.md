@@ -148,8 +148,9 @@ has a **long** initial sync.
 Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
 `18232`. On the operator host, `zclassic23` owns the canonical public P2P port
 `8033`; the co-located legacy `zclassicd` oracle is isolated on P2P `8034` and
-RPC `8232`. The authoritative lane/port table is in [`docs/HANDOFF.md`](docs/HANDOFF.md)
-and the live incident runbook is in [`docs/work/archive/live-node-ops-2026-07-04.md`](docs/work/archive/live-node-ops-2026-07-04.md).
+RPC `8232`. The authoritative lane/port table is in [`docs/HANDOFF.md`](docs/HANDOFF.md).
+The 2026-07-04 live incident runbook was removed from the tree — recover it
+with `git log --follow -- docs/work/archive/live-node-ops-2026-07-04.md`.
 
 ## First boot — what a fresh node looks like
 

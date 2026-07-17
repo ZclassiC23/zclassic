@@ -106,6 +106,7 @@
 #include "util/long_op.h"
 #include "util/service_state.h"
 #include "util/supervisor.h"
+#include "util/supervisor_backstop.h"
 #include "util/blocker.h"
 #include "util/self_backtrace.h"
 #include "util/cpu_topology.h"

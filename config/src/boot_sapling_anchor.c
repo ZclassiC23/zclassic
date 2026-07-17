@@ -14,8 +14,9 @@
 
 /* Birth-defect fix for the empty Sapling anchor-frontier stall. A
  * nonzero-activation seed (-refold-from-anchor / -load-snapshot-at-own-height)
- * resets the sapling anchor table via anchor_kv_reset_in_tx without an initial
- * frontier row, so the first shielded-output block above the seed fails closed.
+ * resets the sapling anchor table via anchor_kv_reset_mark_empty_below_in_tx
+ * without an initial frontier row, so the first shielded-output block above the
+ * seed fails closed.
  * The node already holds a header-verified Sapling frontier in RAM here.
  * anchor_kv_seed_frontier_row independently verifies its root against the
  * activation header and writes nothing on mismatch; an unaligned snapshot

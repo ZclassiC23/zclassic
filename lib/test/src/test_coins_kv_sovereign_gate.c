@@ -183,6 +183,30 @@ int test_coins_kv_sovereign_gate(void)
                   strcmp(r, "applied_height_absent") == 0);
     }
 
+    /* The coins_kv_mark_migration_complete primitive is the earned-fact edge the
+     * mint finalize + ratify paths write: with an applied frontier + a non-empty
+     * set present, stamping it FLIPS coins_kv_is_proven_authority to true (rung 2
+     * of the three rungs). The store was cleared by reset_for_reseed above. */
+    SOV_CHECK("mark_migration_complete(NULL) -> false",
+              !coins_kv_mark_migration_complete(NULL));
+    struct uint256 t2 = sov_txid(0x62);
+    SOV_CHECK("re-add t2.0", coins_kv_add(db, t2.data, 0, 4321, 60, true, sc, sizeof(sc)));
+    SOV_CHECK("re-seed applied_height=61", sov_set_applied(db, 61));
+    SOV_CHECK("not proven authority before migration stamp",
+              !coins_kv_is_proven_authority(db, NULL));
+    SOV_CHECK("mark_migration_complete -> true",
+              coins_kv_mark_migration_complete(db));
+    {
+        int32_t applied = -1;
+        SOV_CHECK("proven authority after migration stamp",
+                  coins_kv_is_proven_authority(db, &applied));
+        SOV_CHECK("proven authority reports applied=61", applied == 61);
+    }
+    SOV_CHECK("mark_migration_complete idempotent",
+              coins_kv_mark_migration_complete(db));
+    SOV_CHECK("still proven authority after idempotent stamp",
+              coins_kv_is_proven_authority(db, NULL));
+
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

@@ -137,10 +137,33 @@ void utxo_recovery_set_cold_import_trust_anchor(const struct uint256 *hash,
     }
 }
 
+/* True iff p IS the provenance-matched cold-import trust anchor — the
+ * operator's cold-import UTXO-snapshot base or the cured coins tip a
+ * shielded-history import registers: a SHA3-attested trust-root terminus
+ * ABOVE the compiled SHA3 anchor. Requires an EXACT (height, hash) match, so a
+ * non-matching torn/orphan root is never granted the relaxation (the
+ * detached-island guard stays intact for every value except this one). */
+static bool utxo_recovery_cold_import_anchor_matches(const struct block_index *p)
+{
+    return g_cold_import_anchor_set && p && p->phashBlock &&
+           p->nHeight == g_cold_import_anchor_h &&
+           uint256_cmp(p->phashBlock, &g_cold_import_anchor_hash) == 0;
+}
+
 const struct block_index *utxo_recovery_block_ancestry_break(
     const struct block_index *bi)
 {
     if (!bi)
+        return NULL;
+
+    /* The candidate ITSELF may be the registered cold-import trust anchor: the
+     * shielded-history import attests the cured coins tip (exact height+hash) as
+     * an SHA3-provenance terminus. A height tear BELOW it (between the compiled
+     * anchor and the cured tip) must NOT refuse it — the attestation is the
+     * proof. Check the candidate up front, mirroring the tear-point and
+     * pprev-less-root cold-import checks below; a non-matching candidate still
+     * descends and is refused if it is a genuine detached island. */
+    if (utxo_recovery_cold_import_anchor_matches(bi))
         return NULL;
 
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
@@ -155,8 +178,19 @@ const struct block_index *utxo_recovery_block_ancestry_break(
      * the anchor is the whole proof (caps the walk at ~tip-anchor hops). */
     const struct block_index *p = bi;
     while (p->pprev) {
-        if (p->pprev->nHeight != p->nHeight - 1)
+        if (p->pprev->nHeight != p->nHeight - 1) {
+            /* Height tear — p is the island root, UNLESS p is itself the
+             * provenance-matched cold-import trust anchor. A shielded-history
+             * import registers the cured coins tip (a legitimate SHA3-attested
+             * terminus above the compiled anchor) whose block-index ancestry
+             * is torn just below it; terminating here — on an EXACT (height,
+             * hash) match only — lets Invariant A install that tip instead of
+             * refusing it as a detached island. Every other torn root still
+             * returns p and is refused. */
+            if (utxo_recovery_cold_import_anchor_matches(p))
+                return NULL;
             return p;          /* height tear — p is the island root */
+        }
         p = p->pprev;
         if (p->nHeight <= anchor)
             return NULL;       /* crossed the attested anchor extent */
@@ -172,9 +206,7 @@ const struct block_index *utxo_recovery_block_ancestry_break(
      * at it ONLY when the reached root provenance-matches (exact hash+height).
      * A non-matching detached island still returns p and is refused, so the
      * detached-island guard is intact for every torn/orphan-seeded root. */
-    if (g_cold_import_anchor_set && p->phashBlock &&
-        p->nHeight == g_cold_import_anchor_h &&
-        uint256_cmp(p->phashBlock, &g_cold_import_anchor_hash) == 0)
+    if (utxo_recovery_cold_import_anchor_matches(p))
         return NULL;
     return p;
 }

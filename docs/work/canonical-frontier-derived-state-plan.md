@@ -10,9 +10,9 @@ add more repair code — make it canonical and DRY**; commit + push."* Net-subtr
 two small gates added, nine repair modules deleted.
 
 Both live wedge classes are one defect — **state INSTALLED instead of DERIVED from
-the log** — surfacing at two chokepoints (the "two faces of one defect" framing and
-the wedge narratives live in `docs/work/archive/tenacity-roadmap.md`; this doc is the
-design-of-record for the gates and the deletion order).
+the log** — surfacing at two chokepoints (the "two faces of one defect" framing
+and the wedge narratives live in [`tenacity-roadmap.md`](./tenacity-roadmap.md);
+this doc is the design-of-record for the gates and the deletion order).
 
 ## Canonical invariants (enforced by construction at one chokepoint each)
 

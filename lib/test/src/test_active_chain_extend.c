@@ -574,6 +574,92 @@ int test_active_chain_extend(void)
         main_state_free(&ms);
     }
 
+    /* 14. FAST-PATH DUPLICATE-HAVE_DATA rescue (the live H+1 window wedge). The
+     * body-dependent pipeline stalls when best_header's ancestry object at H+1
+     * is a DUPLICATE that stayed bodiless (BLOCK_HAVE_DATA never set on it)
+     * while body_persist set the bit on the block_map's canonical SAME-HASH
+     * object. The old fast-path gate read the bit off the ancestry twin, saw no
+     * data, and stopped one block short — utxo_apply then logs "step no-advance
+     * result=idle select_total=0" forever. have_data_by_hash merges the
+     * have-data truth across same-hash twins and fills the window with the
+     * body-bearing object, so active_chain_at(H+1) carries the body. It admits
+     * NOTHING unverified: both objects are the same hash-linked block. Exercises
+     * the FAST path (best_header set, its ancestry hash-matches the tip). */
+    {
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *b[8];
+        bool ok = ace_build(&ms, b, N, 3);          /* window tip at b[3] */
+
+        /* hdr4: best_header's ancestry object at height 4 — the SAME block hash
+         * as the canonical b[4] (already body-present in the map) but a
+         * DIFFERENT object that stayed bodiless. Its parent is the real b[3], so
+         * the fast-path liveness guard (ancestry@tip == tip by hash) passes. */
+        struct block_index hdr4;
+        memset(&hdr4, 0, sizeof(hdr4));
+        hdr4.hashBlock  = b[4]->hashBlock;   /* same hash as the canonical body */
+        hdr4.phashBlock = &hdr4.hashBlock;
+        hdr4.nHeight    = 4;
+        hdr4.nStatus    = BLOCK_VALID_TREE;  /* header-only: NO BLOCK_HAVE_DATA */
+        hdr4.nChainWork = b[4]->nChainWork;
+        hdr4.pprev      = b[3];
+
+        uint64_t fast0 = active_chain_extend_window_have_data_fast_count();
+        uint64_t dup0  = active_chain_extend_window_dup_data_rescued_count();
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, &hdr4, 4);
+        ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];  /* body twin */
+        ok = ok && active_chain_at(&ms.chain_active, 4) != &hdr4; /* not bodiless */
+        ok = ok && active_chain_height(&ms.chain_active) == 4;    /* extended */
+        ok = ok && active_chain_extend_window_have_data_fast_count() > fast0;
+        ok = ok && active_chain_extend_window_dup_data_rescued_count() == dup0 + 1;
+        ACE_CHECK("fast-path bodiless-ancestry duplicate rescued via same-hash "
+                  "body twin (live H+1 wedge; counter fires)", ok);
+        main_state_free(&ms);
+    }
+
+    /* 15. NEGATIVE / SAFETY: a genuinely pprev-less body at tip+1 (an
+     * unverifiable parent — the exact shape the rejected chain-extender rung
+     * admitted) is NEVER pulled into the window, by EITHER path. Admitting it
+     * would put a NULL-pprev lookahead at active_chain_at(tip+1), which
+     * tip_finalize (tip_finalize_stage.c:429) reads as a genuine fork and would
+     * false-mark the good tip below it ok=0 reorg_detected. The have-data merge
+     * only relaxes the BLOCK_HAVE_DATA gate; it never touches the pprev/hash
+     * contiguity requirement, so the refusal is preserved. Uses a 4-block chain
+     * (heights 0..3) so height 4 is free for the orphan. */
+    {
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *bb[4];
+        bool ok = ace_build(&ms, bb, 4, 3);       /* window tip at bb[3] */
+
+        /* A body-present successor at height 4 whose parent link is SEVERED
+         * (pprev == NULL): in the map (eligible by have-data) but with no
+         * verifiable parent, so no path may admit it. */
+        struct uint256 orphan_hash;
+        struct block_index *orphan =
+            ace_insert(&ms, &orphan_hash, 4, NULL,
+                       BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+        ok = ok && orphan != NULL;
+
+        /* SLOW path (best_header NULL): the pprev-walk refuses a NULL-pprev
+         * child. */
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, NULL, 4);
+        ok = ok && active_chain_at(&ms.chain_active, 4) == NULL;
+        ok = ok && active_chain_height(&ms.chain_active) == 3;
+
+        /* FAST-guard path (best_header == the severed orphan): its ancestry
+         * cannot reach the finalized tip (pprev severed), so the guard fails and
+         * the slow pprev-walk again refuses it — never admitted. */
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, orphan, 4);
+        ok = ok && active_chain_at(&ms.chain_active, 4) == NULL;
+        ok = ok && active_chain_height(&ms.chain_active) == 3;
+
+        ACE_CHECK("pprev-less body at tip+1 refused by all paths (no "
+                  "false-reorg fuel)", ok);
+        main_state_free(&ms);
+    }
+
     chain_linkage_reset_for_testing(); /* no HOLD/counter leak to sibling groups */
     return failures;
 }

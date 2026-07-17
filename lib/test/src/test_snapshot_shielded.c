@@ -277,7 +277,7 @@ int test_snapshot_shielded(void)
         /* Exact primitive sequence of boot_seed_shielded_from_snapshot: reset to
          * seed_h (historical prefix unknown), seed current frontiers, and add
          * supplied nullifier rows under a positive completeness marker. */
-        ok = ok && anchor_kv_reset_in_tx(db, SEED_H);
+        ok = ok && anchor_kv_reset_mark_empty_below_in_tx(db, SEED_H);
         ok = ok && anchor_kv_seed_frontier_row(db, ANCHOR_POOL_SAPLING,
                                                &sap_tree, SEED_H, &sap_root);
         ok = ok && anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &spr_tree, SEED_H);
@@ -316,7 +316,7 @@ int test_snapshot_shielded(void)
     {
         sqlite3 *db = NULL;
         bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK &&
-                  anchor_kv_reset_in_tx(db, SEED_H) &&
+                  anchor_kv_reset_mark_empty_below_in_tx(db, SEED_H) &&
                   anchor_kv_seed_frontier_row(db, ANCHOR_POOL_SAPLING,
                                               &sap_tree, SEED_H, &sap_root);
         struct incremental_merkle_tree latest;
@@ -336,7 +336,7 @@ int test_snapshot_shielded(void)
         bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK;
         /* Today's coins-only restore: reset the adoption cursor above genesis
          * over an EMPTY sapling_anchors table. */
-        ok = ok && anchor_kv_reset_in_tx(db, SEED_H);
+        ok = ok && anchor_kv_reset_mark_empty_below_in_tx(db, SEED_H);
         SV_CHECK("control restore (cursor above genesis, empty table) applies",
                  ok);
         struct incremental_merkle_tree lt; struct uint256 lroot; int64_t lh = -1;
@@ -361,7 +361,7 @@ int test_snapshot_shielded(void)
     {
         sqlite3 *db = NULL;
         bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK;
-        ok = ok && anchor_kv_reset_in_tx(db, 0);
+        ok = ok && anchor_kv_reset_mark_complete_in_tx(db);
         ok = ok && anchor_kv_seed_frontier_row(db, ANCHOR_POOL_SAPLING,
                                                &sap_tree, SEED_H, &sap_root);
         ok = ok && anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &spr_tree, SEED_H);

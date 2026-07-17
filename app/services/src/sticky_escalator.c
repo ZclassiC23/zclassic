@@ -9,6 +9,12 @@
 // out-struct, and bool PREDICATES (armed / test accessors) — none strips a
 // failure reason. Every rung dispatch logs + emits EV_RECOVERY_ACTION; the
 // non-latching page emits EV_OPERATOR_NEEDED. No bare-bool lost-reason here.
+//
+// Every rung has a real in-process surface (no NOT_IMPLEMENTED stubs): a rung
+// whose precondition is absent (no reachable anchor / verified rewind base)
+// NAMES a typed DEPENDENCY blocker and returns FAILED so the ladder advances —
+// it never fakes a "done". The deepest rung ALWAYS re-derives from folded bodies
+// (from-anchor refold + self-respawn), NEVER installs a borrowed value.
 
 #include "platform/time_compat.h"
 #include "services/sticky_escalator.h"
@@ -29,6 +35,7 @@
 #include "storage/boot_auto_refold.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "storage/seal_kv.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -64,19 +71,21 @@ static _Atomic uint64_t g_ladder_cycles    = 0;
 static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
 
 /* Wall-unix of the last targeted_rederive apply pass that reported repaired
- * work (cursor clamp / residue purge). While within the rung's witness window
- * a follow-up pass that finds nothing NEW actionable holds the rung
- * (PROGRESSING) instead of advancing: the forward stages are still consuming
- * the clamp (re-deriving the hole from on-disk bodies), and advancing on the
- * very next 5 s tick would cascade into the reindex rung's durable
- * boot_auto_reindex_request seconds after the cure landed. */
+ * work. Within the rung's witness window a follow-up pass that finds nothing
+ * NEW actionable holds the rung (the forward stages are still consuming the
+ * clamp) instead of advancing on the next 5 s tick into the reindex rung. */
 static _Atomic int64_t g_rederive_last_repair_unix = 0;
 
-/* Wall-unix of the last widen_peers discovery kick. Guards against
- * re-kicking every ~30s supervisor tick while the rung holds its witness
- * window: a fresh dial/DNS/onion pass needs real wall time to land peers,
- * and connman_kick_onion_seeds is a blocking per-seed 60s fetch. Reset on
- * episode clear so the next episode kicks immediately. */
+/* FIX-3: consecutive targeted_rederive repairs that do NOT lift H* past the
+ * rung-entry baseline (g_tip_at_rung) — a repair re-clamping the same height.
+ * At STICKY_REDERIVE_MAX_FLAT_REPAIRS the rung FAILs so the ladder advances.
+ * Reset on every rung (re)entry and on episode clear. */
+static _Atomic int g_rederive_flat_repairs = 0;
+
+/* Wall-unix of the last widen_peers discovery kick. Guards against re-kicking
+ * every ~30s supervisor tick while the rung holds its window (a dial/DNS/onion
+ * pass needs real wall time, and connman_kick_onion_seeds blocks per seed 60s).
+ * Reset on episode clear so the next episode kicks immediately. */
 static _Atomic int64_t g_widen_last_kick_unix = 0;
 
 #ifdef ZCL_TESTING
@@ -136,16 +145,50 @@ static int64_t observe_tip(void)
     return -1; // raw-return-ok:no-tip-observable-sentinel-not-an-error
 }
 
+/* Optional in-process range re-derivation primitive (fail-safe-architecture.md
+ * §0c). A sibling lane may link a real stage_rederive_range that rewinds the
+ * suspect stage cursors to `height` and re-derives [height, H*] from
+ * PoW-verified on-disk bodies (delete rows >= height in the lowest stage log and
+ * every downstream log, lower the cursors, let the forward fold rewrite fresh
+ * verdicts). WEAK: the symbol resolves to NULL until that lane lands, at which
+ * point the resnapshot rung invokes it automatically with no edit here — the
+ * "detect at runtime, fall back cleanly if absent" contract. Same idiom as
+ * lib/net/src/tor_integration.c's dynhost_client_fetch weak reference. */
+struct sqlite3;
+struct main_state;
+struct stage_rederive_range_result;
+extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
+                                 int from_height, int to_height,
+                                 struct stage_rederive_range_result *out)
+    __attribute__((weak));
+
 /* ── Default rung actions ──────────────────────────────────────────────
  *
- * Rungs 0/1/3/5/7 have real in-process surfaces and run them (rung 1 runs the
- * reducer-frontier reconcile apply pass, ungated; rung 5 widens peer
- * discovery via connman_kick_seed_discovery/connman_kick_onion_seeds, the
- * same entry points conditions/peer_floor_violated.c's remedy calls; rung 7
- * arms the anchor refold + self-respawn). Rungs 2/4/6 are stubs that emit a
- * typed EV_RECOVERY_ACTION (another lane's worker consumes it) and report
- * NOT_IMPLEMENTED so the ladder advances. A lane can plug a real action via
- * sticky_escalator_register_rung() with no edit here. */
+ * EVERY rung now has a real in-process surface (no NOT_IMPLEMENTED stubs):
+ *   0 retry              — blocker sweep + condition-engine re-attempt.
+ *   1 targeted_rederive  — reducer-frontier reconcile apply pass (ungated).
+ *   2 resnapshot         — in-process re-derive from the nearest SELF-VERIFIED
+ *                          rewind base (newest ratified seal, else compiled
+ *                          anchor) via stage_rederive_range when linked; else
+ *                          names the reachable base + missing consumer and
+ *                          defers to the durable from-bodies rungs. NEVER a
+ *                          borrowed-state snapshot pull.
+ *   3 reindex            — bounded crash-only reindex-from-blocks (next boot).
+ *   4 self_mint_refold   — ARM the durable from-anchor refold of real bodies
+ *                          (boot_auto_refold), no respawn — the arm persists
+ *                          while the cheaper network rungs get a turn.
+ *   5 widen_peers        — connman seed/onion discovery kick.
+ *   6 rebootstrap        — collapsed: widen_peers kick UNION ensure-refold-armed
+ *                          (a separate from-genesis re-bootstrap is intentionally
+ *                          NOT implemented — reindex already re-derives from
+ *                          genesis bodies; see rung_rebootstrap_default).
+ *   7 refold_from_anchor — TERMINAL: arm (if needed) + trigger the self-respawn
+ *                          so the fresh boot re-derives from the verified anchor
+ *                          over real bodies. NEVER installs a borrowed value.
+ * A lane can still plug a custom action via sticky_escalator_register_rung()
+ * with no edit here. A rung whose precondition is absent (no reachable anchor,
+ * no verified base) NAMES a typed blocker and returns FAILED so the ladder
+ * advances — it never fakes a "done". */
 
 static enum sticky_rung_result rung_retry_default(void)
 {
@@ -210,12 +253,22 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
 
     if (rr.repaired) {
         atomic_store(&g_rederive_last_repair_unix, now_unix());
+        /* Flat-H* churn guard (FIX-3): a repair that does not lift H* past the
+         * rung-entry baseline is re-clamping the same height; a climb resets the
+         * count, and at the cap the rung FAILs so the ladder advances. */
+        int64_t entry = atomic_load(&g_tip_at_rung);
+        int flat_repairs = 0;
+        if (entry >= 0 && rr.hstar <= (int)entry)
+            flat_repairs = atomic_fetch_add(&g_rederive_flat_repairs, 1) + 1;
+        else
+            atomic_store(&g_rederive_flat_repairs, 0);
         LOG_WARN("sticky_escalator",
                  "[sticky_escalator] targeted_rederive repaired: hstar=%d "
-                 "coins_applied=%d noncanonical_purged=%d "
-                 "script_validate=%d->%d proof_validate=%d->%d "
-                 "tip_finalize=%d->%d",
-                 rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
+                 "entry=%lld flat_repairs=%d coins_applied=%d "
+                 "noncanonical_purged=%d script_validate=%d->%d "
+                 "proof_validate=%d->%d tip_finalize=%d->%d",
+                 rr.hstar, (long long)entry, flat_repairs,
+                 rr.coins_applied_height, rr.noncanonical_purged,
                  rr.script_validate_cursor_before,
                  rr.script_validate_cursor_after,
                  rr.proof_validate_cursor_before,
@@ -224,16 +277,11 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
                  rr.tip_finalize_cursor_after);
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=sticky-targeted-rederive repaired=1 hstar=%d "
-                    "coins_applied=%d noncanonical_purged=%d "
-                    "script_validate=%d->%d proof_validate=%d->%d "
-                    "tip_finalize=%d->%d",
-                    rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
-                    rr.script_validate_cursor_before,
-                    rr.script_validate_cursor_after,
-                    rr.proof_validate_cursor_before,
-                    rr.proof_validate_cursor_after,
-                    rr.tip_finalize_cursor_before,
+                    "flat_repairs=%d tip_finalize=%d->%d",
+                    rr.hstar, flat_repairs, rr.tip_finalize_cursor_before,
                     rr.tip_finalize_cursor_after);
+        if (flat_repairs >= STICKY_REDERIVE_MAX_FLAT_REPAIRS)
+            return STICKY_RUNG_FAILED; /* re-clamping the same height -> advance */
         return STICKY_RUNG_PROGRESSING; /* clamps durable; stages re-derive */
     }
 
@@ -253,10 +301,108 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
     return STICKY_RUNG_FAILED; /* nothing actionable -> advance the ladder */
 }
 
+/* Name a typed DEPENDENCY blocker (retry-forever, never latching) so a stall
+ * that reaches a precondition-absent rung is escalatable in zcl_blockers
+ * instead of a silent cycle. Reason text is truncated to fit, never rejected. */
+static void name_dependency_blocker(const char *id, const char *reason)
+{
+    struct blocker_record b;
+    if (blocker_init(&b, id, "sticky_escalator", BLOCKER_DEPENDENCY, reason)) {
+        b.retry_budget = -1;
+        (void)blocker_set(&b);
+    }
+}
+
 static enum sticky_rung_result rung_resnapshot_default(void)
 {
-    event_emitf(EV_RECOVERY_ACTION, 0, "action=sticky-resnapshot-request");
-    return STICKY_RUNG_NOT_IMPLEMENTED;
+    /* In-process re-derivation from the nearest SELF-VERIFIED rewind base — the
+     * newest ratified seal, else the compiled anchor. This is emphatically NOT
+     * a borrowed-state snapshot pull (that would reinstate the exact trust root
+     * the sovereign cure deletes, docs/work/self-verified-tip-plan.md): the base
+     * is a locally-verified checkpoint and the forward stages re-fold the SAME
+     * on-disk bodies to the SAME verdicts (consensus parity preserved). */
+    sqlite3 *db = progress_store_db();
+    struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
+    if (!db || !ms) {
+        /* NOT LOG_FAIL: that returns false == STICKY_RUNG_RESOLVED here. */
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] resnapshot: %s unavailable — cannot locate "
+                 "a rewind base", db ? "main_state" : "progress db");
+        return STICKY_RUNG_FAILED;
+    }
+
+    /* Nearest self-verified rewind base: a ratified seal (SHA3-committed coins
+     * set at a 1000-block grid point) beats the compiled anchor. */
+    int32_t base_h = -1;
+    const char *base_kind = "none";
+    struct seal_record seal;
+    bool found = false;
+    if (seal_kv_newest_ratified(db, &seal, &found) && found) {
+        base_h = seal.height;
+        base_kind = "ratified_seal";
+    } else {
+        int32_t anchor_h = -1;
+        if (boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
+                                                       &anchor_h)) {
+            base_h = anchor_h;
+            base_kind = "compiled_anchor";
+        }
+    }
+
+    if (base_h < 0) {
+        /* Precondition absent: no reachable self-verified base. Name the clue
+         * and defer to the durable from-bodies rungs (reindex / self_mint_refold
+         * / refold_from_anchor) which re-derive without a rewind base. */
+        name_dependency_blocker(
+            "sticky_escalator.resnapshot_no_base",
+            "resnapshot: no self-verified rewind base reachable (no ratified "
+            "seal, no compiled-anchor artifact) — deferring to the durable "
+            "reindex/refold re-derivation");
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-resnapshot-skip reason=no_verified_base");
+        return STICKY_RUNG_FAILED;
+    }
+
+    /* If the in-process range re-derivation primitive is linked, run it from the
+     * base: it rewinds the stage cursors to base_h and re-derives forward from
+     * PoW-verified on-disk bodies. Detected at runtime via the weak symbol. */
+    if (stage_rederive_range) {
+        /* Rewind to the self-verified base and re-derive [base_h, tip] from
+         * PoW-verified on-disk bodies. from_height=base_h, to_height=the tip we
+         * observed (H* / active height); the primitive refuses cleanly if the
+         * tip is not above the base. out=NULL: we only need the ran/refused
+         * signal, which the boolean return carries. */
+        bool ran = stage_rederive_range(db, ms, base_h, (int)observe_tip(),
+                                        NULL);
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] resnapshot: in-process re-derive from %s "
+                 "base_h=%d ran=%d", base_kind, base_h, (int)ran);
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-resnapshot-rederive base=%s base_h=%d ran=%d",
+                    base_kind, base_h, (int)ran);
+        /* Ran -> the forward stages consume the rewind (hold the rung); refused
+         * -> nothing actionable here, advance to the durable rungs. */
+        return ran ? STICKY_RUNG_PROGRESSING : STICKY_RUNG_FAILED;
+    }
+
+    /* Base reachable but no in-process rewind consumer wired yet: name the base
+     * + the missing consumer and defer to the durable from-bodies rungs. Honest
+     * (a reachable base is real progress toward the cure) — never a borrowed
+     * pull, never a faked "done". */
+    {
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "resnapshot: self-verified rewind base %s@%d reachable but no "
+                 "in-process rewind consumer (stage_rederive_range / seal "
+                 "window_rebuild) is linked — deferring to reindex/refold",
+                 base_kind, base_h);
+        name_dependency_blocker("sticky_escalator.resnapshot_no_consumer",
+                                reason);
+    }
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=sticky-resnapshot-defer base=%s base_h=%d "
+                "reason=no_inprocess_consumer", base_kind, base_h);
+    return STICKY_RUNG_FAILED;
 }
 
 static bool reindex_replay_executable(int *probe_height_out,
@@ -370,10 +516,115 @@ static enum sticky_rung_result rung_reindex_default(void)
     return STICKY_RUNG_PROGRESSING;  /* armed for next boot; hold a window */
 }
 
+/* Shared from-anchor refold arming primitive — the ONE write path (Law 2) for
+ * both the self_mint_refold rung (arm only) and the terminal refold_from_anchor
+ * rung (arm + trigger the self-respawn). The refold itself always re-derives
+ * from the SHA3-checkpoint-bound anchor set + folds anchor->tip over on-disk
+ * bodies (boot_refold_from_anchor_reset) — it NEVER installs a borrowed value.
+ * `trigger_respawn` false: arm the durable request and let a shallower/cheaper
+ * rung still clear the stall (the arm persists on disk, is withdrawn on episode
+ * clear, or is consumed when the terminal rung pulls the trigger). true: the
+ * durable refold is armed (now or by an earlier rung) — request the supervised
+ * self-respawn so the next boot consumes it. Bounded per anchor episode; a
+ * genuinely broken/absent artifact NAMES a retry-forever blocker (never a
+ * FATAL-loop). `tag` labels the emitted EV_RECOVERY_ACTION. */
+static enum sticky_rung_result arm_refold_from_anchor(bool trigger_respawn,
+                                                      const char *tag)
+{
+    if (!g_datadir || !g_datadir[0]) {
+        event_emitf(EV_RECOVERY_ACTION, 0, "action=%s reason=no_datadir", tag);
+        return STICKY_RUNG_FAILED;
+    }
+    /* Budget exhausted (prior attempts FATAL-looped to terminal): do NOT re-arm
+     * and do NOT respawn into a doomed refold — go deeper / cycle. */
+    if (boot_auto_refold_is_terminal(g_datadir)) {
+        event_emitf(EV_RECOVERY_ACTION, 0, "action=%s reason=budget_terminal",
+                    tag);
+        return STICKY_RUNG_FAILED;
+    }
+
+    bool already_pending = boot_auto_refold_pending(g_datadir);
+
+    if (!already_pending) {
+        /* GATE: a verified anchor snapshot must be reachable (else the boot
+         * reset FATAL-refuses) — name the missing clue, never arm a doomed
+         * refold. */
+        int32_t anchor_h = -1;
+        bool artifact =
+            boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
+                                                       &anchor_h);
+#ifdef ZCL_TESTING
+        int ov = atomic_load(&g_test_refold_artifact_override);
+        if (ov >= 0) {
+            artifact = (ov != 0);
+            if (anchor_h < 0)
+                anchor_h = (int32_t)reducer_frontier_provable_tip_cached();
+        }
+#endif
+        if (!artifact) {
+            char reason[BLOCKER_REASON_MAX];
+            snprintf(reason, sizeof(reason),
+                     "refold_from_anchor: no verified anchor snapshot reachable "
+                     "(anchor_h=%d) — provide the SHA3-checkpoint-bound "
+                     "utxo-anchor.snapshot", anchor_h);
+            name_dependency_blocker(
+                "sticky_escalator.refold_no_anchor_artifact", reason);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=%s reason=no_anchor_artifact anchor_h=%d", tag,
+                        anchor_h);
+            return STICKY_RUNG_FAILED;   /* named the clue -> cycle */
+        }
+
+        /* Arm the durable refold (attempts count at CONSUME/boot time). */
+        int rc = boot_auto_refold_request(g_datadir, anchor_h);
+        if (rc <= 0 || rc == BOOT_AUTO_REFOLD_TERMINAL) {
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=%s-arm-failed anchor=%d rc=%d", tag, anchor_h,
+                        rc);
+            return STICKY_RUNG_FAILED;
+        }
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] %s ARMED anchor=%d respawn=%d — the fresh "
+                 "boot re-seeds + re-folds anchor->tip over on-disk bodies", tag,
+                 anchor_h, (int)trigger_respawn);
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=%s-arm anchor=%d rc=%d respawn=%d", tag, anchor_h, rc,
+                    (int)trigger_respawn);
+    }
+
+    if (!trigger_respawn)
+        /* Armed durably; a shallower/cheaper rung may still clear the stall.
+         * The terminal rung triggers the restart that consumes the arm; an
+         * episode that self-resolves withdraws it (withdraw_stale_refold_request).
+         * Advance so widen_peers/rebootstrap get a turn before the disruptive
+         * restart — the arm is the durable progress, so this is a clean advance,
+         * not a lost remedy. */
+        return STICKY_RUNG_FAILED;
+
+    /* trigger_respawn: the durable refold is armed (now or by an earlier rung) —
+     * pull the trigger so the next boot re-derives from the anchor. */
+    if (already_pending)
+        event_emitf(EV_RECOVERY_ACTION, 0, "action=%s-respawn reason=pending",
+                    tag);
+#ifdef ZCL_TESTING
+    if (!atomic_load(&g_test_suppress_refold_restart))
+#endif
+    {
+        chain_tip_watchdog_request_respawn();
+        thread_registry_request_shutdown();
+    }
+    return STICKY_RUNG_PROGRESSING;   /* armed; the restart consumes it */
+}
+
 static enum sticky_rung_result rung_self_mint_refold_default(void)
 {
-    event_emitf(EV_RECOVERY_ACTION, 0, "action=sticky-self-mint-refold-request");
-    return STICKY_RUNG_NOT_IMPLEMENTED;
+    /* ARM a from-anchor re-fold of the real bodies (the self-derived cure), WITHOUT
+     * respawning — the arm is durable and persists while the cheaper network rungs
+     * (widen_peers, rebootstrap) get a turn; the terminal refold_from_anchor rung
+     * pulls the restart trigger that consumes it. Precondition absent (no verified
+     * anchor artifact) -> names a blocker and advances. */
+    return arm_refold_from_anchor(/*trigger_respawn=*/false,
+                                  "sticky-self-mint-refold");
 }
 
 /* Peer-count floor mirrored from conditions/peer_floor_violated.c's
@@ -447,8 +698,27 @@ static enum sticky_rung_result rung_widen_peers_default(void)
 
 static enum sticky_rung_result rung_rebootstrap_default(void)
 {
-    event_emitf(EV_RECOVERY_ACTION, 0, "action=sticky-rebootstrap-from-genesis");
-    return STICKY_RUNG_NOT_IMPLEMENTED;
+    /* COLLAPSED rung (fail-safe-architecture.md §1: the ladder target is
+     * rederive -> restart-with-refold-armed -> page). A separate from-genesis
+     * re-bootstrap is intentionally NOT implemented here: from-genesis
+     * re-derivation is already the reindex rung (crash-only replay from blocks/),
+     * and a "fresh peer/header re-bootstrap" is exactly the widen_peers kick
+     * (re-add fixed seeds, retry DNS, and — with zero outbound — the onion
+     * directory peer-of-last-resort that harvests clearnet IPs). This last-resort
+     * rung UNIONS the two remedies that actually move a wedged-but-alive node:
+     * re-solicit peers AND ensure the durable from-anchor refold stays armed so
+     * the terminal rung can consume it. */
+    (void)rung_widen_peers_default();   /* re-solicit peers (its own cooldown) */
+    /* Keep the from-anchor refold armed (no respawn — the terminal rung 7 pulls
+     * the trigger). Precondition absent -> names a blocker, does not fake work. */
+    (void)arm_refold_from_anchor(/*trigger_respawn=*/false,
+                                 "sticky-rebootstrap-refold");
+    /* ADVANCE to the terminal refold rung: widen_peers (rung 5) already held a
+     * witness window for a fresh peer set to land; this last-resort rung does a
+     * final re-kick + keeps the refold armed, then hands off so the terminal
+     * rung can fire the decisive self-respawn rather than parking on the peer
+     * cooldown for this rung's (long) window. */
+    return STICKY_RUNG_FAILED;
 }
 
 /* DEEPEST rung — runtime refold from the newest verified anchor
@@ -458,78 +728,14 @@ static enum sticky_rung_result rung_rebootstrap_default(void)
  * an anchor artifact (absent -> name the missing clue). */
 static enum sticky_rung_result rung_refold_from_anchor_default(void)
 {
-    if (!g_datadir || !g_datadir[0]) {
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-refold-skip reason=no_datadir");
-        return STICKY_RUNG_FAILED;
-    }
-    /* Budget exhausted (prior attempts FATAL-looped to terminal): do NOT re-arm. */
-    if (boot_auto_refold_is_terminal(g_datadir)) {
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-refold-skip reason=budget_terminal");
-        return STICKY_RUNG_FAILED;
-    }
-    /* Already armed: HOLD for the restart to consume it (budget counts BOOTS). */
-    if (boot_auto_refold_pending(g_datadir)) {
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-refold-hold reason=request_pending");
-        return STICKY_RUNG_PROGRESSING;
-    }
-
-    /* GATE: a verified anchor snapshot must be reachable (else the boot reset
-     * FATAL-refuses) — name the missing clue, never arm a doomed refold. */
-    int32_t anchor_h = -1;
-    bool artifact =
-        boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
-                                                   &anchor_h);
-#ifdef ZCL_TESTING
-    int ov = atomic_load(&g_test_refold_artifact_override);
-    if (ov >= 0) {
-        artifact = (ov != 0);
-        if (anchor_h < 0)
-            anchor_h = (int32_t)reducer_frontier_provable_tip_cached();
-    }
-#endif
-    if (!artifact) {
-        char reason[BLOCKER_REASON_MAX];
-        snprintf(reason, sizeof(reason),
-                 "refold_from_anchor: no verified anchor snapshot reachable "
-                 "(anchor_h=%d) — provide the SHA3-checkpoint-bound "
-                 "utxo-anchor.snapshot", anchor_h);
-        struct blocker_record b;
-        if (blocker_init(&b, "sticky_escalator.refold_no_anchor_artifact",
-                         "sticky_escalator", BLOCKER_DEPENDENCY, reason)) {
-            b.retry_budget = -1;
-            (void)blocker_set(&b);
-        }
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-refold-skip reason=no_anchor_artifact "
-                    "anchor_h=%d", anchor_h);
-        return STICKY_RUNG_FAILED;   /* named the clue -> cycle */
-    }
-
-    /* Arm the durable refold + request a self-respawn (systemd re-consumes it). */
-    int rc = boot_auto_refold_request(g_datadir, anchor_h);
-    if (rc <= 0 || rc == BOOT_AUTO_REFOLD_TERMINAL) {
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-refold-arm-failed anchor=%d rc=%d",
-                    anchor_h, rc);
-        return STICKY_RUNG_FAILED;
-    }
-    LOG_WARN("sticky_escalator",
-             "[sticky_escalator] refold_from_anchor ARMED anchor=%d — requesting "
-             "self-respawn; the fresh boot re-seeds + re-folds anchor->tip",
-             anchor_h);
-    event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=sticky-refold-arm anchor=%d rc=%d", anchor_h, rc);
-#ifdef ZCL_TESTING
-    if (!atomic_load(&g_test_suppress_refold_restart))
-#endif
-    {
-        chain_tip_watchdog_request_respawn();
-        thread_registry_request_shutdown();
-    }
-    return STICKY_RUNG_PROGRESSING;   /* armed; the restart consumes it */
+    /* TERMINAL: arm the durable from-anchor refold if not already armed (by this
+     * rung or an earlier self_mint_refold/rebootstrap rung) and TRIGGER the
+     * supervised self-respawn so the fresh boot consumes it — re-deriving from
+     * the SHA3-checkpoint-bound anchor set + folding anchor->tip over on-disk
+     * bodies. NEVER installs a borrowed value; a missing/exhausted artifact
+     * names a retry-forever blocker and returns FAILED so the ladder cycles
+     * (never-give-up) and emits the non-latching operator page. */
+    return arm_refold_from_anchor(/*trigger_respawn=*/true, "sticky-refold");
 }
 
 static const sticky_rung_fn g_rung_default[STICKY_RUNG_COUNT] = {
@@ -556,24 +762,17 @@ static void enter_rung(enum sticky_rung r, int64_t now)
     atomic_store(&g_rung, (int)r);
     atomic_store(&g_tip_at_rung, observe_tip());
     atomic_store(&g_rung_entered_unix, now);
+    atomic_store(&g_rederive_flat_repairs, 0);
 }
 
 /* Withdraw a pending (non-terminal) on-disk auto_reindex_request once THIS
- * episode has genuinely resolved (tip proven past the request's anchor).
- * The reindex rung (rung_reindex_default) arms boot_auto_reindex_request()
- * durably so the NEXT boot rebuilds the UTXO set from blocks/; if the stall
- * self-resolves before that boot happens, the marker outlives its episode and
- * would force a needless full chainstate rebuild the next time the node
- * restarts (observed live 2026-07-09: it blocked `make deploy-dev` with
- * "pending crash-only auto-reindex request anchor=3175394" even though the
- * symptom had already cleared) — a violation of the auto-terminating-remedy
- * invariant. boot_auto_reindex_pending() already excludes the TERMINAL marker
- * (count == BOOT_AUTO_REINDEX_TERMINAL), so this never touches the
- * budget-exhausted/operator-paged state — only a live, still-armed request
- * for an anchor the tip has since proven past. `tip > anchor` (not >=) is the
- * same proof bar the reindex rung itself would need: the request was armed at
- * `anchor`, so any height strictly above it is forward progress the rebuild
- * would have re-derived anyway. */
+ * episode has genuinely resolved (tip proven strictly past the request's
+ * anchor). The reindex rung arms boot_auto_reindex_request() durably for the
+ * NEXT boot; if the stall self-resolves first, the marker outlives its episode
+ * and would force a needless chainstate rebuild on restart (live 2026-07-09).
+ * boot_auto_reindex_pending() excludes the TERMINAL marker, so this never
+ * touches the budget-exhausted/operator-paged state — only a live, still-armed
+ * request the tip has since proven past. */
 static void withdraw_stale_reindex_request(int64_t tip)
 {
     if (!g_datadir || !g_datadir[0])
@@ -594,6 +793,37 @@ static void withdraw_stale_reindex_request(int64_t tip)
              anchor, count, (long long)tip);
 }
 
+/* Withdraw a pending (non-terminal) on-disk auto_refold_request once THIS
+ * episode has genuinely resolved (tip proven past the refold anchor). The
+ * self_mint_refold / rebootstrap rungs arm boot_auto_refold_request() durably so
+ * the terminal rung's self-respawn can consume it; if the stall self-resolves
+ * before that respawn happens (a shallower remedy or the network cleared it),
+ * the marker outlives its episode and would force a needless from-anchor refold
+ * on the next boot — a violation of the auto-terminating-remedy invariant, the
+ * exact defect withdraw_stale_reindex_request cures for the reindex marker.
+ * boot_auto_refold_pending() already excludes the TERMINAL marker (budget
+ * exhausted / operator paged), so this never touches that state — only a live,
+ * still-armed request for an anchor the tip has since proven past. */
+static void withdraw_stale_refold_request(int64_t tip)
+{
+    if (!g_datadir || !g_datadir[0])
+        return;
+    if (!boot_auto_refold_pending(g_datadir))
+        return;
+    int32_t anchor = 0;
+    int count = 0;
+    if (!boot_auto_refold_status(g_datadir, &anchor, &count))
+        return;
+    if (tip <= (int64_t)anchor)
+        return;
+    boot_auto_refold_clear(g_datadir);
+    LOG_INFO("sticky_escalator",
+             "[sticky_escalator] withdrew stale auto_refold_request "
+             "anchor=%d count=%d: tip=%lld progressed past it, the refold "
+             "would have been needless",
+             anchor, count, (long long)tip);
+}
+
 static void clear_episode(int64_t now, int64_t tip)
 {
     (void)now;
@@ -602,14 +832,14 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_tip_at_rung, -1);
     atomic_store(&g_rearm_until_unix, 0);
     atomic_store(&g_rederive_last_repair_unix, 0);
+    atomic_store(&g_rederive_flat_repairs, 0);
     atomic_store(&g_widen_last_kick_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
     withdraw_stale_reindex_request(tip);
+    withdraw_stale_refold_request(tip);
     /* Release any operator_needed latch this episode raised: the tip
-     * progressed, so the symptom genuinely cleared. note_cycling_page() emits
-     * a (terminal=0) page that — depending on the alerts policy — may still
-     * latch the health surface; this is the matching clear so recovery is
-     * fully automatic and the node returns to healthy with no human action. */
+     * progressed, so the symptom genuinely cleared. This is the matching clear
+     * for note_cycling_page()'s (terminal=0) page so recovery is automatic. */
     event_emitf(EV_CONDITION_CLEARED, 0,
                 "condition=sticky_ladder_cycling reason=tip_progressed");
     LOG_INFO("sticky_escalator",
@@ -840,6 +1070,7 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_episodes_cleared, 0u);
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
+    atomic_store(&g_rederive_flat_repairs, 0);
     atomic_store(&g_widen_last_kick_unix, (int64_t)0);
     atomic_store(&g_test_suppress_refold_restart, false);
     atomic_store(&g_test_refold_artifact_override, -1);

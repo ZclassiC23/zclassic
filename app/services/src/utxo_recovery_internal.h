@@ -145,16 +145,9 @@ bool utxo_recovery_read_cold_import_seed(struct node_db *ndb,
                                          int *out_height,
                                          struct uint256 *out_hash);
 
-/* PART C — register the provenance-matched cold-import seed anchor as a
- * trust-root terminus for the Invariant A frontier gate. The cold-import UTXO
- * snapshot base is a SHA3-attested trust root ABOVE the compiled SHA3 anchor;
- * without this, utxo_recovery_block_ancestry_break() flags it a detached
- * island and a restart past the seed refuses the coins tip into genesis.
- * Set ONCE at boot by the restore path (single-threaded) before any background
- * consumer runs; read lock-free in ancestry_break. Pass (NULL, -1) — every
- * normal / P2P-origin datadir — to clear, so behaviour is identical to before. */
-void utxo_recovery_set_cold_import_trust_anchor(const struct uint256 *hash,
-                                                int32_t height);
+/* utxo_recovery_set_cold_import_trust_anchor() is now declared in the public
+ * services/utxo_recovery_service.h (PART C trust-root terminus setter) so the
+ * shielded-history import can register the cured coins tip. */
 
 /* ── Mirror-walk helpers (utxo_recovery_mirror_walk.c) ────────────────
  * Legacy fallbacks below the wave-2 derived coins-best: MAX(height) over

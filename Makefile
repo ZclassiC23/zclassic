@@ -157,7 +157,7 @@ CHAOS_SWEEP_SCENARIO ?= tools/sim/scenarios/seeded_peer_churn.scenario
 .DEFAULT_GOAL := all
 
 # App layer (MVC)
-APP_DIRS = models controllers views services supervisors conditions jobs events
+APP_DIRS = models controllers views services supervisors conditions jobs
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 # Lint-gate tests intentionally plant short-lived fixture files inside the
 # production scan tree so the lint scopes stay honest. Those files must remain
@@ -1535,6 +1535,17 @@ export_snapshot: $(BIN_DIR)/export_snapshot
 $(BIN_DIR)/export_snapshot: tools/export_snapshot.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
+
+# verify_anchor_completeness: cross-checks a zclassicd chainstate LevelDB copy
+# against a zclassic23 progress.kv — did the shielded-history importer
+# (shielded_history_import_service.c) capture every anchor/nullifier its
+# source chainstate held? Reads the raw LevelDB keyspace directly (leveldb/c.h),
+# independent of chainstate_legacy_reader.c, as an orthogonal ground truth.
+.PHONY: verify_anchor_completeness
+verify_anchor_completeness: $(BIN_DIR)/verify_anchor_completeness
+$(BIN_DIR)/verify_anchor_completeness: tools/verify_anchor_completeness.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libleveldb.a -l:libsqlite3.a -lstdc++ -lpthread -lm -ldl
 
 .PHONY: zcl-blog
 zcl-blog: $(BIN_DIR)/zcl-blog
@@ -3925,6 +3936,18 @@ check-typed-blocker:
 	@echo "══ LINT: typed blocker adoption ══"
 	@./tools/scripts/check_typed_blocker.sh
 
+# Gate #49 — blocker escape-action totality (HARD, no baseline). Every
+# non-empty escape_action string literal assigned at a blocker_init/
+# blocker_set call site (app/ config/ lib/ src/, excluding lib/test) must
+# resolve to a blocker_register_escape() registration somewhere in the tree.
+# A misspelled or never-registered name silently dead-ends
+# blocker_supervisor_sweep's lookup (lib/util/src/blocker.c ~:492) and is
+# invisible to the blocker_stall_meta_detector.c empty-escape backstop too
+# (that one only catches an EMPTY string). Empty strings are exempt.
+check-blocker-escape-registered:
+	@echo "══ LINT: blocker escape-action totality ══"
+	@./tools/scripts/check_blocker_escape_registered.sh
+
 # Gate #18 graduated WARN → RATCHET (E10): fails on any new off-shape
 # app/ .c file (the allowlist is the baseline and is currently empty).
 check-framework-shape:
@@ -4301,7 +4324,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
+lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

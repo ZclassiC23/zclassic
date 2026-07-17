@@ -203,6 +203,16 @@ bool syncsvc_should_restart_headers_from_tip(size_t accepted,
  * derived from pprev contiguity to the compiled SHA3 anchor / genesis;
  * the band typed blocker is a loud cache, not an authority. */
 
+/* O(1) predicate: true while the band hole is open (recorded via the
+ * HEADER_BAND_BLOCKER_ID typed blocker — the same fact backfill_anchor
+ * gates on). Consumed by the request-side getheaders interval planner
+ * (header_sync_service.c, S8) to stay at the IBD cadence during backfill
+ * even when active_chain_height already reads at the island-anchored tip
+ * and every peer-comparison heuristic concludes "at tip". Reverts
+ * automatically when syncsvc_header_band_after_batch clears the fact on
+ * closure. */
+bool syncsvc_header_band_hole_open(void);
+
 /* True iff the active tip is a detached island AND `last_header` extends
  * the trust-rooted frontier below the island root — i.e. the batch is
  * band-fill progress that must suppress restart-from-tip and the
@@ -314,9 +324,16 @@ bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
 bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
                                     const struct block_index *tip,
                                     int our_height);
+/* `best_header_fallback` (may be NULL) is the last-resort anchor: when neither
+ * `from` nor the active-chain tip yields a locator (a full-index boot where the
+ * active_chain window / authority is not yet seated), the locator is built from
+ * this header frontier instead of collapsing to a genesis-only locator. A
+ * genesis-only locator makes peers re-serve headers from height 0, which pins
+ * header sync near genesis with nothing to escalate it. */
 struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
+                                      const struct block_index *best_header_fallback,
                                       const struct uint256 *genesis_hash);
 
 #define HEADER_STALL_TIMEOUT_SECS 120

@@ -997,6 +997,7 @@ void push_getheaders_from(struct msg_processor *mp,
         struct zcl_result _r = syncsvc_build_getheaders_locator(&loc,
                                               &mp->main_state->chain_active,
                                               from,
+                                              mp->main_state->pindex_best_header,
                                               &mp->params->consensus.hashGenesisBlock);
         if (!_r.ok) {
             fprintf(stderr, "[headers] %s:%d push_getheaders_from: build_locator failed: %s\n",
@@ -1007,6 +1008,7 @@ void push_getheaders_from(struct msg_processor *mp,
         struct zcl_result _r = syncsvc_build_getheaders_locator(&loc,
                                               &mp->main_state->chain_active,
                                               NULL,
+                                              mp->main_state->pindex_best_header,
                                               &mp->params->consensus.hashGenesisBlock);
         if (!_r.ok) {
             fprintf(stderr, "[headers] %s:%d push_getheaders_from: build_locator failed: %s\n",
@@ -1053,6 +1055,7 @@ void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
         block_locator_init(&loc);
         if (syncsvc_build_getheaders_locator(
                 &loc, &mp->main_state->chain_active, NULL,
+                mp->main_state->pindex_best_header,
                 &mp->params->consensus.hashGenesisBlock).ok) {
             struct byte_stream s;
             stream_init(&s, 512);
@@ -1105,10 +1108,14 @@ void exec_getheaders_action(struct msg_processor *mp,
 
     switch (action->anchor) {
     case SYNC_HEADER_REQUEST_TIP_PARENT:
+        /* Prefer best_header whenever it leads the active tip — INCLUDING a
+         * NULL tip (full-index boot before the active_chain window/authority
+         * is seated). The old `tip &&` guard discarded best_header on a NULL
+         * tip and fell to a genesis-only locator. */
         if (mp->main_state->pindex_best_header &&
             mp->main_state->pindex_best_header->phashBlock &&
-            tip &&
-            mp->main_state->pindex_best_header->nHeight > tip->nHeight) {
+            (!tip ||
+             mp->main_state->pindex_best_header->nHeight > tip->nHeight)) {
             push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
         } else if (tip && tip->pprev) {
             push_getheaders_from(mp, node, tip->pprev);
@@ -1130,8 +1137,8 @@ void exec_getheaders_action(struct msg_processor *mp,
         if (msg_processor_block_index_heights_repaired(mp) &&
             mp->main_state->pindex_best_header &&
             mp->main_state->pindex_best_header->phashBlock &&
-            tip &&
-            mp->main_state->pindex_best_header->nHeight > tip->nHeight) {
+            (!tip ||
+             mp->main_state->pindex_best_header->nHeight > tip->nHeight)) {
             push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
         } else {
             push_getheaders(mp, node);

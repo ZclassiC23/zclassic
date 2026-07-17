@@ -5,7 +5,11 @@
 
 #include "jobs/reducer_frontier.h"
 
+#include "reducer_frontier_rewind_bases.h"
+
 #include "json/json.h"
+#include "net/connman.h"
+#include "services/sync_monitor.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -479,6 +483,29 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      served_floor > hstar ? (int64_t)served_floor - hstar : 0);
     json_push_kv_bool(out, "served_above_hstar", served_floor > hstar);
 
+    /* Tail-fold progress: H* against the network's best-known tip (the
+     * highest starting_height any handshake-complete NODE_NETWORK peer
+     * advertised — same source sync_monitor's tip_eval_peer_height and the
+     * sync_rate_below_floor/local_header_refill_needed conditions already
+     * read via connman_max_peer_height()). This is the one number that
+     * answers "is a cured (release_assisted) node now catching the tail up
+     * to the network, or stuck?" without cross-referencing a second
+     * dumpstate call. -1 / not-ok when no connman is wired yet (e.g. very
+     * early boot) or no peer has completed handshake. */
+    struct connman *cm = sync_monitor_connman();
+    bool network_tip_ok = cm != NULL;
+    int32_t network_tip = network_tip_ok ? connman_max_peer_height(cm) : -1;
+    if (network_tip < 0)
+        network_tip_ok = false;
+    json_push_kv_bool(out, "network_tip_read_ok", network_tip_ok);
+    json_push_kv_int(out, "network_tip", network_tip_ok ? network_tip : -1);
+    json_push_kv_int(out, "hstar_to_network_tip_gap",
+                     network_tip_ok && network_tip > hstar
+                         ? (int64_t)network_tip - hstar
+                         : 0);
+    json_push_kv_bool(out, "tail_fold_in_progress",
+                      network_tip_ok && network_tip > hstar);
+
     int32_t trusted_base_height = -1;
     bool trusted_base_found = false;
     bool trusted_base_ok =
@@ -657,6 +684,17 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)active_chain_extend_window_have_data_fast_count());
     json_push_kv_int(out, "window_extend_slow",
                      (int64_t)active_chain_extend_window_have_data_slow_count());
+    /* Heights the fast path unwedged by merging BLOCK_HAVE_DATA across a
+     * bodiless best-header ancestry twin and its body-bearing block_map copy
+     * (the live H+1 duplicate-object window wedge). A nonzero value is the
+     * rescue firing, not a fault — see chainstate.c have_data_by_hash. */
+    json_push_kv_int(out, "window_dup_data_rescued",
+                     (int64_t)active_chain_extend_window_dup_data_rescued_count());
+
+    /* Rolling self-verified rewind bases (Pillar 3): every currently-available
+     * safe rewind target and the O(delta) distance from H* to the nearest
+     * one — see reducer_frontier_rewind_bases.c. */
+    reducer_frontier_push_rewind_bases_json(out, hstar);
 
     /* Reserved `_health` key (see docs/work "Adding state introspection" +
      * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.

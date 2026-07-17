@@ -12,6 +12,7 @@
 #include "primitives/block.h"
 #include "core/serialize.h"
 #include "controllers/wallet_scan.h"
+#include "config/boot_cursor_state.h"
 #include "wallet/wallet.h"
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -272,6 +273,38 @@ static int test_wallet_scan_cache_valid(void)
 
 /* ── Main ────────────────────────────────────────────────────── */
 
+/* ── boot wallet-scan cursor decision (O(delta) boot) ────────── */
+
+static int test_wallet_scan_cursor_start(void)
+{
+    printf("GIVEN a persisted wallet-scan cursor + keyset fp "
+           "WHEN deciding the scan start THEN O(delta) or full... ");
+    int fails = 0;
+
+    /* No cursor (an old wallet datadir) → one final full scan from 0. */
+    if (boot_cursor_wallet_scan_start(false, -1, false, 0, 42, 1000) != 0)
+        fails++;
+    /* Cursor present, keyset unchanged → delta re-scan from cursor+1. */
+    if (boot_cursor_wallet_scan_start(true, 500, true, 42, 42, 1000) != 501)
+        fails++;
+    /* Keyset changed (a key import) → full re-scan from 0. */
+    if (boot_cursor_wallet_scan_start(true, 500, true, 42, 99, 1000) != 0)
+        fails++;
+    /* Cursor without a keyset stamp → full re-scan from 0. */
+    if (boot_cursor_wallet_scan_start(true, 500, false, 0, 42, 1000) != 0)
+        fails++;
+    /* Cursor already at the tip → empty range (start > tip → skip). */
+    if (boot_cursor_wallet_scan_start(true, 1000, true, 42, 42, 1000) <= 1000)
+        fails++;
+    /* A negative cursor is treated as no cursor → full scan. */
+    if (boot_cursor_wallet_scan_start(true, -5, true, 42, 42, 1000) != 0)
+        fails++;
+
+    if (fails == 0) { printf("OK\n"); return 0; }
+    printf("FAIL (%d)\n", fails);
+    return 1;
+}
+
 int test_block_scan(void)
 {
     int failures = 0;
@@ -286,8 +319,9 @@ int test_block_scan(void)
     failures += test_coins_sqlite_null_safety();
     failures += test_wallet_scan_keyset_fp();
     failures += test_wallet_scan_cache_valid();
+    failures += test_wallet_scan_cursor_start();
 
     printf("%d passed, %d failed\n\n",
-           8 - failures, failures);
+           9 - failures, failures);
     return failures;
 }

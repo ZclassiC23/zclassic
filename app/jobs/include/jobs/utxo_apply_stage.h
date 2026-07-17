@@ -83,6 +83,19 @@ int64_t  utxo_apply_stage_step_us_ewma(void);
  * finalized within the same ingest call. Returns false if no row or ok!=1. */
 bool utxo_apply_stage_succeeded_at(int height);
 
+/* Height + kind of the stage's most recent select-idle observation (see
+ * UA_SELECT_IDLE_* / utxo_apply_select_idle_note in
+ * utxo_apply_stage_fallback.c) — the height (and why) utxo_apply is currently
+ * stuck trying to select/read a block to apply. -1 / false when the stage has
+ * never gone select-idle. This is NOT necessarily near the active tip: a
+ * stale-script/coin-backfill replay can rewind the stage's cursor to
+ * re-derive an arbitrary earlier height. Recovery Conditions (see
+ * conditions/have_data_unreadable.h) consume this to locate an unreadable/
+ * corrupt local body anywhere in the chain, not just tip+1. Atomic reads;
+ * see CLAUDE.md "Adding state introspection". */
+int64_t utxo_apply_stage_select_idle_height(void);
+bool utxo_apply_stage_select_idle_is_read_failure(void);
+
 uint64_t utxo_apply_stage_verified_total(void);
 uint64_t utxo_apply_stage_spend_unknown_total(void);
 uint64_t utxo_apply_stage_utxo_collision_total(void);

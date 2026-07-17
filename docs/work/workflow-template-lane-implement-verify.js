@@ -59,7 +59,8 @@ Gates you must leave green: make lint; make -j; build/bin/test_zcl test_simnet_w
     branch: 'security/gossip-blob-reads',
     spec: `TASK SPEC — peer-gossip blob memcpy hardening (next-wave lane #3)
 
-Read docs/work/archive/next-wave-plan.md section 3. Several models copy fixed-size fields (16/32/43-byte hashes, scripts) out of SQLite rows that are populated from PEER GOSSIP, using memcpy without checking sqlite3_column_bytes — a malformed/short blob row causes an out-of-bounds read.
+next-wave-plan.md section 3 (removed from the tree; recover with
+\`git log --follow -- docs/work/archive/next-wave-plan.md\`) covered this: several models copy fixed-size fields (16/32/43-byte hashes, scripts) out of SQLite rows that are populated from PEER GOSSIP, using memcpy without checking sqlite3_column_bytes — a malformed/short blob row causes an out-of-bounds read.
 
 Files (this is the whole scope; do not expand it):
 - app/models/src/swap_contract.c (redeem_script memcpy around line 152, plus any sibling fixed-size blob reads in the file)
@@ -79,7 +80,8 @@ Gates: make lint; make -j; then find and run the existing focused test groups co
     branch: 'dry/printf-to-log',
     spec: `TASK SPEC — printf-to-LOG_* in boot/recovery/validation + MCP-stdio protection (next-wave lane #4)
 
-Read docs/work/archive/next-wave-plan.md section 4. Raw stdout writes from library/service code corrupt the -mcp stdio JSON protocol and hide diagnostics from node.log.
+next-wave-plan.md section 4 (removed from the tree; recover with
+\`git log --follow -- docs/work/archive/next-wave-plan.md\`) covered this: raw stdout writes from library/service code corrupt the -mcp stdio JSON protocol and hide diagnostics from node.log.
 
 Files (whole scope; do not expand):
 - lib/validation/src/process_block_core.c (~33/50/82 printf sites)

@@ -33,7 +33,9 @@
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/boot_auto_refold.h"
 #include "storage/progress_store.h"
+#include "storage/seal_kv.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -460,6 +462,46 @@ static void teardown_fixture(struct se_fixture *fx)
     main_state_free(&fx->ms);
     progress_store_close();
     test_cleanup_tmpdir(fx->dir);
+}
+
+/* Seed a self-valid RATIFIED seal at grid point g into the fixture's seal ring
+ * (mirrors test_seal_kv.c's insert+ratify), so the resnapshot rung's
+ * nearest-verified-base probe (seal_kv_newest_ratified) finds a base. */
+static bool seed_ratified_seal(sqlite3 *db, int32_t g)
+{
+    if (!seal_kv_ensure_schema(db))
+        return false;
+    struct seal_record r;
+    memset(&r, 0, sizeof(r));
+    r.height = g;
+    for (int i = 0; i < 32; i++) {
+        r.block_hash[i]         = (uint8_t)(g + i + 1);
+        r.coins_sha3[i]         = (uint8_t)(g + i + 0x40);
+        r.anchor_window_sha3[i] = (uint8_t)(g + i + 0x80);
+    }
+    r.utxo_count = (int64_t)g * 7 + 11;
+    r.supply     = (int64_t)g * 1000000 + 333;
+    r.sealed_at  = 1700000000 + g;
+
+    progress_store_tx_lock();
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+    if (ok) ok = seal_kv_insert_candidate_in_tx(db, &r);
+    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+
+    struct seal_record at;
+    bool found = false;
+    int slot = -1;
+    if (!seal_kv_get_at_height(db, g, &at, &found, &slot) || !found)
+        return false;
+    progress_store_tx_lock();
+    bool mok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+    if (mok) mok = seal_kv_mark_ratified_in_tx(db, slot, &at);
+    sqlite3_exec(db, mok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    progress_store_tx_unlock();
+    return mok;
 }
 
 /* ── T7 fixture: a synthetic never-clearing condition ────────────────────
@@ -1015,6 +1057,240 @@ int test_sticky_escalator(void)
         teardown_fixture(&fx);
         connman_free(&cm);
         g_connect_only = saved_connect_only;
+    }
+
+    /* ── T11: self_mint_refold ARMS the from-anchor refold; the TERMINAL rung
+     * triggers the (suppressed) self-respawn that consumes it ────────────────
+     * The stub rungs are now real: self_mint_refold arms boot_auto_refold
+     * (witnessed via boot_auto_refold_pending) WITHOUT respawning, so the
+     * cheaper widen_peers/rebootstrap rungs still get a turn; the terminal
+     * refold_from_anchor rung then pulls the restart trigger. The anchor-artifact
+     * gate is forced present and the real shutdown/respawn syscalls suppressed. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T11: setup fixture", setup_fixture(&fx, "t11_refold_arm"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T11: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        sticky_escalator_set_datadir(fx.dir);
+        sticky_escalator_test_set_refold_artifact_available(1);
+        sticky_escalator_test_set_suppress_refold_restart(true);
+
+        SE_CHECK("T11: no refold armed before the ladder runs",
+                 !boot_auto_refold_pending(fx.dir));
+
+        sticky_escalator_note_stall("test_refold_arm");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T11: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T11: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T11: resnapshot (no base) -> reindex",
+                 sticky_escalator_test_drive(0, t + 33) == STICKY_RUNG_REINDEX);
+        SE_CHECK("T11: unexecutable reindex -> self_mint_refold",
+                 sticky_escalator_test_drive(0, t + 34) ==
+                     STICKY_RUNG_SELF_MINT_REFOLD);
+        /* self_mint_refold arms the durable refold and advances (arm persists). */
+        SE_CHECK("T11: self_mint_refold arms the refold + advances to widen_peers",
+                 sticky_escalator_test_drive(0, t + 35) ==
+                     STICKY_RUNG_WIDEN_PEERS &&
+                 boot_auto_refold_pending(fx.dir));
+        SE_CHECK("T11: widen_peers (no connman) -> rebootstrap",
+                 sticky_escalator_test_drive(0, t + 36) ==
+                     STICKY_RUNG_REBOOTSTRAP);
+        SE_CHECK("T11: rebootstrap -> terminal refold_from_anchor",
+                 sticky_escalator_test_drive(0, t + 37) ==
+                     STICKY_RUNG_REFOLD_FROM_ANCHOR);
+        /* Terminal rung sees the pending arm, requests the (suppressed) respawn,
+         * and HOLDS within its witness window — the refold stays armed and the
+         * ladder is still driving (never-give-up). */
+        SE_CHECK("T11: terminal refold requests respawn and holds (armed)",
+                 sticky_escalator_test_drive(0, t + 38) ==
+                     STICKY_RUNG_REFOLD_FROM_ANCHOR &&
+                 boot_auto_refold_pending(fx.dir) &&
+                 sticky_escalator_test_armed());
+
+        sticky_escalator_set_datadir(NULL);
+        reducer_frontier_provable_tip_reset();
+        teardown_fixture(&fx);
+    }
+
+    /* ── T12: resnapshot detects the nearest SELF-VERIFIED rewind base ───────
+     * With NO base it names the typed blocker resnapshot_no_base and advances.
+     * With a ratified seal reachable AND the stage_rederive_range primitive now
+     * LINKED into this build (pillar2's universal re-derive), it invokes that
+     * in-process consumer from the base; on the degenerate range this minimal
+     * fixture presents (no observable tip above the base) the consumer refuses
+     * honestly and the rung advances to the durable reindex rung — naming
+     * neither no_base (a base WAS found) nor no_consumer (a consumer IS linked).
+     * Either way it advances — never a borrowed-state snapshot pull, never a
+     * faked "done". Witnessed via the typed blocker registry. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T12: setup fixture", setup_fixture(&fx, "t12_resnapshot_base"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T12: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+
+        /* Sub-case A: no seal, no artifact -> resnapshot names no_base. */
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        blocker_clear("sticky_escalator.resnapshot_no_base");
+        blocker_clear("sticky_escalator.resnapshot_no_consumer");
+        sticky_escalator_note_stall("test_resnapshot_no_base");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T12A: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T12A: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T12A: resnapshot (no base) names no_base + advances to reindex",
+                 sticky_escalator_test_drive(0, t + 33) == STICKY_RUNG_REINDEX &&
+                 blocker_exists("sticky_escalator.resnapshot_no_base") &&
+                 !blocker_exists("sticky_escalator.resnapshot_no_consumer"));
+
+        /* Sub-case B: seed a ratified seal -> resnapshot finds the base and,
+         * with the real stage_rederive_range consumer now linked (weak symbol
+         * resolves to the pillar2 primitive), invokes it from that base. The
+         * consumer refuses the degenerate [1000, no-tip] range and the rung
+         * advances to reindex — no_base is NOT named (base found) and
+         * no_consumer is NOT named (consumer linked). */
+        SE_CHECK("T12B: seed a ratified seal at a grid point",
+                 seed_ratified_seal(db, 1000));
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        blocker_clear("sticky_escalator.resnapshot_no_base");
+        blocker_clear("sticky_escalator.resnapshot_no_consumer");
+        sticky_escalator_note_stall("test_resnapshot_base_found");
+        int64_t t2 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T12B: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t2 + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T12B: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t2 + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T12B: resnapshot finds the seal base, invokes the linked "
+                 "re-derive consumer, advances",
+                 sticky_escalator_test_drive(0, t2 + 33) == STICKY_RUNG_REINDEX &&
+                 !blocker_exists("sticky_escalator.resnapshot_no_consumer") &&
+                 !blocker_exists("sticky_escalator.resnapshot_no_base"));
+
+        blocker_clear("sticky_escalator.resnapshot_no_base");
+        blocker_clear("sticky_escalator.resnapshot_no_consumer");
+        teardown_fixture(&fx);
+    }
+
+    /* ── T13: episode clear withdraws a stale armed refold ───────────────────
+     * A pending (non-terminal) auto_refold_request whose anchor the tip has
+     * progressed past is withdrawn on episode clear (mirrors T4 for the reindex
+     * marker) so a self-resolved stall does not force a needless from-anchor
+     * refold on the next boot — the auto-terminating-remedy invariant. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sticky_escalator", "t13_refold_withdraw");
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        sticky_escalator_set_datadir(dir);
+
+        SE_CHECK("T13: plant a pending (non-terminal) refold request",
+                 boot_auto_refold_request(dir, 900) == 1 &&
+                 boot_auto_refold_pending(dir));
+
+        sticky_escalator_note_stall("test_t13_refold_withdraw");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T13: tip progress clears the episode",
+                 sticky_escalator_test_drive(1002, t + 1) == STICKY_RUNG_RETRY &&
+                 !sticky_escalator_test_armed());
+        SE_CHECK("T13: stale refold marker withdrawn (tip 1002 > anchor 900)",
+                 !boot_auto_refold_pending(dir) &&
+                 !boot_auto_refold_is_terminal(dir));
+
+        sticky_escalator_set_datadir(NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── T14: flat-H* repair churn advances the rung (FIX-3) ──────────────────
+     * A targeted_rederive whose reconcile keeps reporting repaired (a cursor is
+     * re-raised above the same rowless hole every tick — the fold re-advancing
+     * while the hole pins H*) must NOT hold its whole window: after
+     * STICKY_REDERIVE_MAX_FLAT_REPAIRS flat repairs (H* never lifts past the
+     * rung-entry baseline) the rung FAILs so the ladder advances to resnapshot
+     * instead of looping on a repair that will never clear H*. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T14: setup fixture", setup_fixture(&fx, "t14_flat_churn"));
+        sqlite3 *db = progress_store_db();
+
+        /* Same live 3166989 shape as T1: rowless script/proof hole at the coins
+         * frontier with the utxo cursor parked at it. */
+        SE_CHECK("T14: punch rowless hole at h0 = coins_applied",
+                 delete_height(db, "script_validate_log", A + 2) &&
+                 delete_height(db, "proof_validate_log", A + 2) &&
+                 delete_height(db, "utxo_apply_log", A + 2) &&
+                 delete_height(db, "utxo_apply_log", A + 3) &&
+                 seed_cursor(db, "utxo_apply", A + 2));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+
+        /* Pin observe_tip() to the flat frontier so the rung-entry baseline
+         * (g_tip_at_rung) equals the pinned H* and the flat check fires. */
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(A + 1);
+
+        sticky_escalator_note_stall("test_flat_repair_churn");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T14: retry window lapse advances to targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+
+        /* Each dispatch: re-raise the cursors above the rowless hole (the fold's
+         * re-advance) so the reconcile re-clamps and reports repaired with H*
+         * still pinned at A+1. The first N-1 flat repairs HOLD the rung; the
+         * Nth FAILs and advances — all inside the rung's 60 s window (t+32..),
+         * so only the flat-repair cap, not the window, can advance it. */
+        for (int i = 1; i < STICKY_REDERIVE_MAX_FLAT_REPAIRS; i++) {
+            SE_CHECK("T14: re-raise cursors above the hole",
+                     seed_cursor(db, "script_validate", A + 4) &&
+                     seed_cursor(db, "proof_validate", A + 4) &&
+                     seed_cursor(db, "tip_finalize", A + 3));
+            SE_CHECK("T14: flat repair holds the rung",
+                     sticky_escalator_test_drive(0, t + 31 + i) ==
+                         STICKY_RUNG_TARGETED_REDERIVE);
+        }
+        SE_CHECK("T14: re-raise cursors above the hole (final)",
+                 seed_cursor(db, "script_validate", A + 4) &&
+                 seed_cursor(db, "proof_validate", A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+        SE_CHECK("T14: Nth flat repair FAILs and advances to resnapshot "
+                 "(not a loop)",
+                 sticky_escalator_test_drive(
+                     0, t + 31 + STICKY_REDERIVE_MAX_FLAT_REPAIRS) ==
+                     STICKY_RUNG_RESNAPSHOT);
+
+        reducer_frontier_provable_tip_reset();
+        teardown_fixture(&fx);
     }
 
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */

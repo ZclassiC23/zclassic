@@ -25,7 +25,8 @@ bool boot_crashonly_consume_reindex_request(const char *datadir)
 }
 
 bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
-                                                     int coins_best_height)
+                                                     int coins_best_height,
+                                                     bool coins_best_hash_verified)
 {
     int32_t anchor = 0;
     int count = 0;
@@ -38,13 +39,29 @@ bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
         return false;
     if (anchor <= 0)
         return false; /* anchor 0 is the boot-storage episode, not a tip. */
-    if (coins_best_height <= anchor)
+    /* The anchor is the tip height at which the wedge armed the reindex.
+     * "Covered" (clear the stale sentinel, do NOT wipe) means one of:
+     *   - coins-best strictly ABOVE the anchor: the live reducer advanced past
+     *     the request without it, so the request is stale; OR
+     *   - coins-best exactly AT the anchor AND hash-verified: the transparent
+     *     UTXO set is provably intact through the wedge tip (a torn set could
+     *     not derive a hash-verified coins-best there). Reindex-chainstate only
+     *     rebuilds transparent coins, so consuming it here cannot fix a wedge
+     *     that lives DOWNSTREAM of a covered coins set (e.g. a missing shielded
+     *     anchor at a higher height) — it would only destructively WIPE a
+     *     healthy near-tip coins set and burn an O(chain) rebuild, the opposite
+     *     of always-sync-fast. Let the real (non-transparent) blocker surface.
+     * A coins-best strictly BELOW the anchor, or AT it but UNVERIFIED (possibly
+     * torn), leaves the reindex justified — keep consuming. */
+    if (coins_best_height < anchor)
+        return false;
+    if (coins_best_height == anchor && !coins_best_hash_verified)
         return false;
 
     fprintf(stderr,
             "[boot] crash-only recovery: clearing stale auto-reindex request "
             "anchor=%d count=%d because derived coins-best h=%d already "
-            "advanced beyond it\n",
+            "covers it (transparent coins intact through the wedge point)\n",
             (int)anchor, count, coins_best_height);
     event_emitf(EV_BOOT_ACTIVATE, 0,
                 "crashonly_auto_reindex_cleared_stale anchor=%d count=%d "
@@ -148,7 +165,8 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
 #define BOOT_STORAGE_EPISODE_ANCHOR 0
 
 enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
-                                                  const char *gate_name)
+                                                  const char *gate_name,
+                                                  bool reindex_executable)
 {
     if (!gate_name) gate_name = "boot_storage_gate";
 
@@ -158,6 +176,27 @@ enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
     if (!datadir || !datadir[0]) {
         event_emitf(EV_OPERATOR_NEEDED, 0,
             "condition=boot_storage_gate gate=%s reason=no_datadir", gate_name);
+        return BOOT_GATE_PARK_DEGRADED;
+    }
+
+    /* Verb check FIRST (mirrors boot_crashonly_handle_unrecoverable): a
+     * from-genesis reindex replay needs genesis-side block data. When blocks/
+     * cannot serve it (cold-import / bodyless window), arming the sentinel would
+     * replay a consume→wipe→refuse cycle every boot and destroy the coins mirror
+     * before the reindex verb check discovers the dead end. Do NOT arm: name the
+     * cold-import re-seed remedy, clear any stale sentinel so the per-boot
+     * consume cycle stops, and park alive-degraded. */
+    if (!reindex_executable) {
+        fprintf(stderr,
+            "[boot] crash-only recovery: boot-storage gate '%s' failed, but "
+            "blocks/ cannot serve a from-genesis reindex replay (cold-import "
+            "window, no genesis-side block data) — NOT arming "
+            "-reindex-chainstate. Remedy: cold-import re-seed. Parking "
+            "alive-degraded; the reducer reconciles forward.\n", gate_name);
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+            "condition=cold_import_reseed_required gate=%s "
+            "reason=reindex_unexecutable", gate_name);
+        boot_auto_reindex_clear(datadir);
         return BOOT_GATE_PARK_DEGRADED;
     }
 
@@ -191,4 +230,49 @@ enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
         "condition=boot_storage_gate_exhausted gate=%s attempts=%d",
         gate_name, BOOT_AUTO_REINDEX_MAX);
     return BOOT_GATE_PARK_DEGRADED;
+}
+
+bool boot_reindex_body_coverage_sufficient(int reindex_best_h,
+                                           int max_have_data_h,
+                                           int have_data_count)
+{
+    if (reindex_best_h <= 0)
+        return true;                       /* trivial span — nothing to gate */
+
+    /* Require the body high-water to reach ~99% of the target height AND the
+     * body count to cover ~99% of the span. A cold-import seed (bodies ~0,
+     * target ~tip) fails both; a healthy datadir passes both; a small tail gap
+     * that gap-fill can heal without a full wipe still passes. */
+    int64_t span = (int64_t)reindex_best_h + 1;
+    int64_t floor = span - (span / 100) - 8;
+    if (floor < 1)
+        floor = 1;
+    return (int64_t)max_have_data_h + 1 >= floor &&
+           (int64_t)have_data_count >= floor;
+}
+
+bool boot_crashonly_reindex_coverage_ok(const char *datadir,
+                                        int reindex_best_h,
+                                        int max_have_data_h,
+                                        int have_data_count,
+                                        bool coins_seeded)
+{
+    if (!coins_seeded ||
+        boot_reindex_body_coverage_sufficient(reindex_best_h, max_have_data_h,
+                                              have_data_count))
+        return true;
+
+    fprintf(stderr,
+        "[boot] -reindex-chainstate refused: coins are seeded but local body "
+        "coverage of [0..%d] is materially incomplete (max_have_data_h=%d "
+        "have_data_count=%d) — a from-genesis replay cannot complete and would "
+        "wipe the seed. Preferring fold-forward-from-seed; clearing the reindex "
+        "sentinel so it does not re-arm every boot.\n",
+        reindex_best_h, max_have_data_h, have_data_count);
+    event_emitf(EV_BOOT_ACTIVATE, 0,
+        "reindex_refused_sparse_bodies target=%d max_have_data=%d count=%d",
+        reindex_best_h, max_have_data_h, have_data_count);
+    if (datadir && datadir[0])
+        boot_auto_reindex_clear(datadir);
+    return false;
 }

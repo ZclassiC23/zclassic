@@ -9,6 +9,8 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/proof_validate_stage.h"
+#include "jobs/proof_validate_null_hash_rearm.h"
+#include "services/recovery_policy.h"
 #include "sapling/params_init.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -297,6 +299,48 @@ static bool log_row_at(sqlite3 *db, int height, int *out_ok,
     }
     sqlite3_finalize(st);
     return found;
+}
+
+/* Read a proof_validate_log row's ok flag + whether its block_hash is NULL.
+ * Returns true if a row exists at `height`. */
+static bool pv_row_hash_state(sqlite3 *db, int height, int *out_ok,
+                              bool *out_hash_null)
+{
+    if (out_ok) *out_ok = -1;
+    if (out_hash_null) *out_hash_null = true;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, block_hash IS NULL FROM proof_validate_log "
+            "WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        if (out_ok) *out_ok = sqlite3_column_int(st, 0);
+        if (out_hash_null) *out_hash_null = sqlite3_column_int(st, 1) != 0;
+        found = true;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+/* Read a stage's DURABLY persisted cursor straight from the stage_cursor
+ * table (the in-memory stage_t accessor does not reflect a direct
+ * stage_set_named_cursor rewind until the stage reloads). -1 if absent. */
+static int64_t read_stage_cursor(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int64_t cur = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        cur = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return cur;
 }
 
 static int pv_setup(const char *tag, int n, int upstream_fail_height,
@@ -610,6 +654,125 @@ int test_proof_validate_stage(void)
         PV_CHECK("dump: verified_total=2",
                  strstr(buf, "\"verified_total\":2") != NULL);
         json_free(&v);
+        pv_teardown(dir, &ms, &sc);
+    }
+
+    /* null_hash_rearm: the pre-stamping NULL-block_hash artifact + its
+     * CONTAINED, recovery-gated re-derive-in-place re-arm. Models the live
+     * wedge — proof_validate_log rows written before block_hash stamping
+     * (commit 7fb9f5650) are ok=1/NULL-block_hash; utxo_apply's guard refuses
+     * them, and proof_validate's cursor has already passed them. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_pv sc;
+        sqlite3 *db = NULL;
+        PV_CHECK("rearm: setup",
+                 pv_setup("rearm", 5, -1, dir, sizeof(dir), &ms, &sc) == 0);
+        db = progress_store_db();
+
+        /* Fold all five heights with the CURRENT writer — every row gets a
+         * stamped block_hash and the pv cursor lands at 5. */
+        PV_CHECK("rearm: initial drain 5",
+                 proof_validate_stage_drain(100) == 5);
+        PV_CHECK("rearm: pv cursor at 5",
+                 proof_validate_stage_cursor() == 5);
+
+        /* Both downstream proof-receipt consumers are wedged at height 2:
+         * utxo_apply (label_splice guard) and tip_finalize (validation_evidence).
+         * The re-arm floors at min(utxo_apply, tip_finalize); seed BOTH cursors
+         * so the LCC floor reflects the deepest consumer. Heights below 2 are
+         * already applied by both and must NOT be rewound (LCC floor). */
+        PV_CHECK("rearm: seed utxo_apply cursor = 2",
+                 exec_sql(db,
+                     "INSERT OR REPLACE INTO stage_cursor(name, cursor, "
+                     "updated_at) VALUES('utxo_apply', 2, 1)"));
+        PV_CHECK("rearm: seed tip_finalize cursor = 2",
+                 exec_sql(db,
+                     "INSERT OR REPLACE INTO stage_cursor(name, cursor, "
+                     "updated_at) VALUES('tip_finalize', 2, 1)"));
+
+        /* Recreate the pre-stamping artifact: null the block_hash of the
+         * ok=1 rows at/above the utxo_apply cursor (heights 2,3,4). */
+        PV_CHECK("rearm: null block_hash of suffix >= 2",
+                 exec_sql(db,
+                     "UPDATE proof_validate_log SET block_hash=NULL "
+                     "WHERE height >= 2"));
+        {
+            int okv; bool hn;
+            PV_CHECK("rearm: h=1 still hashed (below floor)",
+                     pv_row_hash_state(db, 1, &okv, &hn) && okv == 1 && !hn);
+            PV_CHECK("rearm: h=2 now NULL-hash",
+                     pv_row_hash_state(db, 2, &okv, &hn) && okv == 1 && hn);
+        }
+
+        /* Containment: a refusing policy (dry_run) must NOT mutate. */
+        {
+            struct recovery_policy refuse;
+            policy_set_defaults(&refuse);
+            refuse.dry_run = true;
+            struct proof_validate_rearm_report rep;
+            enum proof_validate_rearm_outcome oc =
+                proof_validate_null_hash_rearm(db, &refuse, &rep);
+            PV_CHECK("rearm: refusing policy -> REFUSED",
+                     oc == PV_REARM_REFUSED);
+            PV_CHECK("rearm: refused detected lowest_null=2",
+                     rep.lowest_null_height == 2 && rep.null_row_count == 3);
+            PV_CHECK("rearm: refused did NOT rewind (cursor still 5)",
+                     read_stage_cursor(db, "proof_validate") == 5);
+            int okv; bool hn;
+            PV_CHECK("rearm: refused left suffix NULL",
+                     pv_row_hash_state(db, 2, &okv, &hn) && hn);
+        }
+
+        /* Allow: default caps permit a 3-height rewind. */
+        {
+            struct recovery_policy allow;
+            policy_set_defaults(&allow);
+            struct proof_validate_rearm_report rep;
+            enum proof_validate_rearm_outcome oc =
+                proof_validate_null_hash_rearm(db, &allow, &rep);
+            PV_CHECK("rearm: allow policy -> REARMED",
+                     oc == PV_REARM_REARMED);
+            PV_CHECK("rearm: rewound_to == 2 && floor == 2",
+                     rep.rewound_to == 2 && rep.ua_cursor_floor == 2);
+            PV_CHECK("rearm: deleted 3 NULL rows",
+                     rep.deleted_rows == 3);
+            PV_CHECK("rearm: pv cursor rewound to 2",
+                     read_stage_cursor(db, "proof_validate") == 2);
+            /* Below-floor valid rows are untouched. */
+            int okv; bool hn;
+            PV_CHECK("rearm: h=1 untouched (still hashed)",
+                     pv_row_hash_state(db, 1, &okv, &hn) && okv == 1 && !hn);
+            PV_CHECK("rearm: NULL suffix rows deleted (h=2 gone)",
+                     !pv_row_hash_state(db, 2, &okv, &hn));
+        }
+
+        /* Re-fold: the CURRENT binary re-derives + re-stamps block_hash so the
+         * suffix is hash-complete and utxo_apply can advance. */
+        PV_CHECK("rearm: re-drain re-stamps suffix",
+                 proof_validate_stage_drain(100) == 3);
+        PV_CHECK("rearm: pv cursor back at 5",
+                 proof_validate_stage_cursor() == 5);
+        {
+            int okv; bool hn;
+            for (int h = 2; h < 5; h++) {
+                PV_CHECK("rearm: re-stamped row hashed",
+                         pv_row_hash_state(db, h, &okv, &hn) &&
+                             okv == 1 && !hn);
+            }
+        }
+
+        /* Idempotent: a clean log now re-arms to NOT_NEEDED without mutating. */
+        {
+            struct recovery_policy allow;
+            policy_set_defaults(&allow);
+            struct proof_validate_rearm_report rep;
+            enum proof_validate_rearm_outcome oc =
+                proof_validate_null_hash_rearm(db, &allow, &rep);
+            PV_CHECK("rearm: clean log -> NOT_NEEDED", oc == PV_REARM_NOT_NEEDED);
+            PV_CHECK("rearm: NOT_NEEDED left cursor at 5",
+                     read_stage_cursor(db, "proof_validate") == 5);
+        }
+
         pv_teardown(dir, &ms, &sc);
     }
 

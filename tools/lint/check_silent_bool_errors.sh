@@ -38,7 +38,7 @@ cd "$ROOT" || exit 1
 # shellcheck source=tools/lint/scan_exclusions.sh
 source "$SCRIPT_DIR/scan_exclusions.sh"
 BASELINE="tools/lint/silent_bool_errors_baseline.txt"
-DIRS="${ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST:-app/controllers/src app/services/src app/jobs/src app/conditions/src app/models/src app/views/src app/supervisors/src app/events/src}"
+DIRS="${ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST:-app/controllers/src app/services/src app/jobs/src app/conditions/src app/models/src app/views/src app/supervisors/src}"
 MODE="${ZCL_LINT_MODE:-FAIL}"
 
 scan() {

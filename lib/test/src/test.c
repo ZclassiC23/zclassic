@@ -117,6 +117,13 @@ int main(int argc, char **argv)
         if (strncmp(only, "test_", 5) == 0)
             only += 5;
     }
+    if (only && strcmp(only, "lcc") == 0) {
+        printf("[test] ZCL_TEST_ONLY=lcc — running Log-Cursor Contiguity write rules only\n");
+        { extern int test_lcc_write_rules(void);
+          failures += test_lcc_write_rules(); }
+        printf("\n=== LCC write-rules subset complete: %d failure(s) ===\n", failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "onion") == 0) {
         printf("[test] ZCL_TEST_ONLY=onion — running onion bootstrap only\n");
         { extern int test_onion_bootstrap(void);
@@ -218,6 +225,13 @@ int main(int argc, char **argv)
         { extern int test_reducer_block_ingest_gate(void);
           failures += test_reducer_block_ingest_gate(); }
         printf("\n=== reducer-ingest subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "seal_rewind") == 0) {
+        printf("[test] ZCL_TEST_ONLY=seal_rewind — running the seal-ring rewind consumer only\n");
+        { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
+        printf("\n=== seal_rewind subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -995,6 +1009,8 @@ int main(int argc, char **argv)
     failures += test_snapshot_apply_coins_kv();
     failures += test_consensus_state_snapshot_install();
     failures += test_consensus_state_snapshot_export();
+    { extern int test_ratify_mint_anchor(void);
+      failures += test_ratify_mint_anchor(); }
     failures += test_consensus_state_producer_receipt();
     { extern int test_authority_receipt(void);
       failures += test_authority_receipt(); }
@@ -1336,6 +1352,8 @@ int main(int argc, char **argv)
     failures += test_boot_progress();
     failures += test_supervisor();
     failures += test_supervisor_domains();
+    failures += test_supervisor_backstop();
+    failures += test_self_heal_supervisor();
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();
     failures += test_sync_watchdog_conditions();
@@ -1417,11 +1435,14 @@ int main(int argc, char **argv)
     failures += test_seal_kv();
     failures += test_sha3_sidecar_io();
     failures += test_seal_ratify();
+    { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
     { extern int test_vcs_core(void); failures += test_vcs_core(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     failures += test_nullifier_kv();
     failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();
+    { extern int test_always_sync_selfheal(void);
+      failures += test_always_sync_selfheal(); }
     failures += test_script_validate_stage();
     failures += test_script_validate_contextual_gate();
     failures += test_proof_validate_stage();
@@ -1432,6 +1453,9 @@ int main(int argc, char **argv)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_always_sync_chaos();
+    { extern int test_reindex_sparse_bodies(void);
+      failures += test_reindex_sparse_bodies(); }
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
     failures += test_refold_cadence();
@@ -1468,8 +1492,12 @@ int main(int argc, char **argv)
       failures += test_stage_repair_tipfin_backfill(); }
     { extern int test_reorg_residue_tipfin_replace(void);
       failures += test_reorg_residue_tipfin_replace(); }
+    { extern int test_stage_rederive_range(void);
+      failures += test_stage_rederive_range(); }
     { extern int test_utxo_apply_upstream_hole(void);
       failures += test_utxo_apply_upstream_hole(); }
+    { extern int test_lcc_write_rules(void);
+      failures += test_lcc_write_rules(); }
     { extern int test_reducer_reconcile_witness(void);
       failures += test_reducer_reconcile_witness(); }
     failures += test_process_block_revalidate();

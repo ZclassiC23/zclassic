@@ -8,6 +8,7 @@
 #include "config/boot.h"  /* boot_mint_anchor_export_bundle (lane A1 wiring) */
 #include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
+#include "jobs/tip_finalize_stage.h"
 #include "chain/checkpoints.h"
 #include "crypto/sha3.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -223,7 +224,8 @@ static bool cse_binary_digest(uint8_t out[32])
 
 static bool cse_seed_receipt_version(sqlite3 *db, uint8_t hash[2][32],
                                      uint8_t validation_profile, bool corrupt,
-                                     uint8_t receipt_version)
+                                     uint8_t receipt_version,
+                                     const uint8_t *running_binary_override)
 {
     if (!cse_exec(db,
             "CREATE TABLE IF NOT EXISTS consensus_state_source_receipt("
@@ -243,7 +245,9 @@ static bool cse_seed_receipt_version(sqlite3 *db, uint8_t hash[2][32],
         receipt.toolchain_digest[i] = (uint8_t)(0x71u + i);
         receipt.build_inputs_digest[i] = (uint8_t)(0xb1u + i);
     }
-    if (!cse_binary_digest(receipt.running_binary_digest))
+    if (running_binary_override)
+        memcpy(receipt.running_binary_digest, running_binary_override, 32);
+    else if (!cse_binary_digest(receipt.running_binary_digest))
         return false;
     cse_chain_corpus_digest(hash, receipt.chain_corpus_digest);
     if (receipt_version == CONSENSUS_STATE_SOURCE_RECEIPT_V1) {
@@ -306,7 +310,7 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
 {
     return cse_seed_receipt_version(
         db, hash, validation_profile, corrupt,
-        CONSENSUS_STATE_SOURCE_RECEIPT_V2);
+        CONSENSUS_STATE_SOURCE_RECEIPT_V2, NULL);
 }
 
 static bool cse_insert_tip(sqlite3 *db, int height, const char *status,
@@ -419,9 +423,11 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         !nullifier_kv_add(db, nf, 0, 1))
         return false;
 
-    const uint8_t one = 1;
-    if (!progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY, &one, 1) ||
-        !coins_kv_mark_self_folded(db) ||
+    /* Stamp the exporter-required authority markers through the SAME production
+     * helper the -mint-anchor FULL-profile finalize path uses (config/boot.h), so
+     * a passing export here proves that finalize path yields an exporter-
+     * admissible source — not just that a hand-stamped fixture does. */
+    if (!boot_mint_anchor_stamp_sovereign_markers(db) ||
         !cse_exec(db, "BEGIN IMMEDIATE") ||
         !coins_kv_set_applied_height_in_tx(db, 2) ||
         !cse_exec(db, "COMMIT")) {
@@ -444,6 +450,13 @@ int test_consensus_state_snapshot_export(void)
     uint8_t hash[2][32] = {{0}};
     uint8_t nf[32] = {0};
     CSE_CHECK("complete source generation", db && cse_seed_source(db, hash, nf));
+    /* The mint-finalize stamping helper (exercised inside cse_seed_source) yields
+     * a source that passes the exact two predicates consensus_export_prove_source
+     * gates on at :471-472 — proving the finalize path stamps what the exporter
+     * demands, so a fresh full-validation producer's export no longer refuses. */
+    CSE_CHECK("finalize helper stamped exporter-admissible markers",
+              db && coins_kv_is_proven_authority(db, NULL) &&
+                  coins_kv_contains_refold_marker(db));
 
     char export_dir[512];
     snprintf(export_dir, sizeof(export_dir), "%s/export", dir);
@@ -584,7 +597,7 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("seed self-consistent legacy v1 inspection receipt",
               cse_seed_receipt_version(
                   db, hash, CONSENSUS_STATE_VALIDATION_FULL, false,
-                  CONSENSUS_STATE_SOURCE_RECEIPT_V1));
+                  CONSENSUS_STATE_SOURCE_RECEIPT_V1, NULL));
     request.output_name = "legacy-v1.bundle.db";
     struct consensus_state_export_result legacy_v1_result;
     CSE_CHECK("legacy v1 receipt is inspection-only and publishes nothing",
@@ -941,6 +954,261 @@ int test_consensus_state_snapshot_export(void)
               cse_insert_hash_row(db,
                   "UPDATE utxo_apply_delta SET branch_hash=?2 WHERE height=?1",
                   1, hash[1]));
+
+    /* ── FOLD-TO-ANCHOR (H+1) PRODUCER SHAPE. A complete full-validation mint
+     * producer runs tip_finalize in the STEADY-STATE finalized convention: the
+     * cursor sits at anchor+1 and each finalized ok=1 row at h carries the
+     * LOOKAHEAD hash(h+1) — there is no anchor seed row at the tip. The old
+     * durable-tip check resolved via the cursor and floated one above the served
+     * tip (H*), false-rejecting the real producer with
+     * "durable served tip does not own expected height/hash". Rebuild the
+     * canonical fixture into that exact shape (cursor=2==anchor+1; top finalized
+     * row at anchor=1 carrying the successor lookahead; hstar stays 1==anchor)
+     * and prove the served-tip binding now admits it without weakening. */
+    uint8_t lookahead2[32];
+    uint8_t witness_disagree[32];
+    for (size_t i = 0; i < 32; i++) {
+        lookahead2[i] = (uint8_t)(0x11u + i);          /* hash(anchor+1) */
+        witness_disagree[i] = hash[1][i];
+    }
+    witness_disagree[5] ^= 0xff;
+    char mint_output[600];
+    char mint_wrong_output[600];
+    char mint_disagree_output[600];
+    char mint_below_output[600];
+    snprintf(mint_output, sizeof(mint_output), "%s/mint-shape.bundle.db",
+             export_dir);
+    snprintf(mint_wrong_output, sizeof(mint_wrong_output),
+             "%s/mint-wrong-hash.bundle.db", export_dir);
+    snprintf(mint_disagree_output, sizeof(mint_disagree_output),
+             "%s/mint-anchor-disagree.bundle.db", export_dir);
+    snprintf(mint_below_output, sizeof(mint_below_output),
+             "%s/mint-below-anchor.bundle.db", export_dir);
+
+    CSE_CHECK("rebuild fixture into fold-to-anchor (H+1) producer shape",
+              cse_insert_hash_row(db,
+                  "UPDATE tip_finalize_log SET status='finalized',tip_hash=?2 "
+                  "WHERE height=?1", 1, lookahead2) &&
+              cse_exec(db,
+                  "UPDATE stage_cursor SET cursor=2 WHERE name='tip_finalize'"));
+
+    int mint_durable_h = -1;
+    uint8_t mint_durable_hash[32];
+    CSE_CHECK("cursor resolver floats one above the served tip (bug repro)",
+              tip_finalize_stage_resolve_durable_tip(db, &mint_durable_h,
+                                                     mint_durable_hash) &&
+              mint_durable_h == 2 &&
+              memcmp(mint_durable_hash, lookahead2, 32) == 0);
+    uint8_t mint_served_hash[32];
+    CSE_CHECK("convention-aware witness binds the anchor's own hash at H*",
+              tip_finalize_stage_block_hash_at(db, 1, mint_served_hash) &&
+              memcmp(mint_served_hash, hash[1], 32) == 0);
+
+    request.output_name = "mint-shape.bundle.db";
+    struct consensus_state_export_result mint_result;
+    CSE_CHECK("fold-to-anchor producer exports (served-tip bound, not floated)",
+              consensus_state_snapshot_export(db, &request, &mint_result) &&
+              mint_result.status == CONSENSUS_EXPORT_EXPORTED &&
+              mint_result.height == 1 &&
+              mint_result.validation_profile ==
+                  CONSENSUS_STATE_VALIDATION_FULL);
+    (void)unlink(mint_output);
+
+    /* NEGATIVE (a): a tampered expected block hash still refuses (the complete
+     * genesis→height header proof binds it before the served-tip check). */
+    uint8_t saved_expected[32];
+    memcpy(saved_expected, request.expected_block_hash, 32);
+    request.expected_block_hash[0] ^= 0xff;
+    request.output_name = "mint-wrong-hash.bundle.db";
+    struct consensus_state_export_result mint_wrong_result;
+    CSE_CHECK("tampered expected block hash refuses and publishes nothing",
+              !consensus_state_snapshot_export(db, &request,
+                                               &mint_wrong_result) &&
+              mint_wrong_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(mint_wrong_output, F_OK) != 0);
+    memcpy(request.expected_block_hash, saved_expected, 32);
+
+    /* NEGATIVE (c): the served tip is at the claimed height but its own-hash
+     * witness disagrees — the served-tip gate itself must refuse (header chain,
+     * receipt, and H* are all still internally consistent). */
+    CSE_CHECK("corrupt the anchor's own-hash witness at H*",
+              cse_insert_hash_row(db,
+                  "UPDATE tip_finalize_log SET tip_hash=?2 WHERE height=?1",
+                  0, witness_disagree));
+    request.output_name = "mint-anchor-disagree.bundle.db";
+    struct consensus_state_export_result mint_disagree_result;
+    CSE_CHECK("served tip whose own hash disagrees refuses at the served-tip gate",
+              !consensus_state_snapshot_export(db, &request,
+                                               &mint_disagree_result) &&
+              mint_disagree_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              strstr(mint_disagree_result.reason,
+                     "durable served tip does not own") != NULL &&
+              access(mint_disagree_output, F_OK) != 0);
+    CSE_CHECK("restore the anchor's own-hash witness",
+              cse_insert_hash_row(db,
+                  "UPDATE tip_finalize_log SET tip_hash=?2 WHERE height=?1",
+                  0, hash[1]));
+
+    /* NEGATIVE (b): the served tip is BELOW the claimed anchor (top finalized
+     * row at anchor-1, hstar=anchor-1) — must refuse, never relax height==H* to
+     * a >= that would admit a short source. */
+    CSE_CHECK("drop the served tip below the claimed anchor",
+              cse_exec(db,
+                  "DELETE FROM tip_finalize_log WHERE height=1;"
+                  "UPDATE stage_cursor SET cursor=1 WHERE name='tip_finalize'"));
+    request.output_name = "mint-below-anchor.bundle.db";
+    struct consensus_state_export_result mint_below_result;
+    CSE_CHECK("served tip below the claimed anchor refuses and publishes nothing",
+              !consensus_state_snapshot_export(db, &request,
+                                               &mint_below_result) &&
+              mint_below_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(mint_below_output, F_OK) != 0);
+
+    CSE_CHECK("restore canonical anchor-at-cursor tip_finalize shape",
+              cse_exec(db, "DELETE FROM tip_finalize_log WHERE height IN (0,1)") &&
+              cse_insert_tip(db, 0, "finalized", hash[1]) &&
+              cse_insert_tip(db, 1, "anchor", hash[1]) &&
+              cse_exec(db,
+                  "UPDATE stage_cursor SET cursor=1 WHERE name='tip_finalize'"));
+    request.output_name = "complete.bundle.db";
+
+    /* ── CHECKPOINT-CONTENT EXPORT. A finished genesis->checkpoint datadir whose
+     * fold binary can no longer be rebuilt: its receipt binds a FOREIGN running
+     * binary, so the default export (fold-binary bind) refuses. The
+     * checkpoint-content path admits it by a stronger cryptographic content
+     * proof instead — coins reproduce the compiled SHA3 UTXO checkpoint AND the
+     * Sapling tip frontier Pedersen-roots to the header's committed final root —
+     * and emits a byte-identical-shape bundle that validates like a fold bundle.
+     * The compiled-checkpoint override + reducer anchor installed above make the
+     * fixture reproduce the checkpoint at h=1 by construction. */
+    request.output_dir_fd = output_dir_fd;
+    request.expected_height = 1;
+    memcpy(request.expected_block_hash, hash[1], 32);
+    struct incremental_merkle_tree cse_sapling_tip;
+    struct uint256 cse_sapling_root;
+    int64_t cse_sapling_h = -1;
+    CSE_CHECK("read the header-bound Sapling tip frontier root",
+              anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &cse_sapling_tip,
+                                    &cse_sapling_root, &cse_sapling_h) ==
+                  ANCHOR_KV_FOUND);
+    uint8_t foreign_binary[32];
+    for (size_t i = 0; i < 32; i++)
+        foreign_binary[i] = (uint8_t)(0x5au + i);
+    CSE_CHECK("seed a receipt bound to a foreign (unrebuildable) fold binary",
+              cse_seed_receipt_version(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, false,
+                  CONSENSUS_STATE_SOURCE_RECEIPT_V2, foreign_binary));
+
+    char foreign_output[600];
+    char crypto_output[600];
+    char bad_saroot_output[600];
+    char bad_sha3_output[600];
+    char bad_height_output[600];
+    snprintf(foreign_output, sizeof(foreign_output),
+             "%s/foreign-binary-fold.bundle.db", export_dir);
+    snprintf(crypto_output, sizeof(crypto_output),
+             "%s/crypto-checkpoint.bundle.db", export_dir);
+    snprintf(bad_saroot_output, sizeof(bad_saroot_output),
+             "%s/crypto-bad-saroot.bundle.db", export_dir);
+    snprintf(bad_sha3_output, sizeof(bad_sha3_output),
+             "%s/crypto-bad-sha3.bundle.db", export_dir);
+    snprintf(bad_height_output, sizeof(bad_height_output),
+             "%s/crypto-bad-height.bundle.db", export_dir);
+
+    /* (d) NEGATIVE — the DEFAULT (non-checkpoint) path still binds the fold
+     * binary: a foreign-binary receipt refuses, behavior UNCHANGED. */
+    request.checkpoint_content_export = false;
+    request.output_name = "foreign-binary-fold.bundle.db";
+    struct consensus_state_export_result foreign_result;
+    CSE_CHECK("default export still binds the fold binary (foreign refuses)",
+              !consensus_state_snapshot_export(db, &request, &foreign_result) &&
+              foreign_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(foreign_output, F_OK) != 0);
+
+    /* (a) checkpoint-content export admits the same foreign-binary datadir. */
+    request.checkpoint_content_export = true;
+    memcpy(request.checkpoint_sapling_root, cse_sapling_root.data, 32);
+    request.output_name = "crypto-checkpoint.bundle.db";
+    struct consensus_state_export_result crypto_result;
+    CSE_CHECK("checkpoint-content export admits the foreign-binary datadir",
+              consensus_state_snapshot_export(db, &request, &crypto_result) &&
+              crypto_result.status == CONSENSUS_EXPORT_EXPORTED &&
+              crypto_result.height == 1 &&
+              crypto_result.validation_profile ==
+                  CONSENSUS_STATE_VALIDATION_FULL);
+
+    /* (e) the checkpoint-content bundle validates byte-identically to a fold
+     * bundle through the production validator. */
+    struct consensus_state_snapshot_install_request crypto_install = {
+        .bundle_path = crypto_output,
+        .expected_height = 1,
+        .failpoint = CONSENSUS_INSTALL_FAIL_NONE,
+    };
+    memcpy(crypto_install.expected_block_hash, hash[1], 32);
+    struct consensus_state_install_result crypto_install_result;
+    CSE_CHECK("checkpoint-content bundle passes the production validator "
+              "like a fold bundle",
+              !consensus_state_snapshot_install(db, &crypto_install,
+                                                &crypto_install_result) &&
+              crypto_install_result.status ==
+                  CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+              crypto_install_result.history_complete &&
+              crypto_install_result.validation_profile ==
+                  CONSENSUS_STATE_VALIDATION_FULL);
+    (void)unlink(crypto_output);
+
+    /* (f) NEGATIVE — a Sapling frontier not bound to the header root refuses. */
+    uint8_t wrong_saroot[32];
+    memcpy(wrong_saroot, cse_sapling_root.data, 32);
+    wrong_saroot[7] ^= 0xff;
+    memcpy(request.checkpoint_sapling_root, wrong_saroot, 32);
+    request.output_name = "crypto-bad-saroot.bundle.db";
+    struct consensus_state_export_result bad_saroot_result;
+    CSE_CHECK("checkpoint-content export refuses a header-inconsistent frontier",
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_saroot_result) &&
+              bad_saroot_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              strstr(bad_saroot_result.reason, "Sapling tip frontier") != NULL &&
+              access(bad_saroot_output, F_OK) != 0);
+    memcpy(request.checkpoint_sapling_root, cse_sapling_root.data, 32);
+
+    /* (b) NEGATIVE — coins that miss the compiled checkpoint SHA3 refuse. */
+    struct sha3_utxo_checkpoint bad_sha3_cp = checkpoint;
+    bad_sha3_cp.sha3_hash[0] ^= 0xff;
+    checkpoints_set_sha3_override_for_test(&bad_sha3_cp);
+    request.output_name = "crypto-bad-sha3.bundle.db";
+    struct consensus_state_export_result bad_sha3_result;
+    CSE_CHECK("checkpoint-content export refuses coins that miss the SHA3",
+              !consensus_state_snapshot_export(db, &request, &bad_sha3_result) &&
+              bad_sha3_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              strstr(bad_sha3_result.reason, "reproduce the compiled") != NULL &&
+              access(bad_sha3_output, F_OK) != 0);
+    checkpoints_set_sha3_override_for_test(&checkpoint);
+
+    /* (c) NEGATIVE — an export height off the compiled checkpoint refuses. */
+    struct sha3_utxo_checkpoint bad_height_cp = checkpoint;
+    bad_height_cp.height = 2;
+    checkpoints_set_sha3_override_for_test(&bad_height_cp);
+    request.output_name = "crypto-bad-height.bundle.db";
+    struct consensus_state_export_result bad_height_result;
+    CSE_CHECK("checkpoint-content export refuses off the checkpoint height",
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_height_result) &&
+              bad_height_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              strstr(bad_height_result.reason,
+                     "compiled checkpoint height") != NULL &&
+              access(bad_height_output, F_OK) != 0);
+    checkpoints_set_sha3_override_for_test(&checkpoint);
+
+    request.checkpoint_content_export = false;
+    CSE_CHECK("restore canonical running-binary-bound source receipt",
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, false));
+    request.output_name = "complete.bundle.db";
+    (void)unlink(foreign_output);
+    (void)unlink(bad_saroot_output);
+    (void)unlink(bad_sha3_output);
+    (void)unlink(bad_height_output);
 
     CSE_CHECK("remove required source receipt",
               cse_exec(db, "DELETE FROM consensus_state_source_receipt"));

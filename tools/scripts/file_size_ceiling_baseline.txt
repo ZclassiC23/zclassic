@@ -25,16 +25,23 @@ app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/tip_finalize_stage.c 808
 app/jobs/src/utxo_apply_stage.c 937
-app/services/src/block_index_loader.c 844
+app/services/src/block_index_loader.c 949
 app/services/src/consensus_state_publication_cas.c 801
-app/services/src/node_db_catchup_service.c 860
+app/services/src/node_db_catchup_service.c 886
 app/services/src/rolling_anchor_service.c 801
-app/services/src/sticky_escalator.c 873
+app/services/src/sticky_escalator.c 1104
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 4070
+# ADR-0006 (always-sync spine): the reindex-executability verb check +
+# body-coverage gate + O(delta) wallet-scan cursor + the -ratify-mint-anchor
+# and -export-consensus-bundle terminal-verb dispatches raise the boot
+# recovery-selection owner's baseline; boot_index.c gains the
+# genesis-readability verb-check probe.
+config/src/boot.c 4128
+config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
-config/src/boot_services.c 1658
+config/src/boot_services.c 1659
 config/src/consensus_state_producer_receipt.c 810
 config/src/consensus_state_snapshot_install_activate.c 1137
+app/services/src/header_sync_service.c 812

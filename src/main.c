@@ -44,6 +44,7 @@
 #include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "services/shielded_history_import_service.h"
+#include "jobs/proof_validate_null_hash_rearm.h"
 #include "chain/chain.h"                  /* BLOCK_VALID_TRANSACTIONS: connected floor */
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
@@ -68,6 +69,8 @@
 #include "controllers/explorer_internal.h"
 #include "services/wallet_backup_service.h"
 #include "services/chain_tip_watchdog.h"  /* #8: self-respawn when off-systemd */
+#include "util/supervisor_backstop.h"     /* Pillar 7: self-respawn on a frozen
+                                            * supervisor sweep, off-systemd */
 #include "util/clientversion.h"
 #include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
 #include "util/ar_step_readonly.h"
@@ -2434,6 +2437,18 @@ static bool import_shielded_is_live_datadir(const char *target)
 
 static int import_complete_shielded_mode(int argc, char **argv)
 {
+    /* UX: glibc block-buffers stdout when it isn't a tty (the common case
+     * for a redirected/logged import run), so every printf() below would
+     * sit in the buffer until process exit. For a run that goes CPU-bound
+     * inside shielded_history_import_from_chainstate() for many minutes,
+     * that means the operator watches a blank terminal with no way to
+     * tell "running" from "stuck" — a silent stall, which the node's
+     * prime invariant forbids. Force line buffering up front so every
+     * banner below (Source/Target/Chainstate snapshot/Tip bind/
+     * IMPORT COMPLETE|REFUSED) lands on the terminal/log the instant it's
+     * printed. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     const char *home = getenv("HOME");
     const char *src = NULL;
     char target[512];
@@ -2602,6 +2617,64 @@ static int import_complete_shielded_mode(int argc, char **argv)
     struct shielded_import_report rep = {0};
     bool ok = shielded_history_import_from_chainstate(
         progress_store_db(), snap_path, tip_height, &tip_sapling_root, &rep);
+
+    /* On success, register the cured coins tip as a cold-import TRUST anchor so
+     * the next normal boot's Invariant A gate installs it into the active chain
+     * (instead of refusing the detached island and stalling getheaders at
+     * genesis). Durable node_db seed + in-memory; best-effort — a derive miss
+     * logs but never undoes the committed import. progress_store stays open so
+     * the coins-best derivation + the durable count token read the canonical
+     * store. */
+    if (ok) {
+        char ndb_path[600];
+        int nn = snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", target);
+        struct node_db ndb2;
+        if (nn > 0 && (size_t)nn < sizeof(ndb_path) &&
+            node_db_open(&ndb2, ndb_path)) {
+            (void)shielded_history_import_register_cured_tip_trust_anchor(
+                progress_store_db(), &ndb2);
+            node_db_close(&ndb2);
+        } else {
+            fprintf(stderr,
+                    "WARNING: import committed but could not reopen %s to "
+                    "persist the cured-tip trust anchor; the coins tip may need "
+                    "one extra boot to install into the active chain.\n",
+                    ndb_path);
+        }
+    }
+
+    /* Re-arm proof_validate over the pre-2026-07-13 NULL-block_hash suffix so the
+     * post-cure fold is not wedged at utxo_apply's label_splice guard (which
+     * correctly refuses a hashless proof verdict). The rewind FLOOR is
+     * utxo_apply's own cursor (LCC-safe — never rewinds an already-applied
+     * height). Contained: a rewind beyond the recovery block-rollback cap
+     * (default 100) is REFUSED; raise ZCL_MAX_BLOCK_ROLLBACK past the reported
+     * depth after a copy proof. progress_store is still open here. */
+    if (ok) {
+        struct proof_validate_rearm_report rr;
+        memset(&rr, 0, sizeof(rr));
+        enum proof_validate_rearm_outcome ro =
+            proof_validate_null_hash_rearm(progress_store_db(), NULL, &rr);
+        if (ro == PV_REARM_REARMED) {
+            printf("proof_validate re-arm: rewound cursor %llu->%llu, deleted "
+                   "%lld NULL-block_hash rows; the next boot re-derives them.\n",
+                   (unsigned long long)rr.pv_cursor_before,
+                   (unsigned long long)rr.rewound_to, (long long)rr.deleted_rows);
+        } else if (ro == PV_REARM_REFUSED) {
+            fprintf(stderr,
+                    "WARNING: proof_validate re-arm REFUSED — rewinding to h=%d "
+                    "(%lld NULL-block_hash rows) exceeds the recovery "
+                    "block-rollback cap. Raise ZCL_MAX_BLOCK_ROLLBACK past it "
+                    "and re-run, else the post-cure fold wedges at utxo_apply.\n",
+                    rr.lowest_null_height, (long long)rr.null_row_count);
+        } else if (ro == PV_REARM_ERROR) {
+            fprintf(stderr, "WARNING: proof_validate re-arm ERROR — see "
+                            "node.log [proof_validate]; the fold may wedge.\n");
+        }
+        /* PV_REARM_NOT_NEEDED: the fold above utxo_apply is already
+         * hash-complete — nothing to do. */
+    }
+
     progress_store_close();
     ldb_snapshot_destroy(snap_path);
 
@@ -3475,6 +3548,14 @@ int main(int argc, char **argv)
                          sizeof("-verify-consensus-bundle=") - 1) == 0)
             ctx.verify_consensus_bundle =
                 argv[i] + sizeof("-verify-consensus-bundle=") - 1;
+        else if (strcmp(argv[i], "-ratify-mint-anchor") == 0)
+            ctx.ratify_mint_anchor = true;
+        else if (strcmp(argv[i], "-export-consensus-bundle") == 0)
+            ctx.export_consensus_bundle = true;
+        else if (strncmp(argv[i], "-promote-shielded-history=",
+                         sizeof("-promote-shielded-history=") - 1) == 0)
+            ctx.promote_shielded_history =
+                argv[i] + sizeof("-promote-shielded-history=") - 1;
         else if (strcmp(argv[i], "-fold-inram") == 0) {
             /* Bulk-fold in-RAM UTXO hot store (storage/coins_ram.h). The
              * storage layer reads ZCL_FOLD_INRAM as the single source of truth
@@ -3587,7 +3668,6 @@ int main(int argc, char **argv)
         }
         else if (strncmp(argv[i], "-externalip=", 12) == 0) ctx.external_ip = argv[i] + 12;
         else if (strncmp(argv[i], "-httpsdomain=", 13) == 0) ctx.https_domain = argv[i] + 13;
-        else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-gui") == 0 || strcmp(argv[i], "--gui") == 0) {
             /* Opt-in to the WebKit wallet GUI. Consumed earlier (the GUI
              * launch returns before node mode); recognized here so it is
@@ -3826,8 +3906,17 @@ int main(int argc, char **argv)
      * was true), so this is a no-op there and the normal exit happens. The
      * bounded restart budget persisted in progress.kv is reloaded by the fresh
      * boot, so self-respawn is bounded exactly like a systemd restart and
-     * cannot loop unbounded. */
-    bool do_respawn = chain_tip_watchdog_respawn_requested() &&
+     * cannot loop unbounded.
+     *
+     * Pillar 7 — "supervise the supervisor": the independent backstop watcher
+     * (lib/util/src/supervisor_backstop.c) latches the SAME kind of flag when
+     * the root supervisor's sweep heartbeat freezes off-systemd (its on-
+     * systemd path instead just stops feeding boot_sd_watchdog's WATCHDOG=1
+     * ping, so systemd's own Restart=always recovers the unit — no re-exec
+     * needed there). Check both flags here so a frozen supervisor gets the
+     * exact same off-systemd recovery as a frozen chain tip. */
+    bool do_respawn = (chain_tip_watchdog_respawn_requested() ||
+                       supervisor_backstop_respawn_requested()) &&
                       !sd_notify_is_active() && g_saved_argv;
     app_shutdown();
     if (do_respawn) {

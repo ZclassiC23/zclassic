@@ -18,6 +18,7 @@
 #include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 #include "util/stage.h"
@@ -254,6 +255,102 @@ static bool reconcile_block_index_flags(
     return ok;
 }
 
+/* ── tip_finalize rewind-churn refusal (defence-in-depth under the
+ * coins-frontier clamp above) ────────────────────────────────────────────
+ * Observed live 2026-07-16: the reconcile APPLY pass rewound tip_finalize
+ * 3183332->3183331 six-plus times in a row via the clamp below — each
+ * rewind "succeeded" (the write landed, apply reported repaired=true), but
+ * H* never moved and something upstream kept re-advancing the cursor back
+ * to 3183332 between passes. That reads as progress every tick but is a
+ * livelock: the reconcile keeps re-clamping the SAME height forever
+ * instead of a named blocker ever surfacing.
+ *
+ * This memo tracks consecutive rewinds to the identical target height
+ * while H* (out->hstar, freshly computed by reducer_frontier_compute_hstar
+ * every pass) stays pinned at the value it had on the FIRST rewind of the
+ * streak. Once the streak reaches TIP_FINALIZE_REWIND_CHURN_LIMIT
+ * consecutive asks, the rewind is refused and a typed TRANSIENT blocker
+ * names the loop so the meta-detector/ladder escalates instead of the
+ * reconcile quietly re-succeeding forever. A forward advance (catching
+ * tip_finalize UP toward hstar+1) is never gated here — only a target
+ * strictly BELOW the current cursor is a rewind. The memo (and any fired
+ * blocker) resets the moment the target height or hstar_at_first_rewind
+ * differs from the pinned streak, i.e. whenever H* advances or a different
+ * height is being asked for.
+ *
+ * Plain statics: the reconcile apply runs on the serial reducer-drive
+ * thread (LOCK-ORDER LAW — this file never takes csr->lock); test callers
+ * are serial too. */
+#define TIP_FINALIZE_REWIND_CHURN_LIMIT 3
+static struct {
+    bool valid;
+    int  target_height;
+    int  hstar_at_first_rewind;
+    int  consecutive_count;
+} g_tip_finalize_rewind_churn_memo;
+
+#ifdef ZCL_TESTING
+void stage_reducer_frontier_reset_rewind_churn_memo_for_testing(void)
+{
+    memset(&g_tip_finalize_rewind_churn_memo, 0,
+           sizeof(g_tip_finalize_rewind_churn_memo));
+}
+#endif
+
+/* Returns true when the rewind to `target` must be REFUSED because the
+ * streak already hit the limit — a typed blocker is registered and *out is
+ * set to reflect the refusal (cursor left untouched). Returns false when
+ * the rewind may proceed, having recorded this attempt in the memo
+ * (starting a fresh streak — and clearing any prior blocker — when the
+ * target height or the pinned hstar differs from the running streak). */
+static bool tip_finalize_rewind_churn_gate(
+    int cur, int target, int hstar,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    bool same_streak =
+        g_tip_finalize_rewind_churn_memo.valid &&
+        g_tip_finalize_rewind_churn_memo.target_height == target &&
+        g_tip_finalize_rewind_churn_memo.hstar_at_first_rewind == hstar;
+
+    if (same_streak && g_tip_finalize_rewind_churn_memo.consecutive_count >=
+                            TIP_FINALIZE_REWIND_CHURN_LIMIT) {
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "tip_finalize cursor asked to rewind %d->%d again with "
+                 "hstar pinned at %d since the first rewind (%d consecutive "
+                 "asks) - projection-hole/reconcile livelock; refusing "
+                 "further rewinds so the ladder escalates instead of "
+                 "looping forever",
+                 cur, target, hstar,
+                 g_tip_finalize_rewind_churn_memo.consecutive_count);
+        struct blocker_record rec;
+        if (blocker_init(&rec, "tip_finalize.rewind_churn", "stage_repair",
+                         BLOCKER_TRANSIENT, reason)) {
+            rec.escape_deadline_secs = 60;
+            blocker_set(&rec);
+        }
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier tip_finalize rewind churn "
+                 "refused: cur=%d target=%d hstar=%d count=%d",
+                 cur, target, hstar,
+                 g_tip_finalize_rewind_churn_memo.consecutive_count);
+        out->tip_finalize_cursor_after = cur;
+        out->clamped_tip_finalize = false;
+        return true;
+    }
+
+    if (same_streak) {
+        g_tip_finalize_rewind_churn_memo.consecutive_count++;
+    } else {
+        blocker_clear("tip_finalize.rewind_churn");
+        g_tip_finalize_rewind_churn_memo.valid = true;
+        g_tip_finalize_rewind_churn_memo.target_height = target;
+        g_tip_finalize_rewind_churn_memo.hstar_at_first_rewind = hstar;
+        g_tip_finalize_rewind_churn_memo.consecutive_count = 1;
+    }
+    return false;
+}
+
 static bool reconcile_tip_finalize_cursor(
     sqlite3 *db,
     bool apply,
@@ -294,6 +391,10 @@ static bool reconcile_tip_finalize_cursor(
         return true;
     }
 
+    if (apply && target < cur &&
+        tip_finalize_rewind_churn_gate(cur, target, out->hstar, out))
+        return true;   /* rewind-churn refused: gate already set *out */
+
     out->clamped_tip_finalize = true;
     out->tip_finalize_cursor_after = target;
     if (!apply)
@@ -302,6 +403,23 @@ static bool reconcile_tip_finalize_cursor(
     return stage_reducer_frontier_force_stage_cursor_in_tx(
         db, "tip_finalize", "L1", target);
 }
+
+#ifdef ZCL_TESTING
+/* Test-only: drives the tip_finalize cursor clamp/rewind directly (bypasses
+ * the full frontier snapshot + block_index sweep). The caller populates
+ * `out->hstar`, `out->tip_finalize_cursor_before`, and optionally
+ * `out->coins_applied_found` / `out->coins_applied_height`, then reads back
+ * `out->clamped_tip_finalize` / `out->tip_finalize_cursor_after`. Used to
+ * pin the rewind-churn refusal (see tip_finalize_rewind_churn_gate above)
+ * without standing up a main_state/active-chain fixture. */
+bool stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+    struct sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    return reconcile_tip_finalize_cursor(db, apply, out);
+}
+#endif
 
 /* ── detect-path memo ───────────────────────────────────────────────────
  * The reconcile-light Condition polls the dry-run every 5 s; on a stalled
@@ -338,6 +456,12 @@ static struct {
 void stage_reducer_frontier_reset_detect_memo_for_testing(void)
 {
     g_detect_memo.valid = false;
+    /* The rewind-churn memo is per-episode process state on the same serial
+     * drive thread; a test process running many reconcile fixtures back to
+     * back must clear it between fixtures too, or a prior fixture's streak
+     * refuses a fresh fixture's legitimate rewind. */
+    memset(&g_tip_finalize_rewind_churn_memo, 0,
+           sizeof(g_tip_finalize_rewind_churn_memo));
 }
 #endif
 

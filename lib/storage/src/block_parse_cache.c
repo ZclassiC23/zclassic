@@ -91,7 +91,18 @@ static void bpc_register_pressure_sink(void)
  * clone of `src` into the slot. The slot's prior body (if any) is block_free'd.
  * MUST hold g_bpc_mutex. A clone failure leaves the slot UNUSED (freed/empty)
  * rather than installing a partial body — the producer already has a valid
- * body, so a missed cache install only forfeits a future hit. */
+ * body, so a missed cache install only forfeits a future hit.
+ *
+ * CALLER CONTRACT (load-bearing invariant): every entry this function installs
+ * MUST already be known to hash to its `hash` key — bpc_store_locked itself
+ * does not re-derive or check the hash, it trusts the caller. Both call sites
+ * uphold this: the segment path (bpc_segment_try) re-derives and compares
+ * before ever reaching here, and the blk*.dat MISS path in
+ * block_parse_cache_get() now does the same recompute-and-compare
+ * immediately before calling in. This keeps every resident cache entry
+ * hash-verified, so a bad disk read can never poison a slot that a later,
+ * correctly-read body would then be served from — see the MISS path comment
+ * below for the failure mode this closes. */
 static void bpc_store_locked(int32_t height, const uint8_t hash[32],
                              const struct block *src)
 {
@@ -273,10 +284,27 @@ miss:
     /* ── MISS path: read+parse from disk once, BYTE-IDENTICALLY to what
      *    stage_default_block_reader did — same HAVE_DATA guard, same
      *    (nFile,nDataPos), same read_block_from_disk_pread, and DELIBERATELY
-     *    no post-read hash check (the default reader has none; body_persist
+     *    no post-read REJECTION (the default reader has none; body_persist
      *    does its own hash compare and a reader hash-reject would change its
-     *    refetch classification). Then cache a deep clone and hand the
-     *    freshly-read body to the caller (no extra parse, no extra clone). ── */
+     *    refetch classification, so `out` is always handed back to the caller
+     *    exactly as read — the caller's own gate decides accept/reject).
+     *
+     *    What we DO check, before ever installing into the cache: whether the
+     *    body we just read actually hashes to the requested key. A bad disk
+     *    read (torn write, stale bytes at a recycled (nFile,nDataPos), a
+     *    genuinely corrupt sector) can return bytes that parse fine but don't
+     *    belong to `block_hash`. If we cached those under (height,block_hash)
+     *    anyway, the consuming stage's own inline hash check would correctly
+     *    reject `out` on THIS call — but every subsequent refetch of the same
+     *    key would then HIT the poisoned slot and be served the same wrong
+     *    bytes forever, a stuck-refetch liveness wedge that only a whole-cache
+     *    memory-pressure clear could break. So: cache only when the recomputed
+     *    hash matches; on a mismatch `out` is still returned to the caller
+     *    (today's contract is unchanged) but the slot is simply never
+     *    installed, leaving the key free for a correct read to populate later.
+     *    The segment path above already enforces this same equality
+     *    (bpc_segment_try re-derives + compares before returning true), so
+     *    every resident entry — segment- or disk-sourced — is hash-verified. */
     /* Prefer a sealed segment below the frontier (sequential mmap read, hash-
      * verified, byte-identical to the disk body). A miss/mismatch falls through
      * to the unchanged blk*.dat pread. */
@@ -291,13 +319,40 @@ miss:
         }
     }
 
-    /* Cache a deep clone of the body for the downstream stages. A cache failure
-     * is non-fatal: the caller already has a valid body (bpc_store_locked just
-     * leaves the slot unused on a clone failure). */
-    pthread_mutex_lock(&g_bpc_mutex);
-    bpc_store_locked(height, block_hash, out);
-    pthread_mutex_unlock(&g_bpc_mutex);
+    /* Verify-before-store: only cache a deep clone when the body we just read
+     * actually hashes to the requested key. See the MISS path comment above
+     * for why an unverified store is a liveness hazard. A cache failure (skip
+     * or clone OOM) is non-fatal either way: the caller already has a valid
+     * `out` (bpc_store_locked leaves the slot unused on a clone failure). */
+    struct uint256 got_hash;
+    block_get_hash(out, &got_hash);
+    if (memcmp(got_hash.data, block_hash, 32) == 0) {
+        pthread_mutex_lock(&g_bpc_mutex);
+        bpc_store_locked(height, block_hash, out);
+        pthread_mutex_unlock(&g_bpc_mutex);
+    } else {
+        LOG_WARN("block_parse_cache",
+                 "MISS body hash mismatch h=%d — not caching (bad read?)",
+                 height);
+    }
     return true;
+}
+
+void block_parse_cache_evict(int32_t height, const uint8_t hash[32])
+{
+    if (!hash)
+        return;
+    pthread_mutex_lock(&g_bpc_mutex);
+    for (int i = 0; i < BPC_CAPACITY; i++) {
+        if (g_bpc[i].used && g_bpc[i].height == height &&
+            memcmp(g_bpc[i].hash, hash, 32) == 0) {
+            block_free(&g_bpc[i].body);
+            g_bpc[i].used = false;
+            g_bpc[i].stamp = 0;
+            break; /* (height,hash) keys are unique across live slots */
+        }
+    }
+    pthread_mutex_unlock(&g_bpc_mutex);
 }
 
 void block_parse_cache_clear(void)

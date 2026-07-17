@@ -94,6 +94,19 @@
 #     run as NOT gate-complete; see step 6/7 below) for e.g. a hermetic
 #     fixture run with no zclassicd available.
 #
+# RUNTIME CHARACTERISTICS (live empirical finding, 2026-07-16, a real import
+# of the merged binary against a wedged clone + live zclassicd): the
+# ldb_snapshot_make() step above is a hardlink of the immutable SSTs
+# (lib/storage/src/ldb_snapshot.c) and is effectively instant — it is NOT the
+# bottleneck. What follows it (streaming every Sapling/Sprout anchor through
+# the fail-closed incremental-merkle-tree root re-check, shi_anchor_cb /
+# shi_nullifier_cb) is CPU-bound (one core pegged) and currently runs for
+# MANY MINUTES with no progress output and no node.db writes yet — this
+# script's phase-1 step below can legitimately sit silent for a long time
+# before the "IMPORT COMPLETE" banner appears; do not mistake that silence
+# for a hang. --deadline (default 3600s) must stay generous enough to cover
+# it end-to-end, including the post-import H* CLIMB poll.
+#
 # Usage:
 #   tools/scripts/import-copy-prove.sh [--dry-run] \
 #     [--src=DIR]                  (datadir to copy from; default: $HOME/.zclassic-c23)
@@ -140,7 +153,7 @@ SKIP_HEADER_REFRESH=0
 DRY_RUN=0
 
 usage() {
-    sed -n '2,118p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,132p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -231,6 +244,9 @@ echo "       (terminal; the importer FNV-stable-snapshots \$ZD_DATADIR/chainstat
 echo "       itself — zclassicd is read-only, never stopped; require literal"
 echo "       'IMPORT COMPLETE (committed=' banner + exit 0 — SEE THE DEPENDENCY"
 echo "       NOTICE at the top of this script if this flag does not exist yet)"
+echo "    3b. clear any stale \$COPY_DIR/auto_reindex_request left over from the"
+echo "       wedged source datadir — never let the proving boot silently"
+echo "       detour into -reindex-chainstate instead of exercising the import"
 echo "    4. \"\$NODE_BIN\" -datadir=\"\$COPY_DIR\" -rpcport=\$RPCPORT -port=\$P2PPORT"
 echo "       -connect=127.0.0.1:39999 -nolegacyimport -nofilesync (isolated boot)"
 echo "    5. poll getblockcount + dumpstate reducer_frontier/blocker until"
@@ -345,6 +361,29 @@ if [ "$import_rc" != "0" ] || ! grep -q '^IMPORT COMPLETE (committed=' "$IMPORT_
     exit 1
 fi
 echo "[import-copy-prove] import reported IMPORT COMPLETE — booting normally to prove H* CLIMB"
+
+# ── step 3b: clear any stale auto_reindex_request ──────────────────────
+# The copy was cp -a'd from a wedged datadir; if that datadir had ever armed
+# a self-rebuild request (config/src/boot_crashonly.c
+# boot_crashonly_consume_reindex_request(), storage/boot_auto_reindex.h) the
+# sentinel file <datadir>/auto_reindex_request rides along in the copy.
+# import_complete_shielded_mode() is a separate terminal argv path (src/main.c)
+# that returns before the normal boot sequence ever runs, so phase 1 above
+# does NOT consume or clear it — left in place, the very next normal boot
+# (phase 2, right below) would silently detour into -reindex-chainstate
+# instead of exercising the state this harness just imported, which would
+# either make GATE (a)'s climb take far longer than --deadline expects or
+# (worse) mask whether the IMPORT itself, rather than a full block replay,
+# is what carried the copy past the wedge. Clear it unconditionally here —
+# it is a top-level sentinel, never part of derived state, and the whole
+# point of this run is to prove the FRESH import; a rebuild-from-blocks
+# would prove something else.
+if [ -e "$COPY_DIR/auto_reindex_request" ]; then
+    echo "[import-copy-prove] step 3b: stale auto_reindex_request found in the copy — clearing before boot"
+    rm -f "$COPY_DIR/auto_reindex_request"
+else
+    echo "[import-copy-prove] step 3b: no stale auto_reindex_request present — nothing to clear"
+fi
 
 # ── step 4: normal boot (phase 2) ──────────────────────────────────────
 

@@ -1,0 +1,22 @@
+# Lint gate #12 (ENFORCED tier) baseline — grandfathered over-cap functions
+# under app/controllers/src/, app/services/src/, and config/src/.
+#
+# check-long-functions (tools/scripts/check_long_functions.sh) is an
+# ENFORCED RATCHET (not advisory): it flags any function in this tier whose
+# body exceeds the cap (500 lines). Functions pre-dating this baseline's
+# introduction are recorded here so the ratchet does not regress. Each
+# entry is '<relative path> <function-name> <max-lines>'. The gate FAILS
+# (nonzero exit) when:
+#   - a NEW function (not listed here) exceeds the cap, OR
+#   - a listed function grows ABOVE its recorded baseline length.
+# Shrinking a function below the cap lets you delete its baseline line —
+# the gate suggests this automatically when a baselined function's live
+# length is below its recorded number. Re-baselining to a LOWER count for
+# a function that shrank but is still over the cap is always welcome;
+# raising a recorded count requires an ADR (this is a ratchet, not a
+# target).
+#
+# Format: <relative-path> <function-name> <max-lines>   (# = comment)
+# Sorted by path.
+
+config/src/boot.c app_init 2875

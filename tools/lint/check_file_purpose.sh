@@ -60,8 +60,10 @@ extract_make_var() {
 }
 
 read -r -a lib_modules <<< "$(extract_make_var LIB_MODULES)"
-# app shapes: the fixed eight (mirror of k_app_shapes[], codeindex_group.c:32).
-app_shapes=(conditions controllers events jobs models services supervisors views)
+# app shapes: the seven physical app/ folders (mirror of k_app_shapes[],
+# codeindex_group.c:32 — Event is the eighth shape but has no app/ folder,
+# see FRAMEWORK.md §3 row 7).
+app_shapes=(conditions controllers jobs models services supervisors views)
 
 gate_require_scanned "${#lib_modules[@]}" 1 check-file-purpose \
     "LIB_MODULES parse came back empty — Makefile layout changed?"

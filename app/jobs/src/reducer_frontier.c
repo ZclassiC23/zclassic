@@ -13,6 +13,7 @@
 #include "jobs/reducer_frontier.h"
 
 #include "reducer_frontier_evidence.h"
+#include "reducer_frontier_self_anchor.h"  /* self-derived anchor sourcing */
 #include "jobs/mint_skip_crypto.h"
 #include "jobs/refold_progress.h"
 #include "chain/chainparams.h"
@@ -79,7 +80,16 @@ static int32_t reducer_frontier_compiled_anchor(void)
         return 0;
 
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    return cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t compiled = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+
+    /* Prefer a self-derived anchor THIS node folded and hard-verified itself
+     * over the baked literal — see the "SELF-DERIVED SOURCING" note on
+     * REDUCER_FRONTIER_TRUSTED_ANCHOR above and reducer_frontier_self_anchor.c.
+     * Resolved once per process and cached there; every later call is a
+     * lock-free atomic load, so this stays cheap exactly like the doc comment
+     * on reducer_frontier_floor() promises. */
+    int32_t self_derived = reducer_frontier_self_anchor_get(compiled);
+    return self_derived >= 0 ? self_derived : compiled;
 }
 
 /* The FLOOR H* and the L1 reconcile operate at — see reducer_frontier.h. 0

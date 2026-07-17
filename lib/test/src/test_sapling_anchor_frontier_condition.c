@@ -18,13 +18,23 @@
 #include "test/test_helpers.h"
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
+#include "controllers/agent_controller.h"
+#include "core/arith_uint256.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_delta.h"
+#include "jobs/utxo_apply_nullifiers.h"
+#include "json/json.h"
 #include "primitives/block.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "services/sync_monitor.h"
 #include "storage/anchor_kv.h"
+#include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -78,6 +88,114 @@ static void safc_summary_init(struct delta_summary *s)
     memset(s, 0, sizeof(*s));
     s->ok = true;
     s->status = "ok";
+}
+
+/* ── Engine-driven NAMED REMEDY fixture (gap-condition-healer lane) ──
+ *
+ * Drives detect/remedy/witness through the REAL condition engine (not just
+ * the pure classify() helper above), proving the operator-facing surface for
+ * the genuine (not seed-curable) historical anchor gap and the standalone
+ * nullifier gap: both must surface a NAMED, contained remedy on this
+ * condition's own typed detect/remedy/detail surface, refuse to auto-execute
+ * anything, and clear only once BOTH the named blocker(s) are gone AND H*
+ * has climbed past the stall height captured at detect.
+ *
+ * Uses the standalone nullifier gap (utxo_apply.nullifier_backfill_gap) as
+ * the representative trigger: detect_sapling_anchor_frontier() treats it
+ * identically to the anchor SAPLING_ANCHOR_GAP_HISTORICAL case (see the .c),
+ * and it needs no populated anchor tree to construct. */
+struct safu_engine_fixture {
+    char dir[256];
+    struct main_state ms;
+    struct block_index *tip;
+};
+
+static bool safu_engine_setup(struct safu_engine_fixture *fx, const char *tag)
+{
+    memset(fx, 0, sizeof(*fx));
+
+    condition_engine_reset_for_testing();
+    sapling_anchor_frontier_test_reset();
+    blocker_module_init();
+    blocker_reset_for_testing();
+    test_make_tmpdir(fx->dir, sizeof(fx->dir), "safu_named_remedy", tag);
+    if (!progress_store_open(fx->dir))
+        return false;
+
+    main_state_init(&fx->ms);
+    struct uint256 h0, h1;
+    memset(&h0, 0, sizeof(h0)); h0.data[0] = 0xA1; h0.data[1] = 0x5A;
+    memset(&h1, 0, sizeof(h1)); h1.data[0] = 0xA2; h1.data[1] = 0x5A;
+    struct block_index *genesis =
+        chainstate_insert_block_index((struct chainstate *)&fx->ms, &h0);
+    struct block_index *tip =
+        chainstate_insert_block_index((struct chainstate *)&fx->ms, &h1);
+    if (!genesis || !tip)
+        return false;
+    genesis->nHeight = 0;
+    genesis->pprev = NULL;
+    genesis->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+    genesis->nChainTx = 1;
+    arith_uint256_set_u64(&genesis->nChainWork, 1);
+    /* Immediately follows genesis (height 1, pprev=genesis@0) —
+     * active_chain_move_window_tip()'s chain_linkage_check_advance requires
+     * a strictly contiguous connect (pprev_h == h-1), so a height JUMP
+     * (e.g. straight to 10) is REFUSED as a label splice. */
+    tip->nHeight = 1;
+    tip->pprev = genesis;
+    tip->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+    tip->nChainTx = 2;
+    arith_uint256_set_u64(&tip->nChainWork, 2);
+    if (!active_chain_move_window_tip(&fx->ms.chain_active, tip))
+        return false;
+    fx->tip = tip;
+
+    sync_monitor_set_context(NULL, NULL, &fx->ms);
+
+    /* Canonical live datadir/lane: proves containment REFUSES live in-place
+     * apply (mirrors test_shielded_gap_remedy.c's LIVE case). */
+    const char *home = getenv("HOME");
+    char live_dir[600];
+    snprintf(live_dir, sizeof(live_dir), "%s/.zclassic-c23",
+             home && home[0] ? home : "/tmp");
+    rpc_agent_set_boot_context("canonical", "release", live_dir,
+                               18232, 8033, 8443, 0);
+
+    reducer_frontier_provable_tip_reset();
+    /* H* = 0 while the header tip is 1: genuinely behind (detect()'s
+     * "must be genuinely behind" gate). */
+    reducer_frontier_provable_tip_set(0);
+
+    register_sapling_anchor_frontier_unavailable();
+    return true;
+}
+
+static void safu_engine_teardown(struct safu_engine_fixture *fx)
+{
+    sync_monitor_set_context(NULL, NULL, NULL);
+    condition_engine_reset_for_testing();
+    sapling_anchor_frontier_test_reset();
+    reducer_frontier_provable_tip_reset();
+    main_state_free(&fx->ms);
+    progress_store_close();
+    blocker_reset_for_testing();
+    test_cleanup_tmpdir(fx->dir);
+}
+
+/* Find this condition's array entry in a condition_engine_dump_state_json()
+ * "conditions" array by name. Returns NULL if not found. */
+static const struct json_value *safu_find_entry(const struct json_value *dump)
+{
+    const struct json_value *conds = json_get(dump, "conditions");
+    if (!conds)
+        return NULL;
+    for (size_t i = 0; i < json_size(conds); i++) {
+        const struct json_value *e = json_at(conds, i);
+        const char *name = json_get_str(json_get(e, "name"));
+        if (name && strcmp(name, "sapling_anchor_frontier_unavailable") == 0)
+            return e;
+    }
+    return NULL;
 }
 
 int test_sapling_anchor_frontier_condition(void);
@@ -197,6 +315,141 @@ int test_sapling_anchor_frontier_condition(void)
     SAFC_CHECK("condition registered in the engine",
                condition_engine_has_registered(
                    "sapling_anchor_frontier_unavailable"));
+
+    /* ── GAP ABSENT: no blocker -> not detected, no remedy call. ── */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "absent");
+        SAFC_CHECK("gap-absent fixture setup", ok);
+        if (ok) {
+            condition_engine_tick();
+            struct condition_runtime_snapshot snap;
+            bool got = condition_engine_get_registered_snapshot(
+                "sapling_anchor_frontier_unavailable", &snap);
+            SAFC_CHECK("gap-absent: not currently_active",
+                       got && !snap.currently_active);
+            SAFC_CHECK("gap-absent: no remedy call",
+                       sapling_anchor_frontier_test_remedy_calls() == 0);
+
+            struct json_value dump;
+            json_init(&dump);
+            json_set_object(&dump);
+            condition_engine_dump_state_json(&dump, NULL);
+            const struct json_value *mine = safu_find_entry(&dump);
+            const struct json_value *detail =
+                mine ? json_get(mine, "detail") : NULL;
+            SAFC_CHECK("gap-absent: detail emits no shielded_gap_remedy",
+                       !detail || json_get(detail, "shielded_gap_remedy") == NULL);
+            json_free(&dump);
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* ── GAP PRESENT (standalone nullifier gap): NAMED REMEDY surfaced,
+     * containment refuses live auto-exec, never self-resolves. ── */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "present");
+        SAFC_CHECK("gap-present fixture setup", ok);
+        if (ok) {
+            struct blocker_record r;
+            blocker_init(&r, UTXO_APPLY_NF_GAP_BLOCKER_ID, "utxo_apply",
+                        BLOCKER_PERMANENT, "test: nullifier history gap");
+            blocker_set(&r);
+
+            condition_engine_tick();
+
+            struct condition_runtime_snapshot snap;
+            bool got = condition_engine_get_registered_snapshot(
+                "sapling_anchor_frontier_unavailable", &snap);
+            SAFC_CHECK("gap-present: detected + currently_active",
+                       got && snap.currently_active);
+            SAFC_CHECK("gap-present: remedy ran exactly once",
+                       sapling_anchor_frontier_test_remedy_calls() == 1);
+            SAFC_CHECK("gap-present: outcome FAILED (never self-resolves)",
+                       got && snap.last_outcome == COND_REMEDY_FAILED);
+
+            struct json_value dump;
+            json_init(&dump);
+            json_set_object(&dump);
+            SAFC_CHECK("gap-present: engine dump ok",
+                       condition_engine_dump_state_json(&dump, NULL));
+            const struct json_value *mine = safu_find_entry(&dump);
+            SAFC_CHECK("gap-present: found this condition's entry",
+                       mine != NULL);
+            const struct json_value *detail =
+                mine ? json_get(mine, "detail") : NULL;
+            SAFC_CHECK("gap-present: detail present", detail != NULL);
+            SAFC_CHECK("gap-present: episode_kind == NAMED_REMEDY(2)",
+                       detail &&
+                       json_get_int(json_get(detail, "episode_kind")) == 2);
+            SAFC_CHECK("gap-present: nullifier_gap_blocker_present true",
+                       detail &&
+                       json_get_bool(json_get(
+                           detail, "nullifier_gap_blocker_present")));
+
+            const struct json_value *sgr =
+                detail ? json_get(detail, "shielded_gap_remedy") : NULL;
+            SAFC_CHECK("gap-present: named-remedy sub-object present",
+                       sgr != NULL);
+            const struct json_value *remedy =
+                sgr ? json_get(sgr, "remedy") : NULL;
+            SAFC_CHECK("gap-present: remedy object present", remedy != NULL);
+            const char *imp =
+                remedy ? json_get_str(json_get(remedy, "import_command"))
+                       : NULL;
+            SAFC_CHECK("gap-present: names -import-complete-shielded",
+                       imp && strstr(imp, "-import-complete-shielded=") != NULL);
+
+            const struct json_value *cont =
+                sgr ? json_get(sgr, "containment") : NULL;
+            SAFC_CHECK("gap-present: containment present", cont != NULL);
+            SAFC_CHECK("gap-present: auto_execute is structurally false",
+                       cont && !json_get_bool(json_get(cont, "auto_execute")));
+            SAFC_CHECK("gap-present: refuses live auto-exec on live datadir",
+                       cont && json_get_bool(json_get(cont, "refuses_live")));
+            json_free(&dump);
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* ── GAP CLEARED: the operator ran the import + rebooted (activation
+     * flips to 0, both refresh calls clear the blocker) and the fold resumed
+     * (H* climbs past the stall). The very next tick's witness must fire. ── */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "cleared");
+        SAFC_CHECK("gap-cleared fixture setup", ok);
+        if (ok) {
+            struct blocker_record r;
+            blocker_init(&r, UTXO_APPLY_NF_GAP_BLOCKER_ID, "utxo_apply",
+                        BLOCKER_PERMANENT, "test: nullifier history gap");
+            blocker_set(&r);
+            condition_engine_tick();   /* rising edge: episode active */
+
+            struct condition_runtime_snapshot snap0;
+            SAFC_CHECK("gap-cleared: episode active before the cure",
+                       condition_engine_get_registered_snapshot(
+                           "sapling_anchor_frontier_unavailable", &snap0) &&
+                       snap0.currently_active);
+
+            /* The cure: import flips activation -> blocker clears; H* climbs
+             * past the baseline (0) captured at detect. */
+            blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+            reducer_frontier_provable_tip_set(1);
+
+            condition_engine_tick();   /* witness must fire this tick */
+
+            struct condition_runtime_snapshot snap;
+            bool got = condition_engine_get_registered_snapshot(
+                "sapling_anchor_frontier_unavailable", &snap);
+            SAFC_CHECK("gap-cleared: witness fired, no longer active",
+                       got && !snap.currently_active);
+            SAFC_CHECK("gap-cleared: cleared_count advanced",
+                       got && snap.cleared_count >= 1);
+        }
+        safu_engine_teardown(&fx);
+    }
 
     return failures;
 }

@@ -13,6 +13,7 @@
 #include "core/uint256.h"
 #include "script_validate_log_store.h"
 #include "jobs/tip_finalize_stage.h"
+#include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/util.h"
@@ -120,7 +121,13 @@ static bool indexed_body_hash_verifies(const struct block_index *bi,
     block_get_hash(&blk, &got);
     bool ok = uint256_eq(&got, bi->phashBlock);
     block_free(&blk);
-    if (!ok && why) *why = UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH;
+    if (!ok) {
+        if (why) *why = UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH;
+        /* This same (height,hash) key is what stage_read_block() /
+         * block_parse_cache_get() uses; purge it so a poisoned or stale
+         * cache slot can never be served to the next apply attempt. */
+        block_parse_cache_evict(bi->nHeight, bi->phashBlock->data);
+    }
     return ok;
 }
 

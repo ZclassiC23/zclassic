@@ -40,4 +40,29 @@ bool proof_validate_log_insert(struct sqlite3 *db, int height,
                                const struct uint256 *first_failure_txid,
                                const char *first_failure_proof_type);
 
+/* Scan for the LOWEST proof_validate_log height in [floor_height, ceil_height)
+ * whose row is ok=1 but has a NULL block_hash — the pre-stamping artifact class
+ * (rows written before proof_validate_log_insert learned to stamp
+ * bi->phashBlock). utxo_apply's label_splice guard correctly refuses such a
+ * hashless proof verdict, so a NULL-block_hash row at or above utxo_apply's
+ * cursor is a hard wedge.
+ *
+ * Returns 1 and writes *out_height (the lowest matching height) + *out_count
+ * (how many ok=1/NULL-block_hash rows exist in the range) when at least one is
+ * found; 0 when the range is clean; -1 on a query error (logged). out params
+ * are optional. */
+int proof_validate_log_lowest_null_block_hash(struct sqlite3 *db,
+                                              int floor_height,
+                                              int ceil_height,
+                                              int *out_height,
+                                              int64_t *out_count);
+
+/* Delete the NULL-block_hash suffix at/above `from_height`
+ * (height >= from_height AND block_hash IS NULL) so the reducer re-derives and
+ * re-stamps those heights on the next fold. Returns true on success and writes
+ * *out_deleted (rows removed) when non-NULL; false on error (logged). */
+bool proof_validate_log_delete_null_block_hash_suffix(struct sqlite3 *db,
+                                                      int from_height,
+                                                      int64_t *out_deleted);
+
 #endif /* ZCL_JOBS_PROOF_VALIDATE_LOG_STORE_H */

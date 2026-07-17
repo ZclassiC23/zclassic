@@ -18,23 +18,115 @@
 // one-result-type-ok:owner-gated-boot-import
 
 #include "services/shielded_history_import_service.h"
+#include "services/utxo_recovery_service.h"
 
+#include "core/serialize.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "models/database.h"
+#include "platform/time_compat.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/chainstate_legacy_reader.h"
+#include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
+#include "utxo_recovery_internal.h"
+
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #define SHI_SUBSYS "shielded_import"
 #define SHI_PROVENANCE_KEY SHIELDED_IMPORT_PROVENANCE_KEY
+
+/* Emit a node.log progress line every this-many rows. Chosen so a real import
+ * (millions of records) logs a few times/second, turning the historically
+ * silent multi-minute scan into a growing, named cursor. */
+#define SHI_PROGRESS_LOG_INTERVAL 50000
+
+/* ── never-silent progress (see the header) ──────────────────────────────────
+ * Lock-free counters a concurrent dumpstate reader observes. Written only by
+ * the single importer thread; read by any thread via the snapshot getter. */
+static _Atomic bool         g_shi_active         = false;
+static _Atomic int          g_shi_phase          = SHI_PHASE_IDLE;
+static _Atomic int_least64_t g_shi_anchors       = 0;
+static _Atomic int_least64_t g_shi_nullifiers    = 0;
+static _Atomic int_least64_t g_shi_start_ms      = 0;
+static _Atomic int_least64_t g_shi_last_elapsed  = 0;
+
+const char *shielded_history_import_phase_name(int phase)
+{
+    switch (phase) {
+    case SHI_PHASE_IDLE:            return "idle";
+    case SHI_PHASE_SNAPSHOT:        return "snapshot";
+    case SHI_PHASE_SCAN_ANCHORS:    return "scan_anchors";
+    case SHI_PHASE_SCAN_NULLIFIERS: return "scan_nullifiers";
+    case SHI_PHASE_BIND:            return "bind";
+    case SHI_PHASE_COMMIT:          return "commit";
+    case SHI_PHASE_DONE:            return "done";
+    default:                        return "unknown";
+    }
+}
+
+bool shielded_history_import_progress_snapshot(struct shi_progress *out)
+{
+    if (!out)
+        LOG_RETURN(false, SHI_SUBSYS, "progress_snapshot: NULL out");
+    bool active = atomic_load_explicit(&g_shi_active, memory_order_acquire);
+    out->active = active;
+    out->phase = atomic_load_explicit(&g_shi_phase, memory_order_relaxed);
+    out->anchors_done =
+        atomic_load_explicit(&g_shi_anchors, memory_order_relaxed);
+    out->nullifiers_done =
+        atomic_load_explicit(&g_shi_nullifiers, memory_order_relaxed);
+    if (active) {
+        int64_t start =
+            atomic_load_explicit(&g_shi_start_ms, memory_order_relaxed);
+        out->elapsed_ms = start ? platform_time_monotonic_ms() - start : 0;
+    } else {
+        out->elapsed_ms =
+            atomic_load_explicit(&g_shi_last_elapsed, memory_order_relaxed);
+    }
+    return true;
+}
+
+static int64_t shi_elapsed_ms(void)
+{
+    int64_t start = atomic_load_explicit(&g_shi_start_ms, memory_order_relaxed);
+    return start ? platform_time_monotonic_ms() - start : 0;
+}
+
+static void shi_progress_begin(void)
+{
+    atomic_store_explicit(&g_shi_anchors, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_shi_nullifiers, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_shi_start_ms, platform_time_monotonic_ms(),
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_shi_phase, SHI_PHASE_SNAPSHOT,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_shi_active, true, memory_order_release);
+}
+
+static void shi_progress_phase(int phase)
+{
+    atomic_store_explicit(&g_shi_phase, phase, memory_order_relaxed);
+}
+
+/* Mark the import over (success OR rollback). Freezes elapsed and clears active
+ * so a reader stops treating stale counters as a live run. Idempotent. */
+static void shi_progress_end(void)
+{
+    atomic_store_explicit(&g_shi_last_elapsed, shi_elapsed_ms(),
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_shi_phase, SHI_PHASE_DONE, memory_order_relaxed);
+    atomic_store_explicit(&g_shi_active, false, memory_order_release);
+}
 
 /* Streaming callback context — shared by the anchor + nullifier iterators. */
 struct shi_ctx {
@@ -55,7 +147,51 @@ struct shi_ctx {
 
     int64_t nf_sentinel;     /* height stamped on imported nullifiers */
     int64_t count;
+
+    /* Perf: the inlined reused-statement insert path. The canonical writer
+     * anchor_kv_add_tree re-prepares a statement per row AND recomputes
+     * incremental_tree_root — a full frontier Pedersen re-hash. Combined with the
+     * bulk reader (which also no longer recomputes per anchor), the historical
+     * scan pays ZERO per-anchor Pedersen work: each row is keyed on the anchor's
+     * own key-root (leveldb block-CRC + a successful deserialize are the
+     * byte-integrity floor), reusing ONE prepared statement + ONE serialize
+     * buffer per pass. Historical anchor tree contents are not
+     * consensus-load-bearing (ZClassic headers commit none of them); only
+     * PRESENCE + the TIP FRONTIER are, and the tip frontier IS Pedersen-verified
+     * once in shi_anchor_cb against the header-committed root. */
+    sqlite3_stmt *ins;         /* reused INSERT stmt for this pass */
+    struct byte_stream bs;     /* reused serialize buffer (anchor passes only) */
+    struct uint256 empty_root; /* precomputed per-pool empty frontier root */
 };
+
+/* Count one streamed anchor toward the live progress + periodic node.log line. */
+static void shi_count_anchor(const struct shi_ctx *c)
+{
+    int64_t n = atomic_fetch_add_explicit(&g_shi_anchors, 1,
+                                          memory_order_relaxed) + 1;
+    if (n % SHI_PROGRESS_LOG_INTERVAL == 0)
+        LOG_INFO(SHI_SUBSYS,
+                 "shielded import progress: phase=scan_anchors pool=%d "
+                 "anchors=%lld nullifiers=%lld elapsed_ms=%lld",
+                 c->pool, (long long)n,
+                 (long long)atomic_load_explicit(&g_shi_nullifiers,
+                                                 memory_order_relaxed),
+                 (long long)shi_elapsed_ms());
+}
+
+static void shi_count_nullifier(const struct shi_ctx *c)
+{
+    int64_t m = atomic_fetch_add_explicit(&g_shi_nullifiers, 1,
+                                          memory_order_relaxed) + 1;
+    if (m % SHI_PROGRESS_LOG_INTERVAL == 0)
+        LOG_INFO(SHI_SUBSYS,
+                 "shielded import progress: phase=scan_nullifiers pool=%d "
+                 "anchors=%lld nullifiers=%lld elapsed_ms=%lld",
+                 c->pool,
+                 (long long)atomic_load_explicit(&g_shi_anchors,
+                                                 memory_order_relaxed),
+                 (long long)m, (long long)shi_elapsed_ms());
+}
 
 static bool shi_anchor_cb(const struct uint256 *root,
                           const struct incremental_merkle_tree *tree,
@@ -69,14 +205,70 @@ static bool shi_anchor_cb(const struct uint256 *root,
     if (c->best_present && uint256_eq(root, &c->best_root)) {
         height = c->tip_height;
         c->saw_best = true;
+        /* Tip-frontier consensus check — with the bulk reader path (no per-anchor
+         * recompute), this is the ONE Pedersen root recompute the import keeps,
+         * guarded to the best/tip anchor (O(1) per pool). The tip anchor's tree
+         * MUST hash to best_root; for Sapling, best_root was already verified ==
+         * the header-committed hashFinalSaplingRoot at the tip-bind, so this
+         * binds the imported frontier tree to the header. A torn/forged frontier
+         * is refused, rolling back the whole transaction. */
+        struct uint256 tip_computed;
+        incremental_tree_root(tree, &tip_computed);
+        if (!uint256_eq(&tip_computed, &c->best_root)) {
+            c->ok = false;
+            LOG_RETURN(false, SHI_SUBSYS,
+                       "tip frontier tree does not hash to committed root "
+                       "pool=%d — refusing (torn/forged frontier)", c->pool);
+        }
     }
-    if (!anchor_kv_add_tree(c->db, c->pool, tree, height)) {
+
+    /* The protocol-implicit empty frontier is never persisted as a spendable
+     * anchor row (anchor_kv_add_tree treats it as a no-op success, matching
+     * zclassicd). A 32-byte compare against the precomputed empty root — NOT a
+     * re-hash — reproduces that skip while still counting the record. */
+    if (uint256_eq(root, &c->empty_root)) {
+        c->count++;
+        shi_count_anchor(c);
+        return true;
+    }
+
+    /* Reuse the buffer: reset the cursor, keep the allocation (no per-row
+     * malloc). */
+    c->bs.size = 0;
+    c->bs.read_pos = 0;
+    c->bs.error = false;
+    if (!incremental_tree_serialize(tree, &c->bs) || c->bs.error) {
         c->ok = false;
         LOG_RETURN(false, SHI_SUBSYS,
-                   "anchor_kv_add_tree failed pool=%d height=%lld",
+                   "anchor serialize failed pool=%d height=%lld",
                    c->pool, (long long)height);
     }
+
+    sqlite3_stmt *s = c->ins;
+    /* Key on the anchor's own key-root directly (see the shi_ctx comment): the
+     * bulk reader delivers it byte-integrity-checked (leveldb block-CRC +
+     * deserialize), and re-hashing every historical anchor here is the
+     * intractable cost we are removing. The tip frontier was verified above. */
+    bool bound =
+        sqlite3_bind_blob(s, 1, root->data, 32, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_bind_int64(s, 2, (sqlite3_int64)height) == SQLITE_OK &&
+        sqlite3_bind_blob(s, 3, c->bs.data, (int)c->bs.size, SQLITE_STATIC)
+            == SQLITE_OK;
+    if (!bound) {
+        c->ok = false;
+        sqlite3_reset(s);
+        LOG_RETURN(false, SHI_SUBSYS, "anchor bind failed pool=%d: %s",
+                   c->pool, sqlite3_errmsg(c->db));
+    }
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_reset(s);
+    if (rc != SQLITE_DONE) {
+        c->ok = false;
+        LOG_RETURN(false, SHI_SUBSYS, "anchor step rc=%d pool=%d: %s",
+                   rc, c->pool, sqlite3_errmsg(c->db));
+    }
     c->count++;
+    shi_count_anchor(c);
     return true;
 }
 
@@ -85,13 +277,134 @@ static bool shi_nullifier_cb(const uint8_t nf[32], void *vctx)
     struct shi_ctx *c = vctx;
     if (!c || !c->ok)
         return false;
-    if (!nullifier_kv_add(c->db, nf, c->pool, c->nf_sentinel)) {
+    sqlite3_stmt *s = c->ins;
+    bool bound =
+        sqlite3_bind_blob(s, 1, nf, 32, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_bind_int(s, 2, c->pool) == SQLITE_OK &&
+        sqlite3_bind_int64(s, 3, (sqlite3_int64)c->nf_sentinel) == SQLITE_OK;
+    if (!bound) {
         c->ok = false;
-        LOG_RETURN(false, SHI_SUBSYS, "nullifier_kv_add failed pool=%d",
-                   c->pool);
+        sqlite3_reset(s);
+        LOG_RETURN(false, SHI_SUBSYS, "nullifier bind failed pool=%d: %s",
+                   c->pool, sqlite3_errmsg(c->db));
+    }
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_reset(s);
+    if (rc != SQLITE_DONE) {
+        c->ok = false;
+        LOG_RETURN(false, SHI_SUBSYS, "nullifier step rc=%d pool=%d: %s",
+                   rc, c->pool, sqlite3_errmsg(c->db));
     }
     c->count++;
+    shi_count_nullifier(c);
     return true;
+}
+
+/* Prepare the reused INSERT for `pool`'s anchor table. NULL on prepare error. */
+static sqlite3_stmt *shi_prepare_anchor_insert(sqlite3 *db, int pool)
+{
+    const char *table =
+        pool == ANCHOR_POOL_SPROUT ? "sprout_anchors" : "sapling_anchors";
+    char sql[128];
+    int n = snprintf(sql, sizeof(sql),
+                     "INSERT OR IGNORE INTO %s(anchor,height,tree) "
+                     "VALUES(?,?,?)", table);
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return NULL;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN(SHI_SUBSYS, "anchor insert prepare failed pool=%d: %s",
+                 pool, sqlite3_errmsg(db));
+        return NULL;
+    }
+    return s;
+}
+
+static sqlite3_stmt *shi_prepare_nullifier_insert(sqlite3 *db)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO nullifiers(nf,pool,height) VALUES(?,?,?)",
+            -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN(SHI_SUBSYS, "nullifier insert prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return NULL;
+    }
+    return s;
+}
+
+static void shi_pool_empty_root(int pool, struct uint256 *out)
+{
+    struct incremental_merkle_tree empty;
+    if (pool == ANCHOR_POOL_SPROUT)
+        sprout_tree_init(&empty);
+    else
+        sapling_tree_init(&empty);
+    incremental_tree_root(&empty, out);
+}
+
+/* Run ONE complete anchor pass over `pool` with the inlined reused-statement
+ * insert. On return the statement is finalized and the buffer freed. Returns
+ * the delivered count (>=0) on success, -1 on ANY anomaly (a completeness
+ * consumer must treat -1 as "roll back everything"). *count_out and
+ * *saw_best_out are always set. */
+static int64_t shi_run_anchor_pass(sqlite3 *db, void *h, int pool,
+                                   bool best_present,
+                                   const struct uint256 *best_root,
+                                   int64_t tip_height, int64_t *count_out,
+                                   bool *saw_best_out)
+{
+    struct shi_ctx c = {
+        .db = db, .ok = true, .pool = pool, .tip_height = tip_height,
+        .next_seq = 0, .best_present = best_present,
+    };
+    if (best_present)
+        c.best_root = *best_root;
+    shi_pool_empty_root(pool, &c.empty_root);
+    c.ins = shi_prepare_anchor_insert(db, pool);
+    if (!c.ins) {
+        *count_out = 0;
+        *saw_best_out = false;
+        LOG_RETURN(-1, SHI_SUBSYS,
+                   "anchor pass: insert prepare failed pool=%d", pool);
+    }
+    stream_init(&c.bs, 2048);
+
+    /* Bulk iterators: byte-integrity floor (leveldb block-CRC + deserialize +
+     * no trailing bytes) WITHOUT the per-anchor Pedersen root recompute — that
+     * O(anchors × Pedersen) cost was the multi-minute silent scan. The tip
+     * frontier is Pedersen-verified once in shi_anchor_cb against best_root. */
+    int64_t n = (pool == ANCHOR_POOL_SPROUT)
+        ? chainstate_legacy_iter_sprout_anchors_bulk(h, shi_anchor_cb, &c)
+        : chainstate_legacy_iter_sapling_anchors_bulk(h, shi_anchor_cb, &c);
+
+    sqlite3_finalize(c.ins);
+    stream_free(&c.bs);
+    *count_out = c.count;
+    *saw_best_out = c.saw_best;
+    return (n < 0 || !c.ok) ? -1 : n;
+}
+
+/* Run ONE complete nullifier pass over `pool`. Statement finalized on return.
+ * Returns the delivered count (>=0), or -1 on any anomaly. */
+static int64_t shi_run_nullifier_pass(sqlite3 *db, void *h, int pool,
+                                      int64_t nf_sentinel, int64_t *count_out)
+{
+    struct shi_ctx c = {
+        .db = db, .ok = true, .pool = pool, .nf_sentinel = nf_sentinel,
+    };
+    c.ins = shi_prepare_nullifier_insert(db);
+    if (!c.ins) {
+        *count_out = 0;
+        LOG_RETURN(-1, SHI_SUBSYS,
+                   "nullifier pass: insert prepare failed pool=%d", pool);
+    }
+    int64_t n = (pool == NULLIFIER_POOL_SPROUT)
+        ? chainstate_legacy_iter_sprout_nullifiers(h, shi_nullifier_cb, &c)
+        : chainstate_legacy_iter_sapling_nullifiers(h, shi_nullifier_cb, &c);
+    sqlite3_finalize(c.ins);
+    *count_out = c.count;
+    return (n < 0 || !c.ok) ? -1 : n;
 }
 
 /* Read the three durable cursors, requiring both anchor pools share one
@@ -132,6 +445,7 @@ static void shi_rollback(sqlite3 *db)
 {
     (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     progress_store_tx_unlock();
+    shi_progress_end();
 }
 
 static bool shi_write_provenance(sqlite3 *db, const struct uint256 *best_block,
@@ -207,11 +521,18 @@ bool shielded_history_import_from_chainstate(
     report.anchor_boundary = anchor_boundary;
     report.nullifier_boundary = nullifier_boundary;
 
+    /* Heavy work begins — arm the never-silent progress surface. Every failure
+     * path below (pre-tx refusals AND in-tx rollbacks) calls shi_progress_end();
+     * shi_rollback() does it for the transactional paths. */
+    shi_progress_begin();
+
     /* Open the (already point-in-time / fixture) chainstate copy. */
     void *h = NULL;
-    if (!chainstate_legacy_open(chainstate_src_path, &h) || !h)
+    if (!chainstate_legacy_open(chainstate_src_path, &h) || !h) {
+        shi_progress_end();
         LOG_FAIL(SHI_SUBSYS, "chainstate_legacy_open(%s) failed",
                  chainstate_src_path);
+    }
 
     struct uint256 best_block;
     uint256_set_null(&best_block);
@@ -222,11 +543,13 @@ bool shielded_history_import_from_chainstate(
     struct uint256 best_sapling;
     if (!chainstate_legacy_get_best_sapling_anchor(h, &best_sapling)) {
         chainstate_legacy_close(h);
+        shi_progress_end();
         LOG_FAIL(SHI_SUBSYS,
                  "chainstate has no best Sapling anchor — cannot bind tip");
     }
     if (!uint256_eq(&best_sapling, expected_tip_sapling_root)) {
         chainstate_legacy_close(h);
+        shi_progress_end();
         LOG_FAIL(SHI_SUBSYS,
                  "tip bind FAILED: best Sapling anchor != expected header "
                  "hashFinalSaplingRoot at h=%lld — refusing",
@@ -248,74 +571,70 @@ bool shielded_history_import_from_chainstate(
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
         chainstate_legacy_close(h);
+        shi_progress_end();
         return false;
     }
     if (err) { sqlite3_free(err); err = NULL; }
 
     int64_t nf_sentinel = anchor_boundary - 1; /* highest historical height */
 
-    /* Sapling anchors. */
-    struct shi_ctx sap = {
-        .db = progress_db, .ok = true, .pool = ANCHOR_POOL_SAPLING,
-        .tip_height = expected_tip_height, .next_seq = 0,
-        .best_root = best_sapling, .best_present = true,
-    };
-    int64_t n = chainstate_legacy_iter_sapling_anchors(h, shi_anchor_cb, &sap);
-    if (n < 0 || !sap.ok || !sap.saw_best) {
+    /* ── anchors (Sapling then Sprout) ── */
+    shi_progress_phase(SHI_PHASE_SCAN_ANCHORS);
+
+    int64_t sap_count = 0;
+    bool sap_saw_best = false;
+    int64_t n = shi_run_anchor_pass(progress_db, h, ANCHOR_POOL_SAPLING, true,
+                                    &best_sapling, expected_tip_height,
+                                    &sap_count, &sap_saw_best);
+    if (n < 0 || !sap_saw_best) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
         LOG_FAIL(SHI_SUBSYS,
-                 "Sapling anchor import incomplete n=%lld ok=%d saw_tip=%d — "
-                 "rolled back", (long long)n, sap.ok, sap.saw_best);
+                 "Sapling anchor import incomplete n=%lld saw_tip=%d — "
+                 "rolled back", (long long)n, sap_saw_best);
     }
-    report.sapling_anchors = sap.count;
+    report.sapling_anchors = sap_count;
 
     /* Sprout anchors (best may be absent — a drained/empty pool). */
-    struct shi_ctx spr = {
-        .db = progress_db, .ok = true, .pool = ANCHOR_POOL_SPROUT,
-        .tip_height = expected_tip_height, .next_seq = 0,
-        .best_present = sprout_best_present,
-    };
-    if (sprout_best_present)
-        spr.best_root = best_sprout;
-    n = chainstate_legacy_iter_sprout_anchors(h, shi_anchor_cb, &spr);
-    if (n < 0 || !spr.ok || (sprout_best_present && !spr.saw_best)) {
+    int64_t spr_count = 0;
+    bool spr_saw_best = false;
+    n = shi_run_anchor_pass(progress_db, h, ANCHOR_POOL_SPROUT,
+                            sprout_best_present, &best_sprout,
+                            expected_tip_height, &spr_count, &spr_saw_best);
+    if (n < 0 || (sprout_best_present && !spr_saw_best)) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
         LOG_FAIL(SHI_SUBSYS,
-                 "Sprout anchor import incomplete n=%lld ok=%d best=%d "
-                 "saw_best=%d — rolled back", (long long)n, spr.ok,
-                 sprout_best_present, spr.saw_best);
+                 "Sprout anchor import incomplete n=%lld best=%d saw_best=%d — "
+                 "rolled back", (long long)n, sprout_best_present,
+                 spr_saw_best);
     }
-    report.sprout_anchors = spr.count;
+    report.sprout_anchors = spr_count;
 
-    /* Sapling nullifiers. */
-    struct shi_ctx snf = {
-        .db = progress_db, .ok = true, .pool = NULLIFIER_POOL_SAPLING,
-        .nf_sentinel = nf_sentinel,
-    };
-    n = chainstate_legacy_iter_sapling_nullifiers(h, shi_nullifier_cb, &snf);
-    if (n < 0 || !snf.ok) {
+    /* ── nullifiers (Sapling then Sprout) ── */
+    shi_progress_phase(SHI_PHASE_SCAN_NULLIFIERS);
+
+    int64_t snf_count = 0;
+    n = shi_run_nullifier_pass(progress_db, h, NULLIFIER_POOL_SAPLING,
+                               nf_sentinel, &snf_count);
+    if (n < 0) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
         LOG_FAIL(SHI_SUBSYS, "Sapling nullifier import failed n=%lld — "
                              "rolled back", (long long)n);
     }
-    report.sapling_nullifiers = snf.count;
+    report.sapling_nullifiers = snf_count;
 
-    /* Sprout nullifiers. */
-    struct shi_ctx pnf = {
-        .db = progress_db, .ok = true, .pool = NULLIFIER_POOL_SPROUT,
-        .nf_sentinel = nf_sentinel,
-    };
-    n = chainstate_legacy_iter_sprout_nullifiers(h, shi_nullifier_cb, &pnf);
-    if (n < 0 || !pnf.ok) {
+    int64_t pnf_count = 0;
+    n = shi_run_nullifier_pass(progress_db, h, NULLIFIER_POOL_SPROUT,
+                               nf_sentinel, &pnf_count);
+    if (n < 0) {
         shi_rollback(progress_db);
         chainstate_legacy_close(h);
         LOG_FAIL(SHI_SUBSYS, "Sprout nullifier import failed n=%lld — "
                              "rolled back", (long long)n);
     }
-    report.sprout_nullifiers = pnf.count;
+    report.sprout_nullifiers = pnf_count;
 
     /* We are done reading the chainstate; close it before the flip so a torn
      * source cannot silently reopen. */
@@ -324,6 +643,7 @@ bool shielded_history_import_from_chainstate(
 
     /* Flip BOTH activation cursors to zero — only now, after the COMPLETE set
      * is staged in this transaction and the tip was bound. */
+    shi_progress_phase(SHI_PHASE_BIND);
     if (!anchor_kv_publish_full_replay_complete_in_tx(progress_db,
                                                       anchor_boundary) ||
         !nullifier_kv_publish_full_replay_complete_in_tx(progress_db,
@@ -338,6 +658,7 @@ bool shielded_history_import_from_chainstate(
         LOG_FAIL(SHI_SUBSYS, "provenance failed — rolled back");
     }
 
+    shi_progress_phase(SHI_PHASE_COMMIT);
     if (sqlite3_exec(progress_db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN(SHI_SUBSYS, "COMMIT failed: %s",
                  err ? err : sqlite3_errmsg(progress_db));
@@ -347,6 +668,7 @@ bool shielded_history_import_from_chainstate(
     }
     if (err) sqlite3_free(err);
     progress_store_tx_unlock();
+    shi_progress_end();
 
     report.committed = true;
 
@@ -367,5 +689,73 @@ bool shielded_history_import_from_chainstate(
 
     if (out)
         *out = report;
+    return true;
+}
+
+bool shielded_history_import_register_cured_tip_trust_anchor(
+    sqlite3 *progress_db, struct node_db *ndb)
+{
+    if (!progress_db || !ndb)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: null args (progress_db=%p ndb=%p)",
+                   (void *)progress_db, (void *)ndb);
+
+    /* Derive the cured coins tip authoritatively from progress.kv's own
+     * co-committed state: height = coins_applied_height - 1, hash = the
+     * validate_headers_log own-hash at that height (the Invariant A trust
+     * root). This is the import's OWN header-committed value, never a peer's. */
+    int32_t h = -1;
+    uint8_t hash[32];
+    bool hash_found = false, found = false;
+    if (!reducer_frontier_derive_coins_best(progress_db, &h, hash,
+                                            &hash_found, &found))
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best derive failed "
+                   "(progress.kv read error)");
+    if (!found)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best not derivable "
+                   "(coins_applied_height absent / not proven-authority) — "
+                   "leaving the coins tip un-anchored");
+    if (h <= 0)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best height non-positive "
+                   "(h=%d)", h);
+    if (!hash_found)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins-best hash not resolvable "
+                   "from validate_headers_log at h=%d — refusing to register a "
+                   "heightless trust anchor", h);
+
+    struct uint256 tip_hash;
+    memcpy(tip_hash.data, hash, 32);
+
+    /* In-memory: effective THIS process (the copy-prove harness / unit test
+     * drive the Invariant A install without a reboot). */
+    utxo_recovery_set_cold_import_trust_anchor(&tip_hash, h);
+
+    /* Durable: the boot restore path (utxo_recovery_restore.c) re-reads these
+     * node_db seed keys every boot and re-registers the anchor, so the coins
+     * tip installs on the next NORMAL boot after the owner-gated import exits.
+     * The count is the seed's cross-check PROVENANCE token — the coins_kv row
+     * count the restore consumer verifies against the live store; the shielded
+     * import never touches coins_kv, so it stays consistent. */
+    int64_t utxo_count = coins_kv_count(progress_db);
+    if (utxo_count <= 0)
+        LOG_RETURN(false, SHI_SUBSYS,
+                   "cured-tip trust anchor: coins_kv empty (count=%lld) — "
+                   "cannot write the durable seed provenance token; the "
+                   "in-memory anchor is registered for this process only",
+                   (long long)utxo_count);
+    utxo_recovery_write_cold_import_seed(ndb, (int)h, &tip_hash, utxo_count);
+
+    char hex[65];
+    uint256_get_hex(&tip_hash, hex);
+    LOG_INFO(SHI_SUBSYS,
+             "cured-tip trust anchor registered: h=%d hash=%s "
+             "(in-memory + durable node_db seed, utxo_count=%lld) — Invariant A "
+             "will install the coins tip into the active chain so getheaders is "
+             "built from the real tip, not genesis",
+             h, hex, (long long)utxo_count);
     return true;
 }

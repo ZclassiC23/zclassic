@@ -15,11 +15,14 @@ File counts below are from `find <dir> -type f | wc -l` (verified
 
 ## 1. Where things live
 
-### The eight app shapes — `app/` (637 files)
+### The app shapes — `app/` (636 files, seven physical folders)
 
 Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 (`framework_shape_check.sh`). Filename suffix must match the shape
-(`check_framework_filename_suffix.sh`).
+(`check_framework_filename_suffix.sh`). The Event shape (FRAMEWORK.md §3 row 7)
+has no `app/` folder — the reserved-empty `app/events/` placeholder was deleted
+2026-07-17 (0 files ever lived there); the concept is owned by `lib/event/` +
+`lib/storage/event_log.c` + `lib/storage/*_projection.c`.
 
 | Shape | Path | Files | Role | Exemplar |
 |-------|------|-------|------|----------|
@@ -29,7 +32,6 @@ Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 | Jobs | `app/jobs/` | 94 | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
 | Supervisors | `app/supervisors/` | 13 | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
 | Conditions | `app/conditions/` | 53 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
-| Events | `app/events/` | 1 | reserved-empty by design; impl lives in `lib/event/` + `lib/storage/event_log.c` | `app/events/README.md` |
 | Views | `app/views/` | 98 | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
 
 ### Core consensus — `domain/` (44 files)
@@ -67,7 +69,7 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 638
+test_groups: 652
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 41

@@ -8,11 +8,13 @@
  * past the prefix and persisting the digests to
  * <datadir>/sha3_windows_runtime.dat.
  *
- * Each runtime window is committed ONLY after every block in the
- * window has reached CONFIRMATION_DEPTH (default 100) confirmations,
- * AND the oracle_policy state machine is NORMAL.  This prevents a
- * short-lived fork or a misbehaving zclassicd from poisoning the
- * persistent anchor.
+ * Each runtime window is committed only after every block in the
+ * window has reached CONFIRMATION_DEPTH (default 100) confirmations.
+ * oracle_policy divergence (HALTED/PANIC) is recorded as evidence
+ * (total_oracle_divergence_observed + an EV_SYNC_STATE_CHANGE event) but
+ * NEVER gates extension — a co-located zclassicd that is merely wrong or
+ * behind must not be able to halt chain-derived state that stands alone;
+ * these anchors are self-derived from already-validated local state.
  *
  * Format on disk (binary, little-endian):
  *   [8  bytes] magic "ZCLRAW1\0"
@@ -55,9 +57,9 @@ struct zcl_result rolling_anchor_init(const char *datadir,
 /* Attempt to commit one or more new 1000-block windows past the
  * current effective prefix, up to `cfg.max_extend_per_call`. Reads
  * blocks from disk via the active_chain. No-op when:
- *   - oracle_policy state is not NORMAL,
  *   - chain tip is below first uncommitted window + confirmation_depth + 999,
  *   - max_extend_per_call already hit.
+ * oracle_policy divergence does NOT gate this — see the file doc.
  * Returns number of newly committed windows. */
 int rolling_anchor_extend_if_due(struct main_state *ms,
                                   const char *datadir);

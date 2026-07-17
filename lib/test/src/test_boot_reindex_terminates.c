@@ -193,10 +193,13 @@ int test_boot_reindex_terminates(void)
 
     /* ──────────────────────────────────────────────────────────────────
      * (D) A stale tip-height request self-clears once durable coins authority
-     * has advanced beyond its anchor. Equality is still the first boot that
-     * should consume a freshly requested reindex; above-anchor progress proves
-     * the live reducer moved on without the request. The special boot-storage
-     * anchor 0 and terminal markers are not cleared by this covered-tip guard.
+     * COVERS its anchor: above-anchor progress proves the live reducer moved on
+     * without the request, and a HASH-VERIFIED coins-best exactly AT the anchor
+     * proves the transparent set is intact through the wedge tip (so consuming
+     * reindex-chainstate would only destructively wipe a healthy near-tip coins
+     * set without fixing a downstream/shielded wedge). An UNVERIFIED at-anchor
+     * coins-best could still be torn, so it keeps consuming. The special
+     * boot-storage anchor 0 and terminal markers are not cleared by this guard.
      * ────────────────────────────────────────────────────────────────── */
     {
         char dir[256];
@@ -207,17 +210,26 @@ int test_boot_reindex_terminates(void)
         int n1 = boot_auto_reindex_request(dir, ANCHOR);
         BR_CHECK("covered: request starts pending",
                  n1 == 1 && boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: below-anchor coins-best does not clear",
+        BR_CHECK("covered: below-anchor coins-best does not clear (even verified)",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR - 1) &&
+                     dir, ANCHOR - 1, true) &&
                  boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: coins-best at anchor keeps fresh request",
+        BR_CHECK("covered: at-anchor but UNVERIFIED keeps request (maybe torn)",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR) &&
+                     dir, ANCHOR, false) &&
                  boot_auto_reindex_pending(dir));
-        BR_CHECK("covered: coins-best above anchor clears stale request",
+        BR_CHECK("covered: at-anchor and HASH-VERIFIED clears "
+                 "(transparent set intact — wiping it would be destructive)",
                  boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR + 1) &&
+                     dir, ANCHOR, true) &&
+                 !boot_auto_reindex_pending(dir));
+
+        /* Re-arm to check the above-anchor path (reducer moved on) clears
+         * regardless of hash verification. */
+        (void)boot_auto_reindex_request(dir, ANCHOR);
+        BR_CHECK("covered: above-anchor clears stale request (reducer moved on)",
+                 boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR + 1, false) &&
                  !boot_auto_reindex_pending(dir));
 
         int n2 = boot_auto_reindex_request(dir, 0);
@@ -225,15 +237,103 @@ int test_boot_reindex_terminates(void)
                  n2 == 1 && boot_auto_reindex_pending(dir));
         BR_CHECK("covered: boot-storage anchor 0 is never stale-cleared",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, 999999) &&
+                     dir, 999999, true) &&
                  boot_auto_reindex_pending(dir));
         boot_auto_reindex_clear(dir);
 
         (void)boot_auto_reindex_mark_terminal(dir, ANCHOR);
         BR_CHECK("covered: terminal marker is not stale-cleared",
                  !boot_crashonly_clear_reindex_request_if_covered(
-                     dir, ANCHOR + 100) &&
+                     dir, ANCHOR + 100, true) &&
                  boot_auto_reindex_is_terminal(dir));
+
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+     * (E) The boot-storage gate REFUSES to arm on an unreadable-genesis
+     * (cold-import / bodyless) datadir. reindex_executable=false must NOT write
+     * a sentinel, must CLEAR any stale one (so the per-boot consume→wipe→refuse
+     * cycle stops), and must PARK — never crash-loop into a wipe it cannot
+     * rebuild. reindex_executable=true still arms within budget (the verb check
+     * must not suppress a legitimate reindex).
+     * ────────────────────────────────────────────────────────────────── */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "storage_gate");
+        mkdir_p_br(dir);
+
+        enum boot_gate_action a = boot_crashonly_storage_gate(
+            dir, "coins_view_integrity", /*reindex_executable=*/false);
+        BR_CHECK("storage gate: unreadable genesis parks (no crash-loop)",
+                 a == BOOT_GATE_PARK_DEGRADED);
+        BR_CHECK("storage gate: unreadable genesis does NOT arm a reindex",
+                 !boot_auto_reindex_pending(dir) &&
+                 !boot_auto_reindex_is_terminal(dir));
+
+        /* A stale sentinel from a prior boot is cleared by the refusal. */
+        (void)boot_auto_reindex_request(dir, 0);
+        BR_CHECK("storage gate: stale sentinel present before refusal",
+                 boot_auto_reindex_pending(dir));
+        a = boot_crashonly_storage_gate(dir, "coins_view_integrity",
+                                        /*reindex_executable=*/false);
+        BR_CHECK("storage gate: refusal clears the stale sentinel (no re-arm)",
+                 a == BOOT_GATE_PARK_DEGRADED &&
+                 !boot_auto_reindex_pending(dir) &&
+                 !boot_auto_reindex_is_terminal(dir));
+
+        /* Executable genesis → arm within budget (regression guard). */
+        a = boot_crashonly_storage_gate(dir, "coins_view_integrity",
+                                        /*reindex_executable=*/true);
+        BR_CHECK("storage gate: executable genesis arms (exit-for-reindex)",
+                 a == BOOT_GATE_EXIT_FOR_REINDEX &&
+                 boot_auto_reindex_pending(dir));
+
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+     * (F) The body-coverage gate refuses a from-genesis reindex when coins are
+     * seeded but bodies do not cover [0..target] (a cold-import seed), and the
+     * refusal CLEARS the sentinel so it does not re-arm every boot. Dense
+     * coverage — or an unseeded datadir — proceeds.
+     * ────────────────────────────────────────────────────────────────── */
+    {
+        /* Pure predicate. */
+        BR_CHECK("coverage: sparse bodies (target 3M, count ~0) insufficient",
+                 !boot_reindex_body_coverage_sufficient(3000000, 0, 1));
+        BR_CHECK("coverage: dense bodies (target 100k, full) sufficient",
+                 boot_reindex_body_coverage_sufficient(100000, 100000, 100001));
+        BR_CHECK("coverage: small tail gap still sufficient (gap-fill heals)",
+                 boot_reindex_body_coverage_sufficient(100000, 99999, 100000));
+        BR_CHECK("coverage: trivial span (target<=0) always sufficient",
+                 boot_reindex_body_coverage_sufficient(0, 0, 0));
+
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "coverage");
+        mkdir_p_br(dir);
+
+        (void)boot_auto_reindex_request(dir, 0);   /* a pending sentinel */
+        bool ok = boot_crashonly_reindex_coverage_ok(dir, 3000000, 0, 1,
+                                                     /*coins_seeded=*/true);
+        BR_CHECK("coverage decision: seeded+sparse refuses reindex", !ok);
+        BR_CHECK("coverage decision: refusal clears the sentinel (no re-arm)",
+                 !boot_auto_reindex_pending(dir) &&
+                 !boot_auto_reindex_is_terminal(dir));
+
+        /* A simulated SECOND boot re-derives the same sparse coverage: it must
+         * again refuse+clear (idempotent), never leaving a reindex armed. */
+        (void)boot_auto_reindex_request(dir, 0);
+        ok = boot_crashonly_reindex_coverage_ok(dir, 3000000, 0, 1, true);
+        BR_CHECK("coverage decision: second boot still refuses + stays cleared",
+                 !ok && !boot_auto_reindex_pending(dir));
+
+        BR_CHECK("coverage decision: unseeded datadir proceeds (true)",
+                 boot_crashonly_reindex_coverage_ok(dir, 3000000, 0, 1,
+                                                    /*coins_seeded=*/false));
+        BR_CHECK("coverage decision: seeded+dense proceeds (true)",
+                 boot_crashonly_reindex_coverage_ok(dir, 100000, 100000, 100001,
+                                                    /*coins_seeded=*/true));
 
         test_cleanup_tmpdir(dir);
     }

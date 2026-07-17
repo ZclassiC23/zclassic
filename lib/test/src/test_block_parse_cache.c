@@ -9,13 +9,19 @@
  *
  * A silent defect here (stale entry, key collision, shallow clone, eviction
  * error) would hand a WRONG body to body_persist/script_validate/proof_validate/
- * utxo_apply and corrupt the UTXO set. These tests assert the three properties
+ * utxo_apply and corrupt the UTXO set. These tests assert the properties
  * that protect the fold:
  *   (a) deep-clone equality + independence (miss then hit; mutate one, others
  *       and the cache entry unaffected),
  *   (b) no (height,hash) key collision (same height/diff hash, same hash/diff
  *       height both return their own bytes),
  *   (c) LRU eviction (>16 distinct keys; oldest evicted, recents still hit).
+ *   (d) sealed segment source below the frontier (see test_segment_backed_read).
+ *   (e) a MISS whose body does NOT hash to the requested key is never
+ *       installed into the cache (verify-before-store) — a bad disk read at
+ *       height H must not poison the (H,hash) slot for a later, correct read.
+ *   (f) block_parse_cache_evict(height,hash) removes exactly that one entry
+ *       and leaves every other resident entry untouched.
  *
  * The cache is driven through its real public API (block_parse_cache_get /
  * block_parse_cache_clear). Misses are satisfied from synthetic blocks written
@@ -400,6 +406,212 @@ done:
     return failures;
 }
 
+/* ── Test (e): verify-before-store — a MISS on wrong bytes never poisons
+ * the requested key ───────────────────────────────────────────────
+ * Reproduces the audit-confirmed defect: a MISS whose read body does NOT
+ * hash to the requested key (a bad disk read / stale bytes at a recycled
+ * position) used to be cached anyway under the requested (height,hash), so
+ * every later refetch of that key kept being served the SAME wrong bytes
+ * forever — a stuck-refetch liveness wedge. We drive this through the real
+ * public API only: `fx_bad` is genuinely on disk, but we ask for it under
+ * `h_good` (a different block's real hash) — a "bad read" from the cache's
+ * point of view. Then a second, distinct fixture `fx_good` — whose real
+ * on-disk bytes DO hash to `h_good` — is asked for under the same key. If
+ * the first call had wrongly poisoned (H,h_good), this second call would
+ * return `fx_bad`'s bytes (a cache HIT on the poisoned slot) instead of
+ * `fx_good`'s bytes (a genuine MISS reading the correct body). */
+
+static int test_no_cache_on_hash_mismatch(const char *datadir)
+{
+    int failures = 0;
+    block_parse_cache_clear();
+
+    TEST("bpc: MISS body not matching the requested key is never cached") {
+        const int H = 500;
+
+        struct block bad_src;
+        build_block(&bad_src, 0x5AD1, 2);
+        struct fixture fx_bad;
+        if (!make_fixture(&fx_bad, datadir, &bad_src, H)) {
+            printf("FAIL (fx_bad fixture)\n"); failures++;
+            block_free(&bad_src); free(fx_bad.bytes); goto done;
+        }
+        block_free(&bad_src);
+
+        struct block good_src;
+        build_block(&good_src, 0x6000D, 4);
+        struct fixture fx_good;
+        if (!make_fixture(&fx_good, datadir, &good_src, H)) {
+            printf("FAIL (fx_good fixture)\n"); failures++;
+            block_free(&good_src);
+            free(fx_bad.bytes); free(fx_good.bytes); goto done;
+        }
+        block_free(&good_src);
+
+        if (memcmp(fx_bad.hash.data, fx_good.hash.data, 32) == 0) {
+            printf("FAIL (test setup: bad/good hashes collided)\n");
+            failures++; free(fx_bad.bytes); free(fx_good.bytes); goto done;
+        }
+
+        /* "Bad read": fx_bad.bi genuinely points at fx_bad's on-disk bytes,
+         * but we request the key under fx_good's hash (simulating a read
+         * that came back wrong for the (height,hash) the caller wanted). */
+        struct block out1; block_init(&out1);
+        bool ok1 = block_parse_cache_get(H, fx_good.hash.data, &fx_bad.bi,
+                                         datadir, &out1);
+        if (!ok1) {
+            printf("FAIL (bad-key get itself failed)\n"); failures++;
+            block_free(&out1); free(fx_bad.bytes); free(fx_good.bytes);
+            goto done;
+        }
+        /* Sanity: the contract still hands back whatever was actually read
+         * (fx_bad's bytes) — today's "caller's gate decides" behavior. */
+        size_t l1 = 0; unsigned char *s1 = ser(&out1, &l1);
+        bool out1_is_bad = s1 && l1 == fx_bad.len &&
+                           memcmp(s1, fx_bad.bytes, l1) == 0;
+        free(s1); block_free(&out1);
+        if (!out1_is_bad) {
+            printf("FAIL (mismatched MISS did not return the actually-read bytes)\n");
+            failures++; free(fx_bad.bytes); free(fx_good.bytes); goto done;
+        }
+
+        /* The (H, fx_good.hash) slot must NOT have been poisoned with
+         * fx_bad's bytes. Ask for the same key again, this time with an
+         * index pointing at fx_good's real (correct) on-disk bytes. A fixed
+         * cache treats this as a genuine MISS and returns fx_good's bytes; a
+         * poisoned cache would HIT and return fx_bad's bytes instead. */
+        struct block out2; block_init(&out2);
+        bool ok2 = block_parse_cache_get(H, fx_good.hash.data, &fx_good.bi,
+                                         datadir, &out2);
+        if (!ok2) {
+            printf("FAIL (correct-key get failed)\n"); failures++;
+            block_free(&out2); free(fx_bad.bytes); free(fx_good.bytes);
+            goto done;
+        }
+        size_t l2 = 0; unsigned char *s2 = ser(&out2, &l2);
+        bool out2_is_good = s2 && l2 == fx_good.len &&
+                            memcmp(s2, fx_good.bytes, l2) == 0;
+        bool out2_is_poisoned_bad = s2 && l2 == fx_bad.len &&
+                                    memcmp(s2, fx_bad.bytes, l2) == 0;
+        free(s2); block_free(&out2);
+        if (!out2_is_good || out2_is_poisoned_bad) {
+            printf("FAIL (poisoned slot served stale bytes: got_good=%d got_bad=%d)\n",
+                   out2_is_good, out2_is_poisoned_bad);
+            failures++; free(fx_bad.bytes); free(fx_good.bytes); goto done;
+        }
+
+        /* And it is now a real, correctly-keyed cache entry: a third get
+         * under the same key hits it and still returns fx_good's bytes. */
+        struct block out3; block_init(&out3);
+        bool ok3 = block_parse_cache_get(H, fx_good.hash.data, &fx_good.bi,
+                                         datadir, &out3);
+        size_t l3 = 0; unsigned char *s3 = ok3 ? ser(&out3, &l3) : NULL;
+        bool out3_ok = s3 && l3 == fx_good.len &&
+                       memcmp(s3, fx_good.bytes, l3) == 0;
+        free(s3); block_free(&out3);
+        if (!out3_ok) {
+            printf("FAIL (post-fix hit did not serve fx_good bytes)\n");
+            failures++; free(fx_bad.bytes); free(fx_good.bytes); goto done;
+        }
+
+        free(fx_bad.bytes); free(fx_good.bytes);
+        printf("OK\n");
+    }
+done:
+    block_parse_cache_clear();
+    return failures;
+}
+
+/* ── Test (f): block_parse_cache_evict removes exactly one key ────
+ * Deterministic, single-threaded: populate three distinct keys, evict the
+ * middle one, and prove (via the same broken-index trick as the LRU test)
+ * that exactly the evicted key is forced back to a MISS while its siblings
+ * remain resident cache HITs. */
+
+static int test_evict_removes_one_key(const char *datadir)
+{
+    int failures = 0;
+    block_parse_cache_clear();
+
+    TEST("bpc: evict removes exactly the targeted key, siblings untouched") {
+        struct block b1, b2, b3;
+        build_block(&b1, 0x7001, 1);
+        build_block(&b2, 0x7002, 2);
+        build_block(&b3, 0x7003, 3);
+        struct fixture f1, f2, f3;
+        bool setup_ok = make_fixture(&f1, datadir, &b1, 600) &&
+                        make_fixture(&f2, datadir, &b2, 601) &&
+                        make_fixture(&f3, datadir, &b3, 602);
+        block_free(&b1); block_free(&b2); block_free(&b3);
+        if (!setup_ok) {
+            printf("FAIL (fixtures)\n"); failures++;
+            free(f1.bytes); free(f2.bytes); free(f3.bytes); goto done;
+        }
+
+        /* Populate all three (each a genuine MISS + cache install). */
+        struct block g1, g2, g3;
+        block_init(&g1); block_init(&g2); block_init(&g3);
+        bool got = block_parse_cache_get(600, f1.hash.data, &f1.bi, datadir, &g1) &&
+                   block_parse_cache_get(601, f2.hash.data, &f2.bi, datadir, &g2) &&
+                   block_parse_cache_get(602, f3.hash.data, &f3.bi, datadir, &g3);
+        block_free(&g1); block_free(&g2); block_free(&g3);
+        if (!got) {
+            printf("FAIL (populate)\n"); failures++;
+            free(f1.bytes); free(f2.bytes); free(f3.bytes); goto done;
+        }
+
+        /* Evict only key 2. */
+        block_parse_cache_evict(601, f2.hash.data);
+
+        /* Key 2 must now be a MISS: break its index and confirm the get
+         * fails (a HIT would ignore the broken index entirely). */
+        struct block_index broken2 = f2.bi;
+        broken2.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+        struct block e2; block_init(&e2);
+        bool still2 = block_parse_cache_get(601, f2.hash.data, &broken2,
+                                            datadir, &e2);
+        block_free(&e2);
+        if (still2) {
+            printf("FAIL (evicted key still served from cache)\n");
+            failures++; free(f1.bytes); free(f2.bytes); free(f3.bytes);
+            goto done;
+        }
+
+        /* Keys 1 and 3 must still be resident HITs: break THEIR indexes too
+         * and confirm the get still succeeds and returns the right bytes —
+         * only possible if served from the (untouched) cache entry. */
+        struct block_index broken1 = f1.bi, broken3 = f3.bi;
+        broken1.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+        broken3.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+
+        struct block h1, h3; block_init(&h1); block_init(&h3);
+        bool ok1 = block_parse_cache_get(600, f1.hash.data, &broken1, datadir, &h1);
+        bool ok3 = block_parse_cache_get(602, f3.hash.data, &broken3, datadir, &h3);
+        size_t l1 = 0, l3 = 0;
+        unsigned char *s1 = ok1 ? ser(&h1, &l1) : NULL;
+        unsigned char *s3 = ok3 ? ser(&h3, &l3) : NULL;
+        bool sib1_ok = s1 && l1 == f1.len && memcmp(s1, f1.bytes, l1) == 0;
+        bool sib3_ok = s3 && l3 == f3.len && memcmp(s3, f3.bytes, l3) == 0;
+        free(s1); free(s3); block_free(&h1); block_free(&h3);
+        if (!sib1_ok || !sib3_ok) {
+            printf("FAIL (evict disturbed a sibling key: sib1_ok=%d sib3_ok=%d)\n",
+                   sib1_ok, sib3_ok);
+            failures++; free(f1.bytes); free(f2.bytes); free(f3.bytes);
+            goto done;
+        }
+
+        /* Evicting an absent key (or NULL hash) is a safe no-op. */
+        block_parse_cache_evict(999999, f1.hash.data);
+        block_parse_cache_evict(600, NULL);
+
+        free(f1.bytes); free(f2.bytes); free(f3.bytes);
+        printf("OK\n");
+    }
+done:
+    block_parse_cache_clear();
+    return failures;
+}
+
 /* ── Test (d): sealed-segment source below the frontier ───────────
  * The fold substrate: when a sealed segment covers a height, the miss path
  * serves the body from the mmap'd segment (byte-identical, hash-bound) instead
@@ -503,6 +715,8 @@ int test_block_parse_cache(void)
     failures += test_deep_clone_equality(tmpdir);
     failures += test_no_key_collision(tmpdir);
     failures += test_lru_eviction(tmpdir);
+    failures += test_no_cache_on_hash_mismatch(tmpdir);
+    failures += test_evict_removes_one_key(tmpdir);
     failures += test_segment_backed_read(tmpdir);
 
     block_parse_cache_clear();

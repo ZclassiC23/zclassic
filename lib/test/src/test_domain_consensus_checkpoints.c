@@ -188,7 +188,7 @@ int test_domain_consensus_checkpoints(void)
 
     /* ──────────────── L3 LOCK-IN: checkpoint fork-guard is exact-height-only ──
      *
-     * Parity-audit round 2 (docs/work/archive/parity-audit-round2-findings.md, L3):
+     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L3):
      * domain_consensus_checkpoints_validate_header() returns true whenever no
      * checkpoint exists at the EXACT height being checked — even when that
      * height sits BELOW the last (deepest) checkpoint height. zclassicd

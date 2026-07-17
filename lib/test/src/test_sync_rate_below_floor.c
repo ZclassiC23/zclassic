@@ -30,6 +30,7 @@
 #include "net/download.h"
 #include "net/protocol.h"
 #include "platform/clock.h"
+#include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "util/blocker.h"
 #include "validation/main_state.h"
@@ -81,6 +82,7 @@ static void srbf_reset(struct connman *cm, struct download_manager *dm,
     condition_engine_reset_for_testing();
     blocker_reset_for_testing();
     sync_rate_below_floor_test_reset();
+    sticky_escalator_test_reset();
     memset(cm, 0, sizeof(*cm));
     memset(dm, 0, sizeof(*dm));
     memset(ms, 0, sizeof(*ms));
@@ -97,6 +99,7 @@ static void srbf_cleanup(void)
     condition_engine_reset_for_testing();
     blocker_reset_for_testing();
     sync_rate_below_floor_test_reset();
+    sticky_escalator_test_reset();
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
 }
@@ -158,6 +161,12 @@ int test_sync_rate_below_floor(void)
         ok = ok && blocker_exists("sync_rate_below_floor");
         SRBF_CHECK("K consecutive below-floor windows (peers+work) trips it",
                   ok);
+
+        /* ACT (Pillar 1): the remedy did not merely NAME the slowdown — it
+         * invoked the always-terminating recovery ladder. Witness the ladder
+         * arm, not just the blocker. */
+        SRBF_CHECK("sustained growing-gap remedy ARMS the recovery ladder",
+                  sticky_escalator_test_armed());
 
         struct json_value dump;
         json_init(&dump);
@@ -227,6 +236,8 @@ int test_sync_rate_below_floor(void)
             ok = ok && condition_engine_get_active_count() == 0;
         }
         ok = ok && sync_rate_below_floor_test_remedy_calls() == 0;
+        /* A healthy fold never nudges the ladder. */
+        ok = ok && !sticky_escalator_test_armed();
         SRBF_CHECK("rate comfortably above floor never trips across many "
                   "windows", ok);
         srbf_cleanup();

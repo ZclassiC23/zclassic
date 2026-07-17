@@ -26,10 +26,15 @@ a permanent server inventory.
 
 ## Active control documents
 
+This list elaborates [`../HANDOFF.md`](../HANDOFF.md) §6 (the entry point) and
+[`ROADMAPS.md`](./ROADMAPS.md) (the full live-vs-superseded roadmap index); if
+any of these three ever disagree, HANDOFF wins.
+
 - **Current work:** [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) (THE plan),
-  [`self-verified-tip-plan.md`](./self-verified-tip-plan.md),
-  [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md), and
-  [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md).
+  [`self-verified-tip-plan.md`](./self-verified-tip-plan.md) (the cure spine),
+  [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md) (bundle naming/
+  ownership authority), and [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)
+  (install runbook).
 - **Secondary track:** [`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md)
   (the authoritative zero-MCP inventory).
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,

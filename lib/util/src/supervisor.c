@@ -51,6 +51,12 @@ static _Atomic int    g_tick_ms       = 1000;
 static pthread_t      g_thread_id;
 static _Atomic bool   g_thread_handle_set = false;
 
+/* Pillar 7 heartbeat: bumps once per sweep_once() call, before any child
+ * callback runs, so a dead/wedged sweep freezes it. See
+ * util/supervisor_backstop.h for the external watcher. */
+static _Atomic uint64_t g_sweep_heartbeat = 0;
+static _Atomic int64_t  g_sweep_last_us   = 0;
+
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
     switch (r) {
@@ -387,6 +393,11 @@ static void sweep_once(void)
 {
     int64_t now = platform_time_monotonic_us();
 
+    /* Pillar 7: bump FIRST — a hang anywhere below (even inside a
+     * child's on_tick) freezes this at its last recorded value. */
+    atomic_fetch_add(&g_sweep_heartbeat, 1u);
+    atomic_store(&g_sweep_last_us, now);
+
     /* Snapshot the list of pointers under lock; release before
      * invoking any callback so callbacks can re-enter the API safely. */
     struct liveness_contract *snap[SUPERVISOR_CAP];
@@ -612,6 +623,16 @@ int supervisor_child_count_total(void)
     return n;
 }
 
+uint64_t supervisor_sweep_heartbeat(void)
+{
+    return atomic_load(&g_sweep_heartbeat);
+}
+
+int64_t supervisor_sweep_last_us(void)
+{
+    return atomic_load(&g_sweep_last_us);
+}
+
 int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
 {
     if (!out || max <= 0) return 0;
@@ -650,6 +671,11 @@ bool supervisor_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "running",      atomic_load(&g_running));
     json_push_kv_bool(out, "thread_alive", atomic_load(&g_thread_alive));
     json_push_kv_int (out, "tick_ms",      atomic_load(&g_tick_ms));
+    /* Pillar 7: is the root sweep thread itself alive. */
+    json_push_kv_int (out, "sweep_heartbeat",
+                      (int64_t)atomic_load(&g_sweep_heartbeat));
+    json_push_kv_int (out, "sweep_last_age_us",
+                      platform_time_monotonic_us() - atomic_load(&g_sweep_last_us));
 
     if (key && key[0]) {
         pthread_mutex_lock(&g_lock);

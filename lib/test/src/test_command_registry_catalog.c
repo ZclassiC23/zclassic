@@ -1747,10 +1747,124 @@ static int test_describe_emits_observed_p99(void)
     return failures;
 }
 
+/* The ZCL application-feature leaves (config/commands/app_features.def) are the
+ * native twin of tools/mcp/controllers/app_controller.c. The read surface
+ * (names resolve/list, tokens list, messaging inbox, market list/status, swap
+ * chains/list) is READY and MCP-free bridge-dispatched; the destructive
+ * commands (name register/update/transfer/renew/set-record/set-text, message
+ * send/send-named/read, market offer/buy, swap initiate/participate) are
+ * PLANNED and fail closed until the app-write plan/commit handshake lands. */
+static int test_app_features_leaves(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("app feature leaves: read surface READY+bridged, writes PLANNED closed") {
+        const char *branches[] = {
+            "app.names", "app.tokens", "app.messaging", "app.market", "app.swap",
+        };
+        for (size_t i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
+            const struct zcl_command_spec *b = find_spec(reg, branches[i]);
+            ASSERT(b != NULL);
+            ASSERT_EQ(b->mode, ZCL_COMMAND_MODE_BRANCH);
+            ASSERT_STR_EQ(b->parent, "app");
+        }
+
+        /* Read surface: READY, dispatched MCP-free through the bridge with a
+         * tool name AND exactly one body-fn binding (never a direct RPC). */
+        const char *reads[] = {
+            "app.names.resolve", "app.names.list", "app.tokens.list",
+            "app.messaging.inbox", "app.market.list", "app.market.status",
+            "app.swap.chains", "app.swap.list",
+        };
+        for (size_t i = 0; i < sizeof(reads) / sizeof(reads[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, reads[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT(s->handler == zcl_native_bridge_command);
+            ASSERT(zcl_native_bridge_tool_for_path(s->path) != NULL);
+            ASSERT(zcl_native_bridge_body_for_path(s->path) != NULL);
+            ASSERT(zcl_native_bridge_rpc_for_path(s->path) == NULL);
+        }
+
+        /* Destructive surface: PLANNED, no handler, honest reason, blocks with
+         * exit 3 rather than broadcasting. */
+        const char *writes[] = {
+            "app.names.register", "app.names.update", "app.names.transfer",
+            "app.names.renew", "app.names.set-record", "app.names.set-text",
+            "app.messaging.send", "app.messaging.send-named",
+            "app.messaging.read", "app.market.offer", "app.market.buy",
+            "app.swap.initiate", "app.swap.participate",
+        };
+        char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+        for (size_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, writes[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_PLANNED);
+            ASSERT(s->handler == NULL);
+            ASSERT(s->availability_reason && s->availability_reason[0]);
+            ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_MUTATE);
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_BLOCKED);
+            ASSERT(strstr(out, "COMMAND_PLANNED") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The operator rollup dashboards ported from the legacy MCP ops controller
+ * (tools/mcp/controllers/ops_controller.c) that had no native twin. Each is a
+ * READY read leaf under ops.debug.dash, dispatched by the MCP-free bridge via a
+ * re-homed body function (never an RPC-shape binding), and named by a
+ * tool-for-path entry so the selftest sweep and the "exactly one dispatch"
+ * invariant both accept it. */
+static int test_ops_dash_dashboards_ported(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("ops.debug.dash operator dashboards are bridged READY leaves") {
+        const struct {
+            const char *path;
+            const char *tool;
+        } leaves[] = {
+            { "ops.debug.dash.kpi", "zcl_kpi" },
+            { "ops.debug.dash.snapshot", "zcl_operator_snapshot" },
+            { "ops.debug.dash.summary", "zcl_operator_summary" },
+            { "ops.debug.dash.milestone", "zcl_milestone" },
+            { "ops.debug.dash.mirror", "zcl_mirror_status" },
+            { "ops.debug.dash.selfheal", "zcl_self_heal_stats" },
+        };
+        const struct zcl_command_spec *branch =
+            find_spec(reg, "ops.debug.dash");
+        ASSERT(branch != NULL);
+        ASSERT_EQ(branch->mode, ZCL_COMMAND_MODE_BRANCH);
+        ASSERT_STR_EQ(branch->parent, "ops.debug");
+        for (size_t i = 0; i < sizeof(leaves) / sizeof(leaves[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, leaves[i].path);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+            ASSERT_STR_EQ(s->parent, "ops.debug.dash");
+            ASSERT(s->handler == zcl_native_bridge_command);
+            const char *tool = zcl_native_bridge_tool_for_path(leaves[i].path);
+            ASSERT(tool != NULL);
+            ASSERT_STR_EQ(tool, leaves[i].tool);
+            /* body-backed composition, never an RPC-shape binding */
+            ASSERT(zcl_native_bridge_body_for_path(leaves[i].path) != NULL);
+            ASSERT(zcl_native_bridge_rpc_for_path(leaves[i].path) == NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
     failures += test_catalog_wellformed();
+    failures += test_app_features_leaves();
+    failures += test_ops_dash_dashboards_ported();
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();
     failures += test_describe_emits_semantics();
@@ -1781,6 +1895,7 @@ int test_command_registry_catalog(void)
     failures += test_response_budget_views();
     failures += test_typo_stays_branch();
     failures += test_ops_selftest_registry();
+    failures += test_ops_dash_dashboards_ported();
     failures += test_ops_state_requires_subsystem();
     failures += test_dev_vcs_revert_release_stub();
     failures += test_dev_vcs_seal_grant_release_stub();

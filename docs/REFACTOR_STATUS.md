@@ -1,10 +1,11 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-07-14 (file-size ratchet count re-verified against code; the
-> rest of this file is the 2026-06-03 board — treat other
-> specific line counts as potentially stale until re-verified). This file is
-> the current debt board for finishing the framework refactor.
-> `docs/FRAMEWORK.md` remains the architecture.
+> Updated 2026-07-17 (file-size ratchet count re-verified against
+> `tools/scripts/file_size_ceiling_baseline.txt`; the rest of this file is
+> the 2026-06-03 board — treat other specific line counts as potentially
+> stale until re-verified). This file is the current debt board for
+> finishing the framework refactor. `docs/FRAMEWORK.md` remains the
+> architecture.
 >
 > ⚠️ **This is the ARCHITECTURE-AXIS board (~90% done). It is NOT the v1 path.**
 > The v1 bar is [`docs/MVP.md`](./MVP.md); THE plan is
@@ -37,27 +38,27 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
   (pure core); `app/` depends inward on `domain|ports|application` **18×**.
 - 10 of 11 lint baselines = **0 entries** (shape/result-type/sqlite/supervisor/
   blocker/layering gates pass with zero grandfathered exceptions). The one
-  non-empty baseline is file-size: as re-counted 2026-07-14,
-  `tools/scripts/file_size_ceiling_baseline.txt` carries **17 grandfathered
-  entries** — **14 under `app/`** (largest: `app/views/src/explorer_pages_hodl.c`
+  non-empty baseline is file-size: as re-counted 2026-07-17,
+  `tools/scripts/file_size_ceiling_baseline.txt` carries **20 grandfathered
+  entries** — **15 under `app/`** (largest: `app/views/src/explorer_pages_hodl.c`
   1853, `app/controllers/src/name_controller.c` 1034,
-  `app/controllers/src/swap_controller.c` 1013) and **3 under `config/src/`**
-  (`boot.c` 3949, `boot_refold_staged.c` 2107, `boot_services.c` 1634).
-  The earlier "2 entries / `app/` has no baseline entry" claim is stale —
-  do not repeat it without re-counting the baseline file. (A 2026-07-11
-  note also listed `config/src/boot_background_workers.c` as baselined;
-  that entry no longer exists — the file is 678 lines, under the 800
-  ceiling, so it correctly has no baseline line.)
+  `app/controllers/src/swap_controller.c` 1013) and **5 under `config/src/`**
+  (`boot.c` 4070, `boot_refold_staged.c` 2025,
+  `config/src/consensus_state_snapshot_install_activate.c` 1137,
+  `boot_services.c` 1658, `consensus_state_producer_receipt.c` 810). The count
+  keeps drifting upward release-to-release as new files cross the 800-line
+  ceiling and get grandfathered — re-count the baseline file directly before
+  repeating any specific figure here.
 
 **Remaining debt, ranked (tracked as session Waves A–E):**
 
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
-| 1 | `config/` boot monolith | boot.c **3949**, boot_services.c **1634**, boot_refold_staged.c **2107** (re-measured 2026-07-12; earlier splits — `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, `boot_legacy_blocks`, `boot_memory_guard`, `boot_flyclient` — landed 2026-06-30) — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/archive/boot-decomposition-seams.md` | D |
-| 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
+| 1 | `config/` boot monolith | boot.c **4070**, boot_services.c **1658**, boot_refold_staged.c **2025** (re-counted 2026-07-17 from `tools/scripts/file_size_ceiling_baseline.txt`; earlier splits — `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, `boot_legacy_blocks`, `boot_memory_guard`, `boot_flyclient` — landed 2026-06-30) — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Seam plan was `docs/work/archive/boot-decomposition-seams.md`, removed from the tree — recover with `git log --follow -- docs/work/archive/boot-decomposition-seams.md`. | D |
+| 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), the same by-design absence as the deleted `app/events/` folder (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
-| 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED — keep reserved-and-empty by design** (audit: no misplaced Event code; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). README + FRAMEWORK §3 row 7 document the keep-empty rule; `events` now in Makefile `APP_DIRS` for build/lint symmetry. | — |
+| 5 | `app/events/` deleted 2026-07-17 (was empty, 0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED-CLOSED — folder deleted, not just kept empty** (audit: no misplaced Event code, ever; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). A placeholder folder that will never hold code serves no purpose — deleted rather than kept reserved-and-empty. Removed from Makefile `APP_DIRS` and every lint gate that enumerated it; FRAMEWORK §3 row 7 documents the shape as concept-only (no `app/` folder). | — |
 | 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
 
 Wave B = split the files at the 800 ceiling (the current inventory is the
@@ -112,9 +113,9 @@ node soak.
 
 - The reducer/staged pipeline is the authoritative chain-advance architecture.
 - The public cutover/projection-diff MCP/RPC apparatus has been removed.
-- The legacy block-connect engine (`lib/validation/src/connect_block.c`, 806
+- The legacy block-connect engine (`lib/validation/src/connect_block.c`, 896
   LOC) still ships and is live-called on the reindex/recovery path
-  (`config/src/boot_index.c:334`). The staged reducer is the authoritative
+  (`config/src/boot_index.c:403`). The staged reducer is the authoritative
   chain-advance engine; deleting the legacy `connect_block` path is tracked
   cleanup, not done (FRAMEWORK.md §2 states the same).
 - Production C/H surfaces no longer describe active reducer read-model paths as
@@ -160,14 +161,14 @@ node soak.
 
 ### E1 Oversized App Files
 
-`tools/scripts/file_size_ceiling_baseline.txt` has **17 grandfathered
-entries** (re-counted 2026-07-14): 14 under `app/` and 3 under
-`config/src/`. The largest review targets are `config/src/boot.c` (3949),
-`config/src/boot_refold_staged.c` (2107), `config/src/boot_services.c`
-(1634), and `app/views/src/explorer_pages_hodl.c` (1853). The baseline
-remains a ratchet and should not be raised; shrink these files through
-behavior-preserving splits or explicit seam designs until the gate can go to
-zero.
+`tools/scripts/file_size_ceiling_baseline.txt` has **20 grandfathered
+entries** (re-counted 2026-07-17): 15 under `app/` and 5 under
+`config/src/`. The largest review targets are `config/src/boot.c` (4070),
+`config/src/boot_refold_staged.c` (2025),
+`app/views/src/explorer_pages_hodl.c` (1853), and `config/src/boot_services.c`
+(1658). The baseline remains a ratchet and should not be raised; shrink these
+files through behavior-preserving splits or explicit seam designs until the
+gate can go to zero.
 
 ### E2 Service Result Debt
 

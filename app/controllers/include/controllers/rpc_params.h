@@ -5,9 +5,9 @@
  * Hand-rolled snprintf(payload, ..., "[\"%s\"]", user_input) is vulnerable
  * to JSON injection when user_input contains `"`, `\`, or control chars:
  * a caller can punch through the string context and rewrite the params
- * array.  All MCP controller handlers must build RPC param arrays through
- * this builder — it routes every string through the project's JSON
- * encoder, which escapes the dangerous characters.
+ * array.  Every handler that builds RPC param arrays must go through this
+ * builder — it routes every string through the project's JSON encoder,
+ * which escapes the dangerous characters.
  *
  * Usage (flat case):
  *   struct mcp_params p;
@@ -34,8 +34,8 @@
  *   char *params = mcp_params_to_json(&p);
  */
 
-#ifndef ZCL_MCP_RPC_PARAMS_H
-#define ZCL_MCP_RPC_PARAMS_H
+#ifndef ZCL_CONTROLLERS_RPC_PARAMS_H
+#define ZCL_CONTROLLERS_RPC_PARAMS_H
 
 #include "json/json.h"
 

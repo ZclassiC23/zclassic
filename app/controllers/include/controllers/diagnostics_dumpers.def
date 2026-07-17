@@ -15,6 +15,12 @@
                "child service name, or use subsystem=supervisor.<name>",
                "sync.watchdog", "net.outbound_floor",
                "lib/test/src/test_supervisor.c", false),
+    DIAG_RUNTIME("supervisor_backstop", supervisor_backstop_dump_state_json,
+                 "independent sweep-heartbeat watcher for the root supervisor "
+                 "thread (Pillar 7): freeze threshold, respawn latch, "
+                 "off-systemd fallback state",
+                 "lib/util/src/supervisor_backstop.c",
+                 "lib/test/src/test_supervisor_backstop.c"),
     DIAG_CONDITION("blocker", blocker_dump_state_json,
                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
                    "deadlines, escape actions, fire counts",
@@ -150,7 +156,11 @@
     DIAG_STAGE("reducer_frontier", reducer_frontier_dump_state_json,
                "reducer L0 authority: H*, served_floor, stage cursors, "
                "success-checked frontiers, coins frontier, first "
-               "validate_headers blocker + repair owner",
+               "validate_headers blocker + repair owner, and rewind_bases "
+               "(every currently-available self-verified rewind base — "
+               "compiled checkpoint, sealed coins_sha3 ring slots, finalized "
+               "utxo_sha3 — each with height/self_derived, plus the nearest "
+               "one's O(delta) distance from H*)",
                "app/jobs/src/reducer_frontier_dump.c",
                "lib/test/src/test_reducer_frontier.c"),
     DIAG_STAGE("header_admit", header_admit_stage_dump_state_json,

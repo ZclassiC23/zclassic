@@ -18,6 +18,7 @@
 
 #include "jobs/reducer_frontier.h"
 #include "storage/progress_store.h"
+#include "storage/seal_kv.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -1437,6 +1438,133 @@ static int case_log_frontier_above_tip_finalize_cursor(void)
     return failures;
 }
 
+/* Scan a JSON array for the first object whose "kind" field equals `kind`
+ * and whose "height" field equals `height`. Returns NULL if not found. */
+static const struct json_value *find_rewind_base(const struct json_value *arr,
+                                                  const char *kind,
+                                                  int32_t height)
+{
+    size_t n = arr ? json_size(arr) : 0;
+    for (size_t i = 0; i < n; i++) {
+        const struct json_value *item = json_at(arr, i);
+        if (!item)
+            continue;
+        const char *k = json_get_str(json_get(item, "kind"));
+        if (k && strcmp(k, kind) == 0 &&
+            json_get_int(json_get(item, "height")) == height)
+            return item;
+    }
+    return NULL;
+}
+
+/* Pillar 3 observability: the reducer_frontier dump lists every currently
+ * available self-verified rewind base (the compiled checkpoint + every
+ * self-valid seal_kv ring slot + the optional finalized utxo_sha3 stamp) and
+ * reports the O(delta) distance from H* to the nearest one. */
+static int case_dump_reports_rewind_bases(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "rewind_bases");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("rewind: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("rewind: schema", db && build_schema(db));
+    RF_CHECK("rewind: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("rewind: seal schema", seal_kv_ensure_schema(db));
+
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 5; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("rewind: rows built", built);
+    RF_CHECK("rewind: cursors", set_all_cursors(db, A + 6));
+
+    /* One self-derived sealed candidate at A+2 — closer to the tip (A+5) than
+     * the compiled checkpoint (at A). */
+    struct seal_record r;
+    memset(&r, 0, sizeof(r));
+    r.height = A + 2;
+    memset(r.coins_sha3, 0xAB, sizeof(r.coins_sha3));
+    r.utxo_count = 3;
+    r.supply = 12345;
+    r.sealed_at = 1;
+    progress_store_tx_lock();
+    bool tx_ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL)
+                     == SQLITE_OK;
+    bool inserted = tx_ok && seal_kv_insert_candidate_in_tx(db, &r);
+    sqlite3_exec(db, inserted ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    progress_store_tx_unlock();
+    RF_CHECK("rewind: seal candidate inserted", inserted);
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("rewind: dump returns true", dumped);
+    if (dumped) {
+        RF_CHECK("rewind: hstar reaches last consistent height",
+                 json_get_int(json_get(&out, "hstar")) == A + 5);
+
+        const struct json_value *bases = json_get(&out, "rewind_bases");
+        RF_CHECK("rewind: rewind_bases is present", bases != NULL);
+        RF_CHECK("rewind: rewind_bases_count >= 2",
+                 json_get_int(json_get(&out, "rewind_bases_count")) >= 2);
+
+        const struct json_value *compiled =
+            find_rewind_base(bases, "compiled_checkpoint", A);
+        RF_CHECK("rewind: compiled checkpoint entry present",
+                 compiled != NULL);
+        if (compiled) {
+            RF_CHECK("rewind: compiled checkpoint self_derived",
+                     json_get_bool(json_get(compiled, "self_derived")));
+            RF_CHECK("rewind: compiled checkpoint distance_from_tip",
+                     json_get_int(json_get(compiled, "distance_from_tip"))
+                         == 5);
+        }
+
+        const struct json_value *sealed =
+            find_rewind_base(bases, "sealed_coins_sha3", A + 2);
+        RF_CHECK("rewind: sealed candidate entry present", sealed != NULL);
+        if (sealed) {
+            RF_CHECK("rewind: sealed candidate self_derived",
+                     json_get_bool(json_get(sealed, "self_derived")));
+            RF_CHECK("rewind: sealed candidate not yet ratified",
+                     !json_get_bool(json_get(sealed, "ratified")));
+            RF_CHECK("rewind: sealed candidate distance_from_tip",
+                     json_get_int(json_get(sealed, "distance_from_tip"))
+                         == 3);
+            const char *sha3_hex = json_get_str(json_get(sealed,
+                                                          "commitment_sha3"));
+            RF_CHECK("rewind: sealed candidate commitment hex present",
+                     sha3_hex && strlen(sha3_hex) == 64);
+        }
+
+        /* The seal candidate at A+2 is strictly closer to H*=A+5 than the
+         * compiled checkpoint at A, so it MUST be the nearest — regardless
+         * of whether an optional finalized_utxo_sha3 entry is also present
+         * (it is best-effort / process-global and not under this test's
+         * control). Bound the distance both ways instead of asserting an
+         * exact kind match. */
+        int64_t nearest_distance =
+            json_get_int(json_get(&out, "nearest_rewind_distance"));
+        RF_CHECK("rewind: nearest distance is non-negative",
+                 nearest_distance >= 0);
+        RF_CHECK("rewind: nearest distance at most the sealed candidate's",
+                 nearest_distance <= 3);
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_reducer_frontier(void)
 {
     int failures = 0;
@@ -1459,6 +1587,7 @@ int test_reducer_frontier(void)
     failures += case_dump_ignores_tip_finalize_pending_edge();
     failures += case_dump_reports_tip_finalize_real_hole();
     failures += case_log_frontier_above_tip_finalize_cursor();
+    failures += case_dump_reports_rewind_bases();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");
     else

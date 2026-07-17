@@ -70,7 +70,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
     X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
-    X(shielded_payment_gate) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
+    X(shielded_payment_gate) X(simnet_shielded_wallet_e2e) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
     X(event) X(download) X(consensus) X(consensus_parity) \
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
@@ -183,7 +183,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_advance_atomicity) \
     X(block_source_policy_status_json) \
     X(lag_slo) X(boot_phase) X(boot_status) X(sysinit) X(path_check) X(parse_num) X(boot_progress) X(supervisor) \
-    X(supervisor_domains) X(supervisor_production_tree) \
+    X(supervisor_domains) X(supervisor_production_tree) X(supervisor_backstop) X(self_heal_supervisor) \
     X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(sticky_conditions) X(sticky_escalator) X(mem_pressure) \
     X(validation_pack_conditions) \
@@ -208,7 +208,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(log_level) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
-    X(clock) X(rng) X(os_proc) X(os_sandbox) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(rng) X(os_proc) X(os_sandbox) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(projection_consumer) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
@@ -224,7 +224,10 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_segment) X(segment_sealer) X(segment_corruption) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
+    X(body_crosscheck) \
     X(shielded_history_import) \
+    X(shielded_history_promote) \
+    X(shielded_import_cured_tip_anchor) \
     X(shielded_gap_remedy) \
     X(utxo_recovery_shielded_backfill) \
     X(reducer_drive_guard) \
@@ -236,6 +239,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_skip_crypto) X(mint_anchor_preflight) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
+    X(reducer_frontier_self_anchor) \
+    X(always_sync_chaos) \
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_cadence) X(refold_premature_clear) \
     X(rom_compile_status) X(rom_watch_loop) \
@@ -247,6 +252,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(boot_refold_window_extend) \
     X(refold_retro_validate) X(refold_body_span_contiguous) \
     X(contaminated_coin_above_anchor) X(boot_reindex_terminates) \
+    X(reindex_sparse_bodies) \
     X(chain_linkage_check) X(invariant_sentinel) \
     X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \
@@ -256,11 +262,13 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_proof_harness) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
     X(recovery_coordinator) \
+    X(always_sync_selfheal) \
     X(stage_repair_coin_backfill) \
     X(stage_anchor_frontier_cap) X(sapling_anchor_frontier_condition) \
     X(stage_repair_script_refill) \
     X(validate_script_hash_split_repair) \
     X(stage_repair_tipfin_backfill) X(reorg_residue_tipfin_replace) \
+    X(stage_rederive_range) \
     X(utxo_apply_upstream_hole) \
     X(reducer_reconcile_witness) \
     X(reducer_step_drain_harness) \
@@ -289,6 +297,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
     X(consensus_state_snapshot_install) \
     X(consensus_state_snapshot_export) \
+    X(ratify_mint_anchor) \
     X(consensus_state_producer_receipt) \
     X(authority_receipt) \
     X(consensus_state_chain_binding) \
@@ -302,7 +311,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) X(bg_validation_reverify) \
     X(zslp_store_port) \
     X(sapling_tree) X(sapling_ckpt_persist) X(shutdown_marker) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(importblockindex_roundtrip) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
+    X(chainstate_legacy_reader) X(importblockindex_roundtrip) X(importblockindex_cli_dispatch) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
     X(utxo_snapshot_loader) \
     X(snapshot_shielded) \
     X(load_verify_boot) \

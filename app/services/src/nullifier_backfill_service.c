@@ -252,7 +252,7 @@ static struct zcl_result nbf_reset_for_generation(
 
     if (!nbf_tx_begin(db))
         return ZCL_ERR(-10, "begin failed while resetting backfill generation");
-    ok = nullifier_kv_reset_in_tx(db, activation) &&
+    ok = nullifier_kv_reset_mark_empty_below_in_tx(db, activation) &&
          progress_meta_delete_in_tx(db, NULLIFIER_BACKFILL_RESUME_KEY);
     if (ok && binding)
         ok = nbf_chain_binding_store_in_tx(db, binding) &&
