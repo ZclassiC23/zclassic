@@ -20,8 +20,10 @@
 #include "chain/chainparams.h"
 #include "core/serialize.h"
 #include "primitives/block.h"
+#include "util/boot_scan.h"
 #include "util/safe_alloc.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -115,7 +117,33 @@ int chain_restore_rebuild_active_chain_from_disk(
     char stop_reason[160] = "";
     int stop_height = -1;
 
+    /* O(chain) witness (util/boot_scan.h): the disk-backed active-chain rebuild
+     * walks tip->genesis reading one header per height — the bound is
+     * tip->nHeight+1, NOT a delta above any durable cursor (see the loop below;
+     * there is no last-flushed-height floor). This is NOT a cold-seed-only
+     * path: boot reaches it on every UNCLEAN warm restart (crash / kill -9 /
+     * OOM). config/src/boot.c:2743-2744 runs utxo_recovery_restore_chain_tip
+     * whenever the boot is NOT a -reindex AND fast_restart was NOT taken, and
+     * fast_restart requires a clean-shutdown marker
+     * (config/src/boot_shutdown_marker.c: any WAL-present-without-clean-marker
+     * stop sets unclean=true). That restore calls chain_restore_finalize with
+     * the real datadir (app/services/src/utxo_recovery_restore.c:737 ->
+     * app/services/src/chain_restore_repair.c:686 ->
+     * chain_restore_rebuild_active_chain), which enters this O(chain) walk
+     * unless chain_restore_trust_index_fastpath() is engaged. That fastpath is
+     * set on a clean fast_restart (config/src/boot_fast_restart.c) and by
+     * chain_restore_finalize_verified when the index is verified-consistent
+     * (config/src/boot.c:3785) — but NOT around the 2744 restore, so an unclean
+     * restart with an intact index STILL walks the full chain here (~74s
+     * measured, chain_restore_executor.c comment). A non-zero count on a warm
+     * restart is therefore EXPECTED after any unclean stop, and it being
+     * O(chain) rather than O(delta) is a known slow-boot defect (docs/
+     * AGENT_TRAPS.md; proven by test_rebuild_active_chain_is_o_chain_not_delta).
+     * Registered once; bumped per height read. */
+    atomic_uint_least64_t *scan_ctr =
+        boot_scan_counter("chain_restore.disk_rebuild_rows");
     for (int h = tip->nHeight; h >= 0 && cur; h--) {
+        boot_scan_bump(scan_ctr);
         if (cur->nHeight != h) {
             read_errors++;
             break;
@@ -439,7 +467,16 @@ int chain_restore_rebuild_active_chain_from_block_files(
     int populated = 0;
     int repaired = 0;
 
+    /* Same O(chain) witness as _from_disk (and its FULL block-file scan above,
+     * chain_restore_scan_block_files, is itself O(all blocks on disk)): this
+     * variant also walks tip->genesis, bounded by tip->nHeight+1, never a delta.
+     * Shares the counter so the total names the boot's rebuild. Reached on the
+     * SAME unclean-warm-restart path documented on _from_disk's counter above —
+     * not cold seeds only. */
+    atomic_uint_least64_t *scan_ctr =
+        boot_scan_counter("chain_restore.disk_rebuild_rows");
     for (int h = tip->nHeight; h >= 0; h--) {
+        boot_scan_bump(scan_ctr);
         const struct chain_restore_disk_pos_entry *pos =
             chain_restore_disk_pos_map_find(&pos_map, &want);
         if (!pos)

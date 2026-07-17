@@ -19,6 +19,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "core/amount.h"
+#include "util/boot_scan.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -1642,6 +1643,161 @@ static int test_finalize_quarantine_preserves_served_floor(void) {
     return failures;
 }
 
+/* Build a fully-consistent on-disk chain of `n_blocks` (heights 0..n_blocks-1)
+ * whose block-index entries point at their real disk positions and whose pprev
+ * links are intact, so chain_restore_rebuild_active_chain_from_disk walks
+ * cleanly tip->genesis (populated == tip_h+1, integrity clean, no block-file
+ * fallback). Returns the tip index (NULL on any failure). Caller main_state_init
+ * before and main_state_free after. */
+static struct block_index *ods_build_disk_chain(struct main_state *ms,
+                                                const char *tmpdir,
+                                                int n_blocks)
+{
+    char blocksdir[320];
+    mkdir(tmpdir, 0755);
+    snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+    mkdir(blocksdir, 0755);
+
+    struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+    struct uint256 prev;
+    memset(&prev, 0, sizeof(prev));
+    struct block_index *tip = NULL;
+    for (int h = 0; h < n_blocks; h++) {
+        if (h > 0 && !next_block_append_pos(tmpdir, &pos))
+            return NULL;
+        struct uint256 hash;
+        if (!write_chain_block_fixture(tmpdir, &pos, h == 0 ? NULL : &prev,
+                                       0x1e14f400u + (uint32_t)h,
+                                       1700000000u + (uint32_t)h, &hash))
+            return NULL;
+        struct block_index *bi = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hash);
+        if (!bi)
+            return NULL;
+        bi->nHeight  = h;
+        bi->nBits    = 0x1e14f400u + (uint32_t)h;
+        bi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        bi->nFile    = pos.nFile;
+        bi->nDataPos = pos.nPos;
+        bi->nTx      = 1;
+        bi->nChainTx = (unsigned int)(h + 1);
+        if (h > 0)
+            bi->pprev = block_map_find(&ms->map_block_index, &prev);
+        prev = hash;
+        tip = bi;
+    }
+    return tip;
+}
+
+/* REFUTED-CLASSIFICATION FIX (lane/boot-odelta). The lane classified
+ * chain_restore.disk_rebuild_rows as "a cold-seed/repair fallback ... never a
+ * warm boot; a non-zero count on a warm restart is the regression tell." That
+ * is FALSE: the disk-backed active-chain rebuild is O(chain height), and boot
+ * REACHES it on every UNCLEAN warm restart (crash / kill -9 / OOM). Trace:
+ * config/src/boot.c:2743-2744 runs utxo_recovery_restore_chain_tip whenever the
+ * boot is NOT a -reindex AND fast_restart was NOT taken; fast_restart requires
+ * a clean-shutdown marker (config/src/boot_shutdown_marker.c), so any unclean
+ * stop skips it. That restore calls chain_restore_finalize with the real datadir
+ * (app/services/src/utxo_recovery_restore.c:737 -> chain_restore_repair.c:686 ->
+ * chain_restore_rebuild_active_chain), which enters the O(chain) disk walk
+ * unless chain_restore_trust_index_fastpath() is engaged — and the 2744 restore
+ * does NOT engage it (only the clean fast_restart path and the LATER
+ * chain_restore_finalize_verified at boot.c:3785 do).
+ *
+ * This test pins both facts against the boot_scan counter:
+ *   (a) DEFECT: with the fastpath OFF (the 2744 unclean-restart shape) the
+ *       counter equals tip_h+1 for the WHOLE chain and a 3x-taller chain does
+ *       3x the disk header reads — bounded by chain length, never by a delta
+ *       above a durable cursor. This is the known slow-boot defect the owner is
+ *       repeatedly burned by (docs/AGENT_TRAPS.md). It is asserted as the
+ *       CURRENT behavior; the pending boot fix flips (a) to a 0/bounded count.
+ *   (b) FIX MECHANISM: with the fastpath ON (what chain_restore_finalize_verified
+ *       engages on a verified index; the pending fix routes the 2744 restore
+ *       through the same gate), the disk walk is skipped and the counter is 0. */
+static int test_rebuild_active_chain_is_o_chain_not_delta(void) {
+    int failures = 0;
+    const char *const CTR = "chain_restore.disk_rebuild_rows";
+    TEST("chain_restore_rebuild: disk rebuild is O(chain height), reached on unclean warm restart") {
+        mkdir("./test-tmp", 0755);
+        chain_restore_set_trust_index_fastpath(false);
+
+        /* (a) DEFECT — short chain: disk_rebuild_rows == tip_h+1 (full chain). */
+        char short_dir[256];
+        snprintf(short_dir, sizeof(short_dir), "./test-tmp/%d_odelta_short",
+                 (int)getpid());
+        struct main_state ms_short;
+        main_state_init(&ms_short);
+        const int SHORT_N = 4;
+        struct block_index *tip_s =
+            ods_build_disk_chain(&ms_short, short_dir, SHORT_N);
+        ASSERT(tip_s != NULL);
+        ASSERT(active_chain_move_window_tip(&ms_short.chain_active, tip_s));
+        boot_scan_reset_for_testing();
+        int pop_s = chain_restore_rebuild_active_chain(&ms_short, tip_s,
+                                                       short_dir);
+        uint64_t short_rows = boot_scan_value(CTR);
+        ASSERT(pop_s == SHORT_N);
+        ASSERT(short_rows == (uint64_t)SHORT_N);   /* tip_h+1 == full chain */
+
+        /* (a) DEFECT — taller chain: the count TRACKS the taller height, so it
+         * scales with CHAIN HEIGHT, not any fixed delta. */
+        char tall_dir[256];
+        snprintf(tall_dir, sizeof(tall_dir), "./test-tmp/%d_odelta_tall",
+                 (int)getpid());
+        struct main_state ms_tall;
+        main_state_init(&ms_tall);
+        const int TALL_N = 12;
+        struct block_index *tip_t =
+            ods_build_disk_chain(&ms_tall, tall_dir, TALL_N);
+        ASSERT(tip_t != NULL);
+        ASSERT(active_chain_move_window_tip(&ms_tall.chain_active, tip_t));
+        boot_scan_reset_for_testing();
+        int pop_t = chain_restore_rebuild_active_chain(&ms_tall, tip_t,
+                                                       tall_dir);
+        uint64_t tall_rows = boot_scan_value(CTR);
+        ASSERT(pop_t == TALL_N);
+        ASSERT(tall_rows == (uint64_t)TALL_N);     /* tip_h+1 == full chain */
+        /* O(chain), NOT O(delta): a 3x-taller chain does 3x the disk reads. A
+         * delta-bounded rebuild would read O(1) regardless of chain height. */
+        if (tall_rows != 3 * short_rows)
+            printf("  KNOWN DEFECT surfaced: unclean-restart disk rebuild is "
+                   "O(chain) (short=%llu tall=%llu) — docs/AGENT_TRAPS.md\n",
+                   (unsigned long long)short_rows,
+                   (unsigned long long)tall_rows);
+        ASSERT(tall_rows == 3 * short_rows);
+
+        /* (b) FIX MECHANISM — the trust-index fastpath skips the disk walk; the
+         * pending boot fix engages it on a verified unclean restart, so
+         * disk_rebuild_rows becomes 0 there. */
+        char fp_dir[256];
+        snprintf(fp_dir, sizeof(fp_dir), "./test-tmp/%d_odelta_fastpath",
+                 (int)getpid());
+        struct main_state ms_fp;
+        main_state_init(&ms_fp);
+        struct block_index *tip_fp = ods_build_disk_chain(&ms_fp, fp_dir, TALL_N);
+        ASSERT(tip_fp != NULL);
+        ASSERT(active_chain_move_window_tip(&ms_fp.chain_active, tip_fp));
+        chain_restore_set_trust_index_fastpath(true);
+        boot_scan_reset_for_testing();
+        (void)chain_restore_rebuild_active_chain(&ms_fp, tip_fp, fp_dir);
+        uint64_t fastpath_rows = boot_scan_value(CTR);
+        chain_restore_set_trust_index_fastpath(false);
+        ASSERT(fastpath_rows == 0);   /* fastpath => no O(chain) disk walk */
+
+        main_state_free(&ms_short);
+        main_state_free(&ms_tall);
+        main_state_free(&ms_fp);
+
+        char rm_cmd[900];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s %s %s",
+                 short_dir, tall_dir, fp_dir);
+        (void)system(rm_cmd);
+        boot_scan_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_restore_service(void) {
@@ -1686,5 +1842,6 @@ int test_chain_restore_service(void) {
     failures += test_finalize_null_datadir_skips_disk();
     failures += test_finalize_verified_scopes_trust_flag();
     failures += test_finalize_quarantine_preserves_served_floor();
+    failures += test_rebuild_active_chain_is_o_chain_not_delta();
     return failures;
 }

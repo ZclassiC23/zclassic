@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "util/boot_phase.h"
+#include "util/boot_scan.h"
 #include "util/boot_status.h"
 #include "health/heartbeat.h"
 
@@ -62,8 +63,18 @@ void boot_phase_end(struct boot_phase *p)
         health_unregister(p->health_id);
         p->health_id = HEALTH_INVALID_ID;
     }
-    fprintf(stderr, "[boot-phase] END %s %lldms\n",  // obs-ok:boot-phase-trace-marker
-            p->name, (long long)elapsed);
+    /* If a boot-scan counter was registered under this phase's exact name,
+     * report the rows it scanned right next to the ms line so an O(chain)
+     * phase is visible at a glance in node.log. Phases that count nothing
+     * (fixed-size work) print the plain ms line. */
+    uint64_t rows = boot_scan_value(p->name);
+    if (rows > 0)
+        fprintf(stderr,  // obs-ok:boot-phase-trace-marker
+                "[boot-phase] END %s %lldms (%llu rows scanned)\n",
+                p->name, (long long)elapsed, (unsigned long long)rows);
+    else
+        fprintf(stderr, "[boot-phase] END %s %lldms\n",  // obs-ok:boot-phase-trace-marker
+                p->name, (long long)elapsed);
     fflush(stderr);
 }
 

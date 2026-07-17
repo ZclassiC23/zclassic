@@ -22,6 +22,7 @@
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "util/boot_scan.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 
@@ -336,12 +337,23 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
     sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)cursor);
 
+    /* O(delta) witness: every row this walk streams from [anchor+1 .. cursor)
+     * is one atomic add. On a healthy node the walk runs the FULL span above
+     * the trusted anchor, so this counter == (cursor - anchor - 1) per log —
+     * the delta above the sealed floor. If a regression drops the anchor back
+     * to genesis/compiled-checkpoint on a warm boot, the count balloons to
+     * O(chain) and test_boot_odelta_scan fails naming this step. Resolved once
+     * per log invocation (8×/compute), NOT per row — the hot loop only bumps. */
+    atomic_uint_least64_t *scan_ctr =
+        boot_scan_counter("reducer_frontier.contiguity_rows");
+
     int itag_col = profile_bound ? 3 : 2;  /* only valid when have_itag */
     bool rc_ok = true;
     int64_t expect = (int64_t)anchor + 1;
     while (true) {
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
+            boot_scan_bump(scan_ctr);
             int64_t h = sqlite3_column_int64(st, 0);
             int ok_raw = sqlite3_column_type(st, 1) == SQLITE_INTEGER
                              ? sqlite3_column_int(st, 1) : 0;

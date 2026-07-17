@@ -29,6 +29,7 @@
 #include "storage/event_log_payloads.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "util/boot_scan.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "crypto/sha3.h"
@@ -296,6 +297,7 @@ struct catch_up_ctx {
     uint64_t total_consumed;       /* across all batches this call */
     uint64_t collisions;           /* INSERT OR REPLACE that found a prior row */
     uint64_t last_offset_after;    /* offset *after* the last consumed event */
+    atomic_uint_least64_t *scan_ctr; /* boot O(delta) witness (util/boot_scan.h) */
     bool     error;
 };
 
@@ -421,6 +423,11 @@ static bool catch_up_cb(uint64_t offset, enum event_log_type type,
     }
     c->batch_count++;
     if (was_present) c->collisions++;
+    /* O(delta) witness: one header event folded into the projection. On a warm
+     * boot this streams only events past the persisted last_consumed_offset —
+     * the delta — so this counter tracks new headers, not chain length. A
+     * regression that replays from offset 0 on a warm boot balloons it. */
+    boot_scan_bump(c->scan_ctr);
 
     /* Commit periodically. */
     if (c->batch_count >= BIP_BATCH_EVENTS) {
@@ -443,6 +450,7 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
     struct catch_up_ctx c = {0};
     c.p = p;
     c.last_offset_after = p->last_consumed_offset;
+    c.scan_ctr = boot_scan_counter("block_index_projection.catch_up_events");
 
     /* Prepare the INSERT statement once for the whole catch_up. */
     if (sqlite3_prepare_v2(p->db,

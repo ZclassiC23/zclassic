@@ -1348,6 +1348,7 @@ int main(int argc, char **argv)
     failures += test_power_node_contract_spec();
     failures += test_boot_phase();
     failures += test_boot_status();
+    failures += test_boot_odelta_scan();
     failures += test_path_check();
     failures += test_parse_num();
     failures += test_boot_progress();
