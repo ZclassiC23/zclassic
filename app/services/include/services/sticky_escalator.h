@@ -94,6 +94,12 @@ const char *sticky_rung_name(enum sticky_rung r);
 #define STICKY_PROGRESS_MARGIN        2     /* H* climb that clears an episode */
 #define STICKY_REARM_COOLDOWN_SECS    120   /* deepest-rung re-arm pause */
 #define STICKY_PAGE_MIN_INTERVAL_SECS 300   /* non-latching page rate limit */
+/* Livelock backstop: consecutive apply_drive passes that move NEITHER the
+ * observed tip NOR the rung index before the ladder FORCE-advances the current
+ * rung, so a PROGRESSING-holding rung cannot spin its whole (possibly long)
+ * witness window without moving the needle. Complements the per-rung windows
+ * and the absent-precondition FAILED returns; it never repeats the stuck rung. */
+#define STICKY_LIVELOCK_MAX_PASSES    8
 
 #ifdef ZCL_TESTING
 void sticky_escalator_test_reset(void);
@@ -112,6 +118,10 @@ void sticky_escalator_test_set_refold_artifact_available(int override_value);
  * connman_kick_onion_seeds dispatches (excludes the no-connman / already-
  * healthy / cooldown-hold early-outs). */
 uint64_t sticky_escalator_test_widen_kicks(void);
+
+/* Livelock backstop test seam: count of times a rung was force-advanced by the
+ * per-episode zero-progress assertion (STICKY_LIVELOCK_MAX_PASSES). */
+uint64_t sticky_escalator_test_livelock_force_advances(void);
 #endif
 
 #endif /* SERVICES_STICKY_ESCALATOR_H */

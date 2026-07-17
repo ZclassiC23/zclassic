@@ -483,6 +483,14 @@ static bool se_t7_witness(int64_t target_at_detect)
     return false;
 }
 
+/* A rung action that ALWAYS reports PROGRESSING — so the only thing that can
+ * move the ladder off this rung within its (unlapsed) witness window is the
+ * livelock backstop (STICKY_LIVELOCK_MAX_PASSES zero-progress passes). */
+static enum sticky_rung_result se_always_progressing(void)
+{
+    return STICKY_RUNG_PROGRESSING;
+}
+
 int test_sticky_escalator(void);
 int test_sticky_escalator(void)
 {
@@ -1015,6 +1023,72 @@ int test_sticky_escalator(void)
         teardown_fixture(&fx);
         connman_free(&cm);
         g_connect_only = saved_connect_only;
+    }
+
+    /* ── T11: ladder-livelock backstop ──────────────────────────────────
+     * A rung that returns PROGRESSING every pass while the observed tip stays
+     * frozen is spinning without advancing. The per-episode assertion must
+     * FORCE-advance it after STICKY_LIVELOCK_MAX_PASSES zero-progress passes —
+     * even though the rung's own 30s witness window has NOT lapsed. We drive
+     * all passes strictly inside that window so ONLY the backstop can move the
+     * ladder, isolating it from the window mechanism. */
+    {
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        /* Custom RETRY action that never yields — window would hold it forever. */
+        sticky_escalator_register_rung(STICKY_RUNG_RETRY, se_always_progressing);
+
+        sticky_escalator_note_stall("test_livelock_backstop");
+        SE_CHECK("T11: armed at retry", sticky_escalator_test_armed());
+        int64_t t = (int64_t)platform_time_wall_time_t();
+
+        /* MAX passes, each within the 30s retry window, tip frozen at 500:
+         * held on retry (window not lapsed, cap not yet reached). */
+        enum sticky_rung r = STICKY_RUNG_RETRY;
+        for (int i = 1; i <= STICKY_LIVELOCK_MAX_PASSES; i++)
+            r = sticky_escalator_test_drive(500, t + i);
+        SE_CHECK("T11: holds on retry up to the cap (window not lapsed)",
+                 r == STICKY_RUNG_RETRY);
+        SE_CHECK("T11: no force-advance before the cap",
+                 sticky_escalator_test_livelock_force_advances() == 0);
+
+        /* The (cap+1)-th zero-progress pass trips the backstop → force-advance
+         * to the next rung, still inside the retry window. */
+        r = sticky_escalator_test_drive(500, t + STICKY_LIVELOCK_MAX_PASSES + 1);
+        SE_CHECK("T11: backstop force-advances off retry within the window",
+                 r == STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T11: exactly one force-advance recorded",
+                 sticky_escalator_test_livelock_force_advances() == 1);
+
+        sticky_escalator_register_rung(STICKY_RUNG_RETRY, NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+    }
+
+    /* ── T12: a climbing tip resets the backstop ─────────────────────────
+     * Even a sub-margin (1-block) climb each pass is forward cursor movement,
+     * so the no-progress counter never reaches the cap and the backstop never
+     * fires — the rung is held by its own window, not force-advanced. */
+    {
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        sticky_escalator_register_rung(STICKY_RUNG_RETRY, se_always_progressing);
+
+        sticky_escalator_note_stall("test_livelock_climb");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        /* Climb by 1 each pass — below STICKY_PROGRESS_MARGIN (2) so the
+         * episode never CLEARS, but each pass is genuine cursor movement. */
+        enum sticky_rung r = STICKY_RUNG_RETRY;
+        for (int i = 1; i <= STICKY_LIVELOCK_MAX_PASSES + 3; i++)
+            r = sticky_escalator_test_drive(500 + i, t + i);
+        SE_CHECK("T12: climbing tip keeps the rung (backstop not tripped)",
+                 r == STICKY_RUNG_RETRY);
+        SE_CHECK("T12: no force-advance while the tip climbs",
+                 sticky_escalator_test_livelock_force_advances() == 0);
+
+        sticky_escalator_register_rung(STICKY_RUNG_RETRY, NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
     }
 
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */

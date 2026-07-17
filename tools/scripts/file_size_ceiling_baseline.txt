@@ -29,7 +29,7 @@ app/services/src/block_index_loader.c 844
 app/services/src/consensus_state_publication_cas.c 801
 app/services/src/node_db_catchup_service.c 860
 app/services/src/rolling_anchor_service.c 801
-app/services/src/sticky_escalator.c 873
+app/services/src/sticky_escalator.c 953
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823

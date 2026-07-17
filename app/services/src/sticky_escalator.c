@@ -60,6 +60,16 @@ static _Atomic uint64_t g_fires_operator_needed = 0;
 static _Atomic uint64_t g_episodes_cleared = 0;
 static _Atomic uint64_t g_ladder_cycles    = 0;
 
+/* Livelock backstop state (see STICKY_LIVELOCK_MAX_PASSES). Counts consecutive
+ * apply_drive passes that move NEITHER the observed tip NOR the rung index; on
+ * reaching the cap the ladder force-advances the current rung so a
+ * PROGRESSING-holding rung cannot spin its whole witness window without moving
+ * the needle. Reset on every rung entry and episode clear (livelock_reset). */
+static _Atomic int      g_livelock_no_progress_passes = 0;
+static _Atomic int64_t  g_livelock_last_tip           = -1;
+static _Atomic int      g_livelock_last_rung          = -1;
+static _Atomic uint64_t g_livelock_force_advances     = 0;
+
 /* Pluggable rung actions; NULL = default stub (advance). */
 static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
 
@@ -551,11 +561,21 @@ static sticky_rung_fn rung_action(enum sticky_rung r)
 
 /* ── Ladder transitions ────────────────────────────────────────────── */
 
+/* Reset the livelock backstop tracker: a fresh rung (or a cleared episode) is
+ * genuine forward motion, so the zero-progress pass count starts over. */
+static void livelock_reset(void)
+{
+    atomic_store(&g_livelock_no_progress_passes, 0);
+    atomic_store(&g_livelock_last_tip, (int64_t)-1);
+    atomic_store(&g_livelock_last_rung, -1);
+}
+
 static void enter_rung(enum sticky_rung r, int64_t now)
 {
     atomic_store(&g_rung, (int)r);
     atomic_store(&g_tip_at_rung, observe_tip());
     atomic_store(&g_rung_entered_unix, now);
+    livelock_reset();
 }
 
 /* Withdraw a pending (non-terminal) on-disk auto_reindex_request once THIS
@@ -604,6 +624,7 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_rederive_last_repair_unix, 0);
     atomic_store(&g_widen_last_kick_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
+    livelock_reset();
     withdraw_stale_reindex_request(tip);
     /* Release any operator_needed latch this episode raised: the tip
      * progressed, so the symptom genuinely cleared. note_cycling_page() emits
@@ -682,6 +703,52 @@ static void apply_drive(int64_t tip, int64_t now)
     enum sticky_rung cur = (enum sticky_rung)atomic_load(&g_rung);
     int64_t entered = atomic_load(&g_rung_entered_unix);
     int window = g_rung_window_secs[cur];
+
+    /* Livelock backstop: a pass that moves NEITHER the observed tip NOR the
+     * rung index is zero-progress. After STICKY_LIVELOCK_MAX_PASSES consecutive
+     * zero-progress passes the ladder FORCE-advances the current rung — never
+     * repeating the stuck action — regardless of the rung's own (possibly long)
+     * witness window. This bounds a rung that returns PROGRESSING every pass
+     * while nothing actually moves (the ladder-livelock class). The tracker is
+     * reset on every rung entry / episode clear (livelock_reset), so a genuine
+     * rung advance or tip climb never trips it. */
+    {
+        int64_t prev_tip = atomic_load(&g_livelock_last_tip);
+        int     prev_rung = atomic_load(&g_livelock_last_rung);
+        bool no_progress = (prev_rung == (int)cur) && (prev_tip >= 0) &&
+                           (tip <= prev_tip);
+        if (no_progress) {
+            int np = atomic_fetch_add(&g_livelock_no_progress_passes, 1) + 1;
+            if (np >= STICKY_LIVELOCK_MAX_PASSES) {
+                atomic_fetch_add(&g_livelock_force_advances, 1u);
+                LOG_WARN("sticky_escalator",
+                         "[sticky_escalator] livelock backstop: rung '%s' spun "
+                         "%d passes with zero tip/rung progress (tip=%lld) — "
+                         "force-advancing the ladder (never repeat)",
+                         sticky_rung_name(cur), np, (long long)tip);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "action=sticky-livelock-force-advance rung=%s "
+                            "passes=%d tip=%lld",
+                            sticky_rung_name(cur), np, (long long)tip);
+                if (cur + 1 < STICKY_RUNG_COUNT) {
+                    enter_rung((enum sticky_rung)(cur + 1), now); /* resets tracker */
+                } else {
+                    /* Deepest rung: cycle with a cooldown + non-latching page,
+                     * the same terminal handling as a window-lapse exhaust. */
+                    atomic_fetch_add(&g_ladder_cycles, 1u);
+                    note_cycling_page(now, cur);
+                    atomic_store(&g_rearm_until_unix,
+                                 now + STICKY_REARM_COOLDOWN_SECS);
+                    livelock_reset();
+                }
+                return;
+            }
+        } else {
+            atomic_store(&g_livelock_no_progress_passes, 0);
+        }
+        atomic_store(&g_livelock_last_tip, tip);
+        atomic_store(&g_livelock_last_rung, (int)cur);
+    }
 
     /* Dispatch the current rung action (idempotent; each kicks durable work). */
     enum sticky_rung_result res = rung_action(cur)();
@@ -805,6 +872,12 @@ bool sticky_escalator_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)atomic_load(&g_episodes_cleared));
     json_push_kv_int(out, "fires_operator_needed_nonlatching",
                      (int64_t)atomic_load(&g_fires_operator_needed));
+    json_push_kv_int(out, "livelock_no_progress_passes",
+                     (int64_t)atomic_load(&g_livelock_no_progress_passes));
+    json_push_kv_int(out, "livelock_max_passes",
+                     (int64_t)STICKY_LIVELOCK_MAX_PASSES);
+    json_push_kv_int(out, "livelock_force_advances",
+                     (int64_t)atomic_load(&g_livelock_force_advances));
     json_push_kv_int(out, "unresolved_conditions",
                      condition_engine_get_unresolved_count());
 
@@ -841,6 +914,10 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
     atomic_store(&g_widen_last_kick_unix, (int64_t)0);
+    atomic_store(&g_livelock_no_progress_passes, 0);
+    atomic_store(&g_livelock_last_tip, (int64_t)-1);
+    atomic_store(&g_livelock_last_rung, -1);
+    atomic_store(&g_livelock_force_advances, 0u);
     atomic_store(&g_test_suppress_refold_restart, false);
     atomic_store(&g_test_refold_artifact_override, -1);
     atomic_store(&g_test_widen_kicks, 0u);
@@ -870,4 +947,7 @@ void sticky_escalator_test_set_refold_artifact_available(int v)
 
 uint64_t sticky_escalator_test_widen_kicks(void)
 { return atomic_load(&g_test_widen_kicks); }
+
+uint64_t sticky_escalator_test_livelock_force_advances(void)
+{ return atomic_load(&g_livelock_force_advances); }
 #endif
