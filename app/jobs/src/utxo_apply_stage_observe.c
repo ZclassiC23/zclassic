@@ -151,8 +151,8 @@ void utxo_apply_upstream_hole_note(int height, uint64_t pv_cursor)
      * 3166989 script_validate_log/proof_validate_log hole ran 3 h with zero
      * named blockers. DEPENDENCY, not TRANSIENT: utxo_apply cannot fill the
      * row itself — it waits on the reducer_frontier_reconcile_light condition
-     * to refill it from the PoW-verified on-disk body (escape_action names
-     * that healer; no deadline — the condition runs on its own cadence).
+     * to refill it from the PoW-verified on-disk body (no deadline — the
+     * condition runs on its own cadence).
      * Deliberately NOT c->blocker/JOB_BLOCKED (see step_apply): the registry
      * record only names the fact and never feeds the restart ladder.
      * blocker_set's token bucket dedups the per-tick re-fire. */
@@ -166,8 +166,6 @@ void utxo_apply_upstream_hole_note(int height, uint64_t pv_cursor)
              height, (unsigned long long)pv_cursor);
     if (blocker_init(&rec, UA_UPSTREAM_HOLE_BLOCKER_ID, STAGE_NAME,
                      BLOCKER_DEPENDENCY, reason)) {
-        snprintf(rec.escape_action, sizeof(rec.escape_action),
-                 "reducer_frontier_reconcile_light");
         (void)blocker_set(&rec);  /* 1 = rate-limited dup — the fact persists;
                                    * -1 already logged by blocker_set */
     }
@@ -214,8 +212,6 @@ job_result_t utxo_apply_evidence_refuse(
     if (!c || !blocker_init(&c->blocker, UA_EVIDENCE_BLOCKER_ID, STAGE_NAME,
                             BLOCKER_DEPENDENCY, reason))
         return JOB_FATAL;
-    snprintf(c->blocker.escape_action, sizeof(c->blocker.escape_action),
-             "resume the matching offline producer or replay crypto stages");
     c->blocker.retry_budget = -1;
     return JOB_BLOCKED;
 }

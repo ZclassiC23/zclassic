@@ -8,6 +8,8 @@
 
 #include "chain/sha3_windows.h"
 #include "event/event.h"
+#include "json/json.h"
+#include "services/oracle_policy.h"
 #include "services/rolling_anchor_service.h"
 #include "util/supervisor.h"
 #include "validation/main_state.h"
@@ -29,11 +31,38 @@ static void ra_page_observer(enum event_type type, uint32_t peer_id,
         atomic_fetch_add(&g_ra_pages, 1);
 }
 
+/* B8: oracle divergence is evidence, never a gate. Counts
+ * EV_SYNC_STATE_CHANGE payloads naming rolling_anchor's own divergence
+ * observation (distinct from the sibling quorum-split payload). */
+static _Atomic int g_ra_divergence_events = 0;
+static void ra_divergence_observer(enum event_type type, uint32_t peer_id,
+                                   const void *payload, uint32_t payload_len,
+                                   void *ctx)
+{
+    (void)type; (void)peer_id; (void)ctx;
+    if (payload && payload_len > 0 &&
+        strstr((const char *)payload, "rolling_anchor oracle divergence"))
+        atomic_fetch_add(&g_ra_divergence_events, 1);
+}
+
 #define RA_CHECK(name, expr) do { \
     printf("rolling_anchor: %s... ", (name)); \
     if (expr) printf("OK\n"); \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
+
+static int64_t ra_dump_int(const char *field)
+{
+    struct json_value v;
+    json_init(&v);
+    int64_t got = -999999;
+    if (rolling_anchor_dump_state_json(&v, NULL)) {
+        const struct json_value *f = json_get(&v, field);
+        if (f) got = json_get_int(f);
+    }
+    json_free(&v);
+    return got;
+}
 
 static int find_rolling_anchor_snapshot(struct supervisor_snapshot *out,
                                         int *out_count)
@@ -184,6 +213,51 @@ int test_rolling_anchor_service(void)
                  atomic_load(&g_ra_pages) == 0);
 
         event_clear_all_observers();
+        rolling_anchor_reset_for_test();
+    }
+
+    /* ── B8: oracle divergence is evidence, never a gate ─────────────
+     * A HALTED oracle_policy state (a co-located zclassicd that is merely
+     * wrong or behind) must not block rolling-anchor extension — it must
+     * only be recorded on the service's own observability surface. */
+    {
+        struct zcl_result r2 = rolling_anchor_start(&ms, dir);
+        RA_CHECK("oracle-divergence setup: (re)start returns ZCL_OK", r2.ok);
+
+        oracle_policy_reset_for_test();
+        struct oracle_policy_config cfg = {
+            .window_secs = 86400,
+            .halt_distinct_heights = 3,
+            .evidence_prefix_end_height = 1,
+        };
+        oracle_policy_init(&cfg);
+        oracle_policy_record_disagreement(1000001, "a", "b");
+        oracle_policy_record_disagreement(1000002, "a", "b");
+        oracle_policy_record_disagreement(1000003, "a", "b");
+        RA_CHECK("oracle policy reaches HALTED",
+                 oracle_policy_get_state() == OP_HALTED);
+
+        event_log_init();
+        event_clear_all_observers();
+        atomic_store(&g_ra_divergence_events, 0);
+        event_observe(EV_SYNC_STATE_CHANGE, ra_divergence_observer, NULL);
+
+        int64_t before = ra_dump_int("total_oracle_divergence_observed");
+        int extended = rolling_anchor_extend_if_due(&ms, dir);
+
+        RA_CHECK("HALTED oracle policy does not block extend_if_due "
+                 "(no early-return gate)",
+                 extended >= 0);
+        RA_CHECK("HALTED oracle policy increments the divergence counter",
+                 ra_dump_int("total_oracle_divergence_observed") > before);
+        RA_CHECK("HALTED oracle policy still records a divergence event",
+                 atomic_load(&g_ra_divergence_events) > 0);
+        RA_CHECK("oracle_policy state is untouched by rolling_anchor "
+                 "(evidence-only; extension never clears it)",
+                 oracle_policy_get_state() == OP_HALTED);
+
+        event_clear_all_observers();
+        oracle_policy_reset_for_test();
         rolling_anchor_reset_for_test();
     }
 

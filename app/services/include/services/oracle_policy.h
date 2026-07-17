@@ -58,6 +58,9 @@ bool oracle_policy_chain_extension_allowed(void);
 /* Query: current state. */
 enum oracle_policy_state oracle_policy_get_state(void);
 
+/* Human-readable state name ("normal"/"halted"/"panic"). Never NULL. */
+const char *oracle_policy_state_name(enum oracle_policy_state s);
+
 /* Operator: reset to NORMAL (e.g. via MCP after investigation). */
 void oracle_policy_clear(void);
 

@@ -3,6 +3,7 @@
 #include "supervisors/self_heal.h"
 #include "util/log_macros.h"
 
+#include "event/event.h"
 #include "framework/condition.h"
 #include "services/service_state_driver.h"
 #include "services/sticky_escalator.h"
@@ -61,6 +62,36 @@ void self_heal_register(struct main_state *ms)
     supervisor_domains_init();
     atomic_store(&g_id, supervisor_register_in_domain(g_op_sup, &g_contract));
     if (atomic_load(&g_id) == SUPERVISOR_INVALID_ID) {
-        LOG_WARN("self_heal", "[self_heal] WARN register failed");
+        /* This file owns the only periodic hook that could retry
+         * registration (self_heal_tick), and that hook can only ever run
+         * once THIS registration succeeds — there is no other cadence in
+         * this file's lifecycle to hang a bounded retry off. Losing this
+         * registration silently loses the condition engine, the blocker
+         * escape sweep, and the remedy ladder's 5 s driver all at once; a
+         * bare LOG_WARN is not loud enough for that. Make it a durable,
+         * operator-visible fact instead. */
+        LOG_WARN("self_heal",
+                 "[self_heal] register failed — condition engine, blocker "
+                 "escape sweep, and the remedy ladder have NO driver");
+        struct blocker_record rec;
+        if (blocker_init(&rec, "self_heal.unsupervised", "self_heal",
+                         BLOCKER_PERMANENT,
+                         "supervisor_register_in_domain failed for "
+                         "self_heal.engine — condition engine, blocker "
+                         "escape sweep, and the remedy ladder are undriven; "
+                         "operator must restart the node") &&
+            blocker_set(&rec) == 0)
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                        "check=self_heal.unsupervised self_heal registration "
+                        "failed, spine undriven");
     }
 }
+
+#ifdef ZCL_TESTING
+void self_heal_test_reset(void)
+{
+    g_ms = NULL;
+    atomic_store(&g_id, SUPERVISOR_INVALID_ID);
+    atomic_store(&g_registered, false);
+}
+#endif

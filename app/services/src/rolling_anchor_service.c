@@ -73,7 +73,7 @@ static struct {
     int    count;
     int    capacity;
     _Atomic int64_t total_extended;
-    _Atomic int64_t total_skipped_policy;
+    _Atomic int64_t total_skipped_policy, total_oracle_divergence_observed;
     _Atomic int64_t total_skipped_depth, total_skipped_missing_body;
     _Atomic int64_t total_read_failures;
     /* CONSECUTIVE read failures: reset to 0 on any successful window commit.
@@ -429,9 +429,11 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
     if (!ms || !datadir || !datadir[0]) return 0;
     if (!g_ra.initialized) return 0;
 
-    if (!oracle_policy_chain_extension_allowed()) {
-        atomic_fetch_add(&g_ra.total_skipped_policy, 1);
-        return 0;
+    enum oracle_policy_state ops = oracle_policy_get_state();
+    if (ops != OP_NORMAL) {  /* B8: evidence, never a gate — self-derived */
+        atomic_fetch_add(&g_ra.total_oracle_divergence_observed, 1);
+        event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                    "rolling_anchor oracle divergence state=%s", oracle_policy_state_name(ops));
     }
 
     int tip = active_chain_height(&ms->chain_active);
@@ -458,10 +460,6 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         int last_h_in_win = next_start + (int)SHA3_WINDOW_SIZE - 1;
         if (last_h_in_win > zcl_immutable_height(tip)) {
             atomic_fetch_add(&g_ra.total_skipped_depth, 1);
-            break;
-        }
-        if (!oracle_policy_chain_extension_allowed()) {
-            atomic_fetch_add(&g_ra.total_skipped_policy, 1);
             break;
         }
         if (!ra_quorum_allows_commit(last_h_in_win)) {
@@ -719,6 +717,7 @@ bool rolling_anchor_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_ra.total_extended));
     json_push_kv_int (out, "total_skipped_policy",
                       atomic_load(&g_ra.total_skipped_policy));
+    json_push_kv_int (out, "total_oracle_divergence_observed", atomic_load(&g_ra.total_oracle_divergence_observed));
     json_push_kv_int (out, "total_skipped_depth",
                       atomic_load(&g_ra.total_skipped_depth));
     json_push_kv_int (out, "total_skipped_missing_body",
@@ -759,6 +758,7 @@ void rolling_anchor_reset_for_test(void)
     pthread_mutex_unlock(&g_ra.lock);
     atomic_store(&g_ra.total_extended, 0);
     atomic_store(&g_ra.total_skipped_policy, 0);
+    atomic_store(&g_ra.total_oracle_divergence_observed, 0);
     atomic_store(&g_ra.total_skipped_depth, 0);
     atomic_store(&g_ra.total_skipped_missing_body, 0);
     atomic_store(&g_ra.total_read_failures, 0);

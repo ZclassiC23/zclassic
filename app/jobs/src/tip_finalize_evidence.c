@@ -150,8 +150,6 @@ job_result_t tip_finalize_evidence_refuse(
     if (!ctx || !blocker_init(&ctx->blocker, TF_EVIDENCE_BLOCKER_ID,
                               "tip_finalize", BLOCKER_DEPENDENCY, reason))
         return JOB_FATAL;
-    snprintf(ctx->blocker.escape_action, sizeof(ctx->blocker.escape_action),
-             "replay script/proof/utxo validation for the selected block");
     ctx->blocker.retry_budget = -1;
     return JOB_BLOCKED;
 }

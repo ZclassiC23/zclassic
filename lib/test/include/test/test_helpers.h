@@ -578,6 +578,7 @@ int test_boot_progress(void);
 int test_supervisor(void);
 int test_supervisor_domains(void);
 int test_supervisor_backstop(void);
+int test_self_heal_supervisor(void);
 int test_condition_engine(void);
 int test_utxo_activation_paused(void);
 int test_sync_watchdog_conditions(void);

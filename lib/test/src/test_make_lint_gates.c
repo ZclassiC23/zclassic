@@ -1283,6 +1283,18 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 /* The same worker WITH a supervisor_register_in_domain pairing — passes. */
 #define SUPDOM_OK_WORKER_REL  "test-tmp/_supdom_supervised_worker_fixture_tmp.c"
 
+/* Gate #49 — blocker escape-action totality. The fixture is fed directly to
+ * the gate via ZCL_BLOCKER_ESCAPE_SCAN_FILES (a test-tmp/ path, never under
+ * app/), so the self-test never touches the real tree; the registry side
+ * always scans the real tree (the one real registration is
+ * "activation_drive_connect", used as the OK-fixture literal). */
+#define BLOCKER_ESCAPE_SCRIPT_REL \
+    "tools/scripts/check_blocker_escape_registered.sh"
+#define BLOCKER_ESCAPE_BAD_FIXTURE_REL \
+    "test-tmp/_blocker_escape_fixture_bad_tmp.c"
+#define BLOCKER_ESCAPE_OK_FIXTURE_REL \
+    "test-tmp/_blocker_escape_fixture_ok_tmp.c"
+
 #define RRUNG_SCRIPT_REL  "tools/scripts/check_no_new_repair_rung.sh"
 /* A new repair-rung-named file (basename contains "reconcile") planted under
  * app/services/src so the gate's `find app -name '*.c'` scan sees it. */
@@ -2975,6 +2987,76 @@ static int t_privileged_transition_receipt_gate(void)
         ASSERT(run_gate_script_with_env(PRIV_RECEIPT_SCRIPT_REL,
                                         "ZCL_PRIV_RECEIPT_DEF_DIR",
                                         empty_dir) == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #49 — blocker escape-action totality. A literal escape_action string
+ * with no matching blocker_register_escape() call must trip the gate; the
+ * same shape with the one real registered name ("activation_drive_connect")
+ * must pass. Mirrors t_privileged_transition_receipt_gate's env-override
+ * self-test shape. */
+static int t_blocker_escape_registered_gate(void)
+{
+    int failures = 0;
+    char bad_path[PATH_MAX], ok_path[PATH_MAX], test_tmp_dir[PATH_MAX];
+    int paths_ok =
+        (repo_path(bad_path, sizeof(bad_path),
+                   BLOCKER_ESCAPE_BAD_FIXTURE_REL) == 0 &&
+         repo_path(ok_path, sizeof(ok_path),
+                   BLOCKER_ESCAPE_OK_FIXTURE_REL) == 0 &&
+         repo_path(test_tmp_dir, sizeof(test_tmp_dir), "test-tmp") == 0)
+            ? 1 : 0;
+    if (paths_ok) (void)mkdir(test_tmp_dir, 0700);
+
+    unlink_rel(BLOCKER_ESCAPE_BAD_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_OK_FIXTURE_REL);
+
+    int wrote_bad = paths_ok ? write_file(bad_path,
+        "void fixture_bad(void)\n"
+        "{\n"
+        "    struct blocker_record rec;\n"
+        "    if (blocker_init(&rec, \"id\", \"owner\", BLOCKER_DEPENDENCY,\n"
+        "                     \"reason\")) {\n"
+        "        snprintf(rec.escape_action, sizeof(rec.escape_action),\n"
+        "                 \"totally_unregistered_escape_name_xyz\");\n"
+        "        (void)blocker_set(&rec);\n"
+        "    }\n"
+        "}\n") : -1;
+    int wrote_ok = paths_ok ? write_file(ok_path,
+        "void fixture_ok(void)\n"
+        "{\n"
+        "    struct blocker_record rec;\n"
+        "    if (blocker_init(&rec, \"id\", \"owner\", BLOCKER_DEPENDENCY,\n"
+        "                     \"reason\")) {\n"
+        "        snprintf(rec.escape_action, sizeof(rec.escape_action),\n"
+        "                 \"activation_drive_connect\");\n"
+        "        (void)blocker_set(&rec);\n"
+        "    }\n"
+        "}\n") : -1;
+
+    int bad_rc = (wrote_bad == 0)
+        ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
+                                   "ZCL_BLOCKER_ESCAPE_SCAN_FILES", bad_path)
+        : -1;
+    int ok_rc = (wrote_ok == 0)
+        ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
+                                   "ZCL_BLOCKER_ESCAPE_SCAN_FILES", ok_path)
+        : -1;
+    int clean_rc = run_gate_script(BLOCKER_ESCAPE_SCRIPT_REL, NULL);
+
+    unlink_rel(BLOCKER_ESCAPE_BAD_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_OK_FIXTURE_REL);
+
+    TEST("[lint-gate] blocker escape-action totality: unregistered literal "
+         "trips, registered literal + real tree pass") {
+        ASSERT(paths_ok);
+        ASSERT(wrote_bad == 0);
+        ASSERT(wrote_ok == 0);
+        ASSERT(bad_rc == 1);
+        ASSERT(ok_rc == 0);
+        ASSERT(clean_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -7779,6 +7861,7 @@ int test_make_lint_gates(void)
     failures += t_hotswap_swappable_shape_gate();
     failures += t_hotswap_static_state_gate();
     failures += t_privileged_transition_receipt_gate();
+    failures += t_blocker_escape_registered_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
 }
