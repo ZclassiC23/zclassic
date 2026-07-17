@@ -37,6 +37,7 @@
 #include "net/msg_internal.h"
 #include "net/version.h"
 #include "platform/time_compat.h"
+#include "sync/sync_state.h"
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
@@ -230,8 +231,9 @@ static bool hs_captured_has_command(const struct hs_capture *cap, const char *cm
 
 /* ── version-message payload builders (direct handler driving) ──── */
 
-static void hs_build_version_payload(struct byte_stream *out, int32_t proto,
-                                     uint64_t nonce, const char *subver)
+static void hs_build_version_payload_relay(struct byte_stream *out,
+                                           int32_t proto, uint64_t nonce,
+                                           const char *subver, bool relay)
 {
     struct version_message ver;
     version_message_init(&ver);
@@ -242,10 +244,16 @@ static void hs_build_version_payload(struct byte_stream *out, int32_t proto,
     snprintf(ver.sub_version, sizeof(ver.sub_version), "%s",
              subver ? subver : "/test:0.1/");
     ver.start_height = 100;
-    ver.relay = true;
+    ver.relay = relay;
 
     stream_init(out, 128);
     version_message_serialize(&ver, out);
+}
+
+static void hs_build_version_payload(struct byte_stream *out, int32_t proto,
+                                     uint64_t nonce, const char *subver)
+{
+    hs_build_version_payload_relay(out, proto, nonce, subver, true);
 }
 
 /* A version payload whose subver compact-size length claims 1000 bytes
@@ -652,6 +660,180 @@ static int test_honest_handshake_completes(void)
     return failures;
 }
 
+/* ── 10-12. Mempool sync-on-connect (msg_tx.c::msg_tx_maybe_request_mempool,
+ * wired into process_verack() in msg_version.c). A fresh node never
+ * proactively pulled a peer's mempool before this; now it sends ONE
+ * outbound "mempool" message right after the verack round-trip confirms
+ * the handshake, gated on relay_txes and on not being deep in IBD. */
+
+/* sync_get_state() is a process-wide FSM shared with every other test
+ * group forked from test_parallel — restore to SYNC_IDLE around any case
+ * that forces IBD so later cases in this same forked process (all of
+ * test_net_handshake_adversarial runs in one process) see the ordinary
+ * default. Mirrors test_msg_handlers.c's test_msg_sync_to_idle /
+ * test_msg_sync_to_blocks_download. */
+static void hs_force_sync_idle(void)
+{
+    enum sync_state cur = sync_get_state();
+    if (cur == SYNC_IDLE)
+        return;
+    if (cur == SYNC_AT_TIP) {
+        (void)sync_set_state(SYNC_IDLE, "hs mempool test cleanup");
+        return;
+    }
+    if (cur == SYNC_REORG) {
+        (void)sync_set_state(SYNC_AT_TIP, "hs mempool test cleanup");
+        (void)sync_set_state(SYNC_IDLE, "hs mempool test cleanup");
+        return;
+    }
+    (void)sync_set_state(SYNC_IDLE, "hs mempool test cleanup");
+}
+
+static void hs_force_sync_headers_download(void)
+{
+    hs_force_sync_idle();
+    if (sync_get_state() != SYNC_IDLE)
+        return;
+    (void)sync_set_state(SYNC_FINDING_PEERS, "hs mempool test setup");
+    (void)sync_set_state(SYNC_HEADERS_DOWNLOAD, "hs mempool test setup");
+}
+
+/* ── 10. Honest, relay-capable peer: exactly ONE outbound "mempool" is
+ * queued right after the verack round-trip, and a second (duplicate)
+ * verack from the same peer does NOT queue a second one — pins the
+ * per-peer node->mempool_requested once-only guard. */
+
+static int test_mempool_requested_once_for_relay_peer(void)
+{
+    int failures = 0;
+    TEST("mempool sync-on-connect: queued exactly once for a relay-capable peer") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        hs_force_sync_idle();
+        ASSERT(!f.node.mempool_requested);
+
+        struct byte_stream version_payload;
+        hs_build_version_payload_relay(&version_payload, PROTOCOL_VERSION,
+                                       0xAAAABBBBCCCCDDDDULL, "/test:0.1/",
+                                       true /* relay */);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "version", &version_payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT(f.node.relay_txes);
+        stream_free(&version_payload);
+
+        /* Drain the version-triggered replies (verack/version/sendheaders)
+         * so the capture below reflects only the verack-triggered send. */
+        struct hs_capture drain;
+        hs_capture_sent(f.peer_fd, &drain);
+
+        struct byte_stream empty;
+        stream_init(&empty, 0);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
+        ASSERT(!f.node.disconnect);
+        ASSERT(f.node.mempool_requested);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(hs_captured_has_command(&cap, "mempool"));
+
+        /* A second verack from the same peer (e.g. misbehaving/duplicate)
+         * must NOT queue a second "mempool" — the guard is per-peer, not
+         * per-call. */
+        ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
+        struct hs_capture cap2;
+        hs_capture_sent(f.peer_fd, &cap2);
+        ASSERT(!hs_captured_has_command(&cap2, "mempool"));
+
+        stream_free(&empty);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 11. A peer whose version explicitly declares relay=false never gets
+ * an outbound "mempool" pull. */
+
+static int test_mempool_not_requested_for_non_relay_peer(void)
+{
+    int failures = 0;
+    TEST("mempool sync-on-connect: not queued for a non-relay peer") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        hs_force_sync_idle();
+
+        struct byte_stream version_payload;
+        hs_build_version_payload_relay(&version_payload, PROTOCOL_VERSION,
+                                       0x1234123412341234ULL, "/test:0.1/",
+                                       false /* relay */);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "version", &version_payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT(!f.node.relay_txes);
+        stream_free(&version_payload);
+
+        struct hs_capture drain;
+        hs_capture_sent(f.peer_fd, &drain);
+
+        struct byte_stream empty;
+        stream_init(&empty, 0);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
+        ASSERT(!f.node.disconnect);
+        ASSERT(!f.node.mempool_requested);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(!hs_captured_has_command(&cap, "mempool"));
+
+        stream_free(&empty);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 12. Deep in IBD (bulk historical sync): even a relay-capable peer's
+ * verack must NOT trigger a mempool pull — mempool inventory is
+ * irrelevant while headers/blocks are still catching up. */
+
+static int test_mempool_not_requested_during_ibd(void)
+{
+    int failures = 0;
+    TEST("mempool sync-on-connect: not queued while deep in IBD") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        hs_force_sync_headers_download();
+        ASSERT_EQ(sync_get_state(), SYNC_HEADERS_DOWNLOAD);
+
+        struct byte_stream version_payload;
+        hs_build_version_payload_relay(&version_payload, PROTOCOL_VERSION,
+                                       0x5678567856785678ULL, "/test:0.1/",
+                                       true /* relay */);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "version", &version_payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT(f.node.relay_txes);
+        stream_free(&version_payload);
+
+        struct hs_capture drain;
+        hs_capture_sent(f.peer_fd, &drain);
+
+        struct byte_stream empty;
+        stream_init(&empty, 0);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "verack", &empty));
+        ASSERT(!f.node.disconnect);
+        ASSERT(!f.node.mempool_requested);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(!hs_captured_has_command(&cap, "mempool"));
+
+        stream_free(&empty);
+        hs_force_sync_idle();
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────── */
 
 int test_net_handshake_adversarial(void);
@@ -669,6 +851,9 @@ int test_net_handshake_adversarial(void)
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();
+    failures += test_mempool_requested_once_for_relay_peer();
+    failures += test_mempool_not_requested_for_non_relay_peer();
+    failures += test_mempool_not_requested_during_ibd();
 
     return failures;
 }
