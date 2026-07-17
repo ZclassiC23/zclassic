@@ -71,19 +71,21 @@ static _Atomic uint64_t g_ladder_cycles    = 0;
 static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
 
 /* Wall-unix of the last targeted_rederive apply pass that reported repaired
- * work (cursor clamp / residue purge). While within the rung's witness window
- * a follow-up pass that finds nothing NEW actionable holds the rung
- * (PROGRESSING) instead of advancing: the forward stages are still consuming
- * the clamp (re-deriving the hole from on-disk bodies), and advancing on the
- * very next 5 s tick would cascade into the reindex rung's durable
- * boot_auto_reindex_request seconds after the cure landed. */
+ * work. Within the rung's witness window a follow-up pass that finds nothing
+ * NEW actionable holds the rung (the forward stages are still consuming the
+ * clamp) instead of advancing on the next 5 s tick into the reindex rung. */
 static _Atomic int64_t g_rederive_last_repair_unix = 0;
 
-/* Wall-unix of the last widen_peers discovery kick. Guards against
- * re-kicking every ~30s supervisor tick while the rung holds its witness
- * window: a fresh dial/DNS/onion pass needs real wall time to land peers,
- * and connman_kick_onion_seeds is a blocking per-seed 60s fetch. Reset on
- * episode clear so the next episode kicks immediately. */
+/* FIX-3: consecutive targeted_rederive repairs that do NOT lift H* past the
+ * rung-entry baseline (g_tip_at_rung) — a repair re-clamping the same height.
+ * At STICKY_REDERIVE_MAX_FLAT_REPAIRS the rung FAILs so the ladder advances.
+ * Reset on every rung (re)entry and on episode clear. */
+static _Atomic int g_rederive_flat_repairs = 0;
+
+/* Wall-unix of the last widen_peers discovery kick. Guards against re-kicking
+ * every ~30s supervisor tick while the rung holds its window (a dial/DNS/onion
+ * pass needs real wall time, and connman_kick_onion_seeds blocks per seed 60s).
+ * Reset on episode clear so the next episode kicks immediately. */
 static _Atomic int64_t g_widen_last_kick_unix = 0;
 
 #ifdef ZCL_TESTING
@@ -251,12 +253,22 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
 
     if (rr.repaired) {
         atomic_store(&g_rederive_last_repair_unix, now_unix());
+        /* Flat-H* churn guard (FIX-3): a repair that does not lift H* past the
+         * rung-entry baseline is re-clamping the same height; a climb resets the
+         * count, and at the cap the rung FAILs so the ladder advances. */
+        int64_t entry = atomic_load(&g_tip_at_rung);
+        int flat_repairs = 0;
+        if (entry >= 0 && rr.hstar <= (int)entry)
+            flat_repairs = atomic_fetch_add(&g_rederive_flat_repairs, 1) + 1;
+        else
+            atomic_store(&g_rederive_flat_repairs, 0);
         LOG_WARN("sticky_escalator",
                  "[sticky_escalator] targeted_rederive repaired: hstar=%d "
-                 "coins_applied=%d noncanonical_purged=%d "
-                 "script_validate=%d->%d proof_validate=%d->%d "
-                 "tip_finalize=%d->%d",
-                 rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
+                 "entry=%lld flat_repairs=%d coins_applied=%d "
+                 "noncanonical_purged=%d script_validate=%d->%d "
+                 "proof_validate=%d->%d tip_finalize=%d->%d",
+                 rr.hstar, (long long)entry, flat_repairs,
+                 rr.coins_applied_height, rr.noncanonical_purged,
                  rr.script_validate_cursor_before,
                  rr.script_validate_cursor_after,
                  rr.proof_validate_cursor_before,
@@ -265,16 +277,11 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
                  rr.tip_finalize_cursor_after);
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=sticky-targeted-rederive repaired=1 hstar=%d "
-                    "coins_applied=%d noncanonical_purged=%d "
-                    "script_validate=%d->%d proof_validate=%d->%d "
-                    "tip_finalize=%d->%d",
-                    rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
-                    rr.script_validate_cursor_before,
-                    rr.script_validate_cursor_after,
-                    rr.proof_validate_cursor_before,
-                    rr.proof_validate_cursor_after,
-                    rr.tip_finalize_cursor_before,
+                    "flat_repairs=%d tip_finalize=%d->%d",
+                    rr.hstar, flat_repairs, rr.tip_finalize_cursor_before,
                     rr.tip_finalize_cursor_after);
+        if (flat_repairs >= STICKY_REDERIVE_MAX_FLAT_REPAIRS)
+            return STICKY_RUNG_FAILED; /* re-clamping the same height -> advance */
         return STICKY_RUNG_PROGRESSING; /* clamps durable; stages re-derive */
     }
 
@@ -755,24 +762,17 @@ static void enter_rung(enum sticky_rung r, int64_t now)
     atomic_store(&g_rung, (int)r);
     atomic_store(&g_tip_at_rung, observe_tip());
     atomic_store(&g_rung_entered_unix, now);
+    atomic_store(&g_rederive_flat_repairs, 0);
 }
 
 /* Withdraw a pending (non-terminal) on-disk auto_reindex_request once THIS
- * episode has genuinely resolved (tip proven past the request's anchor).
- * The reindex rung (rung_reindex_default) arms boot_auto_reindex_request()
- * durably so the NEXT boot rebuilds the UTXO set from blocks/; if the stall
- * self-resolves before that boot happens, the marker outlives its episode and
- * would force a needless full chainstate rebuild the next time the node
- * restarts (observed live 2026-07-09: it blocked `make deploy-dev` with
- * "pending crash-only auto-reindex request anchor=3175394" even though the
- * symptom had already cleared) — a violation of the auto-terminating-remedy
- * invariant. boot_auto_reindex_pending() already excludes the TERMINAL marker
- * (count == BOOT_AUTO_REINDEX_TERMINAL), so this never touches the
- * budget-exhausted/operator-paged state — only a live, still-armed request
- * for an anchor the tip has since proven past. `tip > anchor` (not >=) is the
- * same proof bar the reindex rung itself would need: the request was armed at
- * `anchor`, so any height strictly above it is forward progress the rebuild
- * would have re-derived anyway. */
+ * episode has genuinely resolved (tip proven strictly past the request's
+ * anchor). The reindex rung arms boot_auto_reindex_request() durably for the
+ * NEXT boot; if the stall self-resolves first, the marker outlives its episode
+ * and would force a needless chainstate rebuild on restart (live 2026-07-09).
+ * boot_auto_reindex_pending() excludes the TERMINAL marker, so this never
+ * touches the budget-exhausted/operator-paged state — only a live, still-armed
+ * request the tip has since proven past. */
 static void withdraw_stale_reindex_request(int64_t tip)
 {
     if (!g_datadir || !g_datadir[0])
@@ -832,15 +832,14 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_tip_at_rung, -1);
     atomic_store(&g_rearm_until_unix, 0);
     atomic_store(&g_rederive_last_repair_unix, 0);
+    atomic_store(&g_rederive_flat_repairs, 0);
     atomic_store(&g_widen_last_kick_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
     withdraw_stale_reindex_request(tip);
     withdraw_stale_refold_request(tip);
     /* Release any operator_needed latch this episode raised: the tip
-     * progressed, so the symptom genuinely cleared. note_cycling_page() emits
-     * a (terminal=0) page that — depending on the alerts policy — may still
-     * latch the health surface; this is the matching clear so recovery is
-     * fully automatic and the node returns to healthy with no human action. */
+     * progressed, so the symptom genuinely cleared. This is the matching clear
+     * for note_cycling_page()'s (terminal=0) page so recovery is automatic. */
     event_emitf(EV_CONDITION_CLEARED, 0,
                 "condition=sticky_ladder_cycling reason=tip_progressed");
     LOG_INFO("sticky_escalator",
@@ -1071,6 +1070,7 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_episodes_cleared, 0u);
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
+    atomic_store(&g_rederive_flat_repairs, 0);
     atomic_store(&g_widen_last_kick_unix, (int64_t)0);
     atomic_store(&g_test_suppress_refold_restart, false);
     atomic_store(&g_test_refold_artifact_override, -1);

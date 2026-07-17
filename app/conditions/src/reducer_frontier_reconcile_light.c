@@ -47,6 +47,29 @@ static int g_gate_suppress_warn_total;
 static void (*g_test_post_remedy_hook)(void);
 #endif
 
+/* FIX-1 progressing high-water baselines. The witness is the SOLE clear
+ * predicate; progressing() only REFRESHES the attempt budget, and only on
+ * FORWARD progress a rewind cannot fake: H* (a monotonic frontier) climbing, or
+ * a coin/tipfin backfill record reaching a strictly NEW height above the
+ * high-water mark. Seeded at the detect rising edge and raised (never lowered)
+ * on a true progressing return, so a same-height rewind->re-derive churn no
+ * longer refreshes forever — the budget exhausts, the operator pages, and the
+ * sticky escalator arms. Serial condition-engine tick thread only (same as the
+ * gate-suppress counter above); the -1 "absent" sentinel never lowers a mark. */
+static _Atomic int g_progressing_hstar_hwm = -1;
+static _Atomic int g_progressing_coin_next_hwm = -1;
+static _Atomic int g_progressing_tipfin_hwm = -1;
+
+static void rfrl_progressing_raise_hwm(int hstar, int coin_next, int tipfin)
+{
+    if (hstar > atomic_load(&g_progressing_hstar_hwm))
+        atomic_store(&g_progressing_hstar_hwm, hstar);
+    if (coin_next > atomic_load(&g_progressing_coin_next_hwm))
+        atomic_store(&g_progressing_coin_next_hwm, coin_next);
+    if (tipfin > atomic_load(&g_progressing_tipfin_hwm))
+        atomic_store(&g_progressing_tipfin_hwm, tipfin);
+}
+
 static bool coin_backfill_refused_reconcile(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
@@ -58,13 +81,22 @@ static bool coin_backfill_refused_reconcile(
            rr->coin_backfill_status != COIN_BACKFILL_OWNER_REFUSED;
 }
 
-static bool peer_lag_allows_repair(struct main_state *ms)
+static bool peer_lag_allows_repair(struct main_state *ms, int hstar)
 {
     struct connman *cm = sync_monitor_connman();
     if (!cm)
         return true;
 
-    int local = ms ? active_chain_height(&ms->chain_active) : -1;
+    /* F6: gate on how far the PROVABLE tip (H*) lags a peer, NOT the DOWNLOAD
+     * tip (active_chain_height). When the fold is stalled below the header tip
+     * — the common wedge — active_chain_height already sits at/above the peers'
+     * static handshake starting_height, so the download-tip comparison
+     * suppressed the repair exactly when it was needed. H* is the height the
+     * repair is trying to lift, so it is the right lag to gate on. Fall back to
+     * the download tip only when H* is unavailable. */
+    int local = hstar >= 0
+                    ? hstar
+                    : (ms ? active_chain_height(&ms->chain_active) : -1);
     if (local < 0)
         return false;
 
@@ -257,7 +289,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
         return false;
     }
 
-    if (!peer_lag_allows_repair(ms)) {
+    if (!peer_lag_allows_repair(ms, rr.hstar)) {
         if (rr.refused_coin_tear) {
             note_peer_gate_bypass(&rr, "refused_coin_tear pending");
         } else if (rr.noncanonical_found > 0) {
@@ -328,6 +360,13 @@ static bool detect_reducer_frontier_reconcile_light(void)
         rfrl_snapshot_coin_backfill_scan(db);
         rfrl_snapshot_coin_backfill_insert_progress();
         rfrl_snapshot_tipfin_backfill(db);
+        /* Seed the progressing high-water baselines from the rising-edge
+         * frontier so a FROZEN backfill record never refreshes the budget while
+         * a genuinely-advancing one does (FIX-1). raise_hwm ignores the -1
+         * "absent" sentinel, so a record that appears later still counts. */
+        rfrl_progressing_raise_hwm(rr.hstar,
+                                   rfrl_coin_backfill_scan_next_at_detect(),
+                                   rfrl_tipfin_backfill_progress_at_detect());
     }
     return true;
 }
@@ -504,20 +543,26 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
  * clear/success predicate; this is consulted by the engine ONLY when the
  * witness is still false after a remedy, to decide whether the attempt budget
  * should be refreshed (a converging multi-round repair) rather than exhausted
- * (pure churn). It re-uses the deleted clear-edge deltas as a REFRESH-ONLY
- * signal: a chunked coin_backfill scan whose resumable cursor advanced, a
- * tipfin backfill whose progress record advanced, or coins inserted by the most
- * recent reconcile pass. ANY of these means durable, resumable progress that
- * has not yet moved H* — the budget refreshes so the repair is not false-paged.
- * On a true return the delta baselines are re-snapshotted so the next round
- * measures fresh; pure churn (records frozen / absent) returns false, so the
- * budget still exhausts and the operator is paged. These statics are NEVER a
- * witness clear-edge (only reducer_frontier_compute_hstar clears). */
+ * (pure churn).
+ *
+ * FIX-1: refresh ONLY on forward progress a same-height rewind cannot fake —
+ * H* (the monotonic provable frontier) climbing above its high-water baseline,
+ * or a coin/tipfin backfill record reaching a strictly NEW height above its
+ * high-water baseline — plus the edge-triggered coins-inserted signal (keyed on
+ * the remedy call, so a stale nonzero cannot refresh forever). The old code
+ * ALSO refreshed on any present<->absent record transition and re-baselined to
+ * the CURRENT (possibly rewound-low) value, so a same-height rewind->re-derive
+ * churn refreshed the budget forever: max_attempts was never reached, the
+ * operator was never paged, and the sticky escalator never armed. The baselines
+ * are HIGH-WATER (raised at detect + on a true return, never lowered) so a
+ * rewind to a previously-seen height no longer refreshes; pure churn now
+ * exhausts the budget in bounded time. These statics are NEVER a witness
+ * clear-edge (only reducer_frontier_compute_hstar clears). */
 static bool progressing_reducer_frontier_reconcile_light(
     int64_t target_at_detect)
 {
     /* The engine passes the wall-clock target timestamp; we key on our own
-     * captured per-record baselines, not on it. */
+     * high-water baselines, not on it. */
     (void)target_at_detect;
 
     sqlite3 *db = progress_store_db();
@@ -530,31 +575,40 @@ static bool progressing_reducer_frontier_reconcile_light(
 
     bool progressed = false;
 
-    /* (1) coin_backfill resumable scan cursor advanced (or appeared). A wide
-     * hole needs more chunks (COIN_BACKFILL_SCAN_CHUNK_BLOCKS/call) than
-     * max_attempts; each chunk advances scan_next durably even before H* moves. */
+    /* (1) H* — the provable frontier — advanced above its high-water baseline.
+     * H* is monotonic; a same-height rewind cannot fake it. (Belt-and-
+     * suspenders vs the witness, the sole CLEAR predicate: any climb past the
+     * at-detect H* already clears there.) */
+    int32_t hstar_now = -1;
+    int32_t served_floor = -1;
+    progress_store_tx_lock();
+    bool have_hstar =
+        reducer_frontier_compute_hstar(db, &hstar_now, &served_floor);
+    progress_store_tx_unlock();
+    if (have_hstar && hstar_now > atomic_load(&g_progressing_hstar_hwm))
+        progressed = true;
+
+    /* (2) coin_backfill resumable scan cursor reached a strictly NEW height
+     * above its high-water baseline. A wide hole needs more chunks
+     * (COIN_BACKFILL_SCAN_CHUNK_BLOCKS/call) than max_attempts; each chunk
+     * advances scan_next durably before H* moves. */
     bool coin_present = false;
     int coin_next = -1;
     if (rfrl_read_coin_backfill_scan_cursor(db, &coin_present, &coin_next) &&
-        coin_present) {
-        int prev_present = rfrl_coin_backfill_scan_present_at_detect();
-        int prev_next = rfrl_coin_backfill_scan_next_at_detect();
-        if (prev_present != 1 || coin_next > prev_next)
-            progressed = true;
-    }
+        coin_present &&
+        coin_next > atomic_load(&g_progressing_coin_next_hwm))
+        progressed = true;
 
-    /* (2) tipfin backfill progress record advanced (or appeared). */
+    /* (3) tipfin backfill progress record reached a strictly NEW height above
+     * its high-water baseline. */
     bool tip_present = false;
     int tip_progress = -1;
     if (rfrl_read_tipfin_backfill_progress(db, &tip_present, &tip_progress) &&
-        tip_present) {
-        int prev_present = rfrl_tipfin_backfill_present_at_detect();
-        int prev_progress = rfrl_tipfin_backfill_progress_at_detect();
-        if (prev_present != 1 || tip_progress > prev_progress)
-            progressed = true;
-    }
+        tip_present &&
+        tip_progress > atomic_load(&g_progressing_tipfin_hwm))
+        progressed = true;
 
-    /* (3) the most recent reconcile pass inserted coins after the current
+    /* (4) the most recent reconcile pass inserted coins after the current
      * progress baseline. The inserted count itself is a last-result field, not
      * a monotonically increasing cursor; key it to the remedy call that produced
      * that result so a stale nonzero value cannot refresh attempts forever. */
@@ -564,14 +618,14 @@ static bool progressing_reducer_frontier_reconcile_light(
             rfrl_coin_backfill_insert_remedy_call_at_detect())
         progressed = true;
 
-    /* Re-snapshot the delta baselines ONLY on a true return (REFRESH-only) so
-     * the next round measures a fresh delta. A false return leaves the baseline
-     * untouched, so progress accrued over multiple rounds is still detected. */
+    /* Re-baseline (high-water: raised, never lowered) on a true return so the
+     * next round measures fresh forward progress. A false return leaves the
+     * baselines untouched, so progress accrued over multiple rounds is still
+     * detected. */
     if (progressed) {
-        if (coin_present)
-            rfrl_set_coin_backfill_scan_snapshot(true, coin_next);
-        if (tip_present)
-            rfrl_set_tipfin_backfill_snapshot(true, tip_progress);
+        rfrl_progressing_raise_hwm(have_hstar ? hstar_now : -1,
+                                   coin_present ? coin_next : -1,
+                                   tip_present ? tip_progress : -1);
         rfrl_snapshot_coin_backfill_insert_progress();
     }
     return progressed;
@@ -603,6 +657,9 @@ void reducer_frontier_reconcile_light_test_reset(void)
     rfrl_observe_reset_for_testing();
     log_throttle_reset(&g_gate_suppress);
     g_gate_suppress_warn_total = 0;
+    atomic_store(&g_progressing_hstar_hwm, -1);
+    atomic_store(&g_progressing_coin_next_hwm, -1);
+    atomic_store(&g_progressing_tipfin_hwm, -1);
     g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
     atomic_store(&s->last_remedy_unix, (int64_t)0);

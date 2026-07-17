@@ -1951,6 +1951,73 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
+    /* ── F6: the peer gate compares the PROVABLE tip (H*), not the download
+     * tip ───────────────────────────────────────────────────────────────────
+     * The common wedge: the fold is stalled below the header tip, so the
+     * download tip (active_chain_height) already sits at/above the peers' static
+     * handshake starting_height while H* lags well behind. A block-serving peer
+     * whose starting_height is AHEAD of H* but BEHIND the download tip is real
+     * evidence the local provable tip is stale — the repair must be admitted.
+     * The old download-tip comparison suppressed it (peer "not ahead"); the H*
+     * comparison admits it. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("F6: setup fixture", setup_fixture(&fx, "f6_hstar_gate"));
+        sqlite3 *db = progress_store_db();
+        /* Download tip at A+3 (active_chain_height) while H* stays pinned at
+         * A+1 (tip_finalize ok=1 only at A+1). */
+        RFRL_CHECK("F6: active chain tip at A+3",
+                   active_chain_move_window_tip(&fx.ms.chain_active,
+                                                fx.idx[3]));
+
+        /* One block-serving peer whose starting_height (A+2) is ABOVE H* (A+1)
+         * but BELOW the download tip (A+3). */
+        struct connman cm;
+        struct p2p_node p1;
+        struct p2p_node *peers[1];
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+        memset(&p1, 0, sizeof(p1));
+        p1.id = 1;
+        p1.starting_height = A + 2;
+        p1.state = PEER_HANDSHAKE_COMPLETE;
+        p1.services = NODE_NETWORK;
+        peers[0] = &p1;
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        RFRL_CHECK("F6: peer ahead of H* (not the download tip) admits the "
+                   "repair — remedy runs and clamps tip_finalize to H*",
+                   got &&
+                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
+                   snap.currently_active &&
+                   cursor_value(db, "tip_finalize") == A + 1);
+        /* Admitted via the H* peer-lag path, not the tear/refill bypass. */
+        RFRL_CHECK("F6: no tear/refill bypass WARN (plain peer-ahead admit)",
+                   reducer_frontier_reconcile_light_test_bypass_warns() == 0);
+
+        cm.manager.nodes = NULL;
+        cm.manager.num_nodes = 0;
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
     printf("reducer_frontier_reconcile_light: %d failures\n", failures);
     return failures;
 }

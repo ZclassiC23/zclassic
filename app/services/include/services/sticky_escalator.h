@@ -94,6 +94,10 @@ const char *sticky_rung_name(enum sticky_rung r);
 #define STICKY_PROGRESS_MARGIN        2     /* H* climb that clears an episode */
 #define STICKY_REARM_COOLDOWN_SECS    120   /* deepest-rung re-arm pause */
 #define STICKY_PAGE_MIN_INTERVAL_SECS 300   /* non-latching page rate limit */
+/* Consecutive targeted_rederive repairs that do NOT lift H* past the rung-entry
+ * baseline before the rung FAILs (advances) instead of holding its window on a
+ * repair that keeps re-clamping the same height. */
+#define STICKY_REDERIVE_MAX_FLAT_REPAIRS 3
 
 #ifdef ZCL_TESTING
 void sticky_escalator_test_reset(void);
