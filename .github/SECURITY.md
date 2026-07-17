@@ -59,4 +59,4 @@ There is no bug-bounty program.
 A third-party security and cryptographic audit was received and triaged
 in June 2026. The point-by-point disposition record — what was fixed,
 what was refuted (with citations), and what is deferred and tracked — is
-[`docs/work/archive/security-audit-response-2026-06-09.md`](../docs/work/archive/security-audit-response-2026-06-09.md).
+[`docs/work/security-audit-response-2026-06-09.md`](../docs/work/security-audit-response-2026-06-09.md).

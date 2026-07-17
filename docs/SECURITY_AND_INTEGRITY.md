@@ -17,10 +17,9 @@ properties auditable.
 - Known gaps are documented instead of hidden. Examples include the current
   live forward-progress blocker, off-chain ZMSG plaintext transport, and
   incomplete marketplace/swap settlement paths.
-- The June 2026 third-party security-audit disposition is
-  [`work/archive/security-audit-response-2026-06-09.md`](./work/archive/security-audit-response-2026-06-09.md):
-  it records fixed findings, refuted findings with citations, deferred items,
-  and deployment gates.
+- The June 2026 third-party security-audit disposition (fixed findings,
+  refuted findings with citations, deferred items, and deployment gates) is
+  [`work/security-audit-response-2026-06-09.md`](./work/security-audit-response-2026-06-09.md).
 
 ## Operator-owned scope
 
@@ -177,7 +176,7 @@ Evidence files worth reading first:
 - [`../README.md`](../README.md) - public status and feature scope.
 - [`../.github/SECURITY.md`](../.github/SECURITY.md) - vulnerability reporting.
 - [`MVP.md`](./MVP.md) - v1 acceptance criteria and readiness score.
-- [`work/archive/security-audit-response-2026-06-09.md`](./work/archive/security-audit-response-2026-06-09.md) - audit disposition.
+- [`work/security-audit-response-2026-06-09.md`](./work/security-audit-response-2026-06-09.md) - audit disposition.
 - [`RUNBOOK.md`](./RUNBOOK.md) - operational safety rails.
 - [`../tools/mcp/middleware.c`](../tools/mcp/middleware.c) - MCP destructive-tool policy.
 - [`../tools/scripts/isolated_node_env.sh`](../tools/scripts/isolated_node_env.sh) - isolated process/datadir guardrails.

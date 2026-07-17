@@ -104,7 +104,7 @@ before deploy. `owner-gated` = consensus parity or a structural/topology decisio
 Held back deliberately (boot-path risk / multi-site lock changes / P3), not rushed.
 Architecture verdict from that audit: SOUND, no refactor — the recurring failure is
 torn UTXO sets INSTALLED at import with no cryptographic proof; root cause + cure are
-canonical in [`never-stuck-plan.md`](../never-stuck-plan.md) +
+canonical in [`never-stuck-plan.md`](./never-stuck-plan.md) +
 [`tenacity-roadmap.md`](./tenacity-roadmap.md). NOTE: `stage_reconcile_clamp_tip_finalize_to_floor`
 (`app/jobs/src/stage_repair.c`) is NOT dead — live caller `config/src/boot.c:3260-3274`;
 ladder-deletion sequencing must re-derive the caller graph with `config/` in scope.

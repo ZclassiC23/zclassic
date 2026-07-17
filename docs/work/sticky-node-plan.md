@@ -192,8 +192,10 @@ datadir) and **GCT — Global Convergence Time** (a forked node → canonical, u
 
 ## 5. WHAT CHANGES vs the dated detective plan
 
-The removed plan's dated verdict and commits are retained in the
-[archive evidence ledger](INDEX.md).
+The removed plan's dated verdict and commits are recoverable from Git history
+(`git log --follow -- docs/work/archive/detective-forward-plan.md`); the
+in-repo archive evidence ledger that used to index it was removed along with
+`docs/work/archive/`.
 
 - **Prime goal flips:** T (time-to-self-verified-tip) → MTTUR/AAR (unattended recovery).
   Detective re-derivation stays the mechanism; "always-terminating remedy" becomes the law.

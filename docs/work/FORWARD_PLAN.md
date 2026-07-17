@@ -21,24 +21,34 @@
 > location, but ZClassic headers do not commit UTXO, Sapling/Sprout, or
 > nullifier roots. Those contents are therefore borrowed, not PoW-bound.
 >
-> Immediate order: enforce fail-closed shielded history and truthful causal
-> status → build one complete atomic state installer → copy-prove H\* climb,
-> exact parity, warm restart, kill-9 resume, and malformed-input no-publish →
-> request owner-gated canonical deployment → begin a fresh evidence window.
-> Do not feed a shielded v3 artifact through the current v1-oriented refold reset
-> that can discard its shielded sections. Current truth is
-> [`../HANDOFF.md`](../HANDOFF.md); cure details are
-> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). The durable Phase
-> 0–6 hierarchy and promotion gates are in
+> Two complementary cure tracks are now in flight — current truth is
+> [`../HANDOFF.md`](../HANDOFF.md), read it fresh before acting:
+> **(A) operational import-path** — the complete-shielded-history import
+> (`-import-complete-shielded`) is proven to clear this exact wedge on a
+> throwaway datadir copy (`../HANDOFF.md` §0-NEWEST, 2026-07-16); it is
+> release-assisted trust, not sovereign, and is NOT yet folded to the header
+> tip, NOT yet pushed to `origin/main`, and NOT yet cut over on the live
+> canonical datadir. **(B) sovereign producer/bundle** — a re-baked checkpoint
+> fixed the root cause and a new producer is folding real blocks forward from
+> it (`../HANDOFF.md` §0-NEW); production ACTIVATE stays contained
+> (`VERIFIED_CONTAINED`) until an independent replay receipt lifts it. Track A
+> reaches a verified tip fast; Track B later upgrades the same node to fully
+> sovereign (`coins_kv_self_folded=true`). Do not feed a shielded v3 artifact
+> through the current v1-oriented refold reset that can discard its shielded
+> sections. Cure design details: [`self-verified-tip-plan.md`](./self-verified-tip-plan.md)
+> (Track B) and [`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md)
+> (Track A). The durable Phase 0–6 hierarchy and promotion gates are in
 > [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
 > Copy-prove every recovery path on a datadir COPY before live; gate on H\* climb.
 
-**The #1 work now:** finish the complete shielded-state installer and prove the
-cure on a canonical datadir copy. CI-gate promotion may proceed in parallel on
-isolated lanes, but canonical soak/canary/seal evidence does not accrue while
-the node is wedged. Only after H\* climb, complete security posture, and exact
-same-height parity are copy-proven may a fresh evidence window begin. Root-cause
-on the preserved fixture, datadir COPY never live
+**The #1 work now:** finish folding Track A to the header tip and pass its full
+copy-proof gate (or let Track B's producer complete and its bundle pass
+independent replay verification), then copy-prove H\* climb on a canonical
+datadir copy before any live cutover. CI-gate promotion may proceed in
+parallel on isolated lanes, but canonical soak/canary/seal evidence does not
+accrue while the node is wedged. Only after H\* climb, complete security
+posture, and exact same-height parity are copy-proven may a fresh evidence
+window begin. Root-cause on the preserved fixture, datadir COPY never live
 ([`fast-path.md`](./fast-path.md)); delete recovery ladders only after their
 replacement and rollback are proven.
 
@@ -147,8 +157,9 @@ jump the queue.
       `make lint && make test_parallel`.
 - [x] **Code-review remediation** (secondary hardening lane; must not displace
       the #1 spine) — the open, verified subset of the 2026-06-27 audit, batched
-      into parallel-worktree lanes with a fix + proof-gate per item:
-      [`archive/code-review-remediation-2026-06-30.md`](./archive/code-review-remediation-2026-06-30.md).
+      into parallel-worktree lanes with a fix + proof-gate per item (tracked in
+      the removed `archive/code-review-remediation-2026-06-30.md`, recoverable
+      with `git log --follow -- docs/work/archive/code-review-remediation-2026-06-30.md`).
       Autonomous review-remediation items are now closed; continue MVP work from
       the sovereign cure and fresh soak window.
 
@@ -162,9 +173,10 @@ jump the queue.
       (`lib/storage/src/coins_view_sqlite.c`), table-derived height/count,
       + `_save_anchored`/`_load_anchor` in `lib/coins/src/utxo_commitment.{c,h}`,
       + re-validating heal in `coins_reconcile_stale_anchor`. Design-of-record
-      [`coins-commitment-persist-plan.md`](./archive/coins-commitment-persist-plan.md)
-      (adversary-vetted; original verdict DO_NOT_APPLY → corrected design at
-      top). **Do NOT apply live without owner go.**
+      `coins-commitment-persist-plan.md` (adversary-vetted; original verdict
+      DO_NOT_APPLY → corrected design at top), removed from the tree —
+      recover with `git log --follow -- docs/work/archive/coins-commitment-persist-plan.md`.
+      **Do NOT apply live without owner go.**
 - [ ] Persist `utxo_sha3` at finalized-tip so the self-heal has a fresh input.
 - [ ] **Reducer shielded-consensus enforcement** — nullifier double-spend gate
       landed (`app/jobs/src/utxo_apply_nullifiers.c`, C-3); REMAINING = anchor
@@ -220,6 +232,7 @@ measurement; the boot refactor gates nothing v1.
 Architecture axis (~90% done): [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
 [`../FRAMEWORK.md`](../FRAMEWORK.md). The only remaining size debt is the three
 `config/` boot files (`boot.c`, `boot_services.c`, `boot_index.c`), frozen
-shrink-only by the size gate; seam plan in
-[`boot-decomposition-seams.md`](./archive/boot-decomposition-seams.md). Safe-execution
-method for any consensus-critical change: [`fast-path.md`](./fast-path.md).
+shrink-only by the size gate; seam plan was in `boot-decomposition-seams.md`,
+removed from the tree — recover with
+`git log --follow -- docs/work/archive/boot-decomposition-seams.md`.
+Safe-execution method for any consensus-critical change: [`fast-path.md`](./fast-path.md).

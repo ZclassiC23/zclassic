@@ -125,8 +125,9 @@ now EXISTS and is adversarially tested (a bundle whose contents differ from the
 honest local fold gets no receipt; a foreign/tampered receipt is refused). The
 receipt is read through the datadir capability fd, not a pathname.
 
-**Codebase review:** the dated, non-authoritative consolidation receipt is
-[`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md).
+**Codebase review:** the dated, non-authoritative 2026-07-14 consolidation
+receipt was removed from the tree; recover it with
+`git log --follow -- docs/work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`.
 The current plan of record is the OS-architecture plan
 `~/.claude/plans/research-this-node-it-clever-dawn.md` (Wave 4).
 
@@ -533,7 +534,9 @@ exit). Replay any consensus-predicate tightening against REAL history first
 - [`docs/work/ROADMAPS.md`](work/ROADMAPS.md) — live vs superseded roadmaps.
 - [`docs/AGENT_TRAPS.md`](AGENT_TRAPS.md) — looks-broken-but-isn't; read before "fixing" anything.
 - [`docs/MVP.md`](MVP.md) — the v1 acceptance bar (8 criteria).
-- [`docs/work/archive/`](work/archive/) — dated handoffs/audits/superseded roadmaps (history only).
+- Dated handoffs/audits/superseded roadmaps are removed from the tree, not
+  archived in-repo — recover any of them with `git log --follow -- <old-path>`
+  (see the note at the top of this file for the pattern).
 
 ## 7. Verify before you trust this file
 

@@ -194,8 +194,9 @@ no third state. That is strictly stronger than detectors watching proxies.
 
 The staged reducer is the authoritative chain-advance architecture, but the
 legacy block-connect engine still ships and is live-called on the recovery path
-(`connect_block` at `boot_index.c:334`; `lib/validation` ≈ 7.5k LOC, still
-linked). Cleanup remains — the checklist tracks it.
+(`connect_block` at `config/src/boot_index.c:403`; `lib/validation/src/` ≈
+7.7k LOC across its `.c` files, still linked). Cleanup remains — the
+checklist tracks it.
 
 ---
 
