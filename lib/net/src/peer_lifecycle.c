@@ -5,7 +5,10 @@
 #include "core/utiltime.h"
 #include "event/event.h"
 #include "net/connman.h"
+#include "net/net.h"
+#include "net/download.h"
 #include "net/fast_sync.h"
+#include "storage/peers_projection.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -680,11 +683,40 @@ void peer_lifecycle_note_active(const struct p2p_node *node)
     pthread_mutex_unlock(&g_pl.lock);
 }
 
+/* NET-2: bank a closed peer session's final reputation + transfer totals into
+ * the durable peers_projection ledger. Called exactly once per session (from
+ * note_terminal's recorded-once path), only for sessions that actually
+ * handshaked. Fail-open — no event log wired ⇒ no-op. */
+static void note_session_closed(const struct p2p_node *node, uint8_t reason,
+                                int64_t connected_at, int64_t now_ts)
+{
+    if (!node)
+        return;
+    uint32_t duration = 0;
+    if (connected_at > 0 && now_ts >= connected_at &&
+        now_ts - connected_at <= (int64_t)UINT32_MAX)
+        duration = (uint32_t)(now_ts - connected_at);
+    uint32_t bw = dl_peer_bandwidth_score(msg_get_download_mgr(),
+                                          (uint32_t)node->id);
+    int64_t last_useful = node->last_useful_headers_time;
+    if (node->last_block_time > last_useful)
+        last_useful = node->last_block_time;
+    uint64_t blocks = node->blocks_received > 0
+                          ? (uint64_t)node->blocks_received : 0;
+    (void)peers_projection_emit_session_closed(
+        node->addr.svc.addr.ip, node->addr.svc.port, reason, duration,
+        node->recv_bytes, node->send_bytes, node->total_headers_delivered,
+        blocks, bw, node->avg_latency_us, last_useful);
+}
+
 static void note_terminal(const struct p2p_node *node, const char *reason,
                           const char *event_name, bool timeout, bool reject)
 {
     char addr[256];
     bool recorded = false;
+    bool emit_session = false;
+    int64_t sess_connected_at = 0;
+    int64_t sess_now = 0;
     addr_key_from_node(node, addr, sizeof(addr));
     pthread_mutex_lock(&g_pl.lock);
     struct peer_lifecycle_entry *e = entry_for_node_locked(node, true);
@@ -724,6 +756,14 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
                 g_pl.totals.pre_handshake_disconnects++;
                 e->pre_handshake_disconnects++;
             }
+            /* Bank the session's reputation exactly once, but only for a
+             * session that actually handshaked (a failed pre-handshake dial is
+             * not a peer session worth remembering). */
+            if (!pre_handshake) {
+                emit_session = true;
+                sess_connected_at = e->connected_at;
+                sess_now = now;
+            }
             recorded = true;
         }
     }
@@ -736,6 +776,9 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
                     event_name, addr, peer_state_name(node->state),
                     reason ? reason : "");
     }
+    if (emit_session)
+        note_session_closed(node, timeout ? 1u : reject ? 2u : 0u,
+                            sess_connected_at, sess_now);
 }
 
 void peer_lifecycle_note_timeout(const struct p2p_node *node,

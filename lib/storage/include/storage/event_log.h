@@ -84,6 +84,13 @@ enum event_log_type {
     EV_HODL_SNAPSHOT        = 24,
     /* ZVCS (lib/vcs) commit log — appended by vcs_snapshot(). */
     EV_VCS_COMMIT           = 25,
+    /* Durable network-truth session ledger (peers_projection). A peer
+     * session closes → its final bandwidth/latency/delivery reputation +
+     * transfer totals. Folded into peer_sessions + addresses reputation. */
+    EV_PEER_SESSION_CLOSED  = 26,
+    /* A fork observation (two peer clusters at one height): the durable
+     * append-only record of network disagreement. Folded into fork_events. */
+    EV_NET_FORK_OBSERVED    = 27,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

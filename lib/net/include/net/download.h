@@ -264,6 +264,16 @@ size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id);
  * Call from connman when a peer is disconnected. Returns count re-queued. */
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);
 
+/* NET-2: current per-peer EWMA bandwidth score (0..255, 0 = none measured).
+ * Read at session close to bank the peer's final reputation. */
+uint32_t dl_peer_bandwidth_score(struct download_manager *dm, uint32_t peer_id);
+
+/* NET-2: seed a peer's INITIAL bandwidth score from banked reputation (only if
+ * unmeasured — never overrides a live score), so a known-fast peer starts at
+ * its historical download window instead of the minimum. Bounded to 0..255. */
+void dl_peer_seed_bandwidth_score(struct download_manager *dm,
+                                  uint32_t peer_id, uint32_t score);
+
 /* Add blocks to the download queue (blocks we need but haven't requested).
  * Deduplicates against already-in-flight and already-queued blocks. */
 size_t dl_queue_blocks(struct download_manager *dm,

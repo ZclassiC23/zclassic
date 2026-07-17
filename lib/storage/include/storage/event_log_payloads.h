@@ -37,6 +37,9 @@
 #define EV_ONION_ADDRESS_MAX 96u
 #define EV_ONION_SCRIPT_HEX_MAX 250u
 #define EV_HODL_SNAPSHOT_LEN 32u
+#define EV_PEER_SESSION_CLOSED_LEN 76u
+#define EV_NET_FORK_TIP_HEX_MAX 64u
+#define EV_NET_FORK_OBSERVED_FIXED_LEN 32u
 
 struct ev_tx_admit_mempool {
     uint8_t  txid[32];
@@ -155,6 +158,43 @@ struct ev_hodl_snapshot {
     int64_t total_zat;
     int64_t older_1y_zat;
     double older_1y_pct;
+};
+
+/* EV_PEER_SESSION_CLOSED — a peer session's final reputation + transfer
+ * totals, banked at disconnect. Fixed 76-byte wire form (LE):
+ *   [16B ip][2B port][1B reason][1B reserved]
+ *   [4B duration_secs][8B bytes_in][8B bytes_out]
+ *   [8B headers_delivered][8B blocks_delivered]
+ *   [4B bandwidth_score][8B avg_latency_us][8B last_useful_time] */
+struct ev_peer_session_closed {
+    uint8_t  ip_v4_or_v6[16];
+    uint16_t port;
+    uint8_t  reason;
+    uint8_t  reserved;
+    uint32_t duration_secs;
+    uint64_t bytes_in;
+    uint64_t bytes_out;
+    uint64_t headers_delivered;
+    uint64_t blocks_delivered;
+    uint32_t bandwidth_score;
+    int64_t  avg_latency_us;
+    int64_t  last_useful_time;
+};
+
+/* EV_NET_FORK_OBSERVED — a network fork observation (two clusters at one
+ * height). Fixed 32-byte prefix (LE) + two variable hex tip-hash strings:
+ *   [8B height][8B observed_unix][4B num_clusters][4B count_a][4B count_b]
+ *   [1B hash_a_len][1B hash_b_len][2B reserved][hash_a][hash_b] */
+struct ev_net_fork_observed {
+    int64_t  height;
+    int64_t  observed_unix;
+    uint32_t num_clusters;
+    uint32_t count_a;
+    uint32_t count_b;
+    uint8_t  hash_a_len;
+    uint8_t  hash_b_len;
+    char     tip_hash_a[EV_NET_FORK_TIP_HEX_MAX + 1];
+    char     tip_hash_b[EV_NET_FORK_TIP_HEX_MAX + 1];
 };
 
 static inline void ev_put_u16_le(uint8_t *dst, uint16_t v)
@@ -802,6 +842,121 @@ ev_hodl_snapshot_parse(const void *payload, size_t len,
     out->total_zat = (int64_t)ev_get_u64_le(buf + 8);
     out->older_1y_zat = (int64_t)ev_get_u64_le(buf + 16);
     out->older_1y_pct = ev_get_double_le(buf + 24);
+    return true;
+}
+
+/* ── EV_PEER_SESSION_CLOSED ─────────────────────────────────────── */
+
+static inline bool
+ev_peer_session_closed_serialize(const struct ev_peer_session_closed *ev,
+                                 uint8_t buf[EV_PEER_SESSION_CLOSED_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf, ev->ip_v4_or_v6, 16);
+    ev_put_u16_le(buf + 16, ev->port);
+    buf[18] = ev->reason;
+    buf[19] = 0u;
+    ev_put_u32_le(buf + 20, ev->duration_secs);
+    ev_put_u64_le(buf + 24, ev->bytes_in);
+    ev_put_u64_le(buf + 32, ev->bytes_out);
+    ev_put_u64_le(buf + 40, ev->headers_delivered);
+    ev_put_u64_le(buf + 48, ev->blocks_delivered);
+    ev_put_u32_le(buf + 56, ev->bandwidth_score);
+    ev_put_u64_le(buf + 60, (uint64_t)ev->avg_latency_us);
+    ev_put_u64_le(buf + 68, (uint64_t)ev->last_useful_time);
+    return true;
+}
+
+static inline bool
+ev_peer_session_closed_parse(const void *payload, size_t len,
+                             struct ev_peer_session_closed *out)
+{
+    if (!payload || !out || len != EV_PEER_SESSION_CLOSED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->ip_v4_or_v6, buf, 16);
+    out->port = ev_get_u16_le(buf + 16);
+    out->reason = buf[18];
+    out->duration_secs = ev_get_u32_le(buf + 20);
+    out->bytes_in = ev_get_u64_le(buf + 24);
+    out->bytes_out = ev_get_u64_le(buf + 32);
+    out->headers_delivered = ev_get_u64_le(buf + 40);
+    out->blocks_delivered = ev_get_u64_le(buf + 48);
+    out->bandwidth_score = ev_get_u32_le(buf + 56);
+    out->avg_latency_us = (int64_t)ev_get_u64_le(buf + 60);
+    out->last_useful_time = (int64_t)ev_get_u64_le(buf + 68);
+    return true;
+}
+
+/* ── EV_NET_FORK_OBSERVED ───────────────────────────────────────── */
+
+static inline size_t
+ev_net_fork_observed_serialized_len(const struct ev_net_fork_observed *ev)
+{
+    if (!ev) return 0;
+    return EV_NET_FORK_OBSERVED_FIXED_LEN + (size_t)ev->hash_a_len +
+           (size_t)ev->hash_b_len;
+}
+
+static inline bool
+ev_net_fork_observed_serialize(const struct ev_net_fork_observed *ev,
+                               uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->hash_a_len > EV_NET_FORK_TIP_HEX_MAX ||
+        ev->hash_b_len > EV_NET_FORK_TIP_HEX_MAX)
+        return false;
+    size_t need = ev_net_fork_observed_serialized_len(ev);
+    if (out_cap < need) return false;
+    ev_put_u64_le(out + 0, (uint64_t)ev->height);
+    ev_put_u64_le(out + 8, (uint64_t)ev->observed_unix);
+    ev_put_u32_le(out + 16, ev->num_clusters);
+    ev_put_u32_le(out + 20, ev->count_a);
+    ev_put_u32_le(out + 24, ev->count_b);
+    out[28] = ev->hash_a_len;
+    out[29] = ev->hash_b_len;
+    out[30] = 0u;
+    out[31] = 0u;
+    if (ev->hash_a_len)
+        memcpy(out + EV_NET_FORK_OBSERVED_FIXED_LEN, ev->tip_hash_a,
+               ev->hash_a_len);
+    if (ev->hash_b_len)
+        memcpy(out + EV_NET_FORK_OBSERVED_FIXED_LEN + ev->hash_a_len,
+               ev->tip_hash_b, ev->hash_b_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_net_fork_observed_parse(const void *payload, size_t len,
+                           struct ev_net_fork_observed *out)
+{
+    if (!payload || !out || len < EV_NET_FORK_OBSERVED_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t hash_a_len = buf[28];
+    uint8_t hash_b_len = buf[29];
+    if (hash_a_len > EV_NET_FORK_TIP_HEX_MAX ||
+        hash_b_len > EV_NET_FORK_TIP_HEX_MAX)
+        return false;
+    if (len != EV_NET_FORK_OBSERVED_FIXED_LEN + (size_t)hash_a_len +
+               (size_t)hash_b_len)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->height = (int64_t)ev_get_u64_le(buf + 0);
+    out->observed_unix = (int64_t)ev_get_u64_le(buf + 8);
+    out->num_clusters = ev_get_u32_le(buf + 16);
+    out->count_a = ev_get_u32_le(buf + 20);
+    out->count_b = ev_get_u32_le(buf + 24);
+    out->hash_a_len = hash_a_len;
+    out->hash_b_len = hash_b_len;
+    if (hash_a_len)
+        memcpy(out->tip_hash_a, buf + EV_NET_FORK_OBSERVED_FIXED_LEN,
+               hash_a_len);
+    if (hash_b_len)
+        memcpy(out->tip_hash_b,
+               buf + EV_NET_FORK_OBSERVED_FIXED_LEN + hash_a_len, hash_b_len);
     return true;
 }
 

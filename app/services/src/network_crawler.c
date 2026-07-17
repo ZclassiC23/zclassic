@@ -85,7 +85,12 @@ void network_crawler_config_defaults(struct network_crawler_config *cfg)
 {
     if (!cfg)
         return;
-    cfg->enabled = false;   /* dials the public net → opt-in only */
+    /* NET-2: ON by default — the eclipse blocker (net_eclipse_suspected) needs
+     * the wider-network census to detect that our connected peers are a small
+     * minority. The existing rate limits (bounded probe batches on short-lived
+     * measurement sockets outside connman) are unchanged. Opt OUT with
+     * ZCL_NETWORK_CRAWLER=0. */
+    cfg->enabled = true;
     cfg->round_interval_secs = NCRAWL_ROUND_INTERVAL_SECS_DEFAULT;
     cfg->max_per_round = NCRAWL_MAX_PER_ROUND;
     cfg->max_concurrent = NCRAWL_MAX_CONCURRENT;
@@ -99,9 +104,21 @@ static bool ncrawl_env_truthy(const char *e)
                  e[0] == 'y' || e[0] == 'Y');
 }
 
+/* Explicit opt-out truthiness: 0/f/F/n/N disables. */
+static bool ncrawl_env_falsy(const char *e)
+{
+    return e && (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                 e[0] == 'n' || e[0] == 'N');
+}
+
 static void ncrawl_config_from_env(struct network_crawler_config *cfg)
 {
-    if (ncrawl_env_truthy(getenv("ZCL_NETWORK_CRAWLER")))
+    /* ON by default; ZCL_NETWORK_CRAWLER is now the opt-OUT knob. An explicit
+     * falsy value disables; any truthy value re-enables (idempotent). */
+    const char *en = getenv("ZCL_NETWORK_CRAWLER");
+    if (ncrawl_env_falsy(en))
+        cfg->enabled = false;
+    else if (ncrawl_env_truthy(en))
         cfg->enabled = true;
     const char *iv = getenv("ZCL_NETCRAWL_INTERVAL_SECS");
     if (iv && iv[0]) {
@@ -497,8 +514,8 @@ struct zcl_result network_crawler_start(const struct network_crawler_config *cfg
     g_ncrawl.started = true;
     if (!g_ncrawl.enabled)
         LOG_WARN("network_crawler",
-                 "crawler registered but IDLE (opt-in: set ZCL_NETWORK_CRAWLER=1 "
-                 "or -netcrawl to map the public network)");
+                 "crawler registered but IDLE (disabled via ZCL_NETWORK_CRAWLER=0; "
+                 "it is ON by default — the eclipse census is off while disabled)");
     return ZCL_OK;
 }
 
@@ -570,7 +587,7 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
     if (!v.ready) {
         diag_push_health(out, true,
                          enabled ? "no census yet"
-                                 : "crawler disabled (opt-in: ZCL_NETWORK_CRAWLER=1)");
+                                 : "crawler disabled (opt-out: ZCL_NETWORK_CRAWLER=0)");
         return true;
     }
 
@@ -661,6 +678,16 @@ void network_crawler_test_set_probe_fn(ncrawl_probe_fn fn)
 void network_crawler_test_set_own_modal(int64_t h)
 {
     atomic_store(&g_ncrawl.test_own_modal, h);
+}
+
+void network_crawler_test_set_view(const struct network_census_view *v)
+{
+    if (!v)
+        return;
+    zcl_mutex_lock(&g_ncrawl.lock);
+    g_ncrawl.view = *v;
+    g_ncrawl.view.ready = true;
+    zcl_mutex_unlock(&g_ncrawl.lock);
 }
 
 int network_crawler_test_probe_round(const struct net_address *addrs, int n)

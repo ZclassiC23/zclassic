@@ -24,6 +24,7 @@
 #include "services/invariant_sentinel.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
+#include "services/network_monitor.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
@@ -51,6 +52,24 @@
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
 static const int64_t HEALTH_RSS_WARNING_MB = 4096;
+/* Plausibility band above our header tip for one peer's claim (10,000 blocks
+ * ~17 days; see node_health_resolve_network_tip in the header). */
+#define NODE_HEALTH_PLAUSIBLE_TIP_BAND 10000
+
+int64_t node_health_resolve_network_tip(int64_t raw_max, int peers_above_band,
+                                        int64_t header_tip, bool modal_ready,
+                                        int64_t modal_height, int modal_count)
+{
+    int64_t plausible_ceiling =
+        header_tip >= 0 ? header_tip + NODE_HEALTH_PLAUSIBLE_TIP_BAND
+                        : INT64_MAX;
+    int64_t clamped_max = raw_max;
+    if (raw_max > plausible_ceiling && peers_above_band < 2)
+        clamped_max = plausible_ceiling; /* lone uncorroborated outlier */
+    if (modal_ready && modal_count >= 3 && modal_height >= 0)
+        return modal_height;             /* >=3-peer modal beats clamped MAX */
+    return clamped_max;
+}
 
 static int health_tip_finalize_log_head(void)
 {
@@ -358,6 +377,15 @@ void node_health_collect(struct node_health_snapshot *snapshot,
 
     if (cm) {
         int64_t newest_peer_block_time = 0;
+        /* Gather raw MAX + count of peers past the plausibility band, then
+         * resolve (clamp lone outliers; prefer a >=3-peer modal). Health READ
+         * only — chain selection is untouched. */
+        int64_t raw_max = -1;
+        int64_t header_tip = snapshot->header_height;
+        int64_t plausible_ceiling =
+            header_tip >= 0 ? header_tip + NODE_HEALTH_PLAUSIBLE_TIP_BAND
+                            : INT64_MAX;
+        int peers_above_band = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             const struct p2p_node *node = cm->manager.nodes[i];
@@ -365,12 +393,25 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                 node->state < PEER_HANDSHAKE_COMPLETE ||
                 (node->services & NODE_NETWORK) == 0)
                 continue;
-            if (node->starting_height > snapshot->peer_best_height)
-                snapshot->peer_best_height = node->starting_height;
+            int64_t claim = node->starting_height;
+            if (claim > raw_max)
+                raw_max = claim;
+            if (claim > plausible_ceiling)
+                peers_above_band++;
             if (node->last_block_time > newest_peer_block_time)
                 newest_peer_block_time = node->last_block_time;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+        struct network_consensus_view nmv;
+        bool modal_ready = network_monitor_get_view(&nmv);
+        int64_t network_tip = node_health_resolve_network_tip(
+            raw_max, peers_above_band, header_tip, modal_ready,
+            modal_ready ? nmv.modal_height : -1,
+            modal_ready ? nmv.modal_height_count : 0);
+
+        if (network_tip >= 0 && network_tip <= INT_MAX)
+            snapshot->peer_best_height = (int)network_tip;
 
         (void)newest_peer_block_time;
     }

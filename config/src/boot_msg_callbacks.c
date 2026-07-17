@@ -27,6 +27,8 @@
 #include "net/snapshot_sync_contract.h"
 #include "net/peer_lifecycle.h"
 #include "net/fast_sync.h"
+#include "net/download.h"
+#include "storage/peers_projection.h"
 #include "sync/sync_state.h"
 #include "validation/process_block.h"
 #include "wallet/wallet.h"
@@ -306,6 +308,19 @@ void boot_save_peer_advisory(const struct p2p_node *node, void *ctx)
     if (!svc || !node)
         return;
     boot_build_peer_record(node, &peer);
+
+    /* NET-2 feed-read: seed this peer's initial download window from its banked
+     * reputation so a proven-fast peer starts at its historical throughput
+     * instead of the per-peer minimum. Fail-open — no reputation ⇒ no-op. */
+    {
+        struct peer_reputation rep;
+        if (peers_projection_get_reputation_global(node->addr.svc.addr.ip,
+                                                   node->addr.svc.port, &rep) &&
+            rep.bandwidth_score > 0)
+            dl_peer_seed_bandwidth_score(msg_get_download_mgr(),
+                                         (uint32_t)node->id,
+                                         rep.bandwidth_score);
+    }
 
     if (dbsvc && db_service_is_started(dbsvc)) {
         struct boot_peer_save_ctx *save =
