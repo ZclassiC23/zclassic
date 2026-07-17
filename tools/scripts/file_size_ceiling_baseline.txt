@@ -33,7 +33,12 @@ app/services/src/sticky_escalator.c 873
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 4070
+# ADR-0006 (always-sync spine): Lane 2B threads the reindex-executability
+# verb check + body-coverage gate + O(delta) wallet-scan cursor through the
+# boot recovery-selection owner; the minimal boot.c glue raises this baseline
+# and boot_index.c gains the genesis-readability verb-check probe.
+config/src/boot.c 4119
+config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1658
 config/src/consensus_state_producer_receipt.c 810

@@ -16,6 +16,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
+#include "controllers/wallet_scan.h"
 #include "jobs/tip_finalize_stage.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
@@ -212,4 +213,51 @@ void boot_cursor_propagate_nchaintx(struct main_state *ms, struct node_db *ndb)
     int tip_h = active_chain_height(&ms->chain_active);
     if (complete && ndb && ndb->open && tip_h > (int)nct_upto)
         node_db_state_set_int(ndb, BOOT_CUR_NCHAINTX, tip_h);
+}
+
+/* ── #4 — cursor-gated wallet block scan ─────────────────────────────── */
+
+int boot_cursor_wallet_scan_start(bool have_cursor, int64_t cursor,
+                                  bool have_ks, uint64_t stored_fp,
+                                  uint64_t cur_fp, int tip_h)
+{
+    /* No durable cursor (an old wallet datadir predating this cursor) or a
+     * changed keyset (a key import/removal makes prior partial scans incomplete
+     * for the new keys): one full scan from genesis. Otherwise re-scan only the
+     * delta above the cursor. */
+    if (!have_cursor || cursor < 0 || !have_ks || stored_fp != cur_fp)
+        return 0;
+    if (cursor >= (int64_t)tip_h)
+        return tip_h + 1;                 /* already scanned to tip → skip */
+    return (int)cursor + 1;
+}
+
+int boot_cursor_scan_wallet(struct node_db *ndb,
+                            const struct active_chain *chain,
+                            const struct wallet *w,
+                            const char *datadir, int tip_h)
+{
+    if (!ndb || !ndb->open || !chain || !w || !datadir || tip_h <= 0)
+        return 0;
+
+    uint64_t cur_fp = wallet_scan_keyset_fp(w);
+    int64_t cursor = -1, stored_fp_i = 0;
+    bool have_cursor = node_db_state_get_int(ndb, BOOT_CUR_WALLET, &cursor);
+    bool have_ks = node_db_state_get_int(ndb, BOOT_CUR_WALLET_KS, &stored_fp_i);
+
+    int start = boot_cursor_wallet_scan_start(have_cursor, cursor, have_ks,
+                                              (uint64_t)stored_fp_i, cur_fp,
+                                              tip_h);
+    if (start > tip_h)
+        return 0;                         /* delta already covered — nothing to do */
+
+    int found = wallet_scan_blocks(ndb, chain, w, datadir, start, tip_h);
+    if (found < 0)
+        return found;   /* scan error: leave the cursor unstamped, retry next boot */
+
+    /* Persist the O(delta) cursor + keyset fp so the next boot scans only the
+     * new tip delta (mirrors boot_cursor_repair_heights' high-water stamp). */
+    node_db_state_set_int(ndb, BOOT_CUR_WALLET, tip_h);
+    node_db_state_set_int(ndb, BOOT_CUR_WALLET_KS, (int64_t)cur_fp);
+    return found;
 }

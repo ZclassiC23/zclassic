@@ -34,6 +34,8 @@ extern "C" {
 
 struct node_db;
 struct main_state;
+struct active_chain;
+struct wallet;
 
 /* Cheap O(n) block-index fingerprint over
  * (phashBlock[0..7] ^ nStatus ^ nChainWork.lo ^ nHeight ^ nChainTx).
@@ -64,6 +66,30 @@ int boot_cursor_repair_heights(struct main_state *ms, struct node_db *ndb);
  * is proven contiguous-complete. Replaces the inline nChainTx block in boot.c
  * (identical derived state; O(delta) pre-scan). */
 void boot_cursor_propagate_nchaintx(struct main_state *ms, struct node_db *ndb);
+
+/* #4 (pure decision) — the wallet-scan start height from the persisted cursor +
+ * keyset fingerprint. Returns 0 (full scan) when there is no durable cursor (an
+ * old wallet datadir → one final full scan) or the keyset changed (a key
+ * import/removal makes prior partial scans incomplete); otherwise cursor+1 (the
+ * O(delta) re-scan). Returns tip_h+1 (an empty range the scan skips) when the
+ * cursor already covers the tip. Separated from the node_db I/O so it is
+ * directly unit-testable. */
+int boot_cursor_wallet_scan_start(bool have_cursor, int64_t cursor,
+                                  bool have_ks, uint64_t stored_fp,
+                                  uint64_t cur_fp, int tip_h);
+
+/* #4 — cursor-gated wallet block scan. Reads BOOT_CUR_WALLET + BOOT_CUR_WALLET_KS,
+ * calls wallet_scan_blocks over only [start, tip] (start from
+ * boot_cursor_wallet_scan_start), and stamps the cursor + keyset fp after a
+ * successful scan so each boot re-scans only the new tip delta — turning the
+ * unconditional O(chain) boot wallet scan into O(delta). A missing cursor on an
+ * existing wallet datadir does one final full scan then persists (no correctness
+ * regression). The reorg clamp already rewinds BOOT_CUR_WALLET on a fork.
+ * Returns wallet_scan_blocks' result (transactions found, or -1 on error). */
+int boot_cursor_scan_wallet(struct node_db *ndb,
+                            const struct active_chain *chain,
+                            const struct wallet *w,
+                            const char *datadir, int tip_h);
 
 #ifdef __cplusplus
 }

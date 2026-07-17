@@ -80,8 +80,43 @@ enum boot_gate_action {
  * BOOT_GATE_EXIT_FOR_REINDEX while the budget allows (caller exits → restart
  * reindexes), or BOOT_GATE_PARK_DEGRADED once the budget is spent (caller
  * parks, never crash-loops). `gate_name` names the failing gate in the log +
- * the EV_OPERATOR_NEEDED page. */
+ * the EV_OPERATOR_NEEDED page.
+ *
+ * `reindex_executable` is the caller's h=0/1 readability probe (the same verb
+ * check boot_crashonly_handle_unrecoverable takes): a from-genesis reindex
+ * replay needs genesis-side block data. When it is FALSE (a cold-import /
+ * bodyless datadir), arming a -reindex-chainstate request would burn a boot
+ * cycle per attempt and — with the early coins clear — wipe the coins mirror
+ * before the reindex verb check discovers the dead end. In that case the gate
+ * does NOT arm: it names the cold-import re-seed remedy (EV_OPERATOR_NEEDED
+ * condition=cold_import_reseed_required), clears any stale sentinel, and
+ * returns BOOT_GATE_PARK_DEGRADED so the caller parks alive-degraded. */
 enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
-                                                  const char *gate_name);
+                                                  const char *gate_name,
+                                                  bool reindex_executable);
+
+/* Pure predicate: is on-disk body coverage of [0..reindex_best_h] dense enough
+ * that a from-genesis -reindex-chainstate replay can complete without hitting a
+ * missing body? The replay reads every block from h=0 and cannot skip one, so a
+ * cold-import (bodyless) seed — have_data_count ~0 and max_have_data_h ~0 while
+ * reindex_best_h is ~tip — returns false. A healthy datadir (bodies densely
+ * cover the span) returns true; a small benign tail gap that gap-fill can heal
+ * still returns true. Reindex-selection only — never touches consensus state. */
+bool boot_reindex_body_coverage_sufficient(int reindex_best_h,
+                                           int max_have_data_h,
+                                           int have_data_count);
+
+/* Reindex-target coverage decision: returns true iff the from-genesis reindex
+ * should proceed, false iff it must be REFUSED in favour of fold-forward from a
+ * seed. Refusal fires only when coins are already seeded AND
+ * boot_reindex_body_coverage_sufficient() is false — a replay would wipe the
+ * seed then stall on the first missing body. On refusal it logs, pages
+ * (EV_BOOT_ACTIVATE reindex_refused_sparse_bodies), and CLEARS the auto-reindex
+ * sentinel (boot_auto_reindex_clear) so it does not re-arm every boot. */
+bool boot_crashonly_reindex_coverage_ok(const char *datadir,
+                                        int reindex_best_h,
+                                        int max_have_data_h,
+                                        int have_data_count,
+                                        bool coins_seeded);
 
 #endif /* ZCL_CONFIG_BOOT_CRASHONLY_H */
