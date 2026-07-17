@@ -97,6 +97,15 @@ void syncsvc_header_band_reset_for_testing(void)
     atomic_store(&g_band_index_frontier, NULL);
 }
 
+/* S8: request-side-only predicate for the getheaders interval planner.
+ * The band fact IS the typed blocker (set/cleared by the producers and
+ * after_batch above) — no re-derivation needed here, matching the same
+ * O(1) exit backfill_anchor already relies on. */
+bool syncsvc_header_band_hole_open(void)
+{
+    return blocker_exists(HEADER_BAND_BLOCKER_ID);
+}
+
 bool syncsvc_header_band_continue(const struct active_chain *chain,
                                   const struct block_index *last_header)
 {

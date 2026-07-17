@@ -155,6 +155,56 @@ static int test_sync_service_request_policy(void)
     return failures;
 }
 
+static int test_sync_service_band_hole_forces_ibd_interval(void)
+{
+    int failures = 0;
+
+    TEST("sync_service forces the IBD getheaders interval while a header "
+         "band hole is open, regardless of at-tip appearance") {
+        struct p2p_node node;
+        struct blocker_record br;
+
+        memset(&node, 0, sizeof(node));
+        node.state = PEER_SYNCING_HEADERS;
+        node.starting_height = 1000;
+        node.last_getheaders_time = 100;
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+
+        /* Baseline: our_height == starting_height reads "at tip" — no band
+         * hole recorded, so the slow 120s at-tip cadence applies (same
+         * truth table as test_sync_service_request_policy). */
+        ASSERT(!syncsvc_header_band_hole_open());
+        ASSERT(!syncsvc_should_request_headers(&node, 1000, 219));
+        ASSERT(syncsvc_should_request_headers(&node, 1000, 221));
+
+        /* S8: band hole open (the typed blocker is recorded) — the same
+         * "at tip" node/height inputs must now use the 10s IBD interval,
+         * not the 120s at-tip cadence. Request side only. */
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+        ASSERT(syncsvc_header_band_hole_open());
+
+        ASSERT(!syncsvc_should_request_headers(&node, 1000, 109));
+        ASSERT(syncsvc_should_request_headers(&node, 1000, 111));
+
+        /* Band closed (blocker cleared): behavior reverts to the normal
+         * at-tip cadence on the very next call — no lingering state. */
+        blocker_clear(HEADER_BAND_BLOCKER_ID);
+        ASSERT(!syncsvc_header_band_hole_open());
+        ASSERT(!syncsvc_should_request_headers(&node, 1000, 219));
+        ASSERT(syncsvc_should_request_headers(&node, 1000, 221));
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_periodic_getheaders_action(void)
 {
     int failures = 0;
@@ -1806,6 +1856,7 @@ int test_sync_service(void)
     failures += test_sync_service_begins_when_peer_one_block_ahead();
     failures += test_sync_service_marks_caught_up_syncing_peers_active();
     failures += test_sync_service_request_policy();
+    failures += test_sync_service_band_hole_forces_ibd_interval();
     failures += test_sync_service_periodic_getheaders_action();
     failures += test_sync_service_invalid_block_getheaders_action();
     failures += test_sync_service_headers_log_throttle();
