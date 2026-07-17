@@ -7,6 +7,7 @@
 #include "consensus_state_snapshot_export_internal.h"
 
 #include <sqlite3.h>
+#include <stddef.h>
 
 struct consensus_state_candidate_output {
     struct consensus_export_output_binding binding;
@@ -57,5 +58,33 @@ bool consensus_state_candidate_output_finalize(
     const uint8_t admission_receipt[32],
     enum consensus_state_candidate_failpoint failpoint,
     struct consensus_state_candidate_result *result);
+
+/* ── ACTIVATE authority lattice ─────────────────────────────────────────────
+ * Which authority (if any) lifted ACTIVATE containment; named in the activation
+ * log line. Implemented in consensus_state_snapshot_install_checkpoint_authority.c. */
+enum consensus_state_activate_authority {
+    CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE = 0,
+    /* Independent replay-derived receipt on this datadir. */
+    CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT,
+    /* The bundle's coins reproduce the compiled SHA3 UTXO checkpoint AND its
+     * Sapling tip frontier Pedersen-roots to the caller's validated-header
+     * hashFinalSaplingRoot — bound to the compiled binary + PoW. */
+    CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT,
+};
+
+const char *consensus_state_activate_authority_name(
+    enum consensus_state_activate_authority authority);
+
+/* Resolve the ACTIVATE authority from the admitted `evidence` (whole-file digest
+ * → replay-receipt lookup on `datadir_fd`) and the content-bound `manifest`.
+ * RECEIPT takes precedence (byte-unchanged), then CHECKPOINT_CONTENT. When no
+ * authority applies the return is CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE and
+ * contained_reason is filled with a typed VERIFIED_CONTAINED explanation. */
+enum consensus_state_activate_authority
+consensus_state_activate_resolve_authority(
+    const struct consensus_state_artifact_evidence *evidence, int datadir_fd,
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_activate_request *request,
+    char *contained_reason, size_t reason_cap);
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_INSTALL_INTERNAL_H */
