@@ -102,6 +102,8 @@
 #include "net/peer_lifecycle.h"
 #include "net/https_server.h"
 #include "net/tor_integration.h"
+#include "net/rom_seed_policy.h"
+#include "net/rom_seed_ledger.h"
 #include "util/log_macros.h"
 #include "util/long_op.h"
 #include "util/service_state.h"
