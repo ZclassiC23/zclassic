@@ -5,6 +5,7 @@
 #include "proof_validate_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_row_itag.h"
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -51,13 +52,21 @@ bool proof_validate_log_ensure_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    return add_column_if_missing(
+    if (!add_column_if_missing(
                db, "ALTER TABLE proof_validate_log ADD COLUMN block_hash BLOB",
-               "block_hash") &&
-           add_column_if_missing(
+               "block_hash") ||
+        !add_column_if_missing(
                db, "ALTER TABLE proof_validate_log ADD COLUMN "
                    "source_epoch_digest BLOB",
-               "source_epoch_digest");
+               "source_epoch_digest"))
+        return false;
+    /* Per-row integrity tag (see stage_row_itag.h): status IS folded in —
+     * proof_validate_log is status-covered by the reducer fold. */
+    if (!add_column_if_missing(
+               db, "ALTER TABLE proof_validate_log ADD COLUMN itag BLOB",
+               "itag"))
+        return false;
+    return stage_row_itag_backfill(db, "proof_validate_log");
 }
 
 int proof_validate_script_validate_log_at(sqlite3 *db, int height,
@@ -122,13 +131,17 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
         progress_store_tx_unlock();
         return false;
     }
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    stage_row_itag_compute("proof_validate_log", (int64_t)height, ok ? 1 : 0,
+                           status, status ? strlen(status) : 0, itag);
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, "
         " sapling_outputs_total, sprout_joinsplits_total, "
         " block_hash, first_failure_txid, first_failure_proof_type, "
-        " validated_at, source_epoch_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        " validated_at, source_epoch_digest, itag) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("proof_validate", "[proof_validate] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -169,6 +182,7 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
         progress_store_tx_unlock();
         return false;
     }
+    sqlite3_bind_blob(stmt, 12, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     progress_store_tx_unlock();

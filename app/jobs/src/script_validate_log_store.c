@@ -5,6 +5,7 @@
 #include "script_validate_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_row_itag.h"
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -64,7 +65,12 @@ bool script_validate_log_ensure_schema(sqlite3 *db)
             "ALTER TABLE script_validate_log ADD COLUMN "
             "source_epoch_digest BLOB"))
         return false;
-    return true;
+    /* Per-row integrity tag (see stage_row_itag.h): status IS folded in —
+     * script_validate_log is status-covered by the reducer fold. */
+    if (!add_column_if_missing(db,
+            "ALTER TABLE script_validate_log ADD COLUMN itag BLOB"))
+        return false;
+    return stage_row_itag_backfill(db, "script_validate_log");
 }
 
 int script_validate_body_persist_log_at(sqlite3 *db, int height,
@@ -185,12 +191,15 @@ bool script_validate_log_insert(sqlite3 *db, int height,
         progress_store_tx_unlock();
         return false;
     }
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    stage_row_itag_compute("script_validate_log", (int64_t)height, ok ? 1 : 0,
+                           status, status ? strlen(status) : 0, itag);
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO script_validate_log "
         "(height, status, ok, tx_count, input_count, first_failure_txid, "
         " first_failure_vin, first_failure_serror, validated_at, block_hash, "
-        " source_epoch_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        " source_epoch_digest, itag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("script_validate", "[script_validate] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -236,6 +245,7 @@ bool script_validate_log_insert(sqlite3 *db, int height,
         progress_store_tx_unlock();
         return false;
     }
+    sqlite3_bind_blob(stmt, 12, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     progress_store_tx_unlock();

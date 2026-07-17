@@ -5,11 +5,26 @@
 #include "utxo_apply_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_row_itag.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
 #include <string.h>
+
+/* Idempotent ADD COLUMN: tolerate "duplicate column name" (already migrated). */
+static bool add_column_if_missing(sqlite3 *db, const char *alter_sql)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, alter_sql, NULL, NULL, &err) == SQLITE_OK)
+        return true;
+    bool dup = err && strstr(err, "duplicate column name") != NULL;
+    if (!dup)
+        LOG_WARN("utxo_apply", "[utxo_apply] schema alter failed: %s",
+                 err ? err : "(no message)");
+    if (err) sqlite3_free(err);
+    return dup;
+}
 
 bool utxo_apply_log_ensure_schema(sqlite3 *db)
 {
@@ -23,7 +38,8 @@ bool utxo_apply_log_ensure_schema(sqlite3 *db)
         "  total_value_delta    INTEGER NOT NULL,"
         "  first_failure_kind   TEXT,"
         "  first_failure_detail BLOB,"
-        "  applied_at           INTEGER NOT NULL"
+        "  applied_at           INTEGER NOT NULL,"
+        "  itag                 BLOB"
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
@@ -31,7 +47,12 @@ bool utxo_apply_log_ensure_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    return true;
+    /* Per-row integrity tag (see stage_row_itag.h): status IS folded into the
+     * tag for utxo_apply — the reducer fold parses status into VERIFIED. */
+    if (!add_column_if_missing(db,
+            "ALTER TABLE utxo_apply_log ADD COLUMN itag BLOB"))
+        return false;
+    return stage_row_itag_backfill(db, "utxo_apply_log");
 }
 
 int utxo_apply_proof_validate_log_at(sqlite3 *db, int height,
@@ -78,12 +99,16 @@ bool utxo_apply_log_insert(sqlite3 *db, int height, const char *status, bool ok,
                            const char *failure_kind,
                            const uint8_t failure_detail[36])
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    stage_row_itag_compute("utxo_apply_log", (int64_t)height, ok ? 1 : 0,
+                           status, status ? strlen(status) : 0, itag);
+
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO utxo_apply_log "
         "(height, status, ok, spent_count, added_count, total_value_delta, "
-        " first_failure_kind, first_failure_detail, applied_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        " first_failure_kind, first_failure_detail, applied_at, itag) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -104,6 +129,7 @@ bool utxo_apply_log_insert(sqlite3 *db, int height, const char *status, bool ok,
     else
         sqlite3_bind_null(stmt, 8);
     sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
+    sqlite3_bind_blob (stmt, 10, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {

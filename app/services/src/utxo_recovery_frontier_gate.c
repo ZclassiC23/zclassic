@@ -511,9 +511,26 @@ bool utxo_recovery_rewind_finalized_floor(int32_t frontier, int floor,
                    "floor rewind skipped: progress_store not open");
 
     progress_store_tx_lock();
+    /* Ensure the itag column exists so the SET itag=NULL below prepares even on
+     * a datadir whose tip_finalize_log predates the integrity-tag migration
+     * (SQLite validates columns at prepare time regardless of matched rows).
+     * Idempotent: a duplicate-column error is the expected already-migrated
+     * case. */
+    {
+        char *aerr = NULL;
+        (void)sqlite3_exec(pdb,
+            "ALTER TABLE tip_finalize_log ADD COLUMN itag BLOB",
+            NULL, NULL, &aerr);
+        if (aerr) sqlite3_free(aerr);
+    }
     sqlite3_stmt *st = NULL;
+    /* Clear itag on the rewound rows: their (height, ok) verdict just changed,
+     * so the old tag would spuriously MISMATCH in the reducer fold. A NULL tag
+     * is treated as untagged (trust ok), and ok is now 0 — the fold caps H* at
+     * `frontier` with no false integrity alarm. Re-finalization re-tags them.
+     * See stage_row_itag.h. */
     bool ok = sqlite3_prepare_v2(pdb,
-        "UPDATE tip_finalize_log SET ok=0, status='floor_rewind' "
+        "UPDATE tip_finalize_log SET ok=0, status='floor_rewind', itag=NULL "
         "WHERE ok=1 AND height > ?", -1, &st, NULL) == SQLITE_OK;
     if (ok) {
         sqlite3_bind_int(st, 1, frontier);

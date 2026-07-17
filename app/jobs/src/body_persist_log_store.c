@@ -5,12 +5,27 @@
 #include "body_persist_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_row_itag.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+/* Idempotent ADD COLUMN: tolerate "duplicate column name" (already migrated). */
+static bool add_column_if_missing(sqlite3 *db, const char *alter_sql)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, alter_sql, NULL, NULL, &err) == SQLITE_OK)
+        return true;
+    bool dup = err && strstr(err, "duplicate column name") != NULL;
+    if (!dup)
+        LOG_WARN("body_persist", "[body_persist] schema alter failed: %s",
+                 err ? err : "(no message)");
+    if (err) sqlite3_free(err);
+    return dup;
+}
 
 bool body_persist_log_ensure_schema(sqlite3 *db)
 {
@@ -19,7 +34,8 @@ bool body_persist_log_ensure_schema(sqlite3 *db)
         "  height       INTEGER PRIMARY KEY,"
         "  source       TEXT    NOT NULL,"
         "  ok           INTEGER NOT NULL,"
-        "  persisted_at INTEGER NOT NULL"
+        "  persisted_at INTEGER NOT NULL,"
+        "  itag         BLOB"
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
@@ -27,7 +43,11 @@ bool body_persist_log_ensure_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    return true;
+    /* Per-row integrity tag (see stage_row_itag.h). */
+    if (!add_column_if_missing(db,
+            "ALTER TABLE body_persist_log ADD COLUMN itag BLOB"))
+        return false;
+    return stage_row_itag_backfill(db, "body_persist_log");
 }
 
 int body_persist_body_fetch_log_at(sqlite3 *db, int height,
@@ -59,10 +79,14 @@ int body_persist_body_fetch_log_at(sqlite3 *db, int height,
 
 bool body_persist_log_insert(sqlite3 *db, int height, const char *source, bool ok)
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    stage_row_itag_compute("body_persist_log", (int64_t)height, ok ? 1 : 0,
+                           NULL, 0, itag);
+
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO body_persist_log "
-        "(height, source, ok, persisted_at) VALUES (?,?,?,?)",
+        "(height, source, ok, persisted_at, itag) VALUES (?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("body_persist", "[body_persist] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -72,6 +96,7 @@ bool body_persist_log_insert(sqlite3 *db, int height, const char *source, bool o
     sqlite3_bind_text (stmt, 2, source, -1, SQLITE_STATIC);
     sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)platform_time_wall_unix());
+    sqlite3_bind_blob (stmt, 5, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {

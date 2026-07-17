@@ -28,6 +28,7 @@
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_rederive_range.h"
+#include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/chain_segment.h"
 #include "storage/coins_kv.h"
@@ -94,12 +95,20 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
         "  spent_blob   BLOB    NOT NULL,"
         "  added_blob   BLOB    NOT NULL"
         ");"
+        /* The six stage *_log tables carry the production `itag` column and the
+         * fixture stamps it on every write (chaos_itag), so the reducer fold's
+         * per-row integrity check verifies them exactly as it does a live datadir
+         * — no untagged (ABSENT) rows, no stale (MISMATCH) rows. In fault (a) the
+         * production seed path creates utxo_apply_log/tip_finalize_log first; the
+         * CREATE-IF-NOT-EXISTS here is then a no-op and those tables keep the
+         * production schema (which already ALTER-adds itag). */
         "CREATE TABLE IF NOT EXISTS validate_headers_log ("
         "  height       INTEGER PRIMARY KEY,"
         "  hash         BLOB    NOT NULL,"
         "  ok           INTEGER NOT NULL,"
         "  fail_reason  TEXT,"
-        "  validated_at INTEGER NOT NULL"
+        "  validated_at INTEGER NOT NULL,"
+        "  itag         BLOB"
         ");"
         "CREATE TABLE IF NOT EXISTS script_validate_log ("
         "  height             INTEGER PRIMARY KEY,"
@@ -112,13 +121,15 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
         "  first_failure_serror INTEGER,"
         "  validated_at       INTEGER NOT NULL,"
         "  block_hash         BLOB,"
-        "  source_epoch_digest BLOB"
+        "  source_epoch_digest BLOB,"
+        "  itag               BLOB"
         ");"
         "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height       INTEGER PRIMARY KEY,"
         "  source       TEXT    NOT NULL,"
         "  ok           INTEGER NOT NULL,"
-        "  persisted_at INTEGER NOT NULL"
+        "  persisted_at INTEGER NOT NULL,"
+        "  itag         BLOB"
         ");"
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height                  INTEGER PRIMARY KEY,"
@@ -131,7 +142,8 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
         "  source_epoch_digest     BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
-        "  validated_at            INTEGER NOT NULL"
+        "  validated_at            INTEGER NOT NULL,"
+        "  itag                    BLOB"
         ");"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
         "  height               INTEGER PRIMARY KEY,"
@@ -142,7 +154,8 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
         "  total_value_delta    INTEGER NOT NULL,"
         "  first_failure_kind   TEXT,"
         "  first_failure_detail BLOB,"
-        "  applied_at           INTEGER NOT NULL"
+        "  applied_at           INTEGER NOT NULL,"
+        "  itag                 BLOB"
         ");"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height           INTEGER PRIMARY KEY,"
@@ -152,7 +165,8 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
         "  work_delta_low   INTEGER NOT NULL,"
         "  utxo_size_after  INTEGER NOT NULL,"
         "  reorg_depth      INTEGER NOT NULL,"
-        "  finalized_at     INTEGER NOT NULL"
+        "  finalized_at     INTEGER NOT NULL,"
+        "  itag             BLOB"
         ");";
     char *err = NULL;
     if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {  // raw-sql-ok:test-fixture-schema
@@ -186,6 +200,18 @@ static bool chaos_ensure_log_tables(sqlite3 *db)
  * overwriting its anchor row's status would itself change which row
  * reducer_trusted_anchor's own status='anchor' lookup finds. */
 
+/* Compute the production integrity tag for an ok=1 stage-log row exactly as the
+ * live writers do (stage_row_itag_compute decides internally whether `status` is
+ * folded in — only for the three status-covered logs), so the reducer fold's
+ * per-row verify MATCHes every fixture row instead of seeing a stale/absent tag.
+ * All fixture rows are ok=1 (a fully consistent prefix). */
+static void chaos_itag(const char *table, int32_t h, const char *status,
+                       uint8_t out[STAGE_ROW_ITAG_LEN])
+{
+    stage_row_itag_compute(table, (int64_t)h, 1,
+                           status, status ? strlen(status) : 0, out);
+}
+
 static bool chaos_put_header_admit(sqlite3 *db, int32_t h,
                                    const uint8_t hash[32])
 {
@@ -205,14 +231,18 @@ static bool chaos_put_header_admit(sqlite3 *db, int32_t h,
 static bool chaos_put_validate_headers(sqlite3 *db, int32_t h,
                                        const uint8_t hash[32])
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("validate_headers_log", h, NULL, itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO validate_headers_log(height,hash,ok,validated_at) "
-            "VALUES(?,?,1,0) ON CONFLICT(height) DO UPDATE SET "
-            "hash=excluded.hash, ok=1", -1, &st, NULL) != SQLITE_OK)
+            "INSERT INTO validate_headers_log(height,hash,ok,validated_at,itag) "
+            "VALUES(?,?,1,0,?) ON CONFLICT(height) DO UPDATE SET "
+            "hash=excluded.hash, ok=1, itag=excluded.itag", -1, &st, NULL)
+            != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
     sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
@@ -221,16 +251,20 @@ static bool chaos_put_validate_headers(sqlite3 *db, int32_t h,
 static bool chaos_put_script_validate(sqlite3 *db, int32_t h,
                                       const uint8_t hash[32])
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("script_validate_log", h, "verified", itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT INTO script_validate_log"
-            "(height,status,ok,tx_count,input_count,validated_at,block_hash) "
-            "VALUES(?,'verified',1,1,1,0,?) ON CONFLICT(height) DO UPDATE "
-            "SET status='verified', ok=1, block_hash=excluded.block_hash",
+            "(height,status,ok,tx_count,input_count,validated_at,block_hash,itag) "
+            "VALUES(?,'verified',1,1,1,0,?,?) ON CONFLICT(height) DO UPDATE "
+            "SET status='verified', ok=1, block_hash=excluded.block_hash, "
+            "itag=excluded.itag",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
     sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
@@ -238,13 +272,16 @@ static bool chaos_put_script_validate(sqlite3 *db, int32_t h,
 
 static bool chaos_put_body_persist(sqlite3 *db, int32_t h)
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("body_persist_log", h, NULL, itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO body_persist_log(height,source,ok,persisted_at) "
-            "VALUES(?,'chaos_fixture',1,0) ON CONFLICT(height) DO UPDATE "
-            "SET ok=1", -1, &st, NULL) != SQLITE_OK)
+            "INSERT INTO body_persist_log(height,source,ok,persisted_at,itag) "
+            "VALUES(?,'chaos_fixture',1,0,?) ON CONFLICT(height) DO UPDATE "
+            "SET ok=1, itag=excluded.itag", -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
+    sqlite3_bind_blob(st, 2, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
@@ -253,17 +290,21 @@ static bool chaos_put_body_persist(sqlite3 *db, int32_t h)
 static bool chaos_put_proof_validate(sqlite3 *db, int32_t h,
                                      const uint8_t hash[32])
 {
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("proof_validate_log", h, "verified", itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT INTO proof_validate_log"
             "(height,status,ok,sapling_spends_total,sapling_outputs_total,"
-            "sprout_joinsplits_total,block_hash,validated_at) "
-            "VALUES(?,'verified',1,0,0,0,?,0) ON CONFLICT(height) DO UPDATE "
-            "SET status='verified', ok=1, block_hash=excluded.block_hash",
+            "sprout_joinsplits_total,block_hash,validated_at,itag) "
+            "VALUES(?,'verified',1,0,0,0,?,0,?) ON CONFLICT(height) DO UPDATE "
+            "SET status='verified', ok=1, block_hash=excluded.block_hash, "
+            "itag=excluded.itag",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
     sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
@@ -271,15 +312,25 @@ static bool chaos_put_proof_validate(sqlite3 *db, int32_t h,
 
 static bool chaos_put_utxo_apply(sqlite3 *db, int32_t h)
 {
+    /* status is overwritten 'anchor'->'verified' when this UPSERTs the row the
+     * production tip_finalize seed anchor wrote (see the header comment above):
+     * utxo_apply_log is status-covered, so the seed's itag (over 'anchor') would
+     * no longer recompute and the fold would read a MISMATCH and cap H* one short.
+     * Re-stamp the itag over the NEW ('verified') fields via excluded.itag so the
+     * overwritten row verifies cleanly and H* climbs to the full height. */
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("utxo_apply_log", h, "verified", itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT INTO utxo_apply_log"
             "(height,status,ok,spent_count,added_count,total_value_delta,"
-            "applied_at) VALUES(?,'verified',1,0,0,0,0) "
-            "ON CONFLICT(height) DO UPDATE SET status='verified', ok=1",
+            "applied_at,itag) VALUES(?,'verified',1,0,0,0,0,?) "
+            "ON CONFLICT(height) DO UPDATE SET status='verified', ok=1, "
+            "itag=excluded.itag",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
+    sqlite3_bind_blob(st, 2, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
@@ -313,14 +364,20 @@ static bool chaos_put_utxo_apply_delta(sqlite3 *db, int32_t h,
  * profile_bound, so contiguity only cares about ok, not status. */
 static bool chaos_put_tip_finalize(sqlite3 *db, int32_t h)
 {
+    /* tip_finalize_log is NOT status-covered: its itag folds only (table,height,
+     * ok), so the production seed anchor row this OR IGNORE preserves at height N
+     * verifies over the same fields the fixture rows below N are stamped with. */
+    uint8_t itag[STAGE_ROW_ITAG_LEN];
+    chaos_itag("tip_finalize_log", h, NULL, itag);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR IGNORE INTO tip_finalize_log"
             "(height,status,ok,work_delta_high,work_delta_low,"
-            "utxo_size_after,reorg_depth,finalized_at) "
-            "VALUES(?,'ok',1,0,0,0,0,0)", -1, &st, NULL) != SQLITE_OK)
+            "utxo_size_after,reorg_depth,finalized_at,itag) "
+            "VALUES(?,'ok',1,0,0,0,0,0,?)", -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, h);
+    sqlite3_bind_blob(st, 2, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
