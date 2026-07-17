@@ -27,6 +27,8 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include "storage/peers_projection.h"
+
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
@@ -66,6 +68,13 @@ static struct {
     /* latest folded view */
     struct network_consensus_view view;
 
+    /* Edge-trigger for the durable fork ledger: the last fork observation we
+     * banked, so a sustained fork emits ONE EV_NET_FORK_OBSERVED, not one per
+     * 30s sample. Reset (height=-1) when the fork clears. */
+    int64_t last_fork_height;
+    char last_fork_hash_a[PEER_OBS_TIP_HEX + 1];
+    char last_fork_hash_b[PEER_OBS_TIP_HEX + 1];
+
     /* sampler thread + supervision */
     pthread_t thread;
     _Atomic bool stop_requested;
@@ -74,6 +83,7 @@ static struct {
     _Atomic supervisor_child_id supervisor_id;
 } g_nm = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
+    .last_fork_height = -1,
 };
 
 static struct liveness_contract g_nm_contract;
@@ -321,9 +331,35 @@ static void nm_sample_once(void)
     struct network_consensus_view v;
     network_monitor_compute_view(obs, n, our_h, now, &v);
 
+    /* Edge-triggered durable fork ledger: bank a NEW fork observation once
+     * (height or either cluster hash changed since the last banked one), and
+     * re-arm when the fork clears. Fail-open — no event log wired ⇒ no-op. */
+    bool emit_fork = false;
     zcl_mutex_lock(&g_nm.lock);
     g_nm.view = v;
+    if (v.fork_detected) {
+        if (v.fork_height != g_nm.last_fork_height ||
+            strcmp(v.fork_hash_a, g_nm.last_fork_hash_a) != 0 ||
+            strcmp(v.fork_hash_b, g_nm.last_fork_hash_b) != 0) {
+            emit_fork = true;
+            g_nm.last_fork_height = v.fork_height;
+            snprintf(g_nm.last_fork_hash_a, sizeof(g_nm.last_fork_hash_a),
+                     "%s", v.fork_hash_a);
+            snprintf(g_nm.last_fork_hash_b, sizeof(g_nm.last_fork_hash_b),
+                     "%s", v.fork_hash_b);
+        }
+    } else {
+        g_nm.last_fork_height = -1;
+        g_nm.last_fork_hash_a[0] = '\0';
+        g_nm.last_fork_hash_b[0] = '\0';
+    }
     zcl_mutex_unlock(&g_nm.lock);
+
+    if (emit_fork)
+        (void)peers_projection_emit_fork_observed(
+            v.fork_height, now, (uint32_t)v.num_clusters,
+            (uint32_t)v.fork_count_a, (uint32_t)v.fork_count_b,
+            v.fork_hash_a, v.fork_hash_b);
 }
 
 bool network_monitor_get_view(struct network_consensus_view *out)
@@ -535,6 +571,9 @@ void network_monitor_test_reset(void)
     zcl_mutex_lock(&g_nm.lock);
     memset(g_nm.votes, 0, sizeof(g_nm.votes));
     memset(&g_nm.view, 0, sizeof(g_nm.view));
+    g_nm.last_fork_height = -1;
+    g_nm.last_fork_hash_a[0] = '\0';
+    g_nm.last_fork_hash_b[0] = '\0';
     zcl_mutex_unlock(&g_nm.lock);
 }
 

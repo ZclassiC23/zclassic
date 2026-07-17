@@ -33,7 +33,9 @@
 #include "sync/sync_state.h"
 #include "event/event.h"
 #include "net/connman.h"
+#include "net/addrman.h"
 #include "net/addnode_file.h"
+#include "storage/peers_projection.h"
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>
@@ -186,6 +188,36 @@ void app_add_nodes_from_file(const char *path)
     addnode_file_load(path, app_add_node_from_file_cb, NULL);
 }
 
+/* NET-2 feed-read: fold one banked reputation row into an addrman dial-
+ * preference weight (bandwidth_score 0..255 → bounded [1, MAX] multiplier;
+ * a fast peer is selected more often, never exclusionary). Fail-open. */
+static void boot_addrman_reputation_cb(const uint8_t ip[16], uint16_t port,
+                                       const struct peer_reputation *rep,
+                                       void *ctx)
+{
+    struct addr_man *am = ctx;
+    (void)port;
+    if (!am || !rep || rep->bandwidth_score == 0)
+        return;
+    double frac = (double)rep->bandwidth_score / 255.0;
+    if (frac > 1.0) frac = 1.0;
+    double weight = 1.0 + (ADDRMAN_REPUTATION_MAX_MULT - 1.0) * frac;
+    struct net_addr na;
+    memset(&na, 0, sizeof(na));
+    memcpy(na.ip, ip, 16);
+    (void)addrman_set_reputation_weight(am, &na, weight);
+}
+
+/* Seed addrman dial preference from the peers projection's banked reputation
+ * (the projection is opened + caught up earlier in boot). Bounded, fail-open. */
+static void boot_seed_addrman_reputation(struct addr_man *am)
+{
+    if (!am)
+        return;
+    (void)peers_projection_for_each_reputation_global(
+        4096, boot_addrman_reputation_cb, am);
+}
+
 void app_log_bootstrap_sources(const struct chain_params *params,
                                 struct connman *cm)
 {
@@ -199,6 +231,7 @@ void app_log_bootstrap_sources(const struct chain_params *params,
         snprintf(p, sizeof(p), "%s/.config/zclassic23/onion-seeds", home);
         operator_onion_seed_file = access(p, R_OK) == 0;
     }
+    boot_seed_addrman_reputation(&cm->manager.addrman);
     size_t addrman_loaded = addrman_size(&cm->manager.addrman);
     size_t total_sources = params->nSeeds + params->nFixedSeeds +
                             params->nOnionSeeds +

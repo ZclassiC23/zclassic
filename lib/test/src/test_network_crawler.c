@@ -18,8 +18,10 @@
 #include "test/test_helpers.h"
 
 #include "services/network_crawler.h"
+#include "conditions/net_eclipse_suspected.h"
 #include "net/netaddr.h"
 #include "json/json.h"
+#include "util/blocker.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -296,6 +298,48 @@ int test_network_crawler(void)
             NC_CHECK(at != NULL && json_get_int(at) == 2);
         }
         json_free(&out);
+        network_crawler_test_reset();
+        printf("done\n");
+    }
+
+    /* ── 8. eclipse CONDITION: 2-round trip + remedy names the blocker ───── */
+    printf("  eclipse condition: 2 consecutive census rounds trip + remedy... ");
+    {
+        (void)blocker_module_init();
+        net_eclipse_suspected_test_reset();
+
+        struct network_census_view v;
+        memset(&v, 0, sizeof(v));
+        v.ready = true;
+        v.eclipse_suspected = true;
+        v.reachable_count = 9;
+        v.own_modal_height = 100;
+        v.network_modal_height = 200;
+        v.network_count_at_own_modal = 2;
+
+        /* Round 1: a single eclipse census must NOT fire (one noisy sample). */
+        v.computed_at = 1000;
+        network_crawler_test_set_view(&v);
+        NC_CHECK(!net_eclipse_suspected_test_detect());
+
+        /* Round 2 (new census fold): 2 consecutive rounds → fire. */
+        v.computed_at = 1060;
+        network_crawler_test_set_view(&v);
+        NC_CHECK(net_eclipse_suspected_test_detect());
+
+        /* Remedy is invoked → it names the typed blocker (cm is NULL in the
+         * test harness, so the discovery kick is skipped and it returns
+         * FAILED, but the blocker MUST be set first). */
+        (void)net_eclipse_suspected_test_remedy();
+        NC_CHECK(blocker_exists("net_eclipse_suspected"));
+
+        /* A census that no longer suspects eclipse stops the detector. */
+        v.computed_at = 1120;
+        v.eclipse_suspected = false;
+        network_crawler_test_set_view(&v);
+        NC_CHECK(!net_eclipse_suspected_test_detect());
+
+        net_eclipse_suspected_test_reset();
         network_crawler_test_reset();
         printf("done\n");
     }

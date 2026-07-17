@@ -159,6 +159,9 @@ void network_crawler_test_set_own_modal(int64_t h);
  * census and refold. Returns the number of addresses actually probed. */
 int  network_crawler_test_probe_round(const struct net_address *addrs, int n);
 int  network_crawler_test_census_count(void);
+/* Inject a folded census view (marks it ready) so the eclipse condition can be
+ * unit-tested without a live crawl. */
+void network_crawler_test_set_view(const struct network_census_view *v);
 #endif
 
 #endif /* ZCL_SERVICES_NETWORK_CRAWLER_H */

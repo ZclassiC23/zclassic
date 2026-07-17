@@ -10,6 +10,7 @@
 #include "net/connman.h"
 #include "net/net.h"
 #include "services/block_source_policy.h"
+#include "services/node_health_service.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "services/chain_state_service.h"
@@ -84,6 +85,31 @@ static bool health_test_init_connman_peer(struct connman *cm,
 int test_node_health_service(void)
 {
     int failures = 0;
+
+    printf("node_health_service: network-tip resolution (modal + clamp)... ");
+    {
+        bool ok = true;
+        /* plausible max, no modal -> raw max */
+        ok = ok && node_health_resolve_network_tip(
+                       100050, 0, 100000, false, -1, 0) == 100050;
+        /* lone above-band liar -> clamped to header_tip+10000 */
+        ok = ok && node_health_resolve_network_tip(
+                       5000000, 1, 100000, false, -1, 0) == 110000;
+        /* two independent peers corroborate -> trust raw max */
+        ok = ok && node_health_resolve_network_tip(
+                       5000000, 2, 100000, false, -1, 0) == 5000000;
+        /* modal agreed by >=3 beats a clamped liar max */
+        ok = ok && node_health_resolve_network_tip(
+                       5000000, 1, 100000, true, 100200, 3) == 100200;
+        /* modal < 3 observations -> fall back to the (clamped) MAX */
+        ok = ok && node_health_resolve_network_tip(
+                       100050, 0, 100000, true, 100200, 2) == 100050;
+        /* unknown header tip -> no clamp */
+        ok = ok && node_health_resolve_network_tip(
+                       100050, 0, -1, false, -1, 0) == 100050;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
 
     printf("node_health_service: idle snapshot reports unhealthy without peers... ");
     {

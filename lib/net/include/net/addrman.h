@@ -37,7 +37,17 @@ struct addr_info {
     bool in_tried;
     int random_pos;
     bool used;
+    /* NET-2: durable dial-preference boost seeded at boot from the peers
+     * projection's banked reputation. 0.0 means "unset" and behaves exactly
+     * like today (multiplier 1.0); a proven-fast peer carries a bounded
+     * [1.0, ADDRMAN_REPUTATION_MAX_MULT] weight applied in
+     * addr_info_get_chance(). Never exclusionary — only ever raises chance. */
+    double reputation_weight;
 };
+
+/* Maximum dial-preference multiplier a banked-fast peer can earn (bounded so
+ * reputation can nudge, never dominate, address selection). */
+#define ADDRMAN_REPUTATION_MAX_MULT 4.0
 
 /* O(1) address→entry-id index slot. Defined privately in addrman.c;
  * struct addr_man holds only a pointer, so a forward declaration is
@@ -107,6 +117,13 @@ int addr_info_get_bucket_position(const struct addr_info *info,
 
 bool addr_info_is_terrible(const struct addr_info *info, int64_t nNow);
 double addr_info_get_chance(const struct addr_info *info, int64_t nNow);
+
+/* Seed the durable reputation dial-preference weight for one address (bounded
+ * and clamped into [1.0, ADDRMAN_REPUTATION_MAX_MULT]; a weight <= 1.0 clears
+ * any boost). Fail-open: a missing address is a silent no-op. Returns true iff
+ * the address was found and updated. */
+bool addrman_set_reputation_weight(struct addr_man *am,
+                                   const struct net_addr *addr, double weight);
 
 /* Verify internal consistency of bucket tables.
  * Returns 0 on success, negative on error.
