@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one compact self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -39,8 +39,9 @@ starts from the in-binary SHA3/PoW checkpoint, folds real block bodies forward,
 then deletes the borrowed `zclassicd`-minted seed path.
 
 **Current canonical state is wedged, not synced.** As of 2026-07-12 the public
-daily-driver is held at H\*=3,176,325 by incomplete historical shielded anchors
-and nullifiers; verify the live value before acting. The consolidated loader did
+daily-driver is held on the historical shielded-state wedge by incomplete
+historical shielded anchors and nullifiers; verify the live H\* in
+`docs/HANDOFF.md` before acting. The consolidated loader did
 previously seed transparent `coins_kv` from a `zclassicd`-minted snapshot and
 reach tip, but matching that artifact's anchor hash to a validated local header
 binds only its height/hash location. ZClassic headers do **not** commit the UTXO,
@@ -80,8 +81,9 @@ is a regression floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 > **Check the live node before treating MVP/soak as the active mission.** The
-> canonical node is currently wedged at H\*=3,176,325 on the permanent
-> `utxo_apply.anchor_backfill_gap` / nullifier-history dependency. A prior
+> canonical node is currently wedged on the permanent
+> `utxo_apply.anchor_backfill_gap` / nullifier-history dependency (the live H\*
+> is in `docs/HANDOFF.md`). A prior
 > transparent borrowed seed reaching tip did not prove complete shielded state.
 > No canonical soak time is clean evidence while this gap exists; cure and
 > copy-prove the complete state first, then start a fresh exact-parity soak
@@ -214,7 +216,7 @@ reverse scan in 64 KB chunks.
 
 ## Node Architecture
 
-A single ~15 MB C23 binary (Equihash 200,9 PoW, Sapling zk-SNARKs). The full
+A single compact C23 binary (Equihash 200,9 PoW, Sapling zk-SNARKs). The full
 subsystem list is in the Vision section above; the rest of this section covers
 how to run and observe it.
 
