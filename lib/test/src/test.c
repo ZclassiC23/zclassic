@@ -1482,6 +1482,8 @@ int main(int argc, char **argv)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    { extern int test_hstar_integrity(void);
+      failures += test_hstar_integrity(); }
     failures += test_always_sync_chaos();
     { extern int test_reindex_sparse_bodies(void);
       failures += test_reindex_sparse_bodies(); }

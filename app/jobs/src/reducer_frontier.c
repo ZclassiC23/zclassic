@@ -14,6 +14,8 @@
 
 #include "reducer_frontier_evidence.h"
 #include "reducer_frontier_self_anchor.h"  /* self-derived anchor sourcing */
+#include "reducer_frontier_itag.h"         /* watermark + column probe + warn */
+#include "jobs/stage_row_itag.h"           /* per-row integrity tag (W4-4) */
 #include "jobs/mint_skip_crypto.h"
 #include "jobs/refold_progress.h"
 #include "chain/chainparams.h"
@@ -153,6 +155,10 @@ void reducer_frontier_provable_tip_reset(void)
      * stage's g_last_advance_height=-1 reset. The next finalize advance
      * republishes the true H*; until then 0 is the honest provable height. */
     atomic_store(&g_provable_tip, REDUCER_FRONTIER_TIP_UNPUBLISHED);
+    /* A refold/reorg reset rewrites the fold prefix from the (new) floor, so
+     * drop the integrity-tag watermark too: the next fold re-verifies every row
+     * it folds rather than trusting a prefix from before the reset. */
+    reducer_frontier_itag_watermark_reset();
 }
 
 /* Per-row reads return a tri-state so contiguity and discrimination can
@@ -160,8 +166,13 @@ void reducer_frontier_provable_tip_reset(void)
 enum log_row_state {
     LOG_ROW_ABSENT = 0,   /* no row at this height */
     LOG_ROW_OK,           /* row present, ok=1 */
-    LOG_ROW_FAIL,         /* row present, ok=0 */
+    LOG_ROW_FAIL,         /* row present, ok=0 (or integrity-tag MISMATCH) */
 };
+
+/* Per-row integrity tag (W4-4): each *_log row carries a truncated-SHA3 `itag`
+ * (jobs/stage_row_itag.h). The fold below recomputes it — a row whose tag does
+ * not verify is treated as NOT ok, so a flipped verdict byte LOWERS H*, never
+ * raises it. Watermark/probe/warn: reducer_frontier_itag.[ch]. */
 
 /* The success-checked logs whose contiguous ok=1 prefix bounds H* (C2).
  * Each entry pairs the log table with its stage cursor name (used only for
@@ -221,11 +232,13 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
     *out = LOG_ROW_ABSENT;
     /* log_table is a fixed string from k_logs[] (never caller input), so the
      * concat below cannot inject. Bind the height parameter. */
-    char sql[128];
+    char sql[160];
     bool profile_bound = log_success_requires_full_validation(log_table);
+    bool have_itag = reducer_frontier_itag_column_present(db, log_table);
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok%s FROM %s WHERE height = ?",
-                     profile_bound ? ", status" : "", log_table);
+                     "SELECT ok%s%s FROM %s WHERE height = ?",
+                     profile_bound ? ", status" : "",
+                     have_itag ? ", itag" : "", log_table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("reducer", "log_ok_at sql overflow for table=%s", log_table);
 
@@ -238,16 +251,33 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        bool row_ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
-                      sqlite3_column_int(st, 0) == 1;
-        if (row_ok && profile_bound) {
-            int status_type = sqlite3_column_type(st, 1);
-            const void *status = status_type == SQLITE_TEXT
-                ? sqlite3_column_text(st, 1) : NULL;
+        int ok_raw = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+                         ? sqlite3_column_int(st, 0) : 0;
+        const void *status = NULL;
+        size_t status_len = 0;
+        if (profile_bound && sqlite3_column_type(st, 1) == SQLITE_TEXT) {
+            status = sqlite3_column_text(st, 1);
+            status_len = (size_t)sqlite3_column_bytes(st, 1);
+        }
+        bool row_ok = ok_raw == 1;
+        if (row_ok && profile_bound)
             row_ok = status &&
-                mint_validation_evidence_parse(
-                    status, (size_t)sqlite3_column_bytes(st, 1)) ==
+                mint_validation_evidence_parse(status, status_len) ==
                     MINT_VALIDATION_EVIDENCE_VERIFIED;
+        /* Integrity tag: a MISMATCH forces the row to FAIL (corruption LOWERS
+         * H*); ABSENT (untagged / pre-migration) trusts ok as before. */
+        if (have_itag) {
+            int itag_col = profile_bound ? 2 : 1;
+            const void *tag = sqlite3_column_type(st, itag_col) == SQLITE_BLOB
+                                  ? sqlite3_column_blob(st, itag_col) : NULL;
+            size_t tag_len = tag ? (size_t)sqlite3_column_bytes(st, itag_col)
+                                 : 0;
+            if (stage_row_itag_verify(log_table, (int64_t)height, ok_raw,
+                                      status, status_len, tag, tag_len) ==
+                STAGE_ROW_ITAG_MISMATCH) {
+                reducer_frontier_itag_mismatch_warn(log_table, (int64_t)height);
+                row_ok = false;
+            }
         }
         *out = row_ok ? LOG_ROW_OK : LOG_ROW_FAIL;
     } else if (rc != SQLITE_DONE) {
@@ -261,16 +291,23 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
 
 /* Walk one success-checked log upward from TRUSTED_ANCHOR+1, returning the
  * deepest height whose [anchor+1 .. h] run is all ok=1 (the contiguous
- * prefix). A missing row OR an ok=0 row terminates the run.
+ * prefix). A missing row, an ok=0 row, OR an integrity-tag MISMATCH terminates
+ * the run.
  *
  * `cursor` bounds the scan: rows are only expected up to `cursor-1` (the
  * cursor names the NEXT height to process). If cursor <= TRUSTED_ANCHOR the
  * log holds nothing above the anchor and is trivially consistent there, so
  * h_contiguous stays at the anchor (does not lower H*).
  *
+ * `verify_above` is the per-boot integrity-tag watermark: rows at heights
+ * <= verify_above were tag-verified on an earlier fold this boot and are
+ * trusted (their ok/status is read directly); rows above it are tag-verified
+ * now. Pass anchor / a floor to verify the whole scanned range.
+ *
  * On a DB read error returns false; *h_contiguous is then meaningless. */
 static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
                                   int32_t anchor, int64_t cursor,
+                                  int32_t verify_above,
                                   int32_t *h_contiguous)
 {
     *h_contiguous = anchor;
@@ -283,12 +320,14 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
      * so rows stream back in strictly increasing height order: the first
      * height JUMP is a hole (a missing row) and the first ok=0 row is a
      * recorded failure — both terminate the contiguous prefix. */
-    char sql[160];
+    char sql[192];
     bool profile_bound = log_success_requires_full_validation(log_table);
+    bool have_itag = reducer_frontier_itag_column_present(db, log_table);
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT height, ok%s FROM %s "
+                     "SELECT height, ok%s%s FROM %s "
                      "WHERE height > ? AND height < ? ORDER BY height",
-                     profile_bound ? ", status" : "", log_table);
+                     profile_bound ? ", status" : "",
+                     have_itag ? ", itag" : "", log_table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("reducer", "log_contiguous_prefix sql overflow for %s",
                  log_table);
@@ -300,25 +339,44 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
     sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)cursor);
 
+    int itag_col = profile_bound ? 3 : 2;  /* only valid when have_itag */
     bool rc_ok = true;
     int64_t expect = (int64_t)anchor + 1;
     while (true) {
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
             int64_t h = sqlite3_column_int64(st, 0);
-            bool row_ok = sqlite3_column_type(st, 1) == SQLITE_INTEGER &&
-                          sqlite3_column_int(st, 1) == 1;
-            if (row_ok && profile_bound) {
-                int status_type = sqlite3_column_type(st, 2);
-                const void *status = status_type == SQLITE_TEXT
-                    ? sqlite3_column_text(st, 2) : NULL;
+            int ok_raw = sqlite3_column_type(st, 1) == SQLITE_INTEGER
+                             ? sqlite3_column_int(st, 1) : 0;
+            const void *status = NULL;
+            size_t status_len = 0;
+            if (profile_bound && sqlite3_column_type(st, 2) == SQLITE_TEXT) {
+                status = sqlite3_column_text(st, 2);
+                status_len = (size_t)sqlite3_column_bytes(st, 2);
+            }
+            bool row_ok = ok_raw == 1;
+            if (row_ok && profile_bound)
                 row_ok = status &&
-                    mint_validation_evidence_parse(
-                        status, (size_t)sqlite3_column_bytes(st, 2)) ==
+                    mint_validation_evidence_parse(status, status_len) ==
                         MINT_VALIDATION_EVIDENCE_VERIFIED;
+            /* Integrity tag: verify rows above the per-boot watermark. A
+             * MISMATCH terminates contiguity exactly like an ok=0 row, so a
+             * flipped verdict byte caps H* here — it can never raise it. */
+            if (row_ok && have_itag && h > (int64_t)verify_above) {
+                const void *tag =
+                    sqlite3_column_type(st, itag_col) == SQLITE_BLOB
+                        ? sqlite3_column_blob(st, itag_col) : NULL;
+                size_t tag_len =
+                    tag ? (size_t)sqlite3_column_bytes(st, itag_col) : 0;
+                if (stage_row_itag_verify(log_table, h, ok_raw, status,
+                                          status_len, tag, tag_len) ==
+                    STAGE_ROW_ITAG_MISMATCH) {
+                    reducer_frontier_itag_mismatch_warn(log_table, h);
+                    row_ok = false;
+                }
             }
             if (h != expect || !row_ok)
-                break;  /* hole (height jump) or ok=0 — contiguity ends */
+                break;  /* hole, ok=0, or tag mismatch — contiguity ends */
             *h_contiguous = (int32_t)h;
             expect++;
         } else if (rc == SQLITE_DONE) {
@@ -571,6 +629,9 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
      * the sentinel survives). */
     int32_t hs = INT32_MAX;
     int32_t ua_contig = anchor;  /* utxo_apply's OWN contiguous frontier (C4) */
+    /* Per-boot integrity-tag watermark: verify only the delta above it (rows
+     * at/below were tag-verified earlier this boot). See reducer_frontier_itag.h. */
+    int32_t verify_wm = reducer_frontier_itag_watermark();
     for (int i = 0; i < k_logs_n; i++) {
         int64_t raw_cursor = 0;
         if (!cursor_at(progress_db, k_logs[i].cursor_name, &raw_cursor))
@@ -592,7 +653,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
 
         int32_t h_contig = anchor;
         if (!log_contiguous_prefix(progress_db, k_logs[i].log_table, anchor,
-                                   scan_cursor, &h_contig))
+                                   scan_cursor, verify_wm, &h_contig))
             LOG_FAIL("reducer", "contiguity walk failed: %s",
                      k_logs[i].log_table);
 
@@ -656,6 +717,11 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     if (hs < anchor)
         hs = anchor;
 
+    /* Advance the watermark to the resolved H*: [anchor+1 .. hs] is now
+     * tag-verified in every log (hs <= each log's verified prefix), so later
+     * folds verify only the delta above it. See reducer_frontier_itag.h. */
+    reducer_frontier_itag_watermark_publish(hs);
+
     *hstar = hs;
     return true;
 }
@@ -685,7 +751,10 @@ bool reducer_frontier_log_frontier(sqlite3 *progress_db,
                strcmp(cursor_name, "tip_finalize") == 0))
         cursor = cursor > 0 ? cursor + 1 : cursor;
     if (ok)
-        ok = log_contiguous_prefix(progress_db, log_table, anchor, cursor, &h);
+        /* verify_above = anchor: this per-stage helper is repair-path (not the
+         * hot fold), so it tag-verifies its whole scanned range every call. */
+        ok = log_contiguous_prefix(progress_db, log_table, anchor, cursor,
+                                   anchor, &h);
 
     progress_store_tx_unlock();
 
@@ -717,8 +786,10 @@ bool reducer_frontier_log_frontier_above(sqlite3 *progress_db,
                strcmp(cursor_name, "tip_finalize") == 0))
         cursor = cursor > 0 ? cursor + 1 : cursor;
     if (ok)
+        /* verify_above = verified_floor: verify the whole scanned range above
+         * the caller's floor (repair-path, not the hot fold). */
         ok = log_contiguous_prefix(progress_db, log_table, verified_floor,
-                                   cursor, &h);
+                                   cursor, verified_floor, &h);
 
     progress_store_tx_unlock();
 
