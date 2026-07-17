@@ -252,6 +252,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(boot_refold_window_extend) \
     X(refold_retro_validate) X(refold_body_span_contiguous) \
     X(contaminated_coin_above_anchor) X(boot_reindex_terminates) \
+    X(reindex_sparse_bodies) \
     X(chain_linkage_check) X(invariant_sentinel) \
     X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \

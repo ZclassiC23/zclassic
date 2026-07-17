@@ -5,7 +5,7 @@
  * MISSION this file serves: the node must ALWAYS fold to the network tip and
  * never silently stall. A stall is always a NAMED, SELF-HEALED blocker at a
  * known height — never a silent halt, never an operator page for a
- * recoverable cause. These five functions each reproduce ONE class of fault
+ * recoverable cause. These six functions each reproduce ONE class of fault
  * against a throwaway fixture (a scratch datadir, a scratch progress.kv, a
  * scratch supervisor/condition/blocker registration) and report whether the
  * subsystem under test named the fault and returned to advancing.
@@ -40,6 +40,16 @@
  *       synthetic condition model a single reducer stage stalling; asserts
  *       zero EV_OPERATOR_NEEDED pages while the retry budget holds, then
  *       clears and asserts a witnessed self-heal.
+ *   (f) chaos_fault_kill_restart_mid_recovery — unlike (b) (kill BEFORE any
+ *       repair action started), this kills INSIDE an open recovery window:
+ *       after the real stage_rederive_range() primitive (app/jobs/src/
+ *       stage_rederive_range.c) has committed a rewind (stage cursors
+ *       lowered, stale suffix rows deleted, coins inverse-rewound) but
+ *       before the drive re-folds the range forward. Asserts H* and the
+ *       coins-applied frontier are byte-identical across the abrupt
+ *       close+reopen, AND that a post-restart call converges (the primitive
+ *       resumes idempotently — no duplicate rewind, no lost frontier, no
+ *       silent stall).
  *
  * Every function is self-contained: it opens/builds its own fixture,
  * exercises the fault, tears down, and never mutates a live datadir (never
@@ -134,6 +144,27 @@ bool chaos_fault_freeze_reducer_drive(struct chaos_fault_result *out);
  * self-heal and asserts the condition clears and the blocker is removed
  * with STILL zero operator pages. */
 bool chaos_fault_stall_single_stage(struct chaos_fault_result *out);
+
+/* (f) kill/restart mid-RECOVERY (inside an open rederive/rewind window).
+ *
+ * Stamps a full consistent prefix [0, N], then calls the real
+ * stage_rederive_range() primitive to open a recovery window at a hole
+ * height HOLE < N (rewinding the body-dependent stage cursors to HOLE,
+ * deleting the stale suffix rows [HOLE, N], and inverse-rewinding the
+ * coins-applied frontier to HOLE — exactly what a self-heal rung does
+ * before the drive re-folds forward). Records H* and the coins-applied
+ * frontier at that point, then simulates kill -9 (abrupt progress.kv
+ * close + reopen, no in-RAM state survives) and re-reads both.
+ *
+ * `out->recovered` is true iff: H* and the coins-applied frontier are
+ * IDENTICAL before and after the kill (nothing lost or corrupted inside
+ * the window), both name the exact rewound height (HOLE-1 / HOLE — never
+ * a silent/undefined value, never a value that would imply the coins
+ * frontier was wiped back to "not found"), and a second
+ * stage_rederive_range() call over the same range succeeds post-restart
+ * (the next boot pass converges — resumes idempotently instead of
+ * erroring or stalling). */
+bool chaos_fault_kill_restart_mid_recovery(struct chaos_fault_result *out);
 
 #ifdef __cplusplus
 }
