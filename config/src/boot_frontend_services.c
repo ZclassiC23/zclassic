@@ -23,7 +23,9 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_controller.h"
 #include "net/file_service.h"
+#include "net/rom_seed.h"
 #include "net/https_server.h"
+#include "util/util.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "rpc/httpserver.h"
@@ -62,6 +64,41 @@ static void boot_file_service_stop(void *ctx)
 {
     (void)ctx;
     fs_server_stop();
+}
+
+/* ROM artifact seeding: register + announce the free/capped ROM/sync artifacts
+ * (consensus-state bundle + header seed) present in the datadir. Enabled by
+ * default alongside the file service; disabled with -noromseed. Caps overridable
+ * with -romseed-peer-bps / -romseed-global-bps / -romseed-max-inflight. */
+static bool boot_rom_seed_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx || !boot_profile_has_file_service(svc->app_ctx))
+        return true;
+    if (svc->defer_offer_service)
+        return true;
+    if (!GetBoolArg("-romseed", true)) {
+        rom_seed_set_enabled(false);
+        printf("ROM seed: disabled via -noromseed\n");
+        return true;
+    }
+    rom_seed_set_enabled(true);
+
+    int64_t peer_bps = GetArgInt("-romseed-peer-bps", 0);
+    int64_t global_bps = GetArgInt("-romseed-global-bps", 0);
+    int64_t inflight = GetArgInt("-romseed-max-inflight", 0);
+    if (peer_bps > 0) rom_seed_set_peer_bps_cap((uint64_t)peer_bps);
+    if (global_bps > 0) rom_seed_set_global_bps_cap((uint64_t)global_bps);
+    if (inflight > 0) rom_seed_set_max_inflight_per_peer((uint32_t)inflight);
+
+    rom_seed_start_scan(svc->datadir, (uint16_t)svc->app_ctx->fs_port);
+    return true;
+}
+
+static void boot_rom_seed_stop(void *ctx)
+{
+    (void)ctx;
+    rom_seed_stop_scan();
 }
 
 static bool boot_rpc_http_start(void *ctx)
@@ -310,6 +347,13 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc)
             .name = "file_service",
             .start = boot_file_service_start,
             .stop = boot_file_service_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "rom_seed",
+            .start = boot_rom_seed_start,
+            .stop = boot_rom_seed_stop,
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },

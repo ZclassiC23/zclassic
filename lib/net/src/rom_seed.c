@@ -1,0 +1,856 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ROM artifact seeding registry + free-tier serve policy + caps. See
+ * net/rom_seed.h for the contract and trust model.
+ *
+ * Everything wire- or disk-derived is bounded and validated here. Registration
+ * re-derives every digest from the bytes on disk in one pass (never a sidecar).
+ * The serve caps are in-memory DDoS bounds only — nothing here is persisted or
+ * a consensus predicate. */
+
+#include "platform/time_compat.h"
+#include "net/rom_seed.h"
+#include "net/file_market.h"
+#include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
+#include "json/json.h"
+#include "util/safe_alloc.h"
+#include "util/log_macros.h"
+#include "util/thread_registry.h"
+#include "util/thread_liveness.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define ROM_SUBSYS "rom_seed"
+
+/* Bounded directory scan: never walk more than this many entries. */
+#define ROM_SEED_SCAN_ENTRY_CAP 4096
+
+/* ── Registry ───────────────────────────────────────────────────────── */
+
+static struct rom_artifact g_artifacts[ROM_SEED_MAX_ARTIFACTS];
+static pthread_mutex_t g_reg_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* ── Config (read from serve threads; set at boot) ──────────────────── */
+
+static _Atomic bool     g_enabled = true;
+static _Atomic uint32_t g_max_inflight_per_peer = ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER;
+static _Atomic uint64_t g_peer_bps_cap   = ROM_SEED_DEFAULT_PEER_BPS_CAP;
+static _Atomic uint64_t g_global_bps_cap = ROM_SEED_DEFAULT_GLOBAL_BPS_CAP;
+
+/* ── Caps + stats state (one mutex) ─────────────────────────────────── */
+
+struct rom_peer_stat {
+    uint8_t  ip[16];
+    bool     used;
+    bool     ever_served;
+    uint32_t concurrent;   /* active in-flight serves for this peer   */
+    int64_t  win_start;    /* rolling 1-second byte-rate window start  */
+    uint64_t win_bytes;    /* bytes charged in the current window      */
+    int64_t  last_seen;    /* LRU eviction when the table is full      */
+};
+static struct rom_peer_stat g_peers[ROM_SEED_PEER_TABLE_CAP];
+static pthread_mutex_t g_caps_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int64_t  g_global_win_start = 0;
+static uint64_t g_global_win_bytes = 0;
+
+/* ── Background scan lifecycle ──────────────────────────────────────── */
+
+static pthread_t g_scan_thread;
+static bool      g_scan_started = false;
+static uint16_t  g_scan_fs_port = 0;
+static char      g_scan_datadir[1024];
+static _Atomic bool g_scan_cancel = false;
+static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct thread_liveness_child g_scan_liveness = { .id = SUPERVISOR_INVALID_ID };
+
+static uint64_t g_chunks_served = 0;
+static uint64_t g_bytes_served_total = 0;
+static uint64_t g_unique_peers_served = 0;
+
+/* ── Small helpers ──────────────────────────────────────────────────── */
+
+/* A registerable filename is a bare basename: no separators, no traversal,
+ * non-empty, and short enough to store. */
+static bool rom_filename_ok(const char *filename)
+{
+    if (!filename || !filename[0])
+        return false;
+    size_t n = strlen(filename);
+    if (n >= ROM_SEED_NAME_MAX)
+        return false;
+    if (strchr(filename, '/'))
+        return false;
+    if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0)
+        return false;
+    if (strstr(filename, ".."))
+        return false;
+    return true;
+}
+
+/* Case-sensitive "does `s` start with `prefix`". */
+static bool str_has_prefix(const char *s, const char *prefix)
+{
+    size_t pl = strlen(prefix);
+    return strncmp(s, prefix, pl) == 0;
+}
+
+static bool str_has_suffix(const char *s, const char *suffix)
+{
+    size_t sl = strlen(s), fl = strlen(suffix);
+    return sl >= fl && strcmp(s + (sl - fl), suffix) == 0;
+}
+
+/* ── Classification + content check ─────────────────────────────────── */
+
+enum rom_artifact_kind rom_seed_classify(const char *filename)
+{
+    if (!filename || !filename[0])
+        return ROM_ARTIFACT_UNKNOWN;
+    if (str_has_prefix(filename, "consensus-state-bundle-") &&
+        str_has_suffix(filename, ".sqlite"))
+        return ROM_ARTIFACT_CONSENSUS_BUNDLE;
+    if (strcmp(filename, "block_index.bin") == 0)
+        return ROM_ARTIFACT_HEADER_SEED;
+    return ROM_ARTIFACT_UNKNOWN;
+}
+
+bool rom_seed_kind_content_ok(enum rom_artifact_kind kind,
+                              const uint8_t *header, size_t n,
+                              uint64_t size_bytes)
+{
+    if (size_bytes < ROM_SEED_MIN_ARTIFACT_BYTES ||
+        size_bytes > ROM_SEED_MAX_ARTIFACT_BYTES)
+        return false;
+    switch (kind) {
+    case ROM_ARTIFACT_CONSENSUS_BUNDLE: {
+        /* The bundle is a SQLite database — the file must begin with the
+         * canonical 16-byte magic. A truncated/garbage/non-SQLite file fails
+         * here and is never offered. */
+        static const uint8_t sqlite_magic[16] = "SQLite format 3";
+        if (!header || n < 16)
+            return false;
+        return memcmp(header, sqlite_magic, 16) == 0;
+    }
+    case ROM_ARTIFACT_HEADER_SEED:
+        /* Header seed has no strong magic; the size band is the guard. */
+        return true;
+    case ROM_ARTIFACT_UNKNOWN:
+    default:
+        return false;
+    }
+}
+
+/* ── Registration ───────────────────────────────────────────────────── */
+
+/* Insert (or replace by filename) into the registry. Caller holds g_reg_mutex.
+ * Returns the slot index, or -1 if full. */
+static int reg_slot_locked(const char *filename)
+{
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS; i++) {
+        if (g_artifacts[i].used &&
+            strcmp(g_artifacts[i].filename, filename) == 0)
+            return (int)i;
+    }
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS; i++) {
+        if (!g_artifacts[i].used)
+            return (int)i;
+    }
+    return -1;
+}
+
+enum rom_register_result rom_seed_register(const char *datadir,
+                                           const char *filename,
+                                           const uint8_t *expected_whole_sha3,
+                                           struct rom_artifact *out)
+{
+    if (!datadir || !datadir[0] || !rom_filename_ok(filename)) {
+        LOG_WARN(ROM_SUBSYS, "register: bad args (datadir/filename)");
+        return ROM_REG_ERR_ARGS;
+    }
+
+    enum rom_artifact_kind kind = rom_seed_classify(filename);
+    if (kind == ROM_ARTIFACT_UNKNOWN) {
+        LOG_WARN(ROM_SUBSYS, "register: unknown kind for '%s'", filename);
+        return ROM_REG_ERR_UNKNOWN_KIND;
+    }
+
+    char path[1024];
+    int pn = snprintf(path, sizeof(path), "%s/%s", datadir, filename);
+    if (pn <= 0 || (size_t)pn >= sizeof(path)) {
+        LOG_WARN(ROM_SUBSYS, "register: path overflow for '%s'", filename);
+        return ROM_REG_ERR_ARGS;
+    }
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        LOG_WARN(ROM_SUBSYS, "register: open '%s' failed errno=%d", path, errno);
+        return ROM_REG_ERR_NOT_FOUND;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        LOG_WARN(ROM_SUBSYS, "register: fstat '%s' failed / not a file", path);
+        return ROM_REG_ERR_NOT_FOUND;
+    }
+    uint64_t size_bytes = (uint64_t)st.st_size;
+    if (size_bytes < ROM_SEED_MIN_ARTIFACT_BYTES) {
+        close(fd);
+        LOG_WARN(ROM_SUBSYS, "register: '%s' too small (%llu bytes)",
+                 filename, (unsigned long long)size_bytes);
+        return ROM_REG_ERR_TOO_SMALL;
+    }
+    if (size_bytes > ROM_SEED_MAX_ARTIFACT_BYTES) {
+        close(fd);
+        LOG_WARN(ROM_SUBSYS, "register: '%s' too large (%llu bytes)",
+                 filename, (unsigned long long)size_bytes);
+        return ROM_REG_ERR_TOO_LARGE;
+    }
+
+    uint32_t num_chunks =
+        (uint32_t)((size_bytes + ROM_SEED_CHUNK_SIZE - 1) / ROM_SEED_CHUNK_SIZE);
+    if (num_chunks == 0 || num_chunks > ROM_SEED_MAX_CHUNKS) {
+        close(fd);
+        LOG_WARN(ROM_SUBSYS, "register: '%s' chunk count %u out of range",
+                 filename, num_chunks);
+        return ROM_REG_ERR_TOO_LARGE;
+    }
+
+    uint8_t *buf = zcl_malloc(ROM_SEED_CHUNK_SIZE, "rom_seed_reg_buf");
+    if (!buf) {
+        close(fd);
+        LOG_WARN(ROM_SUBSYS, "register: alloc chunk buffer failed");
+        return ROM_REG_ERR_IO;
+    }
+
+    struct rom_artifact art;
+    memset(&art, 0, sizeof(art));
+    art.kind = kind;
+    snprintf(art.filename, sizeof(art.filename), "%s", filename);
+    art.size_bytes = size_bytes;
+    art.chunk_size = ROM_SEED_CHUNK_SIZE;
+    art.num_chunks = num_chunks;
+
+    struct sha3_256_ctx whole_ctx;
+    sha3_256_init(&whole_ctx);
+    struct sha3_256_ctx root_ctx;   /* absorbs each per-chunk digest */
+    sha3_256_init(&root_ctx);
+
+    enum rom_register_result rc = ROM_REG_OK;
+    uint64_t total_read = 0;
+    for (uint32_t ci = 0; ci < num_chunks; ci++) {
+        /* Read exactly one chunk (short only for the final chunk). */
+        uint32_t want = ROM_SEED_CHUNK_SIZE;
+        uint64_t remaining = size_bytes - total_read;
+        if (remaining < want)
+            want = (uint32_t)remaining;
+
+        uint32_t got = 0;
+        while (got < want) {
+            ssize_t r = pread(fd, buf + got, want - got,
+                              (off_t)(total_read + got));
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                rc = ROM_REG_ERR_IO;
+                break;
+            }
+            if (r == 0) { /* unexpected EOF vs stat size → corrupt */
+                rc = ROM_REG_ERR_CORRUPT;
+                break;
+            }
+            got += (uint32_t)r;
+        }
+        if (rc != ROM_REG_OK)
+            break;
+
+        /* Content check on the first bytes of chunk 0. */
+        if (ci == 0 &&
+            !rom_seed_kind_content_ok(kind, buf, got < 16 ? got : 16,
+                                      size_bytes)) {
+            rc = ROM_REG_ERR_CORRUPT;
+            break;
+        }
+
+        sha3_256_write(&whole_ctx, buf, got);
+        sha3_256(buf, got, art.chunk_sha3[ci]);
+        sha3_256_write(&root_ctx, art.chunk_sha3[ci], 32);
+        total_read += got;
+    }
+
+    free(buf);
+    close(fd);
+
+    if (rc != ROM_REG_OK) {
+        LOG_WARN(ROM_SUBSYS, "register: '%s' failed rc=%d", filename, (int)rc);
+        return rc;
+    }
+
+    sha3_256_finalize(&whole_ctx, art.whole_sha3);
+    sha3_256_finalize(&root_ctx, art.chunk_root);
+
+    if (expected_whole_sha3 &&
+        memcmp(art.whole_sha3, expected_whole_sha3, 32) != 0) {
+        LOG_WARN(ROM_SUBSYS, "register: '%s' whole-file digest mismatch "
+                 "(corrupt / not the expected artifact)", filename);
+        return ROM_REG_ERR_CORRUPT;
+    }
+
+    art.registered_at = (int64_t)platform_time_wall_time_t();
+    art.used = true;
+
+    pthread_mutex_lock(&g_reg_mutex);
+    int slot = reg_slot_locked(filename);
+    if (slot < 0) {
+        pthread_mutex_unlock(&g_reg_mutex);
+        LOG_WARN(ROM_SUBSYS, "register: registry full (%u), dropping '%s'",
+                 ROM_SEED_MAX_ARTIFACTS, filename);
+        return ROM_REG_ERR_FULL;
+    }
+    g_artifacts[slot] = art;
+    pthread_mutex_unlock(&g_reg_mutex);
+
+    if (out)
+        *out = art;
+
+    char root_hex[65];
+    HexStr(art.chunk_root, 32, false, root_hex, sizeof(root_hex));
+    LOG_INFO(ROM_SUBSYS, "registered '%s' size=%llu chunks=%u root=%s",
+             filename, (unsigned long long)art.size_bytes, art.num_chunks,
+             root_hex);
+    return ROM_REG_OK;
+}
+
+int rom_seed_scan_datadir(const char *datadir)
+{
+    if (!datadir || !datadir[0]) {
+        LOG_WARN(ROM_SUBSYS, "scan: empty datadir");
+        return 0;
+    }
+    DIR *d = opendir(datadir);
+    if (!d) {
+        LOG_WARN(ROM_SUBSYS, "scan: opendir '%s' failed errno=%d", datadir, errno);
+        return 0;
+    }
+
+    int registered = 0;
+    unsigned seen = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (atomic_load(&g_scan_cancel))
+            break;
+        if (++seen > ROM_SEED_SCAN_ENTRY_CAP)
+            break;
+        if (rom_seed_classify(e->d_name) == ROM_ARTIFACT_UNKNOWN)
+            continue;
+        if (rom_seed_count() >= (int)ROM_SEED_MAX_ARTIFACTS)
+            break;
+        if (rom_seed_register(datadir, e->d_name, NULL, NULL) == ROM_REG_OK)
+            registered++;
+    }
+    closedir(d);
+
+    if (registered > 0)
+        LOG_INFO(ROM_SUBSYS, "scan: registered %d artifact(s) in '%s'",
+                 registered, datadir);
+    return registered;
+}
+
+/* ── Registry queries ───────────────────────────────────────────────── */
+
+void rom_seed_reset(void)
+{
+    pthread_mutex_lock(&g_reg_mutex);
+    memset(g_artifacts, 0, sizeof(g_artifacts));
+    pthread_mutex_unlock(&g_reg_mutex);
+
+    pthread_mutex_lock(&g_caps_mutex);
+    memset(g_peers, 0, sizeof(g_peers));
+    g_global_win_start = 0;
+    g_global_win_bytes = 0;
+    g_chunks_served = 0;
+    g_bytes_served_total = 0;
+    g_unique_peers_served = 0;
+    pthread_mutex_unlock(&g_caps_mutex);
+
+    /* Restore default config so a serving session (or a test) starts from a
+     * known clean slate — enabled, default caps. */
+    atomic_store(&g_enabled, true);
+    atomic_store(&g_max_inflight_per_peer, ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER);
+    atomic_store(&g_peer_bps_cap, ROM_SEED_DEFAULT_PEER_BPS_CAP);
+    atomic_store(&g_global_bps_cap, ROM_SEED_DEFAULT_GLOBAL_BPS_CAP);
+}
+
+int rom_seed_count(void)
+{
+    int c = 0;
+    pthread_mutex_lock(&g_reg_mutex);
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS; i++)
+        if (g_artifacts[i].used) c++;
+    pthread_mutex_unlock(&g_reg_mutex);
+    return c;
+}
+
+int rom_seed_list(struct rom_artifact *out, size_t max)
+{
+    if (!out || max == 0) return 0;
+    int c = 0;
+    pthread_mutex_lock(&g_reg_mutex);
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS && (size_t)c < max; i++)
+        if (g_artifacts[i].used)
+            out[c++] = g_artifacts[i];
+    pthread_mutex_unlock(&g_reg_mutex);
+    return c;
+}
+
+bool rom_seed_find_by_root(const uint8_t root_hash[32], struct rom_artifact *out)
+{
+    if (!root_hash) return false;
+    bool found = false;
+    pthread_mutex_lock(&g_reg_mutex);
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS; i++) {
+        if (g_artifacts[i].used &&
+            memcmp(g_artifacts[i].chunk_root, root_hash, 32) == 0) {
+            if (out) *out = g_artifacts[i];
+            found = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_reg_mutex);
+    return found;
+}
+
+bool rom_seed_read_chunk(const struct rom_artifact *a, const char *datadir,
+                         uint32_t idx, uint8_t *buf, uint32_t buf_cap,
+                         uint32_t *out_sz)
+{
+    if (!a || !datadir || !buf || !out_sz)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: null arg");
+    if (idx >= a->num_chunks)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: idx %u >= num_chunks %u",
+                 idx, a->num_chunks);
+
+    uint64_t offset = (uint64_t)idx * (uint64_t)a->chunk_size;
+    if (offset >= a->size_bytes)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: offset past EOF");
+    uint64_t remaining = a->size_bytes - offset;
+    uint32_t want = a->chunk_size;
+    if (remaining < want)
+        want = (uint32_t)remaining;
+    if (want > buf_cap)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: buf_cap %u < chunk %u", buf_cap, want);
+
+    if (!rom_filename_ok(a->filename))
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: unsafe filename");
+    char path[1024];
+    int pn = snprintf(path, sizeof(path), "%s/%s", datadir, a->filename);
+    if (pn <= 0 || (size_t)pn >= sizeof(path))
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: path overflow");
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: open '%s' failed errno=%d", path, errno);
+
+    uint32_t got = 0;
+    while (got < want) {
+        ssize_t r = pread(fd, buf + got, want - got, (off_t)(offset + got));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            LOG_FAIL(ROM_SUBSYS, "read_chunk: pread errno=%d", errno);
+        }
+        if (r == 0) {
+            close(fd);
+            LOG_FAIL(ROM_SUBSYS, "read_chunk: short read (file changed?)");
+        }
+        got += (uint32_t)r;
+    }
+    close(fd);
+
+    uint8_t h[32];
+    sha3_256(buf, got, h);
+    if (memcmp(h, a->chunk_sha3[idx], 32) != 0)
+        LOG_FAIL(ROM_SUBSYS, "read_chunk: idx %u digest mismatch (on-disk "
+                 "corruption)", idx);
+
+    *out_sz = got;
+    return true;
+}
+
+/* ── Free-tier serve policy ─────────────────────────────────────────── */
+
+enum rom_serve_verdict rom_seed_serve_lookup(const uint8_t root_hash[32],
+                                             uint32_t chunk_index,
+                                             struct rom_artifact *out)
+{
+    if (!atomic_load(&g_enabled))
+        return ROM_SERVE_DISABLED;
+    struct rom_artifact a;
+    if (!rom_seed_find_by_root(root_hash, &a))
+        return ROM_SERVE_NOT_ARTIFACT;
+    if (chunk_index >= a.num_chunks)
+        return ROM_SERVE_OUT_OF_RANGE;
+    if (out) *out = a;
+    return ROM_SERVE_FREE_OK;
+}
+
+bool rom_seed_offer_is_free(const uint8_t root_hash[32])
+{
+    return rom_seed_find_by_root(root_hash, NULL);
+}
+
+/* ── Caps ───────────────────────────────────────────────────────────── */
+
+void rom_seed_set_enabled(bool on) { atomic_store(&g_enabled, on); }
+bool rom_seed_enabled(void) { return atomic_load(&g_enabled); }
+
+void rom_seed_set_max_inflight_per_peer(uint32_t n)
+{
+    if (n == 0) n = 1;
+    atomic_store(&g_max_inflight_per_peer, n);
+}
+void rom_seed_set_peer_bps_cap(uint64_t bps)
+{
+    atomic_store(&g_peer_bps_cap, bps ? bps : 1);
+}
+void rom_seed_set_global_bps_cap(uint64_t bps)
+{
+    atomic_store(&g_global_bps_cap, bps ? bps : 1);
+}
+
+/* Find-or-allocate the peer slot (caller holds g_caps_mutex). Evicts the LRU
+ * idle slot when full; never evicts a slot with active in-flight serves. */
+static struct rom_peer_stat *peer_slot_locked(const uint8_t ip[16], int64_t now)
+{
+    struct rom_peer_stat *lru = NULL;
+    for (unsigned i = 0; i < ROM_SEED_PEER_TABLE_CAP; i++) {
+        if (g_peers[i].used && memcmp(g_peers[i].ip, ip, 16) == 0)
+            return &g_peers[i];
+        if (!g_peers[i].used)
+            return &g_peers[i];
+    }
+    for (unsigned i = 0; i < ROM_SEED_PEER_TABLE_CAP; i++) {
+        if (g_peers[i].concurrent == 0 &&
+            (!lru || g_peers[i].last_seen < lru->last_seen))
+            lru = &g_peers[i];
+    }
+    if (!lru)
+        return NULL;   /* table full and every slot has an active serve: fail
+                          closed rather than corrupt a live slot's in-flight
+                          count. Callers deny the serve on NULL. */
+    memset(lru, 0, sizeof(*lru));
+    (void)now;
+    return lru;
+}
+
+bool rom_seed_peer_acquire(const uint8_t peer_ip[16])
+{
+    if (!peer_ip) return false;
+    if (!atomic_load(&g_enabled)) return false;
+    uint32_t cap = atomic_load(&g_max_inflight_per_peer);
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    bool ok = false;
+    pthread_mutex_lock(&g_caps_mutex);
+    struct rom_peer_stat *s = peer_slot_locked(peer_ip, now);
+    if (s) {
+        if (!s->used) {
+            s->used = true;
+            memcpy(s->ip, peer_ip, 16);
+            s->win_start = now;
+        }
+        s->last_seen = now;
+        if (s->concurrent < cap) {
+            s->concurrent++;
+            ok = true;
+        }
+    }
+    pthread_mutex_unlock(&g_caps_mutex);
+    return ok;
+}
+
+void rom_seed_peer_release(const uint8_t peer_ip[16])
+{
+    if (!peer_ip) return;
+    pthread_mutex_lock(&g_caps_mutex);
+    for (unsigned i = 0; i < ROM_SEED_PEER_TABLE_CAP; i++) {
+        if (g_peers[i].used && memcmp(g_peers[i].ip, peer_ip, 16) == 0) {
+            if (g_peers[i].concurrent > 0)
+                g_peers[i].concurrent--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_caps_mutex);
+}
+
+bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n, int64_t now)
+{
+    if (!peer_ip) return false;
+    uint64_t peer_cap = atomic_load(&g_peer_bps_cap);
+    uint64_t global_cap = atomic_load(&g_global_bps_cap);
+    bool ok = true;
+
+    pthread_mutex_lock(&g_caps_mutex);
+
+    /* Global rolling-1s window. */
+    if (now != g_global_win_start) {
+        g_global_win_start = now;
+        g_global_win_bytes = 0;
+    }
+    if (g_global_win_bytes > UINT64_MAX - n) g_global_win_bytes = UINT64_MAX;
+    else g_global_win_bytes += n;
+    if (g_global_win_bytes > global_cap) ok = false;
+
+    /* Per-peer rolling-1s window. */
+    struct rom_peer_stat *s = peer_slot_locked(peer_ip, now);
+    if (s) {
+        if (!s->used) {
+            s->used = true;
+            memcpy(s->ip, peer_ip, 16);
+            s->win_start = now;
+            s->win_bytes = 0;
+        }
+        if (now != s->win_start) {
+            s->win_start = now;
+            s->win_bytes = 0;
+        }
+        s->last_seen = now;
+        if (s->win_bytes > UINT64_MAX - n) s->win_bytes = UINT64_MAX;
+        else s->win_bytes += n;
+        if (s->win_bytes > peer_cap) ok = false;
+
+        if (ok) {
+            if (!s->ever_served) {
+                s->ever_served = true;
+                g_unique_peers_served++;
+            }
+            g_bytes_served_total += n;
+        }
+    } else {
+        ok = false;
+    }
+
+    pthread_mutex_unlock(&g_caps_mutex);
+    return ok;
+}
+
+void rom_seed_note_chunk_served(void)
+{
+    pthread_mutex_lock(&g_caps_mutex);
+    g_chunks_served++;
+    pthread_mutex_unlock(&g_caps_mutex);
+}
+
+/* ── Announce ───────────────────────────────────────────────────────── */
+
+static const char *kind_name(enum rom_artifact_kind k)
+{
+    switch (k) {
+    case ROM_ARTIFACT_CONSENSUS_BUNDLE: return "consensus_bundle";
+    case ROM_ARTIFACT_HEADER_SEED:      return "header_seed";
+    case ROM_ARTIFACT_UNKNOWN:
+    default:                            return "unknown";
+    }
+}
+
+bool rom_seed_build_offer(const struct rom_artifact *a,
+                          const uint8_t self_ip[16], uint16_t fs_port,
+                          struct file_offer *out)
+{
+    if (!a || !out)
+        LOG_FAIL(ROM_SUBSYS, "build_offer: null arg");
+    memset(out, 0, sizeof(*out));
+    memcpy(out->root_hash, a->chunk_root, 32);
+    snprintf(out->filename, sizeof(out->filename), "%s", a->filename);
+    out->size_bytes = a->size_bytes;
+    out->num_chunks = a->num_chunks;
+    out->price_per_mb = 0;              /* free tier — no payment gate */
+    if (self_ip) memcpy(out->peer_ip, self_ip, 16);
+    out->peer_port = fs_port;
+    out->ttl = FILE_MARKET_MAX_TTL;
+    out->last_seen = (int64_t)platform_time_wall_time_t();
+    return true;
+}
+
+size_t rom_seed_directory_json(char *buf, size_t max)
+{
+    if (!buf || max == 0) return 0;
+    struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+    int n = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+
+    size_t off = 0;
+    int w = snprintf(buf + off, max - off, "[");
+    if (w < 0 || (size_t)w >= max - off) return 0;
+    off += (size_t)w;
+
+    int emitted = 0;
+    for (int i = 0; i < n; i++) {
+        char digest_hex[65];
+        HexStr(arts[i].chunk_root, 32, false, digest_hex, sizeof(digest_hex));
+        char whole_hex[65];
+        HexStr(arts[i].whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
+        w = snprintf(buf + off, max - off,
+                     "%s{\"kind\":\"%s\",\"digest\":\"%s\",\"whole_sha3\":\"%s\","
+                     "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}",
+                     emitted ? "," : "", kind_name(arts[i].kind),
+                     digest_hex, whole_hex,
+                     (unsigned long long)arts[i].size_bytes,
+                     arts[i].chunk_size, arts[i].num_chunks);
+        if (w < 0 || (size_t)w >= max - off) {
+            /* Overflow — close the array at what we have so the JSON stays
+             * well-formed rather than truncating mid-object. */
+            break;
+        }
+        off += (size_t)w;
+        emitted++;
+    }
+
+    w = snprintf(buf + off, max - off, "]");
+    if (w < 0 || (size_t)w >= max - off) return 0;
+    off += (size_t)w;
+    return off;
+}
+
+/* ── Background scan lifecycle ──────────────────────────────────────── */
+
+/* Announce every registered artifact as a price-0 offer into the in-memory
+ * market so it surfaces in zmarket_list and the gossip re-broadcast path. */
+static void rom_seed_announce_all(uint16_t fs_port)
+{
+    struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+    int n = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+    uint8_t zero_ip[16] = {0};
+    for (int i = 0; i < n; i++) {
+        struct file_offer offer;
+        if (rom_seed_build_offer(&arts[i], zero_ip, fs_port, &offer))
+            (void)file_market_add_offer(&offer);
+    }
+}
+
+static void *rom_seed_scan_thread(void *arg)
+{
+    (void)arg;
+    char dir[1024];
+    uint16_t fs_port;
+    pthread_mutex_lock(&g_scan_mutex);
+    snprintf(dir, sizeof(dir), "%s", g_scan_datadir);
+    fs_port = g_scan_fs_port;
+    pthread_mutex_unlock(&g_scan_mutex);
+
+    int reg = 0;
+    if (atomic_load(&g_enabled))
+        reg = rom_seed_scan_datadir(dir);
+    if (reg > 0)
+        rom_seed_announce_all(fs_port);
+
+    /* Single-shot worker — the scan above IS its one dispatch. */
+    thread_liveness_beat(&g_scan_liveness, reg);
+    return NULL;
+}
+
+void rom_seed_start_scan(const char *datadir, uint16_t fs_port)
+{
+    if (!datadir || !datadir[0])
+        return;
+    pthread_mutex_lock(&g_scan_mutex);
+    if (g_scan_started) {
+        pthread_mutex_unlock(&g_scan_mutex);
+        return;
+    }
+    atomic_store(&g_scan_cancel, false);
+    snprintf(g_scan_datadir, sizeof(g_scan_datadir), "%s", datadir);
+    g_scan_fs_port = fs_port;
+    if (thread_registry_spawn("zcl_romseed", rom_seed_scan_thread, NULL,
+                              &g_scan_thread) == 0) {
+        g_scan_started = true;
+        thread_liveness_register(&g_scan_liveness, "zcl_romseed", 0, 0);
+    } else {
+        LOG_WARN(ROM_SUBSYS, "start_scan: failed to spawn scan thread");
+    }
+    pthread_mutex_unlock(&g_scan_mutex);
+}
+
+void rom_seed_stop_scan(void)
+{
+    pthread_t t;
+    bool have = false;
+    pthread_mutex_lock(&g_scan_mutex);
+    if (g_scan_started) {
+        t = g_scan_thread;
+        g_scan_started = false;
+        have = true;
+    }
+    pthread_mutex_unlock(&g_scan_mutex);
+    if (!have)
+        return;
+    atomic_store(&g_scan_cancel, true);   /* stop between directory entries */
+    pthread_join(t, NULL);
+    thread_liveness_retire(&g_scan_liveness);
+}
+
+/* ── Introspection ──────────────────────────────────────────────────── */
+
+bool rom_seed_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+
+    json_push_kv_bool(out, "enabled", atomic_load(&g_enabled));
+    json_push_kv_int(out, "max_inflight_per_peer",
+                     (int64_t)atomic_load(&g_max_inflight_per_peer));
+    json_push_kv_int(out, "peer_bps_cap",
+                     (int64_t)atomic_load(&g_peer_bps_cap));
+    json_push_kv_int(out, "global_bps_cap",
+                     (int64_t)atomic_load(&g_global_bps_cap));
+
+    uint64_t chunks_served, bytes_total, unique_peers, cur_bps;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    pthread_mutex_lock(&g_caps_mutex);
+    chunks_served = g_chunks_served;
+    bytes_total = g_bytes_served_total;
+    unique_peers = g_unique_peers_served;
+    cur_bps = (now == g_global_win_start) ? g_global_win_bytes : 0;
+    pthread_mutex_unlock(&g_caps_mutex);
+
+    json_push_kv_int(out, "chunks_served", (int64_t)chunks_served);
+    json_push_kv_int(out, "bytes_served_total", (int64_t)bytes_total);
+    json_push_kv_int(out, "unique_peers_served", (int64_t)unique_peers);
+    json_push_kv_int(out, "current_bps", (int64_t)cur_bps);
+
+    struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+    int n = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+    json_push_kv_int(out, "artifact_count", n);
+
+    struct json_value arr = {0};
+    json_set_array(&arr);
+    for (int i = 0; i < n; i++) {
+        struct json_value o = {0};
+        json_set_object(&o);
+        char digest_hex[65];
+        HexStr(arts[i].chunk_root, 32, false, digest_hex, sizeof(digest_hex));
+        json_push_kv_str(&o, "kind", kind_name(arts[i].kind));
+        json_push_kv_str(&o, "filename", arts[i].filename);
+        json_push_kv_str(&o, "digest", digest_hex);
+        json_push_kv_int(&o, "size", (int64_t)arts[i].size_bytes);
+        json_push_kv_int(&o, "chunk_size", (int64_t)arts[i].chunk_size);
+        json_push_kv_int(&o, "chunks", (int64_t)arts[i].num_chunks);
+        json_push_kv_int(&o, "registered_at", arts[i].registered_at);
+        json_push_back(&arr, &o);
+        json_free(&o);
+    }
+    json_push_kv(out, "artifacts", &arr);
+    json_free(&arr);
+
+    bool ok = atomic_load(&g_enabled);
+    diag_push_health(out, ok,
+                     ok ? "seeding enabled" : "seeding disabled by config");
+    return true;
+}

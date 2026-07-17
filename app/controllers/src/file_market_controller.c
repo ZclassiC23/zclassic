@@ -10,6 +10,8 @@
 
 #include "platform/time_compat.h"
 #include "net/file_market.h"
+#include "net/rom_seed.h"
+#include "util/util.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
 #include "json/json.h"
@@ -286,6 +288,100 @@ static bool rpc_zmarket_status(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── romseed_register ───────────────────────────────────────────────
+ *
+ * Explicitly (re)register a ROM/sync artifact by basename inside the datadir.
+ * Registration re-computes every digest from the bytes on disk (never a
+ * sidecar); a corrupt / mis-named / out-of-band file is refused. */
+static bool rpc_romseed_register(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    if (help || !params || json_size(params) < 1) {
+        json_set_str(result,
+            "romseed_register \"filename\"\n"
+            "\n(Re)register a ROM/sync artifact for free P2P seeding.\n"
+            "\nArguments:\n"
+            "1. filename (string, required) Basename inside the datadir, e.g.\n"
+            "             consensus-state-bundle-<height>.sqlite\n"
+            "\nRegistration re-derives whole-file + per-chunk digests from disk\n"
+            "and refuses a corrupt / mis-named file. Result: the artifact.\n");
+        return true;
+    }
+
+    const struct json_value *arg0 = json_at(params, 0);
+    const char *filename = arg0 ? json_get_str(arg0) : NULL;
+    if (!filename || !filename[0]) {
+        json_set_str(result, "Missing filename");
+        return false;
+    }
+
+    char datadir[1024];
+    GetDataDir(true, datadir, sizeof(datadir));
+
+    struct rom_artifact art;
+    enum rom_register_result rr =
+        rom_seed_register(datadir, filename, NULL, &art);
+
+    json_set_object(result);
+    json_push_kv_str(result, "filename", filename);
+    json_push_kv_int(result, "result_code", (int)rr);
+    if (rr == ROM_REG_OK) {
+        char hex[65];
+        HexStr(art.chunk_root, 32, false, hex, sizeof(hex));
+        json_push_kv_str(result, "status", "registered");
+        json_push_kv_str(result, "digest", hex);
+        json_push_kv_int(result, "size_bytes", (int64_t)art.size_bytes);
+        json_push_kv_int(result, "chunk_size", (int64_t)art.chunk_size);
+        json_push_kv_int(result, "chunks", (int64_t)art.num_chunks);
+
+        /* Announce it as a price-0 offer so peers can discover + fetch it. */
+        struct file_offer offer;
+        uint8_t zero_ip[16] = {0};
+        if (rom_seed_build_offer(&art, zero_ip, 0, &offer))
+            file_market_add_offer(&offer);
+    } else {
+        json_push_kv_str(result, "status", "refused");
+    }
+    return true;
+}
+
+/* ── romseed_list ───────────────────────────────────────────────────── */
+
+static bool rpc_romseed_list(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "romseed_list\n"
+            "\nList ROM/sync artifacts registered for free P2P seeding.\n"
+            "\nResult: array of {kind, filename, digest, size_bytes, chunks}.\n");
+        return true;
+    }
+    (void)params;
+
+    json_set_array(result);
+    struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+    int n = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+    for (int i = 0; i < n; i++) {
+        struct json_value entry = {0};
+        json_set_object(&entry);
+        char hex[65];
+        HexStr(arts[i].chunk_root, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&entry, "kind",
+            arts[i].kind == ROM_ARTIFACT_CONSENSUS_BUNDLE ? "consensus_bundle" :
+            arts[i].kind == ROM_ARTIFACT_HEADER_SEED ? "header_seed" : "unknown");
+        json_push_kv_str(&entry, "filename", arts[i].filename);
+        json_push_kv_str(&entry, "digest", hex);
+        json_push_kv_int(&entry, "size_bytes", (int64_t)arts[i].size_bytes);
+        json_push_kv_int(&entry, "chunk_size", (int64_t)arts[i].chunk_size);
+        json_push_kv_int(&entry, "chunks", (int64_t)arts[i].num_chunks);
+        json_push_kv_bool(&entry, "free", true);
+        json_push_back(result, &entry);
+        json_free(&entry);
+    }
+    return true;
+}
+
 /* ── REST API ───────────────────────────────────────────────────── */
 
 bool api_market_list(struct json_value *result)
@@ -302,6 +398,8 @@ void register_market_rpc_commands(struct rpc_table *t)
         { "market", "zmarket_offer",  rpc_zmarket_offer,  true },
         { "market", "zmarket_buy",    rpc_zmarket_buy,    true },
         { "market", "zmarket_status", rpc_zmarket_status, true },
+        { "market", "romseed_register", rpc_romseed_register, true },
+        { "market", "romseed_list",     rpc_romseed_list,     true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
