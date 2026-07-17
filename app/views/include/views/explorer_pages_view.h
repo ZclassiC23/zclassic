@@ -47,6 +47,10 @@ bool explorer_test_hodl_view_refresh_active(void);
 /* Static client-rendered pages (data fetched via the JSON API by inline JS). */
 size_t explorer_view_events(uint8_t *r, size_t max);
 size_t explorer_view_names(uint8_t *r, size_t max);
+/* Server-rendered /network page over the banked census + topology stores.
+ * `datadir` locates <datadir>/peers_projection.db + topology.db; degrades to a
+ * bounded "not populated" card when the indexer lane has not written it yet. */
+size_t explorer_view_network(const char *datadir, uint8_t *r, size_t max);
 size_t explorer_view_market(uint8_t *r, size_t max);
 size_t explorer_view_swaps(uint8_t *r, size_t max);
 size_t explorer_view_messages(uint8_t *r, size_t max);

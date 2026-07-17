@@ -577,6 +577,14 @@ size_t serve_names(uint8_t *r, size_t max)
     return explorer_view_names(r, max);
 }
 
+/* ── Network Page ────────────────────────────────────────── */
+
+size_t serve_network(uint8_t *r, size_t max)
+{
+    struct explorer_context *ctx = explorer_ctx();
+    return explorer_view_network(ctx->datadir, r, max);
+}
+
 /* ── Market Page ─────────────────────────────────────────── */
 
 size_t serve_market(uint8_t *r, size_t max)

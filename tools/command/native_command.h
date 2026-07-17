@@ -196,6 +196,34 @@ void zcl_native_handle_network_chain_view(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* core.network.census / .node / .versions / .graph — READ-ONLY operator
+ * surface over the banked network census + topology stores (node_census,
+ * topology_edges, census_observations under <datadir>/peers_projection.db +
+ * topology.db). These
+ * open the census SQLite files with SQLITE_OPEN_READONLY in the one-shot CLI
+ * process; no running node is required and consensus is never touched. When the
+ * indexer lane has not yet created a table they degrade gracefully
+ * ("census empty: indexer not yet populated"), never error. Every result is
+ * bounded (paginated node list, bounded observation/edge history, bounded
+ * distribution). Bound by config/commands/core.def. */
+void zcl_native_handle_network_census(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_network_node(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_network_versions(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_network_graph(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* Resolved datadir for the one-shot native CLI process (the --datadir value
+ * captured by zcl_native_command_main, or "" when none was given). Read-only
+ * accessor for handlers that open a datadir-relative store directly. */
+const char *zcl_native_command_datadir(void);
+
 /* ops.selftest — node-free registry self-test (the native successor of the MCP
  * `zcl_self_test mode=registry`). Sweeps every catalog leaf for the static
  * well-formedness the registry guarantees (READY ⇒ dispatchable handler +
