@@ -1299,7 +1299,8 @@ int test_sticky_escalator(void)
 
         reducer_frontier_provable_tip_reset();
         teardown_fixture(&fx);
-    /* ── T13: ladder-livelock backstop ──────────────────────────────────
+    }
+    /* ── T15: ladder-livelock backstop ──────────────────────────────────
      * A rung that returns PROGRESSING every pass while the observed tip stays
      * frozen is spinning without advancing. The per-episode assertion must
      * FORCE-advance it after STICKY_LIVELOCK_MAX_PASSES zero-progress passes —
@@ -1313,7 +1314,7 @@ int test_sticky_escalator(void)
         sticky_escalator_register_rung(STICKY_RUNG_RETRY, se_always_progressing);
 
         sticky_escalator_note_stall("test_livelock_backstop");
-        SE_CHECK("T13: armed at retry", sticky_escalator_test_armed());
+        SE_CHECK("T15: armed at retry", sticky_escalator_test_armed());
         int64_t t = (int64_t)platform_time_wall_time_t();
 
         /* MAX passes, each within the 30s retry window, tip frozen at 500:
@@ -1321,17 +1322,17 @@ int test_sticky_escalator(void)
         enum sticky_rung r = STICKY_RUNG_RETRY;
         for (int i = 1; i <= STICKY_LIVELOCK_MAX_PASSES; i++)
             r = sticky_escalator_test_drive(500, t + i);
-        SE_CHECK("T13: holds on retry up to the cap (window not lapsed)",
+        SE_CHECK("T15: holds on retry up to the cap (window not lapsed)",
                  r == STICKY_RUNG_RETRY);
-        SE_CHECK("T13: no force-advance before the cap",
+        SE_CHECK("T15: no force-advance before the cap",
                  sticky_escalator_test_livelock_force_advances() == 0);
 
         /* The (cap+1)-th zero-progress pass trips the backstop → force-advance
          * to the next rung, still inside the retry window. */
         r = sticky_escalator_test_drive(500, t + STICKY_LIVELOCK_MAX_PASSES + 1);
-        SE_CHECK("T13: backstop force-advances off retry within the window",
+        SE_CHECK("T15: backstop force-advances off retry within the window",
                  r == STICKY_RUNG_TARGETED_REDERIVE);
-        SE_CHECK("T13: exactly one force-advance recorded",
+        SE_CHECK("T15: exactly one force-advance recorded",
                  sticky_escalator_test_livelock_force_advances() == 1);
 
         sticky_escalator_register_rung(STICKY_RUNG_RETRY, NULL);
@@ -1339,7 +1340,7 @@ int test_sticky_escalator(void)
         reducer_frontier_provable_tip_reset();
     }
 
-    /* ── T14: a climbing tip resets the backstop ─────────────────────────
+    /* ── T16: a climbing tip resets the backstop ─────────────────────────
      * Even a sub-margin (1-block) climb each pass is forward cursor movement,
      * so the no-progress counter never reaches the cap and the backstop never
      * fires — the rung is held by its own window, not force-advanced. */
@@ -1355,9 +1356,9 @@ int test_sticky_escalator(void)
         enum sticky_rung r = STICKY_RUNG_RETRY;
         for (int i = 1; i <= STICKY_LIVELOCK_MAX_PASSES + 3; i++)
             r = sticky_escalator_test_drive(500 + i, t + i);
-        SE_CHECK("T14: climbing tip keeps the rung (backstop not tripped)",
+        SE_CHECK("T16: climbing tip keeps the rung (backstop not tripped)",
                  r == STICKY_RUNG_RETRY);
-        SE_CHECK("T14: no force-advance while the tip climbs",
+        SE_CHECK("T16: no force-advance while the tip climbs",
                  sticky_escalator_test_livelock_force_advances() == 0);
 
         sticky_escalator_register_rung(STICKY_RUNG_RETRY, NULL);
