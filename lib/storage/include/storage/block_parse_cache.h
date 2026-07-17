@@ -56,4 +56,15 @@ bool block_parse_cache_get(int32_t height, const uint8_t block_hash[32],
  * with an empty cache. */
 void block_parse_cache_clear(void);
 
+/* Remove exactly the (height, hash) entry if present; a no-op if it isn't
+ * cached (or hash is NULL). Call this from a stage's OWN post-read
+ * verification failure (hash mismatch, merkle mismatch, etc.) on a body that
+ * came through this cache, so a poisoned or now-stale slot can never be
+ * served again — the next block_parse_cache_get() for the same key is
+ * forced back to a genuine disk/segment read. block_parse_cache_get() itself
+ * already verifies a body's hash before ever installing it (see the MISS
+ * path in block_parse_cache.c), so this is defense-in-depth / an explicit
+ * self-healing hook for callers, not the only thing preventing poisoning. */
+void block_parse_cache_evict(int32_t height, const uint8_t hash[32]);
+
 #endif /* STORAGE_BLOCK_PARSE_CACHE_H */

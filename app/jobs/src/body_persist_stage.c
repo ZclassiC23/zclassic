@@ -22,6 +22,7 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "primitives/block.h"
+#include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
@@ -247,6 +248,11 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     block_get_hash(&blk, &disk_hash);
     if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
         block_free(&blk);
+        /* Purge any (height,hash) slot the shared block_parse_cache may hold
+         * for this key: this stage's own hash check just rejected `blk`, so a
+         * cached copy under this key (however it got there) must never be
+         * served to the next refetch attempt — see block_parse_cache.h. */
+        block_parse_cache_evict(next_h, bi->phashBlock->data);
         return requeue_body_for_refetch(bi, next_h, "header_mismatch",
                                         &g_header_mismatch_total);
     }
