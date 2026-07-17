@@ -19,8 +19,10 @@ window granted. This file is the plan of record; update it as state changes.
 
 ## The problem (measured, not assumed)
 
-The live daily-driver node (`~/.zclassic-c23`:18232) is **wedged at H\*=3,176,325** on
-`utxo_apply.anchor_backfill_gap`: `sapling_anchors`/nullifiers are empty below the reducer
+The live daily-driver node (`~/.zclassic-c23`:18232) is **wedged below tip** on
+`utxo_apply.anchor_backfill_gap` (verify the live H\* via `zcl_status` /
+`dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state):
+`sapling_anchors`/nullifiers are empty below the reducer
 cursor because the node was seeded from a **coins-only** snapshot that skipped the
 from-genesis shielded build. To cure it, some producer must **fold from genesis** building
 the complete Sapling/Sprout note-commitment trees + nullifiers, reach the anchor/tip, and

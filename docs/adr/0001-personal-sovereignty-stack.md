@@ -1,6 +1,6 @@
 # ADR-0001: Adopt the AI-Integrated Personal Sovereignty Stack vision
 
-> **Update 2026-07-12:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is now held at H*=3,176,325 by incomplete shielded anchors/nullifiers. The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
+> **Update:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is held below tip by incomplete shielded anchors/nullifiers (verify the live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
 
 - **Status:** Accepted 2026-05-22.
 - **Deciders:** Project maintainer.
