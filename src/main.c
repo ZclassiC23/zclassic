@@ -3715,6 +3715,10 @@ int main(int argc, char **argv)
             ctx.ratify_mint_anchor = true;
         else if (strcmp(argv[i], "-export-consensus-bundle") == 0)
             ctx.export_consensus_bundle = true;
+        else if (strncmp(argv[i], "-promote-shielded-history=",
+                         sizeof("-promote-shielded-history=") - 1) == 0)
+            ctx.promote_shielded_history =
+                argv[i] + sizeof("-promote-shielded-history=") - 1;
         else if (strcmp(argv[i], "-fold-inram") == 0) {
             /* Bulk-fold in-RAM UTXO hot store (storage/coins_ram.h). The
              * storage layer reads ZCL_FOLD_INRAM as the single source of truth

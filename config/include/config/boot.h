@@ -143,6 +143,16 @@ struct app_context {
                                  * itself fold this datadir can still export the
                                  * (byte-identical-shape) bundle. Exits after
                                  * EXPORTED or a typed REFUSED. Default false. */
+    const char *promote_shielded_history; /* -promote-shielded-history=<producer>
+                                 * : TERMINAL offline promote. Installs a finished
+                                 * producer's below-checkpoint shielded history
+                                 * (Sprout+Sapling anchors + nullifiers) into the
+                                 * WEDGED COPY -datadir's progress.kv, atomically
+                                 * flipping all three shielded activation cursors
+                                 * to 0. Refuses any non-*-COPY-* / live datadir.
+                                 * Binds each Sapling frontier to the in-RAM
+                                 * header-committed root. Exits after PROMOTED or
+                                 * a typed REFUSED. Default NULL. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -461,6 +471,17 @@ void boot_ratify_mint_anchor(const char *datadir);
  * at the checkpoint height from `ndb`'s validated block index, and runs the
  * checkpoint-content export against the OPEN progress store into the datadir. */
 void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir);
+
+/* -promote-shielded-history=<producer-datadir> (acts on -datadir as the TARGET;
+ * impl in config/src/boot_promote_shielded_history.c): TERMINAL — NEVER returns;
+ * it _exit()s after printing PROMOTED (0) or a typed REFUSED (1). Enforces the
+ * -COPY- path-safety guard on BOTH the target and producer (never a live
+ * datadir), resolves the in-RAM header tip + compiled checkpoint + Sapling
+ * activation height, and runs shielded_history_promote_run against the OPEN
+ * target progress store. */
+void boot_promote_shielded_history(struct main_state *ms,
+                                   const char *target_datadir,
+                                   const char *producer_datadir);
 
 /* Testable core of the ratify verb: re-derive commitment/count/applied-height
  * from `pdb`'s durable tables, compare against `cp`, and — only on full

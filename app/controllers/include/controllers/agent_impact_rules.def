@@ -96,6 +96,10 @@ AGENT_IMPACT_RULE("app/services/src/chain_restore_repair.c|app/services/src/chai
  * tip via zclassicd chainstate) — the reader iterators + cursor primitive it
  * reuses are covered by the chainstate_legacy_reader / nullifier_kv rules. */
 AGENT_IMPACT_RULE("app/services/src/shielded_history_import_service.c|app/services/include/services/shielded_history_import_service.h|lib/test/src/test_shielded_history_import.c|lib/test/src/test_shielded_import_cured_tip_anchor.c", "shielded_history_import shielded_import_cured_tip_anchor chainstate_legacy_reader chainstate_sapling_anchor nullifier_kv make_lint_gates")
+/* Verified promote of a finished producer's below-checkpoint shielded history
+ * into a wedged COPY datadir + its terminal -promote-shielded-history verb. The
+ * body-crosscheck placeholder is swapped for lane B's real verifier at merge. */
+AGENT_IMPACT_RULE("app/services/src/shielded_history_promote_service.c|app/services/include/services/shielded_history_promote_service.h|app/services/src/shielded_history_body_crosscheck.c|app/services/include/services/shielded_history_body_crosscheck.h|config/src/boot_promote_shielded_history.c|lib/test/src/test_shielded_history_promote.c", "shielded_history_promote anchor_kv nullifier_kv make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/mempool_limits.c|app/services/include/services/mempool_limits.h|lib/test/src/test_mempool_limits.c|config/src/boot_mempool_limits.c|config/include/config/boot_mempool_limits.h", "mempool_limits mem_pressure supervisor make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/zslp_service.c|app/services/include/services/zslp_service.h|lib/test/src/test_models_zslp.c", "models make_lint_gates")
 
