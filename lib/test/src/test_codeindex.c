@@ -901,16 +901,19 @@ int test_codeindex(void)
 
         size_t sn = 0;
         const char *const *shapes = ci_app_shapes(&sn);
-        const char *expect[] = { "conditions", "controllers", "events", "jobs",
+        /* Seven physical app/ shape folders. Event (the eighth conceptual
+         * shape, FRAMEWORK.md §3 row 7) has no app/ folder — deleted
+         * 2026-07-17, owned by lib/event/ + lib/storage/event_log.c. */
+        const char *expect[] = { "conditions", "controllers", "jobs",
                                  "models", "services", "supervisors", "views" };
-        bool shapes_ok = (sn == 8);
-        for (size_t i = 0; shapes_ok && i < 8; i++) {
+        bool shapes_ok = (sn == 7);
+        for (size_t i = 0; shapes_ok && i < 7; i++) {
             bool hit = false;
             for (size_t j = 0; j < sn; j++)
                 if (strcmp(expect[i], shapes[j]) == 0) { hit = true; break; }
             if (!hit) shapes_ok = false;
         }
-        CI_CHECK("app shape list is the eight canonical shapes", shapes_ok);
+        CI_CHECK("app shape list is the seven physical shape folders", shapes_ok);
     }
 
     return failures;

@@ -1234,7 +1234,7 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
     "lib/validation/src/_consensus_parity_fixture_tmp.c"
 /* Gate check-silent-errors-bool — RATCHET (shrink-only
  * silent_bool_errors_baseline.txt). Scans app/{controllers,services,jobs,
- * conditions,models,views,supervisors,events}/src for a swallowed
+ * conditions,models,views,supervisors}/src for a swallowed
  * call-guard failure: `if (!some_call(...)) return false;` with no LOG_*
  * and no `// raw-return-ok:` marker. */
 #define SILENT_BOOL_SCRIPT_REL "tools/lint/check_silent_bool_errors.sh"

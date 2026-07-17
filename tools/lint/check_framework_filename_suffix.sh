@@ -8,9 +8,12 @@
 # in: it is the recurrence guard for "filename matches folder".
 #
 # Rule (NEGATIVE, not positive): a file in shape folder F may not end with
-# the distinctive suffix of a DIFFERENT shape. The eight shape suffixes are
-#   controller service model view job supervisor condition event
-# A file may freely use its OWN shape's suffix (services/foo_service.c) or
+# the distinctive suffix of a DIFFERENT shape. The seven physical-folder
+# shape suffixes are
+#   controller service model view job supervisor condition
+# (the eighth shape, Event, has no app/ folder — see FRAMEWORK.md §3 row 7 —
+# so it carries no suffix to guard here). A file may freely use its OWN
+# shape's suffix (services/foo_service.c) or
 # a bare entity name (models/block.c, jobs/validate_headers_stage.c) — only
 # a FOREIGN-shape suffix is rejected. A positive "must end in _service"
 # rule would reject ~190 legitimately entity-named files; this does not.
@@ -34,9 +37,8 @@ declare -A OWN=(
     [jobs]=job
     [supervisors]=supervisor
     [conditions]=condition
-    [events]=event
 )
-ALL_SHAPES="controller service model view job supervisor condition event"
+ALL_SHAPES="controller service model view job supervisor condition"
 
 fail=0
 violations=()
