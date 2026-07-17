@@ -102,7 +102,7 @@ bool boot_mint_anchor_genesis_reset(struct node_db *ndb)
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, 0))
         refold_ok = false;
     if (refold_ok && (!anchor_kv_reset_mark_complete_in_tx(rpdb) ||
-                      !nullifier_kv_reset_in_tx(rpdb, 0)))
+                      !nullifier_kv_reset_mark_complete_in_tx(rpdb)))
         refold_ok = false;
     if (refold_ok) {
         refold_ok = progress_meta_delete_in_tx(

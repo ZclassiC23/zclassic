@@ -80,6 +80,37 @@ static bool nk_all_history_markers_are(sqlite3 *db, int64_t want)
            sprout == want && sapling == want && nf == want;
 }
 
+/* The reset primitives REFUSE autocommit (they require the caller's open
+ * transaction, unlike anchor_kv_reset which falls back to its own IMMEDIATE tx).
+ * Run each inside its own BEGIN IMMEDIATE..COMMIT so the unit test exercises the
+ * same in-tx contract the boot/refold callers hold. A refusal inside the txn
+ * (e.g. a negative below-height) rolls back and returns false. */
+static bool nk_reset_complete_tx(sqlite3 *db)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+                  SQLITE_OK &&
+              nullifier_kv_reset_mark_complete_in_tx(db) &&
+              sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err) sqlite3_free(err);
+    return ok;
+}
+
+static bool nk_reset_empty_below_tx(sqlite3 *db, int64_t below_height)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+                  SQLITE_OK &&
+              nullifier_kv_reset_mark_empty_below_in_tx(db, below_height) &&
+              sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err) sqlite3_free(err);
+    return ok;
+}
+
 static bool nk_replay_advance(sqlite3 *db, int64_t height, int64_t target)
 {
     char *err = NULL;
@@ -388,6 +419,57 @@ int test_nullifier_kv(void)
     NK_CHECK("mark_empty_below(0) is equivalent to mark_complete",
              anchor_kv_reset_mark_empty_below_in_tx(db, 0) &&
              ak_both_anchor_cursors_are(db, 0));
+
+    /* nullifier_kv reset primitives: the two OPPOSITE completeness semantics are
+     * named at the call site by distinct typed entry points (the exact twin of
+     * the anchor_kv reset split). Same table, same in-tx contract, same rows
+     * cleared — they differ ONLY in the adoption cursor they stamp, and
+     * therefore in whether a pre-activation nullifier can be proven fresh. The
+     * empty-below cursor is the exact marker class behind the PERMANENT
+     * utxo_apply.nullifier_backfill_gap blocker. Pinning both the DELETE, the
+     * cursor value, AND the classification it drives is the load-bearing guard.
+     * (The malformed-marker section above left a junk cursor; the reset writes a
+     * clean explicit cursor over it.) */
+    {
+        uint8_t rc[32];
+        nk_nf(rc, 0x5E);
+        NK_CHECK("reset control row present",
+                 nullifier_kv_add(db, rc, NULLIFIER_POOL_SAPLING, 9) &&
+                 nk_count(db) > 0);
+        NK_CHECK("mark_complete clears the set and stamps cursor zero",
+                 nk_reset_complete_tx(db) && nk_count(db) == 0 &&
+                 nk_marker_is(db, "0"));
+        {
+            /* Complete (from-genesis) history: the durable cursor reads explicit
+             * zero, so no pre-activation nullifier prefix is claimed unknown. */
+            int64_t cursor = -1;
+            bool found = false;
+            NK_CHECK("complete history: activation cursor reads explicit zero",
+                     nullifier_kv_activation_cursor(db, &cursor, &found) &&
+                     found && cursor == 0);
+        }
+        NK_CHECK("mark_empty_below clears the set and stamps cursor N",
+                 nullifier_kv_add(db, rc, NULLIFIER_POOL_SAPLING, 9) &&
+                 nk_reset_empty_below_tx(db, 4242) && nk_count(db) == 0 &&
+                 nk_marker_is(db, "4242"));
+        {
+            /* Empty-below-N history: the durable cursor reads the positive gap
+             * boundary — the marker class the reducer fails closed on until a
+             * body replay backfills [0, N). */
+            int64_t cursor = -1;
+            bool found = false;
+            NK_CHECK("empty-below history: activation cursor reads positive N",
+                     nullifier_kv_activation_cursor(db, &cursor, &found) &&
+                     found && cursor == 4242);
+        }
+        /* Argument validation is preserved from the pre-split primitive: a
+         * negative below-height is refused; a zero below-height is accepted and
+         * behaves as mark_complete (byte-identical to the old reset_in_tx(0)). */
+        NK_CHECK("mark_empty_below refuses a negative height",
+                 !nk_reset_empty_below_tx(db, -1));
+        NK_CHECK("mark_empty_below(0) is equivalent to mark_complete",
+                 nk_reset_empty_below_tx(db, 0) && nk_marker_is(db, "0"));
+    }
 
     progress_store_close();
     test_cleanup_tmpdir(dir);
