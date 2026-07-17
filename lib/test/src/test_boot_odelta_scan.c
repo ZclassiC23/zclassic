@@ -27,7 +27,15 @@
  *
  * Fixtures build the durable image directly with sqlite3_exec/INSERT — this is
  * TEST scaffolding, not production reducer code, so it does not route through
- * the AR lifecycle. compute_hstar (SELECT-only) is the unit under test. */
+ * the AR lifecycle. compute_hstar (SELECT-only) is the unit under test.
+ *
+ * NOTE on the THIRD boot_scan counter, chain_restore.disk_rebuild_rows: it is
+ * deliberately NOT an O(delta) scanner and is characterized separately by
+ * test_rebuild_active_chain_is_o_chain_not_delta (test_chain_restore_service.c).
+ * The disk-backed active-chain rebuild walks tip->genesis (O(chain height)) and
+ * boot reaches it on an UNCLEAN warm restart (crash / kill -9 / OOM) — a known
+ * slow-boot defect, NOT a delta path. See docs/AGENT_TRAPS.md; do not "fix" it
+ * by asserting it here as O(delta). */
 
 #include "test/test_helpers.h"
 
