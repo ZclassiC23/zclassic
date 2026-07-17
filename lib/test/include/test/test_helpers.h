@@ -434,6 +434,7 @@ int test_disk_monitor(void);
 int test_db_maintenance(void);
 int test_mempool_limits(void);
 int test_addrman_integrity(void);
+int test_anchor_peers(void);
 int test_ibd_throttle(void);
 int test_consensus_reject_events(void);
 int test_consensus_reject_index(void);

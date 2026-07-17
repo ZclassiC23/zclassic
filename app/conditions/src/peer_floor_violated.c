@@ -16,7 +16,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define PEER_FLOOR_MIN_HEALTHY 3
+/* Healthy-outbound floor: the single source of truth in net/net.h
+ * (ZCL_PEER_FLOOR_HEALTHY). This condition escalates to operator_needed when
+ * healthy outbound stays below it past PEER_FLOOR_TRIGGER_SECS; keep it in
+ * lockstep with the connman dialer + net supervisor via the shared constant
+ * (lint gate check-peer-floor-single-source). */
+#define PEER_FLOOR_MIN_HEALTHY ZCL_PEER_FLOOR_HEALTHY
 #define PEER_FLOOR_TRIGGER_SECS 60
 
 static _Atomic int64_t g_first_violation_unix;

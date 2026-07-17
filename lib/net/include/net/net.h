@@ -28,6 +28,19 @@
 #define MAX_SUBVERSION_LENGTH 256
 #define DEFAULT_MAX_PEER_CONNECTIONS 125
 #define MAX_OUTBOUND_CONNECTIONS 8
+
+/* Single source of truth for the healthy-outbound peer floor. Below this
+ * many fully-handshaked, block-serving outbound peers the node is
+ * eclipse-exposed and cannot cross-check its tip, so every liveness surface
+ * treats it as a first-class breach: the connman dialer backfills
+ * aggressively (connman.c thread_open_connections + the dns-seed loop), the
+ * net supervisor child fires on_stall + kicks discovery
+ * (app/supervisors net_supervisor.c), and the peer_floor_violated condition
+ * escalates toward operator_needed (app/conditions peer_floor_violated.c).
+ * These four sites used to each hardcode their own 2-or-3 literal; they now
+ * all read this constant so the floor can never drift out of agreement
+ * (lint gate check-peer-floor-single-source pins it). */
+#define ZCL_PEER_FLOOR_HEALTHY 3
 #define NETWORK_UPGRADE_PEER_PREFERENCE_BLOCK_PERIOD (24 * 24 * 3)
 #define DUMP_ADDRESSES_INTERVAL 900
 #define MAPASKFOR_MAX_SZ MAX_INV_SZ
@@ -191,6 +204,14 @@ struct p2p_node {
     char clean_sub_ver[MAX_SUBVERSION_LENGTH];
     bool whitelisted;
     bool one_shot;
+    /* Feeler probe (Bitcoin Core pattern): a short-lived outbound dial that
+     * completes the version handshake to validate an addrman NEW-table
+     * address, then is torn down. Feelers are EXCLUDED from every outbound
+     * slot / healthy-floor count so they never satisfy or perturb the floor
+     * logic; the open-connections thread sweeps completed feelers, marks the
+     * address addrman_good, and disconnects them. Zero-initialised by
+     * p2p_node_create (calloc). */
+    bool is_feeler;
     bool client;
     bool inbound;
     bool network_node;
@@ -457,6 +478,19 @@ void socket_send_data(struct p2p_node *node);
 struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
                                const char *dest);
+
+/* Register an ALREADY-CONNECTED, non-blocking `sock` (from
+ * connect_socket_start + a completed poll(POLLOUT)) as a managed outbound
+ * node. The parallel dialer uses this to complete many concurrent dials
+ * without the blocking select() inside connect_node. Same +1 CALLER-ref
+ * contract as connect_node; re-dedupes under the publish lock and, if a
+ * duplicate service already connected, closes `sock` and returns the existing
+ * node. Returns NULL (closing `sock`) if node creation fails. */
+struct p2p_node *connect_node_from_socket(struct net_manager *nm,
+                                          struct net_address *addr_connect,
+                                          const char *dest,
+                                          zcl_socket_t sock,
+                                          bool *created_out);
 
 bool accept_connection(struct net_manager *nm, const struct listen_socket *ls);
 bool is_banned(struct net_manager *nm, const struct net_addr *addr);

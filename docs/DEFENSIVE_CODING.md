@@ -529,6 +529,7 @@ add/remove a gate.
 - `check-sandbox-wired`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-shellouts`
+- `check-peer-floor-single-source`
 - `check-proc-self-shim`
 - `check-no-authoritative-ram-state`
 - `check-no-new-borrowed-seed`

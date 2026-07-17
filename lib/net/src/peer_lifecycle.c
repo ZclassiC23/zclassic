@@ -127,6 +127,7 @@ const char *peer_lifecycle_source_name(enum peer_lifecycle_source source)
         case PEER_LIFECYCLE_SOURCE_ADDRMAN:  return "addrman";
         case PEER_LIFECYCLE_SOURCE_ZCL23_DB: return "zcl23_db";
         case PEER_LIFECYCLE_SOURCE_MANUAL:   return "manual";
+        case PEER_LIFECYCLE_SOURCE_ANCHOR:   return "anchor";
         case PEER_LIFECYCLE_SOURCE_UNKNOWN:
         default:                             return "unknown";
     }
@@ -264,7 +265,8 @@ static bool source_is_outbound(enum peer_lifecycle_source source)
     return source == PEER_LIFECYCLE_SOURCE_ADDNODE ||
            source == PEER_LIFECYCLE_SOURCE_ADDRMAN ||
            source == PEER_LIFECYCLE_SOURCE_ZCL23_DB ||
-           source == PEER_LIFECYCLE_SOURCE_MANUAL;
+           source == PEER_LIFECYCLE_SOURCE_MANUAL ||
+           source == PEER_LIFECYCLE_SOURCE_ANCHOR;
 }
 
 static const char *entry_direction(const struct peer_lifecycle_entry *e)
