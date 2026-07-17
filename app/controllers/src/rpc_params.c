@@ -2,7 +2,7 @@
  *
  * Safe JSON-RPC params builder: routes every string through the project's
  * JSON encoder so untrusted input cannot inject into the params array.
- * Re-homed from tools/mcp/ (zero-MCP W2). See controllers/rpc_params.h. */
+ * See controllers/rpc_params.h for the public API. */
 
 #include "controllers/rpc_params.h"
 

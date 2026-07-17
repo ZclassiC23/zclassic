@@ -6,7 +6,7 @@ workflow, explorer projection, or operator API. The short version:
 
 **One binary, REST resource first, noun-shaped REST, model-owned schema, ActiveRecord writes,
 explicit validations, explicit relationships, service-owned workflows, typed
-MCP/native calls.**
+native calls.**
 
 ZClassic23 borrows the useful Rails ideas: resources, ActiveRecord lifecycle,
 validations, relationships, migrations, strong parameters, and thin
@@ -21,7 +21,7 @@ Build each feature in this order.
    Pick the noun first: `names`, `messages`, `file_offers`, `swaps`,
    `wallet_notes`, `zslp_tokens`. REST paths are plural collections and member
    resources: `GET /api/v1/names`, `GET /api/v1/names/{name}`,
-   `GET /api/v1/names/{name}/services`. Native/MCP tools may be verbs, but the
+   `GET /api/v1/names/{name}/services`. Native tools may be verbs, but the
    backing model and REST surface stay noun-shaped.
 
 2. **Define the database schema.**
@@ -29,7 +29,7 @@ Build each feature in this order.
    feature migrations live in `app/models/src/database_migrate_features.c`.
    New tables need a primary key, bounded column types, `CHECK` constraints for
    money/heights/counts where possible, and indexes for every list/filter path
-   exposed through REST or MCP. Migrations are forward-only, idempotent, and
+   exposed through REST or native commands. Migrations are forward-only, idempotent, and
    stamped in `schema_migrations` plus `schema_version`.
 
 3. **Create the model.**
@@ -57,7 +57,7 @@ Build each feature in this order.
    Services live in `app/services/src/` and return `struct zcl_result` for new
    code. They receive typed inputs, call models and lower-level services, and
    own transactions or multi-step workflows. They do not parse HTTP, JSON-RPC,
-   or MCP argument shapes.
+   or native argument shapes.
 
 7. **Keep controllers thin.**
    Controllers parse, authorize, call one service or one model read, and render
@@ -71,24 +71,24 @@ Build each feature in this order.
    and privacy. Dynamic/member route helpers must publish the same metadata
    through `/api/v1`, `/api/v1/openapi`, and service-operation contracts. Public
    REST is primarily read-oriented today; mutations stay operator-gated through
-   native/MCP/RPC until an authenticated REST write surface exists.
+   native/RPC until an authenticated REST write surface exists.
 
-9. **Expose typed MCP and native calls from the same contract.**
-   MCP tools live in `tools/mcp/controllers/*_controller.c`. Native operator
-   commands live in the agent contract registry when they are first-class
-   commands. Terminal agents should prefer native commands —
+9. **Expose typed native calls from the same contract.**
+   Native operator commands live in the agent contract registry when they are
+   first-class commands. The native typed command registry is the only agent
+   interface. Terminal agents should prefer native commands —
    `zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
    `zclassic23 discover help` / `discover search <q>`, and
-   `zclassic23-dev status` for the installed dev lane. The legacy typed-MCP
-   one-shots (`make agent-mcp-call*`, `zclassic23 mcpcall <tool> [json]`) are
-   the MCP path and are being removed in zero-MCP W3. Do not add
-   separate helper binaries. Before restarting or hot-swapping the dev lane,
-   run `make agent-dev-status`, native `zclassic23 agentdevstatus`, or MCP
-   `zcl_agent_dev_status` and use its next-action hint.
+   `zclassic23-dev status` for the installed dev lane. The agent contract still
+   carries mcp/mcp_tool taxonomy metadata (the tool-name a command maps to),
+   but the legacy MCP stdio server and its typed one-shots have been removed.
+   Do not add separate helper binaries. Before restarting or hot-swapping the
+   dev lane, run `make agent-dev-status` or native `zclassic23 agentdevstatus`
+   and use its next-action hint.
 
 10. **Test the slice.**
     Add model validation tests, migration/schema tests, service tests, REST
-    contract tests, and MCP controller tests proportional to the risk. Then run
+    contract tests, and native command tests proportional to the risk. Then run
     the focused `make t-fast ONLY=<group>` or `make t ONLY=<group>` path, plus
     `make build-only` and `make lint` before shipping.
 
@@ -136,12 +136,12 @@ Build each feature in this order.
 Before calling a feature done, answer yes to each:
 
 - Is there one resource noun and one owner model?
-- Is the schema/migration indexed for every REST/MCP list path?
+- Is the schema/migration indexed for every REST/native list path?
 - Do all writes pass through AR validation and hooks?
 - Are relationships expressed as model functions, not controller SQL?
 - Does the service return `zcl_result` with actionable failure text?
 - Does REST publish route metadata, schema, privacy, query filters, and
   freshness?
-- Does MCP/native call the same service/model contract as REST?
+- Does the native command call the same service/model contract as REST?
 - Do tests cover invalid input, relationship failure, schema upgrade, and the
   successful path?

@@ -86,16 +86,14 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
-    X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
-    X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
+    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \
     X(principal_authz) X(auth_login) X(command_authority) \
     X(command_handler_snapshot) \
     X(metric_alerts) \
-    X(mcp_inproc_equiv) \
-    X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
+    X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(peer_identity_hostkey) \
     X(secrets_hygiene) X(block_index_integrity) \
     X(block_map_grow_phashblock) \
@@ -175,7 +173,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(coins_view_atomicity) X(coins_anchor_reconcile_all) \
     X(coins_best_derivation) \
     X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
-    X(mcp_fuzz) X(rpc_auth_hardening) \
+    X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
     X(net_msg_dos) \
     X(net_framing_dos) \

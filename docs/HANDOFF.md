@@ -169,7 +169,7 @@ in the trust path). Full picture, laws, and the five-qualities design charter
    — give each a durable cursor like the pprev-repair fix, so boot is O(delta)).
 5. **W4-4/6:** anchor the release binary on-chain + two-builder gate; overlay SDK
    (factor the ZNAM/ZSLP/ZMSG/ZANC skeleton); Noise transport P1 wiring;
-   wallet-encryption default + `zcl_sql` column denylist; finish zero-MCP;
+   wallet-encryption default + `zcl_sql` column denylist (zero-MCP complete);
    command-contract lint ratchet (schema+semantics+bounded-output per leaf).
 
 **Live node (read-only observation 2026-07-15 05:08 UTC):** public canonical
@@ -440,15 +440,15 @@ all-or-nothing publication. Runtime peer-snapshot activation remains contained.
 Do NOT delete the borrowed seed / flip `-refold-from-anchor` to default in
 the same move — that is a separate, later, owner-gated step.
 
-## 3. Zero-MCP program (secondary track)
+## 3. Zero-MCP program (complete)
 
-Owner directive: delete the MCP server entirely — the native CLI
-(`zclassic23 <command>`) becomes the ONLY agent interface. W0/W1-A/W1-B/C
-(hot-swap re-targeted onto the command registry, `88b4e1030`) are DONE.
-Next: W2 (~47 remaining call sites) then W3 (delete the MCP server), per
-[`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) (the
-114-site inventory). W3 is blocked on 3 prereqs — memory
-`project_zero_mcp_w3_prereqs_2026-07-12`.
+W3 is done: the legacy MCP stdio server is deleted — no `-mcp` server mode, no
+`mcpcall` CLI subcommand, no `tools/mcp/` tree. The native typed command
+registry (`zclassic23 <command>`) is the sole agent interface. The surviving
+node RPC transport was re-homed under `app/controllers/`; the agent contract
+still carries `mcp_tool` taxonomy metadata (the tool-name a command maps to) as
+durable contract metadata, not a live server. See
+[`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) for the epitaph.
 
 ## 4. MVP status
 
@@ -471,7 +471,7 @@ Live scorer: `tools/mvp_gate.sh`.
 
 The committed units declare the same intent to the binary with
 `-operator-lane=canonical`, `-operator-lane=dev`, and `-operator-lane=soak`.
-`zclassic23 agent`, REST `/api/v1/agent`, and MCP `zcl_operator_summary`
+`zclassic23 agent` and REST `/api/v1/agent`
 surface that as `operator_lane` (`zcl.operator_lane.v1`) with the lane's
 restart policy. Prefer that native contract over parsing systemd names when a
 lane's RPC is reachable.

@@ -1,20 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Tests for the metric-threshold alert rules (C3):
- * tools/mcp/metrics.c's metrics_prometheus_evaluate_alert_rules() and the
- * mcp_notify.c allow-list entry ("condition.detected") that lets its
- * output flow through the existing MCP push channel.
+ * lib/metrics/src/prometheus_metrics.c's metrics_prometheus_evaluate_alert_rules()
+ * and the operator-event allow-list entry ("condition.detected", in
+ * lib/metrics/src/operator_events.c) that marks its output operator-class.
  *
- * Hermetic: no live node, no real MCP client. Gauges are seeded
- * directly via the public setters in tools/mcp/metrics.h; the emitted
- * EV_CONDITION_DETECTED events are captured with a local sync
- * event_observe() the same way lib/test/src/test_recovery_policy.c
- * captures EV_RECOVERY_POLICY_*.
+ * Hermetic: no live node. Gauges are seeded directly via the public setters
+ * in metrics/prometheus_metrics.h; the emitted EV_CONDITION_DETECTED events
+ * are captured with a local sync event_observe() the same way
+ * lib/test/src/test_recovery_policy.c captures EV_RECOVERY_POLICY_*.
  */
 
 #include "test/test_helpers.h"
 #include "metrics/prometheus_metrics.h"
-#include "mcp/mcp_notify.h"
+#include "metrics/operator_events.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/blocker.h"
@@ -101,10 +100,10 @@ static int test_rule_count_and_names(void)
 static int test_allow_listed_for_push(void)
 {
     int failures = 0;
-    TEST("metric_alerts: condition.detected is in the mcp_notify push allow-list") {
-        ASSERT(mcp_notify_is_operator_event("condition.detected"));
+    TEST("metric_alerts: condition.detected is in the operator-event allow-list") {
+        ASSERT(metrics_is_operator_event("condition.detected"));
         /* Sanity: an unrelated, non-operator event type is still excluded. */
-        ASSERT(!mcp_notify_is_operator_event("chain.tip_updated"));
+        ASSERT(!metrics_is_operator_event("chain.tip_updated"));
         PASS();
     } _test_next:;
     return failures;

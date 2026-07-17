@@ -5611,7 +5611,7 @@ syncdiag_net_split_done:
             "app/controllers/src/agent_lanes_controller.c",
             "app/controllers/src/event_healthcheck_controller.c",
             "app/controllers/include/controllers/event_healthcheck_controller.h",
-            "tools/mcp/controllers/ops_controller.c",
+            "app/controllers/src/diagnostics_native_handlers.c",
             "docs/AGENT_API.md",
         };
         for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -5638,7 +5638,6 @@ syncdiag_net_split_done:
         ok = ok && json_get_bool(json_get(&result, "code_changed"));
         ok = ok && !json_get_bool(json_get(&result, "docs_only"));
         ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
-        ok = ok && json_get_bool(json_get(&result, "mcp_changed"));
         ok = ok && strcmp(json_get_str(json_get(&result, "mapping_source")),
                           "app/controllers/include/controllers/agent_impact_rules.def") == 0;
         ok = ok && json_get_int(json_get(&result, "shared_rule_count")) > 0;
@@ -5647,7 +5646,7 @@ syncdiag_net_split_done:
                      &result, "relevant_test_groups_count")) >= 3;
         ok = ok && out_files && json_size(out_files) == 6;
         ok = ok && json_array_has_str(groups, "syncdiag_rpc");
-        ok = ok && json_array_has_str(groups, "mcp_controllers");
+        ok = ok && json_array_has_str(groups, "command_registry_catalog");
         ok = ok && json_array_has_str(groups, "make_lint_gates");
         ok = ok && json_array_has_substr(commands,
                                          "ZCL_FAST_TESTS=syncdiag_rpc");
@@ -5666,15 +5665,9 @@ syncdiag_net_split_done:
         json_free(&result);
     }
 
-    /* zero-MCP native analog of the "mcp_changed"/"mcp_controllers" test
-     * above (docs/work/MCP-REMOVAL-WORKLIST.md W2): a change to a
-     * *_native_handlers.c file (the command-registry's handler surface,
-     * app/controllers/include/controllers/agent_impact_rules.def:234)
-     * classifies into "command_registry_catalog" — the native successor
-     * group to "mcp_controllers" for this migration. mcp_changed / the
-     * mcp_controllers group above stay untouched: they still describe
-     * real, currently-running -mcp behavior (a tools/mcp/ file changed)
-     * until W3 deletes tools/mcp/ (entire tree) and this rule row. */
+    /* A change to a *_native_handlers.c file (the command-registry's handler
+     * surface) classifies into "command_registry_catalog" — the native group
+     * that replaced the retired MCP-controller test group. */
     printf("api: native RPC maps a native-handlers file change to "
            "command_registry_catalog... ");
     {
@@ -7013,14 +7006,6 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "direct_changed_compile")),
                           "make fast-changed-compile") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "one_binary_mcp")),
-                          "make agent-mcp-call TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "hot_mcp")),
-                          "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strcmp(json_get_str(json_get(loop, "dev_lane_mcp")),
-                          "make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']") == 0;
-        ok = ok && strstr(json_get_str(json_get(loop, "direct_binary_mcp")),
-                          "build/bin/zclassic23 mcpcall") != NULL;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "fast_no_link_compile")),
                           "make fast-compile") == 0;
@@ -7141,8 +7126,6 @@ syncdiag_net_split_done:
                                         "agent_clear_stale_dev_reindex") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "agent_dev_status_mcp") != NULL;
-        ok = ok && find_object_with_str(commands, "name",
-                                        "agent_mcp_call") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "fast_dev_deploy") != NULL;
         ok = ok && find_object_with_str(commands, "name",

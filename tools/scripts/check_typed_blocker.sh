@@ -44,11 +44,8 @@ while IFS= read -r line; do
     baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
-# Scan only production code (not tests, not vendor). The C5 MCP body
-# in tools/mcp lives outside app/services + lib/, so explicitly include
-# the controllers tree.
-roots=(app/services app/controllers lib/validation lib/util lib/net
-       tools/mcp/controllers)
+# Scan only production code (not tests, not vendor).
+roots=(app/services app/controllers lib/validation lib/util lib/net)
 
 fail=0
 new_violations=()

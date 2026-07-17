@@ -8,17 +8,14 @@
 # lib/validation/src/connect_block.c still exists and boot_index.c calls
 # connect_block()). This gate makes that specific class of lie a hard fail.
 #
-# It also pins two load-bearing FACTS the docs cite to the real tree:
+# It also pins one load-bearing FACT the docs cite to the real tree:
 #   - the binary size in MB  (vs `ls -lh build/bin/zclassic23`)
-#   - the MCP tool count     (vs the tools/mcp/controllers/*_controller.c
-#                             routing tables)
 # so an ADR/FRAMEWORK number can never silently drift far from reality.
 #
 # RATCHET design: it encodes the CURRENT tree as the baseline (the real
-# size band, the real tool-count band) so it PASSES once the docs are
-# corrected, and only FAILS when someone (a) re-asserts a false "deleted"
-# claim about live code, or (b) edits a doc to cite a size/count that no
-# longer matches the binary.
+# size band) so it PASSES once the docs are corrected, and only FAILS
+# when someone (a) re-asserts a false "deleted" claim about live code, or
+# (b) edits a doc to cite a size that no longer matches the binary.
 #
 # Exit 0 = pass. Non-zero + a clear message = fail.
 set -uo pipefail
@@ -125,38 +122,6 @@ if [ -f "$BIN" ]; then
     done
 else
     echo "INFO: $BIN not built; skipping binary-size fact check (build first to enforce)."
-fi
-
-##############################################################################
-# PART 3 — MCP tool-count fact pinned to the routing tables (band check).
-# Real count = distinct "zcl_*" tool rows in tools/mcp/controllers/*.c.
-# Docs cite "~100 tools", "93 MCP tools", etc. Each cited count must be
-# within [-COUNT_LO, +COUNT_HI] of the real count.
-##############################################################################
-COUNT_DOCS="docs/adr/0001-personal-sovereignty-stack.md docs/FRAMEWORK.md CLAUDE.md"
-COUNT_BAND=12   # "~100" prose vs a real 98 is fine; a hard 60 or 200 is not
-CTRL_GLOB="tools/mcp/controllers"
-
-if [ -d "$CTRL_GLOB" ]; then
-    real_tools=$(grep -rhoE '^[[:space:]]*\{[[:space:]]*"zcl_[a-z_]+"' "$CTRL_GLOB"/*_controller.c 2>/dev/null \
-                 | grep -oE '"zcl_[a-z_]+"' | sort -u | grep -c .)
-    if [ "${real_tools:-0}" -lt 50 ]; then
-        err "tool-count probe found only ${real_tools} zcl_ tools in $CTRL_GLOB — routing-table format may have changed; update this gate."
-    else
-        for d in $COUNT_DOCS; do
-            [ -f "$d" ] || continue
-            # match "<num> (typed )?(MCP )?tools" and "~<num> ... tools"
-            while read -r n; do
-                [ -n "$n" ] || continue
-                diff=$(( real_tools - n )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
-                if [ "$diff" -gt "$COUNT_BAND" ]; then
-                    err "$d cites '${n}' MCP tools but routing tables have ${real_tools} (band ±${COUNT_BAND})."
-                fi
-            done < <(grep -oiE '~?[0-9]+ (typed )?(mcp )?tools' "$d" | grep -oE '[0-9]+' | sort -u)
-        done
-    fi
-else
-    echo "INFO: $CTRL_GLOB not found; skipping tool-count fact check."
 fi
 
 if [ "$fail" -ne 0 ]; then

@@ -213,7 +213,7 @@ is_code_like_change() {
         *.c|*.h|Makefile|*.mk|tools/*.sh|tools/githooks/*)
             return 0
             ;;
-        app/*|application/*|adapters/*|config/*|domain/*|lib/*|ports/*|tools/mcp/*)
+        app/*|application/*|adapters/*|config/*|domain/*|lib/*|ports/*)
             return 0
             ;;
         *)
@@ -238,10 +238,9 @@ is_node_c_source() {
     local file="$1"
     is_transient_lint_fixture "$file" && return 1
     case "$file" in
-        src/main.c|tools/mcp_server.c|app/*/src/*.c|config/src/*.c|\
+        src/main.c|app/*/src/*.c|config/src/*.c|\
         lib/*/src/*.c|domain/*/src/*.c|application/*/src/*.c|\
-        adapters/outbound/persistence/src/*.c|tools/mcp/*.c|\
-        tools/mcp/controllers/*.c|tools/mcp/views/*.c)
+        adapters/outbound/persistence/src/*.c)
             case "$file" in
                 lib/test/*|tools/sim/*)
                     return 1

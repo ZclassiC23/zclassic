@@ -140,15 +140,15 @@ macros (each logs `error` with `file`/`line`/`func` + varargs):
 - `LOG_ERR(domain, fmt, ...)` — log + `return -1` (for MCP handlers).
 - `LOG_RETURN(val, domain, fmt, ...)` — log + `return (val)`.
 
-**CI lint:** `check-silent-errors` greps `app/ tools/mcp/` for `return -1;` not
-paired with `LOG_ERR`/`log_json`/`fprintf`.
+**CI lint:** the shape-tier `check-silent-errors-*` gates grep `app/` for
+`return -1;` not paired with `LOG_ERR`/`log_json`/`fprintf`.
 
 ---
 
-## 5. MCP handlers must log on every error path
+## 5. Native command handlers must log on every error path
 
-**Problem:** silent `return -1;` in MCP handlers leaves the caller with no
-diagnostic info.
+**Problem:** silent `return -1;` in a native command handler leaves the caller
+with no diagnostic info.
 
 **Status: enforced by lint.** `make lint` runs five shape-tier gates. Each
 requires a bare `return -1;` to be preceded by a logging call or carry an
@@ -156,7 +156,6 @@ explicit `// raw-return-ok:<reason>` marker (no space after the colon):
 
 | Gate | Surface |
 |------|---------|
-| `check-silent-errors` | `tools/mcp/controllers/*.c` |
 | `check-silent-errors-services` | `app/services/src/` |
 | `check-silent-errors-controllers` | `app/controllers/src/` |
 | `check-silent-errors-jobs` | `app/jobs/src/` |
@@ -230,7 +229,7 @@ assert green).
 | `check-blob-read-bounds` | HARD | Fixed-size SQLite blob reads in app models use `AR_READ_BLOB` or prove `sqlite3_column_bytes` before `memcpy`. |
 | `check-malloc`, `check-raw-malloc` | HARD | Raw malloc/calloc/realloc outside `zcl_*` wrappers (§3). Override `// raw-alloc-ok:<tag>`. |
 | `check-raw-sqlite` | HARD | Raw `sqlite3_step` outside `AR_STEP_*` (§1). Override `// raw-sql-ok:<tag>`. |
-| `check-silent-errors` (+ `-services`/`-controllers`/`-jobs`/`-conditions`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
+| `check-silent-errors-services` (+ `-controllers`/`-jobs`/`-conditions`/`-bool`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
 | `check-before-save-hooks` | HARD | `utxo`/`block`/`wallet_key`/`wallet_tx` keep before/after-save hooks (§6). |
 | `check-coins-lookup-nullcheck` | HARD | Coins lookups null-check the returned coin before use. |
 | `check-log-macro-return-type` | HARD | Returning `LOG_*` macros match the enclosing function return type (`LOG_FAIL` only in bool-returning functions, `LOG_ERR` only in int-returning functions, `LOG_NULL` only in pointer-returning functions). |
@@ -561,7 +560,6 @@ add/remove a gate.
 - `check-rpc-registrar`
 - `check-scanner-immunity`
 - `check-service-result-convergence`
-- `check-silent-errors`
 - `check-silent-errors-bool`
 - `check-wallet-raw-prepare-log`
 - `check-silent-errors-conditions`
@@ -612,7 +610,7 @@ mechanically hold:
 |--------|---------------|-----------|
 | `// obs-ok:<tag>` | line with `fprintf(stderr, …)` whose nearby code emits no event / does not terminally propagate | `check-observability-pairing` |
 | `// raw-sql-ok:<tag>` | line with `sqlite3_step(…)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
-| `// raw-return-ok:<tag>` | bare `return -1;` in MCP/service/controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
+| `// raw-return-ok:<tag>` | bare `return -1;` in service/controller code with no preceding log line | `check-silent-errors-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/mcp-bridge/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |

@@ -18,7 +18,6 @@ struct agent_impact_acc {
     bool docs_only;
     bool consensus_risk;
     bool agent_api_changed;
-    bool mcp_changed;
 };
 
 void agent_impact_add_group(struct agent_impact_acc *acc, const char *group);
