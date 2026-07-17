@@ -40,6 +40,10 @@
 #define EV_PEER_SESSION_CLOSED_LEN 76u
 #define EV_NET_FORK_TIP_HEX_MAX 64u
 #define EV_NET_FORK_OBSERVED_FIXED_LEN 32u
+/* Census UA hard cap (bytes). Any longer input is truncated to this length
+ * WITH the ua_overflow flag set — never silently. */
+#define EV_CENSUS_UA_MAX 256u
+#define EV_NODE_CENSUS_OBSERVED_FIXED_LEN 52u
 
 struct ev_tx_admit_mempool {
     uint8_t  txid[32];
@@ -195,6 +199,36 @@ struct ev_net_fork_observed {
     uint8_t  hash_b_len;
     char     tip_hash_a[EV_NET_FORK_TIP_HEX_MAX + 1];
     char     tip_hash_b[EV_NET_FORK_TIP_HEX_MAX + 1];
+};
+
+/* EV_NODE_CENSUS_OBSERVED — one node-identity observation from a version
+ * handshake (real peer OR crawler contact). Fixed 52-byte prefix (LE) + a
+ * variable, pedantically bounded user-agent string:
+ *   [16B ip][2B port][1B source][1B success][1B ua_overflow][1B reserved]
+ *   [4B protocol_version][8B services][8B reported_height][8B observed_unix]
+ *   [2B ua_len][ua bytes]
+ * `source`: 0=real peer, 1=crawler. `success`: 1=completed handshake carrying
+ * version data, 0=dial failed (fail observations only bump an EXISTING row's
+ * fail counter — they never insert). `ua_overflow`: the UA was longer than
+ * EV_CENSUS_UA_MAX and was truncated (never silently). */
+enum {
+    EV_CENSUS_SOURCE_PEER    = 0,
+    EV_CENSUS_SOURCE_CRAWLER = 1,
+};
+
+struct ev_node_census_observed {
+    uint8_t  ip_v4_or_v6[16];
+    uint16_t port;
+    uint8_t  source;
+    uint8_t  success;
+    uint8_t  ua_overflow;
+    uint8_t  reserved;
+    int32_t  protocol_version;
+    uint64_t services;
+    int64_t  reported_height;
+    int64_t  observed_unix;
+    uint16_t ua_len;
+    char     user_agent[EV_CENSUS_UA_MAX + 1];  /* NUL-terminated for readers */
 };
 
 static inline void ev_put_u16_le(uint8_t *dst, uint16_t v)
@@ -957,6 +991,71 @@ ev_net_fork_observed_parse(const void *payload, size_t len,
     if (hash_b_len)
         memcpy(out->tip_hash_b,
                buf + EV_NET_FORK_OBSERVED_FIXED_LEN + hash_a_len, hash_b_len);
+    return true;
+}
+
+/* ── EV_NODE_CENSUS_OBSERVED ────────────────────────────────────── */
+
+static inline size_t
+ev_node_census_observed_serialized_len(const struct ev_node_census_observed *ev)
+{
+    if (!ev) return 0;
+    return EV_NODE_CENSUS_OBSERVED_FIXED_LEN + (size_t)ev->ua_len;
+}
+
+static inline bool
+ev_node_census_observed_serialize(const struct ev_node_census_observed *ev,
+                                  uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->ua_len > EV_CENSUS_UA_MAX) return false;
+    size_t need = ev_node_census_observed_serialized_len(ev);
+    if (out_cap < need) return false;
+    memcpy(out + 0, ev->ip_v4_or_v6, 16);
+    ev_put_u16_le(out + 16, ev->port);
+    out[18] = ev->source;
+    out[19] = ev->success ? 1u : 0u;
+    out[20] = ev->ua_overflow ? 1u : 0u;
+    out[21] = 0u;
+    ev_put_u32_le(out + 22, (uint32_t)ev->protocol_version);
+    ev_put_u64_le(out + 26, ev->services);
+    ev_put_u64_le(out + 34, (uint64_t)ev->reported_height);
+    ev_put_u64_le(out + 42, (uint64_t)ev->observed_unix);
+    ev_put_u16_le(out + 50, ev->ua_len);
+    if (ev->ua_len)
+        memcpy(out + EV_NODE_CENSUS_OBSERVED_FIXED_LEN, ev->user_agent,
+               ev->ua_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_node_census_observed_parse(const void *payload, size_t len,
+                              struct ev_node_census_observed *out)
+{
+    if (!payload || !out || len < EV_NODE_CENSUS_OBSERVED_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint16_t ua_len = ev_get_u16_le(buf + 50);
+    if (ua_len > EV_CENSUS_UA_MAX)
+        return false;
+    if (len != EV_NODE_CENSUS_OBSERVED_FIXED_LEN + (size_t)ua_len)
+        return false;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->ip_v4_or_v6, buf + 0, 16);
+    out->port = ev_get_u16_le(buf + 16);
+    out->source = buf[18];
+    out->success = buf[19] ? 1u : 0u;
+    out->ua_overflow = buf[20] ? 1u : 0u;
+    out->reserved = 0u;
+    out->protocol_version = (int32_t)ev_get_u32_le(buf + 22);
+    out->services = ev_get_u64_le(buf + 26);
+    out->reported_height = (int64_t)ev_get_u64_le(buf + 34);
+    out->observed_unix = (int64_t)ev_get_u64_le(buf + 42);
+    out->ua_len = ua_len;
+    if (ua_len)
+        memcpy(out->user_agent, buf + EV_NODE_CENSUS_OBSERVED_FIXED_LEN,
+               ua_len);
     return true;
 }
 

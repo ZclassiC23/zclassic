@@ -91,6 +91,11 @@ enum event_log_type {
     /* A fork observation (two peer clusters at one height): the durable
      * append-only record of network disagreement. Folded into fork_events. */
     EV_NET_FORK_OBSERVED    = 27,
+    /* A node-identity observation from a version handshake — real peer OR
+     * crawler contact. Carries the pedantically bounded user-agent, protocol
+     * version, services bits, and best height. Folded into the durable
+     * node_census + census_observations tables (peers_projection). */
+    EV_NODE_CENSUS_OBSERVED = 28,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

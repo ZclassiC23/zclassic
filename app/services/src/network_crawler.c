@@ -21,6 +21,8 @@
 #include "services/network_monitor.h"
 
 #include "net/addrman.h"
+#include "storage/peers_projection.h"
+#include "storage/event_log_payloads.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -388,6 +390,27 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
                 zcl_mutex_lock(&g_ncrawl.lock);
                 ncrawl_census_ingest_locked(&items[t].out);
                 zcl_mutex_unlock(&g_ncrawl.lock);
+
+                /* Bank the durable node-identity census from this crawler
+                 * contact (source = crawler), OUTSIDE the crawler lock (the
+                 * emit does event-log I/O). A reachable contact carries an
+                 * identity (success upsert); an unreachable one only bumps an
+                 * existing node's dial_fail_count. The emit fails closed on a
+                 * malformed user-agent and no-ops if no event log is wired. */
+                const struct net_addr *na = &items[t].addr->svc.addr;
+                uint8_t census_key[16];
+                if (na->has_torv3)
+                    memcpy(census_key, na->torv3, 16);
+                else
+                    memcpy(census_key, na->ip, 16);
+                int64_t obs = items[t].out.last_probe_us > 0
+                                  ? items[t].out.last_probe_us
+                                  : platform_time_wall_unix();
+                (void)peers_projection_emit_census_observed(
+                    census_key, items[t].addr->svc.port,
+                    EV_CENSUS_SOURCE_CRAWLER, items[t].out.reachable,
+                    items[t].out.subver, items[t].out.version,
+                    items[t].out.services, items[t].out.best_height, obs);
                 probed++;
 
                 if (items[t].out.reachable) {

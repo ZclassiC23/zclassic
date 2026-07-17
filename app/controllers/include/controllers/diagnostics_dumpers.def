@@ -282,6 +282,15 @@
                     "peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED",
                     "lib/storage/src/peers_projection.c",
                     "lib/test/src/test_peers_projection.c"),
+    DIAG_PROJECTION("census", census_dump_state_json,
+                    "durable network census (node_census over "
+                    "EV_NODE_CENSUS_OBSERVED, real-peer + crawler): population, "
+                    "reachable-in-last-24h, top-10 user-agent distribution, "
+                    "protocol-version distribution, and a height distribution "
+                    "summary (modal/max/min). Distinct from the crawler's live "
+                    "network_census rollup.",
+                    "lib/storage/src/peers_projection.c",
+                    "lib/test/src/test_peers_projection.c"),
     DIAG_PROJECTION("utxo_projection", utxo_projection_dump_state_json,
                     "utxo_projection: open/path/last_consumed_offset, "
                     "utxo_count, events_consumed_total, emit/consume counters, "
