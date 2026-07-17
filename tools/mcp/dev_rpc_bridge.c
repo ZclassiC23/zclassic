@@ -15,7 +15,7 @@
 
 #include "controllers.h"
 #include "router.h"
-#include "rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include "command/native_dev_hotswap.h"
 #include "config/command_catalog.h"

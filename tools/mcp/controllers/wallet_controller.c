@@ -4,8 +4,8 @@
 
 #include "../controllers.h"
 #include "../router.h"
-#include "../rpc_client.h"
-#include "../rpc_params.h"
+#include "controllers/rpc_client.h"
+#include "controllers/rpc_params.h"
 
 /* Tier-1 hot-swap: this controller's route table is generation-exportable
  * (see config/hotswap_eligible.def). The probe names a read-only route it

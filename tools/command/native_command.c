@@ -45,7 +45,7 @@
 #include "command/rom_compile_render.h"
 #include "command/rom_compile_offline.h"
 #include "command/rom_watch_loop.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include <ctype.h>
 #include <errno.h>

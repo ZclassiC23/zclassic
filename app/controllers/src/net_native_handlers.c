@@ -13,7 +13,7 @@
 
 #include "controllers/network_controller.h"
 #include "json/json.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "net/onion_service.h"
 #include "platform/time_compat.h"
 #include "rpc/protocol.h"

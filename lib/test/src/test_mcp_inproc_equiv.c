@@ -23,7 +23,7 @@
  * and captures duplicate-key / ordering quirks identically. */
 
 #include "test/test_helpers.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "rpc/server.h"
 #include "rpc/httpserver.h"
 #include "rpc/protocol.h"

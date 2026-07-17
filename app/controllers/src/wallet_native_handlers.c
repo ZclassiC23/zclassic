@@ -13,8 +13,8 @@
 #include "controllers/wallet_native_handlers.h"
 
 #include "json/json.h"
-#include "mcp/rpc_client.h"
-#include "mcp/rpc_params.h"
+#include "controllers/rpc_client.h"
+#include "controllers/rpc_params.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
