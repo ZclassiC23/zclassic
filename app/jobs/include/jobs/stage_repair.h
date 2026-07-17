@@ -371,6 +371,20 @@ bool stage_repair_validate_script_hash_split_detect_for_testing(
     struct sqlite3 *db, int *out_height);
 bool stage_repair_validate_script_hash_split_rewind_for_testing(
     struct sqlite3 *db, bool *repaired, int *out_height);
+
+/* Test-only: drop the tip_finalize rewind-churn memo (see
+ * tip_finalize_rewind_churn_gate in stage_repair_reducer_frontier.c). Call
+ * between fixtures so a prior test's streak/blocker never leaks in. */
+void stage_reducer_frontier_reset_rewind_churn_memo_for_testing(void);
+
+/* Test-only witness for the tip_finalize rewind-churn refusal: drives the
+ * cursor clamp/rewind directly from a caller-populated result (`hstar`,
+ * `tip_finalize_cursor_before`, optionally `coins_applied_found` /
+ * `coins_applied_height`) without a main_state/active-chain fixture. */
+bool stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+    struct sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
 #endif
 
 #endif /* ZCL_JOBS_STAGE_REPAIR_H */
