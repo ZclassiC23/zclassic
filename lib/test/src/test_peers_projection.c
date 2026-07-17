@@ -614,15 +614,18 @@ static int t_census_pedantic_ua(void)
     peers_projection_t *p = peers_projection_open(proj_path, log);
     peers_projection_set_event_log(log);
 
-    /* control byte (0x01) → malformed → rejected, no row. */
+    /* control byte (0x01) → malformed → rejected, no row.
+     * (String split after \x01 so the greedy hex escape doesn't swallow
+     * the following hex-digit-looking letters "Bea" into one huge
+     * out-of-range escape — adjacent literals concatenate in C.) */
     PP_CHECK("control-byte UA rejected",
              !peers_projection_emit_census_observed(ip1, 8033,
-                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\x01Bean/", 1, 1, 1,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\x01" "Bean/", 1, 1, 1,
                  1700000000LL));
     /* high byte (0xFF) → malformed → rejected. */
     PP_CHECK("high-byte UA rejected",
              !peers_projection_emit_census_observed(ip2, 8033,
-                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\xffBean/", 1, 1, 1,
+                 EV_CENSUS_SOURCE_CRAWLER, true, "/Magic\xff" "Bean/", 1, 1, 1,
                  1700000000LL));
     PP_CHECK("catch up (no rows)", peers_projection_catch_up(p) != UINT64_MAX);
     PP_CHECK("malformed produced no rows",
