@@ -203,6 +203,20 @@
                  "eclipse_suspected signal + evidence (our modal vs network modal)",
                  "app/services/src/network_crawler.c",
                  "lib/test/src/test_network_crawler.c"),
+    DIAG_LOCAL("network", network_dump_state_json,
+               "network rollup: what the node knows about the ZClassic "
+               "network in one call — connman {wired, connected_peers, "
+               "outbound_healthy, addrman_size}, peer_floor (the "
+               "net.outbound_floor supervisor contract: registered, "
+               "healthy_outbound, last_tick_age_us, deadline_secs, "
+               "ticks_run, stall_fires), chain_view (network_monitor: "
+               "modal/max height, our delta, fork clusters), census "
+               "(network_census: reachable count, version histogram, "
+               "onion/clearnet split, eclipse_suspected + evidence), "
+               "tip_comparison (our height vs. peer-modal and "
+               "network-modal height), and peer_lifecycle connect/"
+               "handshake/timeout/reject counters. Rolls up existing "
+               "dumpers only — computes nothing new"),
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",

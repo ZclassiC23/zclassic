@@ -24,6 +24,7 @@
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_security_posture.h"
 #include "controllers/diagnostics_controller.h"
+#include "controllers/diagnostics_internal.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -8892,6 +8893,81 @@ syncdiag_net_split_done:
         json_free(&result);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
+    }
+
+    printf("dumpstate network: rolls up connman/peer_floor/chain_view/"
+           "census/peer_lifecycle on a minimal fixture... ");
+    {
+        struct json_value result = {0};
+
+        /* ── Part 1: nothing wired (the true minimal state — no connman,
+         * no network_monitor sample, no crawler round). The rollup must
+         * still return a well-formed object, never crash or fail. */
+        rpc_net_set_connman(NULL);
+        bool ok = network_dump_state_json(&result, NULL);
+        ok = ok && result.type == JSON_OBJ;
+
+        const struct json_value *connman_j = json_get(&result, "connman");
+        ok = ok && connman_j && connman_j->type == JSON_OBJ;
+        ok = ok && json_get(connman_j, "wired") &&
+            !json_get_bool(json_get(connman_j, "wired"));
+        ok = ok && json_get(connman_j, "connected_peers") &&
+            json_get_int(json_get(connman_j, "connected_peers")) == -1;
+        ok = ok && json_get(connman_j, "addrman_size") &&
+            json_get_int(json_get(connman_j, "addrman_size")) == -1;
+
+        const struct json_value *peer_floor_j = json_get(&result, "peer_floor");
+        ok = ok && peer_floor_j && peer_floor_j->type == JSON_OBJ;
+        ok = ok && json_get(peer_floor_j, "registered") != NULL;
+        ok = ok && json_get(peer_floor_j, "healthy_outbound") != NULL;
+
+        const struct json_value *chain_view_j = json_get(&result, "chain_view");
+        ok = ok && chain_view_j && chain_view_j->type == JSON_OBJ;
+        ok = ok && json_get(chain_view_j, "ready") != NULL;
+
+        const struct json_value *census_j = json_get(&result, "census");
+        ok = ok && census_j && census_j->type == JSON_OBJ;
+        ok = ok && json_get(census_j, "started") != NULL;
+
+        const struct json_value *tip_cmp_j = json_get(&result, "tip_comparison");
+        ok = ok && tip_cmp_j && tip_cmp_j->type == JSON_OBJ;
+        ok = ok && json_get(tip_cmp_j, "our_height") &&
+            json_get_int(json_get(tip_cmp_j, "our_height")) == -1;
+
+        const struct json_value *pl_j = json_get(&result, "peer_lifecycle");
+        ok = ok && pl_j && pl_j->type == JSON_OBJ;
+        ok = ok && json_get(pl_j, "summary") != NULL;
+
+        json_free(&result);
+
+        /* ── Part 2: a freshly-initialized connman with zero peers and an
+         * empty addrman wired in. connman.wired flips true and the two
+         * bare counters read back 0 (not -1), everything else unchanged. */
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        chain_params_select(CHAIN_MAIN);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        rpc_net_set_connman(&cm);
+
+        struct json_value result2 = {0};
+        ok = ok && network_dump_state_json(&result2, NULL);
+        const struct json_value *cm2 = json_get(&result2, "connman");
+        ok = ok && cm2 && json_get(cm2, "wired") &&
+            json_get_bool(json_get(cm2, "wired"));
+        ok = ok && json_get(cm2, "connected_peers") &&
+            json_get_int(json_get(cm2, "connected_peers")) == 0;
+        ok = ok && json_get(cm2, "outbound_healthy") &&
+            json_get_int(json_get(cm2, "outbound_healthy")) == 0;
+        ok = ok && json_get(cm2, "addrman_size") &&
+            json_get_int(json_get(cm2, "addrman_size")) == 0;
+        json_free(&result2);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+        rpc_net_set_connman(NULL);
+        connman_free(&cm);
     }
 
     syncdiag_reset_rpc_globals_for_test();
