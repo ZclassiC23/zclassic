@@ -213,7 +213,7 @@ know the shape.
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (30 conditions live) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-empty **by design** — owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c`; see `app/events/README.md` | `lib/storage/event_log.c` |
+| 7 | **Event** | *(no `app/` folder — concept, not a physical shape)* | typed append-only emit + subscribers | the reserved-empty `app/events/` folder was deleted 2026-07-17 (0 files ever lived there); the concept stays owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c` | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 12 port interfaces + 13 sqlite/file write impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
@@ -269,8 +269,8 @@ app/
   jobs/          cursor-stamped stages (the reducer)
   supervisors/   liveness trees, one root per domain
   conditions/    auto-healers, one file per halt class
-  events/        typed event definitions + subscribers
   views/         explorer templates
+                 (Event shape has no app/ folder — see lib/storage/ below)
 
 domain/          pure consensus core — NO clock/RNG/IO    21 modules: consensus/ wallet/ encoding/
                  (each fronted by a thin lib/ legacy wrapper + a seal test)
@@ -278,6 +278,7 @@ domain/          pure consensus core — NO clock/RNG/IO    21 modules: consensu
 lib/
   framework/     the shape primitives (condition, projection, mailbox real; rest WIP)
   platform/      clock, rng — the only sanctioned source of time/entropy
+  event/         the Event shape's pub/sub bus (typed append-only emit + subscribers)
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
@@ -361,8 +362,10 @@ holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
 test. The adapter tree is **outbound-only by design**: 12 port interfaces + 13 sqlite/file
 write impls carry writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
-so no inbound "repository" port fronts them — the same reserved-empty-by-design
-posture as `app/events/`. App sites that call `lib/storage/*_sqlite.c` directly are
+so no inbound "repository" port fronts them — the same kind of by-design absence
+as the deleted `app/events/` folder (§3 row 7): the concept has a real home
+elsewhere and does not need an empty placeholder. App sites that call
+`lib/storage/*_sqlite.c` directly are
 legitimate (Models ARE storage; Jobs use the progress-kv kernel store; Views are
 read-only introspection), and `check_raw_sqlite.sh` stays CLEAN with an empty
 baseline. The `check-lib-layering` ratchet guards the write direction.

@@ -5,7 +5,9 @@
  * adapters) and the fixed set of group nodes written into the store.
  *
  * The LIB_MODULES and shape lists here are the in-code MIRROR of the
- * Makefile's LIB_MODULES variable and the eight app/ shape folders. A parity
+ * Makefile's LIB_MODULES variable and the seven app/ shape folders (the
+ * eighth shape, Event, has no app/ folder — deleted 2026-07-17, owned by
+ * lib/event/ + lib/storage/event_log.c, see FRAMEWORK.md §3 row 7). A parity
  * test (test_codeindex, case 6) asserts they stay in sync. Keep them sorted
  * the way the Makefile lists them is NOT required — the parity test compares
  * as sets. k_domain_contexts[] mirrors the Makefile's DOMAIN_CONTEXTS the
@@ -30,7 +32,7 @@ static const char *const k_lib_modules[] = {
 };
 
 static const char *const k_app_shapes[] = {
-    "conditions", "controllers", "events", "jobs",
+    "conditions", "controllers", "jobs",
     "models", "services", "supervisors", "views",
 };
 
@@ -99,7 +101,7 @@ const char *ci_group_purpose(const char *group)
 {
     if (!group || !group[0]) return "";
     if (strcmp(group, "lib") == 0) return "reusable node libraries (one whole-program TU each)";
-    if (strcmp(group, "app") == 0) return "the eight application shapes (Rails-like feature slices)";
+    if (strcmp(group, "app") == 0) return "the application shapes (Rails-like feature slices)";
     if (strcmp(group, "core") == 0) return "sealed consensus core (params, chainparams, math, consensus)";
     if (strcmp(group, "config") == 0) return "boot configuration + argv wiring";
     if (strcmp(group, "tools") == 0) return "dev/ops tooling and the MCP surface";
@@ -110,7 +112,6 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/test") == 0) return "the canonical test runner, groups, fixtures, and specifications";
     if (strcmp(group, "app/conditions") == 0) return "shape: liveness/blocker conditions";
     if (strcmp(group, "app/controllers") == 0) return "shape: REST + MCP + RPC request handlers";
-    if (strcmp(group, "app/events") == 0) return "shape: domain events";
     if (strcmp(group, "app/jobs") == 0) return "shape: background jobs";
     if (strcmp(group, "app/models") == 0) return "shape: ActiveRecord models";
     if (strcmp(group, "app/services") == 0) return "shape: service objects (business logic)";

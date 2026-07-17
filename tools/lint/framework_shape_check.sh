@@ -37,7 +37,6 @@ is_known_shape_path() {
         app/jobs/src/*.c|\
         app/supervisors/src/*.c|\
         app/conditions/src/*.c|\
-        app/events/src/*.c|\
         app/views/src/*.c)
             return 0
             ;;
@@ -62,7 +61,7 @@ while IFS= read -r file; do
         continue
     fi
     violations=$((violations + 1))
-    echo "$file: not in a known shape folder (expected one of: controllers, services, models, jobs, supervisors, conditions, events, views)" >&2
+    echo "$file: not in a known shape folder (expected one of: controllers, services, models, jobs, supervisors, conditions, views)" >&2
 done < <(find app -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" | sort)
 
 echo "[framework_shape_check] scanned $scanned .c files in app/"

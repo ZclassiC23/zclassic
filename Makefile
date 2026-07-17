@@ -159,7 +159,7 @@ CHAOS_SWEEP_SCENARIO ?= tools/sim/scenarios/seeded_peer_churn.scenario
 .DEFAULT_GOAL := all
 
 # App layer (MVC)
-APP_DIRS = models controllers views services supervisors conditions jobs events
+APP_DIRS = models controllers views services supervisors conditions jobs
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 # Lint-gate tests intentionally plant short-lived fixture files inside the
 # production scan tree so the lint scopes stay honest. Those files must remain
