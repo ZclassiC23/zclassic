@@ -209,6 +209,12 @@ struct p2p_node {
     struct rolling_bloom_filter addr_known;
     bool get_addr;
 
+    /* Mempool sync-on-connect (msg_tx.c::msg_tx_maybe_request_mempool):
+     * set the instant we queue our one outbound "mempool" pull for this
+     * peer so a later duplicate verack (or any other call site) never
+     * sends a second request. */
+    bool mempool_requested;
+
     /* Per-peer addr-message rate limit (msgprocessor_inv.c::process_addr).
      * A single "addr" message is already capped at MAX_ADDR_TO_SEND
      * entries (oversized -> PEER_OFFENCE_FLOOD + disconnect), but nothing

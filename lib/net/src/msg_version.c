@@ -520,6 +520,13 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
         }
     }
 
+    /* Mempool sync-on-connect: pull this peer's mempool inventory once
+     * now that the handshake round-trip is confirmed complete (we sent
+     * verack, and this IS the peer's verack coming back). Internally
+     * gated on relay_txes / IBD / the per-peer once-only guard — see
+     * msg_tx.c::msg_tx_maybe_request_mempool. */
+    msg_tx_maybe_request_mempool(mp, node);
+
     /* Peer persistence is advisory and caller-owned; the app shell decides
      * whether to enqueue a model write so handshake processing stays a net
      * protocol concern. */
