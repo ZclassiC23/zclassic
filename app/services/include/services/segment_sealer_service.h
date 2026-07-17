@@ -28,6 +28,7 @@
 #ifndef ZCL_SERVICES_SEGMENT_SEALER_SERVICE_H
 #define ZCL_SERVICES_SEGMENT_SEALER_SERVICE_H
 
+#include "storage/chain_segment.h"
 #include "util/result.h"
 #include "validation/main_state.h"
 
@@ -42,6 +43,14 @@
 #define SEGMENT_SEALER_DEFAULT_FINALITY_DEPTH 1000
 #define SEGMENT_SEALER_DEFAULT_TICK_SECONDS   30
 
+/* Boundary backfill catch-up: how many oldest-unsealed segments the sealer may
+ * seal in a SINGLE tick. A node booting with existing history has a backlog of
+ * finalized-but-unsealed segments below the frontier; this lets it walk that
+ * backlog forward a bounded batch per tick (never O(chain) in one tick) instead
+ * of a single segment every tick_seconds. Kept small so the sealer never races
+ * the reducer drive for disk. */
+#define SEGMENT_SEALER_DEFAULT_CATCHUP_BATCH  4
+
 struct segment_sealer_service {
     /* References (not owned) */
     struct main_state *ms;
@@ -51,6 +60,7 @@ struct segment_sealer_service {
     bool    enabled;         /* ZCL_SEGMENT_SEALER=1 or forced on */
     int     finality_depth;
     int     tick_seconds;
+    int     catchup_batch;   /* max segments sealed per tick (bounded backfill) */
 
     /* Thread management */
     pthread_t    thread;
@@ -79,8 +89,29 @@ void segment_sealer_stop(struct segment_sealer_service *svc);
 
 /* Seal at most one eligible segment synchronously. Returns 1 when a segment was
  * sealed, 0 when there was nothing to do, -1 on a seal error. For tests + the
- * background loop. Ignores the enabled flag when `force` is true. */
+ * background loop. Ignores the enabled flag when `force` is true. Thin wrapper
+ * over segment_sealer_run_catchup(svc, 1, force). */
 int segment_sealer_run_once(struct segment_sealer_service *svc, bool force);
+
+/* Bounded backfill catch-up: seal up to `max_segments` oldest-unsealed,
+ * fully-below-frontier, 10k-aligned segments this pass. Returns the count
+ * sealed (>=0), or -1 when the FIRST attempt errored before any segment was
+ * sealed (partial progress on a later error is kept and returned as the count).
+ * Bounded: one call is O(max_segments) segment writes, never O(chain). Ignores
+ * the enabled flag when `force` is true. */
+int segment_sealer_run_catchup(struct segment_sealer_service *svc,
+                               uint32_t max_segments, bool force);
+
+/* Pure single-seal primitive (no service state): seal the single oldest
+ * unsealed, fully-below-`frontier_incl`, 10k-aligned segment in `dir` via
+ * `body`. Returns 1 (sealed; *out_first = its first height when non-NULL), 0
+ * (nothing eligible at/below the frontier — no file written), or -1 (store/seal
+ * error, message in err). Never seals a segment whose top height exceeds
+ * `frontier_incl`. Exposed for unit testing with a synthetic body source; the
+ * service wires the ordinary disk body reader. */
+int segment_sealer_seal_next(const char *dir, uint32_t frontier_incl,
+                             chain_segment_body_fn body, void *user,
+                             uint32_t *out_first, char *err, size_t errlen);
 
 /* Pure range selector: the first unsealed, fully-below-frontier, 10k-aligned
  * segment. `frontier_incl` is the highest height safe to seal (inclusive).

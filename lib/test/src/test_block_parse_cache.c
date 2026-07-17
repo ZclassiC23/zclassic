@@ -703,6 +703,103 @@ done:
     return failures;
 }
 
+/* ── Test (g): a corrupt sealed segment fails CLOSED and falls back ───
+ * The read-integrity guarantee the sealer exists to provide: below the sealed
+ * frontier a body is served from the hash-verified segment store, and a
+ * tampered segment is caught (whole-segment digest on open) so bpc_segment_try
+ * logs + returns false. With blk*.dat intact the reader transparently falls
+ * back to disk (same bytes); with the disk pointer ALSO broken the read fails
+ * closed (returns false) rather than serving unverified bytes. This is exactly
+ * the warm-restart fold-read integrity the wired sealer restores. */
+static int test_segment_corruption_fails_closed(const char *base)
+{
+    int failures = 0;
+    char dir[300];    snprintf(dir, sizeof(dir), "%s/segcorrupt", base);   mkdir(dir, 0755);
+    char blocks[400]; snprintf(blocks, sizeof(blocks), "%s/blocks", dir);  mkdir(blocks, 0755);
+    char segd[400];   snprintf(segd, sizeof(segd), "%s/segments", dir);    mkdir(segd, 0755);
+
+    block_parse_cache_clear();
+
+    TEST("bpc: corrupt sealed segment fails closed; falls back to blk*.dat when present") {
+        const uint32_t H = 1200;
+        struct block src;
+        build_block(&src, 0xC0DE, 2);
+        struct fixture fx;
+        if (!make_fixture(&fx, dir, &src, (int)H)) {
+            printf("FAIL (fixture)\n"); failures++; block_free(&src);
+            free(fx.bytes); goto done;
+        }
+        block_free(&src);
+
+        /* Seal the exact on-disk bytes for H into <dir>/segments. */
+        struct seg_body_src ss = { .h = H, .bytes = fx.bytes, .len = fx.len };
+        char serr[256] = {0};
+        enum cseg_status st = chain_segment_seal_range(segd, seg_body_src_fn, &ss,
+                                                       H, 1, serr, sizeof(serr));
+        if (st != CSEG_OK) {
+            printf("FAIL (seal: %s)\n", serr); failures++;
+            free(fx.bytes); goto done;
+        }
+
+        /* Corrupt one data byte WITHOUT re-fixing the trailer, so the
+         * whole-segment SHA3 fails when the store opens the segment on read. */
+        char segfile[600];
+        snprintf(segfile, sizeof(segfile), "%s/seg-%u-1.dat", segd, H);
+        chmod(segfile, 0644);
+        long tamper_off = 32 + 48 + 2;   /* header(32) + 1 index entry(48) + 2 */
+        FILE *f = fopen(segfile, "r+b");
+        bool tampered = false;
+        if (f) {
+            fseek(f, tamper_off, SEEK_SET);
+            int c = fgetc(f);
+            fseek(f, tamper_off, SEEK_SET);
+            fputc(c ^ 0xff, f);
+            fclose(f);
+            tampered = true;
+        }
+        if (!tampered) {
+            printf("FAIL (tamper write)\n"); failures++;
+            free(fx.bytes); goto done;
+        }
+
+        /* Case 1 — FALLBACK: disk pointer intact. bpc_segment_try must reject
+         * the corrupt segment and the reader must fall back to blk*.dat,
+         * returning the correct bytes byte-identically. */
+        block_parse_cache_clear();
+        struct block out; block_init(&out);
+        bool ok = block_parse_cache_get((int32_t)H, fx.hash.data, &fx.bi, dir, &out);
+        size_t l = 0; unsigned char *s = ok ? ser(&out, &l) : NULL;
+        bool fell_back_ok = ok && s && l == fx.len && memcmp(s, fx.bytes, l) == 0;
+        free(s); block_free(&out);
+        if (!fell_back_ok) {
+            printf("FAIL (corrupt segment did not fall back to disk)\n");
+            failures++; free(fx.bytes); goto done;
+        }
+
+        /* Case 2 — FAIL CLOSED: break the disk pointer too. With neither a
+         * valid segment nor a valid blk*.dat body, the read must return false
+         * rather than serve unverified bytes. */
+        block_parse_cache_clear();
+        struct block_index broken = fx.bi;
+        broken.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+        broken.nFile = -1;
+        broken.nDataPos = 0;
+        struct block out2; block_init(&out2);
+        bool ok2 = block_parse_cache_get((int32_t)H, fx.hash.data, &broken, dir, &out2);
+        block_free(&out2);
+        if (ok2) {
+            printf("FAIL (corrupt segment + broken disk served bytes; not fail-closed)\n");
+            failures++; free(fx.bytes); goto done;
+        }
+
+        free(fx.bytes);
+        printf("OK\n");
+    }
+done:
+    block_parse_cache_clear();
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_block_parse_cache(void)
@@ -718,6 +815,7 @@ int test_block_parse_cache(void)
     failures += test_no_cache_on_hash_mismatch(tmpdir);
     failures += test_evict_removes_one_key(tmpdir);
     failures += test_segment_backed_read(tmpdir);
+    failures += test_segment_corruption_fails_closed(tmpdir);
 
     block_parse_cache_clear();
     cleanup_test_dir(tmpdir);

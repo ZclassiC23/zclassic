@@ -29,6 +29,7 @@
 #include "services/gap_fill_service.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/rolling_anchor_service.h"
+#include "services/segment_sealer_service.h"
 #include "services/utxo_mirror_sync_service.h"
 #include "net/connman.h"
 #include "net/download.h"
@@ -161,6 +162,58 @@ void boot_rolling_anchor_stop(void *ctx)
 {
     (void)ctx;
     rolling_anchor_stop();
+}
+
+/* Sealed-history segment sealer (runtime svc). Owns a file-static service
+ * instance (the kernel calls start/stop once each); g_segment_sealer points at
+ * it for `zcl_state subsystem=segment_sealer`. OFF BY DEFAULT — the thread runs
+ * supervised and heartbeats, but seals nothing unless ZCL_SEGMENT_SEALER=1, so a
+ * default node's on-disk state is unchanged. When enabled it seals finalized
+ * (fully-below-frontier) 10k segments into <datadir>/segments; the fold's block
+ * reader then serves those bodies from the hash-verified segment store instead
+ * of an unverified blk*.dat re-read (block_parse_cache bpc_segment_try). */
+static struct segment_sealer_service g_boot_segment_sealer;
+
+static bool boot_segment_sealer_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->state)
+        return false;
+    segment_sealer_init(&g_boot_segment_sealer, svc->state, svc->datadir);
+    g_segment_sealer = &g_boot_segment_sealer;
+    struct zcl_result r = segment_sealer_start(&g_boot_segment_sealer);
+    if (r.ok) {
+        printf("[segment_sealer] runtime service started (sealed-history ROM)\n");
+        return true;
+    }
+    fprintf(stderr, "WARNING: segment_sealer_start failed: %s:%d code=%d %s\n",
+            r.source_file, r.source_line, r.code, r.message);
+    g_segment_sealer = NULL;
+    return false;
+}
+
+static void boot_segment_sealer_stop(void *ctx)
+{
+    (void)ctx;
+    segment_sealer_stop(&g_boot_segment_sealer);
+    g_segment_sealer = NULL;
+}
+
+/* Register the sealed-history sealer into the runtime service kernel (the
+ * boot_utxo_mirror_sync_register pattern — keeps boot_services.c's spec table
+ * unchanged). Called from boot_register_runtime_services(). */
+bool boot_segment_sealer_register(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return false;
+    const struct zcl_service_spec spec = {
+        .name = "segment_sealer",
+        .start = boot_segment_sealer_start,
+        .stop = boot_segment_sealer_stop,
+        .ctx = svc,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    return zcl_service_kernel_register(&svc->runtime_kernel, &spec);
 }
 
 /* Start the explorer-mirror feeder that keeps node.db's `utxos` table synced
