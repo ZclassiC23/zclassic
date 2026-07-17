@@ -1194,8 +1194,7 @@ bool app_init(struct app_context *ctx)
         return false;
     if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
         !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
-        !ctx->verify_rom &&
-        !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
+        !ctx->verify_rom && !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
         return false;
     if (!boot_refold_staged_preflight(ctx->refold_staged)) return false;
     const struct chain_params *params = chain_params_get();
@@ -1561,8 +1560,7 @@ bool app_init(struct app_context *ctx)
     if (progress_open) {
         if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
             !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
-            !ctx->verify_rom &&
-            !boot_mint_anchor_normal_boot_gate(progress_store_db()))
+            !ctx->verify_rom && !boot_mint_anchor_normal_boot_gate(progress_store_db()))
             return false;
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
