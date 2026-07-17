@@ -297,6 +297,14 @@ bool coins_kv_get_applied_height(struct sqlite3 *db, int32_t *out, bool *found);
  * seed path; read by the proven-authority predicate below. */
 #define COINS_KV_MIGRATION_COMPLETE_KEY "coins_kv_migration_complete"
 
+/* Stamp the migration-complete marker (own-txn; a pure provenance bit with NO
+ * coin mutation — the same standalone-txn justification as
+ * coins_kv_mark_self_folded). Set it once a path has provably populated coins_kv
+ * with the live set: a full-validation mint whose fold reproduces the compiled
+ * checkpoint, a fresh-sync forward population, or a projection bulk-copy.
+ * Idempotent. Returns false on a DB error (logs context). */
+bool coins_kv_mark_migration_complete(struct sqlite3 *db);
+
 /* THE proven-authority predicate — true iff coins_kv is the CANONICAL coin
  * store on this datadir (the wave-2 "canonical datadir" signal; the same
  * three rungs the L1 torn-anchor heal requires):

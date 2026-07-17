@@ -419,9 +419,11 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         !nullifier_kv_add(db, nf, 0, 1))
         return false;
 
-    const uint8_t one = 1;
-    if (!progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY, &one, 1) ||
-        !coins_kv_mark_self_folded(db) ||
+    /* Stamp the exporter-required authority markers through the SAME production
+     * helper the -mint-anchor FULL-profile finalize path uses (config/boot.h), so
+     * a passing export here proves that finalize path yields an exporter-
+     * admissible source — not just that a hand-stamped fixture does. */
+    if (!boot_mint_anchor_stamp_sovereign_markers(db) ||
         !cse_exec(db, "BEGIN IMMEDIATE") ||
         !coins_kv_set_applied_height_in_tx(db, 2) ||
         !cse_exec(db, "COMMIT")) {
@@ -444,6 +446,13 @@ int test_consensus_state_snapshot_export(void)
     uint8_t hash[2][32] = {{0}};
     uint8_t nf[32] = {0};
     CSE_CHECK("complete source generation", db && cse_seed_source(db, hash, nf));
+    /* The mint-finalize stamping helper (exercised inside cse_seed_source) yields
+     * a source that passes the exact two predicates consensus_export_prove_source
+     * gates on at :471-472 — proving the finalize path stamps what the exporter
+     * demands, so a fresh full-validation producer's export no longer refuses. */
+    CSE_CHECK("finalize helper stamped exporter-admissible markers",
+              db && coins_kv_is_proven_authority(db, NULL) &&
+                  coins_kv_contains_refold_marker(db));
 
     char export_dir[512];
     snprintf(export_dir, sizeof(export_dir), "%s/export", dir);

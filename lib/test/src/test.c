@@ -1016,6 +1016,8 @@ int main(int argc, char **argv)
     failures += test_snapshot_apply_coins_kv();
     failures += test_consensus_state_snapshot_install();
     failures += test_consensus_state_snapshot_export();
+    { extern int test_ratify_mint_anchor(void);
+      failures += test_ratify_mint_anchor(); }
     failures += test_consensus_state_producer_receipt();
     { extern int test_authority_receipt(void);
       failures += test_authority_receipt(); }

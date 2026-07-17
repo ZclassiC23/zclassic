@@ -790,6 +790,35 @@ bool coins_kv_is_proven_authority(sqlite3 *db, int32_t *out_applied)
     return true;
 }
 
+/* ── Migration-complete stamp (coins_kv.h COINS_KV_MIGRATION_COMPLETE_KEY) ──── */
+
+bool coins_kv_mark_migration_complete(sqlite3 *db)
+{
+    if (!db) {
+        LOG_WARN("coins_kv", "[coins_kv] mark_migration_complete: NULL db");
+        return false;
+    }
+    if (!progress_meta_table_ensure(db)) {
+        LOG_WARN("coins_kv",
+                 "[coins_kv] mark_migration_complete: meta table ensure failed");
+        return false;
+    }
+    const uint8_t one = 0x01;
+    progress_store_tx_lock();
+    bool ok = progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                &one, sizeof(one));
+    progress_store_tx_unlock();
+    if (!ok) {
+        LOG_WARN("coins_kv",
+                 "[coins_kv] mark_migration_complete: progress_meta_set failed");
+        return false;
+    }
+    LOG_INFO("coins_kv",
+             "[coins_kv] stamped migration-complete marker — coins_kv provably "
+             "holds the live coin set");
+    return true;
+}
+
 /* ── Self-folded provenance marker (coins_kv.h G-SOV part 3) ───────────────── */
 
 bool coins_kv_mark_self_folded(sqlite3 *db)
