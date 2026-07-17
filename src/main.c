@@ -3828,7 +3828,6 @@ int main(int argc, char **argv)
         }
         else if (strncmp(argv[i], "-externalip=", 12) == 0) ctx.external_ip = argv[i] + 12;
         else if (strncmp(argv[i], "-httpsdomain=", 13) == 0) ctx.https_domain = argv[i] + 13;
-        else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-gui") == 0 || strcmp(argv[i], "--gui") == 0) {
             /* Opt-in to the WebKit wallet GUI. Consumed earlier (the GUI
              * launch returns before node mode); recognized here so it is
