@@ -2011,7 +2011,18 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             default:
                 break;
             }
-            exec_getheaders_action(mp, node, &periodic);
+            /* NET-3 range-parallel header acquisition: when >=2 fast-sync
+             * peers are connected and the header gap exceeds one batch,
+             * give this peer its own disjoint checkpoint-anchored span
+             * instead of racing every peer for the same next batch. Returns
+             * false (leaving the single-peer path below untouched) for a
+             * single peer, a small gap, a legacy peer, or an open header
+             * band — so existing behavior is a strict regression-safe
+             * fallback. Validation and band closure are unchanged; this
+             * only changes WHICH peer is asked for WHICH range. */
+            if (!msg_try_range_parallel_getheaders(mp, node, our_height,
+                                                   now_send))
+                exec_getheaders_action(mp, node, &periodic);
         }
     }
 

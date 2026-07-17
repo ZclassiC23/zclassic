@@ -45,6 +45,7 @@
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/seal_service.h"
+#include "services/header_range_scheduler.h"
 #include "services/block_pruning_service.h"
 #include "services/segment_sealer_service.h"
 #include "services/chain_evidence_authority_service.h"

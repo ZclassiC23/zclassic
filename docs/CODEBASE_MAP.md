@@ -69,7 +69,7 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 662
+test_groups: 663
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 41

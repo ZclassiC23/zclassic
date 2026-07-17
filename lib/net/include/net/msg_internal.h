@@ -58,6 +58,27 @@ void exec_getheaders_action(struct msg_processor *mp,
                             struct p2p_node *node,
                             const struct sync_getheaders_action *action);
 
+/* NET-3 range-parallel header acquisition (msg_headers.c).
+ *
+ * push_getheaders_span: issue a getheaders whose locator forks at
+ * `start_hash` and whose hash_stop is `stop_hash` (NULL = unbounded
+ * forward). Used to bound a peer to its assigned span.
+ *
+ * msg_try_range_parallel_getheaders: when >=2 fast-sync-capable peers are
+ * connected and the missing-header gap exceeds one wire batch, partition
+ * the range into disjoint checkpoint-anchored spans and drive THIS peer's
+ * span. Returns true iff it issued the request (caller then skips the
+ * normal single-peer getheaders). Returns false — leaving the existing
+ * path untouched — when the conditions don't hold, so single-peer sync
+ * behaves exactly as before. Never fires while a header-band hole is open
+ * (the band backfill owns the anchor then). */
+void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
+                          const struct uint256 *start_hash,
+                          const struct uint256 *stop_hash);
+bool msg_try_range_parallel_getheaders(struct msg_processor *mp,
+                                       struct p2p_node *node,
+                                       int our_height, int64_t now_seconds);
+
 /* msg_blocks.c — block handling */
 bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s);

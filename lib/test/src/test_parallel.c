@@ -168,7 +168,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rpc_error_envelope) X(tx_property) \
     X(workpool) X(bip113_bip65) X(block_timestamp_adversarial) \
     X(mempool_orphan) X(fee_estimation) \
-    X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
+    X(header_sync) X(header_sync_stall) X(header_range_sched) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(addrman_eclipse) \
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
