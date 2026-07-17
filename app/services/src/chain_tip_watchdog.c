@@ -26,6 +26,8 @@
 #include "supervisors/domains.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "validation/process_block_revalidate.h"
+#include "chain/chain.h"
 #include "services/sticky_escalator.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
@@ -72,6 +74,19 @@ static _Atomic uint64_t g_fires_mirror   = 0;
 static _Atomic uint64_t g_fires_reserved = 0;
 static _Atomic uint64_t g_fires_restart  = 0;
 static _Atomic uint64_t g_fires_operator_needed = 0;
+/* Count of tip-extension SELECTION-wedge remedies driven: a valid direct
+ * successor to the frozen tip exists on the best-header chain but
+ * find_most_work_chain skips it on a persisted BLOCK_FAILED_VALID mask, so the
+ * watchdog drove an evidence-based process_block_revalidate of that one height
+ * rather than a blind restart (which cannot clear an on-disk failure bit). */
+static _Atomic uint64_t g_fires_selection_remedy = 0;
+#ifdef ZCL_TESTING
+/* Selection-wedge remedy test seams: suppress the real revalidate (which would
+ * reach the quorum oracle / activation controller) and record the target so a
+ * hermetic test can assert the remedy was driven at active_tip+1. */
+static _Atomic bool    g_test_suppress_selection_remedy = false;
+static _Atomic int64_t g_selection_remedy_last_target   = -1;
+#endif
 
 static _Atomic int64_t  g_thr_mirror   = CHAIN_TIP_WD_DEFAULT_MIRROR_SECS;
 static _Atomic int64_t  g_thr_reserved = CHAIN_TIP_WD_DEFAULT_RESERVED_SECS;
@@ -284,6 +299,34 @@ void chain_tip_watchdog_request_respawn(void)
  * are process-lifetime literals — race-safe to read off-thread. */
 static const char *wd_deterministic_stall_cause(void)
 {
+    /* (0) Tip-extension SELECTION wedge: the active tip is frozen while the
+     * best-header chain is AHEAD, and the direct successor to the tip on that
+     * header chain is present but carries a persisted BLOCK_FAILED_VALID mask,
+     * so find_most_work_chain skips it and the active-chain most-work selector
+     * keeps returning the tip. A restart cannot clear an on-disk failure bit
+     * (byte-identical every boot), so this is a deterministic cause — but
+     * unlike the causes below it has a TARGETED lever (evidence-based
+     * revalidate of that one height, driven by wd_apply_tick). "not a stale
+     * fork" is enforced by requiring the successor to build DIRECTLY on our tip
+     * (pprev == tip) and the pure selector to still yield the tip (no heavier
+     * eligible candidate). Named FIRST so the actionable class wins over the
+     * generic deterministic causes below. */
+    if (g_ms) {
+        struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+        struct block_index *bh  = g_ms->pindex_best_header;
+        if (tip && bh && bh->nHeight > tip->nHeight) {
+            struct block_index *succ =
+                block_index_get_ancestor(bh, tip->nHeight + 1);
+            if (succ && succ->pprev == tip &&
+                block_is_permanently_failed(succ)) {
+                struct block_index *sel = active_chain_most_work_candidate(
+                    &g_ms->chain_active, &g_ms->map_block_index);
+                if (sel == NULL || sel == tip)
+                    return "tip_selection_wedge";
+            }
+        }
+    }
+
     /* (1) tip_finalize pinned on a persisted ok=0 precondition: the
      * successor is present but not finalizable (e.g. a persisted ok=0
      * script_validate / proof_validate row). Byte-identical every boot. */
@@ -305,6 +348,42 @@ static const char *wd_deterministic_stall_cause(void)
         return "permanent_blocker_active";
 
     return NULL;  /* no named deterministic cause — genuine liveness loss */
+}
+
+/* ── Targeted tip-extension SELECTION-wedge remedy ─────────────────────
+ *
+ * The cause-probe named "tip_selection_wedge": a valid direct successor to the
+ * frozen active tip exists on the best-header chain but find_most_work_chain
+ * skips it on a persisted BLOCK_FAILED_VALID mask. Drive an evidence-based
+ * revalidate of that SPECIFIC successor height (active tip + 1) — a bounded
+ * re-selection, NOT a force-promote. process_block_revalidate only makes the
+ * block eligible for a FULL re-validation (connect_block re-runs
+ * Equihash/scripts/Sapling and re-marks FAILED if still invalid) once ≥2
+ * oracles — or the local-authority pathway — agree on its hash; no consensus
+ * gate is lowered. Runs on the shared supervisor thread, the same profile as
+ * chain.coord_escalation's revalidate driver; process_block_revalidate
+ * serializes its own block_index mutation on the activation controller mutex.
+ * Bounded: wd_apply_tick calls this at most once per restart-threshold crossing
+ * (the level<3 escalation guard). */
+static void wd_drive_selection_remedy(void)
+{
+    if (!g_ms) return;
+    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    if (!tip) return;
+    int target = tip->nHeight + 1;
+    atomic_fetch_add(&g_fires_selection_remedy, 1u);
+#ifdef ZCL_TESTING
+    atomic_store(&g_selection_remedy_last_target, (int64_t)target);
+    if (atomic_load(&g_test_suppress_selection_remedy)) {
+        LOG_INFO("chain_tip_watchdog", "[chain_tip_watchdog] selection-wedge remedy suppressed (test): would revalidate successor h=%d", target);
+        return;
+    }
+#endif
+    enum reval_result rr = process_block_revalidate(target, g_ms, NULL);
+    LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] tip-selection wedge: drove targeted revalidate of successor h=%d -> %s (NOT a blind restart)", target, reval_result_name(rr));
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain_tip_watchdog selection_wedge_revalidate h=%d result=%s",
+                target, reval_result_name(rr));
 }
 
 /* ── Supervisor tick ───────────────────────────────────────────────── */
@@ -375,6 +454,12 @@ static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
             event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "chain_tip_watchdog skip_restart_deterministic h=%lld age=%llds cause=%s",
                 (long long)h, (long long)age_s, cause);
+            /* The tip-extension SELECTION wedge has a targeted lever: drive an
+             * evidence-based revalidate of the specific successor height rather
+             * than only skipping the restart. Every other deterministic cause
+             * falls through to the escalator hand-off in wd_decide_restart. */
+            if (strcmp(cause, "tip_selection_wedge") == 0)
+                wd_drive_selection_remedy();
         }
         /* Bounded path: increments the persisted no-progress counter and
          * requests shutdown; once the cap is hit it pages an operator and
@@ -474,6 +559,7 @@ void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out)
     out->max_restarts = CHAIN_TIP_WD_MAX_RESTARTS;
     out->operator_needed = atomic_load(&g_operator_needed);
     out->fires_operator_needed = atomic_load(&g_fires_operator_needed);
+    out->fires_selection_remedy = atomic_load(&g_fires_selection_remedy);
 }
 
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key)
@@ -499,6 +585,8 @@ bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "operator_needed", s.operator_needed);
     json_push_kv_int(out, "fires_operator_needed",
                      (int64_t)s.fires_operator_needed);
+    json_push_kv_int(out, "fires_selection_remedy",
+                     (int64_t)s.fires_selection_remedy);
     return true;
 }
 
@@ -521,6 +609,9 @@ void chain_tip_watchdog_test_reset_runtime(void)
     atomic_store(&g_no_progress_restarts, 0);
     atomic_store(&g_operator_needed, false);
     atomic_store(&g_respawn_requested, false);
+    atomic_store(&g_fires_selection_remedy, 0u);
+    atomic_store(&g_test_suppress_selection_remedy, false);
+    atomic_store(&g_selection_remedy_last_target, (int64_t)-1);
 }
 
 void chain_tip_watchdog_test_load_persisted(void)
@@ -566,5 +657,25 @@ void chain_tip_watchdog_test_set_thresholds(int64_t mirror_secs,
 void chain_tip_watchdog_test_tick(int64_t h, int64_t now_us, bool do_shutdown)
 {
     wd_apply_tick(h, now_us, do_shutdown);
+}
+
+void chain_tip_watchdog_test_set_main_state(struct main_state *ms)
+{
+    g_ms = ms;
+}
+
+const char *chain_tip_watchdog_test_stall_cause(void)
+{
+    return wd_deterministic_stall_cause();
+}
+
+void chain_tip_watchdog_test_set_suppress_selection_remedy(bool suppress)
+{
+    atomic_store(&g_test_suppress_selection_remedy, suppress);
+}
+
+int64_t chain_tip_watchdog_test_selection_remedy_target(void)
+{
+    return atomic_load(&g_selection_remedy_last_target);
 }
 #endif
