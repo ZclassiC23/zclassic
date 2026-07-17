@@ -203,16 +203,20 @@ validation, unpaired stderr diagnostics, a critical model missing its
 before_save hook, a model file with no `validates_*` call and no
 `ar-validate-skip:<tag>` marker, a model save that hand-runs
 `ar_run_before_save()` / `ar_run_after_save()` instead of the AR lifecycle
-macros, or a controller/service function over 500 lines without a
-`long-function-ok:<tag>` override, gets a red build before any human sees it.
+macros, or a controller/service/mcp-bridge/config-src function over 500 lines
+without a `long-function-ok:<tag>` override, gets a red build before any
+human sees it.
 
 Gates fall into three modes:
 
 - **HARD / FAIL** — fails on any violation.
 - **RATCHET** — fails on a *new* violation while tolerating a recorded
   baseline; the baseline file may only shrink (growing it requires an ADR).
-- **WARN** — measures only (none currently; #18 and #20 graduated WARN →
-  RATCHET as **E10**, 2026-05-26; #19 ratcheted WARN → FAIL in Phase 1).
+- **WARN** — measures only, never fails the build. Two gates carry a WARN
+  sub-tier for `lib/` (excl. `lib/test/`) + `domain/`, alongside their own
+  ENFORCED tier for the app-shape surfaces: **E1** (`check-file-size-ceiling`)
+  and **#12** (`check-long-functions`). #18 and #20 graduated WARN → RATCHET
+  as **E10**, 2026-05-26; #19 ratcheted WARN → FAIL in Phase 1.
 
 Each gate's intent is one row below. Implementation scripts live under
 `tools/scripts/` or `tools/lint/`. The E-series gates are tested in
@@ -249,11 +253,19 @@ assert green).
   after_save` stays one mechanically enforced lifecycle. Impl:
   `tools/scripts/check_model_ar_lifecycle.sh`.
 
-- **Gate #12: `check-long-functions`** (HARD) — flags any top-level function in
-  `app/controllers/src/*.c` or `app/services/src/*.c` whose body spans >500
-  lines. Long functions conceal multiple concerns. Override
-  `// long-function-ok:<tag>` on the signature line (tag matches
-  `[A-Za-z][A-Za-z0-9_-]+`). Impl: `tools/scripts/check_long_functions.sh`.
+- **Gate #12: `check-long-functions`** — flags any top-level function whose
+  body spans >500 lines. Two tiers, same split as Gate E1
+  (`check-file-size-ceiling`): ENFORCED (HARD, fails the build) covers
+  `app/controllers/src/*.c`, `app/services/src/*.c`,
+  `tools/mcp/controllers/*.c` (legacy MCP bridge, deleted in W3), and
+  `config/src/*.c`, ratchet-baselined at
+  `tools/scripts/check_long_functions_baseline.txt` for grandfathered
+  offenders (e.g. `config/src/boot.c`'s `app_init`); WARN (prints, never
+  fails) covers `lib/**/*.c` excl. `lib/test/`, baselined at
+  `tools/scripts/check_long_functions_lib_baseline.txt`. Long functions
+  conceal multiple concerns. Override `// long-function-ok:<tag>` on the
+  signature line (tag matches `[A-Za-z][A-Za-z0-9_-]+`) exempts a function
+  entirely in either tier. Impl: `tools/scripts/check_long_functions.sh`.
 
 - **Gate #13: `check-rpc-registrar`** — every RPC handler declared in
   `lib/rpc/src/` must appear in the registrar table at the bottom of the same
@@ -602,7 +614,7 @@ mechanically hold:
 | `// raw-sql-ok:<tag>` | line with `sqlite3_step(…)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
 | `// raw-return-ok:<tag>` | bare `return -1;` in MCP/service/controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
-| `// long-function-ok:<tag>` | signature line of a controller/service function whose body spans >500 lines | `check-long-functions` |
+| `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/mcp-bridge/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |

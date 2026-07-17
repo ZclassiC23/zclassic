@@ -1,0 +1,17 @@
+# Lint gate #12 (WARN tier) baseline — grandfathered over-cap functions
+# under lib/ (excl. lib/test/, which is fixtures/registrations and
+# legitimately long).
+#
+# check-long-functions (tools/scripts/check_long_functions.sh) treats this
+# tier as WARN-only: it never fails the build. lib/ is primitives, not the
+# app-shape surfaces gate #12's ENFORCED tier was written to police, so
+# this baseline exists to make growth visible, not to gate it. Each entry
+# is '<relative path> <function-name> <max-lines>'. The gate prints when:
+#   - a NEW function (not listed here) exceeds the cap (500), OR
+#   - a listed function grows ABOVE its recorded baseline length.
+# Shrinking a function below the cap lets you delete its baseline line.
+#
+# Format: <relative-path> <function-name> <max-lines>   (# = comment)
+# Sorted by path.
+
+lib/net/src/msgprocessor.c msg_send_messages 520

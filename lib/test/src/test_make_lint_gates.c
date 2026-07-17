@@ -1173,6 +1173,34 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 
 #define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
+/* E1's lib/domain WARN tier (extended to every .c under lib/, excl.
+ * lib/test/ -- see tools/scripts/check_file_size_ceiling.sh's lib_files_all
+ * scan + the WARN branch). No root-override env exists for E1 (unlike gate
+ * #12 below), so this plants directly into the real lib/ tree like
+ * E1_FIXTURE_DST does for app/ -- a violation here must PRINT (WARN) and
+ * never fail the build. */
+#define E1_LIB_FIXTURE_DST \
+    "lib/storage/src/_e1_lib_size_ceiling_fixture_tmp.c"
+/* Gate #12 — check_long_functions.sh, extended to config/src/ (ENFORCED,
+ * ratchet-baselined) and lib/ excl. lib/test/ (WARN, non-blocking). Both
+ * sub-tiers run against an ISOLATED test-tmp/ scan dir + baseline (via
+ * ZCL_LONGFN_ENFORCED_ROOTS/_BASELINE and ZCL_LONGFN_LIB_ROOTS/
+ * _LIB_BASELINE) so the self-test never touches the real scanned trees or
+ * the real baseline files — same convention as SVC_CONV above. */
+#define LONGFN_SCRIPT_REL          "tools/scripts/check_long_functions.sh"
+#define LONGFN_ENFORCED_DIR_REL    "test-tmp/_longfn_enforced_scan_dir_tmp"
+#define LONGFN_ENFORCED_FIXTURE_REL \
+    "test-tmp/_longfn_enforced_scan_dir_tmp/fixture.c"
+/* A permanent, always-clean sibling file so the gate's non-empty-scan-set
+ * floor stays satisfied once fixture.c is removed during recovery — same
+ * reason SVC_CONV_KEEP_REL exists above. */
+#define LONGFN_ENFORCED_KEEP_REL \
+    "test-tmp/_longfn_enforced_scan_dir_tmp/keep.c"
+#define LONGFN_ENFORCED_BASELINE_REL "test-tmp/_longfn_enforced_baseline_tmp.txt"
+#define LONGFN_LIB_DIR_REL         "test-tmp/_longfn_lib_scan_dir_tmp"
+#define LONGFN_LIB_FIXTURE_REL     "test-tmp/_longfn_lib_scan_dir_tmp/fixture.c"
+#define LONGFN_LIB_KEEP_REL        "test-tmp/_longfn_lib_scan_dir_tmp/keep.c"
+#define LONGFN_LIB_BASELINE_REL    "test-tmp/_longfn_lib_baseline_tmp.txt"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
 #define QUALITY_GUARD_TEST_REL "tools/scripts/test_quality_job_guard.sh"
@@ -1344,6 +1372,273 @@ static void unlink_rel(const char *rel)
         (void)unlink(path);
 }
 
+/* Write a single-function .c fixture whose gate-measured length (closing
+ * brace line minus signature line) is exactly `target_len`, optionally
+ * tagged `// long-function-ok:<tag>` on the signature line. Mirrors
+ * plant_oversized_file's direct-fopen approach (no giant string buffer). */
+static int plant_long_function_file(const char *rel, const char *func_name,
+                                    int target_len, const char *tag)
+{
+    char path[PATH_MAX];
+    if (repo_path(path, sizeof(path), rel) != 0) return -1;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    if (tag)
+        fprintf(fp, "void %s(void) // long-function-ok:%s\n", func_name, tag);
+    else
+        fprintf(fp, "void %s(void)\n", func_name);
+    fprintf(fp, "{\n");
+    int body_lines = target_len - 2;
+    if (body_lines < 1) body_lines = 1;
+    for (int i = 0; i < body_lines; i++)
+        fprintf(fp, "    (void)0; /* fixture line %d */\n", i);
+    fprintf(fp, "}\n");
+    fclose(fp);
+    return 0;
+}
+
+/* Gate #12 (check_long_functions.sh) ENFORCED tier, extended to config/src/
+ * (this test exercises the mechanism via an isolated test-tmp/ scan dir +
+ * baseline, so it stands in for either real ENFORCED root — controllers/
+ * services/mcp-bridge/config-src share one code path). Matches the
+ * shrinking-floor breadth of t_service_result_convergence_ratchet above:
+ * baseline-matched is clean, a lowered baseline trips as a REGRESSION, an
+ * empty baseline trips as NEW, and the `// long-function-ok:` tag exempts
+ * the same function entirely — then recovery. */
+static int t_long_functions_enforced_ratchet(void)
+{
+    int failures = 0;
+    char dir_path[PATH_MAX];
+    if (repo_path(dir_path, sizeof(dir_path), LONGFN_ENFORCED_DIR_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve long-fn enforced dir path\n");
+        return 1;
+    }
+    (void)mkdir(dir_path, 0700);
+    unlink_rel(LONGFN_ENFORCED_FIXTURE_REL);
+    unlink_rel(LONGFN_ENFORCED_BASELINE_REL);
+    /* keep.c: a permanent, always-clean (well under the cap) sibling file
+     * so the gate's non-empty-scan-set floor stays satisfied through the
+     * recovery case below, independent of whatever fixture.c is doing. */
+    int wrote_keep = write_file(LONGFN_ENFORCED_KEEP_REL,
+        "void longfn_enforced_keep_placeholder(void) {}\n");
+
+    /* Case A: fixture is 520 lines; baseline records it at 520 — matched,
+     * must be clean. */
+    int planted_a = plant_long_function_file(
+        LONGFN_ENFORCED_FIXTURE_REL, "longfn_case_matched", 520, NULL);
+    char baseline_matched[PATH_MAX + 32];
+    (void)snprintf(baseline_matched, sizeof(baseline_matched),
+                   "%s longfn_case_matched 520\n", LONGFN_ENFORCED_FIXTURE_REL);
+    int wrote_baseline_a = write_file(LONGFN_ENFORCED_BASELINE_REL, baseline_matched);
+    int matched_rc =
+        (planted_a == 0 && wrote_baseline_a == 0)
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_ENFORCED_ROOTS", LONGFN_ENFORCED_DIR_REL,
+                  "ZCL_LONGFN_BASELINE", LONGFN_ENFORCED_BASELINE_REL)
+            : -999;
+
+    /* Case B: same fixture (still 520 lines), baseline lowered to 400 —
+     * must trip as a REGRESSION (grew past its recorded length). */
+    char baseline_grown[PATH_MAX + 32];
+    (void)snprintf(baseline_grown, sizeof(baseline_grown),
+                   "%s longfn_case_matched 400\n", LONGFN_ENFORCED_FIXTURE_REL);
+    int wrote_baseline_b = write_file(LONGFN_ENFORCED_BASELINE_REL, baseline_grown);
+    int grown_rc =
+        wrote_baseline_b == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_ENFORCED_ROOTS", LONGFN_ENFORCED_DIR_REL,
+                  "ZCL_LONGFN_BASELINE", LONGFN_ENFORCED_BASELINE_REL)
+            : -999;
+    char grown_out_path[PATH_MAX];
+    char *grown_out = NULL;
+    int grown_read =
+        (grown_rc >= 0 &&
+         repo_path(grown_out_path, sizeof(grown_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(grown_out_path, &grown_out)
+            : -1;
+
+    /* Case C: EMPTY baseline, no tag — must trip as a NEW unlisted long
+     * function. */
+    int wrote_baseline_empty = write_file(LONGFN_ENFORCED_BASELINE_REL, "");
+    int new_rc =
+        wrote_baseline_empty == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_ENFORCED_ROOTS", LONGFN_ENFORCED_DIR_REL,
+                  "ZCL_LONGFN_BASELINE", LONGFN_ENFORCED_BASELINE_REL)
+            : -999;
+    char new_out_path[PATH_MAX];
+    char *new_out = NULL;
+    int new_read =
+        (new_rc >= 0 &&
+         repo_path(new_out_path, sizeof(new_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(new_out_path, &new_out)
+            : -1;
+
+    /* Case D: same EMPTY baseline, but the signature now carries
+     * `// long-function-ok:<tag>` — the override must exempt it entirely,
+     * no baseline entry required. */
+    int planted_d = plant_long_function_file(
+        LONGFN_ENFORCED_FIXTURE_REL, "longfn_case_matched", 520,
+        "test_fixture_reason");
+    int tagged_rc =
+        planted_d == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_ENFORCED_ROOTS", LONGFN_ENFORCED_DIR_REL,
+                  "ZCL_LONGFN_BASELINE", LONGFN_ENFORCED_BASELINE_REL)
+            : -999;
+
+    /* Recovery: remove fixture + baseline entirely. */
+    unlink_rel(LONGFN_ENFORCED_FIXTURE_REL);
+    int wrote_baseline_recover = write_file(LONGFN_ENFORCED_BASELINE_REL, "");
+    int recover_rc =
+        wrote_baseline_recover == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_ENFORCED_ROOTS", LONGFN_ENFORCED_DIR_REL,
+                  "ZCL_LONGFN_BASELINE", LONGFN_ENFORCED_BASELINE_REL)
+            : -999;
+
+    unlink_rel(LONGFN_ENFORCED_FIXTURE_REL);
+    unlink_rel(LONGFN_ENFORCED_BASELINE_REL);
+    unlink_rel(LONGFN_ENFORCED_KEEP_REL);
+    (void)rmdir(dir_path);
+
+    TEST("[lint-gate] gate#12 ENFORCED (config/src+controllers/services/mcp): matched clean, grown/new trip, tag exempts, recovers") {
+        ASSERT(wrote_keep == 0);
+        ASSERT(planted_a == 0);
+        ASSERT(matched_rc == 0);
+        ASSERT(grown_rc != 0);
+        ASSERT(grown_read == 0);
+        ASSERT(grown_out != NULL && strstr(grown_out, "REGRESSION") != NULL);
+        ASSERT(new_rc != 0);
+        ASSERT(new_read == 0);
+        ASSERT(new_out != NULL && strstr(new_out, "NEW long function") != NULL);
+        ASSERT(planted_d == 0);
+        ASSERT(tagged_rc == 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+
+    free(grown_out);
+    free(new_out);
+    return failures;
+}
+
+/* Gate #12 WARN tier — lib/ (excl. lib/test/). Same mechanism, but a
+ * violation must PRINT (WARN) and never fail the build (exit 0), mirroring
+ * E1's lib/domain WARN tier. */
+static int t_long_functions_lib_warn_tier(void)
+{
+    int failures = 0;
+    char dir_path[PATH_MAX];
+    if (repo_path(dir_path, sizeof(dir_path), LONGFN_LIB_DIR_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve long-fn lib dir path\n");
+        return 1;
+    }
+    (void)mkdir(dir_path, 0700);
+    unlink_rel(LONGFN_LIB_FIXTURE_REL);
+    unlink_rel(LONGFN_LIB_BASELINE_REL);
+    /* keep.c: a permanent, always-clean sibling file so the gate's
+     * non-empty-scan-set floor stays satisfied through the recovery case
+     * below, independent of whatever fixture.c is doing. */
+    int wrote_keep = write_file(LONGFN_LIB_KEEP_REL,
+        "void longfn_lib_keep_placeholder(void) {}\n");
+
+    /* Case A: EMPTY baseline, unbaselined 520-line function — must WARN
+     * (print) but exit 0. */
+    int planted_a = plant_long_function_file(
+        LONGFN_LIB_FIXTURE_REL, "longfn_lib_case_new", 520, NULL);
+    int wrote_baseline_empty = write_file(LONGFN_LIB_BASELINE_REL, "");
+    int new_rc =
+        (planted_a == 0 && wrote_baseline_empty == 0)
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_LIB_ROOTS", LONGFN_LIB_DIR_REL,
+                  "ZCL_LONGFN_LIB_BASELINE", LONGFN_LIB_BASELINE_REL)
+            : -999;
+    char new_out_path[PATH_MAX];
+    char *new_out = NULL;
+    int new_read =
+        (new_rc >= 0 &&
+         repo_path(new_out_path, sizeof(new_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(new_out_path, &new_out)
+            : -1;
+
+    /* Case B: baseline lowered below the fixture's actual length — must
+     * WARN as "grew past its baselined length" but still exit 0. */
+    char baseline_grown[PATH_MAX + 32];
+    (void)snprintf(baseline_grown, sizeof(baseline_grown),
+                   "%s longfn_lib_case_new 400\n", LONGFN_LIB_FIXTURE_REL);
+    int wrote_baseline_grown = write_file(LONGFN_LIB_BASELINE_REL, baseline_grown);
+    int grown_rc =
+        wrote_baseline_grown == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_LIB_ROOTS", LONGFN_LIB_DIR_REL,
+                  "ZCL_LONGFN_LIB_BASELINE", LONGFN_LIB_BASELINE_REL)
+            : -999;
+    char grown_out_path[PATH_MAX];
+    char *grown_out = NULL;
+    int grown_read =
+        (grown_rc >= 0 &&
+         repo_path(grown_out_path, sizeof(grown_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(grown_out_path, &grown_out)
+            : -1;
+
+    /* Recovery: remove fixture + baseline entirely. */
+    unlink_rel(LONGFN_LIB_FIXTURE_REL);
+    int wrote_baseline_recover = write_file(LONGFN_LIB_BASELINE_REL, "");
+    int recover_rc =
+        wrote_baseline_recover == 0
+            ? run_gate_script_with_env2(LONGFN_SCRIPT_REL,
+                  "ZCL_LONGFN_LIB_ROOTS", LONGFN_LIB_DIR_REL,
+                  "ZCL_LONGFN_LIB_BASELINE", LONGFN_LIB_BASELINE_REL)
+            : -999;
+    char recover_out_path[PATH_MAX];
+    char *recover_out = NULL;
+    int recover_read =
+        (recover_rc >= 0 &&
+         repo_path(recover_out_path, sizeof(recover_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(recover_out_path, &recover_out)
+            : -1;
+
+    unlink_rel(LONGFN_LIB_FIXTURE_REL);
+    unlink_rel(LONGFN_LIB_BASELINE_REL);
+    unlink_rel(LONGFN_LIB_KEEP_REL);
+    (void)rmdir(dir_path);
+
+    /* NOTE: the gate's own CLEAN line for this tier reads "...(cap 500,
+     * lib/, WARN tier)" — the bare word "WARN" appears there as a tier
+     * label even when nothing tripped. Assert on the violation HEADING
+     * ("WARN — long-function watch"), never the bare word, or a clean run
+     * false-passes/false-fails this check. */
+    TEST("[lint-gate] gate#12 WARN (lib/, excl. lib/test/): new/grown WARN-print but exit 0, recovers") {
+        ASSERT(wrote_keep == 0);
+        ASSERT(planted_a == 0);
+        ASSERT(new_rc == 0);
+        ASSERT(new_read == 0);
+        ASSERT(new_out != NULL &&
+               strstr(new_out, "WARN — long-function watch") != NULL);
+        ASSERT(new_out != NULL && strstr(new_out, "NEW long function") != NULL);
+        ASSERT(grown_rc == 0);
+        ASSERT(grown_read == 0);
+        ASSERT(grown_out != NULL &&
+               strstr(grown_out, "grew past its baselined length") != NULL);
+        ASSERT(recover_rc == 0);
+        ASSERT(recover_read == 0);
+        ASSERT(recover_out != NULL &&
+               strstr(recover_out, "WARN — long-function watch") == NULL);
+        PASS();
+    } _test_next:;
+
+    free(new_out);
+    free(grown_out);
+    free(recover_out);
+    return failures;
+}
+
 /* E1 — file-size ceiling is an ENFORCED RATCHET (hard FAIL, not advisory):
  * a NEW (non-baselined) app/.c file over the 800-line ceiling trips the
  * gate (nonzero exit) and prints the violation report; removing it returns
@@ -1381,6 +1676,41 @@ static int t_e1_file_size_ceiling(void)
         PASS();
     } _test_next:;
     free(fail_out);
+    return failures;
+}
+
+/* E1 lib/domain WARN tier: an oversized, unbaselined lib/ file must WARN
+ * (print) but never fail the build (exit 0), mirroring the WARN-vs-ENFORCED
+ * split proven for gate #12 below. */
+static int t_e1_lib_warn_tier(void)
+{
+    int failures = 0;
+    unlink_rel(E1_LIB_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    int planted = plant_oversized_file(E1_LIB_FIXTURE_DST, 900);
+    int warn_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
+    char *warn_out = NULL;
+    char warn_path[PATH_MAX];
+    int warn_read = (planted == 0 &&
+                     repo_path(warn_path, sizeof(warn_path),
+                               "test-tmp/zcl_gate_lint.out") == 0)
+                        ? read_entire_file(warn_path, &warn_out)
+                        : -1;
+    unlink_rel(E1_LIB_FIXTURE_DST);
+    int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E1 lib/domain WARN tier: clean, WARN-prints (exit 0) on oversized lib file, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        /* WARN, not FAIL: this tier never fails the build. */
+        ASSERT(warn_rc == 0);
+        ASSERT(warn_read == 0);
+        ASSERT(warn_out != NULL && strstr(warn_out, "WARN") != NULL);
+        ASSERT(warn_out != NULL &&
+               strstr(warn_out, "NEW oversized file") != NULL);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    free(warn_out);
     return failures;
 }
 
@@ -3152,6 +3482,10 @@ static int t_lint_gates_fail_loud_on_empty_scan(void)
         "tools/lint/check_supervisor_domain.sh", "ZCL_SUPDOM_SCAN_ROOTS", empty_dir);
     failures += meta_gate_empty_scan_trips(
         "tools/lint/check_thread_supervision.sh", "ZCL_THREADSUP_SCAN_ROOTS", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        LONGFN_SCRIPT_REL, "ZCL_LONGFN_ENFORCED_ROOTS", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        LONGFN_SCRIPT_REL, "ZCL_LONGFN_LIB_ROOTS", empty_dir);
 
     /* The reorg-ratchet gate's hollow vector is a DRIFTED file list (a tracked
      * stage-log store moved/renamed), not an empty scan dir. Point its file
@@ -7885,6 +8219,9 @@ int test_make_lint_gates(void)
     failures += t_gap_fill_wakes_connman_dispatch_contract();
     failures += t_msg_process_yields_to_send_phase_contract();
     failures += t_e1_file_size_ceiling();
+    failures += t_e1_lib_warn_tier();
+    failures += t_long_functions_enforced_ratchet();
+    failures += t_long_functions_lib_warn_tier();
     failures += t_no_new_repair_rung();
     failures += t_no_new_borrowed_seed_caller();
     failures += t_no_new_coin_backfill_caller();
