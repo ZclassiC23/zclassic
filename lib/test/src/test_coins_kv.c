@@ -155,6 +155,179 @@ static int ck_case_anchor_coin_byte_flip(void)
     return failures;
 }
 
+static bool ck_stamp_present(sqlite3 *db)
+{
+    uint8_t v = 0; size_t n = 0; bool found = false;
+    return progress_meta_get(db, COINS_KV_MIGRATION_COMPLETE_KEY, &v, sizeof(v),
+                             &n, &found) && found && n == 1 && v == 1;
+}
+
+/* Build a source db FILE holding a `utxos` table (the shape
+ * coins_kv_seed_from_node_db copies from) with three coins whose newest is at
+ * `top_h`. Returns the equivalent coins set's SHA3 commitment + count. */
+static bool ck_write_utxos_source(const char *path, int32_t top_h,
+                                  uint8_t root_out[32], int64_t *count_out)
+{
+    sqlite3 *src = NULL;
+    if (sqlite3_open(path, &src) != SQLITE_OK)
+        return false;
+    struct uint256 a = ck_txid(0x41), b = ck_txid(0x42), c = ck_txid(0x43);
+    uint8_t sc[3] = {0xC1, 0xC2, 0xC3};
+    bool ok = coins_kv_ensure_schema(src) &&
+              coins_kv_add(src, a.data, 0, 4000, top_h,     true,  sc, sizeof(sc)) &&
+              coins_kv_add(src, b.data, 0, 5000, top_h - 1, false, sc, sizeof(sc)) &&
+              coins_kv_add(src, c.data, 0, 6000, top_h - 2, false, NULL, 0) &&
+              coins_kv_commitment(src, root_out) == 0;
+    if (count_out) *count_out = coins_kv_count(src);
+    /* coins_kv_seed_from_node_db copies from coinssrc.utxos; rename to match. */
+    ok = ok && sqlite3_exec(src, "ALTER TABLE coins RENAME TO utxos",
+                            NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_close(src);
+    return ok;
+}
+
+/* ── Bootstrap-seed checkpoint-content gate ──────────────────────────────────
+ *
+ * A bootstrap seed that reaches the compiled SHA3 checkpoint height MUST
+ * reproduce cp->sha3_hash + cp->utxo_count; a full-tip seed (max height above
+ * cp->height) is not gated (invisible). We assert the verdict PREDICATE for all
+ * three outcomes and drive the real seed path (coins_kv_seed_from_node_db) for
+ * MATCH + NOT_CHECKED. The MISMATCH _exit side effect is asserted only as the
+ * predicate (it would kill the test process) — same convention as
+ * ck_case_anchor_coin_byte_flip and the forked test_refold_from_anchor_fatal. */
+static int ck_case_seed_checkpoint_gate(void)
+{
+    int failures = 0;
+
+    /* Part 1 — verdict predicate over a directly-built coins set. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "coins_kv_ckpt_verdict", "main");
+        CK_CHECK("ckpt-gate: progress_store opens", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        CK_CHECK("ckpt-gate: schema", db && coins_kv_ensure_schema(db));
+
+        const int32_t H = 500;
+        struct uint256 a = ck_txid(0x51), b = ck_txid(0x52), c = ck_txid(0x53);
+        uint8_t sc[3] = {0xD1, 0xD2, 0xD3};
+        bool seeded =
+            coins_kv_add(db, a.data, 0, 4000, H,     true,  sc, sizeof(sc)) &&
+            coins_kv_add(db, b.data, 0, 5000, H - 1, false, sc, sizeof(sc)) &&
+            coins_kv_add(db, c.data, 0, 6000, H - 2, false, NULL, 0);
+        CK_CHECK("ckpt-gate: clean set seeded (MAX height == H)", seeded);
+
+        uint8_t root[32] = {0};
+        int64_t count = coins_kv_count(db);
+        CK_CHECK("ckpt-gate: commitment computes",
+                 coins_kv_commitment(db, root) == 0);
+
+        struct sha3_utxo_checkpoint cp;
+        memset(&cp, 0, sizeof(cp));
+        cp.height = H;
+        memcpy(cp.sha3_hash, root, 32);
+        cp.utxo_count = (uint64_t)count;
+        checkpoints_set_sha3_override_for_test(&cp);
+
+        /* A. Clean set at cp->height reproduces the checkpoint -> MATCH. */
+        CK_CHECK("ckpt-gate: A clean set -> MATCH",
+                 coins_kv_seed_checkpoint_verdict(db) == COINS_KV_CHECKPOINT_MATCH);
+
+        /* B. Value flip at cp->height (MAX still H) -> MISMATCH (the _exit
+         * trigger; we assert the predicate, never the process-killing side). */
+        bool flipped = coins_kv_spend(db, b.data, 0) &&
+                       coins_kv_add(db, b.data, 0, 5001, H - 1, false, sc, sizeof(sc));
+        CK_CHECK("ckpt-gate: B state-wrong set -> MISMATCH",
+                 flipped &&
+                 coins_kv_seed_checkpoint_verdict(db) == COINS_KV_CHECKPOINT_MISMATCH);
+
+        /* Restore the clean value, then push the set ABOVE cp->height. */
+        bool restored = coins_kv_spend(db, b.data, 0) &&
+                        coins_kv_add(db, b.data, 0, 5000, H - 1, false, sc, sizeof(sc));
+        CK_CHECK("ckpt-gate: restore clean set -> MATCH again",
+                 restored &&
+                 coins_kv_seed_checkpoint_verdict(db) == COINS_KV_CHECKPOINT_MATCH);
+
+        /* C. A coin above cp->height -> the set no longer claims to be the
+         * checkpoint state -> NOT_CHECKED (invisible for full-tip seeds). */
+        struct uint256 d = ck_txid(0x54);
+        bool above = coins_kv_add(db, d.data, 0, 7000, H + 5, false, sc, sizeof(sc));
+        CK_CHECK("ckpt-gate: C set above cp->height -> NOT_CHECKED",
+                 above &&
+                 coins_kv_seed_checkpoint_verdict(db) == COINS_KV_CHECKPOINT_NOT_CHECKED);
+
+        checkpoints_reset_sha3_override_for_test();
+        /* With no compiled checkpoint the gate never fires. */
+        CK_CHECK("ckpt-gate: no checkpoint -> NOT_CHECKED",
+                 coins_kv_seed_checkpoint_verdict(db) == COINS_KV_CHECKPOINT_NOT_CHECKED);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* Part 2 — the real seed path (coins_kv_seed_from_node_db) passes a
+     * checkpoint-matching seed and is invisible to a non-checkpoint seed. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "coins_kv_ckpt_seed", "main");
+        const int32_t H = 800;
+
+        char src_match[320], src_other[320];
+        snprintf(src_match, sizeof(src_match), "%s/match.db", dir);
+        snprintf(src_other, sizeof(src_other), "%s/other.db", dir);
+
+        uint8_t root[32] = {0};
+        int64_t count = 0;
+        CK_CHECK("ckpt-seed: matching source written",
+                 ck_write_utxos_source(src_match, H, root, &count));
+        /* A different source whose newest coin is well above the checkpoint. */
+        uint8_t root_other[32] = {0};
+        int64_t count_other = 0;
+        CK_CHECK("ckpt-seed: non-checkpoint source written",
+                 ck_write_utxos_source(src_other, H + 10, root_other, &count_other));
+
+        struct sha3_utxo_checkpoint cp;
+        memset(&cp, 0, sizeof(cp));
+        cp.height = H;
+        memcpy(cp.sha3_hash, root, 32);
+        cp.utxo_count = (uint64_t)count;
+        checkpoints_set_sha3_override_for_test(&cp);
+
+        /* MATCH: the seed reaches cp->height and reproduces the commitment. */
+        {
+            char d1[256];
+            test_make_tmpdir(d1, sizeof(d1), "coins_kv_ckpt_seed_match", "main");
+            CK_CHECK("ckpt-seed: dest opens (match)", progress_store_open(d1));
+            sqlite3 *db = progress_store_db();
+            bool ok = db && coins_kv_ensure_schema(db) &&
+                      coins_kv_seed_from_node_db(db, src_match);
+            CK_CHECK("ckpt-seed: matching seed passes the gate + stamps",
+                     ok && coins_kv_count(db) == count && ck_stamp_present(db));
+            progress_store_close();
+            test_cleanup_tmpdir(d1);
+        }
+
+        /* NOT_CHECKED: a full-tip-style seed (max height above cp->height) is
+         * not gated — it must NOT _exit and must seed normally. */
+        {
+            char d2[256];
+            test_make_tmpdir(d2, sizeof(d2), "coins_kv_ckpt_seed_other", "main");
+            CK_CHECK("ckpt-seed: dest opens (non-checkpoint)", progress_store_open(d2));
+            sqlite3 *db = progress_store_db();
+            bool ok = db && coins_kv_ensure_schema(db) &&
+                      coins_kv_seed_from_node_db(db, src_other);
+            CK_CHECK("ckpt-seed: non-checkpoint seed is invisible (passes)",
+                     ok && coins_kv_count(db) == count_other && ck_stamp_present(db));
+            progress_store_close();
+            test_cleanup_tmpdir(d2);
+        }
+
+        checkpoints_reset_sha3_override_for_test();
+        test_cleanup_tmpdir(dir);
+    }
+
+    return failures;
+}
+
 int test_coins_kv(void);
 int test_coins_kv(void)
 {
@@ -271,6 +444,9 @@ int test_coins_kv(void)
 
     /* anchor-coin byte-flip detected by the SHA3 commitment (own store/tmpdir). */
     failures += ck_case_anchor_coin_byte_flip();
+
+    /* bootstrap-seed checkpoint-content gate (own store/tmpdir). */
+    failures += ck_case_seed_checkpoint_gate();
 
     return failures;
 }
