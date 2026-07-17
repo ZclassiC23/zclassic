@@ -10,27 +10,58 @@
 
 # HANDOFF — current state (2026-07-17 night)
 
-## 0-LATEST (2026-07-17 night). Bundle EXPORTED + VERIFIED; cure installing under linger units; big merge wave on main
+## 0-LATEST (2026-07-17 night). Bundle EXPORTED + VERIFIED; both copy-install routes REFUSED at chain-binding; mint3 is the reliable path; big merge wave on main
 
-**FIRST, check whether the node cured itself while you were away.** Three
-self-driving cure pipelines run as **systemd `--user` linger units** (they
-survive session/agent shutdown by design — this was the night's key
-resilience fix: anything critical and long-running must be a linger unit, not
-a session-tied background task):
+**STATE AT SHUTDOWN: the live node is still wedged; the cure is NOT yet
+installed.** The complete bundle is exported + independently replay-verified
+(durable, below), but BOTH attempts to `-install-consensus-bundle` onto a
+copy of the live datadir **REFUSED at the chain-binding precondition**:
 
-```bash
-systemctl --user status zcl-cure-torn-repair    # primary route (fast header relink + install)
-systemctl --user status zcl-cure-step4b          # fresh-datadir route (backstop)
-# verdict logs (PASS = "H*=<n> PAST THE WEDGE 3176325"):
-tail -20 ~/.zclassic-c23-COPY-20260717110600-cure/repair-verdict.log
-tail -20 ~/.zclassic-c23-COPY-20260717202255-freshcure/step4-verdict.log
-```
+> `REFUSED: -install-consensus-bundle: selected-chain binding failed (the
+> bundle's height/hash is not on this node's validated header chain, or the
+> node is not the open singleton): chain evidence refused: chain binding:
+> selected frontier changed or is not durable`
+> (`config/src/boot_install_consensus_bundle.c:48` icb_refuse)
 
-If a verdict log shows **PASS** (H\* climbed past 3,176,325 on the copy),
-the cure is proven and the **owner-preauthorized cutover** is the next step
-(revert exists; see the cutover runbook §0-NEWEST below). If still running,
-let it finish. If FAIL, read the boot log it names and diagnose; the
-artifacts below are all preserved so you can re-run.
+**THE OPEN PROBLEM (start here):** installing onto a `cp -a` copy of the LIVE
+(actively-writing) datadir does not give the installer a *durable,
+singleton-selected* header chain binding the checkpoint height 3,056,758 —
+even after relinking headers with `--importblockindex ~/.zclassic`. The copy
+arrives chain-detached ("selected frontier changed or is not durable").
+Likely fixes to investigate: (a) install onto a datadir whose chain was built
+by a normal validated sync rather than a live-copy relink — **mint3's
+from-genesis datadir is exactly that** (fully validated, durable chain, no
+torn-copy issue); or (b) make the chain-binding evidence gate accept a
+relinked-but-consistent chain. NOTE: the new **checkpoint-content install
+authority** (landed on main this session) sits DOWNSTREAM of this chain-
+binding gate, so rebuilding the binary alone will NOT clear this specific
+refusal — the chain-binding precondition on the target datadir is the thing
+to solve.
+
+**THE RELIABLE PATH: let mint3 finish.** The `mint3` from-genesis fold
+(~h=2.3M/3.06M at shutdown, PID under `curebin-7d4f346`, ~40–50 blk/s) is an
+INDEPENDENT complete self-derived cure source with a validated durable chain.
+When it reaches the checkpoint it produces the complete transparent+shielded
+state directly (and/or is the clean target to `-install-consensus-bundle`
+onto). Do not restart/relabel it. Check `mint-progress.log` in its datadir.
+
+**Both copy-install linger units were STOPPED at shutdown** (they were on a
+failed/slow path competing with mint3 for CPU): `zcl-cure-torn-repair`
+(REFUSED, above) and `zcl-cure-step4b` (fresh datadir, still stuck in the
+slow band-path header import after ~90 min — a separate defect: a fresh
+empty datadir's `--importblockindex` should take the bulk path, not the
+incremental band service). Their verdict logs are preserved:
+`~/.zclassic-c23-COPY-20260717110600-cure/repair-verdict.log` and
+`~/.zclassic-c23-COPY-20260717202255-freshcure/step4-verdict.log`. The
+self-driving driver scripts are in `~/.local/lib/zcl-cure/` — re-launch with
+`systemd-run --user --unit=<name> <script>` (linger is on) once you have a
+datadir with a durable validated chain to target.
+
+**Resilience fix banked (the night's most important lesson):** critical
+long-running pipelines MUST run as systemd `--user` linger units, self-driving
+to a terminal verdict written into the target datadir — NOT session-tied
+background tasks. A mid-run token-limit black hole on 2026-07-17 left a cure
+failure unhandled for ~8 hours; linger units make that unreachable.
 
 **What is DONE and durable (cannot un-happen):**
 - The complete consensus-state bundle is **exported and independently
