@@ -80,9 +80,26 @@ bool anchor_kv_add_tree(struct sqlite3 *db, int pool,
 bool anchor_kv_delete_range(struct sqlite3 *db, int64_t first_height,
                             int64_t last_height);
 
-/* Clear both root sets and reset their adoption cursor.  This does not open a
- * transaction: boot/refold callers already own one. */
-bool anchor_kv_reset_in_tx(struct sqlite3 *db, int64_t activation_cursor);
+/* Reset primitives — clear both root sets and stamp their adoption cursor.
+ * The cursor value selects one of two OPPOSITE completeness semantics, so the
+ * choice is named at the call site rather than encoded in a bare integer.
+ * Neither opens a transaction: boot/refold callers already own one (each falls
+ * back to its own IMMEDIATE tx only when invoked in autocommit).
+ *
+ * mark_complete: adoption cursor 0 — a from-genesis COMPLETE history.  A later
+ * missing root is positive proof of absence (ANCHOR_KV_MISSING) and an empty
+ * table folds forward as the protocol-empty frontier (ANCHOR_KV_FOUND). */
+bool anchor_kv_reset_mark_complete_in_tx(struct sqlite3 *db);
+
+/* mark_empty_below: adoption cursor `below_height` — history is UNKNOWN below
+ * `below_height` (the marker every above-genesis seed/refold installs).  A
+ * missing root below the cursor is ANCHOR_KV_HISTORY_INCOMPLETE (fail-closed),
+ * never proof of absence, and an empty table fails closed until a body replay
+ * backfills [0, below_height).  This is the marker class behind the H* wedge.
+ * `below_height` must be >= 0 (a negative height is refused); passing 0 is
+ * accepted and is equivalent to mark_complete. */
+bool anchor_kv_reset_mark_empty_below_in_tx(struct sqlite3 *db,
+                                            int64_t below_height);
 
 /* Change BOTH durable anchor-history markers from `expected_boundary` to zero
  * in the caller's ALREADY-OPEN transaction, without clearing the replayed

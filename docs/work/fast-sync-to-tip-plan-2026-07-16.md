@@ -112,8 +112,8 @@ knows nor proves completeness.
 `anchor_kv_publish_full_replay_complete_in_tx` flips `activation_cursor` to 0
 **without clearing rows** (`anchor_kv.c:510-578`) — the exact operation the
 importer needs after a complete bulk insert. `anchor_kv_initialize_history` /
-`anchor_kv_reset_in_tx` manage the cursor and table lifecycle
-(`anchor_kv.c:94-`).
+`anchor_kv_reset_mark_complete_in_tx` / `anchor_kv_reset_mark_empty_below_in_tx`
+manage the cursor and table lifecycle (`anchor_kv.c:94-`).
 
 ---
 
