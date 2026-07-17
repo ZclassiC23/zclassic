@@ -285,9 +285,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return sv_db_fault(sqlite3_extended_errcode(db), next_h,
                            "body_persist_log read");
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* Row missing despite floor — a durable upstream-log hole, not
+         * "not yet" (see stage_upstream_log_hole_note). JOB_IDLE, never
+         * JOB_BLOCKED: reducer_frontier_reconcile_light is the healer. */
+        stage_upstream_log_hole_note(STAGE_NAME, "body_persist_log", next_h,
+                                     bp_cursor, &g_last_blocked_unix);
         return JOB_IDLE;
     }
+    stage_upstream_log_hole_clear(STAGE_NAME);
 
     if (upstream.ok == 0) {
         if (!script_validate_log_insert(db, next_h, "upstream_failed", false,
@@ -312,9 +317,12 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
         block_free(&blk);
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
+        /* body_persist already hash+merkle verified this body — a later
+         * read failure is not a normal wait (see stage_body_read_hold). */
+        return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock,
+                                    &g_last_blocked_unix);
     }
+    stage_body_read_hold_clear(STAGE_NAME);
 
     /* #26 — at-tip contextual gate (script_validate_contextual.c): per-tx
      * contextual rules / finality / BIP34 before script verification. */
@@ -489,6 +497,11 @@ void script_validate_stage_shutdown(void)
     /* Stop the shared verify worker pool before tearing down stage state so no
      * worker outlives the stage. Safe to call even if the pool never started. */
     script_verify_pool_shutdown();
+    /* Registry hygiene (tests re-init in-process): both are re-derived from
+     * live state the next time the condition fires, so clearing here loses
+     * nothing. */
+    stage_upstream_log_hole_clear(STAGE_NAME);
+    stage_body_read_hold_clear(STAGE_NAME);
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

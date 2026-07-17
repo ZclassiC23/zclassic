@@ -25,6 +25,7 @@
 #include "primitives/block.h"
 #include "storage/progress_store.h"
 #include "storage/txdb.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -42,6 +43,7 @@
 #include <time.h>
 
 #define STAGE_NAME       "validate_headers"
+#define VH_WINDOW_MISS_BLOCKER_ID "validate_headers.window_resolve_miss"
 
 /* The default header validator (PoW target + Equihash-from-nSolution)
  * lives in validate_headers_validator.c — see validate_headers_internal.h. */
@@ -80,6 +82,21 @@ static _Atomic int64_t  g_last_recheck_selected = 0;
  * auto-reindex. Reset on every advancing step. NEVER used for a validity
  * verdict — those advance the cursor with an ok=0/ok=1 row. */
 static struct stage_db_fault g_vh_db_fault;
+
+/* Shared by both call sites: neither authority resolves a block_index entry
+ * — a concurrent reorg is conceivable. JOB_IDLE, never JOB_BLOCKED. */
+static void vh_window_miss_note(int height, const char *context)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d (%s): neither the finalized window nor the "
+             "best-header frontier resolves a block_index entry; holding "
+             "until the active chain settles", height, context);
+    struct blocker_record rec;
+    if (blocker_init(&rec, VH_WINDOW_MISS_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_TRANSIENT, reason))
+        blocker_set(&rec);
+}
 
 /* Injectable validator. Default = full PoW + Equihash from disk.
  * Tests set this via validate_headers_stage_set_validator(). Reset to
@@ -317,16 +334,16 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         }
         struct block_index *bi = vh_resolve_bi(ms, (int)h64);
         if (!bi || !bi->phashBlock) {
-            /* Transient resolve miss (e.g. a concurrent reorg between admit and
-             * recheck). SKIP this one height instead of aborting the entire
-             * pass — one unresolvable row must never strand every later
-             * frontier row — and remember the lowest such height so the floor
-             * is never advanced past it (the next pass retries it). */
+            /* Transient resolve miss. SKIP this height rather than abort the
+             * whole pass; remember the lowest such height so the floor never
+             * advances past it (retried next pass). */
+            vh_window_miss_note((int)h64, "recheck");
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             if (first_unresolved < 0)
                 first_unresolved = h64;
             continue;
         }
+        blocker_clear(VH_WINDOW_MISS_BLOCKER_ID);
         if (!vh_failure_is_recheck_candidate(reason))
             continue;
         if (strcmp(reason, "header-source-hash-mismatch") == 0 &&
@@ -489,14 +506,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         int h = next_h + i;
         struct block_index *bi = vh_resolve_bi(ms, h);
         if (!bi || !bi->phashBlock) {
-            /* Neither the finalized window nor the best-header frontier
-             * covers this height — shouldn't happen since header_admit
-             * just admitted it, but a concurrent reorg between admission
-             * and validation is conceivable. Block on this specific case
-             * so the supervisor surfaces it. */
+            /* Shouldn't happen (header_admit just admitted it), but a
+             * concurrent reorg is conceivable — name a typed blocker rather
+             * than rely solely on the 60-min stage-freeze backstop. */
+            vh_window_miss_note(h, "validation");
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }
+        blocker_clear(VH_WINDOW_MISS_BLOCKER_ID);
         vh_job_bind_block(db, &jobs[i], bi, h);
     }
 
@@ -665,6 +682,8 @@ STAGE_DRAIN_IMPL(validate_headers)
 
 void validate_headers_stage_shutdown(void)
 {
+    /* Registry hygiene: re-derived on next fire, so clearing loses nothing. */
+    blocker_clear(VH_WINDOW_MISS_BLOCKER_ID);
     pthread_mutex_lock(&g_lock);
     /* Pool must stop before stage_destroy so the workers' read of
      * g_validator stays valid. */

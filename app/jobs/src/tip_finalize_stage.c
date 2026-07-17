@@ -307,24 +307,25 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (!stage_cursor_read_or_zero(db, "utxo_apply", STAGE_NAME,
                                    &uv_cursor))
         return JOB_FATAL;
-    if ((uint64_t)next_h > uv_cursor) {
+    if ((uint64_t)next_h > uv_cursor) {  /* ANOMALY: names a typed blocker — see tip_finalize_observe_note_cursor_gap */
         tip_finalize_observe_note_cursor_gap(next_h, uv_cursor);
         return JOB_IDLE;
     }
+    tip_finalize_observe_clear_cursor_gap();
     if ((uint64_t)next_h >= uv_cursor) {
-        tip_finalize_observe_mark_blocked(
-            TIP_FINALIZE_BLOCKED_AT_UV_FRONTIER);
+        tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_AT_UV_FRONTIER);
         return JOB_IDLE;
     }
 
     struct utxo_apply_row upstream;
     int found = utxo_apply_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
-    if (found == 0) {
-        tip_finalize_observe_mark_blocked(
-            TIP_FINALIZE_BLOCKED_UV_ROW_MISSING);
+    if (found == 0) {  /* durable upstream-log hole, not "not yet" — see stage_upstream_log_hole_note */
+        stage_upstream_log_hole_note(STAGE_NAME, "utxo_apply_log", next_h, uv_cursor, NULL);
+        tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_UV_ROW_MISSING);
         return JOB_IDLE;
     }
+    stage_upstream_log_hole_clear(STAGE_NAME);
 
     if (upstream.ok == 0) {
         tip_finalize_evidence_clear();
@@ -385,13 +386,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         }
     }
     if (!new_tip) {
-        tip_finalize_observe_mark_blocked(
-            TIP_FINALIZE_BLOCKED_LOOKAHEAD_MISSING);
+        tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;
     }
     if (!old_tip || !old_tip->phashBlock) {
-        tip_finalize_observe_mark_blocked(
-            TIP_FINALIZE_BLOCKED_TIP_MISSING);
+        tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_TIP_MISSING);
         return JOB_IDLE;
     }
 

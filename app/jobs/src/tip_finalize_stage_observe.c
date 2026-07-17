@@ -10,6 +10,7 @@
 
 #include "core/arith_uint256.h"
 #include "json/json.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 #include "util/sync.h"
@@ -20,6 +21,13 @@
 #include <string.h>
 
 #define STAGE_NAME "tip_finalize"
+
+/* Typed blocker id for the cursor_in > uv_cursor anomaly (lane/stall-taxonomy
+ * audit): the pipeline order guarantees utxo_apply commits a height before
+ * tip_finalize consumes it, so reaching here means utxo_apply's cursor
+ * REGRESSED below tip_finalize's (e.g. a targeted operator repair) without a
+ * matching tip_finalize rewind. See tip_finalize_observe_note_cursor_gap. */
+#define TF_CURSOR_GAP_BLOCKER_ID "tip_finalize.uv_cursor_gap"
 
 static _Atomic uint64_t g_finalized_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
@@ -113,6 +121,10 @@ void tip_finalize_observe_shutdown(void)
     atomic_store(&g_last_precondition_height, (int64_t)-1);
     log_throttle_reset(&g_precondition_throttle);
     log_throttle_reset(&g_cursor_gap_throttle);
+    /* Registry hygiene: both re-derived on next fire, so clearing here
+     * loses nothing (tests re-init in-process). */
+    blocker_clear(TF_CURSOR_GAP_BLOCKER_ID);
+    stage_upstream_log_hole_clear(STAGE_NAME);
     pthread_mutex_lock(&g_lifecycle_lock);
     if (g_mutexes_ready) {
         zcl_mutex_lock(&g_block_reason_mu);
@@ -158,6 +170,26 @@ void tip_finalize_observe_note_cursor_gap(int next_h, uint64_t uv_cursor)
             next_h, (unsigned long long)uv_cursor,
             (unsigned long long)shown);
     tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_UV_CURSOR_GAP);
+
+    /* Registry-visible typed blocker (JOB_IDLE at the call site, never
+     * JOB_BLOCKED — tip_finalize can't fix utxo_apply's cursor itself;
+     * utxo_apply catching back up, or an operator repair, is the healer).
+     * Previously this anomaly touched only the WARN + counter above. */
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d exceeds the utxo_apply cursor=%llu — tip_finalize's "
+             "own cursor is ahead of its upstream, which the pipeline order "
+             "should make unreachable; holding until utxo_apply's cursor "
+             "catches back up", next_h, (unsigned long long)uv_cursor);
+    struct blocker_record rec;
+    if (blocker_init(&rec, TF_CURSOR_GAP_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_DEPENDENCY, reason))
+        blocker_set(&rec);
+}
+
+void tip_finalize_observe_clear_cursor_gap(void)
+{
+    blocker_clear(TF_CURSOR_GAP_BLOCKER_ID);
 }
 
 void tip_finalize_observe_note_reorg_rewind(void)

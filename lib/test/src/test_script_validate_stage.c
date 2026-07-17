@@ -56,6 +56,7 @@ struct synth_chain_sv {
     int                 invalid_height;
     int                 missing_prevout_height;
     int                 no_data_height;
+    int                 read_fail_height;  /* fake_reader() fails here */
 };
 
 static int mkdir_p_sv(const char *p)
@@ -114,6 +115,7 @@ static bool synth_chain_sv_build(struct synth_chain_sv *sc, int n)
     sc->invalid_height = -1;
     sc->missing_prevout_height = -1;
     sc->no_data_height = -1;
+    sc->read_fail_height = -1;
     sc->blocks = zcl_calloc((size_t)n, sizeof(struct block_index),
                             "sv_blocks");
     sc->hashes = zcl_calloc((size_t)n, sizeof(struct uint256),
@@ -166,6 +168,8 @@ static bool fake_reader(struct block *out, const struct block_index *bi,
     struct synth_chain_sv *sc = user;
     if (!out || !bi || !sc || bi->nHeight < 0 || bi->nHeight >= sc->n)
         return false;
+    if (bi->nHeight == sc->read_fail_height)
+        return false;  /* simulate on-disk bytes vanished/corrupted */
     return test_block_copy(out, &sc->bodies[bi->nHeight], "sv_tx_copy");
 }
 
@@ -688,6 +692,120 @@ int test_script_validate_stage(void)
         SV_CHECK("dump: verified_total=2",
                  strstr(buf, "\"verified_total\":2") != NULL);
         json_free(&v);
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    /* lane/stall-taxonomy audit: stage_upstream_log_hole_note. A durable
+     * hole (row deleted below the already-advanced upstream cursor — the
+     * residue of a noncanonical-row purge, the exact class that pinned H*
+     * for 3 h on 2026-07-02 at heights 3166989 in script_validate_log +
+     * proof_validate_log, see docs/AGENT_TRAPS.md / reducer_frontier_
+     * reconcile_light.c) must name a typed DEPENDENCY blocker immediately,
+     * not rely solely on the 60-minute stage-freeze backstop. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("upstream_log_hole: setup",
+                 sv_setup("upstream_hole", 3, -1, dir, sizeof(dir), &ms,
+                          &sc) == 0);
+        /* body_persist's cursor is already at 3 (sv_setup's seed); delete
+         * its row at height=1 to simulate the torn-invariant residue. */
+        SV_CHECK("upstream_log_hole: delete row at height=1 below the floor",
+                 exec_sql(progress_store_db(),
+                          "DELETE FROM body_persist_log WHERE height=1"));
+        SV_CHECK("upstream_log_hole: h=0 advances, holds at the hole",
+                 script_validate_stage_drain(100) == 1);
+        SV_CHECK("upstream_log_hole: cursor held at the hole (1)",
+                 script_validate_stage_cursor() == 1);
+        SV_CHECK("upstream_log_hole: stays JOB_IDLE, never JOB_BLOCKED",
+                 script_validate_stage_step_once() == JOB_IDLE);
+
+        struct blocker_snapshot uh_snaps[16];
+        int uh_n = blocker_snapshot_all(uh_snaps, 16);
+        bool uh_found = false, uh_fields_ok = false;
+        for (int k = 0; k < uh_n; k++) {
+            if (strcmp(uh_snaps[k].id,
+                      "script_validate.upstream_log_hole") == 0) {
+                uh_found = true;
+                uh_fields_ok =
+                    strstr(uh_snaps[k].reason, "body_persist_log") &&
+                    strstr(uh_snaps[k].reason, "height=1") &&
+                    uh_snaps[k].class == BLOCKER_DEPENDENCY;
+                break;
+            }
+        }
+        SV_CHECK("upstream_log_hole: typed blocker raised", uh_found);
+        SV_CHECK("upstream_log_hole: blocker names the row + height + class "
+                 "DEPENDENCY", uh_fields_ok);
+
+        int ok = -1, vin = -2; char status[32];
+        SV_CHECK("upstream_log_hole: no terminal row written at the hole",
+                 !log_row_at(progress_store_db(), 1, &ok, status,
+                             sizeof(status), &vin));
+
+        /* The healer (reducer_frontier_reconcile_light, out of scope for
+         * this unit test) refills the row on its own cadence; simulate
+         * that directly and prove the stage resumes and the blocker
+         * clears — auto-termination, no operator. */
+        SV_CHECK("upstream_log_hole: refill the row (healer simulation)",
+                 exec_sql(progress_store_db(),
+                          "INSERT OR REPLACE INTO body_persist_log "
+                          "(height, source, ok, persisted_at) "
+                          "VALUES (1, 'verified', 1, 1)"));
+        SV_CHECK("upstream_log_hole: resumes once the row is refilled",
+                 script_validate_stage_drain(100) == 2);
+        SV_CHECK("upstream_log_hole: cursor advanced to tip (3)",
+                 script_validate_stage_cursor() == 3);
+        SV_CHECK("upstream_log_hole: blocker cleared on resolve",
+                 !blocker_exists("script_validate.upstream_log_hole"));
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    /* lane/stall-taxonomy audit: stage_body_read_hold. body_persist already
+     * verified this body's hash+merkle root before advancing (BLOCK_HAVE_
+     * DATA set), so a later stage_read_block() failure here is on-disk
+     * damage, not a normal wait — it must name a typed TRANSIENT blocker
+     * immediately instead of holding on a bare timestamp. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("body_read_failed: setup",
+                 sv_setup("body_read_failed", 3, -1, dir, sizeof(dir), &ms,
+                          &sc) == 0);
+        sc.read_fail_height = 1;
+        SV_CHECK("body_read_failed: drains only up to the hole",
+                 script_validate_stage_drain(100) == 1);
+        SV_CHECK("body_read_failed: cursor held at the hole (1)",
+                 script_validate_stage_cursor() == 1);
+        SV_CHECK("body_read_failed: next step stays JOB_IDLE",
+                 script_validate_stage_step_once() == JOB_IDLE);
+
+        struct blocker_snapshot rf_snaps[16];
+        int rf_n = blocker_snapshot_all(rf_snaps, 16);
+        bool rf_found = false, rf_fields_ok = false;
+        for (int k = 0; k < rf_n; k++) {
+            if (strcmp(rf_snaps[k].id,
+                      "script_validate.body_read_failed") == 0) {
+                rf_found = true;
+                rf_fields_ok = strstr(rf_snaps[k].reason, "height=1") &&
+                               rf_snaps[k].class == BLOCKER_TRANSIENT;
+                break;
+            }
+        }
+        SV_CHECK("body_read_failed: typed blocker raised", rf_found);
+        SV_CHECK("body_read_failed: blocker names height + class TRANSIENT",
+                 rf_fields_ok);
+
+        int ok2 = -1, vin2 = -2; char status2[32];
+        SV_CHECK("body_read_failed: no terminal row written at the hole",
+                 !log_row_at(progress_store_db(), 1, &ok2, status2,
+                             sizeof(status2), &vin2));
+
+        sc.read_fail_height = -1;
+        SV_CHECK("body_read_failed: resumes once the read succeeds again",
+                 script_validate_stage_drain(100) == 2);
+        SV_CHECK("body_read_failed: cursor advanced to tip (3)",
+                 script_validate_stage_cursor() == 3);
+        SV_CHECK("body_read_failed: blocker cleared on resolve",
+                 !blocker_exists("script_validate.body_read_failed"));
         sv_teardown(dir, &ms, &sc);
     }
 

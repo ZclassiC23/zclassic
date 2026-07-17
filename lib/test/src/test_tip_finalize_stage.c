@@ -739,6 +739,69 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
+    /* lane/stall-taxonomy audit: stage_upstream_log_hole_note. A durable
+     * hole (utxo_apply_log row deleted below the already-advanced
+     * utxo_apply cursor — the residue of a noncanonical-row purge, the
+     * exact class that pinned H* for 3 h on 2026-07-02, see
+     * docs/AGENT_TRAPS.md) must name a typed DEPENDENCY blocker
+     * immediately. tip_finalize was the one stage still relying solely on
+     * the internal tip_finalize_observe_mark_blocked counter for this
+     * exact class already fixed (via the shared helper) in body_fetch /
+     * body_persist / script_validate / proof_validate / utxo_apply. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("upstream_log_hole: setup",
+                 tf_setup("upstream_hole", 3, TF_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        /* utxo_apply's cursor is already at 3 (tf_setup's seed); delete its
+         * row at height=1 to simulate the torn-invariant residue. */
+        TF_CHECK("upstream_log_hole: delete row at height=1 below the floor",
+                 exec_sql(progress_store_db(),
+                          "DELETE FROM utxo_apply_log WHERE height=1"));
+        TF_CHECK("upstream_log_hole: h=0 advances, holds at the hole",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("upstream_log_hole: cursor held at the hole (1)",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("upstream_log_hole: stays JOB_IDLE, never JOB_BLOCKED",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+
+        struct blocker_snapshot uh_snaps[16];
+        int uh_n = blocker_snapshot_all(uh_snaps, 16);
+        bool uh_found = false, uh_fields_ok = false;
+        for (int k = 0; k < uh_n; k++) {
+            if (strcmp(uh_snaps[k].id, "tip_finalize.upstream_log_hole") ==
+                0) {
+                uh_found = true;
+                uh_fields_ok = strstr(uh_snaps[k].reason, "utxo_apply_log") &&
+                               strstr(uh_snaps[k].reason, "height=1") &&
+                               uh_snaps[k].class == BLOCKER_DEPENDENCY;
+                break;
+            }
+        }
+        TF_CHECK("upstream_log_hole: typed blocker raised", uh_found);
+        TF_CHECK("upstream_log_hole: blocker names the row + height + "
+                 "class DEPENDENCY", uh_fields_ok);
+
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("upstream_log_hole: no terminal row written at the hole",
+                 !log_row_at(progress_store_db(), 1, &ok, status,
+                             sizeof(status), &depth, &utxos));
+
+        TF_CHECK("upstream_log_hole: refill the row (healer simulation)",
+                 exec_sql(progress_store_db(),
+                          "INSERT OR REPLACE INTO utxo_apply_log "
+                          "(height, status, ok, spent_count, added_count, "
+                          " total_value_delta, applied_at) "
+                          "VALUES (1, 'verified', 1, 1, 2, 1, 1)"));
+        TF_CHECK("upstream_log_hole: resumes once the row is refilled",
+                 tip_finalize_stage_drain(100) == 2);
+        TF_CHECK("upstream_log_hole: cursor advanced to tip (3)",
+                 tip_finalize_stage_cursor() == 3);
+        TF_CHECK("upstream_log_hole: blocker cleared on resolve",
+                 !blocker_exists("tip_finalize.upstream_log_hole"));
+        tf_teardown(dir, &ms, &sc);
+    }
+
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("checkpoint_evidence: setup",
