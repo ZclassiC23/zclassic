@@ -2,9 +2,17 @@
 
 #include "test/test_helpers.h"
 #include "services/node_db_catchup_service.h"
+#include "models/database.h"
+#include "controllers/sync_controller.h"
+#include "validation/chainstate.h"
+#include "chain/chain.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "storage/disk_block_io.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -110,6 +118,101 @@ int test_node_db_catchup_service(void)
     NDC_CHECK("sparse watcher allows restart when the next slot is present "
               "despite an interior hole",
               !node_db_catchup_sparse_tip_slot_pending(true, 1, 5, true));
+
+    /* A torn index (cp -a of a running node) can hand the catchup walk a
+     * block_index carrying BLOCK_HAVE_DATA yet a NULL phashBlock. That must
+     * fail-closed with a named log — never a SIGSEGV in sync_block_lean. */
+    {
+        struct node_db ndb;
+        bool opened = node_db_open(&ndb, ":memory:");
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.num_vtx = 1;
+        blk.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+        if (blk.vtx) {
+            transaction_init(&blk.vtx[0]);
+            transaction_alloc(&blk.vtx[0], 1, 1);
+        }
+        struct block_index torn;
+        memset(&torn, 0, sizeof(torn));
+        torn.nHeight = 1;
+        torn.nStatus = BLOCK_HAVE_DATA;
+        torn.phashBlock = NULL;
+        bool guarded = opened && blk.vtx &&
+            !node_db_catchup_test_sync_block_lean(&ndb, &blk, &torn);
+        NDC_CHECK("sync_block_lean fails closed on a hash-less block index",
+                  guarded);
+        block_free(&blk);
+        if (opened) node_db_close(&ndb);
+    }
+
+    /* Drive the full walk against a torn projection: a real decodable block
+     * on disk reached through an active-chain slot whose phashBlock is NULL,
+     * with a missing lower slot (h=0). The run must complete with a named
+     * lean-hole outcome, never crash, and never advance the projection tip
+     * onto the unidentifiable slot. */
+    {
+        char dir2[256];
+        test_make_tmpdir(dir2, sizeof(dir2), "node_db_catchup", "torn_walk");
+        char blocks2[512];
+        snprintf(blocks2, sizeof(blocks2), "%s/blocks", dir2);
+        mkdir(blocks2, 0755);
+
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = 1700000123u;
+        b.header.nBits = 0x2000ffffu;
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+        if (b.vtx) {
+            transaction_init(&b.vtx[0]);
+            transaction_alloc(&b.vtx[0], 1, 1);
+            b.vtx[0].vin[0].sequence = 0xffffffffu;
+            b.vtx[0].vout[0].value = 5000000000LL;
+        }
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+        bool wrote = b.vtx && write_block_to_disk(&b, &pos, dir2, msg_start);
+        block_free(&b);
+
+        struct block_index torn;
+        memset(&torn, 0, sizeof(torn));
+        torn.nHeight = 1;
+        torn.nStatus = BLOCK_HAVE_DATA;
+        torn.nFile = pos.nFile;
+        torn.nDataPos = pos.nPos;
+        torn.phashBlock = NULL;
+
+        struct active_chain ac;
+        active_chain_init(&ac);
+        bool installed = active_chain_install_tip_slot(&ac, &torn);
+
+        struct node_db ndb;
+        char ndb_path[512];
+        snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", dir2);
+        bool opened = node_db_open(&ndb, ndb_path);
+
+        /* A pre-run sentinel: if the walk SIGSEGVs on the hash-less slot,
+         * the process dies here and the group fails with a signal. Reaching
+         * the assertions with result reassigned proves the walk returned a
+         * named outcome (a catchup abort returns -1 via LOG_ERR) instead. */
+        int result = -99;
+        if (wrote && installed && opened)
+            result = node_db_catchup_service_run(&ndb, &ac, NULL, dir2);
+
+        int tip = opened ? node_db_sync_get_tip_height(&ndb) : -1;
+        NDC_CHECK("catchup survives a torn hash-less slot without crashing",
+                  wrote && installed && opened && result != -99);
+        NDC_CHECK("catchup refuses to advance the projection onto a torn slot",
+                  tip < 1);
+
+        if (opened) node_db_close(&ndb);
+        active_chain_free(&ac);
+        test_cleanup_tmpdir(dir2);
+    }
 
     test_cleanup_tmpdir(dir);
     printf("node_db_catchup_service: %d failures\n", failures);
