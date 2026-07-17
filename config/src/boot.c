@@ -2139,11 +2139,20 @@ bool app_init(struct app_context *ctx)
                 int64_t db_h = g_node_db.open ? db_block_max_height(&g_node_db) : 0;
                 if (db_h > chain_h) chain_h = (int)db_h;
             }
-            /* Always try zclassicd LDB if our index has far fewer entries
-             * than the chain height. After snapshot sync, our own LDB has
-             * only a handful of entries with scrambled heights. */
-            bool need_zcd = ((int64_t)g_state.map_block_index.size <
-                             (int64_t)chain_h * 9 / 10);
+            /* Legacy source probe, hoisted: feeds need_zcd + the LevelDB open. */
+            const char *home = getenv("HOME");
+            char zcd_idx_path[1024];
+            if (home)
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         "%s/.zclassic/blocks/index", home);
+            else
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         ".zclassic/blocks/index");
+            struct stat zcd_st;
+            bool legacy_source_present = (stat(zcd_idx_path, &zcd_st) == 0);
+            /* Ratio or empty-datadir trigger — see boot_need_legacy_header_pull. */
+            bool need_zcd = boot_need_legacy_header_pull(
+                (int64_t)g_state.map_block_index.size, (int64_t)chain_h, legacy_source_present);
         if (need_zcd) {
             /* Derive our OWN coins frontier up front. The zclassicd LevelDB
              * index tops out at zclassicd's own tip; if our derived frontier
@@ -2160,17 +2169,8 @@ bool app_init(struct app_context *ctx)
              * normally. */
             struct boot_derived_coins_best ndcb;
             bool have_ndcb = boot_derive_coins_best(&ndcb);
-            const char *home = getenv("HOME");
-            char zcd_idx_path[1024];
-            if (home)
-                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
-                         "%s/.zclassic/blocks/index", home);
-            else
-                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
-                         ".zclassic/blocks/index");
 
-            struct stat zcd_st;
-            if (stat(zcd_idx_path, &zcd_st) == 0) {
+            if (legacy_source_present) {
                 printf("Loading block index from zclassicd LevelDB: %s\n",
                        zcd_idx_path);
                 fflush(stdout);
