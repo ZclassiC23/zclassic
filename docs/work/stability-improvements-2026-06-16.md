@@ -40,7 +40,11 @@ before deploy. `owner-gated` = consensus parity or a structural/topology decisio
   the zero-outbound forgive-all-backoff remedy; the `contradiction_frozen`
   condition loop through the engine.
 - **S8 — IBD-class getheaders interval while a band hole exists** (10s, request
-  side only; reverts when the band closes).
+  side only; reverts when the band closes). **DONE** — `syncsvc_header_band_hole_open()`
+  (`app/services/src/header_band_service.c`) forces `syncsvc_getheaders_interval()`
+  (`app/services/src/header_sync_service.c`) to the 10s IBD interval whenever the
+  band hole is open, overriding the at-tip 120s cadence; covered by
+  `test_sync_service_band_hole_forces_ibd_interval` (`lib/test/src/test_sync_service.c`).
 - **S9 — band-aware stall condition** keyed on the *contiguous frontier* (not
   `best_header`, which sits at the high island root and hides a pinned frontier).
 - **S10 — split nTx disk-recovery counters** (hash-mismatch vs unreadable).
