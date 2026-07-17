@@ -456,6 +456,12 @@ static struct {
 void stage_reducer_frontier_reset_detect_memo_for_testing(void)
 {
     g_detect_memo.valid = false;
+    /* The rewind-churn memo is per-episode process state on the same serial
+     * drive thread; a test process running many reconcile fixtures back to
+     * back must clear it between fixtures too, or a prior fixture's streak
+     * refuses a fresh fixture's legitimate rewind. */
+    memset(&g_tip_finalize_rewind_churn_memo, 0,
+           sizeof(g_tip_finalize_rewind_churn_memo));
 }
 #endif
 
