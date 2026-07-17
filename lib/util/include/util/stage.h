@@ -237,6 +237,35 @@ void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn);
 void stage_batch_mark_dirty(void);
 bool stage_batch_dirty(void);
 
+/* ── Test-only commit-boundary hook (deterministic crash-point injection) ──
+ *
+ * stage_run_once() consults this hook exactly once per ADVANCING step,
+ * immediately AFTER the new cursor value has been staged
+ * (cursor_write_locked succeeded) but BEFORE the per-step commit
+ * (stage_step_commit — a real `COMMIT` outside a batch, the common case;
+ * `RELEASE SAVEPOINT` inside one). This is the single seam every one of the
+ * eight reducer stages funnels through, so a hook installed here observes
+ * EVERY stage-batch commit boundary across the whole pipeline in the exact,
+ * reproducible order a real drive produces them — never wall-clock timing.
+ *
+ * `seq` is a monotonically increasing, process-local count of commit
+ * boundaries consulted since the hook was installed (0-based) — the "point
+ * N" a crash-sweep test targets. A test hook that kills the process
+ * (raise(SIGKILL)) at a chosen `seq` simulates a real `kill -9` landing
+ * exactly at that boundary, deterministically: the staged cursor write and
+ * the step's own output writes are still sitting in an UNCOMMITTED
+ * transaction when the process dies, so SQLite's WAL recovery discards them
+ * on next open — identical in effect to a real crash at that exact point,
+ * without any timing race.
+ *
+ * NULL in production (the default) — the call site is one pointer load and
+ * a branch, no allocation, no behavioural change: zero production cost.
+ * Not thread-safe by design: install/clear only from a single-threaded test
+ * driver before/after a fold, never while a live drive thread is running.
+ * See lib/test/src/test_stage_crash_sweep.c. */
+typedef void (*stage_commit_boundary_fn)(const char *stage_name, uint64_t seq);
+void stage_set_test_commit_boundary_hook(stage_commit_boundary_fn fn);
+
 /* Boot-time restore: explicitly set the cursor. Persists immediately.
  * Intended for replaying a known-good cursor on import. */
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value);
