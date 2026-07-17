@@ -4,6 +4,7 @@
 #include "test/test_helpers.h"
 
 #include "coins/utxo_commitment.h"
+#include "chain/checkpoints.h"
 #include "config/boot.h"
 #include "config/consensus_state_replay_receipt.h"
 #include "config/consensus_state_snapshot_export.h"
@@ -2610,6 +2611,194 @@ int test_consensus_state_snapshot_install(void)
             (void)close(active_dir_fd);
         progress_store_close();
         test_cleanup_tmpdir(active_dir);
+    }
+
+    /* ── CHECKPOINT_CONTENT ACTIVATE authority ─────────────────────────────
+     * The second, additive activation authority. A bundle whose coins reproduce
+     * the compiled SHA3 UTXO checkpoint (sha3 + count at the checkpoint height)
+     * AND whose Sapling tip frontier Pedersen-roots to THIS datadir's validated-
+     * header hashFinalSaplingRoot activates WITHOUT any independent replay
+     * receipt: it is bound to the compiled binary + PoW, stronger than a
+     * fold-process attestation. Prove: no validated-header root CONTAINS; a
+     * wrong Sapling root CONTAINS; a single-coin mutation refuses; the
+     * header-bound content match activates and NAMES the authority. */
+    {
+        b.anchors[0].height = b.height;
+        b.anchors[1].height = b.height;
+        char cc_dir[320];
+        snprintf(cc_dir, sizeof(cc_dir), "%s/ckpt-content", dir);
+        CSI_CHECK("checkpoint-content: datadir", mkdir(cc_dir, 0700) == 0);
+        CSI_CHECK("checkpoint-content: live progress store opens",
+                  progress_store_open(cc_dir));
+        sqlite3 *pdb = progress_store_db();
+        int cc_dir_fd = open(cc_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        reducer_frontier_test_set_compiled_anchor(0);
+
+        uint8_t borrowed_txid[32];
+        memset(borrowed_txid, 0x5a, sizeof(borrowed_txid));
+        const uint8_t borrowed_script[] = {0x51};
+        CSI_CHECK("checkpoint-content: wedged store seeds (borrowed coin, empty "
+                  "anchors, positive activation cursor)",
+                  pdb && coins_kv_ensure_schema(pdb) &&
+                  progress_meta_table_ensure(pdb) &&
+                  anchor_kv_ensure_schema(pdb) &&
+                  nullifier_kv_ensure_schema(pdb) &&
+                  anchor_kv_initialize_history(pdb, b.height) &&
+                  nullifier_kv_initialize_history(pdb, b.height) &&
+                  coins_kv_add(pdb, borrowed_txid, 0, 4242, b.height, false,
+                               borrowed_script, sizeof(borrowed_script)) &&
+                  hs_seed_current_frontier(pdb, b.height, b.block_hash));
+
+        CSI_CHECK("checkpoint-content: valid complete bundle writes",
+                  write_bundle(&b, CSI_VALID));
+
+        /* Build the ADMIT decision + exact receipt binding activate requires,
+         * exactly as the boot adapter would. */
+        struct consensus_state_activate_request areq;
+        memset(&areq, 0, sizeof(areq));
+        areq.bundle_path = b.path;
+        areq.expected_height = b.height;
+        memcpy(areq.expected_block_hash, b.block_hash, 32);
+        areq.datadir_fd = cc_dir_fd;
+        areq.datadir_display = cc_dir;
+
+        struct consensus_state_artifact_evidence *ccev = NULL;
+        struct zcl_result ccevr =
+            consensus_state_artifact_evidence_open(b.path, &ccev);
+        struct consensus_state_publication_cas_inputs ccin;
+        memset(&ccin, 0, sizeof(ccin));
+        bool ccin_ok = ccevr.ok && ccev &&
+            consensus_state_artifact_evidence_manifest_copy(ccev,
+                                                            &ccin.manifest) &&
+            consensus_state_artifact_evidence_digest(
+                ccev, ccin.artifact_logical_digest) &&
+            consensus_state_artifact_evidence_receipt_digest(
+                ccev, ccin.artifact_receipt_digest);
+        ccin.chain_evidence_present = true;
+        ccin.chain_bound_to_artifact = true;
+        memset(ccin.chain_evidence_digest, 0xa5, 32);
+        ccin.source_receipt_present = true;
+        ccin.source_receipt = b.receipt;
+        ccin.target_lane = CONSENSUS_STATE_TARGET_LANE_COPY_PROOF;
+        ccin.frontier_known = true;
+        memcpy(ccin.frontier_hash, b.block_hash, 32);
+        ccin.frontier_height = b.height;
+        struct consensus_state_publication_decision_record ccdec;
+        consensus_state_publication_cas_decide(&ccin, &ccdec);
+        struct consensus_state_publication_decision_record cc_decision;
+        memset(&cc_decision, 0, sizeof(cc_decision));
+        CSI_CHECK("checkpoint-content: complete bundle CAS-decides ADMIT",
+                  ccin_ok && ccdec.decision == CONSENSUS_PUBLICATION_ADMIT);
+        cc_decision = ccdec;
+        memcpy(areq.expected_artifact_receipt_digest,
+               ccdec.artifact_receipt_digest, 32);
+        areq.publication_decision = &cc_decision;
+        if (ccev)
+            consensus_state_artifact_evidence_free(ccev);
+
+        /* The compiled SHA3 UTXO checkpoint the bundle's own coins reproduce by
+         * construction (the fixture folds these two coins into b.utxo_root). */
+        struct sha3_utxo_checkpoint cc_cp;
+        memset(&cc_cp, 0, sizeof(cc_cp));
+        cc_cp.height = b.height;
+        memcpy(cc_cp.block_hash, b.block_hash, 32);
+        cc_cp.utxo_count = b.coin_count;
+        cc_cp.total_supply = b.supply;
+        memcpy(cc_cp.sha3_hash, b.utxo_root, 32);
+        checkpoints_set_sha3_override_for_test(&cc_cp);
+
+        /* No independent replay receipt exists on this datadir: checkpoint-
+         * content is the ONLY authority that can lift containment here. */
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            false);
+        struct consensus_state_activate_result cc_ares;
+
+        /* (i) NEGATIVE — no validated-header Sapling root: the coins match the
+         * checkpoint but the shielded tip is not PoW-bound, so CONTAINED. */
+        areq.checkpoint_sapling_root_from_validated_header = false;
+        memset(areq.checkpoint_sapling_root, 0, 32);
+        CSI_CHECK("checkpoint-content: no validated-header root stays CONTAINED "
+                  "(nothing written)",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &cc_ares) &&
+                  !cc_ares.activated &&
+                  cc_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  strstr(cc_ares.reason, "validated-header") != NULL &&
+                  cc_ares.prior_generation_path[0] == '\0' &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (ii) NEGATIVE — a Sapling root that does not match the bundle's
+         * frontier: never activate on a header-inconsistent root. CONTAINED. */
+        areq.checkpoint_sapling_root_from_validated_header = true;
+        memcpy(areq.checkpoint_sapling_root,
+               b.frontier_root[ANCHOR_POOL_SAPLING], 32);
+        areq.checkpoint_sapling_root[7] ^= 0xff;
+        CSI_CHECK("checkpoint-content: wrong Sapling root stays CONTAINED",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &cc_ares) &&
+                  !cc_ares.activated &&
+                  cc_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  strstr(cc_ares.reason, "validated-header") != NULL &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (iii) NEGATIVE — a single-coin mutation flips the compiled checkpoint
+         * SHA3, so the bundle's coins no longer reproduce it: no authority. */
+        struct sha3_256_ctx cc_mut_ctx;
+        sha3_256_init(&cc_mut_ctx);
+        for (size_t i = 0; i < b.coin_count; i++) {
+            const struct csi_coin *coin = &b.coins[i];
+            utxo_commitment_sha3_write_record(
+                &cc_mut_ctx, coin->txid, coin->vout,
+                coin->value + (i == 0 ? 1 : 0), coin->script,
+                coin->script_len, (uint32_t)coin->height,
+                coin->coinbase ? 1 : 0);
+        }
+        struct sha3_utxo_checkpoint cc_mut = cc_cp;
+        sha3_256_finalize(&cc_mut_ctx, cc_mut.sha3_hash);
+        checkpoints_set_sha3_override_for_test(&cc_mut);
+        areq.checkpoint_sapling_root_from_validated_header = true;
+        memcpy(areq.checkpoint_sapling_root,
+               b.frontier_root[ANCHOR_POOL_SAPLING], 32);
+        CSI_CHECK("checkpoint-content: single-coin mutation refuses (coins miss "
+                  "the compiled SHA3)",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &cc_ares) &&
+                  !cc_ares.activated &&
+                  cc_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  strstr(cc_ares.reason, "checkpoint-content") != NULL &&
+                  coins_kv_count(pdb) == 1);
+        checkpoints_set_sha3_override_for_test(&cc_cp);
+
+        /* (iv) POSITIVE — coins reproduce the compiled checkpoint AND the
+         * Sapling frontier Pedersen-roots to the validated-header root:
+         * ACTIVATE via checkpoint-content with NO receipt, naming the authority. */
+        areq.checkpoint_sapling_root_from_validated_header = true;
+        memcpy(areq.checkpoint_sapling_root,
+               b.frontier_root[ANCHOR_POOL_SAPLING], 32);
+        CSI_CHECK("checkpoint-content: content match + header root activates "
+                  "with NO receipt",
+                  consensus_state_snapshot_install_activate(pdb, &areq,
+                                                            &cc_ares) &&
+                  cc_ares.activated &&
+                  cc_ares.status == CONSENSUS_INSTALL_ACTIVATED &&
+                  cc_ares.height == b.height && cc_ares.utxo_count == 2 &&
+                  cc_ares.anchor_count == 2 && cc_ares.nullifier_count == 2 &&
+                  cc_ares.hstar == b.height &&
+                  cc_ares.coins_applied_height == b.height + 1 &&
+                  strstr(cc_ares.reason,
+                         "authority=checkpoint_content") != NULL);
+        CSI_CHECK("checkpoint-content: installed coins/anchors/nullifiers match "
+                  "the bundle with COMPLETE (cursor 0) history",
+                  active_is(pdb, &b));
+        if (cc_ares.prior_generation_path[0])
+            (void)unlink(cc_ares.prior_generation_path);
+
+        checkpoints_reset_sha3_override_for_test();
+        reducer_frontier_test_set_compiled_anchor(-1);
+        if (cc_dir_fd >= 0)
+            (void)close(cc_dir_fd);
+        progress_store_close();
+        test_cleanup_tmpdir(cc_dir);
     }
 
     fixture_free(&a); fixture_free(&b); fixture_free(&inc);

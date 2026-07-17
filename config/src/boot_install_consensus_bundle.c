@@ -12,12 +12,15 @@
 
 #include "config/consensus_state_snapshot_install.h"
 #include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
+#include "chain/chain.h"                              /* block_index, active_chain_at */
+#include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "validation/chainstate.h"                    /* active_chain_at */
 #include "validation/main_state.h"
 
 #include <errno.h>
@@ -348,6 +351,32 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
      * bound into the ADMIT record; height/hash alone carry no state authority. */
     consensus_state_artifact_evidence_free(artifact);
 
+    /* (4b) CHECKPOINT_CONTENT authority input. If this node's validated header
+     * chain owns the compiled SHA3 UTXO checkpoint block, read that header's
+     * PoW-committed hashFinalSaplingRoot so activate can bind a checkpoint-
+     * content bundle's Sapling tip frontier to PoW (see the request contract in
+     * config/consensus_state_snapshot_install.h). An absent / mismatched /
+     * zero-root header leaves the authority unavailable: a content-matching
+     * bundle then only VERIFY-CONTAINS, never activates on an unverifiable root.
+     * This never gates the receipt authority, which needs no header. */
+    bool checkpoint_root_from_header = false;
+    uint8_t checkpoint_sapling_root[32];
+    memset(checkpoint_sapling_root, 0, sizeof(checkpoint_sapling_root));
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (cp && ms) {
+        const struct block_index *cp_bi =
+            active_chain_at(&ms->chain_active, cp->height);
+        struct uint256 zero_root;
+        memset(&zero_root, 0, sizeof(zero_root));
+        if (cp_bi && cp_bi->phashBlock &&
+            memcmp(cp_bi->phashBlock->data, cp->block_hash, 32) == 0 &&
+            memcmp(cp_bi->hashFinalSaplingRoot.data, zero_root.data, 32) != 0) {
+            memcpy(checkpoint_sapling_root,
+                   cp_bi->hashFinalSaplingRoot.data, 32);
+            checkpoint_root_from_header = true;
+        }
+    }
+
     /* (5) ADMIT — atomically install the complete state. */
     struct consensus_state_activate_request areq;
     memset(&areq, 0, sizeof(areq));
@@ -359,6 +388,9 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     areq.publication_decision = &durable_decision;
     areq.datadir_fd = dir_fd;
     areq.datadir_display = datadir;
+    areq.checkpoint_sapling_root_from_validated_header =
+        checkpoint_root_from_header;
+    memcpy(areq.checkpoint_sapling_root, checkpoint_sapling_root, 32);
     struct consensus_state_activate_result ares;
     if (!consensus_state_snapshot_install_activate(progress_store_db(), &areq,
                                                    &ares))

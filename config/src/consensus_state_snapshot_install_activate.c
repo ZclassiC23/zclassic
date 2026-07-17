@@ -12,8 +12,7 @@
 
 #include "config/consensus_state_snapshot_install.h"
 
-#include "config/consensus_state_replay_receipt.h" /* independent-replay authority */
-#include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
+#include "consensus_state_snapshot_install_internal.h" /* lease + authority resolver */
 #include "jobs/reducer_frontier.h"       /* reducer_frontier_compute_hstar,
                                           * REDUCER_TRUSTED_BASE_*_KEY */
 #include "jobs/refold_progress.h"
@@ -52,13 +51,6 @@ static void (*g_activate_after_backup_hook)(void *) = NULL;
 static void *g_activate_after_backup_hook_ctx = NULL;
 static bool g_activate_fail_seed_once = false;
 static bool g_activate_fail_after_seed_once = false;
-static _Atomic bool g_activate_test_independent_authority = false;
-
-void consensus_state_snapshot_install_activate_test_set_independent_authority(
-    bool available)
-{
-    atomic_store(&g_activate_test_independent_authority, available);
-}
 
 void consensus_state_snapshot_install_activate_test_set_after_stream_hook(
     void (*hook)(void *), void *ctx)
@@ -123,32 +115,6 @@ static void activate_run_after_backup_hook(void) { }
 static bool activate_consume_fail_seed(void) { return false; }
 static bool activate_consume_fail_after_seed(void) { return false; }
 #endif
-
-/* ZClassic headers do not commit the transparent/shielded state sets, so the
- * bundle's self-recomputed digests cannot authorize a live state replacement
- * even when every internal digest and selected-chain height/hash check passes.
- * The ONLY production authority is an independent replay-derived receipt
- * (consensus_state_replay_receipt.h) written by -verify-consensus-bundle after
- * re-deriving every component digest from this datadir's OWN folded tables:
- * it must bind EXACTLY this bundle whole-file digest + artifact + anchor +
- * component digests + the running binary image. The ZCL_TESTING seam lets the
- * hermetic copy-proof harness exercise the install mechanics without one. */
-static bool activate_independent_authority_available(
-    const struct consensus_state_bundle_manifest *manifest,
-    const struct consensus_state_artifact_evidence *evidence,
-    int datadir_fd)
-{
-#ifdef ZCL_TESTING
-    if (atomic_load(&g_activate_test_independent_authority))
-        return true;
-#endif
-    uint8_t bundle_file_digest[32];
-    if (!consensus_state_artifact_evidence_file_digest(evidence,
-                                                       bundle_file_digest))
-        return false;
-    return consensus_state_replay_receipt_authority_available(
-        manifest, bundle_file_digest, datadir_fd);
-}
 
 /* Reducer-derived tables cleared on cutover — the exact list
  * boot_refold_from_anchor_reset uses (a "no such table" is tolerated). */
@@ -944,17 +910,18 @@ bool consensus_state_snapshot_install_activate(
 
     result->height = manifest.height;
 
-    /* 3b. Independent-replay authority gate. Without a valid replay receipt
-     *     the install stays CONTAINED (VERIFIED_CONTAINED) and writes nothing —
-     *     the bundle's self-asserted digests do not authenticate its contents. */
-    if (!activate_independent_authority_available(&manifest, evidence,
-                                                  request->datadir_fd)) {
+    /* 3b. ACTIVATE authority gate: a replay-derived RECEIPT or a
+     *     CHECKPOINT_CONTENT proof lifts containment (lattice + rationale in
+     *     *_checkpoint_authority.c); else VERIFIED_CONTAINED, nothing written. */
+    char contained_reason[192];
+    enum consensus_state_activate_authority authority =
+        consensus_state_activate_resolve_authority(
+            evidence, request->datadir_fd, &manifest, request,
+            contained_reason, sizeof(contained_reason));
+    if (authority == CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE) {
         consensus_state_artifact_evidence_free(evidence);
         return activate_fail(result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
-                             "no independent replay-derived receipt authorizes "
-                             "this bundle; run -verify-consensus-bundle against "
-                             "a datadir folded to the anchor first (install "
-                             "stays contained)");
+                             "%s", contained_reason);
     }
 
     /* 4. Lease the immutable read transaction (revalidates the pinned file),
@@ -1125,13 +1092,15 @@ bool consensus_state_snapshot_install_activate(
     result->status = CONSENSUS_INSTALL_ACTIVATED;
     result->activated = true;
     snprintf(result->reason, sizeof(result->reason),
-             "activated %s height=%d coins=%llu anchors=%llu nullifiers=%llu "
-             "H*=%d coins_applied=%d; prior generation preserved at %s",
+             "activated %s h=%d coins=%llu anchors=%llu nullifiers=%llu H*=%d "
+             "applied=%d authority=%s; prior generation preserved at %s",
              CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height,
              (unsigned long long)result->utxo_count,
              (unsigned long long)result->anchor_count,
              (unsigned long long)result->nullifier_count, result->hstar,
-             result->coins_applied_height, result->prior_generation_path);
+             result->coins_applied_height,
+             consensus_state_activate_authority_name(authority),
+             result->prior_generation_path);
     LOG_INFO(ACTIVATE_SUBSYS, "%s", result->reason);
     return true;
 }
