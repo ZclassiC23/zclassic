@@ -2,13 +2,13 @@
 
 # Tenacity Roadmap — sync super fast, fail almost never
 
-**Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](../canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
+**Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
 
 > This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Near-term hardening sequencing lives in [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md); the merged rock-solid recovery-program L1/L2 items are in this doc (see "Rock-solid recovery program" below).
 
 ## The lens
 
-The three principles every item anchors to (state-duplication → divergence; verification must sample the real distribution not reference text; sync has an information floor) are TENACITY doctrine — see [`docs/TENACITY.md`](../../TENACITY.md). Floor is already measured: `--importblockindex` 3.14M headers in 60–74 s, then a normal boot (auto-reads ~/.zclassic) → hash-identical tip in ~25 min; remaining work is making the floor the *only* path and never letting "fast" mean "silently incomplete".
+The three principles every item anchors to (state-duplication → divergence; verification must sample the real distribution not reference text; sync has an information floor) are TENACITY doctrine — see [`docs/TENACITY.md`](../TENACITY.md). Floor is already measured: `--importblockindex` 3.14M headers in 60–74 s, then a normal boot (auto-reads ~/.zclassic) → hash-identical tip in ~25 min; remaining work is making the floor the *only* path and never letting "fast" mean "silently incomplete".
 
 **Standing rule (doctrine, enforced on every PR):** a new wedge gets a new *write-time invariant at a chokepoint*, never a new repair module.
 
@@ -140,7 +140,7 @@ items. Both Layer-0 wedge classes (the coin tear AND restart fragility) share on
 root: cold import is a non-self-sufficient "borrow from zclassicd" bootstrap (skips
 SHA3 verify at non-checkpoint heights, depends on a co-located zclassicd, commits
 state derived from zclassicd's index). The structural cure is self-sufficient sync
-(FlyClient + SHA3 snapshot + delta P2P) — see [`never-stuck-plan.md`](../never-stuck-plan.md);
+(FlyClient + SHA3 snapshot + delta P2P) — see [`never-stuck-plan.md`](./never-stuck-plan.md);
 these harden the bridge.
 
 ### L1 — autonomous durability (copy-prove-gated, no live mutation)

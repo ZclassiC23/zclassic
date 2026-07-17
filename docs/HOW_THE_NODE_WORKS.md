@@ -122,8 +122,10 @@ must match a validated local header. That proves the selected chain location,
 not the derivation of UTXO or shielded state: ZClassic headers commit none of
 the UTXO, Sapling/Sprout frontier, or nullifier roots. The state is therefore
 **borrowed**, not consensus-bound or re-derived from genesis. The plan
-(`docs/work/self-verified-tip-plan.md`, and `docs/work/archive/sync-fix-plan-2026-06-21.md`
-for the ordered steps) replaces it with a **self-verified UTXO anchor rebuild**:
+(`docs/work/self-verified-tip-plan.md`; the ordered-steps predecessor
+`sync-fix-plan-2026-06-21.md` was removed from the tree — recover with
+`git log --follow -- docs/work/archive/sync-fix-plan-2026-06-21.md`)
+replaces it with a **self-verified UTXO anchor rebuild**:
 the internal boot path is `-refold-from-anchor`
 (`app/jobs/src/refold_progress.c`, `app/services/src/anchor_selfmint.c`), which
 rebuilds the coin set from that compiled checkpoint forward, then deletes the

@@ -43,9 +43,10 @@ points in order; dated evidence and backlog material are intentionally omitted.
 
 ## Dated review evidence
 
-- [`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](./work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md) — full-tree code,
+- `work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md` — full-tree code,
   tooling, documentation, and developer-experience reduction audit; evidence,
-  not a competing plan.
+  not a competing plan. Removed from the tree; recover with
+  `git log --follow -- docs/work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`.
 
 ## Architecture (reference, off the v1 path)
 

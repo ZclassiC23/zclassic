@@ -596,7 +596,8 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* S6 (docs/work/archive/sovereign-service-roadmap.md #S6): bootstrap
+    /* S6 (design item #S6, `sovereign-service-roadmap.md`, removed from the
+     * tree — recover with `git log --follow -- docs/work/archive/sovereign-service-roadmap.md`): bootstrap
      * fallback-of-last-resort. With DNS seeds AND the operator addrman
      * file BOTH unavailable, the hardcoded chainparams onion-seed tier
      * (connman.c:281-283 run_onion_seed_pass, addrman.c addrman_add) is

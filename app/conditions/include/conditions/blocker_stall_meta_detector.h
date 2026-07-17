@@ -3,7 +3,7 @@
  * blocker_stall_meta_detector -- the GENERIC backstop for the "typed blocker
  * with an EMPTY escape_action holding H*" defect CLASS.
  *
- * Doctrine (docs/work/archive/hold-class-audit-2026-07-10.md + the stickiness
+ * Doctrine (docs/work/hold-class-audit-2026-07-10.md + the stickiness
  * invariant): a stall must ALWAYS be a named blocker WITH an auto-terminating
  * remedy. A typed blocker (lib/util/blocker.h) that is active with an EMPTY
  * escape_action while H* (the reducer_frontier provable tip) does not advance

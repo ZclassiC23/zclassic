@@ -2,7 +2,7 @@
  *
  * script_validate_contextual — implementation. See
  * jobs/script_validate_contextual.h for the gate contract and
- * docs/work/archive/contextual-check-wiring-spec-2026-06-08.md for the
+ * docs/work/contextual-check-wiring-spec-2026-06-08.md for the
  * fork-safety analysis behind the gating conditions.
  */
 

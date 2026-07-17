@@ -8,7 +8,64 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate canonical cure below.
 
-# HANDOFF — current state (2026-07-15)
+# HANDOFF — current state (2026-07-16)
+
+## 0-NEWEST. Import-path cure PROVEN ON A COPY (2026-07-16) — live NOT yet cut over
+
+**A second, faster cure path for the exact same wedge landed this session:
+the complete-shielded-history IMPORT** (`-import-complete-shielded=<zclassicd-datadir>`,
+`app/services/src/shielded_history_import_service.c`,
+design doc `docs/work/fast-sync-to-tip-plan-2026-07-16.md`). This is
+**operational-readiness** (`trust_mode=release_assisted`), not the sovereign
+producer/bundle cure in §0-NEW below — the two tracks are complementary, not
+competing; this one gets a verified tip fast, the producer/bundle track later
+upgrades the same node to `sovereign` (`coins_kv_self_folded=true`).
+
+**What's proven, on a throwaway copy of the live canonical datadir (never on
+`~/.zclassic-c23` itself — the binary structurally refuses to run this import
+against either live path, see the runbook below §1):**
+- The importer was CPU-intractable on the real mainnet anchor set: it
+  recomputed the Pedersen-hash Merkle root of every historical Sapling
+  anchor, O(anchors × Pedersen), ~14 minutes pegged at 100% CPU with zero
+  forward progress (gdb-confirmed). Fixed (commits `63e40f347`, `b9aacbaaa`):
+  historical anchor tree *contents* are not consensus-load-bearing (ZClassic
+  headers commit none of them), so the bulk historical set skips the
+  per-anchor recompute entirely and only the tip frontier tree is
+  Pedersen-verified once, against the header-committed `hashFinalSaplingRoot`.
+  This took the import from intractable to a small number of seconds.
+- `tools/scripts/import-copy-prove.sh` (with its 2026-07-16 header-refresh
+  step 1b against `zclassicd`'s live chainstate) run against a `cp -a` copy
+  of `~/.zclassic-c23` **cleared the wedge boundary on that copy**: both
+  `utxo_apply.anchor_backfill_gap` and `utxo_apply.nullifier_backfill_gap`
+  flipped from present to absent, and `coins_applied_height` advanced past
+  the wedged `3,176,326`, with the reducer resuming an O(delta) fold from
+  there (no skip/duplicate/re-wedge — pinned by
+  `test(boot): pin O(delta) post-import resume in the from-anchor auto-arm`,
+  commit `f606a679b`).
+
+**What's NOT yet proven or done — read before treating this as solved:**
+- **The copy has not been folded all the way to the current header tip.**
+  Today's run confirmed the boundary flips and the reducer resumes, not that
+  the copy has climbed the remaining ~5,000+ blocks to tip and held there
+  with continuous same-height hash parity against `zclassicd`. That
+  forward-fold-to-tip pass is the next, separate piece of work (the
+  "cured-node-to-tip" workflow) — check live agent/session state for its
+  current status before assuming it is finished.
+- **The fix is NOT yet pushed to `origin/main`** — it exists on a local
+  development branch/worktree only as of this writing. It must land on
+  `main` with `make lint` + `make test-parallel` clean before any cutover
+  step is executable.
+- **The live canonical datadir (`~/.zclassic-c23`) has not been touched.**
+  It remains wedged exactly as §1 below describes.
+
+**The owner-gated cutover + revert plan for THIS path** (distinct mechanics
+from §0-NEW's `-install-consensus-bundle` cutover — this importer has no
+in-transaction prior-generation capture and cannot run in place against the
+live datadir, so cutover is a proven-copy datadir swap, not a live install
+call) is
+[`docs/work/canonical-cutover-runbook-2026-07-16.md`](work/canonical-cutover-runbook-2026-07-16.md).
+Its Precondition (a) requires the tail-fold-to-tip work above to complete
+with a full G-SOV pass before any live-affecting command in it runs.
 
 ## 0-NEW. Incoming-developer handoff (current state — 2026-07-15 evening)
 
@@ -68,8 +125,9 @@ now EXISTS and is adversarially tested (a bundle whose contents differ from the
 honest local fold gets no receipt; a foreign/tampered receipt is refused). The
 receipt is read through the datadir capability fd, not a pathname.
 
-**Codebase review:** the dated, non-authoritative consolidation receipt is
-[`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md).
+**Codebase review:** the dated, non-authoritative 2026-07-14 consolidation
+receipt was removed from the tree; recover it with
+`git log --follow -- docs/work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`.
 The current plan of record is the OS-architecture plan
 `~/.claude/plans/research-this-node-it-clever-dawn.md` (Wave 4).
 
@@ -163,7 +221,11 @@ memory `project_live_wedge_anchor_frontier_rootcause_2026-07-12`. The
 **sovereign cure** is the self-verified UTXO/anchor rebuild that folds real
 block bodies forward from the in-binary SHA3/PoW checkpoint and deletes the
 borrowed `zclassicd`-minted seed path (see `CLAUDE.md` "Tenacity &
-recovery").
+recovery"). A second, faster **operational** cure (§0-NEWEST above,
+`release_assisted` trust, not sovereign) is now proven to clear this exact
+wedge on a datadir copy — not yet folded to tip or cut over live; its
+owner-gated procedure is
+[`docs/work/canonical-cutover-runbook-2026-07-16.md`](work/canonical-cutover-runbook-2026-07-16.md).
 
 ## 2. Historical producer/cure detail (current protected producer is in §0)
 
@@ -466,10 +528,15 @@ exit). Replay any consensus-predicate tightening against REAL history first
 
 - [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md) — THE plan.
 - [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) — the sovereign-cure spine.
+- [`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md) — the operational import-path cure design (§0-NEWEST above).
+- [`docs/work/canonical-cutover-runbook-2026-07-16.md`](work/canonical-cutover-runbook-2026-07-16.md) — owner-gated live cutover + revert for the import-path cure.
+- [`docs/work/sovereign-cutover-runbook.md`](work/sovereign-cutover-runbook.md) — owner-gated live cutover + revert for the sovereign bundle cure.
 - [`docs/work/ROADMAPS.md`](work/ROADMAPS.md) — live vs superseded roadmaps.
 - [`docs/AGENT_TRAPS.md`](AGENT_TRAPS.md) — looks-broken-but-isn't; read before "fixing" anything.
 - [`docs/MVP.md`](MVP.md) — the v1 acceptance bar (8 criteria).
-- [`docs/work/archive/`](work/archive/) — dated handoffs/audits/superseded roadmaps (history only).
+- Dated handoffs/audits/superseded roadmaps are removed from the tree, not
+  archived in-repo — recover any of them with `git log --follow -- <old-path>`
+  (see the note at the top of this file for the pattern).
 
 ## 7. Verify before you trust this file
 

@@ -36,7 +36,8 @@
 
 /* Conservative above-seed P2P body-fetch+fold rate (blocks/sec). The published
  * gap divided by this estimates a fresh install's catch-up time. Tracks the
- * ~3 blk/s measured in docs/work/archive/never-stuck-roadmap-2026-06-28.md. */
+ * ~3 blk/s measured in the removed `never-stuck-roadmap-2026-06-28.md`
+ * (recover with `git log --follow -- docs/work/archive/never-stuck-roadmap-2026-06-28.md`). */
 #define ZCL_BUNDLE_CATCHUP_BLOCKS_PER_SEC 3
 /* The "seconds to tip" design target: at/below this catch-up the bundle is
  * fresh enough that a fresh install is effectively at the tip on first boot. */
