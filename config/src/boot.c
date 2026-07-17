@@ -3473,6 +3473,9 @@ sapling_tree_boot_check_done:
     /* Terminal ratifier for a completed full-validation mint producer datadir. */
     if (ctx->ratify_mint_anchor)
         boot_ratify_mint_anchor(ctx->datadir);
+    /* Terminal checkpoint-content exporter (header chain loaded → Sapling bind). */
+    if (ctx->export_consensus_bundle)
+        boot_export_consensus_bundle(&g_node_db, ctx->datadir);
     /* Explicit recovery: load digest-verified assisted state at its own header
      * height and fold forward. File integrity is not state provenance; posture
      * remains assisted until full-history promotion. */

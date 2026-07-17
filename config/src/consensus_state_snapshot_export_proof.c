@@ -4,10 +4,12 @@
 #include "consensus_state_snapshot_export_internal.h"
 #include "consensus_state_sqlite_text.h"
 
+#include "chain/checkpoints.h"
 #include "crypto/sha3.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
 #include "jobs/tip_finalize_stage.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/coins_ram.h"
@@ -104,6 +106,7 @@ static bool copy_receipt_blob(sqlite3_stmt *st, int column, uint8_t out[32])
 
 static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                                  const uint8_t chain_corpus_digest[32],
+                                 bool checkpoint_content_export,
                                  struct consensus_state_source_receipt *receipt,
                                  uint8_t source_digest[32])
 {
@@ -184,8 +187,20 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                  strnlen(receipt->producer_commit,
                          sizeof(receipt->producer_commit))) &&
              memcmp(receipt->chain_corpus_digest, chain_corpus_digest, 32) == 0 &&
-             running_binary_digest(executable) &&
-             memcmp(receipt->running_binary_digest, executable, 32) == 0;
+             /* Fold-binary provenance vs checkpoint-content proof. The default
+              * export binds the receipt to the running binary that folded the
+              * state. The checkpoint-content path (caller-gated by an exact
+              * compiled-checkpoint + PoW-header content match in
+              * prove_checkpoint_content) instead only requires the receipt's
+              * running-binary digest to be well-formed (nonzero) — the state's
+              * authority comes from the SHA3 + header-root proof, not from
+              * re-running the exact fold binary. No downstream gate re-checks
+              * this digest, so the emitted bundle is byte-identical in shape. */
+             (checkpoint_content_export
+                  ? digest_nonzero(receipt->running_binary_digest)
+                  : (running_binary_digest(executable) &&
+                     memcmp(receipt->running_binary_digest, executable, 32) ==
+                         0));
     if (ok) {
         consensus_state_source_epoch_digest(receipt, source_epoch);
         consensus_state_source_receipt_digest(receipt, recomputed);
@@ -455,6 +470,68 @@ static bool prove_stage_rows(sqlite3 *db,
     return ok;
 }
 
+/* Cryptographic checkpoint-content proof that authorizes a checkpoint-content
+ * export in place of the fold-binary-identity receipt gate. Every rung is a
+ * content fact:
+ *   1. expected_height == the compiled SHA3 UTXO checkpoint height (the export
+ *      is only admissible AT the checkpoint — the strongest content anchor);
+ *   2. the frozen transparent coins reproduce the checkpoint's SHA3 + count
+ *      bit-for-bit (coins_kv_commitment canonically encodes each coin's value,
+ *      so a matching SHA3 also fixes the total supply — no separate scan);
+ *   3. the Sapling tip frontier Pedersen-roots to the block header's committed
+ *      hashFinalSaplingRoot at that height (checkpoint_sapling_root, supplied
+ *      from this node's validated header chain) — the shielded tip is bound to
+ *      PoW. The install side re-derives this same binding against block_index;
+ *      requiring it here fails a header-inconsistent frontier at export time.
+ * Any mismatch refuses and emits nothing. Does not mutate the source. */
+static bool prove_checkpoint_content(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result)
+{
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "no compiled SHA3 UTXO checkpoint to bind the export against");
+    if (request->expected_height != cp->height)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "checkpoint-content export is admissible only at the compiled "
+            "checkpoint height (want=%d got=%d)",
+            cp->height, request->expected_height);
+
+    uint8_t coins_sha3[32];
+    if (coins_kv_commitment(source, coins_sha3) != 0)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_STORE_ERROR,
+                                     "coins commitment computation failed");
+    int64_t coins_count = coins_kv_count(source);
+    if (coins_count < 0)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_STORE_ERROR,
+                                     "coins count read failed");
+    if (memcmp(coins_sha3, cp->sha3_hash, 32) != 0 ||
+        (uint64_t)coins_count != cp->utxo_count)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "coins do not reproduce the compiled SHA3 UTXO checkpoint");
+
+    struct incremental_merkle_tree sapling_tip;
+    struct uint256 sapling_root;
+    int64_t sapling_height = -1;
+    if (anchor_kv_latest_tree(source, ANCHOR_POOL_SAPLING, &sapling_tip,
+                              &sapling_root, &sapling_height) != ANCHOR_KV_FOUND)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "Sapling tip frontier is absent; cannot bind it to the PoW header "
+            "committed final Sapling root");
+    if (memcmp(sapling_root.data, request->checkpoint_sapling_root, 32) != 0)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "Sapling tip frontier does not Pedersen-root to the header "
+            "committed hashFinalSaplingRoot at the checkpoint height");
+    return true;
+}
+
 bool consensus_export_prove_source(
     sqlite3 *source,
     const struct consensus_state_snapshot_export_request *request,
@@ -528,8 +605,16 @@ bool consensus_export_prove_source(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "complete genesis-to-height header proof is unavailable");
 
+    /* Checkpoint-content export authority: a compiled-checkpoint + PoW-header
+     * content proof that authorizes relaxing the receipt's fold-binary-identity
+     * bind below. It TIGHTENS the admission (exact checkpoint coins SHA3 + count
+     * + header Sapling-root match) — every other rung stays identical. */
+    if (request->checkpoint_content_export &&
+        !prove_checkpoint_content(source, request, result))
+        return false;
     if (!prove_source_receipt(source, manifest->source_fold_cursor,
-                              chain_corpus_digest, receipt,
+                              chain_corpus_digest,
+                              request->checkpoint_content_export, receipt,
                               manifest->source_digest))
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
@@ -559,12 +644,23 @@ bool consensus_export_prove_source(
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "frozen source is not the exact durable reducer generation");
-    int durable_height = -1;
-    uint8_t durable_hash[32];
-    if (!tip_finalize_stage_resolve_durable_tip(
-            source, &durable_height, durable_hash) ||
-        durable_height != request->expected_height ||
-        memcmp(durable_hash, request->expected_block_hash, 32) != 0)
+    /* Bind the SERVED tip's own block hash. H* (== expected_height, proven
+     * just above) IS the reducer's provable served tip, so the height is
+     * already bound exactly — the remaining property is that the served tip
+     * owns expected_block_hash. Read that height's hash witness CONVENTION-
+     * AWARE via tip_finalize_stage_block_hash_at (the finalized ok=1 row at
+     * expected_height-1 carries the LOOKAHEAD hash(expected_height); an anchor
+     * seed row at expected_height carries its own hash) — the same served-tip
+     * hash binding derive_coins_best uses at applied-1. Do NOT resolve via the
+     * cursor: a fold-to-anchor producer's tip_finalize cursor sits at
+     * expected_height+1 (the H+1 steady-state convention), so
+     * tip_finalize_stage_resolve_durable_tip floats one above the served tip
+     * through the finalized lookahead — a different notion from the served H*
+     * that false-rejects a complete producer. */
+    uint8_t served_tip_hash[32];
+    if (!tip_finalize_stage_block_hash_at(
+            source, request->expected_height, served_tip_hash) ||
+        memcmp(served_tip_hash, request->expected_block_hash, 32) != 0)
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "durable served tip does not own expected height/hash");
