@@ -305,6 +305,85 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
+/* Free-tier P2P delivery of the ROM/sync artifacts (docs/ROM_DELIVERY.md):
+ * the policy layer's operator surface (app/controllers/src/rom_seed_controller.c,
+ * lib/net/include/net/rom_seed_policy.h, lib/net/include/net/rom_seed_ledger.h).
+ * Nested under `ops.debug` (not a new top-level `ops.*` branch) for the same
+ * reason ops.debug.dash is: the top-level ops menu is within ~70 bytes of
+ * ZCL_COMMAND_BRANCH_BUDGET (proven by test_branch_menus_shallow, see the
+ * comment above ops.debug.dash), so a new top-level branch overflows it.
+ * Named `ops.debug.rom_seed.*` rather than colliding with `ops.debug.rom` —
+ * that path is the unrelated ROM *compile*-fold telemetry subsystem despite
+ * the shared "ROM" word; the underscore form also matches the sibling
+ * seed/fetch lanes' dumpstate subsystem names (`rom_seed`, `rom_fetch`). */
+ZCL_COMMAND_BRANCH("ops.debug.rom_seed", "ops.debug", "ROM-seed policy",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_READY_READ(
+    "ops.debug.rom_seed.status", "ops.debug.rom_seed", "",
+    "ROM-seed policy + live counters",
+    "The live seeding policy (enabled, bandwidth/concurrency caps, "
+    "generosity-boost window), upload counters, and local serve-log ledger "
+    "availability, read from this node's in-process policy state at call "
+    "time.", 0,
+    "rom,seed,policy,bandwidth,generosity,status",
+    "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
+    "zclassic23 ops debug rom_seed status",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_rom_seed_status)
+ZCL_COMMAND_READY_COMMAND(
+    "ops.debug.rom_seed.enable", "ops.debug.rom_seed", "",
+    "Enable ROM-seed serving",
+    "The settled policy+counters state after turning ROM-seed serving on; "
+    "idempotent, so enabling an already-enabled policy returns the same "
+    "settled state.", 0,
+    "rom,seed,enable,policy",
+    "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
+    "zclassic23 ops debug rom_seed enable",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_rom_seed_enable)
+ZCL_COMMAND_READY_COMMAND(
+    "ops.debug.rom_seed.disable", "ops.debug.rom_seed", "",
+    "Disable ROM-seed serving",
+    "The settled policy+counters state after turning ROM-seed serving off "
+    "(new uploads are refused; the caller is expected to consult "
+    "rom_seed_policy_admit_upload on its existing serve path); idempotent, "
+    "so disabling an already-disabled policy returns the same settled "
+    "state.", 0,
+    "rom,seed,disable,policy",
+    "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
+    "zclassic23 ops debug rom_seed disable",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_rom_seed_disable)
+ZCL_COMMAND_READY_READ(
+    "ops.debug.rom_seed.artifacts", "ops.debug.rom_seed", "",
+    "List served ROM artifacts + seed stats",
+    "Every artifact this node has served at least one chunk of, with "
+    "bytes/chunks/distinct-peer totals folded from the local serve-log "
+    "ledger; the seed engine's artifact registry (digests, names) joins in "
+    "once that lane is wired, reported honestly absent until then.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "rom,seed,artifacts,ledger,stats",
+    "zcl.command.empty_input.v1", "zcl.rom_seed_artifacts.v1", "", "",
+    "zclassic23 ops debug rom_seed artifacts",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_rom_seed_artifacts)
+
 ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Postmortems",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(

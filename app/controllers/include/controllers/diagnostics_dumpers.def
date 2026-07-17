@@ -500,3 +500,16 @@
                  "elevated/high/critical_pct thresholds, polling_active, and "
                  "per-sink {name, last_shrink_unix, shrink_calls}",
                  "lib/util/src/mem_pressure.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("rom_seed_policy", rom_seed_policy_dump_state_json,
+                 "free-tier ROM/sync-artifact seeding policy (docs/ROM_DELIVERY.md): "
+                 "enabled, bandwidth/concurrency caps, generosity-boost window, "
+                 "consensus-preempt signal, and live upload counters. Deliberately "
+                 "a DIFFERENT subsystem than the seed engine's own `rom_seed` "
+                 "artifact registry, so the two can never collide.",
+                 "lib/net/src/rom_seed_policy.c",
+                 "lib/test/src/test_rom_seed_policy.c"),
+    DIAG_SERVICE("rom_seed_ledger", rom_seed_ledger_dump_state_json,
+                 "free-tier ROM/sync-artifact serve-log ledger: open flag, row "
+                 "count, and the retention cap it prunes to.",
+                 "lib/net/src/rom_seed_ledger.c",
+                 "lib/test/src/test_rom_seed_ledger.c"),

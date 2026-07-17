@@ -65,3 +65,5 @@ app.market.offer           exempt: PLANNED fail-closed, no artifact install (zma
 app.market.buy             exempt: PLANNED fail-closed, no artifact install (zmarket_buy RPC owns the write)
 app.swap.initiate          exempt: PLANNED fail-closed, no artifact install (swap_initiate RPC owns the write)
 app.swap.participate       exempt: PLANNED fail-closed, no artifact install (swap_participate RPC owns the write)
+ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
+ops.debug.rom_seed.disable exempt: in-process policy flag flip + JSON persist, no artifact install
