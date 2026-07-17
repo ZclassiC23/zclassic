@@ -30,6 +30,7 @@
  *
  * Fixture is a trimmed copy of test_reducer_frontier_reconcile_light.c's. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
 #include "conditions/reducer_frontier_reconcile_light.h"
@@ -41,6 +42,7 @@
 #include "jobs/stage_repair.h"
 #include "net/connman.h"
 #include "net/net.h"
+#include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
@@ -1064,6 +1066,119 @@ int test_reducer_reconcile_witness(void)
                   !dry2.clamped_proof_validate &&
                   !dry2.refused_coin_tear);
 
+        teardown_fixture(&fx);
+    }
+
+    /* ── T12: same-height churn exhausts the budget and ARMS the escalator ──
+     * FIX-1: a backfill record that never advances past its high-water baseline
+     * (a same-height rewind->re-derive cycle) is churn, not progress:
+     * progressing() must NOT refresh, so the budget exhausts, the CRITICAL
+     * condition pages, and the sticky escalator (the always-terminating remedy
+     * ladder) auto-arms on the unresolved-CRITICAL backlog. Pre-FIX-1 the record
+     * transition re-refreshed the budget every cycle so max_attempts was never
+     * reached and the escalator never armed (the silent-wedge bug). */
+    {
+        struct rrw_fixture fx;
+        RRW_CHECK("T12: setup tear fixture", setup_fixture(&fx, "t12_arm"));
+        sqlite3 *db = progress_store_db();
+        RRW_CHECK("T12: poke real utxo_apply hole at K=A+2",
+                  poke_utxo_apply_hole(db, A + 2));
+        RRW_CHECK("T12: seed coins_applied above the hole (tear)",
+                  seed_coins_applied(db, A + 3));
+        /* A record that re-derives back to the SAME height every round: seeded
+         * at 100, never climbs above it — the degenerate same-height churn. */
+        RRW_CHECK("T12: backfill record present, pinned at one height",
+                  set_tipfin_progress(db, 100));
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sticky_escalator_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        for (int i = 0; i < 5; i++) {
+            /* Re-write the record to the SAME height each round (a rewind that
+             * re-derives back to where it was) — never above the high-water. */
+            (void)set_tipfin_progress(db, 100);
+            reducer_frontier_reconcile_light_test_clear_backoff();
+            condition_engine_tick();
+        }
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(COND_NAME, &snap);
+        RRW_CHECK("T12: same-height churn does NOT refresh — budget exhausts "
+                  "and pages",
+                  got &&
+                  snap.currently_active &&
+                  snap.attempts >= 5 &&
+                  snap.operator_needed_emitted &&
+                  condition_engine_get_unresolved_critical_count() == 1);
+
+        /* The exhausted CRITICAL backlog auto-arms the always-terminating
+         * remedy ladder on its next drive. */
+        sticky_escalator_test_reset();
+        (void)sticky_escalator_test_drive(
+            0, (int64_t)platform_time_wall_unix());
+        RRW_CHECK("T12: budget exhaustion arms the sticky escalator",
+                  sticky_escalator_test_armed());
+
+        sticky_escalator_test_reset();
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── T13: a rewind BELOW the high-water then a re-advance to a
+     *   previously-seen height does NOT refresh progressing() (FIX-1) ────────
+     * Drives progressing() directly. The old code re-baselined the record to
+     * the CURRENT (rewound-low) value whenever ANY signal refreshed, so a
+     * subsequent re-advance to a height it had ALREADY reached refreshed again —
+     * churn forever. The high-water baseline is raised, never lowered, so the
+     * re-advance to a seen height returns false. */
+    {
+        struct rrw_fixture fx;
+        RRW_CHECK("T13: setup fixture", setup_fixture(&fx, "t13_highwater"));
+        sqlite3 *db = progress_store_db();
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        reducer_frontier_reconcile_light_test_snapshot_insert_baseline();
+
+        /* R1: record present at its peak (200) — genuine forward progress. */
+        RRW_CHECK("T13: seed record at the peak", set_tipfin_progress(db, 200));
+        bool p1 = reducer_frontier_reconcile_light_test_progressing();
+
+        /* R2: rewind the record low (150), but an inserted-coin result refreshes
+         * this round — the OLD code re-baselined the record DOWN to 150 here. */
+        RRW_CHECK("T13: rewind record below the peak",
+                  set_tipfin_progress(db, 150));
+        reducer_frontier_reconcile_light_test_note_coin_insert_result(5);
+        bool p2 = reducer_frontier_reconcile_light_test_progressing();
+
+        /* R3: re-advance to 160 — above the rewound 150 but still BELOW the 200
+         * high-water. OLD: 160 > 150 -> refresh (churn). NEW: 160 <= 200 -> no
+         * refresh, and no insert this round, H* flat -> false. */
+        RRW_CHECK("T13: re-advance below the high-water",
+                  set_tipfin_progress(db, 160));
+        reducer_frontier_reconcile_light_test_note_coin_insert_result(0);
+        bool p3 = reducer_frontier_reconcile_light_test_progressing();
+
+        RRW_CHECK("T13: peak + insert refresh, but a re-advance to a seen height "
+                  "does not (high-water baseline)",
+                  p1 && p2 && !p3 &&
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 2);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
         teardown_fixture(&fx);
     }
 

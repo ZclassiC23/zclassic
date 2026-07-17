@@ -1017,6 +1017,69 @@ int test_sticky_escalator(void)
         g_connect_only = saved_connect_only;
     }
 
+    /* T11 — flat-H* repair churn advances the rung (FIX-3). A targeted_rederive
+     * whose reconcile keeps reporting repaired (a cursor is re-raised above the
+     * same rowless hole every tick — the fold re-advancing while the hole pins
+     * H*) must NOT hold its whole window: after STICKY_REDERIVE_MAX_FLAT_REPAIRS
+     * flat repairs (H* never lifts past the rung-entry baseline) the rung FAILs
+     * so the ladder advances to resnapshot instead of looping on a repair that
+     * will never clear H*. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T11: setup fixture", setup_fixture(&fx, "t11_flat_churn"));
+        sqlite3 *db = progress_store_db();
+
+        /* Same live 3166989 shape as T1: rowless script/proof hole at the coins
+         * frontier with the utxo cursor parked at it. */
+        SE_CHECK("T11: punch rowless hole at h0 = coins_applied",
+                 delete_height(db, "script_validate_log", A + 2) &&
+                 delete_height(db, "proof_validate_log", A + 2) &&
+                 delete_height(db, "utxo_apply_log", A + 2) &&
+                 delete_height(db, "utxo_apply_log", A + 3) &&
+                 seed_cursor(db, "utxo_apply", A + 2));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        /* Pin observe_tip() to the flat frontier so the rung-entry baseline
+         * (g_tip_at_rung) equals the pinned H* and the flat check fires. */
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(A + 1);
+
+        sticky_escalator_note_stall("test_flat_repair_churn");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T11: retry window lapse advances to targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+
+        /* Each dispatch: re-raise the cursors above the rowless hole (the fold's
+         * re-advance) so the reconcile re-clamps and reports repaired with H*
+         * still pinned at A+1. The first N-1 flat repairs HOLD the rung; the
+         * Nth FAILs and advances — all inside the rung's 60 s window (t+32..),
+         * so only the flat-repair cap, not the window, can advance it. */
+        for (int i = 1; i < STICKY_REDERIVE_MAX_FLAT_REPAIRS; i++) {
+            SE_CHECK("T11: re-raise cursors above the hole",
+                     seed_cursor(db, "script_validate", A + 4) &&
+                     seed_cursor(db, "proof_validate", A + 4) &&
+                     seed_cursor(db, "tip_finalize", A + 3));
+            SE_CHECK("T11: flat repair holds the rung",
+                     sticky_escalator_test_drive(0, t + 31 + i) ==
+                         STICKY_RUNG_TARGETED_REDERIVE);
+        }
+        SE_CHECK("T11: re-raise cursors above the hole (final)",
+                 seed_cursor(db, "script_validate", A + 4) &&
+                 seed_cursor(db, "proof_validate", A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+        SE_CHECK("T11: Nth flat repair FAILs and advances to resnapshot "
+                 "(not a loop)",
+                 sticky_escalator_test_drive(
+                     0, t + 31 + STICKY_REDERIVE_MAX_FLAT_REPAIRS) ==
+                     STICKY_RUNG_RESNAPSHOT);
+
+        reducer_frontier_provable_tip_reset();
+        teardown_fixture(&fx);
+    }
+
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
 
     printf("sticky_escalator: %d failures\n", failures);
