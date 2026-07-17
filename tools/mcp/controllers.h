@@ -17,7 +17,7 @@
 #include "json/json.h"
 #include "controllers/native_handler_body.h" /* json_get_*_or + body contract */
 #include "router.h"
-#include "rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "util/log_macros.h"
 
 void mcp_register_ops(void);      /* zcl_status, zcl_health, zcl_events, zcl_rpc, ... */
@@ -66,7 +66,7 @@ bool mcp_dev_hotswap_probe_body_ok(
  *
  * Required headers in the .c that uses this macro:
  *   #include "../router.h"        — struct mcp_request/response
- *   #include "../rpc_client.h"    — mcp_node_rpc()
+ *   #include "controllers/rpc_client.h"    — mcp_node_rpc()
  *   #include "util/log_macros.h"  — LOG_ERR
  *   <stdio.h>                     — snprintf
  *
@@ -95,7 +95,7 @@ bool mcp_dev_hotswap_probe_body_ok(
  *   DEFINE_PT_STR(h_zcl_gettransaction, "txid", "gettransaction", "mcp.wallet")
  *
  * Required headers in the .c that uses this macro (a superset of
- * DEFINE_PT's): also needs "../rpc_params.h" (mcp_params_*) and
+ * DEFINE_PT's): also needs "controllers/rpc_params.h" (mcp_params_*) and
  * <stdlib.h> (free). All current callers already include them.
  *
  * Handlers that need extra args, a typed (non-string) arg, or
@@ -131,7 +131,7 @@ bool mcp_dev_hotswap_probe_body_ok(
  * Used by DEFINE_PT and by any handler that hand-constructs params.
  *
  * Required includes (see DEFINE_PT block):
- *   "../router.h", "../rpc_client.h", "util/log_macros.h", <stdio.h>
+ *   "../router.h", "controllers/rpc_client.h", "util/log_macros.h", <stdio.h>
  */
 static inline int mcp_return_rpc_body(struct mcp_response *res,
                                        char *body_or_null,

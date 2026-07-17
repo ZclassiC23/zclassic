@@ -1,14 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Thin RPC client used by every MCP controller.  Talks to the local
- * zclassic23 node over HTTP on 127.0.0.1 using the cookie file in
- * the data directory for auth.  This is the *only* file in the MCP
- * tree that knows how to speak to the node. */
+ * Thin loopback RPC client used by the native command handlers and the
+ * tools/command CLI.  Talks to the local zclassic23 node over HTTP on
+ * 127.0.0.1 using the cookie file in the data directory for auth.  This is
+ * the *only* file that knows how to speak to the node this way.  Symbols keep
+ * their historical mcp_* names (re-homed from tools/mcp/ in zero-MCP W2). */
 
-#ifndef ZCL_MCP_RPC_CLIENT_H
-#define ZCL_MCP_RPC_CLIENT_H
+#ifndef ZCL_CONTROLLERS_RPC_CLIENT_H
+#define ZCL_CONTROLLERS_RPC_CLIENT_H
 
-/* Call once at startup (from tools/mcp_server.c main loop). */
+/* Call once at startup (from the node/CLI entry point). */
 void mcp_rpc_client_init(const char *datadir, int rpc_port);
 
 /* Return the datadir passed to mcp_rpc_client_init (empty string if

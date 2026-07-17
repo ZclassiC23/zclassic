@@ -47,6 +47,55 @@ replacement needed).
 
 ## Wave W2 — consumer migration (scripts / tests / docs / configs → native)
 
+**Current W2 truth (re-derived from a live grep, superseding the "47 sites"
+count above).** Two structural facts changed the remainder:
+
+1. **Shared loopback RPC transport is re-homed out of `tools/mcp/`.** The
+   only `tools/mcp/` files with survivors past the W3 delete were the
+   transport pair `rpc_client.{c,h}` + `rpc_params.{c,h}` (the native command
+   handlers and the `tools/command` CLI depend on them). They now live at
+   `app/controllers/src/rpc_client.c` + `.../rpc_params.c` and
+   `app/controllers/include/controllers/rpc_client.h` + `rpc_params.h`,
+   included as `"controllers/rpc_client.h"` / `"controllers/rpc_params.h"`.
+   Symbols keep their historical `mcp_*` names (pure move — no behavior
+   change). Home chosen = `app/controllers/` (not `tools/command/`) because
+   the transport's lowest-layer consumers are the app-layer
+   `*_native_handlers.c`; putting it in `tools/command/` would make the app
+   layer depend outward on the tools layer — the same "foundation must not
+   depend on its consumer" inversion the `check-lib-layering` gate codifies.
+   With the transport gone, the ONLY non-test, non-dying `tools/mcp/`
+   consumer left is `config/src/boot_services.c` (`mcp/dev_rpc_bridge.h`,
+   the W1 delete item) plus `src/main.c` (the `-mcp` server wiring, W3).
+
+2. **`dev_rpc_bridge.{c,h}` is NOT relocated (reclassified out of "shared
+   transport").** Despite living beside the transport, its body is the
+   resident MCP-router bridge — it calls `mcp_router_dispatch`,
+   `mcp_router_find`, `mcp_router_reset`, `mcp_register_*`, and reads
+   `mcp_tool_route`/`MCP_TOOL_FLAG_DESTRUCTIVE`, all of which die in W3.
+   Its native successor already exists (`register_dev_native_hotswap_rpc`,
+   `tools/command/native_dev_hotswap.c`, wired at
+   `dev_rpc_bridge.c` after W1-B/C). Moving it would carry MCP-router
+   coupling into a new home without advancing the `tools/mcp/` deletion, so
+   it stays a **W1/W3 delete-or-rewrite** item, not a W2 relocation. See the
+   `boot_services.c:register_dev_mcp_rpc_commands` W1 row.
+
+3. **The test-assertion W2 rows below are largely already satisfied.** The
+   native-twin landing this session added the "native-alongside-mcp"
+   assertions (`native_command`/`native_tool` beside `mcp_tool`) in
+   `test_syncdiag_rpc.c` (`:1423-1430,1512-1534,3064,3205`) and
+   `test_api.c` (`:2850-2857,2954,3053-3055,3277,3341`). The `mcp_tool` /
+   `mcp_callable_count` / `mcp_changed` assertions are **intentionally
+   retained** — they still describe real, currently-running `-mcp` behavior
+   and flip/delete in W3 (the tests say so inline). So these are DONE for W2;
+   do not "migrate" them now or you delete live-behavior coverage.
+
+4. **Docs are deferred, not migrated, by design.** Per the present-tense
+   docs doctrine, a doc that documents the still-working legacy `-mcp` /
+   `mcpcall` surface is *accurate today*; rewriting it to native-only before
+   W3 actually removes `-mcp` would make the doc lie. Docs that already frame
+   native as primary + MCP as legacy (e.g. `CLAUDE.md`) are correct as-is.
+   The doc rows below land WITH W3, when `-mcp` truly goes away.
+
 | file:line | surface | kind | replacement | wave | in-plan? |
 |---|---|---|---|---|---|
 | tools/agent_fast_ci.sh:633 | `make agent-mcp-call TOOL=<tool>` | doc-reference | native leaf equivalents; update `mcp_shortcuts` JSON docs | W2 | YES §1.3 |
@@ -162,8 +211,25 @@ replacement needed).
 - **Total unique consumers:** 114 (deduped by file+line across the 4 sweeps —
   no exact file+line duplicates were found; the 4 sweeps had already
   partitioned cleanly by area).
-- **Wave split:** W1 (hot-swap re-target) = 15, W2 (consumer migration) = 47,
-  W3 (pure delete) = 52.
+- **Wave split (original sweep):** W1 (hot-swap re-target) = 15,
+  W2 (consumer migration) = 47, W3 (pure delete) = 52.
+- **W2 remainder now (re-derived, present-tense):** the load-bearing W2 code
+  action — extracting the shared loopback RPC transport out of `tools/mcp/`
+  so the tree can be deleted — is **DONE** (`rpc_client`/`rpc_params` →
+  `app/controllers/`, all ~25 include sites rewritten to `controllers/…`,
+  `build-only` green). `dev_rpc_bridge` is reclassified to W1/W3 (MCP-router
+  bridge, not transport). The test-assertion rows are **DONE** via the
+  native-alongside pattern (mcp_* deferred to W3 by design). What genuinely
+  remains for W2 is the **doc/config sweep** (README/CLAUDE.md/BUILD.md/
+  GETTING_STARTED.md/AGENT_API.md/AGENT_ARCHITECTURE.md/CODEBASE_MAP.md/
+  HANDOFF.md/fast-path.md + `.mcp.json` + `tools/agent_fast_ci.sh`
+  doc-refs), which lands WITH W3 under the present-tense docs doctrine —
+  ~25 doc/config lines, zero of which block the `tools/mcp/` deletion.
+- **No W2 code call site remains blocked on a missing native twin.** Every
+  remaining `mcpcall`/`mcp_router_*`/`mcp_register_*`/`mcp_server_main`
+  reference in `.c` is in `src/main.c` (the `-mcp` server + `mcpcall` CLI,
+  W3 pure-delete) or `config/src/boot_services.c` (`register_dev_mcp_rpc_commands`,
+  W1 delete) — none is a W2 "call a tool that has no native twin" blocker.
 - **In-plan (`YES`, exact citation):** 55
 - **In-plan (`partial` — file/feature named, this line/site not itemized,
   mostly doc line-number drift):** 32

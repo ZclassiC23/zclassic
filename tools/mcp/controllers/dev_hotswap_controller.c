@@ -13,7 +13,7 @@
 
 #include "../controllers.h"
 #include "../router.h"
-#include "../rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include "hotswap/hotswap.h"
 #include "json/json.h"

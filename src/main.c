@@ -75,7 +75,7 @@
 #include "mcp/controllers.h"
 #include "mcp/middleware.h"
 #include "mcp/router.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "command/native_command.h"
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"

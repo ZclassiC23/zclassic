@@ -19,8 +19,8 @@
 #include "controllers/status_native_helpers.h"
 
 #include "json/json.h"
-#include "mcp/rpc_client.h"
-#include "mcp/rpc_params.h"
+#include "controllers/rpc_client.h"
+#include "controllers/rpc_params.h"
 #include "sim/postmortem.h"
 #include "util/clientversion.h"
 #include "util/log_macros.h"

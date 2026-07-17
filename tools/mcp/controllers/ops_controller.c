@@ -13,8 +13,8 @@
 
 #include "../controllers.h"
 #include "../router.h"
-#include "../rpc_client.h"
-#include "../rpc_params.h"
+#include "controllers/rpc_client.h"
+#include "controllers/rpc_params.h"
 
 #include "controllers/agent_controller.h"
 #include "controllers/status_native_handlers.h"

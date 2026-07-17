@@ -4,7 +4,7 @@
  * contract and the 4.1 source-swap seam. */
 
 #include "mcp_notify.h"
-#include "rpc_client.h"
+#include "controllers/rpc_client.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"

@@ -14,7 +14,7 @@
 
 #include "../controllers.h"
 #include "../router.h"
-#include "../rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "metrics/prometheus_metrics.h"
 #include "../baseline.h"
 

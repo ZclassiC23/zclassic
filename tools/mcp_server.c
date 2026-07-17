@@ -26,7 +26,7 @@
 #include "mcp/replay.h"
 #include "mcp/baseline.h"
 #include "mcp/controllers.h"
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "mcp/mcp_notify.h"
 
 #include "json/json.h"

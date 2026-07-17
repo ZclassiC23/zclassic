@@ -16,9 +16,9 @@
 #include "platform/time_compat.h"
 #include "../controllers.h"
 #include "../router.h"
-#include "../rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "../replay.h"
-#include "../rpc_params.h"
+#include "controllers/rpc_params.h"
 
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_native_handlers.h"

@@ -2,7 +2,7 @@
 
 #include "controllers/chain_projection.h"
 
-#include "mcp/rpc_client.h"
+#include "controllers/rpc_client.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
 #include "util/projection.h"

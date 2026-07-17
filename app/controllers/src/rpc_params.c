@@ -1,6 +1,10 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Safe JSON-RPC params builder: routes every string through the project's
+ * JSON encoder so untrusted input cannot inject into the params array.
+ * Re-homed from tools/mcp/ (zero-MCP W2). See controllers/rpc_params.h. */
 
-#include "rpc_params.h"
+#include "controllers/rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
