@@ -623,7 +623,7 @@ static bool activate_apply_in_tx(
      *    empty table with a positive cursor. The reset primitives join our
      *    open transaction. */
     if (!anchor_kv_reset_in_tx(progress_db, 0) ||
-        !nullifier_kv_reset_in_tx(progress_db, 0))
+        !nullifier_kv_reset_mark_complete_in_tx(progress_db))
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "shielded history reset to complete failed");
     /* The atomic bundle supersedes every partial shielded recovery session.

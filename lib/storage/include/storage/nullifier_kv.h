@@ -90,12 +90,29 @@ bool nullifier_kv_initialize_history(struct sqlite3 *db,
 bool nullifier_kv_activation_cursor(struct sqlite3 *db,
                                     int64_t *cursor_out, bool *found_out);
 
-/* Clear the complete set and replace its provenance with an explicit adoption
- * boundary in the caller's ALREADY-OPEN transaction. This is the only valid
- * full-reset primitive: DELETE without co-writing the marker can preserve a
- * stale explicit zero and make an empty set look complete. */
-bool nullifier_kv_reset_in_tx(struct sqlite3 *db,
-                              int64_t activation_cursor);
+/* Reset primitives — clear the complete nullifier set and stamp its adoption
+ * cursor in the caller's ALREADY-OPEN transaction (autocommit is refused).
+ * The cursor value selects one of two OPPOSITE completeness semantics, so the
+ * choice is named at the call site rather than encoded in a bare integer.
+ * Co-writing the marker with the DELETE in one txn is load-bearing: a DELETE
+ * without it can preserve a stale explicit zero and make an empty set look
+ * complete.
+ *
+ * mark_complete: adoption cursor 0 — a from-genesis COMPLETE history. Every
+ * revealed nullifier is durably present, so a double-spend of ANY note is
+ * provable fresh and no historical prefix is claimed unknown. */
+bool nullifier_kv_reset_mark_complete_in_tx(struct sqlite3 *db);
+
+/* mark_empty_below: adoption cursor `below_height` — the historical prefix is
+ * UNKNOWN below `below_height` (the marker every above-genesis seed/refold/
+ * replay installs). Every nullifier revealed below the cursor is absent, so a
+ * pre-activation double-spend cannot be proven fresh; the reducer holds every
+ * shielded input and surfaces the PERMANENT `utxo_apply.nullifier_backfill_gap`
+ * blocker until a body replay backfills [0, below_height). `below_height` must
+ * be >= 0 (a negative height is refused); passing 0 is accepted and is
+ * equivalent to mark_complete. */
+bool nullifier_kv_reset_mark_empty_below_in_tx(struct sqlite3 *db,
+                                               int64_t below_height);
 
 /* Flip the durable nullifier activation marker from `expected_boundary` to zero
  * in the caller's ALREADY-OPEN transaction, WITHOUT clearing the rows — the

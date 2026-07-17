@@ -559,7 +559,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
      * Record that absence explicitly: the fold must backfill [0,anchor)
      * before accepting an unknown shielded root. */
     if (refold_ok && (!anchor_kv_reset_in_tx(rpdb, anchor) ||
-                      !nullifier_kv_reset_in_tx(rpdb, anchor)))
+                      !nullifier_kv_reset_mark_empty_below_in_tx(rpdb, anchor)))
         refold_ok = false;
     if (refold_ok && seeded_from_minted_snapshot) {
         uint8_t one = 1;

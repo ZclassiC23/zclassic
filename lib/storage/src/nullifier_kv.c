@@ -171,7 +171,11 @@ bool nullifier_kv_activation_cursor(sqlite3 *db, int64_t *cursor_out,
     return marker_read_i64(db, NF_ACTIVATION_KEY, cursor_out, found_out);
 }
 
-bool nullifier_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
+/* Shared reset body for both typed entry points below. They differ ONLY in the
+ * adoption cursor they stamp — 0 for a from-genesis COMPLETE history, a positive
+ * height for an EMPTY-BELOW-N gap — so the DELETE, transaction scope, and marker
+ * write are identical regardless of which caller invoked it. */
+static bool nullifier_kv_reset_impl_in_tx(sqlite3 *db, int64_t activation_cursor)
 {
     if (!db || activation_cursor < 0) {
         LOG_WARN("nullifier_kv",
@@ -204,6 +208,16 @@ bool nullifier_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
         return false;
     }
     return true;
+}
+
+bool nullifier_kv_reset_mark_complete_in_tx(sqlite3 *db)
+{
+    return nullifier_kv_reset_impl_in_tx(db, 0);
+}
+
+bool nullifier_kv_reset_mark_empty_below_in_tx(sqlite3 *db, int64_t below_height)
+{
+    return nullifier_kv_reset_impl_in_tx(db, below_height);
 }
 
 bool nullifier_kv_publish_full_replay_complete_in_tx(sqlite3 *db,
@@ -316,7 +330,7 @@ bool shielded_history_begin_full_replay(sqlite3 *db, int64_t target_height)
     int64_t boundary = target_height + 1;
     bool ok = progress_meta_table_ensure(db) &&
               anchor_kv_reset_in_tx(db, boundary) &&
-              nullifier_kv_reset_in_tx(db, boundary) &&
+              nullifier_kv_reset_mark_empty_below_in_tx(db, boundary) &&
               marker_set_i64_in_tx(db, SHIELDED_REPLAY_TARGET_KEY,
                                    target_height) &&
               marker_set_i64_in_tx(db, SHIELDED_REPLAY_NEXT_KEY, 0) &&
@@ -494,7 +508,7 @@ bool shielded_history_reset_to_boundary(sqlite3 *db,
     if (err) { sqlite3_free(err); err = NULL; }
 
     bool ok = anchor_kv_reset_in_tx(db, activation_cursor);
-    if (ok && !nullifier_kv_reset_in_tx(db, activation_cursor))
+    if (ok && !nullifier_kv_reset_mark_empty_below_in_tx(db, activation_cursor))
         ok = false;
     /* Any assisted/general reset cancels a prior full-replay session in the
      * same transaction. The positive component markers remain the authority;

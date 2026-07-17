@@ -126,7 +126,7 @@ static bool reset_shielded_history_incomplete_in_tx(struct sqlite3 *db,
                                                      int seed_h)
 {
     return anchor_kv_reset_in_tx(db, seed_h) &&
-           nullifier_kv_reset_in_tx(db, seed_h);
+           nullifier_kv_reset_mark_empty_below_in_tx(db, seed_h);
 }
 
 /* Install v3's current frontiers/nullifier rows in the caller's transaction.
