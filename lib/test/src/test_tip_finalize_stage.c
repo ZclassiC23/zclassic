@@ -1075,6 +1075,100 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
+    {
+        /* SAFETY / NO-FALSE-REORG (the rejected chain-extender rung regression).
+         * The rung admitted a pprev-less body at tip+1 into the window on weak
+         * "unique have-data, non-failed body" criteria; tip_finalize then read
+         * that NULL-pprev lookahead as new_tip and false-marked the good tip
+         * below it ok=0 reorg_detected (tip_finalize_stage.c:429), incrementing
+         * reorg_detected_total and skipping the cursor past a perfectly valid
+         * height. The shipped extender REFUSES a pprev-less successor, so the
+         * good tip idles on a missing lookahead (safe) instead of being
+         * false-reorged. This proves all three: (1) the extender keeps the
+         * severed body OUT of the window; (2) with it out, tip_finalize does NOT
+         * reorg the good tip; (3) contrast — if the severed body IS forced into
+         * the window slot (what the rung did), tip_finalize DOES reorg, so the
+         * extender's refusal is the load-bearing guard. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "no_false_reorg");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 5);
+        /* SEVER block 4's parent link: a genuinely unverifiable-parent body. */
+        sc.blocks[4].pprev = NULL;
+        /* Blocks 0..3 are the good, pprev-linked chain; block 4 (severed) lives
+         * in the map as the ONLY candidate for the height-4 lookahead. */
+        for (int i = 0; ok_setup && i <= 4; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
+        ms.pindex_best_header = &sc.blocks[4];
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 4, -1);
+        ok_setup = ok_setup &&
+            seed_upstream_logs_tf(progress_store_db(), &sc, 4);
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
+        TF_CHECK("no_false_reorg: setup", ok_setup);
+
+        /* Finalize the good heights 0,1,2 (lookaheads 1,2,3 are all linked); the
+         * severed height-4 body idles height 3, so the drain stops at 3. */
+        TF_CHECK("no_false_reorg: drains the good prefix",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("no_false_reorg: cursor at the good tip",
+                 tip_finalize_stage_cursor() == 3);
+
+        /* (1) The extender must NOT pull the severed height-4 body into the
+         * window — active_chain_at(4) stays empty. */
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index,
+                                             ms.pindex_best_header, 4);
+        TF_CHECK("no_false_reorg: severed tip+1 body kept out of the window",
+                 active_chain_at(&ms.chain_active, 4) == NULL);
+
+        /* (2) With the severed body out, finalizing the good tip idles on a
+         * missing lookahead — NOT reorg_detected. */
+        uint64_t reorgs_before = tip_finalize_stage_reorg_detected_total();
+        TF_CHECK("no_false_reorg: good tip idles, not reorged",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+        TF_CHECK("no_false_reorg: reorg counter did not increment",
+                 tip_finalize_stage_reorg_detected_total() == reorgs_before);
+        {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("no_false_reorg: no verdict row written at the good tip",
+                     !log_row_at(progress_store_db(), 3, &ok, status,
+                                 sizeof(status), &depth, &utxos));
+        }
+
+        /* (3) CONTRAST — force the severed body into the window slot (what the
+         * rung did). Now tip_finalize DOES false-detect a reorg on the good tip,
+         * proving the extender's refusal above is the load-bearing guard. */
+        TF_CHECK("no_false_reorg: window has room for the forced slot",
+                 ms.chain_active.capacity > 4);
+        if (ms.chain_active.capacity > 4) {
+            ms.chain_active.chain[4] = &sc.blocks[4];
+            ms.chain_active.height = 4;
+            TF_CHECK("no_false_reorg: forced severed lookahead DOES reorg",
+                     tip_finalize_stage_step_once() == JOB_ADVANCED);
+            TF_CHECK("no_false_reorg: forced-in reorg increments the counter",
+                     tip_finalize_stage_reorg_detected_total() ==
+                     reorgs_before + 1);
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("no_false_reorg: forced-in marks the good tip "
+                     "reorg_detected",
+                     log_row_at(progress_store_db(), 3, &ok, status,
+                                sizeof(status), &depth, &utxos) &&
+                     ok == 0 && strcmp(status, "reorg_detected") == 0);
+        }
+        tf_teardown(dir, &ms, &sc);
+    }
+
     /* A snapshot/refold boot can already have a durable, coherent tip_finalize
      * frontier before the first coordinator step. Public RPC must not serve the
      * unpublished H* sentinel (0) while waiting for a later stage tick. */
