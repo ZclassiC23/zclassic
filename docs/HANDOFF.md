@@ -8,7 +8,119 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate canonical cure below.
 
-# HANDOFF — current state (2026-07-16)
+# HANDOFF — current state (2026-07-17 night)
+
+## 0-LATEST (2026-07-17 night). Bundle EXPORTED + VERIFIED; cure installing under linger units; big merge wave on main
+
+**FIRST, check whether the node cured itself while you were away.** Three
+self-driving cure pipelines run as **systemd `--user` linger units** (they
+survive session/agent shutdown by design — this was the night's key
+resilience fix: anything critical and long-running must be a linger unit, not
+a session-tied background task):
+
+```bash
+systemctl --user status zcl-cure-torn-repair    # primary route (fast header relink + install)
+systemctl --user status zcl-cure-step4b          # fresh-datadir route (backstop)
+# verdict logs (PASS = "H*=<n> PAST THE WEDGE 3176325"):
+tail -20 ~/.zclassic-c23-COPY-20260717110600-cure/repair-verdict.log
+tail -20 ~/.zclassic-c23-COPY-20260717202255-freshcure/step4-verdict.log
+```
+
+If a verdict log shows **PASS** (H\* climbed past 3,176,325 on the copy),
+the cure is proven and the **owner-preauthorized cutover** is the next step
+(revert exists; see the cutover runbook §0-NEWEST below). If still running,
+let it finish. If FAIL, read the boot log it names and diagnose; the
+artifacts below are all preserved so you can re-run.
+
+**What is DONE and durable (cannot un-happen):**
+- The complete consensus-state bundle is **exported and independently
+  replay-verified**: `~/.zclassic-c23-COPY-20260717-fastcure/consensus-state-bundle-3056758.sqlite`
+  (513 MB; coins=1,354,769 == compiled checkpoint, anchors=631,645,
+  nullifiers=1,495,126; digest `eb3bb23f…cadf5d2`), proven by
+  **checkpoint-content proof** (coins SHA3 reproduces the compiled checkpoint
+  + Sapling tip frontier Pedersen-roots to the PoW header's
+  `hashFinalSaplingRoot`). The replay receipt is written beside it
+  (`consensus_state_replay_receipt.v1`).
+- Preserved binary that produced + verifies it: `fastcure4-9e444c230b2840cc`
+  under `~/.local/lib/zclassic23-mint-candidates/`. **Binary-binding law:
+  run install/verify/copy-prove under ONE preserved binary; never rebuild a
+  preserved binary.**
+- The self-driving cure scripts live in `~/.local/lib/zcl-cure/`
+  (`cure-torncopy-repair.sh`, `cure-step4-driver.sh`) — durable path, not the
+  session scratchpad.
+- **mint3** from-genesis fold (an INDEPENDENT complete cure source) continues
+  under `curebin-7d4f346`, ~h=2.3M/3.06M — arrives regardless if every
+  install route stalls. Do not restart/relabel it.
+
+**The wall class is now permanently closed (landed on main this session):**
+`-install-consensus-bundle` gained a second **CHECKPOINT_CONTENT ACTIVATE
+authority** (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`):
+a bundle activates when its coins reproduce the compiled SHA3 checkpoint AND
+its Sapling frontier roots to the local validated header — **receipt-free**.
+Every all-day wall was a terminal verb (`-export`/`-verify`) not being
+exempted from a producer-lane boot serving gate; those exemptions are all in
+now. Torn-copy lesson banked: **never `cp -a` a live *writing* datadir** for
+an install proof (the copy is chain-detached); relink headers first via
+`--importblockindex ~/.zclassic`.
+
+**Landed + pushed to `origin/main` this session** (all gate-verified with
+`tools/scripts/gate-and-report.sh`, adversarially re-verified, several
+datadir-pollution-guarded). `main` is at `e06d7e73b`, in sync, working tree
+clean:
+- **W3**: the legacy MCP server is DELETED (−22,962 LOC). Native command
+  registry (`zclassic23 <command>`) is the sole agent interface.
+- **Network omniscience**: NET-1 (anchors.dat + 8-wide parallel dialer +
+  feelers + one peer-floor constant), NET-2 (modal-tip truth + banked peer
+  reputation + session/fork ledgers), NET-3 (range-parallel header sync),
+  NET-4 (`dumpstate network`), node **census** (IP/MagicBean-UA/version, in
+  `peers_projection.db`), **topology** graph (`topology.db`), and a pedantic
+  wire-parser audit (`docs/NET_PARSER_AUDIT.md`).
+- **Chain index**: `op_return_index` (ZNAM/ZSLP/ZANC/unknown catalog),
+  opt-in `address_index` (script→appearances), `dumpstate rom` (the L0–L3
+  trust-machine catalog + `docs/ROM.md`) — all rebuildable projections with
+  their own cursors + SHA3 digests.
+- **ROM P2P delivery (seed+policy side)**: `rom_seed` free-tier chunked
+  serving of the bundle (per-peer/global rate caps, corrupt-artifact
+  rejection at registration, `directory.json` advertisement),
+  `rom_seed_policy` + `artifact_serve_log` ledger + `ops.debug.rom_seed.*`
+  commands + `docs/ROM_DELIVERY.md`.
+- **W4 integrity**: sealed-history segment sealer wired (env-gated), per-row
+  stage-log **integrity tags** (MISMATCH lowers H\*, NULL trusted-but-logged),
+  checkpoint content re-check + `-verify-rom` verb, `utxo_recovery.rewind_overshoot`
+  typed blocker, export-heartbeat observability.
+- **Sync foundation**: checkpoint-content install authority (above),
+  **stall-taxonomy** (closed 4 silent-hold sites across the 8 stages incl.
+  the tip_finalize class that pinned H\* for 3h on 2026-07-02), **kill-9
+  resume-determinism** test harness, S8 band-hole cadence, parse-cache
+  poison fix.
+
+**IN-FLIGHT and NOT landed — session-tied, likely died on shutdown; RESUME
+these** (each was building in an isolated worktree with an adversarial
+verifier; re-drive from the workflow scripts under
+`~/.claude/projects/<session>/workflows/scripts/` with `resumeFromRunId`, or
+finish the lane branch directly):
+- `lane/rom-fetch2` — the ROM **fetch** side (multi-seeder verify-by-content
+  download + resume). The seed side is on main; this completes <60s assisted
+  sync. NOT done.
+- `lane/index-tx2` — `txindex` as a first-class projection (mirror
+  `address_index`). NOT done.
+- `lane/net-operator-surface2` — `net census/node/versions/graph` commands +
+  `/network` explorer page over the REAL census/topology schemas (a prior
+  attempt coded against imagined columns and was rejected). NOT done.
+- `lane/boot-odelta` — boot O(delta) complexity audit. A verifier found its
+  `chain_restore.disk_rebuild` counter is **misclassified**: an unclean
+  shutdown (kill-9/OOM, no clean marker) DOES run `utxo_recovery_restore_chain_tip`
+  on a warm restart (`config/src/boot.c` ~2744). Open question worth
+  answering: is that rebuild O(chain) or O(delta)? If O(chain) it's a real
+  slow-boot defect. A fix agent was mid-analysis. NOT landed.
+
+**THE plan of record + program context is unchanged below and in
+`docs/work/FORWARD_PLAN.md`.** The architecture verdict + best-possible-node
+plan the owner approved this session is
+`~/.claude/plans/zclassic23-needs-to-be-starry-wirth.md` (the L0–L3 machine,
+Ten Laws, the two-path sync spine, and the shielded-ROM keystone bake P4).
+
+---
 
 ## 0-NEWEST. Import-path cure PROVEN ON A COPY (2026-07-16) — live NOT yet cut over
 
