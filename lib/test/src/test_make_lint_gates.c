@@ -1294,6 +1294,15 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
     "test-tmp/_blocker_escape_fixture_bad_tmp.c"
 #define BLOCKER_ESCAPE_OK_FIXTURE_REL \
     "test-tmp/_blocker_escape_fixture_ok_tmp.c"
+/* An identifier literal naming a registered condition-engine healer (a
+ * ZCL_CONDITION() entry in condition_registry.def) — not a registered
+ * escape function, still a valid form. */
+#define BLOCKER_ESCAPE_COND_FIXTURE_REL \
+    "test-tmp/_blocker_escape_fixture_cond_tmp.c"
+/* A whitespace-bearing human-readable remedy phrase — never dispatched,
+ * exempt unconditionally regardless of the registry/condition table. */
+#define BLOCKER_ESCAPE_PHRASE_FIXTURE_REL \
+    "test-tmp/_blocker_escape_fixture_phrase_tmp.c"
 
 #define RRUNG_SCRIPT_REL  "tools/scripts/check_no_new_repair_rung.sh"
 /* A new repair-rung-named file (basename contains "reconcile") planted under
@@ -2992,26 +3001,40 @@ static int t_privileged_transition_receipt_gate(void)
     return failures;
 }
 
-/* Gate #49 — blocker escape-action totality. A literal escape_action string
- * with no matching blocker_register_escape() call must trip the gate; the
- * same shape with the one real registered name ("activation_drive_connect")
- * must pass. Mirrors t_privileged_transition_receipt_gate's env-override
- * self-test shape. */
+/* Gate #49 — blocker escape-action totality. escape_action is dual-purpose;
+ * a literal is valid in any of three forms, and the gate must accept all
+ * three while still tripping on a mistyped identifier that matches none:
+ *   1. a registered dispatch key ("activation_drive_connect", via
+ *      blocker_register_escape());
+ *   2. an identifier naming a registered condition-engine healer
+ *      ("reducer_frontier_reconcile_light", a ZCL_CONDITION() entry in
+ *      condition_registry.def);
+ *   3. a whitespace-bearing human-readable remedy phrase ("resume the
+ *      matching offline producer"), exempt unconditionally.
+ * Mirrors t_privileged_transition_receipt_gate's env-override self-test
+ * shape. */
 static int t_blocker_escape_registered_gate(void)
 {
     int failures = 0;
-    char bad_path[PATH_MAX], ok_path[PATH_MAX], test_tmp_dir[PATH_MAX];
+    char bad_path[PATH_MAX], ok_path[PATH_MAX], cond_path[PATH_MAX],
+         phrase_path[PATH_MAX], test_tmp_dir[PATH_MAX];
     int paths_ok =
         (repo_path(bad_path, sizeof(bad_path),
                    BLOCKER_ESCAPE_BAD_FIXTURE_REL) == 0 &&
          repo_path(ok_path, sizeof(ok_path),
                    BLOCKER_ESCAPE_OK_FIXTURE_REL) == 0 &&
+         repo_path(cond_path, sizeof(cond_path),
+                   BLOCKER_ESCAPE_COND_FIXTURE_REL) == 0 &&
+         repo_path(phrase_path, sizeof(phrase_path),
+                   BLOCKER_ESCAPE_PHRASE_FIXTURE_REL) == 0 &&
          repo_path(test_tmp_dir, sizeof(test_tmp_dir), "test-tmp") == 0)
             ? 1 : 0;
     if (paths_ok) (void)mkdir(test_tmp_dir, 0700);
 
     unlink_rel(BLOCKER_ESCAPE_BAD_FIXTURE_REL);
     unlink_rel(BLOCKER_ESCAPE_OK_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_COND_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_PHRASE_FIXTURE_REL);
 
     int wrote_bad = paths_ok ? write_file(bad_path,
         "void fixture_bad(void)\n"
@@ -3035,6 +3058,28 @@ static int t_blocker_escape_registered_gate(void)
         "        (void)blocker_set(&rec);\n"
         "    }\n"
         "}\n") : -1;
+    int wrote_cond = paths_ok ? write_file(cond_path,
+        "void fixture_cond(void)\n"
+        "{\n"
+        "    struct blocker_record rec;\n"
+        "    if (blocker_init(&rec, \"id\", \"owner\", BLOCKER_DEPENDENCY,\n"
+        "                     \"reason\")) {\n"
+        "        snprintf(rec.escape_action, sizeof(rec.escape_action),\n"
+        "                 \"reducer_frontier_reconcile_light\");\n"
+        "        (void)blocker_set(&rec);\n"
+        "    }\n"
+        "}\n") : -1;
+    int wrote_phrase = paths_ok ? write_file(phrase_path,
+        "void fixture_phrase(void)\n"
+        "{\n"
+        "    struct blocker_record rec;\n"
+        "    if (blocker_init(&rec, \"id\", \"owner\", BLOCKER_DEPENDENCY,\n"
+        "                     \"reason\")) {\n"
+        "        snprintf(rec.escape_action, sizeof(rec.escape_action),\n"
+        "                 \"resume the matching offline producer\");\n"
+        "        (void)blocker_set(&rec);\n"
+        "    }\n"
+        "}\n") : -1;
 
     int bad_rc = (wrote_bad == 0)
         ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
@@ -3044,18 +3089,33 @@ static int t_blocker_escape_registered_gate(void)
         ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
                                    "ZCL_BLOCKER_ESCAPE_SCAN_FILES", ok_path)
         : -1;
+    int cond_rc = (wrote_cond == 0)
+        ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
+                                   "ZCL_BLOCKER_ESCAPE_SCAN_FILES", cond_path)
+        : -1;
+    int phrase_rc = (wrote_phrase == 0)
+        ? run_gate_script_with_env(BLOCKER_ESCAPE_SCRIPT_REL,
+                                   "ZCL_BLOCKER_ESCAPE_SCAN_FILES", phrase_path)
+        : -1;
     int clean_rc = run_gate_script(BLOCKER_ESCAPE_SCRIPT_REL, NULL);
 
     unlink_rel(BLOCKER_ESCAPE_BAD_FIXTURE_REL);
     unlink_rel(BLOCKER_ESCAPE_OK_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_COND_FIXTURE_REL);
+    unlink_rel(BLOCKER_ESCAPE_PHRASE_FIXTURE_REL);
 
     TEST("[lint-gate] blocker escape-action totality: unregistered literal "
-         "trips, registered literal + real tree pass") {
+         "trips; registered literal, condition-name literal, and a "
+         "whitespace remedy phrase all pass; real tree passes") {
         ASSERT(paths_ok);
         ASSERT(wrote_bad == 0);
         ASSERT(wrote_ok == 0);
+        ASSERT(wrote_cond == 0);
+        ASSERT(wrote_phrase == 0);
         ASSERT(bad_rc == 1);
         ASSERT(ok_rc == 0);
+        ASSERT(cond_rc == 0);
+        ASSERT(phrase_rc == 0);
         ASSERT(clean_rc == 0);
         PASS();
     } _test_next:;

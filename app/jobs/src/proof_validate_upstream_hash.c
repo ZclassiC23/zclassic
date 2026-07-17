@@ -34,6 +34,8 @@ bool proof_validate_upstream_hash_ready(
              height, receipt_hex, selected_hex);
     if (blocker_init(&rec, PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID,
                      "proof_validate", BLOCKER_DEPENDENCY, reason)) {
+        snprintf(rec.escape_action, sizeof(rec.escape_action),
+                 "re-run script_validate for selected block hash");
         (void)blocker_set(&rec);
     }
     return false;
@@ -59,6 +61,8 @@ job_result_t proof_validate_upstream_verdict_refuse(
             PROOF_VALIDATE_INVALID_UPSTREAM_BLOCKER_ID, "proof_validate",
             BLOCKER_DEPENDENCY, reason))
         return JOB_FATAL;
+    snprintf(ctx->blocker.escape_action, sizeof(ctx->blocker.escape_action),
+             "re-run script_validate for selected block hash");
     ctx->blocker.retry_budget = -1;
     return JOB_BLOCKED;
 }
@@ -83,6 +87,8 @@ job_result_t proof_validate_upstream_evidence_refuse(
             PROOF_VALIDATE_UPSTREAM_EVIDENCE_BLOCKER_ID, "proof_validate",
             BLOCKER_DEPENDENCY, reason))
         return JOB_FATAL;
+    snprintf(ctx->blocker.escape_action, sizeof(ctx->blocker.escape_action),
+             "resume the matching offline producer or replay script_validate");
     ctx->blocker.retry_budget = -1;
     return JOB_BLOCKED;
 }

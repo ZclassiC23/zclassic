@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # Lint gate #49 — blocker escape-action totality.
 #
-# blocker_supervisor_sweep() (lib/util/src/blocker.c ~:492) dispatches a
-# blocker's escape by looking up its `escape_action` string in the
-# blocker_register_escape() registry via exact strcmp. That lookup is not a
-# compile-time check: a misspelled or never-registered action name means the
-# blocker can never auto-escape, and — unlike an EMPTY escape_action, which
-# app/conditions/src/blocker_stall_meta_detector.c catches as a generic
-# defect class — a non-empty-but-unregistered string is invisible to that
-# backstop too, so nothing catches it. This gate is the compile-time
-# equivalent: it extracts every literal escape_action string assigned at a
-# blocker_init/blocker_set call site in production code and fails if the
-# string has no matching blocker_register_escape("<same string>") call
-# anywhere in the tree.
+# escape_action is dual-purpose, and a literal is valid in any of three
+# forms:
+#
+#   1. A DISPATCH KEY: blocker_supervisor_sweep() (lib/util/src/blocker.c
+#      ~:492) looks the string up in the blocker_register_escape() registry
+#      via exact strcmp and calls the matching function. Valid iff a
+#      blocker_register_escape("<same string>") call exists anywhere in the
+#      tree.
+#   2. A human-readable REMEDY DESCRIPTION for the operator (e.g. "re-run
+#      script_validate for selected block hash") — never dispatched, purely
+#      informational. A dispatch key or a condition name is always a single
+#      identifier, never a phrase, so any literal containing whitespace is
+#      recognized as this form and is exempt unconditionally.
+#   3. The name of a CONDITION-ENGINE healer that drives the fix out of
+#      band (e.g. "reducer_frontier_reconcile_light") — not a registered
+#      escape function, but still not dead: the condition runs on its own
+#      cadence and the literal is documentation of which one owns the fix.
+#      Valid iff the identifier matches a registered condition name, i.e. a
+#      ZCL_CONDITION(<name>) entry in
+#      app/conditions/include/conditions/condition_registry.def and/or a
+#      `#define <X>_COND_NAME "<name>"` literal anywhere in the tree.
+#
+# A literal that is none of the three — an identifier matching no
+# registered escape function AND no registered condition name — silently
+# dead-ends blocker_supervisor_sweep's lookup AND is invisible to
+# app/conditions/src/blocker_stall_meta_detector.c's empty-escape backstop
+# (which only catches truly empty strings), so nothing catches it. That is
+# what this gate exists to catch.
 #
 # Empty escape_action strings are exempt (the meta-detector backstop already
 # covers the "no escape configured" case; this gate is about strings that
@@ -33,7 +49,7 @@ ROOTS=(app config lib src)
 collect_registry_files() {
     for root in "${ROOTS[@]}"; do
         [ -d "$root" ] || continue
-        find "$root" -type f \( -name '*.c' -o -name '*.h' \) \
+        find "$root" -type f \( -name '*.c' -o -name '*.h' -o -name '*.def' \) \
             ! -path 'lib/test/*' \
             ! -path 'lib/util/src/blocker.c' \
             ! -path 'lib/util/include/util/blocker.h' \
@@ -103,28 +119,65 @@ extract_registered_names() {
     ' "$@"
 }
 
+# One condition name per line: every ZCL_CONDITION(<name>) entry (the data
+# table in condition_registry.def, where <name> IS the condition's string
+# name — see lib/test/src/test_condition_engine.c's `#define
+# ZCL_CONDITION(name) #name,` stringization) plus every literal on a
+# `#define <X>_COND_NAME "<name>"` line, wherever it appears in the tree.
+extract_condition_names() {
+    awk '
+        {
+            if (match($0, /ZCL_CONDITION\([A-Za-z0-9_]+\)/)) {
+                s = substr($0, RSTART, RLENGTH)
+                sub(/^ZCL_CONDITION\(/, "", s)
+                sub(/\)$/, "", s)
+                print s
+            }
+            if (match($0, /#define[ \t]+[A-Za-z0-9_]+_COND_NAME[ \t]+"([^"\\]|\\.)*"/)) {
+                line = substr($0, RSTART, RLENGTH)
+                if (match(line, /"([^"\\]|\\.)*"/)) {
+                    print substr(line, RSTART + 1, RLENGTH - 2)
+                }
+            }
+        }
+    ' "$@"
+}
+
 declare -A registered
 while IFS= read -r name; do
     [ -n "$name" ] && registered["$name"]=1
 done < <(extract_registered_names "${registry_files[@]}")
 
+declare -A conditions
+while IFS= read -r name; do
+    [ -n "$name" ] && conditions["$name"]=1
+done < <(extract_condition_names "${registry_files[@]}")
+
 fail=0
 violations=()
 while IFS=$'\t' read -r file line lit; do
     [ -z "$file" ] && continue
-    if [ -z "${registered[$lit]+x}" ]; then
-        violations+=("$file:$line: \"$lit\"")
-        fail=1
-    fi
+    # Form 1: a registered dispatch key.
+    [ -n "${registered[$lit]+x}" ] && continue
+    # Form 2: a human-readable remedy phrase — a dispatch key or condition
+    # name is always a single identifier, never a phrase, so whitespace
+    # alone marks this form. Exempt unconditionally.
+    case "$lit" in
+        *[[:space:]]*) continue ;;
+    esac
+    # Form 3: an identifier naming a registered condition-engine healer.
+    [ -n "${conditions[$lit]+x}" ] && continue
+    violations+=("$file:$line: \"$lit\"")
+    fail=1
 done < <(extract_escape_action_literals "${assign_files[@]}")
 
 if [ "$fail" = "0" ]; then
-    echo "check_blocker_escape_registered: clean — ${#registered[@]} registered escape(s), all escape_action literals resolve"
+    echo "check_blocker_escape_registered: clean — ${#registered[@]} registered escape(s), ${#conditions[@]} condition name(s), all escape_action literals resolve"
     exit 0
 fi
 
 echo ""
-echo "check_blocker_escape_registered: ${#violations[@]} escape_action literal(s) with no matching blocker_register_escape()"
+echo "check_blocker_escape_registered: ${#violations[@]} escape_action literal(s) matching no registered escape function and no registered condition name"
 echo ""
 for v in "${violations[@]}"; do
     echo "  $v"
@@ -134,9 +187,19 @@ echo "Fix options:"
 echo "  1. Register the escape: blocker_register_escape(\"<same string>\", <fn>)"
 echo "     at the owning subsystem's init (see"
 echo "     app/services/src/chain_activation_service.c for the pattern)."
-echo "  2. If the blocker never sets escape_deadline_secs (no auto-escape is"
+echo "  2. If the string names the condition-engine healer that actually"
+echo "     drives the fix (e.g. \"reducer_frontier_reconcile_light\"), add a"
+echo "     ZCL_CONDITION(<name>) entry to"
+echo "     app/conditions/include/conditions/condition_registry.def (or a"
+echo "     matching <X>_COND_NAME #define) so the gate recognizes it."
+echo "  3. If it's operator guidance rather than a dispatch key, phrase it as"
+echo "     a sentence (e.g. \"re-run script_validate for selected block"
+echo "     hash\") — any literal containing whitespace is exempt as a"
+echo "     human-readable remedy description."
+echo "  4. If the blocker never sets escape_deadline_secs (no auto-escape is"
 echo "     intended — it is dispatched some other way, e.g. its own"
-echo "     condition cadence), empty the string instead: it then falls under"
-echo "     the blocker_stall_meta_detector.c empty-escape backstop rather"
-echo "     than silently dead-ending an unregistered name."
+echo "     condition cadence, and there's no useful remedy text to add),"
+echo "     empty the string instead: it then falls under the"
+echo "     blocker_stall_meta_detector.c empty-escape backstop rather than"
+echo "     silently dead-ending an unregistered name."
 exit 1
