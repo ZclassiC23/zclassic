@@ -25,7 +25,9 @@
 #include "chain/chain.h"
 #include "chain/checkpoints.h"
 #include "models/block.h"
+#include "primitives/block.h"
 #include "storage/consensus_state_bundle_codec.h"
+#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
@@ -102,7 +104,41 @@ void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir)
         .checkpoint_content_export = true,
     };
     memcpy(request.expected_block_hash, cp->block_hash, 32);
-    memcpy(request.checkpoint_sapling_root, blk.sapling_root, 32);
+
+    /* The blocks-projection row can carry a zero sapling_root (the legacy
+     * header import never populated that column), so the PoW anchor for the
+     * shielded tip is taken from the header bytes on disk instead: read the
+     * block at the row's recorded position, require its recomputed hash to be
+     * exactly the compiled checkpoint's block hash, and use that header's
+     * committed final Sapling root. */
+    struct block body;
+    struct disk_block_pos body_pos = { .nFile = blk.file_num,
+                                       .nPos = (unsigned int)blk.data_pos };
+    if (!read_block_from_disk_pread(&body, &body_pos, datadir)) {
+        (void)close(dir_fd);
+        fprintf(stderr,
+                "REFUSED: -export-consensus-bundle: cannot read the checkpoint "
+                "block body at file=%d pos=%d to bind the Sapling root\n",
+                blk.file_num, blk.data_pos);
+        LOG_WARN(EXPORT_SUBSYS, "checkpoint body read failed file=%d pos=%d",
+                 blk.file_num, blk.data_pos);
+        _exit(EXIT_FAILURE);
+    }
+    struct uint256 body_hash;
+    block_get_hash(&body, &body_hash);
+    if (memcmp(body_hash.data, cp->block_hash, 32) != 0) {
+        block_free(&body);
+        (void)close(dir_fd);
+        fprintf(stderr,
+                "REFUSED: -export-consensus-bundle: on-disk checkpoint block "
+                "does not hash to the compiled checkpoint block hash\n");
+        LOG_WARN(EXPORT_SUBSYS,
+                 "checkpoint body hash mismatch at height %d", cp->height);
+        _exit(EXIT_FAILURE);
+    }
+    memcpy(request.checkpoint_sapling_root,
+           body.header.hashFinalSaplingRoot.data, 32);
+    block_free(&body);
     struct consensus_state_export_result res;
     memset(&res, 0, sizeof(res));
     bool exported =
