@@ -689,6 +689,39 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 31) {
+        /* v31: OP_RETURN catalog (op_return_index) — one rebuildable
+         * projection row per OP_RETURN OUTPUT (not per tx; a tx with
+         * several OP_RETURN outputs gets several rows), covering ZNAM,
+         * ZSLP, ZANC, and unrecognized lokad tags alike. See
+         * models/op_return_index.h. Not consulted by consensus; rebuilt
+         * from block history (op_return_index_truncate). */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS op_return_index ("
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "vout_n INTEGER NOT NULL,"
+            "height INTEGER NOT NULL,"
+            "tag BLOB NOT NULL,"
+            "tag_text TEXT NOT NULL,"
+            "payload_len INTEGER NOT NULL,"
+            "payload_sha3 BLOB NOT NULL CHECK(length(payload_sha3)=32),"
+            "PRIMARY KEY (txid, vout_n)) WITHOUT ROWID");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_op_return_index_height "
+            "ON op_return_index(height)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_op_return_index_tag "
+            "ON op_return_index(tag_text, height)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('031')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 31);
+        current_ver = 31;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
