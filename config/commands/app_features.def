@@ -1,0 +1,355 @@
+/* ZCL built-in application features, mounted under the `app` root (the frozen
+ * root set stays at seven: status/core/app/dev/ops/discover/code). These are the
+ * native-command twin of tools/mcp/controllers/app_controller.c: names (ZNAM),
+ * ZSLP tokens, messaging (ZMSG), the file market, and cross-chain atomic swaps.
+ *
+ * Read leaves are READY and dispatch MCP-free through zcl_native_bridge_command
+ * (body functions in app/controllers/src/app_native_handlers.c, bound in
+ * tools/command/native_command.c's g_bridge_tools[]/g_bridge_native_body[]).
+ * The destructive app-layer commands are PLANNED (fail-closed, exit 3) until the
+ * app-write plan/commit handshake lands — the same posture core.def gives
+ * wallet spends. Their backing RPC methods stay available at the node RPC layer,
+ * so no capability is lost by keeping them PLANNED here. Consumer defines
+ * ZCL_COMMAND_*. */
+
+/* Branch summaries are deliberately terse single words: they render inside the
+ * parent `app` branch menu, which is bounded by ZCL_COMMAND_BRANCH_BUDGET and
+ * already carries six longer-summary children (auth/account/list/inspect/
+ * protocols/invoke). Keeping these short keeps the `app` menu well under
+ * budget (verified in test_native_api_contract's per-branch menu sweep). */
+ZCL_COMMAND_BRANCH("app.names", "app", "Names", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.tokens", "app", "Tokens", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
+
+/* ── Names (ZNAM) ──────────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.names.resolve", "app.names", "", "Resolve a ZCL Name to its target",
+    "One ZCL Name's resolved target (.onion, z-address, or t-address) looked up "
+    "live on-chain at call time; absent/error if the name is not registered.", 0,
+    "names,znam,resolve", "zcl.app_name_resolve.input.v1",
+    "zcl.app_name_record.v1", "name", "name",
+    "zclassic23 app names resolve alice",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "app.names.list", "app.names", "", "List registered ZCL Names",
+    "Every ZCL Name registered on the network, read live at call time; bounded "
+    "to the list budget row cap, not full history.", ZCL_COMMAND_LIST_BUDGET,
+    "names,znam,list", "zcl.command.empty_input.v1", "zcl.app_name_index.v1",
+    "", "", "zclassic23 app names list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.register", "app.names", "", "Register a ZCL Name on-chain",
+    "Will build and broadcast the OP_RETURN registration once the app-write "
+    "plan/commit handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3 rather than broadcasting.", 0,
+    "names,znam,register", "zcl.app_name_register.input.v1",
+    "zcl.app_name_txresult.v1", "name,type,value", "name",
+    "zclassic23 app names register --input='{\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_register RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.update", "app.names", "", "Replace a ZCL Name's primary target",
+    "Will build and broadcast the owner-only target replacement once the "
+    "app-write plan/commit handshake is wired; today the handler is unbound and "
+    "fails closed with exit 3.", 0,
+    "names,znam,update", "zcl.app_name_register.input.v1",
+    "zcl.app_name_txresult.v1", "name,type,value", "name",
+    "zclassic23 app names update --input='{\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_update RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.transfer", "app.names", "", "Transfer ZCL Name ownership",
+    "Will build and broadcast the owner-only ownership transfer once the "
+    "app-write plan/commit handshake is wired; today the handler is unbound and "
+    "fails closed with exit 3.", 0,
+    "names,znam,transfer", "zcl.app_name_transfer.input.v1",
+    "zcl.app_name_txresult.v1", "name,new_owner", "name",
+    "zclassic23 app names transfer --input='{\"name\":\"alice\",\"new_owner\":\"t1..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_transfer RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.renew", "app.names", "", "Renew a ZCL Name registration term",
+    "Will build and broadcast the permissionless renewal once the app-write "
+    "plan/commit handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3.", 0,
+    "names,znam,renew", "zcl.app_name_renew.input.v1",
+    "zcl.app_name_txresult.v1", "name", "name",
+    "zclassic23 app names renew alice",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_renew RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.set-record", "app.names", "", "Set a multi-coin address record",
+    "Will build and broadcast the owner-only multi-coin record (BTC/LTC/DOGE/..) "
+    "once the app-write plan/commit handshake is wired; today the handler is "
+    "unbound and fails closed with exit 3.", 0,
+    "names,znam,record", "zcl.app_name_register.input.v1",
+    "zcl.app_name_txresult.v1", "name,type,value", "name",
+    "zclassic23 app names set-record --input='{\"name\":\"alice\",\"type\":\"btc\",\"value\":\"bc1..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_set_record RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.names.set-text", "app.names", "", "Set a text record on a ZCL Name",
+    "Will build and broadcast the owner-only key/value text record (email, url, "
+    "avatar, ..) once the app-write plan/commit handshake is wired; today the "
+    "handler is unbound and fails closed with exit 3.", 0,
+    "names,znam,text", "zcl.app_name_set_text.input.v1",
+    "zcl.app_name_txresult.v1", "name,key,value", "name",
+    "zclassic23 app names set-text --input='{\"name\":\"alice\",\"key\":\"url\",\"value\":\"https://..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
+    ZCL_COMMAND_TRAIT_NONE,
+    "ZNAM write plan/commit handshake is a follow-up native wave; the "
+    "name_set_text RPC remains available at the node RPC layer")
+
+/* ── ZSLP tokens ───────────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.tokens.list", "app.tokens", "", "List ZSLP tokens on the network",
+    "Every ZSLP token seen on the network, read live at call time; bounded to "
+    "the list budget row cap, not full token history.", ZCL_COMMAND_LIST_BUDGET,
+    "tokens,zslp,list", "zcl.command.empty_input.v1", "zcl.app_token_index.v1",
+    "", "", "zclassic23 app tokens list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* ── Messaging (ZMSG) ──────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.messaging.inbox", "app.messaging", "", "List inbox messages",
+    "Every message in the inbox, newest first, read live at call time; bounded "
+    "to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "messaging,zmsg,inbox", "zcl.command.empty_input.v1",
+    "zcl.app_message_index.v1", "", "", "zclassic23 app messaging inbox",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.messaging.send", "app.messaging", "", "Send a message",
+    "Will send a message over the p2p channel or as a shielded Sapling-memo "
+    "transaction once the app-write plan/commit handshake is wired; today the "
+    "handler is unbound and fails closed with exit 3.", 0,
+    "messaging,zmsg,send", "zcl.app_message_send.input.v1",
+    "zcl.app_message_send_result.v1",
+    "message,channel,peer_id,to,from_address,reply_to", "",
+    "zclassic23 app messaging send --input='{\"channel\":\"p2p\",\"peer_id\":1,\"message\":\"hi\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
+    "ZMSG write plan/commit handshake is a follow-up native wave; the "
+    "msg_send RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.messaging.send-named", "app.messaging", "", "Send a message to a ZCL Name",
+    "Will resolve the ZCL Name and send it a message once the app-write "
+    "plan/commit handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3.", 0,
+    "messaging,zmsg,send,name", "zcl.app_message_send_named.input.v1",
+    "zcl.app_message_send_result.v1", "name,message", "name",
+    "zclassic23 app messaging send-named --input='{\"name\":\"alice\",\"message\":\"hi\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
+    "ZMSG write plan/commit handshake is a follow-up native wave; the "
+    "msg_send_named RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.messaging.read", "app.messaging", "", "Mark a message read and return it",
+    "Will mark one message read by 64-hex id and return its content once the "
+    "read-state mutation is wired natively; today the handler is unbound and "
+    "fails closed with exit 3.", 0,
+    "messaging,zmsg,read", "zcl.app_message_read.input.v1",
+    "zcl.app_message.v1", "msg_id", "msg_id",
+    "zclassic23 app messaging read --input='{\"msg_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
+    "ZMSG read-state mutation is a follow-up native wave; the msg_read RPC "
+    "remains available at the node RPC layer")
+
+/* ── File market ───────────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.market.list", "app.market", "", "List files on the ZCL Market",
+    "Every file currently offered on the ZCL Market P2P network, read live at "
+    "call time; bounded to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "market,files,list", "zcl.command.empty_input.v1", "zcl.app_market_index.v1",
+    "", "", "zclassic23 app market list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "app.market.status", "app.market", "", "ZCL Market status",
+    "The market's current status — cached offers, persisted offers, and active "
+    "downloads — read live at call time.", 0,
+    "market,status", "zcl.command.empty_input.v1", "zcl.app_market_status.v1",
+    "", "", "zclassic23 app market status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.market.offer", "app.market", "", "Announce a file for sale",
+    "Will announce a file for sale on the ZCL Market once the app-write "
+    "plan/commit handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3.", 0,
+    "market,offer,sell", "zcl.app_market_offer.input.v1",
+    "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat", "",
+    "zclassic23 app market offer --input='{\"filepath\":\"/data/f\",\"price_per_mb_zat\":1000}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
+    "ZCL Market write plan/commit handshake is a follow-up native wave; the "
+    "zmarket_offer RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.market.buy", "app.market", "", "Buy and download a market file",
+    "Will initiate purchase and download of a file by its SHA3 root hash once "
+    "the app-write plan/commit handshake is wired; today the handler is unbound "
+    "and fails closed with exit 3, so no funds move.", 0,
+    "market,buy,download", "zcl.app_market_buy.input.v1",
+    "zcl.app_market_buy_result.v1", "root_hash", "root_hash",
+    "zclassic23 app market buy --input='{\"root_hash\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "ZCL Market purchase plan/commit handshake is a follow-up native wave; the "
+    "zmarket_buy RPC remains available at the node RPC layer")
+
+/* ── Atomic swaps (ZSWP) ───────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.swap.chains", "app.swap", "", "List supported atomic-swap chains",
+    "The set of chains supported for cross-chain atomic swaps (ZCL, BTC, LTC, "
+    "DOGE), read from the node at call time.", ZCL_COMMAND_LIST_BUDGET,
+    "swap,zswp,chains", "zcl.command.empty_input.v1", "zcl.app_swap_chains.v1",
+    "", "", "zclassic23 app swap chains",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "app.swap.list", "app.swap", "", "List atomic-swap contracts",
+    "Every atomic-swap contract the node tracks, optionally filtered by state, "
+    "read live at call time; bounded to the list budget row cap.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "swap,zswp,list", "zcl.app_swap_list.input.v1", "zcl.app_swap_index.v1",
+    "state", "state", "zclassic23 app swap list --input='{\"state\":\"pending\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.swap.initiate", "app.swap", "", "Initiate an atomic swap",
+    "Will generate the secret, build the HTLC, and return the P2SH once the "
+    "app-write plan/commit handshake is wired; today the handler is unbound and "
+    "fails closed with exit 3.", 0,
+    "swap,zswp,initiate", "zcl.app_swap_initiate.input.v1",
+    "zcl.app_swap_contract.v1",
+    "my_address,counter_address,amount,locktime_blocks,chain", "",
+    "zclassic23 app swap initiate --input='{\"my_address\":\"t1..\",\"counter_address\":\"t1..\",\"amount\":1,\"locktime_blocks\":20}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "ZSWP write plan/commit handshake is a follow-up native wave; the "
+    "swap_initiate RPC remains available at the node RPC layer")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "app.swap.participate", "app.swap", "", "Participate in an atomic swap",
+    "Will build the counter-HTLC with a shorter locktime once the app-write "
+    "plan/commit handshake is wired; today the handler is unbound and fails "
+    "closed with exit 3.", 0,
+    "swap,zswp,participate", "zcl.app_swap_participate.input.v1",
+    "zcl.app_swap_contract.v1",
+    "my_address,counter_address,amount,locktime_blocks,secret_hash,chain", "",
+    "zclassic23 app swap participate --input='{\"my_address\":\"t1..\",\"counter_address\":\"t1..\",\"amount\":1,\"locktime_blocks\":10,\"secret_hash\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "ZSWP write plan/commit handshake is a follow-up native wave; the "
+    "swap_participate RPC remains available at the node RPC layer")

@@ -244,6 +244,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/root.def"
 #include "../commands/core.def"
 #include "../commands/apps.def"
+#include "../commands/app_features.def"
 #include "../commands/ops.def"
 #include "../commands/dev.def"
 #include "../commands/code.def"

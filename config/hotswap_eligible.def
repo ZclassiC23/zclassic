@@ -77,6 +77,7 @@ HOTSWAP_ELIGIBLE("app/controllers/src/wallet_native_handlers.c") HOTSWAP_PROBE("
 HOTSWAP_ELIGIBLE("app/controllers/src/net_native_handlers.c") HOTSWAP_PROBE("core.network.peers.incidents")
 HOTSWAP_ELIGIBLE("app/controllers/src/meta_native_handlers.c") HOTSWAP_PROBE("ops.metrics")
 HOTSWAP_ELIGIBLE("app/controllers/src/chain_native_handlers.c") HOTSWAP_PROBE("core.consensus.utxo.audit")
+HOTSWAP_ELIGIBLE("app/controllers/src/app_native_handlers.c") HOTSWAP_PROBE("app.names.list")
 /* app/controllers/src/diagnostics_native_handlers.c: eligible-pending, NOT
  * listed above. Its two leaves (core.storage.query -> zcl_native_sql_body,
  * ops.logs -> zcl_native_node_log_body) both require a caller-supplied
