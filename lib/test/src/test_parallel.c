@@ -226,6 +226,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_segment) X(segment_sealer) X(segment_corruption) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
+    X(body_crosscheck) \
     X(shielded_history_import) \
     X(shielded_import_cured_tip_anchor) \
     X(shielded_gap_remedy) \
