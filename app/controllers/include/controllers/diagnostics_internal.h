@@ -124,6 +124,12 @@ bool diag_header_band_dump_state_json(struct json_value *out,
 bool sapling_checkpoint_dump_state_json(struct json_value *out,
                                         const char *key);
 
+/* diagnostics_registry_rom.c — the "rom" g_dumpers[] entry: L0-L3 trust
+ * machine catalog (compiled checkpoint, header commitment enumeration,
+ * per-layer coverage, MMB/utxo_root_ladder projection cursors). See
+ * docs/ROM.md. */
+bool rom_dump_state_json(struct json_value *out, const char *key);
+
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,
                          struct json_value *result);
