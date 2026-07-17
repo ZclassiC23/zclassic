@@ -331,6 +331,19 @@ bool boot_mint_anchor_export_bundle(sqlite3 *pdb, const char *datadir,
     return true;
 }
 
+bool boot_mint_anchor_stamp_sovereign_markers(sqlite3 *pdb)
+{
+    if (!pdb)
+        LOG_FAIL("mint_anchor", "stamp sovereign markers: NULL db");
+    if (!coins_kv_mark_migration_complete(pdb))
+        LOG_FAIL("mint_anchor",
+                 "stamp sovereign markers: migration-complete stamp failed");
+    if (!coins_kv_mark_self_folded(pdb))
+        LOG_FAIL("mint_anchor",
+                 "stamp sovereign markers: self-folded stamp failed");
+    return true;
+}
+
 /* Set progress.kv's WAL auto-checkpoint threshold (pages; 0 disables SQLite's
  * automatic checkpoints). PRAGMA-only, under the progress-store tx lock. */
 static void mint_wal_autocheckpoint(sqlite3 *pdb, int pages)
@@ -743,10 +756,36 @@ bool boot_mint_anchor_run(const char *datadir)
      * systemd — the verified anchor snapshot + receipt stay intact regardless. */
     bool bundle_ok = true;
     if (receipt_finalized) {
-        if (!mint_skip_crypto_get())
+        if (!mint_skip_crypto_get()) {
+            /* Stamp the EARNED migration-complete + self-folded markers before
+             * export. The checkpoint HARD-ASSERT above (_exit on mismatch)
+             * proved this coins_kv reproduces the compiled checkpoint, so the
+             * markers are earned here — and a fresh full-validation producer has
+             * no other stamper. The exporter's proof refuses a source lacking
+             * BOTH markers, so without this a full-validation bundle export
+             * always refuses. Fail CLOSED: page + PERMANENT blocker + exit
+             * non-zero, never an unearned marker on a non-agreement path. */
+            if (!boot_mint_anchor_stamp_sovereign_markers(pdb)) {
+                event_emitf(EV_OPERATOR_NEEDED, 0,
+                            "condition=mint_bundle_export_failed "
+                            "reason=marker_stamp anchor=%d", anchor);
+                struct blocker_record frec;
+                if (blocker_init(&frec, "mint_bundle.export_failed",
+                                 "mint_anchor", BLOCKER_PERMANENT,
+                                 "consensus-state authority markers "
+                                 "(migration-complete + self-folded) could not "
+                                 "be stamped after a checkpoint-matched mint; "
+                                 "export cannot proceed on an unmarked source"))
+                    (void)blocker_set(&frec);
+                LOG_FAIL("mint_anchor",
+                         "[mint-anchor] failed to stamp the earned "
+                         "migration-complete/self-folded markers at h=%d — "
+                         "refusing to export against an unproven source",
+                         anchor);
+            }
             bundle_ok = boot_mint_anchor_export_bundle(pdb, datadir, anchor,
                                                        cp->block_hash);
-        else
+        } else
             fprintf(stderr,
                     "[mint-anchor] consensus-state bundle export skipped: "
                     "checkpoint-fold state is non-serving and not canonically "

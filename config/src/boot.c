@@ -1192,7 +1192,7 @@ bool app_init(struct app_context *ctx)
     boot_sysinit_register_all();
     if (!boot_step_select_chain_and_datadir(ctx))
         return false;
-    if (!ctx->mint_anchor &&
+    if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
         !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
         return false;
     if (!boot_refold_staged_preflight(ctx->refold_staged)) return false;
@@ -1557,7 +1557,7 @@ bool app_init(struct app_context *ctx)
     bool progress_open = progress_store_open(ctx->datadir);
     boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
     if (progress_open) {
-        if (!ctx->mint_anchor &&
+        if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
             !boot_mint_anchor_normal_boot_gate(progress_store_db()))
             return false;
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
@@ -3470,6 +3470,9 @@ sapling_tree_boot_check_done:
         boot_install_consensus_bundle(&g_node_db, &g_state,
                                       ctx->install_consensus_bundle,
                                       ctx->datadir);
+    /* Terminal ratifier for a completed full-validation mint producer datadir. */
+    if (ctx->ratify_mint_anchor)
+        boot_ratify_mint_anchor(ctx->datadir);
     /* Explicit recovery: load digest-verified assisted state at its own header
      * height and fold forward. File integrity is not state provenance; posture
      * remains assisted until full-history promotion. */

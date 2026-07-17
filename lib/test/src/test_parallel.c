@@ -296,6 +296,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
     X(consensus_state_snapshot_install) \
     X(consensus_state_snapshot_export) \
+    X(ratify_mint_anchor) \
     X(consensus_state_producer_receipt) \
     X(authority_receipt) \
     X(consensus_state_chain_binding) \

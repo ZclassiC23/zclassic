@@ -118,6 +118,18 @@ struct app_context {
                                  * path is unreachable on a running node. OFFLINE
                                  * PRODUCTION ONLY, fingerprint-gated, NEVER a
                                  * node-boot signature bypass. Default false. */
+    bool ratify_mint_anchor;   /* -ratify-mint-anchor : TERMINAL offline ratifier
+                                 * for a COMPLETED full-validation mint producer
+                                 * datadir (run against a COPY). Re-derives the
+                                 * coins_kv commitment + count + applied frontier
+                                 * from the datadir's OWN durable tables and, ONLY
+                                 * on full agreement with the compiled SHA3 UTXO
+                                 * checkpoint, stamps the migration-complete +
+                                 * self-folded markers the bundle exporter demands
+                                 * and re-arms the mint resume marker. Reads the
+                                 * DURABLE set (never the coins_ram overlay); no
+                                 * fold. Exits after RATIFIED or a typed REFUSED.
+                                 * Default false. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -409,6 +421,36 @@ void boot_install_consensus_bundle(struct node_db *ndb,
 void boot_verify_consensus_bundle(const char *bundle_path,
                                   const char *datadir);
 
+/* -ratify-mint-anchor result (banner + reason surface for the terminal verb and
+ * its unit test). `reason` is always set; `ratified` is true only after the
+ * durable coins_kv fully agrees with the compiled checkpoint AND all three
+ * markers were stamped. On any disagreement NOTHING is stamped. */
+struct sqlite3;
+struct sha3_utxo_checkpoint;
+struct boot_ratify_result {
+    bool     ratified;
+    int32_t  height;         /* cp->height (the ratified anchor height) */
+    uint64_t count;          /* the datadir's own coins_kv count */
+    uint8_t  sha3[32];       /* the datadir's own coins_kv commitment */
+    char     reason[256];
+};
+
+/* -ratify-mint-anchor=(no arg, acts on -datadir) (impl in
+ * config/src/boot_ratify_mint_anchor.c): TERMINAL — NEVER returns; it _exit()s
+ * after printing RATIFIED (0) or a typed REFUSED (1). Reads the OPEN progress
+ * store's DURABLE coins_kv (refuses if the coins_ram overlay is active). */
+void boot_ratify_mint_anchor(const char *datadir);
+
+/* Testable core of the ratify verb: re-derive commitment/count/applied-height
+ * from `pdb`'s durable tables, compare against `cp`, and — only on full
+ * agreement — stamp coins_kv_mark_migration_complete + coins_kv_mark_self_folded
+ * and re-arm mint_anchor_progress_mark, all under one progress-store critical
+ * section. Fills `*out`. Returns true iff ratified+stamped; on any mismatch it
+ * stamps nothing and returns false with out->reason set. */
+bool boot_ratify_mint_anchor_check_and_stamp(
+    struct sqlite3 *pdb, const struct sha3_utxo_checkpoint *cp,
+    struct boot_ratify_result *out);
+
 #ifdef ZCL_TESTING
 /* Unit surface for the exact production lane/owner gate. `authorization` is
  * accepted only when it is exactly "1". */
@@ -511,6 +553,17 @@ bool boot_mint_anchor_run(const char *datadir);
 bool boot_mint_anchor_export_bundle(struct sqlite3 *pdb, const char *datadir,
                                     int32_t anchor,
                                     const uint8_t block_hash[32]);
+
+/* Stamp the EARNED sovereign-authority markers the bundle export proof requires:
+ * COINS_KV_MIGRATION_COMPLETE_KEY (coins_kv provably holds the live set) + the
+ * self-folded provenance bit (the set is checkpoint-verified, not a borrowed
+ * node.db copy). Called by the FULL-profile mint finalize path AFTER the
+ * checkpoint HARD-ASSERT (_exit on mismatch) proved the folded coins_kv
+ * reproduces the compiled checkpoint, so both facts are earned — a fresh
+ * full-validation producer has no other stamper. Public so the
+ * consensus_state_snapshot_export test can prove the finalize path yields an
+ * exporter-admissible source. Returns false (logs) if either stamp fails. */
+bool boot_mint_anchor_stamp_sovereign_markers(struct sqlite3 *pdb);
 
 /* Read-only producer-marker/lane refusal before node.db, wallet, or progress.kv
  * is opened for writing. */

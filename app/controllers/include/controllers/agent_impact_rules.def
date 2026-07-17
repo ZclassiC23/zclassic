@@ -482,6 +482,10 @@ AGENT_IMPACT_RULE("config/src/consensus_state_snapshot_export*.c|config/src/cons
  * verifier + the ACTIVATE authority gate it feeds. Tests live in the
  * consensus_state_snapshot_install group. */
 AGENT_IMPACT_RULE("config/src/consensus_state_replay_receipt.c|config/include/config/consensus_state_replay_receipt.h|config/src/boot_verify_consensus_bundle.c", "consensus_state_snapshot_install make_lint_gates")
+/* -ratify-mint-anchor: the terminal ratifier that stamps a completed producer
+ * datadir's exporter-required markers. Touches coins_kv (the migration stamp)
+ * and the bundle exporter's admission proof. */
+AGENT_IMPACT_RULE("config/src/boot_ratify_mint_anchor.c|lib/test/src/test_ratify_mint_anchor.c", "ratify_mint_anchor consensus_state_snapshot_export coins_kv_sovereign_gate make_lint_gates")
 /* OS-A1: the generalized authority-receipt idiom (safe-privileged-transition
  * foundation) + its Law-7 lint gate. Any edit to the replay receipt (the live
  * instance) also re-runs the new authority_receipt group so the extraction
