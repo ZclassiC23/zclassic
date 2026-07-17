@@ -240,6 +240,35 @@ bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
 bool coins_kv_seed_from_node_db(struct sqlite3 *progress_db,
                                 const char *node_db_path);
 
+/* ── Bootstrap-seed checkpoint-content gate ──────────────────────────────────
+ *
+ * Turns the documented cure copy-proof into a resident boot invariant: a
+ * bootstrap seed that reaches the compiled SHA3 UTXO checkpoint height MUST
+ * reproduce its committed UTXO commitment (get_sha3_utxo_checkpoint()->
+ * sha3_hash + utxo_count), else it is a height-correct/state-wrong set that
+ * must never seed the fold.
+ *
+ * The verdict is height-triggered so it is INVISIBLE on the ordinary full-tip
+ * seed (whose newest coin is far above the checkpoint): only a set whose
+ * MAX(coins.height) equals cp->height CLAIMS to be the checkpoint-anchored
+ * state and is compared. SELECT-only — safe to call mid-transaction on the
+ * seed's own connection (it reads the connection's uncommitted rows).
+ *   NOT_CHECKED — no compiled checkpoint (testnet/regtest), the set does not
+ *                 reach cp->height, or the applicability read failed (fail-open
+ *                 on the gate's ability to RUN, never a false FATAL).
+ *   MATCH       — set at cp->height reproduces cp->sha3_hash and cp->utxo_count.
+ *   MISMATCH    — set at cp->height, wrong commitment/count (or the commitment
+ *                 could not be computed for a confirmed checkpoint set): the
+ *                 seed functions roll this back and _exit rather than fold from
+ *                 an unproven base. */
+enum coins_kv_checkpoint_verdict {
+    COINS_KV_CHECKPOINT_NOT_CHECKED = 0,
+    COINS_KV_CHECKPOINT_MATCH       = 1,
+    COINS_KV_CHECKPOINT_MISMATCH    = 2,
+};
+enum coins_kv_checkpoint_verdict
+coins_kv_seed_checkpoint_verdict(struct sqlite3 *db);
+
 /* ── coins_applied_height — the canonical contiguous applied-frontier ──
  *
  * A single progress_meta key recording the contiguous applied frontier of the

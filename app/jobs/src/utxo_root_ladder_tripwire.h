@@ -1,16 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_root_ladder_tripwire — OBSERVE-ONLY production caller for the golden
+ * utxo_root_ladder_tripwire — FAIL-CLOSED production caller for the golden
  * UTXO root ladder verifier (models/utxo_root_ladder_verify.h /
- * chain/utxo_root_ladder.h). Same posture as the SHA3 golden-window
- * corroboration tripwire in this directory (tip_finalize_post_step.c's
- * sha3_window_tripwire_*): recomputes nothing new — it compares THIS node's
- * own already-persisted coins_kv boundary-root store
- * (coins_kv_boundary_root_get) against the locked golden-height ladder
- * table, and on a byte mismatch raises a typed PERMANENT blocker + an
- * evidence event, naming the divergent height. It NEVER rejects a block,
- * NEVER raises a pipeline HOLD, NEVER changes the tip or consensus
- * accept/reject — E13-neutral, identical to the SHA3 tripwire's contract.
+ * chain/utxo_root_ladder.h). Like the SHA3 golden-window tripwire it recomputes
+ * nothing new — it compares THIS node's own already-persisted coins_kv
+ * boundary-root store (coins_kv_boundary_root_get) against the locked
+ * golden-height ladder table. The ladder is an immutable commitment over frozen
+ * history, so a byte mismatch means this node's own UTXO state no longer
+ * reproduces a value it already locked in: a state-wrong-coin defect, not a
+ * transient miss.
+ *
+ * On divergence it FAILS CLOSED (default): it caps H* below the first divergent
+ * rung — by writing an ok=0 utxo_apply_log verdict at that height, the SAME
+ * lever utxo_apply's shielded-anchor reject uses (utxo_apply_anchors.c), so the
+ * untouched reducer_frontier H* fold terminates its contiguous prefix there and
+ * no trusted base can re-anchor above it — and raises an ESCALATING typed
+ * blocker (BLOCKER_DEPENDENCY, owner "utxo_root_ladder_tripwire") naming the
+ * divergent height. It NEVER touches the chain_linkage_hold accept/reject latch
+ * or any consensus validity rule (E13-neutral); "stop advance" is enacted
+ * purely through the provable-tip fold, so consensus parity with zclassicd is
+ * bit-identical whether or not it fires. The escape hatch env
+ * ZCL_UTXO_LADDER_OBSERVE_ONLY reverts to the historical evidence-only posture
+ * (a PERMANENT blocker + event, no H* cap); it DEFAULTS to fail-closed.
  *
  * Cadence: only re-checked at MMR_COMMITMENT_INTERVAL (100-block) boundaries
  * — the same cadence tip_finalize_post_step.c persists a fresh boundary root
@@ -34,24 +45,29 @@
 #include <stddef.h>
 
 struct utxo_root_ladder_verify_result;
+struct sqlite3;
 
 enum utxo_root_ladder_tripwire_result {
     UTXO_ROOT_LADDER_TRIPWIRE_HEALTHY  = 0,  /* no divergence (incl. all
                                               * NOT_YET_REACHED / empty) */
-    UTXO_ROOT_LADDER_TRIPWIRE_MISMATCH = 1,  /* >=1 rung diverged; evidence
-                                              * emitted (blocker + event) */
+    UTXO_ROOT_LADDER_TRIPWIRE_MISMATCH = 1,  /* >=1 rung diverged; fail-closed
+                                              * (H* capped + blocker + event),
+                                              * or observe-only under the hatch */
 };
 
-/* Emit the observe-only evidence for a completed
- * utxo_root_ladder_verify_against_store() call. `results`/`n` are that
- * call's own output array. Silent (HEALTHY, no blocker) when every rung is
- * MATCH or NOT_YET_REACHED. Registers the `utxo_ladder_mismatch` typed
- * blocker (PERMANENT, owner "utxo_root_ladder_tripwire") naming the FIRST
- * divergent rung's height and the divergent/total rung counts when at
- * least one rung is DIVERGENT. `results` NULL or `n` 0 is a no-op HEALTHY
- * return. */
+/* Act on a completed utxo_root_ladder_verify_against_store() call. `results`/`n`
+ * are that call's own output array. Silent (HEALTHY, no blocker, no cap) when
+ * every rung is MATCH or NOT_YET_REACHED. When at least one rung is DIVERGENT it
+ * registers the `utxo_ladder_mismatch` typed blocker naming the FIRST divergent
+ * rung's height and, by DEFAULT (fail-closed), caps H* below that height by
+ * writing an ok=0 utxo_apply_log verdict there via `db` (the live progress.kv
+ * handle) — so pass the same handle the verify read from. `db` NULL skips only
+ * the cap write (the blocker/event still fire); the env
+ * ZCL_UTXO_LADDER_OBSERVE_ONLY suppresses the cap and keeps a PERMANENT
+ * evidence-only blocker. `results` NULL or `n` 0 is a no-op HEALTHY return. */
 enum utxo_root_ladder_tripwire_result
-utxo_root_ladder_tripwire_report(const struct utxo_root_ladder_verify_result *results,
+utxo_root_ladder_tripwire_report(struct sqlite3 *db,
+                                 const struct utxo_root_ladder_verify_result *results,
                                  size_t n);
 
 /* Run the tripwire iff `height` is an MMR_COMMITMENT_INTERVAL boundary (the
