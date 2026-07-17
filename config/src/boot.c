@@ -1724,10 +1724,25 @@ bool app_init(struct app_context *ctx)
          * performs the same wipe idempotently, ~line 2539) can run the rebuild
          * the operator asked for. Guarded strictly on the explicit request: a
          * normal boot never wipes a recoverable coins set here. */
-        if (ctx->reindex_chainstate && boot_index_clear_coins_state(&g_node_db))
-            fprintf(stderr,
-                "[boot] -reindex-chainstate: cleared coins state before the "
-                "integrity gate; UTXO set will be rebuilt from block data\n");
+        /* Verb check BEFORE the wipe (never wipe state we cannot rebuild from
+         * local inputs): a from-genesis replay needs genesis-side block data.
+         * On a cold-import / bodyless datadir the wipe would delete the coins
+         * mirror + anchors and then reindex_chainstate's own verb check would
+         * refuse — leaving nothing to fold forward from. Skip the early clear
+         * there; the mirror is preserved and the reducer reconciles forward. */
+        if (ctx->reindex_chainstate) {
+            if (!boot_index_reindex_replay_executable(&g_state, &g_block_tree,
+                    g_block_tree_open, ctx->datadir))
+                fprintf(stderr,
+                    "[boot] -reindex-chainstate: genesis-side block data "
+                    "unreadable (cold-import window) — NOT clearing coins state "
+                    "before the verb check; preserving the seed to fold "
+                    "forward\n");
+            else if (boot_index_clear_coins_state(&g_node_db))
+                fprintf(stderr,
+                    "[boot] -reindex-chainstate: cleared coins state before the "
+                    "integrity gate; UTXO set will be rebuilt from block data\n");
+        }
         /* Wave 2: on canonical datadirs (coins_applied_height present) the
          * coins-best fact is DERIVED from coins_kv's own co-committed state —
          * the legacy anchor caches cannot wedge boot, so the legacy repair
@@ -1772,7 +1787,10 @@ bool app_init(struct app_context *ctx)
                  * cleanly so the restart consumes the request and rebuilds; once
                  * exhausted, park alive-degraded (paged once), never power-cycle. */
                 if (boot_crashonly_storage_gate(ctx->datadir,
-                        "coins_view_integrity") == BOOT_GATE_PARK_DEGRADED)
+                        "coins_view_integrity",
+                        boot_index_reindex_replay_executable(&g_state,
+                            &g_block_tree, g_block_tree_open, ctx->datadir))
+                        == BOOT_GATE_PARK_DEGRADED)
                     return boot_park_until_shutdown("coins_view_integrity");
                 return false;
             }
@@ -1881,7 +1899,9 @@ bool app_init(struct app_context *ctx)
          * so it climbs 1→2→3 and parks rather than _exit()ing into a crash-loop.
          * The reindex sentinel is harmless if progress.kv later opens — it is
          * consumed up front and the reindex_chainstate execution rebuilds. */
-        if (boot_crashonly_storage_gate(ctx->datadir, "progress_kv_open")
+        if (boot_crashonly_storage_gate(ctx->datadir, "progress_kv_open",
+                boot_index_reindex_replay_executable(&g_state, &g_block_tree,
+                    g_block_tree_open, ctx->datadir))
                 == BOOT_GATE_PARK_DEGRADED)
             return boot_park_until_shutdown("progress_kv_open");
         return false;
@@ -2493,7 +2513,10 @@ bool app_init(struct app_context *ctx)
                  * from blocks/; once the budget is exhausted, park
                  * alive-degraded (paged once) instead of looping. */
                 if (boot_crashonly_storage_gate(ctx->datadir,
-                        "block_index_integrity") == BOOT_GATE_PARK_DEGRADED)
+                        "block_index_integrity",
+                        boot_index_reindex_replay_executable(&g_state,
+                            &g_block_tree, g_block_tree_open, ctx->datadir))
+                        == BOOT_GATE_PARK_DEGRADED)
                     return boot_park_until_shutdown("block_index_integrity");
                 return false;
             }
@@ -2584,6 +2607,7 @@ bool app_init(struct app_context *ctx)
     struct block_index *scan_reindex_best = NULL;  /* highest w/ pprev+nChainTx */
     int scan_cleared_failed = 0;
     int scan_max_have_data_h = 0;
+    int scan_have_data_count = 0;
     int scan_missing_header_data = 0;
 
     {
@@ -2614,10 +2638,13 @@ bool app_init(struct app_context *ctx)
                     sp->nHeight > scan_reindex_best->nHeight)
                     scan_reindex_best = sp;
             }
-            /* Max HAVE_DATA height */
-            if ((sp->nStatus & BLOCK_HAVE_DATA) &&
-                sp->nHeight > scan_max_have_data_h)
-                scan_max_have_data_h = sp->nHeight;
+            /* Max HAVE_DATA height + aggregate body-coverage count (gates the
+             * reindex-target decision below; no extra O(chain) pass). */
+            if (sp->nStatus & BLOCK_HAVE_DATA) {
+                scan_have_data_count++;
+                if (sp->nHeight > scan_max_have_data_h)
+                    scan_max_have_data_h = sp->nHeight;
+            }
             if ((sp->nStatus & BLOCK_HAVE_DATA) && sp->nDataPos > 0 &&
                 sp->nHeight > 0 &&
                 (sp->nVersion == 0 || sp->nTime == 0 || sp->nBits == 0))
@@ -2651,6 +2678,24 @@ bool app_init(struct app_context *ctx)
                 (void)boot_promote_header_via_csr(scan_best_header,
                                                   "fast_restart");
         }
+    }
+
+    /* Coverage gate: a -reindex-chainstate (explicit or sentinel-consumed)
+     * replays from genesis and cannot skip a missing body. When coins are
+     * already seeded but local bodies materially fail to cover [0..target] (a
+     * cold-import seed), the replay would wipe the seed and then stall on the
+     * first missing body. Prefer fold-forward-from-seed: refuse the reindex,
+     * clear the sentinel so it does not re-arm, and fall through to the restore
+     * path (the else-if chain below). Uses only facts the single-pass scan
+     * already computed — no new O(chain) pass. */
+    if (ctx->reindex_chainstate && scan_reindex_best) {
+        struct boot_derived_coins_best cov_dcb;
+        bool seeded = boot_derive_coins_best(&cov_dcb) ||
+                      node_db_utxo_count(&g_node_db) > 0;
+        if (!boot_crashonly_reindex_coverage_ok(ctx->datadir,
+                scan_reindex_best->nHeight, scan_max_have_data_h,
+                scan_have_data_count, seeded))
+            ctx->reindex_chainstate = false;
     }
 
     /* Restore chain tip from coins DB best block hash */
@@ -3582,7 +3627,10 @@ sapling_tree_boot_check_done:
                  * on the restart; bounded so a genuinely corrupt base parks
                  * alive-degraded rather than _exit()ing into a crash-loop. */
                 if (boot_crashonly_storage_gate(ctx->datadir,
-                        "refold_sapling_rebuild") == BOOT_GATE_PARK_DEGRADED)
+                        "refold_sapling_rebuild",
+                        boot_index_reindex_replay_executable(&g_state,
+                            &g_block_tree, g_block_tree_open, ctx->datadir))
+                        == BOOT_GATE_PARK_DEGRADED)
                     return boot_park_until_shutdown("refold_sapling_rebuild");
                 return false;
             }
@@ -3865,9 +3913,10 @@ sapling_tree_boot_check_done:
         if (tip_h > 0 && g_node_db.open) {
             struct boot_phase bp_ws;
             boot_phase_begin(&bp_ws, "wallet_scan_blocks");
-            int found = wallet_scan_blocks(&g_node_db,
-                &g_state.chain_active, &g_wallet, ctx->datadir,
-                0, tip_h);
+            /* O(delta) boot: cursor-gated so each boot scans only [cursor+1,
+             * tip] (full scan only on a missing cursor or a changed keyset). */
+            int found = boot_cursor_scan_wallet(&g_node_db,
+                &g_state.chain_active, &g_wallet, ctx->datadir, tip_h);
             boot_phase_end(&bp_ws);
             if (found > 0)
                 printf("Wallet: auto-discovered %d transactions "

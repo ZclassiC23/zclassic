@@ -62,6 +62,19 @@ bool reindex_chainstate(struct main_state *ms,
  * FATAL boot before -reindex-chainstate can run). Idempotent. */
 bool boot_index_clear_coins_state(struct node_db *ndb);
 
+/* True iff a from-genesis -reindex-chainstate replay can actually read block
+ * bodies from blocks/ (the reindex reads every block from h=0 and cannot skip a
+ * missing one). Prefers the loaded active chain (h=0/1 probe); at the early
+ * boot-storage gates — which run before the in-memory index is loaded — it
+ * resolves genesis from the block tree DB (btdb, open iff btdb_open) and
+ * attempts the real body read, since a cold-import datadir can persist
+ * BLOCK_HAVE_DATA with no body. Returns false when genesis readability cannot be
+ * proven — the caller must then NOT wipe the coins state / arm a reindex. */
+bool boot_index_reindex_replay_executable(struct main_state *ms,
+                                          struct block_tree_db *btdb,
+                                          bool btdb_open,
+                                          const char *datadir);
+
 /* Fail-closed reset used only by the immutable anchor producer lane. */
 bool boot_mint_anchor_genesis_reset(struct node_db *ndb);
 

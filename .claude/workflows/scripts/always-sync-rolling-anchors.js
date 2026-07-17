@@ -1,0 +1,39 @@
+export const meta = {
+  name: 'always-sync-rolling-anchors',
+  description: 'Pillar 3: rolling self-verified anchors — executable seal-ring rewind bases + utxo_sha3 at finalized-tip so any datadir self-heals (O(delta) recovery)',
+  phases: [ { title: 'Anchors', detail: '4 isolated worktree lanes: seal-ring rewind consumer, finalized-tip utxo_sha3 persist, self-derived anchor constant, rewind observability+tests' } ],
+}
+const LANE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['branch','verdict','files_changed','summary','gates'],
+  properties: { branch:{type:'string'}, verdict:{type:'string', enum:['MERGE_READY','NEEDS_WORK','BLOCKED']}, files_changed:{type:'array',items:{type:'string'}}, summary:{type:'string'}, gates:{type:'string'}, caveats:{type:'string'} },
+}
+const COMMON = `zclassic23 is one C23 node, consensus-parity with zclassicd. MISSION: always fold to tip, self-heal FAST, self-derived folding of real bodies is the ONLY authority (borrowed state = scaffolding, re-derived + discarded). This workflow builds Pillar 3 of the always-sync spine: ROLLING SELF-VERIFIED ANCHORS so recovery rewinds to the NEAREST validated anchor (O(delta)) instead of the single deep compiled checkpoint, and so a torn anchor self-heals on ANY datadir.
+
+CONTEXT (verified this session): today there is ONE executable rewind base — the compiled SHA3 checkpoint h=3,056,758 (REDUCER_FRONTIER_TRUSTED_ANCHOR, app/jobs/include/jobs/reducer_frontier.h:39). The per-~1000-block seal ring records coins_sha3 but its rewind CONSUMER is comment-only vaporware (lib/storage/.../seal_kv.h:7). Torn-anchor self-heal needs a utxo_sha3 commitment written ONLY at snapshot-import, so a normally-synced datadir FATALs into operator recovery (docs/BOOT_INVARIANTS.md:133-145). The self-mint producer already validates a self-derived anchor (config/src/boot_mint_anchor.c).
+
+HARD RULES: consensus parity inviolable; a rewind base is only valid if self-derived (folded bodies) + cross-checked against its own SHA3 — never a borrowed value; every malloc via zcl_malloc, every error LOG_*, every write AR lifecycle; files < 800 lines; every thread supervised; NEVER touch a live datadir / mint producer / stop zclassicd; copy-prove before live, gate on H* CLIMB. If your worktree cannot link: cp -a /home/rhett/github/zclassic23/vendor/lib vendor/. OWN isolated worktree; commit to THIS branch only. Self-gate: make build-only + focused test + make lint (+ agent_impact_rules.def per changed .c; reconcile DOC-COUNTS/EXPECTED_DIAGNOSTICS_DUMPERS). Final message = structured data; report the branch. AVOID editing tip_finalize_stage.c, chainstate.c, block_index_loader.c, msg_headers.c (a sibling spine workflow owns those).`
+
+phase('Anchors')
+const lanes = await parallel([
+  () => agent(`${COMMON}
+
+LANE seal-ring rewind consumer (consensus-adjacent). The seal ring persists a coins_sha3 every ~1000 blocks but nothing can REWIND to one (lib/storage/.../seal_kv.h:7 "comment-only vaporware"). Build the executable consumer: given a target height H below the current cursor, find the NEAREST sealed anchor at or below H (highest sealed_height <= H), verify its coins_sha3 against a re-fold of the bodies from that seal forward (self-derived proof, never trust the stored value alone), reset the reducer to that seal, and re-fold H_seal..H from on-disk PoW-verified bodies. This makes recovery O(delta from the nearest seal) instead of O(chain from the compiled checkpoint). Expose a callable seal_kv_nearest_rewind_base(H)->{height,hash} + a rewind executor. Wire it as the preferred base for the recovery ladder's re-derive rungs (but do NOT edit sticky_escalator.c / recovery_coordinator.c — another workflow owns those; just expose the API + a clear integration note). Focused test on a fixture with several seals: nearest-base selection, self-verified re-fold, and refusal when a seal's coins_sha3 does not reproduce. Files: lib/storage/src/seal_kv.c/.h (+ a rewind executor file if >800 lines).`,
+    { isolation:'worktree', model:'opus', label:'P3:seal-rewind', phase:'Anchors', schema:LANE_SCHEMA }),
+
+  () => agent(`${COMMON}
+
+LANE finalized-tip utxo_sha3 persist (removes the FATAL-into-operator SPOF). Today the coins-integrity self-heal only fires when a stored utxo_sha3 commitment exists, and that is written ONLY at snapshot-import (docs/BOOT_INVARIANTS.md:104-145); a normally-synced datadir has none, so a torn anchor FATALs. Persist a utxo_sha3 (the SHA3 of the coins set) at every finalized-tip checkpoint boundary (the same ~1000-block cadence as the seal ring, or at each finalized checkpoint) via the durable node_db/progress.kv state, so ANY datadir carries a rolling self-heal commitment. Then the existing torn-anchor detector can verify + self-heal instead of FATAL. Keep it a pure derived commitment written after the finalized COMMIT (kill-9 safe: a missing one just means "no self-heal base at that height", never corruption). Focused test: after N finalized checkpoints a utxo_sha3 exists and matches a recompute; a torn coins set is detected against it. Files: the finalized-checkpoint persistence path (a NEW helper file under app/services or app/jobs, or config/src) + its test. Do NOT edit tip_finalize_stage.c (spine owns it) — hook via an existing post-finalize seam / event, or a small helper the finalized path already calls.`,
+    { isolation:'worktree', model:'opus', label:'P3:finalized-utxo_sha3', phase:'Anchors', schema:LANE_SCHEMA }),
+
+  () => agent(`${COMMON}
+
+LANE self-derived anchor constant. Replace the hardcoded REDUCER_FRONTIER_TRUSTED_ANCHOR=3056758 (app/jobs/include/jobs/reducer_frontier.h:39) with a value SOURCED from the self-derived anchor the producer validated (config/src/boot_mint_anchor.c HARD-ASSERTs the fold reproduces the compiled SHA3+count at 3,056,758) — read the self-derived anchor height+hash from the durable producer artifact / a persisted self-verified marker at boot, falling back to the compiled constant only when no self-derived value is available yet. The point: the trust anchor becomes something THIS node folded and proved, not a baked literal. Keep it consensus-safe: the self-derived value must equal the compiled checkpoint (assert on mismatch) until the anchor legitimately advances; never accept a borrowed anchor. Focused test: with a self-verified marker present the anchor resolves to it; absent, it falls back to the compiled value; a mismatched self-derived value is refused. Files: reducer_frontier.h + reducer_frontier.c call sites (app/jobs/src/reducer_frontier.c:451-457,554) + the marker reader. Coordinate: do NOT edit boot_mint_anchor.c's fold/assert logic (read its output only).`,
+    { isolation:'worktree', model:'sonnet', label:'P3:self-derived-anchor', phase:'Anchors', schema:LANE_SCHEMA }),
+
+  () => agent(`${COMMON}
+
+LANE rolling-anchor observability. Make the rewind-base redundancy VISIBLE so an operator/agent (and the recovery ladder) can see the safety net: extend an existing dumpstate subsystem (reducer_frontier or a seal/anchor dumper) to report the set of available self-verified rewind bases (the compiled checkpoint + every sealed coins_sha3 + the latest finalized utxo_sha3), each with height + whether it is self-derived, and the DISTANCE from the current tip to the nearest one (the O(delta) recovery cost). This is the "how far is the nearest safe anchor" number. If a dumper field is added, reconcile EXPECTED_DIAGNOSTICS_DUMPERS + DOC-COUNTS. Focused test: with several seals present the dumper lists them + reports the nearest-base distance. Files: at most one existing dumper .c + its test + count pins. Do NOT add production logic beyond the read surface; do NOT edit seal_kv.c (a sibling lane owns it — read its public API only).`,
+    { isolation:'worktree', model:'sonnet', label:'P3:rewind-observability', phase:'Anchors', schema:LANE_SCHEMA }),
+])
+return { lanes: lanes.filter(Boolean) }

@@ -233,6 +233,59 @@ static bool boot_index_flush_reindex_coins(struct coins_view_sqlite *cvs,
     return true;
 }
 
+bool boot_index_reindex_replay_executable(struct main_state *ms,
+                                          struct block_tree_db *btdb,
+                                          bool btdb_open,
+                                          const char *datadir)
+{
+    if (!datadir)
+        return false;
+
+    /* Preferred source: the loaded active chain (the late block-index gate and
+     * the post-restore integrity path). Probe h=0/1 exactly like
+     * reindex_chainstate's inline verb check. */
+    if (ms && active_chain_tip(&ms->chain_active)) {
+        int tip = active_chain_height(&ms->chain_active);
+        for (int h = 0; h <= (tip < 1 ? tip : 1); h++) {
+            struct block_index *pi = active_chain_at(&ms->chain_active, h);
+            struct block pblk;
+            if (!pi || !read_block_from_disk_index(&pblk, pi, datadir))
+                return false;
+            block_free(&pblk);
+        }
+        return true;
+    }
+
+    /* The early coins-view / progress.kv gates run BEFORE the in-memory index
+     * is loaded, so resolve genesis from the durable block tree DB and attempt
+     * the real body read — a cold-import (bodyless) datadir persists
+     * BLOCK_HAVE_DATA with no genesis-side body, so the flag alone is not proof;
+     * the READ is. Cannot prove genesis readable ⇒ refuse (never wipe state we
+     * cannot rebuild from local inputs). */
+    if (!btdb || !btdb_open)
+        return false;
+    const struct chain_params *cp = chain_params_get();
+    if (!cp)
+        return false;
+    struct disk_block_index dbi;
+    disk_block_index_init(&dbi);
+    if (!block_tree_db_read_block_index(btdb, &cp->consensus.hashGenesisBlock,
+                                        &dbi))
+        return false;
+    struct block_index probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.phashBlock = &cp->consensus.hashGenesisBlock;
+    probe.nHeight = 0;
+    probe.nStatus = dbi.nStatus;
+    probe.nFile = dbi.nFile;
+    probe.nDataPos = dbi.nDataPos;
+    struct block gblk;
+    if (!read_block_from_disk_index(&gblk, &probe, datadir))
+        return false;
+    block_free(&gblk);
+    return true;
+}
+
 /* Clear the persisted coins state (UTXO set + anchor + commitments) so the set
  * can be rebuilt from block data. Shared by reindex_chainstate and the
  * pre-integrity-gate path in app_init: a torn coins anchor would otherwise
