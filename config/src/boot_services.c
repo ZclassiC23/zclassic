@@ -95,6 +95,8 @@
 #include "controllers/file_market_controller.h"
 #include "controllers/name_controller.h"
 #include "controllers/anchor_controller.h"
+#include "controllers/op_return_index_controller.h"
+#include "services/op_return_backfill_service.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
@@ -431,6 +433,12 @@ static void boot_register_core_liveness_and_reducer(
     recovery_coordinator_register(svc->state);
     condition_registry_register_all();
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
+    /* OP_RETURN catalog backfill (op_return_index projection): supervised,
+     * bounded-per-tick historical walk up to the provable tip H*. The live
+     * tip-finalize hook (explorer_index_block) inserts rows for new blocks
+     * on its own; this is the sole cursor/digest writer. */
+    op_return_backfill_set_datadir(svc->datadir);
+    op_return_backfill_register();
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health
@@ -1215,6 +1223,10 @@ bool app_init_services(struct app_context *ctx,
     rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state,
                           svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
+
+    /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
+    rpc_op_return_index_set_state(boot_node_db(svc));
+    register_op_return_index_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — P2P messages (plaintext on the wire) */
     rpc_msg_set_state(boot_node_db(svc), svc->connman);

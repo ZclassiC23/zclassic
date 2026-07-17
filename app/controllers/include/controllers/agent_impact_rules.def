@@ -543,3 +543,9 @@ AGENT_IMPACT_RULE("lib/util/src/thread_profile.c|lib/util/include/util/thread_pr
 /* Blog reference App: one MVC/ActiveRecord slice from opaque Core wallet
  * signing through ZNAM ownership and reorg-aware full-node anchor evidence. */
 AGENT_IMPACT_RULE("apps/blog/*|app/models/src/app_event.c|app/models/include/models/app_event.h|app/models/src/blog_post.c|app/models/include/models/blog_post.h|app/services/src/blog_publication.c|app/services/include/services/blog_publication_service.h|app/controllers/src/blog_post_controller.c|app/controllers/include/controllers/blog_post_controller.h|app/views/src/blog_post_view.c|app/views/include/views/blog_post_view.h|lib/test/src/test_blog.c|lib/framework/src/app_platform.c|lib/framework/include/framework/app_platform.h|lib/test/src/test_dev_platform.c|app/models/src/database_migrate_features.c|app/models/include/models/database.h|lib/net/src/onion_service.c|lib/net/src/https_server.c", "blog dev_platform db_migration_idempotent schema_migration models net make_lint_gates")
+
+/* OP_RETURN catalog (op_return_index) — a rebuildable projection over
+ * every OP_RETURN output ever seen (ZNAM/ZSLP/ZANC/unknown lokad tags),
+ * populated at tip-finalize (explorer_index.c hook) and by a supervised
+ * bounded backfill service up to the reducer's provable tip. */
+AGENT_IMPACT_RULE("app/models/src/op_return_index.c|app/models/include/models/op_return_index.h|app/services/src/op_return_backfill_service.c|app/services/include/services/op_return_backfill_service.h|app/controllers/src/op_return_index_controller.c|app/controllers/include/controllers/op_return_index_controller.h|app/models/src/database_migrate_features.c|app/models/include/models/database.h|app/models/src/explorer_index.c|app/models/include/models/explorer_index.h|lib/test/src/test_op_return_index.c", "op_return_index explorer models db_migration_idempotent schema_migration supervisor syncdiag_rpc make_lint_gates")

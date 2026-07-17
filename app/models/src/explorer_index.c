@@ -15,6 +15,7 @@
 #include "models/explorer_index.h"
 #include "models/database.h"
 #include "models/activerecord.h"
+#include "models/op_return_index.h"
 #include "models/znam.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
@@ -672,6 +673,16 @@ bool explorer_index_block(struct node_db *ndb, const struct block *blk,
     for (size_t i = 0; i < blk->num_vtx; i++)
         index_tx_projections(ndb, &blk->vtx[i], pindex->nHeight,
                              &njs, &nss, &nso, &sprout_val, &sapling_val);
+
+    /* OP_RETURN catalog (models/op_return_index.h) — independent projection
+     * of EVERY OP_RETURN output (unlike op_returns above, which keeps only
+     * the tx's first). Row-only here: the digest/cursor advance is owned
+     * exclusively by the supervised backfill service
+     * (app/services/src/op_return_backfill_service.c) so the running
+     * catalog digest stays single-writer across threads. A save failure is
+     * logged inside apply_block_rows and never fails this hook. */
+    (void)op_return_index_apply_block_rows(ndb, blk, pindex->nHeight,
+                                           NULL, 0, NULL);
 
     uint8_t zero_prev[32] = {0};
     const uint8_t *prev = (pindex->nHeight == 0 || !prev_receipt)
