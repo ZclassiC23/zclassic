@@ -37,6 +37,31 @@ bool connect_socket_directly(const struct net_service *addr,
                              zcl_socket_t *sock_out,
                              int timeout_ms);
 
+/* ── Non-blocking connect primitives (parallel dialer) ───────────────────
+ *
+ * connect_socket_directly() blocks in select() for up to timeout_ms on ONE
+ * address. To dial many peers concurrently from a single thread, split the
+ * connect into "start" (create socket, set non-blocking, issue connect()) and
+ * "check" (has the in-flight connect completed successfully?). The caller
+ * poll()s the returned fds against ONE shared deadline and completes whichever
+ * win, closing the losers — no extra threads, no per-address blocking wait. */
+enum zcl_connect_start {
+    ZCL_CONNECT_START_ERROR = 0,   /* socket()/connect() failed; sock closed */
+    ZCL_CONNECT_START_CONNECTED,   /* connected synchronously (e.g. localhost) */
+    ZCL_CONNECT_START_IN_PROGRESS, /* EINPROGRESS — poll POLLOUT then _check */
+};
+
+/* Create a non-blocking TCP socket (TCP_NODELAY, SO_NOSIGPIPE where available)
+ * and issue a non-blocking connect() to `addr`. On ERROR the socket is closed
+ * and *sock_out is ZCL_INVALID_SOCKET. On CONNECTED/IN_PROGRESS *sock_out holds
+ * the (still non-blocking) socket the caller now owns. */
+enum zcl_connect_start connect_socket_start(const struct net_service *addr,
+                                            zcl_socket_t *sock_out);
+
+/* After poll() reports the socket writable (POLLOUT), returns true iff the
+ * async connect() succeeded (SO_ERROR == 0). Does not close the socket. */
+bool connect_socket_check(zcl_socket_t sock);
+
 bool close_socket(zcl_socket_t *sock);
 
 /* Prefixed to avoid conflict with Tor's socket.c */

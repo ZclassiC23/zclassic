@@ -884,32 +884,29 @@ static bool nm_add_node(struct net_manager *nm, struct p2p_node *node)
  *     saw ref>0 and parked the node in deferred_free forever. Now every caller
  *     releases symmetrically, so deduped returns are balanced too. */
 
-struct p2p_node *connect_node(struct net_manager *nm,
-                               struct net_address *addr_connect,
-                               const char *dest)
+struct p2p_node *connect_node_from_socket(struct net_manager *nm,
+                                          struct net_address *addr_connect,
+                                          const char *dest,
+                                          zcl_socket_t sock,
+                                          bool *created_out)
 {
-    if (!dest && is_local(nm, &addr_connect->svc))
-        LOG_NULL("net", "refusing connection to local address");
-
-    /* Always dedupe by remote service, even for addnode/localhost connects.
-     * The dest override exists to skip the localhost rejection, not to allow
-     * parallel duplicate sockets to the same peer. Duplicate addnode sockets
-     * cause repeated getheaders loops and can split one-shot fast-sync offers
-     * across multiple connections. */
+    if (created_out)
+        *created_out = false;
+    /* Re-dedupe under the SAME cs_nodes acquire that publishes the new node.
+     * The up-front dedupe in connect_node (or the connman dialer's
+     * already-connected gate) can lose a race: a duplicate connection to this
+     * service may have completed while our dial was in flight — the whole
+     * point of the parallel dialer is many in-flight dials at once. If a peer
+     * for this service now exists, close OUR socket and hand back the existing
+     * node with find_node_by_service_locked's +1 ref, preserving the
+     * symmetric-ref contract (the caller releases exactly one ref either way).
+     * `created_out` distinguishes a fresh node from this dedupe path so the
+     * caller never mislabels an already-connected real peer (e.g. as a
+     * feeler). */
     struct p2p_node *existing = find_node_by_service_locked(nm, &addr_connect->svc);
-    if (existing)
+    if (existing) {
+        close_socket(&sock);
         return existing;
-
-    zcl_socket_t sock;
-
-    if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT)) {
-        char addr_str[64];
-        net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
-        char addr_safe[96];
-        log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
-        log_jsonf(LOG_JSON_WARN, "peer_connect_failed",
-                  "\"addr\":\"%s\"", addr_safe);
-        return NULL;
     }
 
     struct p2p_node *node = p2p_node_create(nm, sock, addr_connect,
@@ -936,6 +933,8 @@ struct p2p_node *connect_node(struct net_manager *nm,
     zcl_mutex_unlock(&nm->cs_nodes);
 
     node->time_connected = GetTime();
+    if (created_out)
+        *created_out = true;
 
     char addr_str[64];
     net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
@@ -945,6 +944,37 @@ struct p2p_node *connect_node(struct net_manager *nm,
               "\"addr\":\"%s\",\"peer_id\":%d",
               addr_safe, (int)node->id);
     return node;
+}
+
+struct p2p_node *connect_node(struct net_manager *nm,
+                               struct net_address *addr_connect,
+                               const char *dest)
+{
+    if (!dest && is_local(nm, &addr_connect->svc))
+        LOG_NULL("net", "refusing connection to local address");
+
+    /* Always dedupe by remote service, even for addnode/localhost connects.
+     * The dest override exists to skip the localhost rejection, not to allow
+     * parallel duplicate sockets to the same peer. Duplicate addnode sockets
+     * cause repeated getheaders loops and can split one-shot fast-sync offers
+     * across multiple connections. (connect_node_from_socket re-checks under
+     * the publish lock to close the residual race.) */
+    struct p2p_node *existing = find_node_by_service_locked(nm, &addr_connect->svc);
+    if (existing)
+        return existing;
+
+    zcl_socket_t sock;
+    if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT)) {
+        char addr_str[64];
+        net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
+        char addr_safe[96];
+        log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
+        log_jsonf(LOG_JSON_WARN, "peer_connect_failed",
+                  "\"addr\":\"%s\"", addr_safe);
+        return NULL;
+    }
+
+    return connect_node_from_socket(nm, addr_connect, dest, sock, NULL);
 }
 
 /* --- ban management --- */
