@@ -1193,7 +1193,7 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_select_chain_and_datadir(ctx))
         return false;
     if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
-        !ctx->export_consensus_bundle &&
+        !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
         !boot_mint_anchor_normal_boot_preflight(ctx->datadir))
         return false;
     if (!boot_refold_staged_preflight(ctx->refold_staged)) return false;
@@ -1559,7 +1559,7 @@ bool app_init(struct app_context *ctx)
     boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
     if (progress_open) {
         if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
-            !ctx->export_consensus_bundle &&
+            !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
             !boot_mint_anchor_normal_boot_gate(progress_store_db()))
             return false;
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
