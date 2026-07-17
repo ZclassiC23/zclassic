@@ -49,6 +49,7 @@
 #include "services/block_pruning_service.h"
 #include "services/segment_sealer_service.h"
 #include "services/op_return_backfill_service.h"
+#include "net/rom_seed.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/gap_fill_service.h"
 #include "services/wallet_backup_service.h"

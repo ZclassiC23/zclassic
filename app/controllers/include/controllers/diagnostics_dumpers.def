@@ -274,6 +274,14 @@
     DIAG_SERVICE("crypto_registry", crypto_registry_dump_state_json,
                  "registered crypto schemes, statuses, implementations, and kind counts",
                  "lib/crypto_registry/src/crypto_registry.c", DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("rom_seed", rom_seed_dump_state_json,
+                 "ROM artifact seeding (free/capped P2P delivery of the "
+                 "consensus-state bundle + header seed): registered artifacts "
+                 "(kind, size, digest, chunks), chunks/bytes served, unique "
+                 "peers served, current bytes/sec vs per-peer + global caps, "
+                 "enabled flag",
+                 "lib/net/src/rom_seed.c",
+                 "lib/test/src/test_rom_seed.c"),
     DIAG_PROJECTION("mempool_projection", mempool_projection_dump_state_json,
                     "mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL",
                     "lib/storage/src/mempool_projection.c",

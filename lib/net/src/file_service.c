@@ -10,6 +10,7 @@
 #include "config/boot_snapshot_offer.h"
 #include "net/file_manifest.h"
 #include "net/file_service.h"
+#include "net/rom_seed.h"
 #include "util/log_json.h"
 #include "crypto/sha3_crypt.h"
 #include "crypto/sha3.h"
@@ -670,6 +671,23 @@ bool fs_parse_serve_request(const uint8_t *payload, uint32_t plen,
     return false;
 }
 
+bool fs_parse_rom_request(const uint8_t *payload, uint32_t plen,
+                          uint8_t root_out[32], uint32_t *idx_out)
+{
+    if (!payload || plen < FS_ROM_REQUEST_SIZE)
+        return false;
+    if (memcmp(payload, "ROM", 3) != 0)
+        return false;
+    if (root_out)
+        memcpy(root_out, payload + 3, 32);
+    if (idx_out)
+        *idx_out = (uint32_t)payload[35] |
+                   ((uint32_t)payload[36] << 8) |
+                   ((uint32_t)payload[37] << 16) |
+                   ((uint32_t)payload[38] << 24);
+    return true;
+}
+
 enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
                                         const uint8_t peer_token[32],
                                         uint8_t out_seed[32], int *out_bits,
@@ -902,6 +920,61 @@ static void fs_stream_range(struct fs_session *session,
     }
 }
 
+/* Serve one FREE ROM artifact chunk. Runs on the file-service worker pool —
+ * a thread pool separate from the consensus P2P message loop — so it never
+ * blocks or starves consensus P2P. Bounded by the rom_seed per-peer
+ * concurrency + per-peer/global byte-rate caps (NOT the PoW/ALL gate) and the
+ * per-connection budget already enforced elsewhere. No payment is required.
+ * On any refusal it sends FS_DONE (a clean end-of-serve), never a silent drop. */
+static void fs_serve_rom_chunk(struct fs_session *session,
+                               const uint8_t client_ip[16],
+                               const uint8_t root[32], uint32_t idx)
+{
+    struct rom_artifact art;
+    if (rom_seed_serve_lookup(root, idx, &art) != ROM_SERVE_FREE_OK) {
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!fs_conn_budget_ok(session->bytes_sent, session->start_time,
+                           (int64_t)platform_time_wall_time_t())) {
+        fs_gate_log_throttled("rom_conn_budget_exceeded", (int)idx);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!rom_seed_peer_acquire(client_ip)) {
+        fs_gate_log_throttled("rom_concurrency_refused", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+
+    uint8_t *buf = zcl_malloc(art.chunk_size, "rom_serve_chunk");
+    if (!buf) {
+        rom_seed_peer_release(client_ip);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    uint32_t sz = 0;
+    if (!rom_seed_read_chunk(&art, g_fs_datadir, idx, buf, art.chunk_size, &sz)) {
+        free(buf);
+        rom_seed_peer_release(client_ip);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    /* Separate send budget: the ROM global/per-peer byte-rate window bounds how
+     * much uplink ROM serving may draw, independent of consensus P2P. */
+    if (!rom_seed_rate_charge(client_ip, sz, (int64_t)platform_time_wall_time_t())) {
+        free(buf);
+        rom_seed_peer_release(client_ip);
+        fs_gate_log_throttled("rom_rate_exceeded", (int)idx);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (fs_send_chunk_fast(session, buf, sz, art.chunk_sha3[idx]))
+        rom_seed_note_chunk_served();
+    free(buf);
+    rom_seed_peer_release(client_ip);
+}
+
 /* Per-client handler run on a bounded worker pool. */
 static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
 {
@@ -942,6 +1015,17 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
             if (!fs_send_challenge(&session, seed, bits, st))
                 break;
             continue;
+        }
+
+        /* Free-tier ROM artifact chunk request — independent of the ALL/RNG
+         * bulk-stream PoW gate; bounded by the rom_seed caps instead. */
+        if (type == FS_REQUEST) {
+            uint8_t rom_root[32];
+            uint32_t rom_idx = 0;
+            if (fs_parse_rom_request(payload, plen, rom_root, &rom_idx)) {
+                fs_serve_rom_chunk(&session, client_ip, rom_root, rom_idx);
+                continue;
+            }
         }
 
         bool is_all = false, is_rng = false;
