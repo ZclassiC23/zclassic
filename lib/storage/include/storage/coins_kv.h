@@ -199,6 +199,40 @@ bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
  * success, -1 on error. */
 int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
 
+/* Forward-declared (chain/checkpoints.h) so a caller that only needs to verify
+ * against the compiled checkpoint does not have to pull the chain headers in. */
+struct sha3_utxo_checkpoint;
+
+/* THE single re-check of a compiled SHA3 UTXO checkpoint against the live
+ * coins_kv content. Re-derives the canonical commitment via the SAME ONE fold
+ * coins_kv_commitment() implements (the fold the -ratify-mint-anchor verb and
+ * the -refold-from-anchor hard-assert already use — there is exactly one digest
+ * implementation) and compares BOTH it and coins_kv_count() against `cp`.
+ * Returns true iff the SHA3-256 commitment == cp->sha3_hash AND coins_kv_count
+ * == cp->utxo_count.
+ *
+ * WHY: the frontier fold consumes only the checkpoint HEIGHT as a numeric floor
+ * (app/jobs/src/reducer_frontier.c), so a transparent set that is wrong BELOW
+ * the checkpoint is otherwise invisible. Wire this at the moments state is
+ * written wholesale AT the checkpoint height (the -refold-from-anchor reseed
+ * hard-assert) and expose it on demand (the -verify-rom operator verb). It does
+ * NOT belong on the height-agnostic tip seeds — coins_kv_seed_from_node_db is
+ * also called by the reindex epilogue and the recovery restore, which seed the
+ * TIP set, where the checkpoint's cp->height commitment legitimately does not
+ * apply (see the note on coins_kv_seed_from_node_db).
+ *
+ * out_got_root (32 bytes) and *out_got_count receive the derived values when
+ * non-NULL (for the caller's banner / FATAL message). On mismatch a short typed
+ * cause is written to `reason` (when non-NULL, reason_cap > 0): it always names
+ * the diverging component with the substring "sha3" and/or "count" and includes
+ * both hex digests. SELECT-only: NO markers are stamped, NO mutation. Returns
+ * false (reason set) on a NULL/read error too. */
+bool coins_kv_verify_against_checkpoint(struct sqlite3 *db,
+                                        const struct sha3_utxo_checkpoint *cp,
+                                        uint8_t out_got_root[32],
+                                        int64_t *out_got_count,
+                                        char *reason, size_t reason_cap);
+
 /* ── Per-boundary UTXO root table (the keystone's reproducibility anchor) ──
  *
  * The MMB leaf carries a per-height utxo_root, but ONLY at boundary heights
