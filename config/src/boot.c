@@ -3516,7 +3516,7 @@ sapling_tree_boot_check_done:
     if (ctx->ratify_mint_anchor)
         boot_ratify_mint_anchor(ctx->datadir);
     if (ctx->export_consensus_bundle)
-        boot_export_consensus_bundle(&g_node_db, ctx->datadir);
+        boot_export_consensus_bundle(&g_node_db, &g_state, ctx->datadir);
     if (ctx->promote_shielded_history)  /* -> wedged COPY, header-bound Sapling */
         boot_promote_shielded_history(&g_state, ctx->datadir,
                                       ctx->promote_shielded_history);

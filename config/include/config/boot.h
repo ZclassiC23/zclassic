@@ -470,7 +470,8 @@ void boot_ratify_mint_anchor(const char *datadir);
  * compiled SHA3 UTXO checkpoint, reads the header-committed final Sapling root
  * at the checkpoint height from `ndb`'s validated block index, and runs the
  * checkpoint-content export against the OPEN progress store into the datadir. */
-void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir);
+void boot_export_consensus_bundle(struct node_db *ndb, struct main_state *ms,
+                                  const char *datadir);
 
 /* -promote-shielded-history=<producer-datadir> (acts on -datadir as the TARGET;
  * impl in config/src/boot_promote_shielded_history.c): TERMINAL — NEVER returns;

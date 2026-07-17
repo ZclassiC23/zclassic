@@ -25,11 +25,11 @@
 #include "chain/chain.h"
 #include "chain/checkpoints.h"
 #include "models/block.h"
-#include "primitives/block.h"
 #include "storage/consensus_state_bundle_codec.h"
-#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -41,7 +41,8 @@
 
 #define EXPORT_SUBSYS "export_consensus_bundle"
 
-void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir)
+void boot_export_consensus_bundle(struct node_db *ndb, struct main_state *ms,
+                                  const char *datadir)
 {
     if (!datadir || !datadir[0]) {
         fprintf(stderr, "REFUSED: -export-consensus-bundle: empty datadir\n");
@@ -105,40 +106,41 @@ void boot_export_consensus_bundle(struct node_db *ndb, const char *datadir)
     };
     memcpy(request.expected_block_hash, cp->block_hash, 32);
 
-    /* The blocks-projection row can carry a zero sapling_root (the legacy
-     * header import never populated that column), so the PoW anchor for the
-     * shielded tip is taken from the header bytes on disk instead: read the
-     * block at the row's recorded position, require its recomputed hash to be
-     * exactly the compiled checkpoint's block hash, and use that header's
-     * committed final Sapling root. */
-    struct block body;
-    struct disk_block_pos body_pos = { .nFile = blk.file_num,
-                                       .nPos = (unsigned int)blk.data_pos };
-    if (!read_block_from_disk_pread(&body, &body_pos, datadir)) {
+    /* The blocks-projection row can carry a zero sapling_root and stale file
+     * positions (the legacy header import never populated them for this
+     * layout), so the PoW anchor for the shielded tip comes from the in-RAM
+     * validated block index: the entry at the checkpoint height must hash to
+     * exactly the compiled checkpoint's block hash, and its committed final
+     * Sapling root must be non-zero. */
+    const struct block_index *cp_bi =
+        ms ? active_chain_at(&ms->chain_active, cp->height) : NULL;
+    if (!cp_bi || !cp_bi->phashBlock ||
+        memcmp(cp_bi->phashBlock->data, cp->block_hash, 32) != 0) {
         (void)close(dir_fd);
         fprintf(stderr,
-                "REFUSED: -export-consensus-bundle: cannot read the checkpoint "
-                "block body at file=%d pos=%d to bind the Sapling root\n",
-                blk.file_num, blk.data_pos);
-        LOG_WARN(EXPORT_SUBSYS, "checkpoint body read failed file=%d pos=%d",
-                 blk.file_num, blk.data_pos);
+                "REFUSED: -export-consensus-bundle: in-RAM header chain does "
+                "not own the compiled checkpoint block at height %d (import "
+                "the header chain first)\n", cp->height);
+        LOG_WARN(EXPORT_SUBSYS,
+                 "in-RAM chain missing/mismatched at checkpoint height %d",
+                 cp->height);
         _exit(EXIT_FAILURE);
     }
-    struct uint256 body_hash;
-    block_get_hash(&body, &body_hash);
-    if (memcmp(body_hash.data, cp->block_hash, 32) != 0) {
-        block_free(&body);
+    struct uint256 zero_root;
+    memset(&zero_root, 0, sizeof(zero_root));
+    if (memcmp(cp_bi->hashFinalSaplingRoot.data, zero_root.data, 32) == 0) {
         (void)close(dir_fd);
         fprintf(stderr,
-                "REFUSED: -export-consensus-bundle: on-disk checkpoint block "
-                "does not hash to the compiled checkpoint block hash\n");
+                "REFUSED: -export-consensus-bundle: the validated header at "
+                "the checkpoint height carries an all-zero final Sapling root "
+                "— refusing to bind against zeros\n");
         LOG_WARN(EXPORT_SUBSYS,
-                 "checkpoint body hash mismatch at height %d", cp->height);
+                 "zero hashFinalSaplingRoot at checkpoint height %d",
+                 cp->height);
         _exit(EXIT_FAILURE);
     }
     memcpy(request.checkpoint_sapling_root,
-           body.header.hashFinalSaplingRoot.data, 32);
-    block_free(&body);
+           cp_bi->hashFinalSaplingRoot.data, 32);
     struct consensus_state_export_result res;
     memset(&res, 0, sizeof(res));
     bool exported =
