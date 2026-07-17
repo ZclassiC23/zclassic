@@ -433,12 +433,8 @@ static void boot_register_core_liveness_and_reducer(
     recovery_coordinator_register(svc->state);
     condition_registry_register_all();
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
-    /* OP_RETURN catalog backfill (op_return_index projection): supervised,
-     * bounded-per-tick historical walk up to the provable tip H*. The live
-     * tip-finalize hook (explorer_index_block) inserts rows for new blocks
-     * on its own; this is the sole cursor/digest writer. */
     op_return_backfill_set_datadir(svc->datadir);
-    op_return_backfill_register();
+    op_return_backfill_register(); /* op_return_index: bounded backfill to H* */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health

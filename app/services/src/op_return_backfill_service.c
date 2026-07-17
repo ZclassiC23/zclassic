@@ -1,3 +1,23 @@
+// one-result-type-ok:bounded-backfill-progress-counter
+/* E2 override: this module's public surface is a bounded best-effort
+ * background walk (op_return_backfill_run_once returns the count of
+ * blocks folded this batch; 0 is a normal "nothing to do yet" state, not
+ * a failure) plus registration/JSON-dump helpers, same shape as the
+ * sibling authority_projection_audit / invariant_sentinel sweeps. A
+ * per-height read/save failure is already fail-loud via LOG_WARN and
+ * simply stops the batch for a retry next tick (see op_return_backfill_
+ * run_once) — a zcl_result on the outer entry points would duplicate
+ * that channel with a code/message callers must not branch on. */
+// repair-rung-ok:test_op_return_index
+// TENACITY I3: this is NOT a consensus-state repair rung — op_return_index
+// is a rebuildable, non-consensus PROJECTION (never consulted by
+// utxo_apply/consensus), and this service only ever POPULATES it forward
+// from already-validated, already-persisted block bodies (never patches a
+// torn write). test_op_return_index's backfill-e2e case proves a
+// truncate + fresh re-derive reproduces the exact same row set and
+// running digest, i.e. there is no "bad state" here to repair — the same
+// populate-only shape as nullifier_backfill_service.c.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * op_return_backfill_service — see services/op_return_backfill_service.h. */

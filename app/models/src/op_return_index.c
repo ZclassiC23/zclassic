@@ -72,8 +72,12 @@ bool op_return_index_extract(const uint8_t *script, size_t script_len,
     const uint8_t *data = NULL;
     size_t len = 0;
     const uint8_t *after = read_push(payload, end, &data, &len);
-    if (after && len >= 1 && len <= OP_RETURN_INDEX_TAG_MAX) {
-        memcpy(out->tag, data, len);
+    if (after && len <= OP_RETURN_INDEX_TAG_MAX) {
+        /* A well-formed push, including the canonical empty push (OP_0,
+         * len==0) — do NOT fall through to the raw-byte fallback below,
+         * which would otherwise mistake "OP_RETURN OP_0" for a malformed
+         * script and catalog a 1-byte tag instead of the true 0-byte one. */
+        if (len > 0) memcpy(out->tag, data, len);
         out->tag_len = (uint8_t)len;
     } else {
         size_t n = payload_len < OP_RETURN_INDEX_TAG_MAX
