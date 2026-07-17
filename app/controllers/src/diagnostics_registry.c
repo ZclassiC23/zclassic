@@ -87,6 +87,7 @@
 #include "config/bundle_exporter.h"
 #include "controllers/sovereignty_controller.h"
 #include "storage/small_projections.h"
+#include "storage/topology_store.h"
 #include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"

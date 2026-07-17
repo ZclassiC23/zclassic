@@ -1407,6 +1407,8 @@ int main(int argc, char **argv)
     failures += test_event_log();
     failures += test_mempool_projection();
     failures += test_peers_projection();
+    { extern int test_topology_store(void);
+      failures += test_topology_store(); }
     failures += test_wallet_projection();
     failures += test_small_projections();
     failures += test_utxo_projection();

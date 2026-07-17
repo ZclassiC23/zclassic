@@ -26,6 +26,7 @@
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"
 #include "storage/small_projections.h"
+#include "storage/topology_store.h"
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -214,6 +215,13 @@ void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb
                 "[phase4] peers_projection caught up to offset=%llu\n",
                 (unsigned long long)off);
     }
+
+    /* topology_store: the addr-gossip / crawler-result GRAPH ("who
+     * advertises whom"). Its own dedicated file, no event log — best-effort,
+     * never blocks the rest of projection setup. */
+    if (!topology_store_open(datadir))
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] topology_store unavailable; graph disabled\n");
 
     /* utxo_projection is opened and caught up above by
      * boot_ensure_log_and_utxo_projection so the coins_tip read view can bind
@@ -428,6 +436,7 @@ void boot_stop_projection_storage(void)
         hodl_history_projection_close(g_phase4_hodl_history_projection);
         g_phase4_hodl_history_projection = NULL;
     }
+    topology_store_close();
     block_index_projection_set_singleton(NULL);
     if (g_phase4_block_index_projection) {
         block_index_projection_close(g_phase4_block_index_projection);

@@ -24,6 +24,7 @@
 
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "storage/topology_store.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
 #include "util/sync.h"
@@ -325,11 +326,23 @@ static void *ncrawl_worker_fn(void *arg)
 
 /* Dial addrs[0..n) through fn with at most `concurrent` (<=NCRAWL_MAX_CONCURRENT)
  * in-flight at once; ingest each recordable result into the bounded census.
- * Returns the count of recorded probes. */
+ * Every REACHABLE result also feeds one topology-graph "self" edge (our own
+ * node directly reached this address this round — the crawler-results half
+ * of storage/topology_store.h's two edge sources; the other half is
+ * addr-message ingestion in lib/net/src/msgprocessor_inv.c). The three
+ * out-params (nullable) accumulate this round's sweep-summary counters:
+ * out_reachable = count of REACHABLE results, out_edges_seen = count of
+ * topology edges actually recorded, out_new_nodes = count of those edges
+ * whose advertised address had never been seen in the topology graph before.
+ * Returns the count of recorded probes (reachable + known-unreachable). */
 static int ncrawl_run_round(const struct net_address *addrs, int n,
                             ncrawl_probe_fn fn, int concurrent,
-                            int ct_ms, int ht_ms)
+                            int ct_ms, int ht_ms, int *out_reachable,
+                            int *out_edges_seen, int *out_new_nodes)
 {
+    if (out_reachable) *out_reachable = 0;
+    if (out_edges_seen) *out_edges_seen = 0;
+    if (out_new_nodes) *out_new_nodes = 0;
     if (!addrs || n <= 0 || !fn)
         return 0;
     if (n > NCRAWL_MAX_PER_ROUND)
@@ -339,6 +352,7 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
     if (concurrent > NCRAWL_MAX_CONCURRENT)
         concurrent = NCRAWL_MAX_CONCURRENT;
 
+    int64_t topo_now = platform_time_wall_unix();
     int probed = 0;
     for (int base = 0; base < n; base += concurrent) {
         int wave = n - base;
@@ -375,6 +389,17 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
                 ncrawl_census_ingest_locked(&items[t].out);
                 zcl_mutex_unlock(&g_ncrawl.lock);
                 probed++;
+
+                if (items[t].out.reachable) {
+                    if (out_reachable) (*out_reachable)++;
+                    bool is_new = false;
+                    if (topology_store_record_self_edge(
+                            &items[t].addr->svc.addr, items[t].addr->svc.port,
+                            topo_now, &is_new)) {
+                        if (out_edges_seen) (*out_edges_seen)++;
+                        if (is_new && out_new_nodes) (*out_new_nodes)++;
+                    }
+                }
             }
         }
     }
@@ -382,7 +407,10 @@ static int ncrawl_run_round(const struct net_address *addrs, int n,
 }
 
 /* One full crawl round: pull a bounded address batch from addrman, probe it,
- * refold. Worker-thread-only (the batch buffer is thread-owned). */
+ * refold. Worker-thread-only (the batch buffer is thread-owned). Each round
+ * is also this crawler's "sweep boundary" for storage/topology_store.h's
+ * topology_sweeps ledger: one bounded batch, a definite start/end, appended
+ * unconditionally (best-effort — a not-open topology store just no-ops). */
 static void ncrawl_do_round(void)
 {
     struct addr_man *am = g_ncrawl.addrman;
@@ -395,12 +423,18 @@ static void ncrawl_do_round(void)
     size_t got = addrman_get_addr(am, batch, want);
     int n = (int)(got > NCRAWL_MAX_PER_ROUND ? NCRAWL_MAX_PER_ROUND : got);
 
+    int64_t sweep_started = platform_time_wall_unix();
+    int reachable = 0, edges_seen = 0, new_nodes = 0;
     int probed = ncrawl_run_round(batch, n, g_ncrawl.probe_fn,
                                   g_ncrawl.max_concurrent,
                                   g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms);
+                                  g_ncrawl.handshake_timeout_ms, &reachable,
+                                  &edges_seen, &new_nodes);
+    int64_t sweep_finished = platform_time_wall_unix();
+    (void)topology_store_record_sweep(sweep_started, sweep_finished, n,
+                                      reachable, edges_seen, new_nodes);
 
-    int64_t now = platform_time_wall_unix();
+    int64_t now = sweep_finished;
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;
@@ -692,11 +726,16 @@ void network_crawler_test_set_view(const struct network_census_view *v)
 
 int network_crawler_test_probe_round(const struct net_address *addrs, int n)
 {
+    int64_t sweep_started = platform_time_wall_unix();
+    int reachable = 0, edges_seen = 0, new_nodes = 0;
     int probed = ncrawl_run_round(addrs, n, g_ncrawl.probe_fn,
                                   g_ncrawl.max_concurrent,
                                   g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms);
+                                  g_ncrawl.handshake_timeout_ms, &reachable,
+                                  &edges_seen, &new_nodes);
     int64_t now = platform_time_wall_unix();
+    (void)topology_store_record_sweep(sweep_started, now, n, reachable,
+                                      edges_seen, new_nodes);
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;
