@@ -139,9 +139,10 @@ static bool sync_block_lean(struct node_db *ndb,
                             const uint8_t prev_receipt[32],
                             uint8_t out_receipt[32])
 {
-    if (!ndb || !ndb->open || !blk || !pindex)
-        LOG_FAIL("sync", "sync_block_lean: invalid args (ndb=%p, blk=%p, pindex=%p)",
-                 (void *)ndb, (void *)blk, (void *)pindex);
+    if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
+        LOG_FAIL("sync", "sync_block_lean: invalid args (ndb=%p, blk=%p, pindex=%p, hash=%p)",
+                 (void *)ndb, (void *)blk, (void *)pindex,
+                 (const void *)(pindex ? pindex->phashBlock : NULL));
 
     struct db_block db_blk;
     memset(&db_blk, 0, sizeof(db_blk));
@@ -619,6 +620,20 @@ int node_db_catchup_service_run(struct node_db *ndb,
                              "height %d — recording lean hole", h);
                 continue;
             }
+        } else {
+            /* A torn index (e.g. cp -a of a running node) can carry an
+             * active-chain slot with BLOCK_HAVE_DATA yet no phashBlock. Its
+             * frame cannot be hash-bound to an identity and every downstream
+             * write keys off pindex->phashBlock->data; record it as a
+             * suspicious lean hole (never advanced over quietly) instead of
+             * dereferencing NULL in sync_block_lean. */
+            block_free(&blk);
+            if (++lean_holes == 1) first_hole_h = h;
+            suspicious_lean_holes++;
+            if (lean_holes <= 3)
+                LOG_INFO("catchup", "catchup: block index missing its hash "
+                         "at height %d — recording lean hole", h);
+            continue;
         }
 
         /* Lean index: block header + txid index + explorer projections */
@@ -858,3 +873,14 @@ int node_db_catchup_service_run(struct node_db *ndb,
     sync_job_catchup_finish();
     return indexed;
 }
+
+#ifdef ZCL_TESTING
+bool node_db_catchup_test_sync_block_lean(struct node_db *ndb,
+                                          const struct block *blk,
+                                          const struct block_index *pindex)
+{
+    uint8_t prev[32] = {0};
+    uint8_t out[32] = {0};
+    return sync_block_lean(ndb, blk, pindex, prev, out);
+}
+#endif
