@@ -28,6 +28,7 @@
 #include "config/boot_fast_restart.h"  /* boot_fast_restart_capture_shutdown_facts (P2) */
 #include "services/chain_tip_watchdog.h"
 #include "services/address_index_service.h"
+#include "services/txindex_projection_service.h"
 #include "services/sticky_escalator.h"
 #include "services/recovery_coordinator.h"
 #include "services/invariant_sentinel.h"
@@ -433,8 +434,7 @@ static void boot_register_core_liveness_and_reducer(
     condition_registry_register_all();
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
     op_return_backfill_set_datadir(svc->datadir);
-    op_return_backfill_register(); /* op_return_index: bounded backfill to H* */
-    address_index_service_register(); /* opt-in -addressindex backfill; no-op when off */
+    op_return_backfill_register(); address_index_service_register(); txindex_projection_service_register(); /* projection backfills to H*: op_return (always) + -addressindex/-txindex (opt-in, no-op when off) */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches an operator and the health

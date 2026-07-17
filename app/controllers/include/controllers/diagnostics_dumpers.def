@@ -381,6 +381,17 @@
                "64-hex scripthash [:from_height]", "<64-hex scripthash>",
                "<64-hex scripthash>:3170000",
                "lib/test/src/test_address_index.c", true),
+    DIAG_ENTRY("txindex", txindex_dump_state_json,
+               "transaction-location projection (-txindex): enabled, cursor, "
+               "H*, gap, rows, SHA3 digest, coverage blocker; "
+               "key=<64-hex txid> -> {height, block_hash, tx_n} or a soft "
+               "'txindex behind: cursor=H' when the fold hasn't reached it",
+               "projection", "projection",
+               "app/services/src/txindex_projection_service.c",
+               "persisted_projection_snapshot", "bounded_lookup",
+               "64-hex txid", "<64-hex txid>",
+               "<64-hex txid>",
+               "lib/test/src/test_txindex_projection.c", true),
     DIAG_SERVICE("soak", soak_dump_state_json,
                  "soak attestation log: lines_written, last_ts, "
                  "last_healthy, rotations, write_failures, file_bytes",
