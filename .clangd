@@ -1,0 +1,49 @@
+# clangd configuration for ZClassic23.
+#
+# The authoritative compile commands live in compile_commands.json at the repo
+# root, generated from the real dev-object recipes by `make compdb` (alias for
+# `make agent-index`, see tools/dev/generate-compdb.sh). Every node TU parses
+# clean under clangd 20 with zero diagnostics. This file only covers what the
+# database cannot: out-of-database flag fallback, diagnostic noise tuning, and
+# indexing. Validated against clangd 20 (`clangd --check=<file>`).
+
+Index:
+  # Persist the project-wide index under .cache/clangd/ (gitignored) so
+  # cross-references work on first open, no warm-up pass. (This is clangd's
+  # default for LSP sessions; stated here so it survives config changes.)
+  Background: Build
+
+Diagnostics:
+  Suppress:
+    # Every compdb command carries GCC-only -Wno-* flags
+    # (-Wno-stringop-overflow, -Wno-format-truncation, -Wno-maybe-uninitialized).
+    # clangd ignores them until a TU emits any other diagnostic, then floods
+    # it with unknown-warning-option noise on top.
+    - unknown-warning-option
+    - unused-command-line-argument
+
+---
+# Node sources missing from compile_commands.json (not in the dev-object
+# graph: src/cli.c, examples/, fuzz harnesses, vendored C) get a minimal
+# working flag set on top of clangd's bare fallback. Relative -I paths
+# resolve against this file's directory.
+If:
+  PathMatch: [src/cli\.c, examples/.*, tools/fuzz/.*, vendor/.*]
+CompileFlags:
+  Add:
+    - -std=c23
+    - -Wall
+    - -Wextra
+    - -D_POSIX_C_SOURCE=200809L
+    - -Ivendor/include
+    - -Ilib/util/include
+    - -Ilib/crypto/include
+    - -Isdk/include
+    - -Iports/include
+
+---
+# Third-party vendored code: not ours to diagnose.
+If:
+  PathMatch: vendor/.*
+Diagnostics:
+  Suppress: "*"

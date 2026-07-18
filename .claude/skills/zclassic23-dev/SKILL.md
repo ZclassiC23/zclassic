@@ -33,6 +33,8 @@ Before you Read a file or `grep`, ask the in-tree **code navigator** (`lib/codei
 
 The index is derived and read-only. The current efficient loop is **`code sym`/`code refs` to understand (cheap) → `Edit` the `.c` → the watcher builds+tests in verify-only mode → `dev status` to confirm → preserve the candidate evidence for review.** Runtime publication is contained; a green verdict does not change a running generation.
 
+**Editor/agent LSP (clangd):** `make compdb` regenerates the gitignored root `compile_commands.json` from the exact dev-object recipes (~25 s). The root `.clangd` adds the C23 fallback flags for out-of-database files (`src/cli.c`, `examples/`, fuzz, `vendor/`), suppresses GCC-only `-Wno-*` noise, and keeps the background index on disk (`.cache/clangd/`). It complements the navigator — navigator for cheap exact symbol/refs queries, clangd for editor hover/rename/diagnostics. Sanity-check one TU with `clangd --check=<file> --compile-commands-dir=.`.
+
 ## Develop fast — the native dev loop (this is how you stay efficient)
 
 The platform exists so you **drop in C and let the machine classify, build, and test it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
