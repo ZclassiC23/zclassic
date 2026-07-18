@@ -24,6 +24,7 @@
 #include "test/test_helpers.h"
 
 #include "jobs/address_index.h"
+#include "jobs/txindex_projection.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/catalog_completeness.h"
@@ -77,13 +78,17 @@ int test_catalog_completeness(void)
     printf("\n=== catalog_completeness tests ===\n");
     int failures = 0;
 
-    /* address_index is now ON by default (omniscience). This test exercises the
-     * DISABLED path explicitly (cursor unavailable -> excluded from worst_lag),
-     * so force -addressindex=0 and reset the cached gate deterministically. */
+    /* address_index + txindex are both ON by default (omniscience). This test
+     * exercises the DISABLED path explicitly (cursor unavailable -> excluded
+     * from worst_lag), so force both off and reset the cached gates
+     * deterministically. zslp_ledger degrades to disabled on its own here (no
+     * app runtime / node.db wired in this bare test process, like
+     * op_return_index). */
     {
-        const char *offargs[] = { "test", "-addressindex=0" };
-        ParseParameters(2, offargs);
+        const char *offargs[] = { "test", "-addressindex=0", "-txindex=0" };
+        ParseParameters(3, offargs);
         address_index_enabled_reset_for_test();
+        txindex_projection_enabled_reset_for_test();
     }
 
     /* ── scenario A: from-genesis (activation_cursor=0) shielded stores
@@ -166,6 +171,22 @@ int test_catalog_completeness(void)
                      ai_row && ai_row->cursor == 0 && ai_row->lag == 0);
             CC_CHECK("scenario A: address_index always_on==false",
                      ai_row && !ai_row->always_on);
+
+            /* txindex: forced -txindex=0 -> disabled path (excluded from lag). */
+            const struct catalog_index_status *tx_row =
+                cc_find(rows, n, "txindex");
+            CC_CHECK("scenario A: txindex disabled (-txindex=0)",
+                     tx_row && !tx_row->enabled);
+            CC_CHECK("scenario A: txindex disabled -> cursor=0 lag=0",
+                     tx_row && tx_row->cursor == 0 && tx_row->lag == 0);
+
+            /* zslp_ledger: no app runtime / node.db -> disabled path. */
+            const struct catalog_index_status *zslp_row =
+                cc_find(rows, n, "zslp_ledger");
+            CC_CHECK("scenario A: zslp_ledger disabled (no app runtime)",
+                     zslp_row && !zslp_row->enabled);
+            CC_CHECK("scenario A: zslp_ledger disabled -> cursor=0 lag=0",
+                     zslp_row && zslp_row->cursor == 0 && zslp_row->lag == 0);
 
             /* no app runtime wired in this bare test process -> these
              * degrade gracefully instead of dereferencing a NULL node_db. */
@@ -321,6 +342,99 @@ int test_catalog_completeness(void)
         size_t n2 = catalog_completeness_snapshot(two, 2, 100);
         CC_CHECK("snapshot: max<registered truncates to exactly max",
                  n2 == 2);
+    }
+
+    /* ── catalog_completeness_worst_over: pure "which index is over the
+     * threshold" selector ────────────────────────────────────────────── */
+    {
+        struct catalog_index_status rows[4];
+        memset(rows, 0, sizeof(rows));
+        rows[0] = (struct catalog_index_status){
+            .name = "a", .cursor = 10, .target = 5000, .lag = 4990,
+            .enabled = true};
+        rows[1] = (struct catalog_index_status){
+            .name = "b", .cursor = 4999, .target = 5000, .lag = 1,
+            .enabled = true};                        /* under threshold */
+        rows[2] = (struct catalog_index_status){
+            .name = "c", .cursor = 0, .target = 5000, .lag = 5000,
+            .enabled = false};                       /* disabled: skipped */
+        rows[3] = (struct catalog_index_status){
+            .name = "d", .cursor = 3000, .target = 5000, .lag = 2000,
+            .enabled = true};
+
+        const struct catalog_index_status *w =
+            catalog_completeness_worst_over(rows, 4, 1000);
+        CC_CHECK("worst_over: picks max ENABLED lag over threshold ('a')",
+                 w && w->name && strcmp(w->name, "a") == 0);
+        CC_CHECK("worst_over: disabled row never wins",
+                 catalog_completeness_worst_over(rows, 4, 1000) != &rows[2]);
+        CC_CHECK("worst_over: threshold above all enabled -> NULL",
+                 catalog_completeness_worst_over(rows, 4, 100000) == NULL);
+        CC_CHECK("worst_over: NULL rows -> NULL",
+                 catalog_completeness_worst_over(NULL, 4, 0) == NULL);
+    }
+
+    /* ── catalog_completeness_verdict: the omniscience classifier ─────── */
+    {
+        struct catalog_index_status caught_up[2];
+        memset(caught_up, 0, sizeof(caught_up));
+        caught_up[0] = (struct catalog_index_status){
+            .name = "x", .cursor = 100, .target = 100, .lag = 0,
+            .enabled = true};
+        caught_up[1] = (struct catalog_index_status){
+            .name = "y", .cursor = 0, .target = 100, .lag = 999,
+            .enabled = false};                        /* disabled: ignored */
+
+        char v[96];
+        /* omniscient: all enabled caught up, peers >= floor, census fresh. */
+        enum catalog_verdict r =
+            catalog_completeness_verdict(caught_up, 2, /*peers*/3, /*floor*/3,
+                                         /*census_age*/30, /*max*/900, v,
+                                         sizeof(v));
+        CC_CHECK("verdict: all caught up + peers ok + census fresh -> omniscient",
+                 r == CATALOG_VERDICT_OMNISCIENT && strcmp(v, "omniscient") == 0);
+
+        /* blocked dominates even when peers/census are also bad. */
+        struct catalog_index_status lag_rows[1];
+        memset(lag_rows, 0, sizeof(lag_rows));
+        lag_rows[0] = (struct catalog_index_status){
+            .name = "txindex", .cursor = 4200, .target = 5000, .lag = 800,
+            .enabled = true};
+        r = catalog_completeness_verdict(lag_rows, 1, /*peers*/0, /*floor*/3,
+                                         /*census_age*/-1, /*max*/900, v,
+                                         sizeof(v));
+        CC_CHECK("verdict: lagging index -> blocked:<name>@<cursor> (dominates)",
+                 r == CATALOG_VERDICT_BLOCKED &&
+                     strcmp(v, "blocked:txindex@4200") == 0);
+
+        /* degraded:peers when caught up but below the peer floor. */
+        r = catalog_completeness_verdict(caught_up, 2, /*peers*/1, /*floor*/3,
+                                         /*census_age*/30, /*max*/900, v,
+                                         sizeof(v));
+        CC_CHECK("verdict: peers below floor -> degraded:peers",
+                 r == CATALOG_VERDICT_DEGRADED &&
+                     strcmp(v, "degraded:peers") == 0);
+
+        /* degraded:census when there has been no sweep yet (age < 0). */
+        r = catalog_completeness_verdict(caught_up, 2, /*peers*/3, /*floor*/3,
+                                         /*census_age*/-1, /*max*/900, v,
+                                         sizeof(v));
+        CC_CHECK("verdict: no census sweep (age<0) -> degraded:census",
+                 r == CATALOG_VERDICT_DEGRADED &&
+                     strcmp(v, "degraded:census") == 0);
+
+        /* degraded:census when the last sweep is older than the bound. */
+        r = catalog_completeness_verdict(caught_up, 2, /*peers*/3, /*floor*/3,
+                                         /*census_age*/2000, /*max*/900, v,
+                                         sizeof(v));
+        CC_CHECK("verdict: stale census (age>max) -> degraded:census",
+                 r == CATALOG_VERDICT_DEGRADED &&
+                     strcmp(v, "degraded:census") == 0);
+
+        /* NULL out buffer tolerated (enum still returned). */
+        r = catalog_completeness_verdict(caught_up, 2, 3, 3, 30, 900, NULL, 0);
+        CC_CHECK("verdict: NULL out buffer -> still classifies omniscient",
+                 r == CATALOG_VERDICT_OMNISCIENT);
     }
 
     printf("catalog_completeness: %d failures\n", failures);

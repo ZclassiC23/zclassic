@@ -217,4 +217,12 @@ bool unhealthy_dump_state_json(struct json_value *out, const char *key);
  * nothing new. */
 bool network_dump_state_json(struct json_value *out, const char *key);
 
+/* diagnostics_omniscience.c — the "omniscience" g_dumpers[] entry: the
+ * capstone one-call verdict on whether the node knows everything it should.
+ * Composes the catalog_completeness per-index lag table (against reducer H*),
+ * the handshaked-peer count + time-to-first-peer, and the network-census
+ * freshness into a single {verdict, per-index array, worst_lag, ...} object.
+ * Read-only composition over existing accessors. */
+bool omniscience_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_DIAGNOSTICS_INTERNAL_H */

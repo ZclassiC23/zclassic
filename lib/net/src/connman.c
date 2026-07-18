@@ -81,6 +81,41 @@ static _Atomic size_t g_reactor_npfds_high_water        = 0;
 static _Atomic size_t g_reactor_configured_listen_sockets = 0;
 static _Atomic int    g_reactor_configured_max_connections = 0;
 
+/* Time-to-first-handshaked-peer telemetry (omniscience surface). connman_start()
+ * stamps g_connman_start_us with a monotonic epoch; the FIRST fully-handshaked
+ * peer records now-epoch into g_first_peer_us (delta stored directly, 0 = "none
+ * yet"). Both are process-wide (a single connman per process, matching the
+ * g_reactor_* globals above). */
+static _Atomic int64_t g_connman_start_us = 0;   /* 0 = connman not started */
+static _Atomic int64_t g_first_peer_us    = 0;   /* delta us; 0 = no peer yet */
+
+void connman_note_first_handshaked_peer(void)
+{
+    int64_t start = atomic_load(&g_connman_start_us);
+    if (start == 0)
+        return;                  /* connman not started (e.g. a bare unit test) */
+    int64_t expected = 0;
+    if (atomic_load(&g_first_peer_us) != 0)
+        return;                  /* already recorded — first peer only */
+    int64_t delta = platform_time_monotonic_us() - start;
+    if (delta <= 0)
+        delta = 1;               /* keep 0 reserved for "none yet" */
+    (void)atomic_compare_exchange_strong(&g_first_peer_us, &expected, delta);
+}
+
+int64_t connman_time_to_first_peer_us(void)
+{
+    return atomic_load(&g_first_peer_us);
+}
+
+#ifdef ZCL_TESTING
+void connman_ttfp_reset_for_testing(void)
+{
+    atomic_store(&g_connman_start_us, 0);
+    atomic_store(&g_first_peer_us, 0);
+}
+#endif
+
 void connman_get_reactor_stats(struct connman_reactor_stats *out)
 {
     if (!out) return;
@@ -2285,6 +2320,10 @@ bool connman_start(struct connman *cm)
     if (cm->started)
         return true;
 
+    /* Stamp the time-to-first-peer epoch before any dial can complete a
+     * handshake (connman_note_first_handshaked_peer measures against this). */
+    atomic_store(&g_connman_start_us, platform_time_monotonic_us());
+
     /* Initialize per-peer bandwidth quotas from env vars. */
     if (!g_peer_bw_active) {
         peer_bandwidth_init(&g_peer_bw);
@@ -2772,6 +2811,25 @@ size_t connman_outbound_healthy_count(struct connman *cm)
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
     return healthy;
+}
+
+size_t connman_handshaked_peer_count(struct connman *cm)
+{
+    if (!cm) return 0;
+    size_t n = 0;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        const struct p2p_node *p = cm->manager.nodes[i];
+        if (p && !p->disconnect && p->state >= PEER_HANDSHAKE_COMPLETE)
+            n++;
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return n;
+}
+
+struct addr_man *connman_addrman(struct connman *cm)
+{
+    return cm ? &cm->manager.addrman : NULL;
 }
 
 int connman_max_peer_height(struct connman *cm)

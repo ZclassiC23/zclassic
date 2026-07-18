@@ -207,6 +207,29 @@ size_t connman_get_node_count(const struct connman *cm);
  * slot-burning peers from peers actually able to serve us blocks. */
 size_t connman_outbound_healthy_count(struct connman *cm);
 
+/* Total peers (inbound + outbound) currently in PEER_HANDSHAKE_COMPLETE or
+ * later and not marked for disconnect. Distinct from
+ * connman_outbound_healthy_count (outbound + NODE_NETWORK only): this is the
+ * whole handshaked-peer population the omniscience surface reports. */
+size_t connman_handshaked_peer_count(struct connman *cm);
+
+/* The connection manager's address table (peers.dat), READ-only for the
+ * network crawler seed. Returns NULL for a NULL connman. */
+struct addr_man *connman_addrman(struct connman *cm);
+
+/* Time-to-first-handshaked-peer telemetry. connman_start() stamps a monotonic
+ * epoch; the FIRST fully-handshaked peer (any direction) records now-epoch.
+ * connman_time_to_first_peer_us() returns that delta in microseconds, or 0 if
+ * no peer has completed a handshake yet.
+ * connman_note_first_handshaked_peer() is the single record hook (called from
+ * peer_lifecycle_note_handshake_complete): idempotent (only the first
+ * post-epoch call records) and a no-op before connman_start() has run. */
+int64_t connman_time_to_first_peer_us(void);
+void    connman_note_first_handshaked_peer(void);
+#ifdef ZCL_TESTING
+void    connman_ttfp_reset_for_testing(void);
+#endif
+
 /* Return the highest starting_height among handshaked, non-disconnecting
  * NODE_NETWORK peers, or -1 if no usable block-serving peer is present. */
 int connman_max_peer_height(struct connman *cm);

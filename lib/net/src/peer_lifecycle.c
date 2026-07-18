@@ -663,6 +663,12 @@ void peer_lifecycle_note_handshake_complete(const struct p2p_node *node)
     }
     if (zcl23) g_pl.totals.zcl23_handshakes++;
     pthread_mutex_unlock(&g_pl.lock);
+
+    /* Omniscience time-to-first-peer: this is the single production choke point
+     * every completed handshake passes through (msg_version.c inbound + outbound
+     * + verack). Idempotent + a no-op before connman_start(). */
+    connman_note_first_handshaked_peer();
+
     if (node) {
         event_emitf(EV_PEER_HANDSHAKE_SUCCESS, (uint32_t)node->id,
                     "addr=%s duration=%llds services=%llu subver=%s",

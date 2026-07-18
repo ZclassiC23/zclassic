@@ -91,4 +91,39 @@ size_t catalog_completeness_snapshot(struct catalog_index_status *out,
 int64_t catalog_completeness_worst_lag(const struct catalog_index_status *rows,
                                        size_t n);
 
+/* The single ENABLED row with the largest lag STRICTLY greater than
+ * `threshold`, or NULL if no enabled row exceeds it (disabled rows carry no lag
+ * signal and are skipped). Ties resolve to the first such row. Pure — no store
+ * access — so the catalog_lag_exceeded condition and its unit test share one
+ * definition of "which index is over the line". NULL rows / n==0 -> NULL. */
+const struct catalog_index_status *catalog_completeness_worst_over(
+    const struct catalog_index_status *rows, size_t n, int64_t threshold);
+
+/* The omniscience verdict — a single classification over a completeness
+ * snapshot PLUS the node's live network posture. */
+enum catalog_verdict {
+    CATALOG_VERDICT_OMNISCIENT = 0, /* every enabled index caught up, peers at
+                                     * or above floor, census fresh */
+    CATALOG_VERDICT_BLOCKED,        /* an enabled index is lagging */
+    CATALOG_VERDICT_DEGRADED,       /* peers below floor, or census stale */
+};
+
+/* Classify `rows[0..n)` against the network posture and write a stable verdict
+ * string into `out` (never overflows `out_cap`; safe with out==NULL/out_cap==0,
+ * which just skips the string). Precedence: a lagging index (BLOCKED) dominates
+ * a degraded P2P/census layer.
+ *   - "omniscient"           — all enabled indexes lag==0, handshaked_peers >=
+ *                              peer_floor, and census is fresh
+ *   - "blocked:<index>@<h>"  — the worst lagging enabled index (h = its cursor)
+ *   - "degraded:peers"       — handshaked_peers < peer_floor
+ *   - "degraded:census"      — census_age_s < 0 (no sweep yet) or
+ *                              census_age_s > census_max_age_s (stale)
+ * census_age_s < 0 means "no sweep recorded yet". Returns the enum regardless
+ * of whether a string buffer was supplied. Pure — testable without a node. */
+enum catalog_verdict catalog_completeness_verdict(
+    const struct catalog_index_status *rows, size_t n,
+    int handshaked_peers, int peer_floor,
+    int64_t census_age_s, int64_t census_max_age_s,
+    char *out, size_t out_cap);
+
 #endif /* STORAGE_CATALOG_COMPLETENESS_H */
