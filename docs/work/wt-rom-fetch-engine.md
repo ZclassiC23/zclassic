@@ -112,18 +112,37 @@ message is a future serve-side addition, out of this lane's budget.
    `lib/test/src/test_parallel.c`: directory parse (valid/malformed/bounds),
    verify_file (pass, wrong whole digest, wrong chunk_root, short file,
    multi-chunk fold) — all on `mkdtemp()` fixtures, no network.
-3. **Next session (not done yet):**
+3. **Landed (session 2):**
    - loopback E2E test: `fs_server_start` on a mkdtemp datadir +
-     `rom_seed_register` a synthetic bundle + `rom_fetch_download` from
-     127.0.0.1 — proves the client against the real serve path;
-   - `ops.debug.rom_fetch.*` native commands (status/fetch with explicit
-     `--peer/--root/--whole-sha3/--size` commit input; later a discovery mode
-     over `file_market` offers / onion directory) + `dumpstate rom_fetch`
-     per the "Adding state introspection" convention;
-   - resume (per-chunk presence/SHA3 spot-check like
-     `fs_client_sync`'s skip logic), parallel multi-seeder chunk scheduling,
-     progress counters.
-4. **Explicitly out of scope:** `core/chainparams/*` (keystone bake conflict —
+     `rom_seed_register` a synthetic bundle + fetch from 127.0.0.1 through
+     the real serve path — proves the zero-root handshake, counter
+     alignment, chunk MAC, the verify+rename driver, the no-partial-trust
+     discard, and clean failure on an unknown chunk_root;
+   - fetch status/stats (`rom_fetch_status_snapshot`) +
+     `rom_fetch_dump_state_json`, registered as `dumpstate rom_fetch`
+     (diagnostics_dumpers.def);
+   - `ops.debug.rom_fetch.{status,bundle}` native commands
+     (app/controllers/src/rom_fetch_controller.c): `bundle` is owner-auth
+     and takes the expected `(root, whole_sha3, size)` as explicit input;
+     Law-7 disposition `exempt` (no artifact install — activation is the
+     separate receipt-gated `-install-consensus-bundle` path);
+   - parallel multi-seeder scheduling: `rom_fetch_download_parallel`
+     (bounded joined worker pool, shared chunk queue, per-chunk
+     round-robin retry across ALL peers before failure); the `bundle`
+     leaf accepts a comma-separated `peer` list.
+4. **Next (not done yet):**
+   - resume (per-chunk presence/SHA3 spot-check like `fs_client_sync`'s
+     skip logic) so an interrupted 513 MB fetch does not restart;
+   - discovery mode: pick up the manifest from `file_market` gossip offers
+     / a peer's onion `/directory.json` (the parser is landed) instead of
+     requiring explicit operator digests — still committing the digest
+     BEFORE fetching;
+   - live-network copy-prove of the real 513 MB bundle against a seeding
+     node, then the runbook line pairing `ops.debug.rom_fetch.bundle` with
+     `-install-consensus-bundle`;
+   - keep-alive chunk streaming (multiple FS_REQUESTs per connection)
+     if profiling shows handshake overhead matters at 129 chunks.
+5. **Explicitly out of scope:** `core/chainparams/*` (keystone bake conflict —
    the unmerged `lane/rom-keystone` commit 767bd652f owns
    `core/chainparams/src/checkpoints.c`; this lane takes the expected digest
    as input instead of baking it), any change to the merged serve path, any
@@ -131,10 +150,15 @@ message is a future serve-side addition, out of this lane's budget.
 
 ## Verification
 
-- `make build-only -j32`: green (rom_fetch.o compiled into the node objects).
-- `build/bin/test_parallel --only=rom_fetch`: PASS (3/3 test fns — manifest
-  sanity, directory parse, whole-file verify vs `rom_seed_register` digests
-  incl. all fail-closed mismatch paths).
-- `build/bin/test_parallel --only=rom_seed`: PASS (3/3 neighbor groups —
-  rom_seed, rom_seed_policy, rom_seed_ledger — unbroken).
-- No live-network fetch in this session; the E2E loopback test is step 3.
+- `make build-only -j32`: green (rom_fetch.o + rom_fetch_controller.o).
+- `build/bin/test_parallel --only=rom_fetch`: PASS (5/5 test fns —
+  manifest sanity, directory parse, whole-file verify vs
+  `rom_seed_register` digests, loopback E2E, parallel scheduling).
+- Neighbors green: `--only=rom_seed` (3/3), `--only=command` (3/3, incl.
+  the branch-menu budget + catalog invariants for the two new leaves),
+  `--only=health_rollup`, `--only=file_controller`, `--only=operator_ux`,
+  `--only=native_api`.
+- `make lint`: all gates green (87 gates; Law-7 disposition added for
+  `ops.debug.rom_fetch.bundle`; thread-supervision marker on the worker
+  spawn; DOC-COUNTS test_groups 666 → 667).
+- No live-network fetch yet; the loopback E2E runs the real serve path.
