@@ -18,9 +18,12 @@
  * minority in the wider crawled network, that is an eclipse indicator the
  * own-peer monitor cannot see.
  *
- * OPT-IN: it dials the public network, so it is OFF unless ZCL_NETWORK_CRAWLER=1
- * (or -netcrawl). When off, the supervised worker still registers and idles
- * (named degradation, never a boot failure).
+ * ON BY DEFAULT (omniscience directive: the node obsesses about knowing the
+ * whole network). It is opt-OUT: `-netcrawl=0` / `-nonetcrawl` or
+ * ZCL_NETWORK_CRAWLER=0 fully disables the dialer. The rate limits below
+ * (bounded probe batch on short-lived measurement sockets outside connman)
+ * keep always-on cost tiny. When off, the supervised worker still registers
+ * and idles (named degradation, never a boot failure).
  *
  * The per-address dialer is behind an injectable probe_fn seam so the census
  * fold is unit-tested hermetically with synthetic results — no real sockets.
@@ -128,7 +131,7 @@ bool network_crawler_default_probe(const struct net_address *addr,
 
 /* ── Runtime lifecycle ──────────────────────────────────────────────── */
 struct network_crawler_config {
-    bool enabled;               /* off unless ZCL_NETWORK_CRAWLER=1 / -netcrawl */
+    bool enabled;               /* ON by default; -netcrawl=0 / ZCL_NETWORK_CRAWLER=0 opts out */
     int  round_interval_secs;
     int  max_per_round;
     int  max_concurrent;

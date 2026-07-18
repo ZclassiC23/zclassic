@@ -7,13 +7,17 @@
 
 #include "core/uint256.h"
 #include "encoding/utilstrencodings.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/txindex_projection.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "services/index_fold_guard.h"
 #include "services/txindex_projection_service.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -44,21 +48,38 @@ int test_txindex_projection(void)
     sqlite3 *db = progress_store_db();
     TI_CHECK("db handle", db != NULL);
 
-    /* Opt-in default: with no -txindex arg the projection service is OFF and the
-     * boot registration + a service tick are no-ops — a default boot pays zero
-     * cost and writes no projection rows. */
-    TI_CHECK("disabled by default", !txindex_projection_enabled());
-    TI_CHECK("register no-op when disabled",
-             !txindex_projection_service_register() &&
-             !txindex_projection_service_registered());
-    TI_CHECK("tick no-op when disabled",
-             txindex_projection_service_tick_once() == 0);
+    /* OMNISCIENCE default: with no -txindex arg the projection service is ON so
+     * a plain boot builds the tx-location catalog. */
     {
+        const char *noargs[] = { "test" };
+        ParseParameters(1, noargs);
+        txindex_projection_enabled_reset_for_test();
+        TI_CHECK("enabled by default (omniscience)",
+                 txindex_projection_enabled());
+    }
+    /* Off-switch: -txindex=0 fully disables; registration + a service tick are
+     * clean no-ops that write no projection rows. */
+    {
+        const char *offargs[] = { "test", "-txindex=0" };
+        ParseParameters(2, offargs);
+        txindex_projection_enabled_reset_for_test();
+        TI_CHECK("-txindex=0 disables", !txindex_projection_enabled());
+        TI_CHECK("register no-op when disabled",
+                 !txindex_projection_service_register() &&
+                 !txindex_projection_service_registered());
+        TI_CHECK("tick no-op when disabled",
+                 txindex_projection_service_tick_once() == 0);
         uint8_t any[32]; memset(any, 0x11, 32);
         int64_t h = 0, n = 0, c = 0; uint8_t bh[32];
         TI_CHECK("read_locate DISABLED when off",
                  txindex_projection_read_locate(any, &h, bh, &n, &c) ==
                  TXINDEX_READ_DISABLED);
+    }
+    /* Restore default-on (arg cleared) for the rest of the test. */
+    {
+        const char *noargs[] = { "test" };
+        ParseParameters(1, noargs);
+        txindex_projection_enabled_reset_for_test();
     }
 
     /* Cursor read before schema exists is a clean cursor=-1 (not an error). */
@@ -211,8 +232,8 @@ int test_txindex_projection(void)
         TI_CHECK("dump status returns true",
                  txindex_dump_state_json(&out, NULL));
         TI_CHECK("dump status has rows key", json_get(&out, "rows") != NULL);
-        TI_CHECK("dump status enabled=false (no -txindex)",
-                 !json_get_bool(json_get(&out, "enabled")));
+        TI_CHECK("dump status enabled=true (omniscience default)",
+                 json_get_bool(json_get(&out, "enabled")));
         json_free(&out);
 
         /* keyed hit: CB is folded at height 100 (cursor 101 >= H*=0 in test). */
@@ -255,6 +276,45 @@ int test_txindex_projection(void)
                  txindex_dump_state_json(&out, "not-a-txid") &&
                  json_get(&out, "error") != NULL);
         json_free(&out);
+    }
+
+    /* ── backfill safety rails (index_fold_guard, txindex-named) ──── */
+    {
+        blocker_reset_for_testing();
+
+        /* Disk precheck raises a txindex.disk_low RESOURCE blocker below floor. */
+        index_fold_set_min_free_for_test(INT64_MAX);
+        TI_CHECK("disk_ok false when below floor",
+                 !index_fold_disk_ok("txindex", "txindex", dir));
+        TI_CHECK("txindex.disk_low raised (RESOURCE)",
+                 blocker_exists("txindex.disk_low") &&
+                 blocker_class_for("txindex.disk_low") == BLOCKER_RESOURCE);
+        index_fold_set_min_free_for_test(0);
+        TI_CHECK("disk_ok true after recovery clears disk_low",
+                 index_fold_disk_ok("txindex", "txindex", dir) &&
+                 !blocker_exists("txindex.disk_low"));
+        index_fold_set_min_free_for_test(-1);   /* restore default */
+
+        /* Seed floor: below the installed snapshot seed raises a DEPENDENCY. */
+        {
+            int64_t base = 2000;
+            uint8_t blob[8];
+            for (int i = 0; i < 8; i++)
+                blob[i] = (uint8_t)((uint64_t)base >> (8 * i));
+            TI_CHECK("write trusted_base_height=2000",
+                     progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                       blob, sizeof(blob)));
+        }
+        index_fold_note_absent_body("txindex", "txindex", db, 1000);
+        TI_CHECK("below-seed raises txindex.below_snapshot_seed (DEPENDENCY)",
+                 blocker_exists("txindex.below_snapshot_seed") &&
+                 blocker_class_for("txindex.below_snapshot_seed") ==
+                 BLOCKER_DEPENDENCY);
+        index_fold_note_absent_body("txindex", "txindex", db, 3000);
+        TI_CHECK("above-seed clears txindex.below_snapshot_seed",
+                 !blocker_exists("txindex.below_snapshot_seed"));
+
+        blocker_reset_for_testing();
     }
 
     /* cleanup */

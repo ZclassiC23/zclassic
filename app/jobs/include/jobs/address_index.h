@@ -34,9 +34,14 @@ struct block;
 struct json_value;
 typedef struct sqlite3 sqlite3;
 
-/* -addressindex opt-in (matches -txindex's pattern). Cached after first read.
- * Default false: a plain boot registers NO service and writes NO rows. */
+/* -addressindex gate (matches -txindex's pattern). Cached after first read.
+ * OMNISCIENCE default TRUE: a plain boot builds the script-appearance catalog.
+ * Opt OUT with -addressindex=0, which registers NO service and writes NO rows. */
 bool address_index_enabled(void);
+
+/* Test-only: clear the cached -addressindex decision so a test can flip the arg
+ * (via ParseParameters) and re-observe the gate. Safe to call anytime. */
+void address_index_enabled_reset_for_test(void);
 
 /* Canonical appearance key: sha3_256 over the raw scriptPubKey bytes. Total
  * function — every output maps to exactly one 32-byte scripthash. */
