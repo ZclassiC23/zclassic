@@ -891,6 +891,14 @@ int main(int argc, char **argv)
             if (results[i].out_path[0])
                 printf(" log=%s", results[i].out_path);
             printf("\n");
+            /* Exact focused rerun for this group — no whole-group wait.
+             * Params-heavy groups (Groth16 proving; normally gated out
+             * unless ZCL_PARAMS_TESTS/--only opted in) need the same env
+             * opt-in on the rerun. */
+            printf("      repro: %smake t-fast ONLY=%s\n",
+                   group_is_params_heavy(g_groups[i].name)
+                       ? "ZCL_PARAMS_TESTS=1 " : "",
+                   g_groups[i].name);
         }
     }
 
