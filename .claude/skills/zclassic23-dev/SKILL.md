@@ -129,6 +129,12 @@ The interface is the native registry: `zclassic23 <path>` under `core.*` / `app.
 `discover help` / `discover search <q>`. Add introspection by registering one `*_dump_state_json` in
 `app/controllers/src/diagnostics_registry.c` — no new command needed.
 
+Postmortem fast path: `zclassic23 ops debug bundle` writes ONE JSON (every dumper + build identity +
+supervisor stalls) to `<datadir>/debug-bundle-<utc>.json` — also auto-written, rate-limited, when the
+supervisor detects a stall. Don't scroll 100+KB of JSON:
+`python3 tools/scripts/debug_bundle_triage.py <datadir|bundle.json>` prints the one-screen triage
+(H*/floor/gap, coins vs H*, top blockers + repair owners, stalled supervisor children, likely story).
+
 ## Hosting & recovering the clearnet block explorer
 
 The node **is its own HTTPS server** (`lib/net/src/https_server.c`) — no nginx/proxy.
