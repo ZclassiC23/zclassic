@@ -78,6 +78,9 @@
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 #define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
     "test-tmp/_pre_push_hook_fixture_tmp"
+#define GIT_HOOKS_PRECOMMIT_REL "tools/githooks/pre-commit"
+#define GIT_HOOKS_PRECOMMIT_FIXTURE_REL \
+    "test-tmp/_pre_commit_hook_fixture_tmp"
 
 static int run_gate_script(const char *script_rel, const char *mode);
 
@@ -1115,6 +1118,14 @@ static int run_git_hooks_gate_with_file(const char *hook_path)
         "ZCL_GIT_HOOK_FILE_FOR_TEST", hook_path);
 }
 
+static int run_git_hooks_gate_with_precommit_file(const char *hook_path)
+{
+    return run_gate_script_with_env2(
+        GIT_HOOKS_SCRIPT_REL,
+        "ZCL_GIT_HOOKS_PATH_FOR_TEST", "tools/githooks",
+        "ZCL_GIT_HOOK_PRECOMMIT_FILE_FOR_TEST", hook_path);
+}
+
 static int t_git_hooks_gate_enforces_tracked_pre_push(void)
 {
     int failures = 0;
@@ -1159,6 +1170,51 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
     }
 
     TEST("[lint-gate] local pre-push hook gate rejects no-op hook body") {
+        ASSERT(read_ok);
+        ASSERT(planted_good);
+        ASSERT(original_rc == 0);
+        ASSERT(wrote_noop);
+        ASSERT(noop_rc != 0);
+        PASS();
+    } _test_next:;
+
+    free(orig);
+    return failures;
+}
+
+static int t_git_hooks_gate_rejects_noop_pre_commit(void)
+{
+    int failures = 0;
+    char hook_path[PATH_MAX], fixture_path[PATH_MAX];
+    char *orig = NULL;
+    int resolved = repo_path(hook_path, sizeof(hook_path),
+                             GIT_HOOKS_PRECOMMIT_REL);
+    int fixture_resolved = repo_path(fixture_path, sizeof(fixture_path),
+                                     GIT_HOOKS_PRECOMMIT_FIXTURE_REL);
+    int read_ok = (resolved == 0 && fixture_resolved == 0 &&
+                   read_entire_file(hook_path, &orig) == 0);
+    int planted_good = 0;
+    int original_rc = -1;
+    int wrote_noop = 0;
+    int noop_rc = -1;
+
+    if (read_ok) {
+        (void)unlink(fixture_path);
+        planted_good = (write_file(fixture_path, orig) == 0 &&
+                        chmod(fixture_path, 0755) == 0);
+        if (planted_good)
+            original_rc = run_git_hooks_gate_with_precommit_file(fixture_path);
+        wrote_noop = (write_file(fixture_path,
+                      "#!/usr/bin/env bash\n"
+                      "# fixture: no main-checkout lane guard\n"
+                      "exit 0\n") == 0 &&
+                      chmod(fixture_path, 0755) == 0);
+        if (wrote_noop)
+            noop_rc = run_git_hooks_gate_with_precommit_file(fixture_path);
+        (void)unlink(fixture_path);
+    }
+
+    TEST("[lint-gate] local pre-commit hook gate rejects no-op hook body") {
         ASSERT(read_ok);
         ASSERT(planted_good);
         ASSERT(original_rc == 0);
@@ -8078,6 +8134,7 @@ int test_make_lint_gates(void)
     failures += t_markdown_links_gate();
     failures += t_git_hooks_gate_enforces_tracked_pre_push();
     failures += t_git_hooks_gate_rejects_noop_pre_push();
+    failures += t_git_hooks_gate_rejects_noop_pre_commit();
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();

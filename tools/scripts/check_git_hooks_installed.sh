@@ -77,4 +77,31 @@ if ! grep -qE '\$CMD[[:space:]]*>[[:space:]]*"\$LOG_FILE"[[:space:]]+2>&1' "$hoo
     exit 1
 fi
 
+# The pre-commit main-checkout lane guard is armed by the same hooksPath and
+# must still carry its guard: refuse a non-main-branch commit in the MAIN
+# checkout (git-dir == git-common-dir), allow worktrees and main itself, and
+# keep the ZCL_LANE_COMMIT_OK deliberate-override valve. Self-tests point the
+# override at an isolated fixture, same convention as the pre-push check above.
+precommit="${ZCL_GIT_HOOK_PRECOMMIT_FILE_FOR_TEST:-$want/pre-commit}"
+if [[ ! -x "$precommit" ]]; then
+    echo "check_git_hooks_installed: FAIL — $precommit is missing or not executable" >&2
+    echo "  Run: chmod +x $precommit && make install-hooks" >&2
+    exit 1
+fi
+
+if ! awk '
+    /^[[:space:]]*#/ { next }
+    /ZCL_LANE_COMMIT_OK/ { override=1 }
+    /--absolute-git-dir/ { gitdir=1 }
+    /--git-common-dir/ { common=1 }
+    /git symbolic-ref --short/ { branch=1 }
+    /git worktree add \.claude\/worktrees/ { howto=1 }
+    /exit 1/ { refuses=1 }
+    END { exit !(override && gitdir && common && branch && howto && refuses) }
+' "$precommit"; then
+    echo "check_git_hooks_installed: FAIL — $precommit does not carry the main-checkout lane guard" >&2
+    echo "  Restore the tracked pre-commit hook or run: git checkout -- $precommit" >&2
+    exit 1
+fi
+
 echo "check_git_hooks_installed: clean — core.hooksPath=$want"

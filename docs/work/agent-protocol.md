@@ -176,6 +176,7 @@ In this priority order:
 ## Forbidden moves
 
 - ❌ Committing directly on `main` in a worker worktree — `main` is the orchestrator's.
+- ❌ Committing on a non-`main` branch in the MAIN checkout — the symmetric trap: the main checkout stays on `main`, so the orchestrator's merges never surf onto lane refs. Lane work goes in a worktree: `git worktree add .claude/worktrees/wf_<name> -b lane/<name> main`. The tracked pre-commit hook refuses this; a truly deliberate main-checkout lane commit overrides once with `ZCL_LANE_COMMIT_OK=1`.
 - ❌ **Pushing ANY branch to `origin`** — workers never push; the orchestrator pushes `main` only. **NEVER `git push --all` or `git push --mirror`** — those push every local branch (hundreds of stale lanes live locally).
 - ❌ Merging your own lane into `main` — the orchestrator reviews and merges.
 - ❌ Editing `docs/REFACTOR_STATUS.md` directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+#
+# Pre-commit MAIN-CHECKOUT lane guard.
+#
+# The recurring accident this refuses: a lane agent leaves the MAIN checkout
+# sitting on its lane branch and commits there directly; the orchestrator's
+# next merge then surfs onto the lane ref. Lane work belongs in a linked
+# worktree under .claude/worktrees/ (see docs/work/agent-protocol.md) —
+# never as a non-main branch commit in the main checkout.
+#
+# Refuses the commit only when ALL of these hold:
+#   1. cwd is the MAIN checkout — git-dir == git-common-dir. A linked
+#      worktree has git-dir = <common>/worktrees/<name> != git-common-dir,
+#      so lane commits in worktrees are always allowed.
+#   2. the current branch is NOT main (a detached HEAD counts as not-main) —
+#      the orchestrator committing ON main in the main checkout is normal
+#      work and stays allowed.
+#   3. ZCL_LANE_COMMIT_OK is unset/empty — the deliberate-override valve.
+#
+# Activate:  make install-hooks   (sets core.hooksPath=tools/githooks)
+set -euo pipefail
+trap '' PIPE
+
+if [ -n "${ZCL_LANE_COMMIT_OK:-}" ]; then
+    exit 0
+fi
+
+git_dir="$(cd "$(git rev-parse --absolute-git-dir)" && pwd)"
+common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+
+# Linked worktree -> normal lane work, any branch allowed.
+if [ "$git_dir" != "$common_dir" ]; then
+    exit 0
+fi
+
+branch="$(git symbolic-ref --short -q HEAD || true)"
+
+# Orchestrator committing on main in the main checkout -> normal.
+if [ "$branch" = "main" ]; then
+    exit 0
+fi
+
+echo "pre-commit: COMMIT REFUSED — the MAIN checkout is on branch '${branch:-DETACHED-HEAD}', not 'main'." >&2 || true
+echo "pre-commit: lane branches are committed from a linked worktree, never from the main checkout." >&2 || true
+echo "pre-commit: do it right:" >&2 || true
+echo "pre-commit:   git worktree add .claude/worktrees/wf_<name> -b lane/<name> main" >&2 || true
+echo "pre-commit:   cd .claude/worktrees/wf_<name>   # commit there" >&2 || true
+echo "pre-commit: if this main-checkout lane commit is truly deliberate, override once:" >&2 || true
+echo "pre-commit:   ZCL_LANE_COMMIT_OK=1 git commit ..." >&2 || true
+exit 1

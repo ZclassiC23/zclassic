@@ -3901,6 +3901,8 @@ install-hooks:
 	@chmod +x tools/githooks/* 2>/dev/null || true
 	@echo "Installed git hooks: core.hooksPath=tools/githooks"
 	@echo "  pre-push -> runs 'make pre-push-ci' before every push to origin"
+	@echo "  pre-commit -> refuses non-main-branch commits in the MAIN checkout"
+	@echo "                (lane work goes in a worktree; ZCL_LANE_COMMIT_OK=1 overrides)"
 	@echo "  full-suite/fuzz/coverage -> make install-quality-linger"
 	@echo "  bypass one push: git push --no-verify   (or ZCL_SKIP_PREPUSH=1)"
 
