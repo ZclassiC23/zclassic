@@ -21,6 +21,7 @@
 #include "util/log_level.h"
 #include "util/log_macros.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -173,6 +174,34 @@ int test_log_level(void)
         bool captured = log_level_capture(emit_test_warn, buf, sizeof(buf));
         LVL_CHECK("floor=OFF suppresses LOG_WARN",
                   captured && strstr(buf, "WMARK") == NULL);
+    }
+
+    /* ── emitted lines carry the ISO-8601 UTC timestamp + level token ──
+     * Contract with nodelog_controller.c: "YYYY-MM-DDTHH:MM:SSZ LEVEL
+     * [domain] ..." — timestamp at line start, token right after it. */
+    {
+        char buf[512];
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(emit_test_warn, buf, sizeof(buf));
+        bool iso_prefix = strlen(buf) > 21 &&
+            isdigit((unsigned char)buf[0]) &&
+            isdigit((unsigned char)buf[1]) &&
+            isdigit((unsigned char)buf[2]) &&
+            isdigit((unsigned char)buf[3]) &&
+            buf[4] == '-' && buf[7] == '-' && buf[10] == 'T' &&
+            buf[13] == ':' && buf[16] == ':' && buf[19] == 'Z' &&
+            buf[20] == ' ';
+        LVL_CHECK("LOG_WARN line starts with ISO-8601 UTC timestamp",
+                  captured && iso_prefix);
+        LVL_CHECK("LOG_WARN line carries the WARN level token",
+                  captured && strstr(buf, "Z WARN [test_log_level]") != NULL);
+    }
+    {
+        char buf[512];
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(emit_test_info, buf, sizeof(buf));
+        LVL_CHECK("LOG_INFO line carries the INFO level token",
+                  captured && strstr(buf, "Z INFO [test_log_level]") != NULL);
     }
 
     /* Restore whatever level this process had on entry so later test

@@ -29,7 +29,8 @@
  * LOG_* return/control-flow contracts, but do not let millions of expected
  * rejects backpressure libFuzzer through stderr. A variadic function call
  * (rather than a no-op macro) preserves argument evaluation and format
- * checking. Normal builds retain the exact direct-to-stderr behavior. */
+ * checking. Normal builds go through zcl_log_emit_at() (log_level.c), which
+ * prepends the ISO-8601 UTC timestamp + level token to every line. */
 #ifdef ZCL_FUZZ_QUIET_LOG_MACROS
 static inline __attribute__((format(printf, 1, 2)))
 void zcl_fuzz_discard_log(const char *fmt, ...)
@@ -37,8 +38,10 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
     (void)fmt;
 }
 #define ZCL_LOG_RAW(...) zcl_fuzz_discard_log(__VA_ARGS__)
+#define ZCL_LOG_DO_EMIT(level, ...) zcl_fuzz_discard_log(__VA_ARGS__)
 #else
 #define ZCL_LOG_RAW(...) ((void)fprintf(stderr, __VA_ARGS__))
+#define ZCL_LOG_DO_EMIT(level, ...) zcl_log_emit_at((level), __VA_ARGS__)
 #endif
 
 /* Opt-in level gate (see util/log_level.h): the calling macro passes its
@@ -46,11 +49,14 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
  * parses the rendered text. Default level is ZCL_LOG_ALL, so `level >=
  * zcl_log_level_get()` is true for every call site until -loglevel=
  * raises the floor: zero behavior change unless the flag is passed. A
- * suppressed line skips the fprintf entirely (and its vararg formatting
- * cost), same as the fuzz-quiet path above. */
+ * suppressed line skips the emission entirely (timestamp, prefix, and its
+ * vararg formatting cost), same as the fuzz-quiet path above. Every
+ * emitted line is one flockfile'd sequence:
+ *   YYYY-MM-DDTHH:MM:SSZ LEVEL [domain] file:line func(): msg
+ */
 #define ZCL_LOG_EMIT_AT(level, ...) do { \
     if ((level) >= zcl_log_level_get()) \
-        ZCL_LOG_RAW(__VA_ARGS__); \
+        ZCL_LOG_DO_EMIT((level), __VA_ARGS__); \
 } while (0)
 
 /* Back-compat alias: the historical unconditional-emit name, kept at
@@ -96,9 +102,10 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
  * marked `// obs-ok:`) so node.log is uniform and `zclassic23 getnodelog` can
  * filter by level.
  *
- * Same `[domain] LEVEL file:line func():` prefix the returning macros
- * use; the level token matches nodelog_controller's filter
- * (`WARN:` → warn; bare → info; the returning macros cover error/fatal).
+ * Same `[domain] file:line func():` body the returning macros use; the
+ * timestamp + level token prefix comes from ZCL_LOG_EMIT_AT (via
+ * zcl_log_emit_at), and nodelog_controller parses that prefix
+ * positionally (` WARN ` → warn, ` ERROR ` → error, ...).
  *
  *   // Instead of: fprintf(stderr, "[net] short write peer=%d\n", id);
  *   LOG_WARN("net", "short write peer=%d", id);
@@ -106,13 +113,13 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 
 /* Log a warning and continue (no return). */
 #define LOG_WARN(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[%s] WARN: %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
 /* Log an informational line and continue (no return). */
 #define LOG_INFO(domain, fmt, ...) do { \
-    ZCL_LOG_EMIT_AT(ZCL_LOG_INFO, "[%s] INFO %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_INFO, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 

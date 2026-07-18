@@ -227,9 +227,26 @@ static enum log_level parse_level(const char *s)
 
 static enum log_level line_level(const char *line)
 {
-    /* Cheap heuristic. LOG_FAIL/LOG_ERR/LOG_NULL all use stderr and
-     * prefix with [domain]; we treat those as ERROR level. Boot-time
-     * printfs use explicit FATAL/WARN markers. Everything else INFO. */
+    /* Current LOG_* format (zcl_log_emit_at, log_level.c):
+     *   YYYY-MM-DDTHH:MM:SSZ LEVEL [domain] file:line func(): msg
+     * The level token sits positionally right after the 20-char
+     * timestamp + one space — parse it exactly, no text sniffing. */
+    if (line) {
+        int64_t ts = 0;
+        if (parse_iso_timestamp(line, &ts) &&
+            line[19] == 'Z' && line[20] == ' ') {
+            const char *p = line + 21;
+            if (!strncmp(p, "FATAL ", 6)) return LL_FATAL;
+            if (!strncmp(p, "ERROR ", 6)) return LL_ERROR;
+            if (!strncmp(p, "WARN ", 5))  return LL_WARN;
+            if (!strncmp(p, "INFO ", 5))  return LL_INFO;
+        }
+    }
+
+    /* Legacy undated format heuristic (pre-timestamp LOG_* lines):
+     * LOG_FAIL/LOG_ERR/LOG_NULL all use stderr and prefix with [domain];
+     * we treat those as ERROR level. Boot-time printfs use explicit
+     * FATAL/WARN markers. Everything else INFO. */
     if (strstr(line, "FATAL") || strstr(line, "PANIC") ||
         strstr(line, "ABORT"))
         return LL_FATAL;
