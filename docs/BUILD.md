@@ -322,6 +322,39 @@ exact candidate and object tree (`build/bin/test-fast/epochs/<compile-epoch>/`
 and `build/test-obj/epochs/<compile-epoch>/`, `-O1`, non-`-Werror`) for the
 tightest edit loop; run strict `make t` / `make test` before commit.
 
+## Sanitizer profiles (opt-in)
+
+Two ASan/UBSan profiles extend the fuzz-only sanitizer coverage to the test
+suite and the dev node. Both compile with
+`-fsanitize=address,undefined -fno-omit-frame-pointer` (plus
+`-fno-sanitize=alignment`, mirroring the fuzz harnesses' established UBSan
+profile), no LTO, into their own epoch-keyed object trees — the flags are
+referenced only by these profiles and can never leak into the
+release/dev/test default builds.
+
+- **`make t-asan ONLY=<group>`** — one test group under the instrumented
+  harness (`build/bin/test-asan`, object tree `build/test-asan-obj/`).
+  ASan aborts the failing child, so a memory error is a red group with the
+  full report in its replayed log; UBSan stays in gcc's recover-and-continue
+  default so one run collects every finding (export
+  `UBSAN_OPTIONS=halt_on_error=1` to make reports fatal). Findings are the
+  point — fix forward, don't suppress.
+- **`make asan-ci`** — opt-in smoke: a small set of fast, params-free groups
+  under test-asan with `UBSAN_OPTIONS=halt_on_error=1` so any report fails
+  the run. Deliberately **not** wired into `make ci` (instrumented runs are
+  several times slower and push times must stay stable). Override the set
+  with `ASAN_CI_GROUPS="..."`.
+- **`make dev-asan`** — the dev node under ASan/UBSan
+  (`build/bin/zclassic23-dev-asan`, `-Og`, non-LTO, object tree
+  `build/dev-asan-obj/`). For local memory/UB debugging on a scratch
+  datadir; boot with `ASAN_OPTIONS=detect_leaks=0` until leak triage is
+  done.
+
+The test runners set a large **finite** stack limit (1 GiB) rather than the
+usual `ulimit -s unlimited`: ASan + PIE with an unlimited stack
+intermittently aborts at startup with "Shadow memory range interleaves with
+an existing memory mapping" (google/sanitizers#856).
+
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
