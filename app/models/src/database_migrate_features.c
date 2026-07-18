@@ -722,6 +722,47 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 32) {
+        /* v32: ZSLP per-(token, outpoint) ledger (zslp_ledger) — the
+         * debit-correct token-balance projection that finally makes token
+         * balances fully chain-derived (the credit-only zslp_balances is
+         * left untouched). One row per token-bearing transaction output (an
+         * SLP UTXO): created by GENESIS/MINT/SEND, marked spent when a later
+         * tx consumes the outpoint (the always-on tx_inputs spend graph). A
+         * holder's balance = SUM(amount) over their UNSPENT rows. See
+         * models/zslp_ledger.h. Not consulted by consensus; rebuilt from the
+         * zslp_transfers / tx_outputs / tx_inputs projections
+         * (zslp_ledger_truncate). token_id is internal (node) byte order. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zslp_ledger ("
+            "token_id BLOB NOT NULL CHECK(length(token_id)=32),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "vout INTEGER NOT NULL,"
+            "amount INTEGER NOT NULL CHECK(amount>=0),"
+            "address BLOB CHECK(address IS NULL OR length(address)=20),"
+            "created_height INTEGER NOT NULL,"
+            "spent_by_txid BLOB "
+            "  CHECK(spent_by_txid IS NULL OR length(spent_by_txid)=32),"
+            "spent_height INTEGER,"
+            "PRIMARY KEY (token_id, txid, vout)) WITHOUT ROWID");
+
+        /* Reconciliation surface: SUM(amount) over a holder's unspent rows. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_ledger_addr "
+            "ON zslp_ledger(token_id, address) WHERE spent_by_txid IS NULL");
+
+        /* Spend-marking lookup by consumed outpoint (across tokens). */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_ledger_outpoint "
+            "ON zslp_ledger(txid, vout)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('032')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 32);
+        current_ver = 32;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
