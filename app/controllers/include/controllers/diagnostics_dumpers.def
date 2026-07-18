@@ -282,6 +282,15 @@
                  "enabled flag",
                  "lib/net/src/rom_seed.c",
                  "lib/test/src/test_rom_seed.c"),
+    DIAG_SERVICE("rom_fetch", rom_fetch_dump_state_json,
+                 "ROM artifact fetching (the CLIENT half of "
+                 "docs/ROM_DELIVERY.md): last fetch attempt (peer, filename, "
+                 "size, chunks done, ok/fail + detail), in_progress flag, and "
+                 "cumulative attempts/successes/failures/bytes-installed. "
+                 "Download + content-verify only; activation stays with the "
+                 "unified installer.",
+                 "lib/net/src/rom_fetch.c",
+                 "lib/test/src/test_rom_fetch.c"),
     DIAG_PROJECTION("mempool_projection", mempool_projection_dump_state_json,
                     "mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL",
                     "lib/storage/src/mempool_projection.c",
