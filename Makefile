@@ -290,7 +290,21 @@ WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 HARDEN_CFLAGS = -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fcf-protection=full -fPIE
 HARDEN_LDFLAGS = -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fcf-protection=full
 BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUILD_CLEAN=$(BUILD_CLEAN)
-CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
+# -g: full debug info so addr2line resolves file:line through the split
+# sidecar (see the zclassic23 link rule below). -g1 was tried first and is
+# NOT sufficient: under the whole-program LTO link its line tables degrade
+# to <artificial> file attribution. Code generation is identical; only the
+# .debug sidecar grows — the shipped binary is stripped either way.
+# -g: full debug info so crash-log addresses resolve to file:line through
+# the split sidecar (see the zclassic23 link rule below). -g1 was tried
+# first and is NOT sufficient: under the whole-program LTO link its line
+# tables degrade to <artificial> file attribution. Note binutils addr2line
+# only resolves ~3% of addresses on this LTO binary (GCC's .debug_aranges
+# for the LTO partitions do not cover most of .text), which is why
+# tools/scripts/symbolize_crash.sh uses gdb as its resolution engine.
+# Code generation is identical; only the .debug sidecar grows — the
+# shipped binary is stripped either way.
+CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
@@ -1419,15 +1433,27 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
+# Split-debug: CFLAGS carries -g, but the shipped binary stays stripped —
+# the debug payload moves to $@.debug next to the binary and .gnu_debuglink
+# points at it, so addr2line/gdb resolve file:line (symbolize_crash.sh)
+# without growing the deployed artifact. The sidecar is staged in a temp
+# dir under its final basename because --add-gnu-debuglink reads the file
+# (stored name + CRC32) at link time.
 $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
-	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	dbg="$@.debug"; \
+	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
+	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
 	strip -s "$$tmp"; \
+	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
+	mv -f -- "$$dbgdir/$$(basename "$$dbg")" "$$dbg"; \
+	rmdir "$$dbgdir"; \
 	trap - EXIT HUP INT TERM
 
 .PHONY: zclassic-cli
