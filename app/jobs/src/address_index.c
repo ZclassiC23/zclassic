@@ -33,13 +33,26 @@ static void ai_put_u64le(uint8_t b[8], uint64_t v)
         b[i] = (uint8_t)(v >> (8 * i));
 }
 
+/* Cached -addressindex decision (file-scope so a test can reset it). -1 =
+ * unknown. */
+static int g_ai_enabled_cache = -1;
+
 bool address_index_enabled(void)
 {
-    /* Args are parsed once at startup; cache the decision. -1 = unknown. */
-    static int cached = -1;
-    if (cached < 0)
-        cached = GetBoolArg("-addressindex", false) ? 1 : 0;
-    return cached == 1;
+    /* Args are parsed once at startup; cache the decision.
+     * OMNISCIENCE default (owner directive: "the node obsesses about knowing
+     * everything about the ZClassic network"): ON by default so a plain boot
+     * builds the script-appearance catalog. Opt OUT with -addressindex=0. The
+     * backfill is a bounded, supervised, disk-pre-checked, tip-yielding
+     * background job (address_index_service.c) — it never wedges tip-follow. */
+    if (g_ai_enabled_cache < 0)
+        g_ai_enabled_cache = GetBoolArg("-addressindex", true) ? 1 : 0;
+    return g_ai_enabled_cache == 1;
+}
+
+void address_index_enabled_reset_for_test(void)
+{
+    g_ai_enabled_cache = -1;
 }
 
 void address_index_scripthash(const uint8_t *script, size_t len,

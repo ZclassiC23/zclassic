@@ -31,6 +31,7 @@
 #include "util/supervisor.h"
 #include "util/sync.h"
 #include "util/thread_registry.h"
+#include "util/util.h"
 #include "supervisors/domains.h"
 
 #include <pthread.h>
@@ -116,13 +117,19 @@ static bool ncrawl_env_falsy(const char *e)
 
 static void ncrawl_config_from_env(struct network_crawler_config *cfg)
 {
-    /* ON by default; ZCL_NETWORK_CRAWLER is now the opt-OUT knob. An explicit
-     * falsy value disables; any truthy value re-enables (idempotent). */
+    /* ON by default (omniscience directive); both the -netcrawl CLI flag and
+     * the ZCL_NETWORK_CRAWLER env var are opt-OUT knobs. Precedence: start from
+     * the compiled default (true), apply the env override, then let an
+     * explicit -netcrawl CLI flag win last (a boot flag beats the shell env).
+     * `-netcrawl=0` (or `-nonetcrawl`) fully disables; `-netcrawl`/`-netcrawl=1`
+     * re-enables. */
     const char *en = getenv("ZCL_NETWORK_CRAWLER");
     if (ncrawl_env_falsy(en))
         cfg->enabled = false;
     else if (ncrawl_env_truthy(en))
         cfg->enabled = true;
+    if (GetArg("-netcrawl", NULL))            /* flag present → it decides */
+        cfg->enabled = GetBoolArg("-netcrawl", true);
     const char *iv = getenv("ZCL_NETCRAWL_INTERVAL_SECS");
     if (iv && iv[0]) {
         int v = atoi(iv);

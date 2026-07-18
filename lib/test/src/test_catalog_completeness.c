@@ -10,8 +10,8 @@
  *     nullifier_history) surface a KNOWN positive-activation-cursor gap as
  *     a strongly positive lag (cursor=0), and a real forward frontier
  *     height once the store is genesis-complete
- *   - address_index reports enabled=false when -addressindex was not
- *     passed (the default), never a crash
+ *   - address_index reports enabled=false when -addressindex=0 is forced
+ *     (it is ON by default now), never a crash
  *   - rows backed by app_runtime_node_db() (op_return_index,
  *     view_integrity, explorer_projection) degrade to enabled=false when
  *     no app runtime is wired in this test process
@@ -29,6 +29,7 @@
 #include "storage/catalog_completeness.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "util/util.h"
 
 #include <errno.h>
 #include <sqlite3.h>
@@ -75,6 +76,15 @@ int test_catalog_completeness(void)
 {
     printf("\n=== catalog_completeness tests ===\n");
     int failures = 0;
+
+    /* address_index is now ON by default (omniscience). This test exercises the
+     * DISABLED path explicitly (cursor unavailable -> excluded from worst_lag),
+     * so force -addressindex=0 and reset the cached gate deterministically. */
+    {
+        const char *offargs[] = { "test", "-addressindex=0" };
+        ParseParameters(2, offargs);
+        address_index_enabled_reset_for_test();
+    }
 
     /* ── scenario A: from-genesis (activation_cursor=0) shielded stores
      * with real forward frontier rows, plus lag math above/at/below
@@ -147,10 +157,10 @@ int test_catalog_completeness(void)
             CC_CHECK("scenario A: nullifier_history lag==750",
                      nf_row && nf_row->lag == 750);
 
-            /* address_index: -addressindex not passed -> opt-in disabled. */
+            /* address_index: forced -addressindex=0 -> disabled path. */
             const struct catalog_index_status *ai_row =
                 cc_find(rows, n, "address_index");
-            CC_CHECK("scenario A: address_index disabled by default",
+            CC_CHECK("scenario A: address_index disabled (-addressindex=0)",
                      ai_row && !ai_row->enabled);
             CC_CHECK("scenario A: address_index disabled -> cursor=0 lag=0",
                      ai_row && ai_row->cursor == 0 && ai_row->lag == 0);

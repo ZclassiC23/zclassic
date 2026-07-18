@@ -32,13 +32,26 @@ static void ti_put_u64le(uint8_t b[8], uint64_t v)
         b[i] = (uint8_t)(v >> (8 * i));
 }
 
+/* Cached -txindex decision (file-scope so a test can reset it). -1 = unknown. */
+static int g_tx_enabled_cache = -1;
+
 bool txindex_projection_enabled(void)
 {
-    /* Args are parsed once at startup; cache the decision. -1 = unknown. */
-    static int cached = -1;
-    if (cached < 0)
-        cached = GetBoolArg("-txindex", false) ? 1 : 0;
-    return cached == 1;
+    /* Args are parsed once at startup; cache the decision.
+     * OMNISCIENCE default (owner directive: "the node obsesses about knowing
+     * everything about the ZClassic network"): ON by default so a plain boot
+     * builds the tx-location catalog (getrawtransaction-class lookups without a
+     * full-chain scan). Opt OUT with -txindex=0. The backfill is a bounded,
+     * supervised, disk-pre-checked, tip-yielding background job — it never
+     * wedges tip-follow (txindex_projection_service.c). */
+    if (g_tx_enabled_cache < 0)
+        g_tx_enabled_cache = GetBoolArg("-txindex", true) ? 1 : 0;
+    return g_tx_enabled_cache == 1;
+}
+
+void txindex_projection_enabled_reset_for_test(void)
+{
+    g_tx_enabled_cache = -1;
 }
 
 bool txindex_projection_ensure_schema(sqlite3 *db)

@@ -32,10 +32,15 @@
 struct block;
 typedef struct sqlite3 sqlite3;
 
-/* -txindex opt-in (matches address_index's -addressindex pattern). Cached after
- * first read. Default false: a plain boot registers NO service and writes NO
+/* -txindex gate (matches address_index's -addressindex pattern). Cached after
+ * first read. OMNISCIENCE default TRUE: a plain boot builds the tx-location
+ * catalog. Opt OUT with -txindex=0, which registers NO service and writes NO
  * projection rows (the legacy node.db tx_index build is a separate mechanism). */
 bool txindex_projection_enabled(void);
+
+/* Test-only: clear the cached -txindex decision so a test can flip the arg (via
+ * ParseParameters) and re-observe the gate. Safe to call anytime. */
+void txindex_projection_enabled_reset_for_test(void);
 
 /* Create the txindex tables + secondary index if absent. Idempotent. Returns
  * false on a real SQLite error. Caller holds the tx lock. */

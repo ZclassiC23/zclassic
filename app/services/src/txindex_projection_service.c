@@ -22,6 +22,7 @@
 #include "encoding/utilstrencodings.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/txindex_projection.h"
+#include "services/index_fold_guard.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
@@ -108,8 +109,16 @@ static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
     if (cursor >= hstar) {                  /* caught up to the finalized tip */
         atomic_store(&g_tx_blocked, false);
         atomic_store(&g_tx_last_batch_blocks, 0);
+        index_fold_clear_seed_blocker("txindex");
         return 0;
     }
+
+    /* Free-disk precheck: never start/continue the historical fold when disk
+     * headroom is low — it raises a named txindex.disk_low blocker and yields,
+     * so consensus writes keep their last bytes instead of the catalog filling
+     * the disk. */
+    if (!index_fold_disk_ok("txindex", "txindex", datadir))
+        return 0;
 
     uint8_t digest[32];
     bool dfound = false;
@@ -137,6 +146,9 @@ static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
             block_free(&blk);
             blocked = true;
             blocked_h = h;
+            /* Name the floor: below the snapshot seed this is a structural
+             * DEPENDENCY (bodies never downloaded), above it a transient gap. */
+            index_fold_note_absent_body("txindex", "txindex", db, h);
             break;                          /* body absent — coverage floor */
         }
         struct uint256 bh;
@@ -166,6 +178,8 @@ static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 
     int64_t elapsed = platform_time_monotonic_us() - start_us;
+    if (commit && !blocked)
+        index_fold_clear_seed_blocker("txindex");
     atomic_store(&g_tx_blocked, blocked);
     atomic_store(&g_tx_blocked_height, blocked ? blocked_h : -1);
     atomic_store(&g_tx_last_batch_blocks, commit ? folded : 0);

@@ -20,6 +20,7 @@
 #include "encoding/utilstrencodings.h"
 #include "jobs/address_index.h"
 #include "jobs/tip_finalize_stage.h"
+#include "services/index_fold_guard.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
@@ -94,8 +95,16 @@ static int ai_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
     if (cursor >= hstar) {                 /* caught up to the finalized tip */
         atomic_store(&g_ai_blocked, false);
         atomic_store(&g_ai_last_batch_blocks, 0);
+        index_fold_clear_seed_blocker("address_index");
         return 0;
     }
+
+    /* Free-disk precheck: never start/continue the historical fold when disk
+     * headroom is low — it raises a named address_index.disk_low blocker and
+     * yields, so consensus writes keep their last bytes instead of the catalog
+     * filling the disk. */
+    if (!index_fold_disk_ok("address_index", "address_index", datadir))
+        return 0;
 
     uint8_t digest[32];
     bool dfound = false;
@@ -124,6 +133,10 @@ static int ai_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
             block_free(&blk);
             blocked = true;
             blocked_h = h;
+            /* Name the floor: below the snapshot seed this is a structural
+             * DEPENDENCY (bodies never downloaded), above it a transient gap. */
+            index_fold_note_absent_body("address_index", "address_index",
+                                            db, h);
             break;                          /* body absent — coverage floor */
         }
         int added = 0;
@@ -150,6 +163,8 @@ static int ai_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 
     int64_t elapsed = platform_time_monotonic_us() - start_us;
+    if (commit && !blocked)
+        index_fold_clear_seed_blocker("address_index");
     atomic_store(&g_ai_blocked, blocked);
     atomic_store(&g_ai_blocked_height, blocked ? blocked_h : -1);
     atomic_store(&g_ai_last_batch_blocks, commit ? folded : 0);

@@ -27,6 +27,7 @@
  */
 
 #include "test/test_helpers.h"
+#include "services/network_crawler.h"
 #include "storage/census_read.h"
 #include "storage/peers_projection.h"
 #include "storage/topology_store.h"
@@ -453,11 +454,36 @@ static int test_census_explorer_page(void)
     return failures;
 }
 
+/* ── 7. crawler default gate: ON by default (omniscience) ─────────────── */
+
+static int test_crawler_default_gate(void)
+{
+    int failures = 0;
+    TEST("network_crawler: ON by default (omniscience directive)") {
+        struct network_crawler_config cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        network_crawler_config_defaults(&cfg);
+        /* The dialer defaults ON so a plain boot obsesses about the whole
+         * network; -netcrawl=0 / ZCL_NETWORK_CRAWLER=0 opt out (resolved in
+         * network_crawler_start via ncrawl_config_from_env). The rate limits
+         * stay bounded for always-on. */
+        ASSERT(cfg.enabled);
+        ASSERT(cfg.max_per_round >= 1 &&
+               cfg.max_per_round <= NCRAWL_MAX_PER_ROUND);
+        ASSERT(cfg.max_concurrent >= 1 &&
+               cfg.max_concurrent <= NCRAWL_MAX_CONCURRENT);
+        ASSERT(cfg.round_interval_secs >= 5);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_net_census(void);
 int test_net_census(void)
 {
     int failures = 0;
     failures += test_census_schema_parity();
+    failures += test_crawler_default_gate();
     failures += test_census_empty_degradation();
     failures += test_census_tables_absent();
     failures += test_census_list_and_filters();

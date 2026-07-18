@@ -8,14 +8,18 @@
 #include "core/uint256.h"
 #include "crypto/sha3.h"
 #include "jobs/address_index.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
 #include "services/address_index_service.h"
+#include "services/index_fold_guard.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -94,12 +98,32 @@ int test_address_index(void)
     sqlite3 *db = progress_store_db();
     AI_CHECK("db handle", db != NULL);
 
-    /* Opt-in default: with no -addressindex arg the projection is OFF and the
-     * boot registration is a no-op — a default boot pays zero cost. */
-    AI_CHECK("disabled by default", !address_index_enabled());
-    AI_CHECK("register no-op when disabled",
-             !address_index_service_register() &&
-             !address_index_service_registered());
+    /* OMNISCIENCE default: with no -addressindex arg the projection is ON so a
+     * plain boot builds the script-appearance catalog. */
+    {
+        const char *noargs[] = { "test" };
+        ParseParameters(1, noargs);
+        address_index_enabled_reset_for_test();
+        AI_CHECK("enabled by default (omniscience)", address_index_enabled());
+    }
+    /* Off-switch: -addressindex=0 fully disables; boot registration is then a
+     * clean no-op — pays zero cost. */
+    {
+        const char *offargs[] = { "test", "-addressindex=0" };
+        ParseParameters(2, offargs);
+        address_index_enabled_reset_for_test();
+        AI_CHECK("-addressindex=0 disables", !address_index_enabled());
+        AI_CHECK("register no-op when disabled",
+                 !address_index_service_register() &&
+                 !address_index_service_registered());
+    }
+    /* Restore default-on (arg cleared) for the observable-gate assertions below;
+     * the raw DB primitives don't depend on the gate. */
+    {
+        const char *noargs[] = { "test" };
+        ParseParameters(1, noargs);
+        address_index_enabled_reset_for_test();
+    }
 
     /* Cursor read before schema exists is a clean cursor=-1 (not an error). */
     {
@@ -312,8 +336,8 @@ int test_address_index(void)
         json_init(&out);
         AI_CHECK("dump keyed query returns true",
                  address_index_dump_state_json(&out, hex));
-        AI_CHECK("dump: enabled false (no -addressindex)",
-                 !json_get_bool(json_get(&out, "enabled")));
+        AI_CHECK("dump: enabled true (omniscience default)",
+                 json_get_bool(json_get(&out, "enabled")));
         AI_CHECK("dump: count 1 for C",
                  json_get_int(json_get(&out, "count")) == 1);
         AI_CHECK("dump: balance 2000 for C",
@@ -381,6 +405,72 @@ int test_address_index(void)
                "%.3f ms => %.0f rows/s, %.0f blocks/s\n",
                total_rows, N, (double)elapsed_us / 1000.0, rps, bps);
         AI_CHECK("perf: nonzero throughput", rps > 0);
+    }
+
+    /* ── backfill safety rails (index_fold_guard) ────────────────
+     * These are the always-on hardening: never fill the disk, never spin below
+     * a snapshot-seed floor — both surface a NAMED typed blocker. */
+    {
+        blocker_reset_for_testing();
+
+        /* Disk precheck OK when the free-space floor is 0. */
+        index_fold_set_min_free_for_test(0);
+        AI_CHECK("disk_ok true with 0-byte floor",
+                 index_fold_disk_ok("address_index", "address_index", dir));
+        AI_CHECK("no disk_low blocker when healthy",
+                 !blocker_exists("address_index.disk_low"));
+
+        /* Force LOW: an impossibly high floor makes any real FS "too low". */
+        index_fold_set_min_free_for_test(INT64_MAX);
+        AI_CHECK("disk_ok false when below floor",
+                 !index_fold_disk_ok("address_index", "address_index", dir));
+        AI_CHECK("address_index.disk_low blocker raised",
+                 blocker_exists("address_index.disk_low"));
+        AI_CHECK("disk_low blocker is RESOURCE class",
+                 blocker_class_for("address_index.disk_low") == BLOCKER_RESOURCE);
+
+        /* Recover: floor back to 0 clears the blocker. */
+        index_fold_set_min_free_for_test(0);
+        AI_CHECK("disk_ok true after recovery",
+                 index_fold_disk_ok("address_index", "address_index", dir));
+        AI_CHECK("disk_low blocker cleared after recovery",
+                 !blocker_exists("address_index.disk_low"));
+        index_fold_set_min_free_for_test(-1);   /* restore default */
+
+        /* Seed floor: with NO trusted-base-height key, an absent body is a
+         * transient gap, not a below-seed floor — no seed blocker. */
+        index_fold_note_absent_body("address_index", "address_index", db, 0);
+        AI_CHECK("no seed blocker without a snapshot seed",
+                 !blocker_exists("address_index.below_snapshot_seed"));
+
+        /* Install a snapshot-seed floor at height 1000. */
+        {
+            int64_t base = 1000;
+            uint8_t blob[8];
+            for (int i = 0; i < 8; i++)
+                blob[i] = (uint8_t)((uint64_t)base >> (8 * i));
+            AI_CHECK("write trusted_base_height=1000",
+                     progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                       blob, sizeof(blob)));
+        }
+        /* An absent body BELOW the seed floor raises the named DEPENDENCY. */
+        index_fold_note_absent_body("address_index", "address_index", db, 500);
+        AI_CHECK("below-seed absent body raises below_snapshot_seed",
+                 blocker_exists("address_index.below_snapshot_seed"));
+        AI_CHECK("below_snapshot_seed is DEPENDENCY class",
+                 blocker_class_for("address_index.below_snapshot_seed") ==
+                 BLOCKER_DEPENDENCY);
+        /* An absent body ABOVE the seed floor is transient — clears it. */
+        index_fold_note_absent_body("address_index", "address_index", db, 1500);
+        AI_CHECK("above-seed absent body clears below_snapshot_seed",
+                 !blocker_exists("address_index.below_snapshot_seed"));
+        /* Explicit clear is idempotent. */
+        index_fold_note_absent_body("address_index", "address_index", db, 500);
+        index_fold_clear_seed_blocker("address_index");
+        AI_CHECK("clear_seed_blocker removes it",
+                 !blocker_exists("address_index.below_snapshot_seed"));
+
+        blocker_reset_for_testing();
     }
 
     /* cleanup */
