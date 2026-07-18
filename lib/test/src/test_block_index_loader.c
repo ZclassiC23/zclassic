@@ -13,6 +13,7 @@
 #include "storage/coins_kv.h"
 #include "jobs/tip_finalize_stage.h"
 #include "validation/main_state.h"
+#include "primitives/block.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/chainparamsbase.h"
@@ -82,6 +83,88 @@ static struct uint256 make_test_hash(int h)
     hash.data[2] = (uint8_t)((h >> 16) & 0xFF);
     hash.data[3] = 0xAA;
     return hash;
+}
+
+/* Create the node.db `blocks` table (the real schema columns the hydrate
+ * loader reads + the NOT NULL companions) in an in-memory db. */
+static bool bih_create_blocks_table(sqlite3 *db)
+{
+    return sqlite3_exec(db,
+        "CREATE TABLE blocks("
+        "hash BLOB PRIMARY KEY,height INTEGER NOT NULL,"
+        "prev_hash BLOB NOT NULL,version INTEGER NOT NULL,"
+        "merkle_root BLOB NOT NULL,time INTEGER NOT NULL,"
+        "bits INTEGER NOT NULL,nonce BLOB NOT NULL,"
+        "solution BLOB NOT NULL,chain_work BLOB NOT NULL,"
+        "status INTEGER NOT NULL DEFAULT 0,"
+        "file_num INTEGER,data_pos INTEGER,undo_pos INTEGER,"
+        "num_tx INTEGER NOT NULL DEFAULT 0,"
+        "sapling_root BLOB,sprout_root BLOB,"
+        "sapling_value INTEGER DEFAULT 0,"
+        "sprout_value INTEGER DEFAULT 0)",
+        NULL, NULL, NULL) == SQLITE_OK;
+}
+
+/* Build a deterministic header at height h linked to `prev`, insert a
+ * header-only `blocks` row (status=SCRIPTS but NO HAVE_DATA, chain_work=0 —
+ * exactly what --importblockindex writes), and return its real PoW hash so the
+ * stored `hash` column hash-binds. Returns false on any DB error. */
+static bool bih_insert_header_row(sqlite3 *db, int h,
+                                  const struct uint256 *prev,
+                                  struct uint256 *out_hash)
+{
+    struct block_header hdr;
+    block_header_init(&hdr);
+    hdr.nVersion = 4;
+    hdr.hashPrevBlock = *prev;
+    memset(hdr.hashMerkleRoot.data, 0, 32);
+    hdr.hashMerkleRoot.data[0] = (uint8_t)(h & 0xFF);
+    hdr.hashMerkleRoot.data[1] = (uint8_t)((h >> 8) & 0xFF);
+    hdr.hashMerkleRoot.data[31] = 0x5A;
+    memset(hdr.hashFinalSaplingRoot.data, 0, 32);
+    hdr.hashFinalSaplingRoot.data[0] = (uint8_t)(h & 0xFF);
+    hdr.hashFinalSaplingRoot.data[30] = 0x11;
+    hdr.nTime = 1000000 + (uint32_t)h * 150;
+    hdr.nBits = 0x1f07ffff;
+    memset(hdr.nNonce.data, 0, 32);
+    hdr.nNonce.data[0] = (uint8_t)(h & 0xFF);
+    hdr.nNonce.data[1] = 0xC3;
+    hdr.nSolutionSize = 32;
+    for (int i = 0; i < 32; i++)
+        hdr.nSolution[i] = (uint8_t)(i + h);
+    block_header_get_hash(&hdr, out_hash);
+
+    uint8_t zero32[32] = {0};
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO blocks(hash,height,prev_hash,version,merkle_root,"
+            "time,bits,nonce,solution,chain_work,status,file_num,data_pos,"
+            "undo_pos,num_tx,sapling_root,sprout_root,sapling_value,"
+            "sprout_value) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_blob(s, 1, out_hash->data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, h);
+    sqlite3_bind_blob(s, 3, hdr.hashPrevBlock.data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 4, hdr.nVersion);
+    sqlite3_bind_blob(s, 5, hdr.hashMerkleRoot.data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 6, hdr.nTime);
+    sqlite3_bind_int64(s, 7, hdr.nBits);
+    sqlite3_bind_blob(s, 8, hdr.nNonce.data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 9, hdr.nSolution, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 10, zero32, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 11, BLOCK_VALID_SCRIPTS);   /* no HAVE bits */
+    sqlite3_bind_int(s, 12, 0);
+    sqlite3_bind_int(s, 13, 0);
+    sqlite3_bind_int(s, 14, 0);
+    sqlite3_bind_int(s, 15, 1);
+    sqlite3_bind_blob(s, 16, hdr.hashFinalSaplingRoot.data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 17, zero32, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 18, 0);
+    sqlite3_bind_int64(s, 19, 0);
+    bool ok = (sqlite3_step(s) == SQLITE_DONE);
+    sqlite3_finalize(s);
+    return ok;
 }
 
 int test_block_index_loader(void)
@@ -933,6 +1016,125 @@ int test_block_index_loader(void)
         }
 
         chain_params_select(CHAIN_MAIN);
+    }
+
+    /* ── 15. node.db `blocks` hydrate: hash-linked rows load + link ──────
+     *
+     * Reproduces the fresh-datadir header-hydration hole: --importblockindex
+     * fills the `blocks` table with header-only rows but writes no flat file /
+     * cache / LevelDB, so the map is genesis-only until this rung reads them
+     * back. Build N hash-linked header rows, hydrate, and assert the map size,
+     * tip linkage to genesis, and honest header-only validity clamping. */
+    {
+        const int N = 300;
+        struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+        bool ok = (hashes != NULL);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        ok = ok && bih_create_blocks_table(ndb.db);
+
+        struct uint256 zero;
+        memset(&zero, 0, sizeof(zero));
+        for (int h = 0; ok && h < N; h++) {
+            const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+            ok = bih_insert_header_row(ndb.db, h, prev, &hashes[h]);
+        }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        ok = ok && load_block_index_from_blocks_table(&ndb, &ms).ok;
+        bool size_ok = ok && (ms.map_block_index.size == (size_t)N);
+
+        /* Tip present at height N-1 and pprev-walks N hops to the root. */
+        bool tip_ok = false, valid_ok = false;
+        if (size_ok) {
+            struct block_index *tip = block_map_find(&ms.map_block_index,
+                                                     &hashes[N - 1]);
+            int walk = 0;
+            struct block_index *cur = tip;
+            while (cur && walk < N + 5) { walk++; cur = cur->pprev; }
+            tip_ok = tip && tip->nHeight == N - 1 && walk == N;
+
+            /* Honest validity: a mid entry is clamped to header-only TREE with
+             * NO HAVE_DATA, even though the row stored SCRIPTS. */
+            struct block_index *mid = block_map_find(&ms.map_block_index,
+                                                     &hashes[N / 2]);
+            valid_ok = mid &&
+                ((mid->nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_TREE) &&
+                !(mid->nStatus & BLOCK_HAVE_DATA) &&
+                !(mid->nStatus & BLOCK_HAVE_UNDO);
+        }
+
+        BIL_CHECK("bil: blocks-table hydrate loads N hash-linked headers",
+                  size_ok && tip_ok);
+        BIL_CHECK("bil: blocks-table hydrate clamps to header-only "
+                  "(BLOCK_VALID_TREE, no HAVE_DATA)", valid_ok);
+
+        block_map_free(&ms.map_block_index);
+        if (ndb.db) sqlite3_close(ndb.db);
+        free(hashes);
+    }
+
+    /* ── 16. node.db `blocks` hydrate: a corrupted row REFUSES the whole
+     *       hydration and leaves the map untouched. ───────────────────── */
+    {
+        const int N = 120;
+        struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+        bool ok = (hashes != NULL);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        ok = ok && bih_create_blocks_table(ndb.db);
+
+        struct uint256 zero;
+        memset(&zero, 0, sizeof(zero));
+        for (int h = 0; ok && h < N; h++) {
+            const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+            ok = bih_insert_header_row(ndb.db, h, prev, &hashes[h]);
+        }
+
+        /* Poison ONE row: rewrite its merkle_root so the stored hash no longer
+         * hash-binds (the header re-serializes to a different PoW hash). */
+        if (ok) {
+            uint8_t bad[32];
+            memset(bad, 0xEE, sizeof(bad));
+            sqlite3_stmt *u = NULL;
+            ok = (sqlite3_prepare_v2(ndb.db,
+                    "UPDATE blocks SET merkle_root=? WHERE height=?",
+                    -1, &u, NULL) == SQLITE_OK && u);
+            if (ok) {
+                sqlite3_bind_blob(u, 1, bad, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_int(u, 2, N / 2);
+                ok = (sqlite3_step(u) == SQLITE_DONE);
+                sqlite3_finalize(u);
+            }
+        }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        /* The load must REFUSE (.ok=false) and leave the map empty — the
+         * validate pass runs before any insert, so a poisoned table never
+         * seeds a partial map. */
+        bool refused = ok && !load_block_index_from_blocks_table(&ndb, &ms).ok;
+        bool untouched = (ms.map_block_index.size == 0);
+
+        BIL_CHECK("bil: blocks-table hydrate refuses a non-hash-bound row",
+                  refused && untouched);
+
+        block_map_free(&ms.map_block_index);
+        if (ndb.db) sqlite3_close(ndb.db);
+        free(hashes);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

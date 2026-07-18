@@ -79,6 +79,31 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms);
  * The previous bare-bool true/false maps to .ok. */
 struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
 
+/* ── node.db `blocks` table hydrate (--importblockindex sink) ─────── */
+
+/* Hydrate the in-memory block_index map from the node.db `blocks` table — the
+ * sink the `--importblockindex` CLI bulk-loads header rows into. That import
+ * writes NO flat file, NO block_index_cache, and NO datadir LevelDB, so on a
+ * freshly-imported datadir every other loader rung leaves a genesis-only map
+ * and the node serves H*=0 until the legacy pull rescues it; this rung closes
+ * that hole.
+ *
+ * Each row's header is re-serialized and its PoW hash recomputed; a row whose
+ * stored `hash` does not equal that value REFUSES the whole hydration (loud
+ * named blocker, .ok=false) so a poisoned table never seeds a partial map.
+ * Parent linkage is asserted via the pprev link pass, and nChainWork is
+ * recomputed from the linked chain (the imported chain_work column is zero).
+ * Entries install HONESTLY as header-only: BLOCK_VALID level clamped to at
+ * most BLOCK_VALID_TREE, no HAVE_DATA/HAVE_UNDO (bodies fetched lazily via
+ * P2P) — higher validity is never fabricated.
+ *
+ * Intended as a boot loader rung that fires ONLY when the earlier rungs leave a
+ * (near-)empty map yet `blocks` has rows. Returns .ok=true on a non-empty
+ * hydrate; .ok=false (map untouched by the refusal path) on an empty table, a
+ * prepare error, or the first non-hash-bound row. */
+struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
+                                                     struct main_state *ms);
+
 /* ── LevelDB block tree ──────────────────────────────────── */
 
 /* Load block_index from LevelDB block tree database.

@@ -2100,6 +2100,19 @@ bool app_init(struct app_context *ctx)
             }
         }
 
+        /* Rung: hydrate the map from the node.db `blocks` table — the sink the
+         * `--importblockindex` CLI bulk-loads header rows into (it writes no
+         * flat file / cache / datadir LevelDB, so every rung above leaves a
+         * genesis-only map on a freshly-imported datadir). Fires ONLY on a
+         * still-(near-)empty map with rows present; validates each row's
+         * hash-bind + parent link (refusing the whole hydration on the first
+         * poisoned row) and installs header-only entries — see the loader's
+         * contract in services/block_index_loader.h. */
+        if (!rebuilt_from_log && !loaded &&
+            g_state.map_block_index.size <= 1 && g_node_db.open &&
+            load_block_index_from_blocks_table(&g_node_db, &g_state).ok)
+            loaded = true;
+
         if (!rebuilt_from_log && !loaded) {
             int64_t t_idx_start = (int64_t)platform_time_wall_time_t();
             printf("Loading block index from LevelDB...\n");
