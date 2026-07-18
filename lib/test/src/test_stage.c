@@ -12,7 +12,13 @@
  *     then signals ERROR; on next run the scratch row is absent (the
  *     framework rolled back) and the cursor is the pre-step value.
  *   - stage_set_cursor: explicit restore round-trips
- *   - stage_set_named_cursor: named cursor stamping can intentionally rewind. */
+ *   - stage_set_named_cursor: named cursor stamping can intentionally rewind.
+ *   - cursor writers inside an open drain batch: stage_set_cursor /
+ *     stage_set_named_cursor / stage_set_named_cursor_if_behind must nest as
+ *     a SAVEPOINT (a second BEGIN IMMEDIATE is rejected by SQLite with
+ *     "cannot start a transaction within a transaction" — the io-speedups
+ *     reorg bug on the tip_finalize rewind path), mark the batch dirty so a
+ *     non-advancing drain still COMMITs the rewind, and roll back with it. */
 
 #include "test/test_helpers.h"
 #include "util/blocker.h"
@@ -395,6 +401,88 @@ int test_stage(void)
                   atomic_load(&g_precommit_calls) == 0);
         STG_CHECK("precommit: row durable after unregister",
                   scratch_count(db) == 2);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── cursor writers inside an open batch (io-speedups reorg bug) ──
+     * Regression: the standalone cursor writers once opened an unconditional
+     * BEGIN IMMEDIATE. Inside a drain batch — the tip_finalize reorg-rewind
+     * path calls stage_set_cursor with the batch open — SQLite rejected the
+     * nested BEGIN ("cannot start a transaction within a transaction"). They
+     * must now nest as a named SAVEPOINT, enrol in the outer batch, and mark
+     * it dirty so a non-advancing drain COMMITs the rewind instead of
+     * rolling it back (mirrors stage_run_once's batched shape). */
+    {
+        const char *path = "test_stage_batch_cursor.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+        STG_CHECK("batch-cursor: db open", db != NULL);
+
+        stage_t *s = stage_create("rewinder", step_advance_by_one, NULL);
+
+        /* Unbatched baseline: unchanged behavior (own BEGIN IMMEDIATE). */
+        STG_CHECK("batch-cursor: unbatched set_cursor ok",
+                  stage_set_cursor(s, db, 10));
+        STG_CHECK("batch-cursor: unbatched cursor=10", stage_cursor(s) == 10);
+
+        /* Rewind INSIDE an open batch. Pre-fix this returned false on the
+         * nested BEGIN; now the savepoint nests and the write succeeds. */
+        STG_CHECK("batch-cursor: batch_begin", stage_batch_begin(db));
+        STG_CHECK("batch-cursor: batched set_cursor rewind ok",
+                  stage_set_cursor(s, db, 4));
+        STG_CHECK("batch-cursor: rewind marked batch dirty",
+                  stage_batch_dirty());
+        STG_CHECK("batch-cursor: batch still open after rewind",
+                  stage_batch_active());
+
+        /* The named writers must nest the same way. */
+        STG_CHECK("batch-cursor: batched set_named_cursor ok",
+                  stage_set_named_cursor(db, "named2", 9));
+        STG_CHECK("batch-cursor: batched if_behind raise ok",
+                  stage_set_named_cursor_if_behind(db, "named2", 12));
+        /* No-op if_behind (already ahead): must NOT roll the batch back —
+         * the outer batch has to survive to COMMIT the earlier writes. */
+        STG_CHECK("batch-cursor: batched if_behind no-op ok",
+                  stage_set_named_cursor_if_behind(db, "named2", 5));
+        STG_CHECK("batch-cursor: batch survived no-op if_behind",
+                  stage_batch_active());
+
+        /* Commit the way a drain with advanced==0 does: the dirty flag
+         * carries the rewind into the COMMIT. */
+        STG_CHECK("batch-cursor: batch_end commit ok",
+                  stage_batch_end(db, stage_batch_dirty()));
+        STG_CHECK("batch-cursor: batch closed after commit",
+                  !stage_batch_active());
+
+        /* A rolled-back batch discards the enclosed rewind. */
+        STG_CHECK("batch-cursor: batch_begin 2", stage_batch_begin(db));
+        STG_CHECK("batch-cursor: batched set_cursor 2 ok",
+                  stage_set_cursor(s, db, 2));
+        STG_CHECK("batch-cursor: batch_end rollback ok",
+                  stage_batch_end(db, false));
+        STG_CHECK("batch-cursor: batch closed after rollback",
+                  !stage_batch_active());
+        stage_destroy(s);
+
+        /* Durability proof: reopen and observe only the COMMITted values
+         * (rewinder=4, named2=12) — the rolled-back 2 is gone. A fresh
+         * stage loads the persisted cursor on its first run. */
+        sqlite3_close(db);
+        db = open_db_with_schema(path);
+        struct ctx_advance_by_one u = { .db = db, .times_called = 0 };
+        stage_t *s2 = stage_create("rewinder", step_advance_by_one, &u);
+        job_result_t r = stage_run_once(s2, db);
+        STG_CHECK("batch-cursor: rewound cursor durable",
+                  r == JOB_ADVANCED && stage_cursor(s2) == 5);
+        stage_destroy(s2);
+        struct ctx_advance_by_one u2 = { .db = db, .times_called = 0 };
+        stage_t *s3 = stage_create("named2", step_advance_by_one, &u2);
+        r = stage_run_once(s3, db);
+        STG_CHECK("batch-cursor: named raise durable",
+                  r == JOB_ADVANCED && stage_cursor(s3) == 13);
+        stage_destroy(s3);
 
         sqlite3_close(db);
         unlink(path);
