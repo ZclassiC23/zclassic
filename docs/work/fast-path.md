@@ -73,7 +73,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make agent-clear-stale-dev-reindex` | archive a proven-stale dev-lane `auto_reindex_request` after RPC height is at/above the marker anchor; no restart, no canonical/soak mutation |
 | `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
-| `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
+| `make lint-fast` | measured ~15 high-signal lint gates via the timed parallel driver (per-gate ms in `.cache/lint-timing/`; full `make lint` before commit) |
 | `make agent-plan` | no-build JSON decision packet: changed-path/test classification hints, source-wide compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and native command shortcuts |
 | `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + exact source-wide compile/test proofs + native linger-service probe; identical green inputs skip repeated proven scope |

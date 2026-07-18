@@ -1087,10 +1087,39 @@ hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 syntax-check: $(VIEW_GEN_HEADERS)
 	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) $(NODE_ENTRY_SRCS) && echo "syntax-check: OK"
 
-# The highest-signal lint gates for the inner loop. Run full `make lint` at
-# sub-wave boundaries / before commit.
-lint-fast: check-raw-sqlite check-malloc check-model-validation check-model-ar-lifecycle check-one-write-path check-vendor-provenance
+# The highest-signal lint gates for the inner loop — a measured ~15-gate set
+# (per-gate timings live in .cache/lint-timing/last-run.json after any driver
+# run) covering the most common push-breaking classes: stray sources, raw
+# sqlite/malloc, the AR lifecycle laws, thread-registry discipline, framework
+# shape, supervisor adoption, vendor drift. All but two gates measure <1 s;
+# the stray-source guard (~5 s) dominates, so the set stays ~6-8 s wall under
+# the parallel driver. Same ZCL_LINT_SERIAL=1 fallback as lint.
+# Run full `make lint` at sub-wave boundaries / before commit.
+LINT_FAST_GATES := \
+    check-no-stray-untracked-source \
+    check-raw-sqlite \
+    check-malloc \
+    check-raw-malloc \
+    check-no-raw-sqlite-in-controllers \
+    check-model-validation \
+    check-model-ar-lifecycle \
+    check-one-write-path \
+    check-before-save-hooks \
+    check-pthread-create \
+    check-log-macro-return-type \
+    check-wallet-raw-prepare-log \
+    check-framework-shape \
+    check-supervisor-registration \
+    check-vendor-provenance
+
+ifeq ($(ZCL_LINT_SERIAL),1)
+lint-fast: $(LINT_FAST_GATES)
+	@echo "lint-fast: OK (serial)"
+else
+lint-fast:
+	@tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_FAST_GATES)
 	@echo "lint-fast: OK"
+endif
 
 # Cache-aware agent/operator loop:
 #   make fast-ci
@@ -3516,28 +3545,7 @@ check-agent-cli: zclassic23
 
 check-malloc:
 	@echo "══ LINT: bare malloc/calloc/realloc in app/tools code ══"
-	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
-	    | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*malloc\|LOG_\|fprintf'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: bare malloc in app/tools code (use zcl_malloc or mark // raw-alloc-ok)"; \
-	    exit 1; \
-	fi
-	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
-	    | grep -v 'zcl_calloc\|raw-alloc-ok\|safe_alloc\|".*calloc\|LOG_\|fprintf'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: bare calloc in app/tools code (use zcl_calloc or mark // raw-alloc-ok)"; \
-	    exit 1; \
-	fi
-	@HITS=$$(grep -rn '[^_]realloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
-	    | grep -v 'zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*realloc\|LOG_\|fprintf'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: bare realloc in app/tools code (use zcl_realloc or mark // raw-alloc-ok)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: no raw allocations"
+	@./tools/lint/check_malloc.sh
 
 check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
@@ -3559,28 +3567,7 @@ check-vcs-no-sha1:
 # so a release build links zero dynamic-loading code.
 check-hotswap-dev-only:
 	@echo "══ LINT: hot-swap dlopen confined to lib/hotswap under ZCL_DEV_BUILD ══"
-	@HITS=$$(grep -rnE --include='*.c' \
-	    'dlopen[[:space:]]*\(|dlsym[[:space:]]*\(|dlclose[[:space:]]*\(' \
-	    app tools lib config src domain application adapters 2>/dev/null \
-	    | grep -v '^lib/hotswap/'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: dlopen/dlsym/dlclose outside lib/hotswap/ (release must be static)"; \
-	    exit 1; \
-	fi
-	@for f in $$(ls lib/hotswap/src/*.c 2>/dev/null); do \
-	    BAD=$$(awk ' \
-	        /#ifdef[[:space:]]+ZCL_DEV_BUILD/ { dev=1; next } \
-	        /#else|#endif/                    { dev=0; next } \
-	        /dl(open|sym|close)[[:space:]]*\(/ { if (dev!=1) print FILENAME ":" NR ": " $$0 } \
-	    ' "$$f"); \
-	    if [ -n "$$BAD" ]; then \
-	        echo "$$BAD"; \
-	        echo "FAIL: dl* call outside a #ifdef ZCL_DEV_BUILD region in $$f"; \
-	        exit 1; \
-	    fi; \
-	done
-	@echo "  OK: hot-swap dynamic loading is dev-only"
+	@./tools/lint/check_hotswap_dev_only.sh
 
 # Tier-1 hot-swap eligibility manifest (config/hotswap_eligible.def) is kept
 # honest by two REAL gates (self-tested in test_make_lint_gates.c): eligible
@@ -3742,83 +3729,23 @@ check-core-include-boundary:
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
-	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
-	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
-	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
-	    | while read -r line; do \
-	        file=$$(echo "$$line" | cut -d: -f1); \
-	        lnum=$$(echo "$$line" | cut -d: -f2); \
-	        prev=$$((lnum - 1)); \
-	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
-	    done); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: silent error returns found in services (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all service error returns logged"
+	@./tools/lint/check_silent_error_returns.sh app/services/src services service \
+	    "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"
 
 check-silent-errors-controllers:
 	@echo "══ LINT: silent error returns in controllers ══"
-	@HITS=$$(grep -rn -B1 'return -1;' app/controllers/src/ --include='*.c' \
-	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
-	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
-	    | while read -r line; do \
-	        file=$$(echo "$$line" | cut -d: -f1); \
-	        lnum=$$(echo "$$line" | cut -d: -f2); \
-	        prev=$$((lnum - 1)); \
-	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
-	    done); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: silent error returns found in controllers (use LOG_ERR/LOG_RETURN, prev-line fprintf, or mark // raw-return-ok:<reason>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all controller error returns logged"
+	@./tools/lint/check_silent_error_returns.sh app/controllers/src controllers controller \
+	    "use LOG_ERR/LOG_RETURN, prev-line fprintf, or mark // raw-return-ok:<reason>"
 
 check-silent-errors-jobs:
 	@echo "══ LINT: silent error returns in jobs ══"
-	@HITS=$$(grep -rn -B1 'return -1;' app/jobs/src/ --include='*.c' \
-	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
-	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
-	    | while read -r line; do \
-	        file=$$(echo "$$line" | cut -d: -f1); \
-	        lnum=$$(echo "$$line" | cut -d: -f2); \
-	        prev=$$((lnum - 1)); \
-	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
-	    done); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: silent error returns found in jobs (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all job error returns logged"
+	@./tools/lint/check_silent_error_returns.sh app/jobs/src jobs job \
+	    "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"
 
 check-silent-errors-conditions:
 	@echo "══ LINT: silent error returns in conditions ══"
-	@HITS=$$(grep -rn -B1 'return -1;' app/conditions/src/ --include='*.c' \
-	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
-	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
-	    | while read -r line; do \
-	        file=$$(echo "$$line" | cut -d: -f1); \
-	        lnum=$$(echo "$$line" | cut -d: -f2); \
-	        prev=$$((lnum - 1)); \
-	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
-	    done); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: silent error returns found in conditions (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all condition error returns logged"
+	@./tools/lint/check_silent_error_returns.sh app/conditions/src conditions condition \
+	    "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"
 
 # Closes the bool/`return false;` blind spot of the four int-convention gates
 # above: flags a NEW swallowed call failure (if (!call(...)) return false; with
@@ -3841,14 +3768,7 @@ check-wallet-raw-prepare-log:
 
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
-	@for model in utxo block wallet_key wallet_tx; do \
-	    f=app/models/src/$$model.c; \
-	    test -f "$$f" \
-	    || { echo "FAIL: $$f missing (model file moved/renamed)"; exit 1; }; \
-	    grep -qE 'ar_register_before_save[[:space:]]*\(' "$$f" \
-	    || { echo "FAIL: $$f does not WIRE a before_save hook (no ar_register_before_save(...) call; a bare 'before_save' comment does not count)"; exit 1; }; \
-	done
-	@echo "  OK: critical models have before_save hooks"
+	@./tools/lint/check_before_save_hooks.sh
 
 # Move 4: every long-running thread goes through thread_registry_spawn{,_ex}.
 # Short-burst workers joined within the same function, and pthread_attr-using
@@ -3857,27 +3777,7 @@ check-before-save-hooks:
 # implementation in lib/util/src/thread_registry.c is implicitly skipped.
 check-pthread-create:
 	@echo "══ LINT: raw pthread_create outside thread_registry ══"
-	@HITS=$$(grep -rn 'pthread_create\s*(' lib/ app/ tools/ config/ --include='*.c' \
-	    | grep -v 'lib/test/' \
-	    | grep -v 'lib/util/src/thread_registry.c' \
-	    | grep -v 'thread_registry_spawn\|thread_registry_trampoline' \
-	    | grep -v 'raw-pthread-ok' \
-	    | while read -r line; do \
-	        f=$$(echo "$$line" | cut -d: -f1); \
-	        n=$$(echo "$$line" | cut -d: -f2); \
-	        prev=$$((n - 1)); \
-	        if [ "$$prev" -gt 0 ] && \
-	           sed -n "$${prev}p" "$$f" | grep -q 'raw-pthread-ok'; then \
-	            continue; \
-	        fi; \
-	        echo "$$line"; \
-	    done); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: raw pthread_create in production code (use thread_registry_spawn{,_ex} or mark // raw-pthread-ok: <reason>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: all pthread_create call sites accounted for"
+	@./tools/lint/check_pthread_create.sh
 
 # Move 11: every app/models/src/*.c either invokes validates_* macros
 # from app/models/include/models/activerecord.h, or carries an
@@ -4378,8 +4278,128 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-no-retired-agent-protocol check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-peer-floor-single-source check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
+# ── Lint umbrella ────────────────────────────────────────────────────────
+# LINT_GATES is the single ordered source of truth for the 87-gate umbrella
+# (E11 check-doc-accuracy cross-checks it against DEFENSIVE_CODING.md).
+#
+# Two execution modes:
+#   default            — tools/lint/run_lint.sh execs every gate's script
+#                        directly (no per-gate Make parse), times each in ms
+#                        (.cache/lint-timing/), and runs independent gates in
+#                        parallel (ZCL_LINT_JOBS workers). All gates run even
+#                        when some fail, so one pass reports every violation.
+#   ZCL_LINT_SERIAL=1  — legacy fallback: gates run as plain Make
+#                        prerequisites in listed order, no timing, stop at
+#                        first failure. Use if parallel lint ever misbehaves
+#                        on a host (and report it — the driver is the
+#                        maintained path).
+#
+# Wall-time budget (SOFT, warn-only — never fails the build): the umbrella
+# should stay <= 75 s wall on the dev reference host. Measured 2026-07-18:
+# serial p50 ~56 s (87 gates, warm cache); driver ~17-23 s at 8-12 jobs.
+# Per-gate ms lands in .cache/lint-timing/last-run.json and every run prints
+# the slowest 10, so a creeping gate is visible before it eats the budget.
+ZCL_LINT_JOBS ?= 8
+LINT_GATES := \
+    check-no-retired-agent-protocol \
+    check-build-epoch-integrity \
+    check-checkout-lock \
+    check-no-stray-untracked-source \
+    check-scanner-immunity \
+    check-git-hooks-installed \
+    check-malloc \
+    check-hotswap-dev-only \
+    check-hotswap-eligible-scope \
+    check-hotswap-static-state \
+    check-hotswap-swappable-shape \
+    check-release-no-dev-symbols \
+    check-stable-publish-contained \
+    check-raw-sqlite \
+    check-raw-malloc \
+    check-blob-read-bounds \
+    check-coins-lookup-nullcheck \
+    check-observability-pairing \
+    check-silent-errors-services \
+    check-silent-errors-controllers \
+    check-silent-errors-jobs \
+    check-silent-errors-conditions \
+    check-silent-errors-bool \
+    check-log-macro-return-type \
+    check-wallet-raw-prepare-log \
+    check-before-save-hooks \
+    check-pthread-create \
+    check-model-validation \
+    check-model-ar-lifecycle \
+    check-long-functions \
+    check-rpc-registrar \
+    check-lag-slo-observable \
+    check-lib-layering \
+    check-domain-purity \
+    check-core-include-boundary \
+    check-core-seal \
+    check-supervisor-registration \
+    check-test-registration \
+    check-typed-blocker \
+    check-blocker-escape-registered \
+    check-framework-shape \
+    check-framework-filename-suffix \
+    check-no-raw-clock-outside-platform \
+    check-sysinit-ordering \
+    check-sandbox-wired \
+    check-no-shellouts \
+    check-peer-floor-single-source \
+    check-proc-self-shim \
+    check-no-raw-sqlite-in-controllers \
+    check-supervisor-domain \
+    check-thread-supervision \
+    check-file-purpose \
+    check-group-purpose \
+    check-no-orphan-placement \
+    check-file-size-ceiling \
+    check-operator-needed-sink \
+    check-systemd-memory-budget \
+    check-condition-cooldown \
+    check-doc-accuracy \
+    check-doc-counts \
+    check-no-stale-pinned-facts \
+    check-markdown-links \
+    check-one-result-type \
+    check-service-result-convergence \
+    check-shape-includes-header \
+    check-projections-pure \
+    check-one-write-path \
+    check-no-authoritative-ram-state \
+    check-stage-advances-or-blocks \
+    check-no-silent-ready \
+    check-honest-witness \
+    check-consensus-parity \
+    check-no-new-repair-rung \
+    check-no-new-borrowed-seed \
+    check-no-new-coin-backfill-caller \
+    check-route-command-parity \
+    check-doc-no-false-deleted \
+    check-zclassicd-reach-allowlist \
+    check-stage-log-reorg-unsafe \
+    check-no-csr-lock-on-finalize-drive \
+    check-mint-skip-crypto-offline-only \
+    check-wire-harness-security-gate \
+    check-vcs-no-git \
+    check-vcs-no-sha1 \
+    check-vendor-provenance \
+    check-command-contract \
+    check-privileged-transition-receipt
+
+# The driver execs gate scripts directly, so the two gates backed by a built
+# tool (check-core-seal, check-observability-pairing) need their binaries
+# present before it starts; in serial mode those deps ride the check-* rules.
+ifeq ($(ZCL_LINT_SERIAL),1)
+lint: $(LINT_GATES)
+	@echo "══ LINT: all checks passed (serial) ══"
+else
+lint: tools/core_seal tools/check_observability_pairing
+	@tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_GATES)
 	@echo "══ LINT: all checks passed ══"
+endif
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
 # monolith (test_zcl). Both build from the same TEST_SRCS and cover the same
