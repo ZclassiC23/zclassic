@@ -150,7 +150,9 @@ supervisor_child_id thread_liveness_register(struct thread_liveness_child *c,
                                              int64_t progress_quiet_us)
 {
     if (!c || !name || !name[0]) return SUPERVISOR_INVALID_ID;
-    if (c->id != SUPERVISOR_INVALID_ID) return c->id;  /* idempotent */
+    supervisor_child_id existing =
+        atomic_load_explicit(&c->id, memory_order_acquire);
+    if (existing != SUPERVISOR_INVALID_ID) return existing;  /* idempotent */
 
     liveness_contract_init(&c->contract, name);
     /* Child-driven heartbeat: the supervisor never calls on_tick. */
@@ -164,21 +166,29 @@ supervisor_child_id thread_liveness_register(struct thread_liveness_child *c,
     atomic_store(&c->blocker_standing, false);
     snprintf(c->blocker_id, sizeof c->blocker_id, "thread_stalled_%s", name);
 
-    c->id = supervisor_register(&c->contract);  // supervisor-root-ok:cross-cutting-infra-thread
-    if (c->id == SUPERVISOR_INVALID_ID) {
+    supervisor_child_id id = supervisor_register(&c->contract);  // supervisor-root-ok:cross-cutting-infra-thread
+    /* Release-publish the id: restartable callers spawn the worker BEFORE
+     * this registration runs, so the worker reads c->id concurrently (see
+     * thread_liveness_worker_alive). Pairing this release store with the
+     * readers' acquire load means a worker that observes a valid id also
+     * observes the completed registry insertion above. */
+    atomic_store_explicit(&c->id, id, memory_order_release);
+    if (id == SUPERVISOR_INVALID_ID) {
         LOG_WARN("thread_liveness",
                  "[thread_liveness] register failed for '%s' — thread runs "
                  "UNsupervised this boot (registry full?)", name);
     }
-    return c->id;
+    return id;
 }
 
 void thread_liveness_beat(struct thread_liveness_child *c, int64_t progress)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
     if (progress >= 0)
-        supervisor_progress(c->id, progress);
-    supervisor_tick(c->id);
+        supervisor_progress(id, progress);
+    supervisor_tick(id);
     if (atomic_load(&c->blocker_standing)) {
         blocker_clear(c->blocker_id);
         atomic_store(&c->blocker_standing, false);
@@ -187,13 +197,15 @@ void thread_liveness_beat(struct thread_liveness_child *c, int64_t progress)
 
 void thread_liveness_retire(struct thread_liveness_child *c)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
     if (atomic_load(&c->blocker_standing)) {
         blocker_clear(c->blocker_id);
         atomic_store(&c->blocker_standing, false);
     }
-    supervisor_unregister(c->id);
-    c->id = SUPERVISOR_INVALID_ID;
+    supervisor_unregister(id);
+    atomic_store_explicit(&c->id, SUPERVISOR_INVALID_ID, memory_order_release);
 }
 
 /* ── Bounded auto-restart ──────────────────────────────────────────── */
@@ -205,7 +217,9 @@ supervisor_child_id thread_liveness_register_restartable(
     int64_t intensity_max, int64_t period_secs)
 {
     if (!c || !name || !name[0] || !entry) return SUPERVISOR_INVALID_ID;
-    if (c->id != SUPERVISOR_INVALID_ID) return c->id;  /* idempotent */
+    supervisor_child_id existing =
+        atomic_load_explicit(&c->id, memory_order_acquire);
+    if (existing != SUPERVISOR_INVALID_ID) return existing;  /* idempotent */
 
     /* Base registration (heartbeat-driven ROOT child, same as the plain path)
      * plus the restart wiring. Note the contract's on_stall is tl_on_stall,
@@ -235,30 +249,38 @@ supervisor_child_id thread_liveness_register_restartable(
 
 void thread_liveness_worker_alive(struct thread_liveness_child *c)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
-    supervisor_worker_alive(c->id);
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
+    supervisor_worker_alive(id);
 }
 
 void thread_liveness_worker_exited(struct thread_liveness_child *c)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
-    supervisor_worker_exited(c->id);
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
+    supervisor_worker_exited(id);
 }
 
 void thread_liveness_stop_begin(struct thread_liveness_child *c)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
     /* Mark complete FIRST so no future sweep restarts the worker, then take
      * restart_lock to drain any respawn already in flight on the supervisor
      * thread. After this returns, c->worker_tid is stable for the join. */
-    supervisor_child_complete(c->id);
+    supervisor_child_complete(id);
     if (atomic_load(&c->restart_lock_init))
         pthread_mutex_lock(&c->restart_lock);
 }
 
 void thread_liveness_stop_finish(struct thread_liveness_child *c)
 {
-    if (!c || c->id == SUPERVISOR_INVALID_ID) return;
+    if (!c) return;
+    supervisor_child_id id = atomic_load_explicit(&c->id, memory_order_acquire);
+    if (id == SUPERVISOR_INVALID_ID) return;
     if (atomic_load(&c->worker_tid_set)) {
         pthread_join(c->worker_tid, NULL);
         atomic_store(&c->worker_tid_set, false);
