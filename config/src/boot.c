@@ -932,8 +932,8 @@ static bool boot_register_maintenance_services(void)
     return zcl_service_kernel_register(&g_maintenance_kernel, &wallet_backup_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel, &db_maintenance_spec) &&
            bundle_exporter_register_service(&g_maintenance_kernel, g_datadir) &&
-           boot_register_network_monitor_service(&g_maintenance_kernel,
-                                                 &g_node_db);
+           boot_register_network_monitor_service(&g_maintenance_kernel, &g_node_db) &&
+           boot_register_network_crawler_service(&g_maintenance_kernel);
 }
 
 static void boot_step_start_disk_and_ibd_guards(const char *datadir)

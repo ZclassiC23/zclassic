@@ -34,6 +34,7 @@
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ── app/-layer accessors, reached by FORWARD DECLARATION ONLY ──────────
@@ -68,6 +69,17 @@ extern int node_db_sync_get_tip_height(struct node_db *ndb);
 extern bool address_index_enabled(void);
 extern bool address_index_get_cursor(sqlite3 *db, int64_t *cursor_out);
 
+/* app/jobs/src/txindex_projection.c (jobs/txindex_projection.h) — the
+ * txindex fold reads the shared progress.kv kernel handle (progress_store_db),
+ * exactly like address_index above. */
+extern bool txindex_projection_enabled(void);
+extern bool txindex_projection_get_cursor(sqlite3 *db, int64_t *cursor_out);
+
+/* app/models/src/zslp_ledger.c (models/zslp_ledger.h) — the ZSLP ledger folds
+ * into node.db (app_runtime_node_db), like op_return_index above. */
+extern bool zslp_ledger_get_cursor(struct node_db *ndb, int32_t *out_height,
+                                   uint8_t out_digest[32]);
+
 /* ── per-index get_cursor() wrappers ─────────────────────────────────── */
 
 static int64_t cc_get_op_return_cursor(void)
@@ -94,6 +106,32 @@ static int64_t cc_get_address_index_cursor(void)
         return CATALOG_CURSOR_UNAVAILABLE;
     }
     return cursor;
+}
+
+static int64_t cc_get_txindex_cursor(void)
+{
+    if (!txindex_projection_enabled()) return CATALOG_CURSOR_UNAVAILABLE;
+    sqlite3 *db = progress_store_db();
+    if (!db) return CATALOG_CURSOR_UNAVAILABLE;
+    int64_t cursor = -1;
+    if (!txindex_projection_get_cursor(db, &cursor)) {
+        LOG_WARN("catalog_completeness", "txindex_projection_get_cursor failed");
+        return CATALOG_CURSOR_UNAVAILABLE;
+    }
+    return cursor;    /* -1 == "nothing folded yet", a legit low cursor */
+}
+
+static int64_t cc_get_zslp_ledger_cursor(void)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
+    int32_t h = -1;
+    uint8_t digest[32];
+    if (!zslp_ledger_get_cursor(ndb, &h, digest)) {
+        LOG_WARN("catalog_completeness", "zslp_ledger_get_cursor failed");
+        return CATALOG_CURSOR_UNAVAILABLE;
+    }
+    return (int64_t)h;    /* -1 == "nothing folded yet", a legit low cursor */
 }
 
 static int64_t cc_get_view_integrity_cursor(void)
@@ -186,6 +224,8 @@ struct catalog_index_entry {
 static const struct catalog_index_entry g_catalog_indexes[] = {
     { "op_return_index",     cc_get_op_return_cursor,          true  },
     { "address_index",       cc_get_address_index_cursor,      false },
+    { "txindex",             cc_get_txindex_cursor,            false },
+    { "zslp_ledger",         cc_get_zslp_ledger_cursor,        false },
     { "sprout_anchor",       cc_get_sprout_anchor_cursor,       true  },
     { "sapling_anchor",      cc_get_sapling_anchor_cursor,      true  },
     { "nullifier_history",   cc_get_nullifier_cursor,          true  },
@@ -246,4 +286,48 @@ int64_t catalog_completeness_worst_lag(const struct catalog_index_status *rows,
         if (rows[i].lag > worst) worst = rows[i].lag;
     }
     return worst;
+}
+
+const struct catalog_index_status *catalog_completeness_worst_over(
+    const struct catalog_index_status *rows, size_t n, int64_t threshold)
+{
+    if (!rows) return NULL;
+    const struct catalog_index_status *worst = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (!rows[i].enabled) continue;
+        if (rows[i].lag <= threshold) continue;
+        if (!worst || rows[i].lag > worst->lag) worst = &rows[i];
+    }
+    return worst;
+}
+
+enum catalog_verdict catalog_completeness_verdict(
+    const struct catalog_index_status *rows, size_t n,
+    int handshaked_peers, int peer_floor,
+    int64_t census_age_s, int64_t census_max_age_s,
+    char *out, size_t out_cap)
+{
+    /* BLOCKED dominates: an enabled index lagging at all (threshold 0) is the
+     * primary omniscience deficit — a peer/census gap is secondary. */
+    const struct catalog_index_status *lag =
+        catalog_completeness_worst_over(rows, n, 0);
+    if (lag) {
+        if (out && out_cap)
+            snprintf(out, out_cap, "blocked:%s@%lld",
+                     lag->name ? lag->name : "?", (long long)lag->cursor);
+        return CATALOG_VERDICT_BLOCKED;
+    }
+    if (handshaked_peers < peer_floor) {
+        if (out && out_cap)
+            snprintf(out, out_cap, "degraded:peers");
+        return CATALOG_VERDICT_DEGRADED;
+    }
+    if (census_age_s < 0 || census_age_s > census_max_age_s) {
+        if (out && out_cap)
+            snprintf(out, out_cap, "degraded:census");
+        return CATALOG_VERDICT_DEGRADED;
+    }
+    if (out && out_cap)
+        snprintf(out, out_cap, "omniscient");
+    return CATALOG_VERDICT_OMNISCIENT;
 }
