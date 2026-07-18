@@ -181,6 +181,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(net_framing_dos) \
     X(net_handshake_adversarial) \
     X(net_ban_persistence) \
+    X(net_census) \
     X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
     X(block_source_policy_status_json) \

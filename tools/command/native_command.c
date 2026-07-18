@@ -364,6 +364,11 @@ static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
 static bool g_bridge_rpc_ready;
 
+const char *zcl_native_command_datadir(void)
+{
+    return g_bridge_datadir;
+}
+
 static void bridge_ensure_rpc_client(void)
 {
     if (g_bridge_rpc_ready)

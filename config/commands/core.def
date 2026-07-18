@@ -422,6 +422,80 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_NONE,
     "peer-mutation binding is a Wave 2.2 deliverable")
+/* Network-omniscience operator surface over the banked census + topology
+ * stores (node_census, census_observations under <datadir>/peers_projection.db;
+ * topology_edges, topology_sweeps under <datadir>/topology.db). Read-only;
+ * degrade gracefully when the indexer lane has not populated a table yet. See
+ * tools/command/native_net_census.c. */
+ZCL_COMMAND_READY_READ(
+    "core.network.census", "core.network", "",
+    "Paginated list of every node the crawler has seen",
+    "Nodes from the banked network census (node_census) read from "
+    "<datadir>/peers_projection.db at call time, newest-last_seen first, "
+    "bounded to a hard page cap; filters --ua-contains/--min-height/"
+    "--seen-within and --page/--limit. SQL fallback: SELECT hex(ip),port,"
+    "user_agent,protocol_version,last_reported_height,last_seen FROM "
+    "node_census ORDER BY last_seen DESC. Says 'census empty: indexer not "
+    "yet populated' when the store is absent.", ZCL_COMMAND_LIST_BUDGET,
+    "network,census,nodes,useragent,version,peers,population,omniscience",
+    "zcl.network_census.input.v1", "zcl.network_census.v1",
+    "ua-contains,min-height,seen-within,page,limit", "",
+    "zclassic23 core network census --ua-contains=MagicBean --limit=25",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_network_census)
+ZCL_COMMAND_READY_READ(
+    "core.network.node", "core.network", "",
+    "Everything known about one node (census row, history, edges)",
+    "The census row for one ip[:port] plus its bounded observation history "
+    "(census_observations in peers_projection.db) and the bounded topology "
+    "edges referencing it (topology_edges in topology.db), read at call time. "
+    "SQL fallback: SELECT * FROM node_census WHERE ip_to_str(ip)=? AND port=?. "
+    "Reports found=false when the endpoint is not in the census.", 0,
+    "network,node,peer,history,edges,observations,topology",
+    "zcl.network_node.input.v1", "zcl.network_node.v1", "target", "target",
+    "zclassic23 core network node 1.2.3.4:8033",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_network_node)
+ZCL_COMMAND_READY_READ(
+    "core.network.versions", "core.network", "",
+    "User-agent / version distribution across the census",
+    "Distribution of user_agent strings across the census with each "
+    "bucket's node count, integer share (basis points), and max reported "
+    "height, descending by count, read at call time. SQL fallback: SELECT "
+    "user_agent, COUNT(*) FROM node_census GROUP BY user_agent ORDER BY 2 "
+    "DESC (peers_projection.db).", ZCL_COMMAND_LIST_BUDGET,
+    "network,versions,useragent,magicbean,distribution,census",
+    "zcl.command.empty_input.v1", "zcl.network_versions.v1", "", "",
+    "zclassic23 core network versions",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_network_versions)
+ZCL_COMMAND_READY_READ(
+    "core.network.graph", "core.network", "",
+    "Topology stats: node/edge counts and top-advertised endpoints",
+    "Network graph summary from topology_edges: node/edge/observation "
+    "counts, how many advertised endpoints are themselves in the census, "
+    "the last crawler sweep's finished_unix, and the top-10 most-advertised "
+    "endpoints, read at call time. SQL fallback: SELECT advertised_ip,"
+    "advertised_port, SUM(times_seen) FROM topology_edges GROUP BY "
+    "advertised_ip, advertised_port ORDER BY 3 DESC LIMIT 10 (topology.db).",
+    ZCL_COMMAND_LIST_BUDGET,
+    "network,graph,topology,edges,advertised,connectivity,census",
+    "zcl.command.empty_input.v1", "zcl.network_graph.v1", "", "",
+    "zclassic23 core network graph",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_network_graph)
 ZCL_COMMAND_BRANCH("core.network.onion", "core.network",
                    "Embedded onion service", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(

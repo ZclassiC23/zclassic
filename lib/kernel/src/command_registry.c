@@ -881,6 +881,17 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "after") == 0 ||
                    strcmp(key, "after_epoch") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "min-height") == 0) {
+            /* net census height floor: a non-negative advertised height. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "seen-within") == 0) {
+            /* net census recency window in seconds (0..1y). */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 31536000;
+        } else if (strcmp(key, "page") == 0) {
+            /* net census zero-based page index. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 1000000;
         } else if (strcmp(key, "timeout_ms") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 300000;

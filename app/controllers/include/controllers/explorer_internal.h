@@ -76,6 +76,7 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
         { "/explorer/events",   "Events",    "events"   },
         { "/explorer/factoids", "Factoids",  "factoids" },
         { "/explorer/names",    "Names",     "names"    },
+        { "/explorer/network",  "Network",   "network"  },
         { "/explorer/market",   "Market",    "market"   },
         { "/explorer/swaps",    "Swaps",     "swaps"    },
     };
@@ -107,6 +108,7 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     "<a href='/explorer/events'>Events</a>" \
     "<a href='/explorer/factoids'>Factoids</a>" \
     "<a href='/explorer/names'>Names</a>" \
+    "<a href='/explorer/network'>Network</a>" \
     "<a href='/explorer/market'>Market</a>" \
     "<a href='/explorer/swaps'>Swaps</a>" \
     "<div class='search'>" \

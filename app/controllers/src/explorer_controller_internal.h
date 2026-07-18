@@ -118,6 +118,7 @@ size_t serve_hodl(uint8_t *r, size_t max);
 size_t serve_css(uint8_t *r, size_t max);
 size_t serve_events(uint8_t *r, size_t max);
 size_t serve_names(uint8_t *r, size_t max);
+size_t serve_network(uint8_t *r, size_t max);
 size_t serve_market(uint8_t *r, size_t max);
 size_t serve_swaps(uint8_t *r, size_t max);
 size_t serve_messages(uint8_t *r, size_t max);

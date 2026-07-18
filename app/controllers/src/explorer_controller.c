@@ -474,6 +474,8 @@ static const struct explorer_shortcut_route g_explorer_shortcuts[] = {
     { "/factoids/", "/explorer/factoids" },
     { "/names", "/explorer/names" },
     { "/names/", "/explorer/names" },
+    { "/network", "/explorer/network" },
+    { "/network/", "/explorer/network" },
     { "/market", "/explorer/market" },
     { "/market/", "/explorer/market" },
     { "/swaps", "/explorer/swaps" },
@@ -582,6 +584,9 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/names") == 0 || strcmp(path, "/explorer/names/") == 0)
         return serve_names(response, response_max);
+
+    if (strcmp(path, "/explorer/network") == 0 || strcmp(path, "/explorer/network/") == 0)
+        return serve_network(response, response_max);
 
     if (strcmp(path, "/explorer/market") == 0 || strcmp(path, "/explorer/market/") == 0)
         return serve_market(response, response_max);
