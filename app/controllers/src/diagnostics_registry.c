@@ -49,6 +49,7 @@
 #include "services/block_pruning_service.h"
 #include "services/segment_sealer_service.h"
 #include "services/op_return_backfill_service.h"
+#include "services/zslp_ledger_backfill_service.h"
 #include "net/rom_seed.h"
 #include "net/rom_fetch.h"
 #include "services/chain_evidence_authority_service.h"

@@ -239,7 +239,7 @@ int test_rpc(void) {
 
     printf("diagnostics registry is the complete catalog manifest... ");
     {
-        enum { EXPECTED_DIAGNOSTICS_DUMPERS = 105 };
+        enum { EXPECTED_DIAGNOSTICS_DUMPERS = 106 };
         const size_t count = diagnostics_dumper_count();
         char csv[4096];
         int csv_len = diagnostics_subsystems_csv(csv, sizeof(csv));

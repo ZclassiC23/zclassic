@@ -328,6 +328,14 @@
                     "rows-by-known-tag counts (znam/zslp/zanc/other).",
                     "app/services/src/op_return_backfill_service.c",
                     "lib/test/src/test_op_return_index.c"),
+    DIAG_PROJECTION("zslp_ledger", zslp_ledger_dump_state_json,
+                    "ZSLP per-(token,outpoint) ledger: backfill cursor height "
+                    "+ running digest, provable_tip, blocks_remaining, "
+                    "ticks/last_folded_height, total_rows + unspent_rows. The "
+                    "debit-correct token-balance projection (zslp_ledger_"
+                    "balance sums a holder's unspent rows).",
+                    "app/services/src/zslp_ledger_backfill_service.c",
+                    "lib/test/src/test_zslp_ledger.c"),
     DIAG_PROJECTION("wallet_projection", wallet_projection_dump_state_json,
                     "wallet view projection: public-only "
                     "address/tx/UTXO/note counts, total value, cursor, "

@@ -16,6 +16,7 @@
 #include "models/database.h"
 #include "models/activerecord.h"
 #include "models/op_return_index.h"
+#include "models/zslp_ledger.h"
 #include "models/znam.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
@@ -349,6 +350,13 @@ bool db_explorer_index_truncate(struct node_db *ndb)
                      "db_explorer_index_truncate: DELETE FROM %s failed",
                      tables[i]);
     }
+    /* The per-outpoint ledger is DOWNSTREAM of these source projections
+     * (zslp_transfers / tx_outputs / tx_inputs), so a reindex must reset it
+     * — rows AND cursor/digest — so the backfill re-derives it once the
+     * source tables are repopulated. */
+    if (!zslp_ledger_truncate(ndb))
+        LOG_FAIL("explorer",
+                 "db_explorer_index_truncate: zslp_ledger reset failed");
     return true;
 }
 
@@ -545,8 +553,12 @@ static void index_op_return(struct node_db *ndb, const struct transaction *tx,
         LOG_WARN("explorer", "index_op_return: op_returns save failed at h=%d",
                  height);
 
-    if (is_slp)
+    if (is_slp) {
         explorer_index_apply_slp(ndb, tx, &slpmsg, height);
+        /* Debit-correct per-outpoint ledger (rows only; the backfill
+         * service owns the cursor/digest). See models/zslp_ledger.h. */
+        (void)zslp_ledger_apply_slp_live(ndb, tx, &slpmsg, height);
+    }
 
     struct znam_message zm;
     if (znam_parse(script, len, &zm))
