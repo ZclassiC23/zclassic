@@ -14,9 +14,10 @@
  * are. Those legacy printf lines remain the volume the filter does not
  * cover; see lib/util/include/util/log_macros.h.
  *
- * The emitted line FORMAT is unchanged (nodelog_controller.c level-sniffs
- * the "[domain] WARN:" prefix from the rendered text) — this filter only
- * decides whether a line is rendered at all, never how.
+ * The emitted line FORMAT is produced by zcl_log_emit_at() below:
+ * "YYYY-MM-DDTHH:MM:SSZ LEVEL [domain] file:line func(): msg" — a single
+ * ISO-8601 UTC timestamp + level token prefix so nodelog_controller.c can
+ * parse time/level positionally instead of sniffing rendered text.
  */
 
 #ifndef ZCL_LOG_LEVEL_H
@@ -45,5 +46,13 @@ enum zcl_log_level zcl_log_level_get(void);
  * callers must treat an unrecognized value as "keep the current level",
  * never as a reason to abort boot. */
 bool zcl_log_level_from_string(const char *s, enum zcl_log_level *out);
+
+/* Emit one structured LOG_* line to stderr: "YYYY-MM-DDTHH:MM:SSZ LEVEL "
+ * prefix, then the caller's formatted body, as a single flockfile'd
+ * sequence so lines from different threads never interleave. Called only
+ * by ZCL_LOG_EMIT_AT (log_macros.h) after the level gate passes — do not
+ * call directly; use the LOG_* / GUARD* macros. */
+void zcl_log_emit_at(enum zcl_log_level level, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 
 #endif /* ZCL_LOG_LEVEL_H */

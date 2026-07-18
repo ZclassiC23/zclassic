@@ -621,6 +621,127 @@ int test_rpc(void) {
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("getnodelog level filter on ISO-timestamped LOG_* lines... ");
+    {
+        char dir_template[] = "/tmp/zcl_nodelog_lvl_XXXXXX";
+        char *dir = mkdtemp(dir_template);
+        char log_path[1024] = {0};
+        bool ok = dir != NULL;
+        if (ok) {
+            int n = snprintf(log_path, sizeof(log_path), "%s/node.log", dir);
+            ok = n > 0 && (size_t)n < sizeof(log_path);
+        }
+        if (ok) {
+            FILE *fp = fopen(log_path, "w");
+            ok = fp != NULL;
+            if (fp) {
+                /* Current LOG_* format (zcl_log_emit_at): ISO-8601 UTC
+                 * timestamp + level token prefix; plus one pre-timestamp
+                 * legacy line to prove the old "WARN:" sniffing survives. */
+                ok = fputs("2026-06-23T18:34:18Z ERROR [sync] sync.c:1 f(): nlv_err\n", fp) >= 0;
+                ok = ok && fputs("2026-06-23T18:34:19Z WARN [net] net.c:2 g(): nlv_warn\n", fp) >= 0;
+                ok = ok && fputs("2026-06-23T18:34:20Z INFO [net] net.c:3 h(): nlv_info\n", fp) >= 0;
+                ok = ok && fputs("[net] WARN: net.c:4 old(): nlv_legacy_warn\n", fp) >= 0;
+                ok = ok && fclose(fp) == 0;
+            }
+        }
+
+        /* Fake "now" = 2026-06-23T18:34:30Z: every dated line above is
+         * within the 60 s since window. */
+        struct rpc_fake_clock fake = { .wall_ms = 1782239670000LL };
+        const clock_iface_t iface = {
+            .now_monotonic_ns = rpc_fake_now_mono,
+            .now_wall_ms = rpc_fake_now_wall,
+            .self = &fake,
+        };
+        bool clock_installed = false;
+        if (ok) {
+            clock_set_default(&iface);
+            clock_installed = true;
+            diagnostics_controller_set_state(NULL, dir);
+        }
+
+        /* level=warn keeps WARN+ERROR, drops INFO; reverse scan order. */
+        if (ok) {
+            struct json_value params;
+            json_init(&params);
+            struct json_value result;
+            json_init(&result);
+            json_set_array(&params);
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, "nlv_");
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 60);
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 10);
+            ok = ok && json_push_back(&params, &v);
+            json_set_str(&v, "warn");
+            ok = ok && json_push_back(&params, &v);
+            json_free(&v);
+
+            struct rpc_table tbl;
+            rpc_table_init(&tbl);
+            register_diagnostics_rpc_commands(&tbl);
+            ok = rpc_table_execute(&tbl, "getnodelog", &params, &result);
+            if (ok) {
+                const struct json_value *lines = json_get(&result, "lines");
+                ok = lines && lines->type == JSON_ARR && json_size(lines) == 3;
+                ok = ok && strstr(json_get_str(json_at(lines, 0)),
+                                  "nlv_legacy_warn") != NULL;
+                ok = ok && strstr(json_get_str(json_at(lines, 1)),
+                                  "nlv_warn") != NULL;
+                ok = ok && strstr(json_get_str(json_at(lines, 2)),
+                                  "nlv_err") != NULL;
+            }
+            json_free(&params);
+            json_free(&result);
+        }
+
+        /* level=error keeps only the ERROR line. */
+        if (ok) {
+            struct json_value params;
+            json_init(&params);
+            struct json_value result;
+            json_init(&result);
+            json_set_array(&params);
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, "nlv_");
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 60);
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 10);
+            ok = ok && json_push_back(&params, &v);
+            json_set_str(&v, "error");
+            ok = ok && json_push_back(&params, &v);
+            json_free(&v);
+
+            struct rpc_table tbl;
+            rpc_table_init(&tbl);
+            register_diagnostics_rpc_commands(&tbl);
+            ok = rpc_table_execute(&tbl, "getnodelog", &params, &result);
+            if (ok) {
+                const struct json_value *lines = json_get(&result, "lines");
+                ok = lines && lines->type == JSON_ARR && json_size(lines) == 1;
+                ok = ok && strstr(json_get_str(json_at(lines, 0)),
+                                  "nlv_err") != NULL;
+            }
+            json_free(&params);
+            json_free(&result);
+        }
+
+        diagnostics_controller_set_state(NULL, "");
+        if (clock_installed)
+            clock_reset_default();
+        if (dir) {
+            unlink(log_path);
+            rmdir(dir);
+        }
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("value_from_amount... ");
     {
         struct json_value v;
