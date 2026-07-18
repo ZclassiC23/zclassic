@@ -1,12 +1,18 @@
 # Agent Protocol — Worker Startup & Completion
 
-**Every worker agent in a worktree (`~/github/zclassic23-N`) MUST follow
-this protocol exactly.** It is the contract between the orchestrator and
-the workers. Deviating breaks coordination and risks data loss.
+**Every worker agent in a worktree MUST follow this protocol exactly.** It
+is the contract between the orchestrator and the workers. Deviating breaks
+coordination and risks data loss.
 
-**Workflow:** workers push DIRECTLY to `main`. No feature branches. No
-orchestrator merge step. The remote has exactly one branch (`main`),
-and every worker rebases on top of it before pushing.
+**Workflow:** each worker runs in its own worktree on its own branch —
+`lane/<slug>` or `wf/<slug>`, named by the assignment doc. Workers never
+commit on `main` and never push. The worker self-gates (build + focused
+tests + `make lint`) and commits its green work on the lane branch. The
+orchestrator (the main checkout) reviews the green branch, merges it into
+`main`, and pushes. Every worktree shares the one local object store, so
+"hand off to the orchestrator" is a branch name and a head SHA, not a push.
+After the merge lands, the worker's worktree is stale and is reclaimed by
+`tools/scripts/worktree_gc.sh` (dry-run by default; the owner applies).
 
 ---
 
@@ -14,21 +20,18 @@ and every worker rebases on top of it before pushing.
 
 ```
 1. Identify yourself
-   $ pwd                                  # e.g., ~/github/zclassic23-2
-   → worktree ID = "wt2"  (extract suffix after "zclassic23-")
-   → if no suffix → you are the orchestrator; read the orchestrator section
-                    of REFACTOR_STATUS.md, NOT a worker assignment
+   $ pwd                                  # e.g. ~/github/zclassic23-2 or
+                                          # .../.claude/worktrees/wf_<slug>
+   → worktree ID = the directory name ("wt2", "wf_env-hygiene", ...)
+   → if you are in the bare main checkout → you are the orchestrator; review
+     in-flight lanes and merge green branches, do NOT take a worker assignment
 
-2. Sync from origin (always main, no feature branches)
-   $ git fetch origin
-   $ git checkout main
-   $ git pull --ff-only origin main
+2. Load the live state (docs, not just code)
+   $ cat docs/HANDOFF.md                  # current live facts — read FIRST
+   $ cat docs/work/FORWARD_PLAN.md        # THE plan
+   $ cat docs/FRAMEWORK.md                # canonical architecture (reference)
 
-3. Load the architecture
-   $ cat docs/FRAMEWORK.md                # canonical architecture
-   $ cat docs/REFACTOR_STATUS.md          # current phase + your row in "In flight"
-
-4. Load your assignment
+3. Load your assignment
    $ ls docs/work/wt<N>-*.md docs/work/wt-*.md   # specific + cross-worker
    $ for f in docs/work/wt<N>-*.md docs/work/wt-*.md; do
        [ -e "$f" ] || continue
@@ -38,23 +41,23 @@ and every worker rebases on top of it before pushing.
    # `wt<N>-*.md` are worker-specific. `wt-*.md` are cross-worker — claim by
    # marking IN PROGRESS (wt<N>). First worker to mark wins; second worker
    # skips it and picks the next READY assignment.
-   # SKIP any whose Status starts with "✅ DONE — merged" — work is closed.
+   # SKIP any whose Status starts with "✅ DONE" — work is closed.
    # SKIP any whose Status starts with "QUEUED" — gated on prerequisite.
    $ cat docs/work/<chosen-file>           # full spec — branch name, scope, tasks
 
-5. Verify the assignment doc's "Status" section: DONE → report to user;
+4. Verify the assignment doc's "Status" section: DONE → report to user;
    BLOCKED/FAILED → re-read, retry or escalate; READY/IN PROGRESS (wt<N>) → proceed.
 
-6. Stay on main (see Workflow note above — commit directly to main).
-   - **IGNORE any `**Branch:**` field at the top of older assignment docs.**
-     That was a legacy of the feature-branch workflow; the field is dead.
-     You stay on `main` regardless of what the doc says.
+5. Check out YOUR branch — the assignment's **Branch:** field is authoritative.
+   $ git switch -c <lane>/<slug> main     # fresh lane off current main, or
+   $ git switch <lane>/<slug>             # resume the existing lane branch
+   Never commit on `main` itself. If the worktree is already on the right
+   lane branch, stay on it.
 
-7. Mark in-progress + push
+6. Mark in-progress
    - Edit the assignment doc's Status section to "IN PROGRESS (wt<N>)"
    - $ git add docs/work/<file>
-   - $ git commit -m "wt<N>: mark <slug> in progress"
-   - $ git push origin main                   # see "Push discipline" below
+   - $ git commit -m "wt<N>: mark <slug> in progress"     # on YOUR lane branch
 ```
 
 Then **execute the assignment's Tasks section in order**.
@@ -66,14 +69,17 @@ Then **execute the assignment's Tasks section in order**.
 Each Task has a **scope** (exact files) and an **acceptance test** (concrete
 check that proves done). For each task:
 
-1. `git pull --rebase origin main` to stay current.
-2. Implement.
-3. Run the acceptance test (`make test_parallel`, build, lint).
-4. **Green:** `git add` the specific files, commit, `git push origin main`.
-5. **Red:** debug; never commit a broken state. Stuck > 30 min → append a
+1. Implement — stay inside the assignment's file scope.
+2. Run the acceptance test (`make test_parallel` / focused group, build, lint).
+3. **Green:** `git add` the specific files, commit on the lane branch.
+4. **Red:** debug; never commit a broken state. Stuck > 30 min → append a
    `BLOCKED` note to the assignment.
 
 One commit per task — no megacommits.
+
+On a long-lived lane, rebase onto `main` (or merge `main` in) between tasks
+so the orchestrator's final merge stays small. Resolve conflicts in your
+lane, never on `main`.
 
 ---
 
@@ -82,27 +88,26 @@ One commit per task — no megacommits.
 - **Subject < 70 chars, imperative:** "add CONDITION macro", not "added".
 - **Body** explains the *why*; the *what* is in the diff.
 - **Co-author trailer** per the convention in `CLAUDE.md` (current model).
-- **No `--no-verify`** (hooks are load-bearing). **No `--amend` after push** —
-  always new commits.
+- **No `--no-verify`** (hooks are load-bearing). **No `--amend` once the
+  orchestrator has merged** — fix mistakes with a NEW commit.
 
 ---
 
-## Push discipline — DIRECTLY TO MAIN
+## Integration discipline — branch + merge, not push-to-main
 
-Push to `origin/main` after every committed task. On non-fast-forward
-(another worker pushed first):
+- Workers do **not** push — not `main`, not the lane branch, nothing. All
+  worktrees share one local object store, so the orchestrator sees your lane
+  branch and its head SHA the moment you commit. The orchestrator is the
+  only pusher, and it pushes `main` only.
+- Hand off with the exact branch name + head SHA + gate results in your
+  completion report. The orchestrator reviews the diff (`git log main..<lane>`
+  / `git diff main...<lane>`), merges green lanes into `main`, and pushes.
+- If `main` moved while you worked, rebase/merge it into your lane and
+  re-run the gates BEFORE reporting done — the orchestrator merges only
+  lanes that are green against current `main`.
 
-```bash
-git pull --rebase origin main      # rebase on top of theirs
-git push origin main               # retry
-```
-
-Conflicts are unlikely (workers own different scopes). If a rebase conflict
-takes > 10 min, `git rebase --abort`, stash, `git pull --ff-only`, re-read the
-file the other worker changed, stash pop, resolve, commit, push.
-
-**Never `git push --force` or `--force-with-lease` to any branch.** Fix
-mistakes with a NEW commit; let the orchestrator clean up history.
+**Never `git push --force` or `--force-with-lease` to any branch.** Never
+rebase another worker's lane.
 
 ---
 
@@ -125,18 +130,25 @@ When all tasks pass:
    report it, don't ship it.
 
 2. **Update the assignment doc:** set Status to
-   `✅ DONE — pushed YYYY-MM-DD` (with commit sha), and append a `## Completion
-   (wt<N>, YYYY-MM-DD)` section covering: summary, which TOP 10 BENCHMARK
-   (REFACTOR_STATUS.md) it moved and by how much (or what it unblocks),
-   commits, files added/modified, acceptance verification (incl. the live
-   check), and any surprises/follow-ups.
+   `✅ DONE — ready for merge (branch <lane>, head <sha>)`, and append a
+   `## Completion (wt<N>, YYYY-MM-DD)` section covering: summary, which TOP
+   10 BENCHMARK (REFACTOR_STATUS.md) it moved and by how much (or what it
+   unblocks), commits, files added/modified, acceptance verification (incl.
+   the live check), and any surprises/follow-ups. Commit that on the lane
+   branch.
 
-3. **Push:** `git commit -m "wt<N>: complete <slug>"`, `git push origin main`.
+3. **Report to the user:** completed `<slug>`, lane branch `<lane>` at
+   `<sha>`, gates green, ready for orchestrator merge.
 
-4. **Report to the user:** completed `<slug>`, pushed to main.
+4. **The orchestrator merges.** It reviews the lane, merges into `main`,
+   pushes, and updates REFACTOR_STATUS.md. A lane is not landed until the
+   merge commit is on `main`.
 
-The orchestrator does NOT merge — your commits are already on main. It only
-writes assignments, updates `REFACTOR_STATUS.md`, and curates the pipeline.
+5. **Self-clean after the merge.** Once your branch is merged, your worktree
+   is stale: `tools/scripts/worktree_gc.sh` (dry-run) will classify it SAFE
+   (merged + clean) and the owner reclaims it with `--apply`. Never delete a
+   worktree or branch by hand — `rm -rf` leaves stale git admin state and
+   bypasses the GC's protect list.
 
 ---
 
@@ -155,23 +167,25 @@ In this priority order:
 
 1. Re-read `docs/FRAMEWORK.md` for the architectural shape.
 2. Re-read your assignment doc — it has a Tasks section in order.
-3. Re-read `docs/REFACTOR_STATUS.md` to see where you fit in the bigger picture.
+3. Re-read `docs/HANDOFF.md` and `docs/REFACTOR_STATUS.md` to see where you fit in the bigger picture.
 4. Check the existing codebase for examples (e.g., for Job shape, look at `app/jobs/src/header_admit_stage.c` — the canonical stage adopter).
-5. If still stuck > 30 min: append `BLOCKED: <reason>` to your assignment, push, report to user. Do NOT guess and ship questionable code.
+5. If still stuck > 30 min: append `BLOCKED: <reason>` to your assignment, commit it on your lane branch, report to user. Do NOT guess and ship questionable code.
 
 ---
 
 ## Forbidden moves
 
-- ❌ Creating new branches on `origin` (workers push to main only).
-- ❌ **Pushing ANY non-main branch to `origin`**, even by accident. If your local checkout has stale feature branches from the old workflow, run `git branch -D <name>` to delete them locally before doing any `git push`. **NEVER `git push --all` or `git push --mirror`** — those push every local branch.
+- ❌ Committing directly on `main` in a worker worktree — `main` is the orchestrator's.
+- ❌ **Pushing ANY branch to `origin`** — workers never push; the orchestrator pushes `main` only. **NEVER `git push --all` or `git push --mirror`** — those push every local branch (hundreds of stale lanes live locally).
+- ❌ Merging your own lane into `main` — the orchestrator reviews and merges.
 - ❌ Editing `docs/REFACTOR_STATUS.md` directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).
 - ❌ Touching files outside your assignment's scope.
 - ❌ `git push --force` / `--force-with-lease` to ANY branch.
 - ❌ Deleting another worker's commits via rebase-and-overwrite.
-- ❌ `--no-verify`, `--amend` after push, skipping tests "just this once".
+- ❌ `--no-verify`, `--amend` after the orchestrator's merge, skipping tests "just this once".
 - ❌ Editing CLAUDE.md without orchestrator sign-off (it's auto-loaded into every session).
 - ❌ Writing code that doesn't match one of the 8 framework shapes.
+- ❌ Removing worktrees or branches by hand (`rm -rf`, `git branch -D`) — that is `tools/scripts/worktree_gc.sh`'s job, under its protect list, with the owner applying.
 
 ---
 
@@ -179,8 +193,8 @@ In this priority order:
 
 Whether you finished or not:
 
-1. `git status` — verify clean (or known WIP).
-2. `git push origin main` — back up.
-3. Update assignment Status: `✅ DONE — pushed YYYY-MM-DD` if finished, else
-   `IN PROGRESS (wt<N>) — paused at task <X>` (and `git push origin main`).
-4. Report briefly to user.
+1. `git status` — verify clean, or commit the known WIP on your lane branch
+   (the shared object store is the backup; no push needed or wanted).
+2. Update assignment Status: `✅ DONE — ready for merge (branch <lane>, head
+   <sha>)` if finished, else `IN PROGRESS (wt<N>) — paused at task <X>`.
+3. Report briefly to user: lane branch, head SHA, gate state.

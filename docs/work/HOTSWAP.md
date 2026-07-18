@@ -234,11 +234,13 @@ build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" \
 make hotswap-sim
 ```
 
-`make hotswap` and `dev.hotswap.apply` remain contained. They do not treat
-dev-lane eligibility as publication authority and never reach the commit.
-
-No process is swapped during containment. Use the simulation and focused
-loader tests as the end-to-end proof surfaces.
+For the manifest/staging mechanism, `make hotswap` and
+`tools/dev/hotswap-running-dev.sh` remain contained: both refuse before
+building, loading, forwarding, or registry replacement, and the staging path
+itself stops before the commit. `dev.hotswap.apply` and `dev.hotswap.probe`
+are NOT staging entry points — they are the live module-ABI commands
+described under "Real module ABI" above. Use the simulation and focused
+loader tests as the staging mechanism's end-to-end proof surfaces.
 
 ### Provider and ABI contract
 
@@ -283,9 +285,21 @@ zclassic23-dev dev hotswap probe \
   --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
 ```
 
-The module-ABI commands (`dev.hotswap.probe` / `dev.hotswap.apply`) are live
-as documented under "Real module ABI" above. The GENERATION
-(manifest/staging) path stays contained:
+Both commands are live module-ABI entry points (see "Real module ABI"
+above), not staging publication commands:
+
+- `dev.hotswap.probe` runs verify-only in the CLI's own throwaway process:
+  dlopen + ABI-validate + self-test of one module `.so`. It never commits,
+  and `hotswap_module_admit()` runs its admission gauntlet before any
+  candidate code is called.
+- `dev.hotswap.apply` forwards to the resident dev node's
+  `dev_hotswap_native` RPC, which performs the swap inside the running node.
+  The swap is verify-only by default; a live activation requires all of
+  `-hotswap-activate`, `ZCL_HOTSWAP_ACTIVATE=1`, and the exact
+  `~/.zclassic-c23-dev` datadir (the canonical datadir is refused). The
+  single authority check is `hotswap_activation_authorized()`.
+
+The GENERATION (manifest/staging) path stays contained:
 
 - `make hotswap` refuses before any load or publication; `make hotswap-so`
   builds a read-only, unpublishable candidate only.
@@ -294,8 +308,11 @@ as documented under "Real module ABI" above. The GENERATION
 - `deploy-dev-lane.sh` public activation, the watcher `auto`/`apply` modes,
   and `dev.change.apply` all refuse before generation relinking.
 
-Re-enable staging publication only with a disposable worker, pre-load
-sidecar/ELF/import policy, an immutable artifact receipt, and bounded fixtures.
+Only `make hotswap` and `tools/dev/hotswap-running-dev.sh` remain typed
+containment refusals; the manifest/staging publication path likewise stops
+before the commit. Re-enable staging publication only with a disposable
+worker, pre-load sidecar/ELF/import policy, an immutable artifact receipt,
+and bounded fixtures.
 
 ### Eligibility
 
