@@ -9,7 +9,7 @@ Lane: `wf_install-e2e` (branch `lane/install-e2e-proof`). Scratch datadir:
 
 Status: **PASS (2026-07-18)** — `-install-consensus-bundle` fired
 successfully on a minimal hand-built fixture (`INSTALLED` banner, exit 0);
-post-install boot serves H\* = served_floor = 3,056,758 and the installed
+post-install boot serves H\* = served_floor = 3,056,758 and the installed <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
 UTXO set recomputes to the compiled checkpoint root `5817f0ec…` both by the
 node's own commitment command and by an independent Python recompute.
 Recorded authority: **CHECKPOINT_CONTENT**. No installer defect found; no
@@ -242,7 +242,7 @@ the restore clamp to it rather than "waiting for P2P".)
   (next-height convention).
 - `tip_finalize` = 3056758 (served-tip convention).
 - Every contiguity scan range `(3056758, 3056759)` is empty → each log's
-  prefix = anchor → H* = 3056758 (the CAS gate's `durable_h == hstar` then
+  prefix = anchor → H* = 3056758 (the CAS gate's `durable_h == hstar` then <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
   holds via §2.3).
 
 ### 2.3 tip_finalize anchor row (the durable authority pair)
@@ -251,7 +251,7 @@ the restore clamp to it rather than "waiting for P2P".)
   tip_hash=53d65b85…, itag=…)` — exactly the row
   `tip_finalize_stage_seed_anchor` writes in production
   (`app/jobs/src/tip_finalize_anchor.c:284-291`). Backs
-  `resolve_durable_tip` (durable_h == H* == 3056758) and the
+  `resolve_durable_tip` (durable_h == H* == 3056758) and the <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
   convention-aware `block_hash_at(H*)` authority read.
 
 ### 2.4 validate_headers pass records (2 rows)
@@ -286,7 +286,7 @@ by the `leveldb_utxo_migrated` flag.)
 - The unstamped datadir refuses predictably: with no coins_kv proven
   authority the phantom-anchor guard drops the H* floor to 0
   (`reducer_frontier.c:617-622`), so the chain binder refuses
-  "bundle height=3056758 exceeds durable H*=0"
+  "bundle height=3056758 exceeds durable H*=0" <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
   (`consensus_state_chain_binding_service.c:100-102`). (Attempt 2/3
   confirmed the gate is reached only after a full admission pass — do not
   iterate blind: stamp first.)
@@ -304,7 +304,7 @@ PLAINTEXT wallet …". Not an install-gate verdict.
 ### 3.2 Attempts 2/3 — bare import / genesis-only chain, no durable image
 Boot reaches `utxo_chain_reconcile` in seconds, then spends ~40 min in the
 bundle admission (the dominant cost). With no stamps the chain binder would
-refuse "bundle height=3056758 exceeds durable H*=0" (phantom-anchor guard,
+refuse "bundle height=3056758 exceeds durable H*=0" (phantom-anchor guard, <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
 §2 cost notes). Attempt 2 was lost to an operator error (piped through
 `tail`, the task wrapper reaped the reader; SIGPIPE killed the node) — the
 datadir was unharmed. Attempt 3 confirmed the genesis-only load and the
@@ -344,9 +344,9 @@ Install verdict (stderr, verbatim):
 [tip_finalize] authority publish durable h=3056758 reason=install_verb_warm
 [tip_finalize] provable-tip cache warmed h=3056758 reason=install_verb_warm
 [consensus_replay_receipt] WARN …: no valid replay receipt in the datadir; ACTIVATE stays contained
-[consensus_bundle_activate] INFO …: activated zcl.consensus_state_bundle.v1 h=3056758 coins=1354769 anchors=631645 nullifiers=1495126 H*=3056758 applied=3056759 authority=checkpoint_content; prior generation preserved at /home/rhett/.zclassic-c23-install-e2e/progress.kv.preinstall.1784372250.489464.1
-INSTALLED: -install-consensus-bundle: activated zcl.consensus_state_bundle.v1 h=3056758 coins=1354769 anchors=631645 nullifiers=1495126 H*=3056758 applied=3056759 authority=checkpoint_content; prior generation preserved at /home/rhett/.zclassic-c23-install-e2e/progress.kv.preinstall.1784372250.489464.1
-  reboot normally; the reducer folds forward from H*=3056758 to tip.
+[consensus_bundle_activate] INFO …: activated zcl.consensus_state_bundle.v1 h=3056758 coins=1354769 anchors=631645 nullifiers=1495126 H*=3056758 applied=3056759 authority=checkpoint_content; prior generation preserved at /home/rhett/.zclassic-c23-install-e2e/progress.kv.preinstall.1784372250.489464.1 <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
+INSTALLED: -install-consensus-bundle: activated zcl.consensus_state_bundle.v1 h=3056758 coins=1354769 anchors=631645 nullifiers=1495126 H*=3056758 applied=3056759 authority=checkpoint_content; prior generation preserved at /home/rhett/.zclassic-c23-install-e2e/progress.kv.preinstall.1784372250.489464.1 <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
+  reboot normally; the reducer folds forward from H*=3056758 to tip. <!-- stale-ok: dated 2026-07-18 proof of the immutable h=3056758 bundle -->
 ```
 (The `consensus_replay_receipt` WARN is the RECEIPT authority check reporting
 its absence — expected on a fixture with no replay receipt; the
