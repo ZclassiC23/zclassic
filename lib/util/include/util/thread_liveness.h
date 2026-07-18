@@ -60,7 +60,14 @@
  * are set by thread_liveness_register{,_restartable}(). */
 struct thread_liveness_child {
     struct liveness_contract contract;   /* ctx points back to this struct */
-    supervisor_child_id      id;
+    /* _Atomic: restartable callers spawn the worker BEFORE registering, so
+     * the worker reads id concurrently (thread_liveness_worker_alive). The
+     * register path publishes it with memory_order_release and every reader
+     * loads with memory_order_acquire, so a worker that observes a valid id
+     * also sees the completed supervisor_register() that produced it. A
+     * worker that still reads SUPERVISOR_INVALID_ID skips one beat and
+     * self-heals on the next. */
+    _Atomic supervisor_child_id id;
     _Atomic bool             blocker_standing;
     char                     blocker_id[BLOCKER_ID_MAX];
 
