@@ -417,10 +417,11 @@ ZCL_COMMAND_READY_COMMAND(
     "seeding peer's file service and verifies it BY CONTENT against the "
     "digests supplied here — the operator commits to (root, whole_sha3, "
     "size) before a byte is requested; any whole-file mismatch discards "
-    "the download (no partial trust). The verified file lands at "
-    "<out_dir>/<filename> (default: the node datadir); it is NOT "
-    "activated — install funnels only through -install-consensus-bundle. "
-    "Blocks for the duration of the download.", 0,
+    "the download (no partial trust). 'peer' may be a comma-separated "
+    "host list for the parallel multi-seeder scheduler. The verified "
+    "file lands at <out_dir>/<filename> (default: the node datadir); it "
+    "is NOT activated — install funnels only through "
+    "-install-consensus-bundle. Blocks for the duration of the download.", 0,
     "rom,fetch,download,bundle,verify",
     "zcl.rom_fetch_bundle.input.v1", "zcl.rom_fetch_bundle.result.v1",
     "peer,port,root,whole_sha3,size,filename,out_dir", "",

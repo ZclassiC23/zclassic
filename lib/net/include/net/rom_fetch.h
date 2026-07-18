@@ -121,6 +121,34 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
                         const char *out_dir,
                         rom_fetch_progress_cb cb, void *cb_ctx);
 
+/* ── Parallel multi-seeder download ─────────────────────────────────── */
+
+/* One seeder endpoint (host + file-service port). */
+struct rom_fetch_peer {
+    char     addr[128];
+    uint16_t port;
+};
+
+/* Hard cap on worker threads per parallel download. The serve-side per-peer
+ * in-flight cap is small (default 2), so the caller should size workers at
+ * ~2x the peer count; more workers than that just queue on refusals. */
+#define ROM_FETCH_MAX_WORKERS 8u
+
+/* Parallel download: worker threads pull chunk indices from a shared queue;
+ * chunk i is first tried on peers[i % npeers], and on failure retried on
+ * each subsequent peer (round-robin) — a chunk is declared failed only
+ * after EVERY peer refused/failed it. Each chunk is transport-MAC-verified
+ * on arrival and pwrite()n at its offset into <out_dir>/<filename>.part;
+ * the whole-file content proof + atomic rename (or unlink on mismatch) is
+ * identical to rom_fetch_download. `workers` is clamped to
+ * [1, ROM_FETCH_MAX_WORKERS]. Returns false (leaving .part for resume) if
+ * any chunk failed on all peers. */
+bool rom_fetch_download_parallel(const struct rom_fetch_peer *peers,
+                                 size_t npeers,
+                                 const struct rom_fetch_manifest *m,
+                                 const char *out_dir, uint32_t workers,
+                                 rom_fetch_progress_cb cb, void *cb_ctx);
+
 /* ── Fetch status (observability; powers dumpstate rom_fetch) ───────── */
 
 struct rom_fetch_status {

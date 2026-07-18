@@ -175,8 +175,48 @@ void zcl_native_handle_rom_fetch_bundle(
 
     /* Synchronous download + whole-file content proof. Blocks this command
      * worker for the duration (minutes for a full bundle over a slow peer);
-     * a background/scheduling engine is the follow-up lane. */
-    if (!rom_fetch_download(peer, port, &m, out_dir, NULL, NULL)) {
+     * a background/scheduling engine is the follow-up lane.
+     * `peer` may be a comma-separated host list (all sharing `port`): a
+     * single peer uses the sequential driver, several peers use the
+     * parallel multi-seeder scheduler (chunks round-robin across peers,
+     * per-peer retry before a chunk is declared failed). */
+    bool fetched = false;
+    if (strchr(peer, ',')) {
+        struct rom_fetch_peer peers[4];
+        size_t npeers = 0;
+        char list[512];
+        snprintf(list, sizeof(list), "%s", peer);
+        for (char *tok = strtok(list, ","); tok && npeers < 4;
+             tok = strtok(NULL, ",")) {
+            while (*tok == ' ')
+                tok++;
+            size_t tl = strlen(tok);
+            while (tl > 0 && tok[tl - 1] == ' ')
+                tok[--tl] = '\0';
+            if (tl == 0 || tl >= sizeof(peers[0].addr))
+                continue;
+            snprintf(peers[npeers].addr, sizeof(peers[npeers].addr),
+                     "%s", tok);
+            peers[npeers].port = port;
+            npeers++;
+        }
+        if (npeers == 0) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "BAD_PEER_LIST",
+                                   "parse", false, false,
+                                   "input.peer held a comma but no usable "
+                                   "host", RFC_SUBSYS);
+            return;
+        }
+        uint32_t workers = (uint32_t)(2 * npeers);
+        if (workers > ROM_FETCH_MAX_WORKERS)
+            workers = ROM_FETCH_MAX_WORKERS;
+        fetched = rom_fetch_download_parallel(peers, npeers, &m, out_dir,
+                                              workers, NULL, NULL);
+    } else {
+        fetched = rom_fetch_download(peer, port, &m, out_dir, NULL, NULL);
+    }
+    if (!fetched) {
         struct rom_fetch_status st;
         rom_fetch_status_snapshot(&st);
         char msg[256];

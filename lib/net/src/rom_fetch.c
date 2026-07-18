@@ -15,11 +15,13 @@
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -463,6 +465,29 @@ void rom_fetch_status_snapshot(struct rom_fetch_status *out)
     pthread_mutex_unlock(&g_status_mutex);
 }
 
+/* Shared install tail for both download drivers: content-prove the staged
+ * .part against the committed digests, then rename it into place. A digest
+ * mismatch UNLINKS the .part (no partial trust). Returns true on install;
+ * *why gets a short static reason on failure. */
+static bool rf_install_verified(const char *part_path, const char *final_path,
+                                const struct rom_fetch_manifest *m,
+                                const char **why)
+{
+    if (!rom_fetch_verify_file(part_path, m)) {
+        LOG_WARN(RF_SUBSYS, "download: '%s' failed whole-file verification; "
+                 "unlinking (seeder served non-committed content)", part_path);
+        unlink(part_path);
+        *why = "whole-file digest mismatch; download discarded";
+        return false;
+    }
+    if (rename(part_path, final_path) != 0) {
+        *why = "rename into place failed";
+        LOG_FAIL(RF_SUBSYS, "download: rename '%s' -> '%s' failed errno=%d",
+                 part_path, final_path, errno);
+    }
+    return true;
+}
+
 /* ── Download driver ────────────────────────────────────────────────── */
 
 bool rom_fetch_download(const char *peer_addr, uint16_t port,
@@ -567,20 +592,9 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
     fdatasync(fd);
     close(fd);
 
-    /* Whole-file content proof against the committed digests. A mismatch
-     * discards the file — no partial trust. */
-    if (!rom_fetch_verify_file(part_path, &mc)) {
-        LOG_WARN(RF_SUBSYS, "download: '%s' failed whole-file verification; "
-                 "unlinking (seeder served non-committed content)", part_path);
-        unlink(part_path);
-        rf_note_end(false, "whole-file digest mismatch; download discarded");
+    if (!rf_install_verified(part_path, final_path, &mc, &fail_reason)) {
+        rf_note_end(false, fail_reason);
         return false;
-    }
-
-    if (rename(part_path, final_path) != 0) {
-        rf_note_end(false, "rename into place failed");
-        LOG_FAIL(RF_SUBSYS, "download: rename '%s' -> '%s' failed errno=%d",
-                 part_path, final_path, errno);
     }
 
     rf_note_end(true, final_path);
@@ -588,6 +602,203 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
              "from %s:%u — verified against committed digests",
              final_path, (unsigned long long)mc.size_bytes, mc.num_chunks,
              peer_addr, (unsigned)port);
+    return true;
+}
+
+/* ── Parallel multi-seeder download ─────────────────────────────────── */
+
+struct rf_par_job {
+    const struct rom_fetch_peer *peers;
+    size_t npeers;
+    struct rom_fetch_manifest m;      /* copy, filename already resolved   */
+    int fd;                           /* .part; pwrite at disjoint offsets */
+    _Atomic uint32_t next_chunk;
+    _Atomic uint32_t chunks_done;
+    _Atomic uint64_t bytes_done;
+    _Atomic bool abort;               /* set on all-peers-failed / cb stop */
+    _Atomic bool failed;              /* at least one chunk unrecoverable  */
+    rom_fetch_progress_cb cb;
+    void *cb_ctx;
+    pthread_mutex_t cb_mutex;
+};
+
+static void *rf_par_worker(void *arg)
+{
+    struct rf_par_job *j = (struct rf_par_job *)arg;
+    uint8_t *buf = zcl_malloc(ROM_SEED_CHUNK_SIZE, "rom_fetch_par_buf");
+    if (!buf) {
+        LOG_WARN(RF_SUBSYS, "par: worker alloc failed");
+        atomic_store(&j->failed, true);
+        atomic_store(&j->abort, true);
+        return NULL;
+    }
+
+    for (;;) {
+        if (atomic_load(&j->abort))
+            break;
+        uint32_t i = atomic_fetch_add(&j->next_chunk, 1);
+        if (i >= j->m.num_chunks)
+            break;
+
+        uint64_t offset = (uint64_t)i * j->m.chunk_size;
+        uint32_t want = j->m.chunk_size;
+        uint64_t remaining = j->m.size_bytes - offset;
+        if (remaining < want)
+            want = (uint32_t)remaining;
+
+        /* Try each peer in round-robin order starting at (i % npeers); the
+         * chunk fails only when EVERY peer has failed it. */
+        bool have = false;
+        uint32_t got = 0;
+        for (size_t a = 0; a < j->npeers; a++) {
+            const struct rom_fetch_peer *p = &j->peers[(i + a) % j->npeers];
+            if (rom_fetch_chunk(p->addr, p->port, j->m.chunk_root, i,
+                                buf, ROM_SEED_CHUNK_SIZE, &got) &&
+                got == want) {
+                have = true;
+                break;
+            }
+        }
+        if (!have) {
+            LOG_WARN(RF_SUBSYS, "par: chunk %u/%u failed on all %zu peer(s)",
+                     i, j->m.num_chunks, j->npeers);
+            atomic_store(&j->failed, true);
+            atomic_store(&j->abort, true);
+            break;
+        }
+        ssize_t w = pwrite(j->fd, buf, got, (off_t)offset);
+        if (w != (ssize_t)got) {
+            LOG_WARN(RF_SUBSYS, "par: pwrite chunk %u failed errno=%d",
+                     i, errno);
+            atomic_store(&j->failed, true);
+            atomic_store(&j->abort, true);
+            break;
+        }
+        uint64_t bytes =
+            atomic_fetch_add(&j->bytes_done, got) + got;
+        uint32_t done = atomic_fetch_add(&j->chunks_done, 1) + 1;
+        rf_note_progress(done, bytes);
+        if (j->cb) {
+            pthread_mutex_lock(&j->cb_mutex);
+            bool cont = j->cb(done, j->m.num_chunks, bytes, j->cb_ctx);
+            pthread_mutex_unlock(&j->cb_mutex);
+            if (!cont) {
+                atomic_store(&j->abort, true);
+                break;
+            }
+        }
+    }
+    free(buf);
+    return NULL;
+}
+
+bool rom_fetch_download_parallel(const struct rom_fetch_peer *peers,
+                                 size_t npeers,
+                                 const struct rom_fetch_manifest *m,
+                                 const char *out_dir, uint32_t workers,
+                                 rom_fetch_progress_cb cb, void *cb_ctx)
+{
+    if (!peers || npeers == 0 || !m || !out_dir || !out_dir[0])
+        LOG_FAIL(RF_SUBSYS, "par: null arg");
+
+    struct rom_fetch_manifest mc = *m;
+    if (mc.filename[0] && !rf_filename_ok(mc.filename))
+        LOG_FAIL(RF_SUBSYS, "par: unsafe filename '%s'", mc.filename);
+    if (!mc.filename[0]) {
+        char hex[17];
+        HexStr(mc.chunk_root, 8, false, hex, sizeof(hex));
+        snprintf(mc.filename, sizeof(mc.filename), "rom-artifact-%s", hex);
+    }
+    if (!rom_fetch_manifest_sane(&mc))
+        LOG_FAIL(RF_SUBSYS, "par: manifest fails sanity checks");
+    for (size_t i = 0; i < npeers; i++) {
+        if (!peers[i].addr[0] || peers[i].port == 0)
+            LOG_FAIL(RF_SUBSYS, "par: peer %zu has empty addr/port", i);
+    }
+
+    if (workers == 0)
+        workers = 1;
+    if (workers > ROM_FETCH_MAX_WORKERS)
+        workers = ROM_FETCH_MAX_WORKERS;
+    if (workers > mc.num_chunks)
+        workers = mc.num_chunks;
+
+    char part_path[1200];
+    int pn = snprintf(part_path, sizeof(part_path), "%s/%s%s",
+                      out_dir, mc.filename, ROM_FETCH_PART_SUFFIX);
+    if (pn <= 0 || (size_t)pn >= sizeof(part_path))
+        LOG_FAIL(RF_SUBSYS, "par: part path overflow");
+    char final_path[1200];
+    pn = snprintf(final_path, sizeof(final_path), "%s/%s",
+                  out_dir, mc.filename);
+    if (pn <= 0 || (size_t)pn >= sizeof(final_path))
+        LOG_FAIL(RF_SUBSYS, "par: final path overflow");
+
+    int fd = open(part_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0)
+        LOG_FAIL(RF_SUBSYS, "par: open '%s' failed errno=%d",
+                 part_path, errno);
+
+    rf_note_begin(peers[0].addr, peers[0].port, &mc);
+
+    struct rf_par_job job;
+    memset(&job, 0, sizeof(job));
+    job.peers = peers;
+    job.npeers = npeers;
+    job.m = mc;
+    job.fd = fd;
+    job.cb = cb;
+    job.cb_ctx = cb_ctx;
+    pthread_mutex_init(&job.cb_mutex, NULL);
+
+    pthread_t tids[ROM_FETCH_MAX_WORKERS];
+    uint32_t spawned = 0;
+    for (uint32_t i = 0; i < workers; i++) {
+        /* Bounded, joined worker pool: workers exit on queue-drain/abort,
+         * chunk I/O is bounded by socket deadlines, and the driver
+         * pthread_join()s every spawned worker before returning. */
+        // thread-supervision-ok: bounded joined worker pool (see above).
+        if (thread_registry_spawn("zcl_romfetch", rf_par_worker, &job,
+                                  &tids[i]) == 0) {
+            spawned++;
+        } else {
+            LOG_WARN(RF_SUBSYS, "par: failed to spawn worker %u", i);
+            break;
+        }
+    }
+    if (spawned == 0) {
+        pthread_mutex_destroy(&job.cb_mutex);
+        close(fd);
+        rf_note_end(false, "could not spawn any fetch worker");
+        LOG_FAIL(RF_SUBSYS, "par: no workers spawned");
+    }
+    for (uint32_t i = 0; i < spawned; i++)
+        pthread_join(tids[i], NULL);
+    pthread_mutex_destroy(&job.cb_mutex);
+
+    uint32_t done = atomic_load(&job.chunks_done);
+    if (atomic_load(&job.failed) || done < mc.num_chunks) {
+        close(fd);
+        rf_note_end(false, "chunk fetch failed on all peers (or aborted)");
+        LOG_WARN(RF_SUBSYS, "par: download incomplete (%u/%u chunks); "
+                 "leaving '%s' for resume", done, mc.num_chunks, part_path);
+        return false;
+    }
+
+    fdatasync(fd);
+    close(fd);
+
+    const char *why = "";
+    if (!rf_install_verified(part_path, final_path, &mc, &why)) {
+        rf_note_end(false, why);
+        return false;
+    }
+
+    rf_note_end(true, final_path);
+    LOG_INFO(RF_SUBSYS, "par: fetched '%s' (%llu bytes, %u chunks, %u "
+             "workers, %zu peer(s)) — verified against committed digests",
+             final_path, (unsigned long long)mc.size_bytes, mc.num_chunks,
+             spawned, npeers);
     return true;
 }
 
