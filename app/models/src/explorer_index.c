@@ -300,6 +300,18 @@ bool db_view_integrity_save(struct node_db *ndb, int64_t height,
     AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
+int64_t db_view_integrity_max_height(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return -1;
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s, "SELECT MAX(height) FROM view_integrity", -1);
+    int64_t h = -1;
+    if (AR_STEP_ROW(s))
+        h = AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return h;
+}
+
 /* ── Owner-derivation helper ───────────────────────────────────────── */
 
 bool db_tx_output_addr(struct node_db *ndb, const uint8_t txid[32],

@@ -103,6 +103,16 @@ bool db_sprout_nullifier_save(struct node_db *ndb, const uint8_t nullifier[32],
 bool db_view_integrity_save(struct node_db *ndb, int64_t height,
                             const uint8_t sha3[32]);
 
+/* Highest height with a recorded view_integrity receipt, or -1 when the db
+ * is closed. Mirrors db_utxo_max_height(): an empty table yields 0 (the "no
+ * receipts yet" floor, SQLite's MAX() over zero rows), the same quirk
+ * db_utxo_max_height/db_block_max_height already carry — single source of
+ * truth for "SELECT MAX(height) FROM view_integrity". Read-only — used by
+ * catalog_completeness (lib/storage/catalog_completeness.c, reached via a
+ * forward declaration, never an #include, to stay clean under the lib/
+ * layering gate) to report explorer-projection catch-up lag. */
+int64_t db_view_integrity_max_height(struct node_db *ndb);
+
 /* Read the 20-byte address hash recorded for a spent prevout (used to
  * derive a ZNAM op's owner from its first input). Returns false when the
  * prevout row is absent or carries no address (non-P2PKH). */
