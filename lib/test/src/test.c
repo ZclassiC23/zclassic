@@ -1356,6 +1356,7 @@ int main(int argc, char **argv)
     failures += test_supervisor();
     failures += test_supervisor_domains();
     failures += test_supervisor_backstop();
+    failures += test_sd_notify();
     failures += test_self_heal_supervisor();
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();

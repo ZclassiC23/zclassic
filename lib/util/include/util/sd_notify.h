@@ -56,14 +56,43 @@ uint64_t sd_notify_watchdog_usec(void);
 bool sd_notify_ready(void);
 
 /* Send "WATCHDOG=1". Heartbeat the systemd watchdog timer. Call from
- * the heartbeat thread when the node is healthy. */
+ * the heartbeat thread when the node is healthy. Suppressed (returns
+ * false, sends nothing) when a registered health-check callback (see
+ * sd_notify_set_health_check) reports unhealthy. */
 bool sd_notify_watchdog_ping(void);
+
+/* Optional root-health gate, checked by sd_notify_watchdog_ping() before
+ * every send. This is a defense-in-depth backstop independent of
+ * whatever gating a caller already does at its own call site: a wedged
+ * root supervisor (util/supervisor.h) must stop feeding the watchdog so
+ * systemd's WatchdogSec timer restarts the process, and that guarantee
+ * belongs at the primitive that actually sends the datagram, not only at
+ * one call site that could someday be bypassed or duplicated.
+ *
+ * `fn` is called with no arguments immediately before every WATCHDOG=1
+ * send, on the pinging thread. A NULL fn (the default) disables the gate
+ * (always allow, matching pre-existing behavior). Pass NULL to clear.
+ * Production wiring: config/src/boot_sd_watchdog.c registers its
+ * supervisor-sweep-freshness check here. */
+typedef bool (*sd_notify_health_check_fn)(void);
+void sd_notify_set_health_check(sd_notify_health_check_fn fn);
 
 /* Send free-form "STATUS=...". Visible in `systemctl status`. */
 bool sd_notify_status(const char *msg);
 
 /* Send "STOPPING=1" + "STATUS=..." once when shutdown begins. */
 bool sd_notify_stopping(const char *reason);
+
+#ifdef ZCL_TESTING
+/* Test hook: reset all internal state (active flag, socket path,
+ * WATCHDOG_USEC cache, health-check callback) as if the process had
+ * never called sd_notify_init(). Production never calls this — the
+ * module is designed to latch in its NOTIFY_SOCKET once per process
+ * (matching real systemd semantics: the env var never changes mid-run).
+ * Tests that exercise more than one NOTIFY_SOCKET scenario in a single
+ * process need this between scenarios. */
+void sd_notify_reset_for_testing(void);
+#endif
 
 #ifdef __cplusplus
 }
