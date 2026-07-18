@@ -94,7 +94,7 @@ int64_t  body_fetch_stage_step_us_ewma(void);
 uint64_t body_fetch_stage_observed_total(void);   /* source='disk' rows */
 uint64_t body_fetch_stage_skipped_total(void);    /* source='skipped_invalid' */
 
-/* zcl_state subsystem=body_fetch (CLAUDE.md convention). */
+/* `zclassic23 dumpstate body_fetch` (dump-state convention). */
 bool body_fetch_stage_dump_state_json(struct json_value *out,
                                        const char *key);
 

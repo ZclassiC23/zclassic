@@ -190,16 +190,15 @@ static int test_multiple_attacker_ips(void)
  * CAN verify the implementation property: the comparison function in
  * httpserver.c processes all bytes regardless of mismatch position.
  *
- * We test the MCP middleware's constant_time_memcmp indirectly by
- * verifying it gives correct results for various inputs (the timing
+ * We test the constant-time comparison pattern indirectly by verifying it
+ * gives correct results for various inputs (the timing
  * property is structural — XOR accumulation with no early exit). */
 
 static int test_constant_time_comparison(void)
 {
     int failures = 0;
     TEST("auth_hardening: constant-time comparison — correct results") {
-        /* Test via MCP middleware which exports the pattern.
-         * The HTTP server's check_auth uses the same pattern now. */
+        /* The HTTP server's check_auth uses this XOR-accumulation pattern. */
 
         /* We verify the structural property: same-length strings that
          * differ only in the last byte still return "not equal". */

@@ -1,12 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for the read-only ZCL application MCP
- * tools. Moved out of tools/mcp/controllers/app_controller.c so both the MCP
- * wrapper and the MCP-free native command bridge can call the same
- * composition; see controllers/native_handler_body.h for the contract these
- * functions satisfy. The MCP wrapper (app_controller.c) maps a NULL return +
- * err->status back onto the historical res->error / res->error_message so the
- * MCP surface stays byte-identical (dual-run through W2).
+ * Native bodies for read-only ZCL application commands. See
+ * controllers/native_handler_body.h for their shared contract.
  *
  * Scope: the READ surface only (names resolve/list, tokens list, message
  * inbox, market list/status, swap chains/list). The destructive app-layer
@@ -26,17 +21,16 @@
 #include <string.h>
 
 /* One shared tail for the parameter-free 1:1 RPC proxies: call the backing
- * method with no params and surface a NULL RPC result as the legacy
- * "RPC <method> returned null" body failure. */
+ * method with no params and surface a NULL RPC result as a body failure. */
 static char *app_native_rpc_noargs(const char *method,
                                    struct zcl_native_body_err *err)
 {
-    char *out = mcp_node_rpc(method, NULL);
+    char *out = node_rpc_call(method, NULL);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", method);
-        LOG_NULL("mcp.app", "RPC %s returned null", method);
+        LOG_NULL("native.app", "RPC %s returned null", method);
     }
     return out;
 }
@@ -56,17 +50,17 @@ char *zcl_native_name_resolve_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
     const char *n = json_get_str(json_get(args, "name"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, n);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("name_resolve", params) : NULL;
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, n);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *out = params ? node_rpc_call("name_resolve", params) : NULL;
     free(params);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s failed: name=%s", "name_resolve", n ? n : "(null)");
-        LOG_NULL("mcp.app", "RPC %s failed: name=%s", "name_resolve",
+        LOG_NULL("native.app", "RPC %s failed: name=%s", "name_resolve",
                  n ? n : "(null)");
     }
     return out;
@@ -81,7 +75,7 @@ char *zcl_native_name_list_body(const struct json_value *args,
 
 /* ── Messaging (ZMSG) ───────────────────────────────────────── */
 
-/* Native inbox is the full inbox, newest first. The MCP tool's optional
+/* Native inbox is the full inbox, newest first. The native command's optional
  * `unread_only` boolean filter is intentionally not carried onto the native
  * leaf: the registry input validator only admits a fixed set of boolean keys
  * (verbose/confirm/relink_generation), so an `unread_only` bool would be
@@ -124,20 +118,20 @@ char *zcl_native_swap_list_body(const struct json_value *args,
     const struct json_value *st = json_get(args, "state");
     char *out;
     if (st) {
-        struct mcp_params p;
-        mcp_params_init(&p);
-        mcp_params_push_str(&p, json_get_str(st));
-        char *params = mcp_params_to_json(&p);
-        out = params ? mcp_node_rpc("swap_list", params) : NULL;
+        struct rpc_arg_builder p;
+        rpc_arg_builder_init(&p);
+        rpc_arg_builder_push_str(&p, json_get_str(st));
+        char *params = rpc_arg_builder_to_json(&p);
+        out = params ? node_rpc_call("swap_list", params) : NULL;
         free(params);
     } else {
-        out = mcp_node_rpc("swap_list", NULL);
+        out = node_rpc_call("swap_list", NULL);
     }
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "swap_list");
-        LOG_NULL("mcp.app", "RPC %s returned null", "swap_list");
+        LOG_NULL("native.app", "RPC %s returned null", "swap_list");
     }
     return out;
 }
@@ -154,7 +148,7 @@ char *zcl_native_swap_list_body(const struct json_value *args,
  * empty-args self-test dispatch the generation loader runs succeeds. The other
  * seven leaves are equally args-free (or take one optional/required string) and
  * would work as probes too; app.names.list is kept as the pilot probe to match
- * the legacy app_controller.c HOTSWAP_PROBE("zcl_name_list").
+ * the read-only name-list leaf.
  * See config/hotswap_eligible.def. */
 #ifdef ZCL_HOTSWAP_GEN
 #define ZCL_HOTSWAP_PROBE_LEAF "app.names.list"

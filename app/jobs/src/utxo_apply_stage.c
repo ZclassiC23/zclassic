@@ -71,7 +71,7 @@ static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
 
-/* Module state shared with utxo_apply_stage_dump.c (the zcl_state dump TU)
+/* Module state shared with utxo_apply_stage_dump.c (the dump-state TU)
  * via utxo_apply_stage_internal.h — written here, atomic_load-only there. */
 _Atomic uint64_t g_ua_verified_total = 0;
 _Atomic uint64_t g_ua_spend_unknown_total = 0;
@@ -243,8 +243,8 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
  * PERMANENT blocker is re-derived from the same torn store on the first tick
  * of every boot (before the watchdog's restart threshold), so the stall is
  * immediately classified "permanent_blocker_active" and the node stays up
- * degraded with a named halt an operator can see via zcl_blockers instead of
- * crash-looping. blocker_set's token bucket dedups the per-tick re-fire.
+ * degraded with a named halt visible via `zclassic23 core sync blockers`
+ * instead of crash-looping. blocker_set's token bucket dedups each re-fire.
  * Transient conditions are NOT routed here — they stay JOB_IDLE/JOB_BLOCKED. */
 static void ua_fatal_permanent_blocker(int height, const char *reason_tail)
 {

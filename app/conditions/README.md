@@ -25,7 +25,7 @@ The condition engine (in `lib/framework/condition.{c,h}`) polls every
 registered condition, dispatches remedies under backoff, and pages the
 operator only if `max_attempts` is exhausted with the witness still false.
 Condition detail JSON is part of the AI/operator surface exposed through
-`zcl_state subsystem=condition_engine`. When a remedy can return OK while the
+`zclassic23 dumpstate condition_engine`. When a remedy can return OK while the
 condition still needs a witness (for example a no-advance stall that accepts
 `height_not_found` but still requires an observed tip advance), the detail must
 include the last remedy result and the witness facts that decide whether the

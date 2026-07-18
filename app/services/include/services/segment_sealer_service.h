@@ -22,7 +22,7 @@
  *   segment_sealer_start(svc)              — launch background thread
  *   segment_sealer_stop(svc)               — join thread
  *   segment_sealer_run_once(svc)           — seal at most one segment (tests)
- *   segment_sealer_dump_state_json         — zcl_state subsystem=segment_sealer
+ *   segment_sealer_dump_state_json — `zclassic23 dumpstate segment_sealer`
  */
 
 #ifndef ZCL_SERVICES_SEGMENT_SEALER_SERVICE_H

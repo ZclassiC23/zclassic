@@ -4,15 +4,15 @@
  *   HOTSWAP_ELIGIBLE(path) HOTSWAP_PROBE(tool)
  *
  * `path` is the repo-relative .c translation unit and `tool` is one
- * parameter-free, non-destructive route owned by that TU.  Keep the pair on
+ * parameter-free, non-destructive command leaf owned by that TU. Keep the pair on
  * one line: this file is the single source of truth consumed by the native
  * planner, shell watcher, demo, loader allowlist, and lint gates.
  *
  * A translation unit listed here may be recompiled into a generation .so
  * (`make hotswap-so FILES=...`) and dlopen'd into a RUNNING dev node to
- * re-point its atomic route/provider slots with no restart. See
- * docs/work/HOTSWAP.md and ZCL_HOTSWAP_EXPORT_ROUTES /
- * ZCL_HOTSWAP_EXPORT_PROVIDER in lib/hotswap/include/hotswap/hotswap.h.
+ * re-point its atomic command-leaf slots with no restart. See
+ * docs/work/HOTSWAP.md and ZCL_HOTSWAP_EXPORT_LEAVES in
+ * lib/hotswap/include/hotswap/hotswap.h.
  *
  * Two lint gates keep this list honest (both wired into `make lint`, both
  * self-tested in lib/test/src/test_make_lint_gates.c):
@@ -32,12 +32,12 @@
  *
  * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
 
-/* native.leaves provider class (ZERO-MCP): the MCP-free native command bridge
- * (tools/command/native_command.c). Each TU below invokes
+/* native.leaves provider class: the native command bridge in
+ * tools/command/native_command.c. Each TU below invokes
  * ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, ...) inside `#ifdef ZCL_HOTSWAP_GEN`,
  * staging {dotted_leaf_path, trampoline} pairs — a trampoline calls
  * zcl_native_bridge_run(request, <this TU's freshly-compiled body fn>,
- * reply), the same MCP-free composition the resident bridge already uses.
+ * reply), the same composition the resident bridge already uses.
  * The resident native command router dispatches the manifest's declared
  * probe leaf with NO input before committing the batch, so the probe for a
  * native TU MUST be a leaf whose body TOLERATES EMPTY ARGS — verified per-TU
@@ -59,9 +59,8 @@ HOTSWAP_ELIGIBLE("app/controllers/src/app_native_handlers.c") HOTSWAP_PROBE("app
 
 /* Still reload-required (NOT eligible), by design:
  *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics
- *     (diagnostics_registry.c) carry ZCL_HOTSWAP_EXPORT_PROVIDER: their legacy
- *     direct-provider atomics cannot join a single immutable-snapshot commit
- *     (fail closed on ZCL_HOTSWAP_CAP_DIRECT_PROVIDER).
+ *     (diagnostics_registry.c) use independent provider atomics that cannot
+ *     join a single immutable-snapshot commit.
  *   - diagnostics_registry.c holds mutable file-scope statics
  *     (g_state_subsystems_csv, non-const p_state[]).
  * Re-enable REST/diagnostics only behind one unified resident provider table. */

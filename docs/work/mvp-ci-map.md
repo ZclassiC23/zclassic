@@ -26,7 +26,7 @@ The three **synced-node-dependent** criteria — **C3** (cold-start sync to tip)
 **C6** (168h soak), **C8** (consensus parity over the soak window) — CANNOT
 pass until the node holds a clean synced tip on the **sovereign foundation** and
 accrues a clean window. Canonical is currently wedged below tip (verify the
-live H\* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md`
+live H\* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md`
 holds current state) on incomplete shielded history; these stay **BLOCKED(needs synced node)** by
 construction until the complete state cure is copy-proven + the window accrues —
 no hermetic slice can stand in for "a fresh node reached the real ~3.15M-block
@@ -66,7 +66,7 @@ FAIL: 0   (nothing false-greens)
 
 This matches MVP.md's own MRS of 4/8 (C1/C2/C4/C7 ✅). The 4 BLOCKED criteria
 are gated on the **sovereign foundation + a clean soak window**. Canonical is
-currently held below tip (verify the live H\* via `zcl_status` / `dumpstate
+currently held below tip (verify the live H\* via `zclassic23 status` / `zclassic23 dumpstate
 reducer_frontier`; `docs/HANDOFF.md` holds current state) on incomplete shielded history (cure design:
 `self-verified-tip-plan.md`). When the node holds a sovereign synced tip and a
 fresh exact-parity window accrues, C3/C5/C6/C8 can flip from BLOCKED to PASS

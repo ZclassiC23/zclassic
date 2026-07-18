@@ -246,7 +246,7 @@ int test_utxo_mirror_sync(void)
     UMS_CHECK("pass2 no-op (0 rows)", written2 == 0);
     UMS_CHECK("mirror count still 4", db_utxo_count(&ndb) == 4);
 
-    /* dump_state_json (zcl_state subsystem=utxo_mirror_sync) reads the
+    /* dump_state_json (`zclassic23 dumpstate utxo_mirror_sync`) reads the
      * boot-owned global instance pointer — temporarily point it at this
      * test's local `svc` (already carries pass1's counters) to prove the
      * dumper surfaces them, then restore NULL so later groups see "not

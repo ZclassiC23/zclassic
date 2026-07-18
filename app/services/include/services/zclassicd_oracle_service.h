@@ -17,10 +17,10 @@
  *   - Each tick: pick `heights_per_tick` random heights in [0, tip-100]
  *     and probe each.
  *   - zclassicd_oracle_probe() is also exposed synchronously for the
- *     `zcl_probe_zclassicd` MCP tool and unit tests.
+ *     oracle diagnostics and unit tests.
  *
  * See CLAUDE.md "Adding state introspection" — this module follows the
- * *_dump_state_json convention and is wired into the generic zcl_state
+ * *_dump_state_json convention and is wired into `zclassic23 dumpstate oracle`
  * dispatcher.
  */
 
@@ -71,8 +71,7 @@ struct zclassicd_oracle_probe_result {
 struct zcl_result zclassicd_oracle_probe(int height,
                             struct zclassicd_oracle_probe_result *out);
 
-/* zcl_state subsystem=oracle dispatcher entry. See CLAUDE.md
- * "Adding state introspection". Reentrant-safe. */
+/* Reentrant-safe dispatcher entry for `zclassic23 dumpstate oracle`. */
 bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key);
 
 struct zclassicd_oracle_stats {

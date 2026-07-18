@@ -65,7 +65,7 @@ the following honest mint.
 | `lib/sim/include/sim/simnet_byzantine.h` | `simnet_byzantine_run_header_case` | Tier-2 case: builds one malformed header and drives it through `check_block_header()` / `contextual_check_block_header()` (before any body is fetched). |
 | `lib/sim/include/sim/simnet_byzantine.h` | `simnet_byzantine_class_tier`, `simnet_byzantine_class_name`, `simnet_byzantine_expected_reason` | Metadata per `enum simnet_byzantine_class` — which gate applies and what reason string a correct rejection must carry. |
 | `lib/sim/src/simnet_byzantine.c` | `simnet_byzantine_observation_ok` | The invariant this example re-derives independently: rejected, non-empty reason, tip unchanged, and the follow-up honest mint succeeded. |
-| `lib/util/include/util/blocker.h` | `blocker_module_init`, `blocker_reset_for_testing`, `blocker_class_name` | Every rejection in this example becomes a typed `BLOCKER_PERMANENT` record, the same primitive a live node exposes via `zcl_state subsystem=blocker` / the `zcl_blockers` MCP tool. |
+| `lib/util/include/util/blocker.h` | `blocker_module_init`, `blocker_reset_for_testing`, `blocker_class_name` | Every rejection in this example becomes a typed `BLOCKER_PERMANENT` record, the same primitive a live node exposes via `zclassic23 ops state --subsystem=blocker` and `zclassic23 core sync blockers`. |
 
 Reference test (ground truth for expected reason strings and blocker
 classes per class): `lib/test/src/test_simnet_byzantine.c`.

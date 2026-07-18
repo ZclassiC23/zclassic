@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_apply_stage_dump — the zcl_state JSON dump for the utxo_apply Job,
+ * utxo_apply_stage_dump — the native dump-state JSON view for the utxo_apply Job,
  * split out of utxo_apply_stage.c to keep that file under the framework
  * file-size ceiling. Reads the module state declared in
  * utxo_apply_stage_internal.h with atomic_load only (the dump runs on
- * MCP/RPC threads while the supervisor thread steps the stage) and
+ * native/RPC threads while the supervisor thread steps the stage) and
  * allocates nothing — the caller's json_value owns the buffer. */
 
 #include "platform/time_compat.h"
@@ -153,7 +153,7 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
 
     /* P2 self-heal input: the contiguous applied frontier and whether it equals
      * the durable utxo_apply cursor (the invariant the co-commit sites enforce).
-     * Surfaced here so `zcl_state subsystem=utxo_apply` shows the invariant
+     * Surfaced here so `zclassic23 dumpstate utxo_apply` shows the invariant
      * directly — frontier_eq_cursor must be true on every quiescent path.
      * coins_applied_height == -1 means ABSENT (a virgin / un-synced datadir),
      * which is a clean "unknown", not a violation. */

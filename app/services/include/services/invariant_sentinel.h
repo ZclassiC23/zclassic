@@ -43,7 +43,7 @@
  *            blocker + HOLD + PAGE.
  *
  * All check states are exposed through ONE dumper registered as
- * zcl_state subsystem=validation_pack (covers this module + the HOLD
+ * `zclassic23 dumpstate validation_pack` (covers this module + the HOLD
  * latch in lib/validation/chain_linkage_check + the seed gate + the
  * mirror divergence locator).
  *
@@ -146,7 +146,7 @@ bool invariant_sentinel_commitment_audit_once(void);
  * audit thread; this clears only the operator-facing signal. */
 void invariant_sentinel_clear_commitment_blocker(void);
 
-/* ── zcl_state subsystem=validation_pack ─────────────────────────── */
+/* ── `zclassic23 dumpstate validation_pack` ─────────────────────── */
 bool invariant_sentinel_dump_state_json(struct json_value *out,
                                         const char *key);
 

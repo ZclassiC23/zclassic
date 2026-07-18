@@ -281,7 +281,8 @@ int main(void)
  *
  *   - Multi-input/multi-output send:
  *       wallet_create_transaction()   in lib/wallet/include/wallet/wallet.h
- *       (invoked by the `zcl_send` / `sendtoaddress` RPC path via
+ *       (invoked by `zclassic23 core wallet transaction send` or the
+ *        `sendtoaddress` RPC path via
  *        app/controllers/src/wallet_controller.c and
  *        app/controllers/src/transaction_controller.c)
  *   - P2SH HTLC fund + redeem (real cross-chain atomic swaps):

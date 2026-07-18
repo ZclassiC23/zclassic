@@ -29,7 +29,7 @@ struct metrics_external_gauges {
     /* Best-known header height minus served height H* (reducer_frontier
      * provable tip). -1 when the header tip is not yet known (cold boot
      * before the chain-state repository initializes). Feeds the
-     * `header_gap_growing` MCP metric alert — see tools/mcp/metrics.c. */
+     * `header_gap_growing` metric alert. */
     int64_t header_gap_blocks;
     /* The 8 reducer stages' live cursor + step_us_ewma, indexed in the
      * fixed METRICS_STAGE_COUNT order (metrics_stage_name()). Filled by

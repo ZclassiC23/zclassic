@@ -16,7 +16,7 @@
 # Scope: ALL app/services/src/*.c, not just *_service.c — a background
 # daemon loop (disk_monitor, db_maintenance, mempool_limits, ...) is a
 # long-running service whatever the filename suffix, and must be visible
-# to `zcl_state subsystem=supervisor` so a wedged loop is not silent.
+# to `zclassic23 dumpstate supervisor` so a wedged loop is not silent.
 #
 # A file is "long-running" if it contains either:
 #   - thread_registry_spawn      (the project's long-running wrapper)

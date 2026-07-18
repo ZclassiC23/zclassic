@@ -1,5 +1,5 @@
 // one-result-type-ok:json-dump-bool — E2 (one way out): the sole remaining
-// legacy export is quorum_oracle_dump_state_json, the zcl_state
+// Dump-state export: quorum_oracle_dump_state_json.
 // introspection dumper. The dump convention (CLAUDE.md "Adding state
 // introspection") mandates a bool return (false = couldn't populate), not
 // struct zcl_result; every other fallible surface in this file already

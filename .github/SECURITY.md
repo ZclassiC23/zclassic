@@ -16,10 +16,10 @@ are currently plaintext on the wire).
 
 ZClassic23 is security-sensitive full-node software, not offensive-security
 tooling. The repository contains Tor, wallet/key handling, P2P networking,
-MCP operator tools, fuzzers, and crash harnesses because those are required to
+native operator commands, fuzzers, and crash harnesses because those are required to
 run, inspect, and harden an operator-owned node.
 
-The safety boundary, scanner context, local gates, MCP controls, release
+The safety boundary, scanner context, local gates, command authorization, release
 integrity checks, and reviewer checklist are documented in
 [`docs/SECURITY_AND_INTEGRITY.md`](../docs/SECURITY_AND_INTEGRITY.md).
 

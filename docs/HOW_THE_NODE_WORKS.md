@@ -69,32 +69,33 @@ when you have your answer.
 
 | Call | Shows |
 |------|-------|
-| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Typed native CLI JSON is first, the legacy MCP `zcl_agent_interface` route remains during W2/W3 migration, and REST is read-only. No external wrapper logic is required. |
-| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/MCP/REST calls. Start here when choosing an interface. |
-| `zclassic23 appprotocols` | Native application-protocol catalog. Same contract as MCP `zcl_app_protocols` and `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
-| `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
-| `zclassic23 agentliveness` | Compact lane/service/supervisor/background-quality liveness. Same contract as MCP `zcl_agent_liveness`; use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. Use `agentliveness full` only for embedded method/lane/domain arrays. |
-| `zclassic23 status` | The native first check: one line by default, or a bounded `zcl.result.v1` / `zcl.core_status_brief.v1` document with H*, gap, peers, health, and the causal blocker. Use `zclassic23 core status` for the larger diagnostic tree. The legacy `zclassic23 agent` / `zcl_agent` / REST document is separate. |
-| `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
-| `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
-| `zcl_syncdiag` | Sync state, header-sync counters, watchdog (= condition-engine health), chain/header heights, peer max height, download stats. **It does NOT list the eight stage cursors** — use `reducer_frontier` for those. |
-| `zcl_state subsystem=reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height — the tip `getblockcount` serves), and the success-checked log frontiers (the contiguous ok=1 prefix per log) |
-| `zcl_state subsystem=blocker` | Active blockers with deadlines and escape actions |
-| `zcl_state subsystem=condition_engine` | Self-heal engine: active vs cleared conditions |
-| `zcl_state subsystem=service_state` | Operational mode: boot / restore / reconcile / degraded_serving / syncing / healthy / repairing |
-| `zcl_state subsystem=chain_evidence` | Native chain evidence: tips, cursors, evidence flags, any contradiction reason |
+| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Typed native CLI JSON is the operator surface, and REST is read-only. No external wrapper logic is required. |
+| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v2` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/REST calls. Start here when choosing an interface. |
+| `zclassic23 appprotocols` | Native application-protocol catalog. Same contract as `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
+| `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract; use it before choosing a deploy or restart target. |
+| `zclassic23 agentliveness` | Compact lane/service/supervisor/background-quality liveness. Use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. Use `agentliveness full` only for embedded method/lane/domain arrays. |
+| `zclassic23 status` | The native first check: one line by default, or a bounded `zcl.result.v1` / `zcl.core_status_brief.v1` document with H*, gap, peers, health, and the causal blocker. Use `zclassic23 core status` for the larger diagnostic tree. |
+| `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
+| `zclassic23 core status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine, typed blockers, and chain source scoring. |
+| `zclassic23 core sync diagnose` | Sync state, header-sync counters, watchdog health, chain/header heights, peer maximum height, and download statistics. **It does not list the eight stage cursors**—use `dumpstate reducer_frontier` for those. |
+| `zclassic23 dumpstate reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height—the tip `getblockcount` serves), and the success-checked log frontiers. |
+| `zclassic23 dumpstate blocker` | Active blockers with deadlines and escape actions. |
+| `zclassic23 dumpstate condition_engine` | Self-heal engine: active versus cleared conditions. |
+| `zclassic23 dumpstate service_state` | Operational mode: boot / restore / reconcile / degraded_serving / syncing / healthy / repairing. |
+| `zclassic23 dumpstate chain_evidence` | Native chain evidence: tips, cursors, evidence flags, and any contradiction reason. |
 
-`zcl_state` is a generic dispatcher — pass any of ~56 subsystem names. The eight
+`zclassic23 dumpstate` is a generic dispatcher—pass any registered subsystem
+name. The eight
 stage names work directly as subsystems too: `header_admit`, `validate_headers`,
 `body_fetch`, `body_persist`, `script_validate`, `proof_validate`, `utxo_apply`,
-`tip_finalize`. For drilling deeper: `zcl_node_log` (server-side regex tail of
-node.log), `zcl_sql` (SELECT-only over node.db), `zcl_probe_zclassicd` (compare
-our block-index against the local zclassicd at a random height).
+`tip_finalize`. For drilling deeper, use `zclassic23 getnodelog` for a bounded
+server-side regex tail, `zclassic23 dbquery` for SELECT-only node-database
+inspection, and `zclassic23 ops mirror` for the local reference-daemon view.
 
 The complete subsystem list is one array in code:
 `app/controllers/src/diagnostics_registry.c` (`g_dumpers[]`). Adding a new
 introspectable subsystem is one entry there plus one `*_dump_state_json` function —
-no new tool, no MCP plumbing.
+no new command route or schema.
 
 ## 4. What is real vs what is being deleted
 
@@ -134,8 +135,8 @@ production fully deletable, plus PRUNE-not-delete tear paths that keep their
 crash-recovery slice). Canonical is currently wedged below tip because
 its historical shielded anchors/nullifiers are incomplete; a complete atomic
 state install and copy proof must precede live cutover. (Verify the live H\*
-and whether the cure has shipped via `zcl_status` / `dumpstate
-reducer_frontier`, `docs/HANDOFF.md`, and the live node — do not assume from
+and whether the cure has shipped via `zclassic23 status` / `zclassic23
+dumpstate reducer_frontier`, `docs/HANDOFF.md`, and the live node—do not assume from
 this page.)
 
 ## 5. START HERE — fresh agent
@@ -148,17 +149,14 @@ this page.)
    lists things that look broken but are not (don't re-chase them);
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
 3. Look at the live node before trusting any doc: start with
-   `zclassic23 agentmap` or `zcl_agent_map` for the code/docs/test map,
-   `zclassic23 agentlanes` or `zcl_agent_lanes` for canonical/soak/dev safety,
-   `zclassic23 agentliveness` or `zcl_agent_liveness` for the current lane's
-   listener/supervisor/quality rollup,
-   `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop,
-   `zclassic23 api` for interface discovery, and `zclassic23 appprotocols` or
-   `zcl_app_protocols` for the ZCL L1 / zclassic23 application-layer catalog.
-   Then use native `zclassic23 status` for compact live state; the larger
-   compatibility document remains at `zclassic23 agent` / `zcl_agent`. Use `zclassic23 milestone` or
-   `zcl_milestone` for v1 progress bars. Drill down with `zcl_status` and
-   `zcl_state subsystem=reducer_frontier` only if needed. A doc can be stale;
+   `zclassic23 agentmap` for the code/docs/test map, `zclassic23 agentlanes` for
+   canonical/soak/dev safety, `zclassic23 agentliveness` for the current lane's
+   listener/supervisor/quality rollup, `zclassic23 agentbuild` for the cached
+   build loop, `zclassic23 api` for interface discovery, and `zclassic23
+   appprotocols` for the application-layer catalog. Then use `zclassic23
+   status` for compact live state and `zclassic23 milestone` for v1 progress.
+   Drill down with `zclassic23 core status` and `zclassic23 dumpstate
+   reducer_frontier` only if needed. A doc can be stale;
    the node cannot.
 4. To understand one stage, open its file — `app/jobs/src/<stage>_stage.c`. Each is
    one `step_*` function that does exactly the advance-or-name-a-blocker contract

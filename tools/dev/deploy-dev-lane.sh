@@ -674,7 +674,7 @@ run_injected_command() {
 preflight_candidate_default() {
     local timeout_s="${ZCL_DEV_PREFLIGHT_TIMEOUT:-30}" agentbuild tools selftest observed
     agentbuild="$(timeout "$timeout_s" "$CANDIDATE_BIN" agentbuild 2>&1)" || return 1
-    printf '%s' "$agentbuild" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v1"' || return 1
+    printf '%s' "$agentbuild" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v2"' || return 1
     observed="$(json_first_string_field "$agentbuild" source_id_sha256)"
     if [ -z "$observed" ]; then
         echo "candidate agentbuild omitted source_id_sha256" >&2
@@ -684,14 +684,14 @@ preflight_candidate_default() {
         echo "candidate source identity mismatch: expected=$BUILD_SOURCE_ID observed=$observed" >&2
         return 1
     fi
-    # Native discovery replaces `mcpcall zcl_tools_list`: the registry menu is
+    # Native discovery enumerates the registry menu, which is
     # the authoritative command catalog and needs no running node.
     tools="$(timeout "$timeout_s" "$CANDIDATE_BIN" \
         -datadir="$DEV_DATADIR" -rpcport="$DEV_RPCPORT" \
         discover help 2>&1)" || return 1
     printf '%s' "$tools" | grep -q '"children"[[:space:]]*:' || return 1
     ! printf '%s' "$tools" | grep -q '"error"[[:space:]]*:' || return 1
-    # Native `ops selftest` replaces `mcpcall zcl_self_test mode=registry`:
+    # Native `ops selftest` validates the registry:
     # a deterministic, node-free well-formedness sweep of the registry.
     selftest="$(timeout "$timeout_s" "$CANDIDATE_BIN" \
         -datadir="$DEV_DATADIR" -rpcport="$DEV_RPCPORT" \
@@ -813,13 +813,13 @@ activation_probe_default() {
     [[ "$height" =~ ^[0-9]+$ ]] || return 1
     agent="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" agent 2>/dev/null)" || return 1
-    printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"' || return 1
+    printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v2"' || return 1
     observed_source_id="$(json_first_string_field "$agent" source_id_sha256)"
     [ -n "$observed_source_id" ] &&
         [ "$observed_source_id" = "$expected_source_id" ] || return 1
     operator_snapshot="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" operatorsnapshot 2>/dev/null)" || return 1
-    printf '%s' "$operator_snapshot" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_snapshot.v2"' || return 1
+    printf '%s' "$operator_snapshot" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_snapshot.v3"' || return 1
     catalog="$(timeout "$timeout_s" "$expected_bin" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" discover help 2>/dev/null)" || return 1
     printf '%s' "$catalog" | grep -q '"children"[[:space:]]*:' || return 1

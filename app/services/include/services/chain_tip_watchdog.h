@@ -28,7 +28,7 @@
  * its budget). After the count reaches CHAIN_TIP_WD_MAX_RESTARTS it
  * STOPS requesting shutdown and instead pages a human
  * (EV_OPERATOR_NEEDED + a loud stderr line), leaving the node up
- * (degraded) so an operator/MCP can intervene. A transient hang still
+ * (degraded) so an operator/native can intervene. A transient hang still
  * recovers: sustained progress (CHAIN_TIP_WD_EPISODE_CLEAR blocks past
  * the anchor) resets the counter, so the next hang gets a fresh budget.
  *
@@ -124,7 +124,7 @@ bool chain_tip_watchdog_respawn_requested(void);
  * Idempotent; race-safe. */
 void chain_tip_watchdog_request_respawn(void);
 
-/* `zcl_state subsystem=chain_tip_watchdog` dumper. `out` is an
+/* `zclassic23 dumpstate chain_tip_watchdog` dumper. `out` is an
  * already-initialized json object; `key` is ignored. */
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key);
 

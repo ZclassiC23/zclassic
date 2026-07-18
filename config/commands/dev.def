@@ -1,4 +1,4 @@
-/* Checkout-local development commands. Never bind these to RPC/REST/MCP. */
+/* Checkout-local development commands. Native transport only. */
 
 ZCL_COMMAND_READY_READ(
     "dev.status", "dev", "", "Read the latest native cycle verdict",

@@ -10,7 +10,7 @@
  *
  * Concurrency model:
  *   - One writer (the mutator) calls apply_diff().
- *   - Many readers (RPC, MCP, explorer, wallet scan) call lookup().
+ *   - Many readers (native commands, RPC, explorer, wallet scan) call lookup().
  *   - Snapshots are read-consistent: a reader sees the set as of
  *     the snapshot tip it was opened against.
  *

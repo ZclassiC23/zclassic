@@ -3,7 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 /* Compact public REST status endpoint for dashboards, website checks, and
- * MCP-friendly clients that do not need the full diagnostic tree. */
+ * native clients that do not need the full diagnostic tree. */
 
 #include "controllers/agent_controller.h"
 #include "controllers/agent_height_contract.h"
@@ -290,7 +290,6 @@ static void api_push_mvp_operator_proofs(
     json_push_kv_str(&proofs, "source", "docs/MVP.md");
     json_push_kv_str(&proofs, "native_command", "zclassic23 milestone");
     json_push_kv_str(&proofs, "alias_command", "zclassic23 mvpstatus");
-    json_push_kv_str(&proofs, "mcp_tool", "zcl_milestone");
     json_push_kv_int(&proofs, "accepted_count", strict_pass);
     json_push_kv_int(&proofs, "target_count", (int64_t)criteria_count);
     json_push_kv_int(&proofs, "pending_count", pending);
@@ -484,7 +483,7 @@ void api_milestone_status_json(struct json_value *result)
                          : agent_ok ? "agent_cached_summary_with_fallbacks"
                                     : "node_health_collect_fallback");
     json_push_kv_str(&live, "source_schema",
-                     agent_ok ? "zcl.public_status.v1"
+                     agent_ok ? "zcl.public_status.v2"
                               : "zcl.node_health_snapshot");
     json_push_kv_bool(&live, "agent_summary_available", agent_ok);
     json_push_kv_bool(&live, "agent_fields_complete",
@@ -666,7 +665,6 @@ void api_refold_status_json(struct json_value *result)
     json_set_object(&commands);
     json_push_kv_str(&commands, "native", "zclassic23 refold");
     json_push_kv_str(&commands, "rest", "/api/v1/refold");
-    json_push_kv_str(&commands, "mcp", "zcl_refold_status");
     json_push_kv_str(&commands, "copy_proof",
                      "make repro-on-copy SLUG=soak-refold "
                      "REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 "

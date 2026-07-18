@@ -1,13 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for the zcl_peer_incidents and
- * zcl_onion_health MCP tools. Moved out of
- * tools/mcp/controllers/net_controller.c so both the MCP wrapper and
- * the future native command bridge can call the same composition;
- * see controllers/native_handler_body.h for the contract these
- * functions satisfy. The MCP wrapper (net_controller.c) maps a NULL
- * return + err->status back onto the historical res->error /
- * res->error_message so the MCP surface stays byte-identical. */
+ * Native bodies for peer-incident and onion-health commands. See
+ * controllers/native_handler_body.h for their shared contract. */
 
 #include "controllers/net_native_handlers.h"
 
@@ -27,7 +21,7 @@
 #include <string.h>
 #include <time.h>
 
-/* ── zcl_peer_incidents ──────────────────────────────────────────── */
+/* ── Peer incidents ──────────────────────────────────────────────── */
 
 static bool rpc_body_is_method_not_found(const char *body,
                                          char *message,
@@ -58,7 +52,7 @@ static bool rpc_body_is_method_not_found(const char *body,
 
 static char *peer_incidents_dumpstate_fallback_body(const char *reason)
 {
-    char *raw = mcp_node_rpc("dumpstate",
+    char *raw = node_rpc_call("dumpstate",
                              "[\"peer_lifecycle\",\"incidents\"]");
     if (!raw)
         return NULL;
@@ -88,7 +82,7 @@ char *zcl_native_peer_incidents_body(const struct json_value *args,
                                      struct zcl_native_body_err *err)
 {
     (void)args;
-    char *out = mcp_node_rpc("peerincidents", NULL);
+    char *out = node_rpc_call("peerincidents", NULL);
     char message[192];
     if (rpc_body_is_method_not_found(out, message, sizeof(message))) {
         char *fallback = peer_incidents_dumpstate_fallback_body(message);
@@ -101,29 +95,26 @@ char *zcl_native_peer_incidents_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC peerincidents returned null");
-        LOG_NULL("mcp.net", "RPC peerincidents returned null");
+        LOG_NULL("native.net", "RPC peerincidents returned null");
     }
     return out;
 }
 
-/* ── zcl_onion_health ────────────────────────────────────────────── */
+/* ── Onion health command body ────────────────────────────────────────────── */
 
-/* Mirrors the legacy mcp_res_set_oom (tools/mcp/controllers.h) tail but
- * returns NULL (this TU's functions are char*-returning body fns, not
- * int-returning MCP handlers). cap==0 means no single byte count applies,
- * matching the legacy convention (never hit by either call site below,
- * both pass a nonzero cap). */
+/* Set a contextual allocation failure and return NULL. cap==0 means no single
+ * byte count applies; both current call sites pass a nonzero cap. */
 static char *net_native_oom(struct zcl_native_body_err *err, size_t cap,
                             const char *what)
 {
     err->status = ZCL_NATIVE_BODY_INTERNAL;
     snprintf(err->message, sizeof(err->message), "malloc failed for %s", what);
     if (cap > 0)
-        LOG_NULL("mcp.net", "malloc failed for %s (%zu bytes)", what, cap);
-    LOG_NULL("mcp.net", "malloc failed for %s", what);
+        LOG_NULL("native.net", "malloc failed for %s (%zu bytes)", what, cap);
+    LOG_NULL("native.net", "malloc failed for %s", what);
 }
 
-/* zcl_onion_health — probe the in-process onion service by calling
+/* Probe the in-process onion service by calling
  * `onion_service_handle_request()` directly and measuring the
  * response size + wall-clock latency.  Synchronous: one call per
  * invocation.  Bypasses Tor and the SOCKS layer entirely (dynhost
@@ -138,7 +129,7 @@ static char *net_native_oom(struct zcl_native_body_err *err, size_t cap,
  *   { ok: false, error: "not_started" }
  *
  * err->status = ZCL_NATIVE_BODY_INVALID on a bad `path` arg — the
- * wrapper maps this back to the legacy MCP_ERR_HANDLER_FAILED for
+ * wrapper maps this to the native command's handler-failed status for
  * this tool (byte-compat trumps the generic INVALID mapping). */
 char *zcl_native_onion_health_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
@@ -150,7 +141,7 @@ char *zcl_native_onion_health_body(const struct json_value *args,
         snprintf(err->message, sizeof(err->message),
                  "path: must start with '/', "
                  "be 1..256 chars, contain no control chars or '..' segments");
-        LOG_WARN("mcp.net", "onion_health: %s", err->message);
+        LOG_WARN("native.net", "onion_health: %s", err->message);
         return NULL;
     }
 

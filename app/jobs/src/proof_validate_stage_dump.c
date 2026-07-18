@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * proof_validate_stage_dump — the zcl_state JSON dump for the proof_validate
+ * proof_validate_stage_dump — the native dump-state JSON view for the proof_validate
  * Job. Reads the stage-owned state through sibling-private accessors so the
  * reducer step logic stays focused on validation and cursor movement.
  */

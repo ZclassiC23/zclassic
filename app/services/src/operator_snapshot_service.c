@@ -151,7 +151,7 @@ struct operator_verdict operator_snapshot_classify(
         .status = "unknown",
         .primary = "unknown",
         .next_action = "inspect operator snapshot components",
-        .next_tool = "zcl_operator_snapshot",
+        .next_command = "zclassic23 ops snapshot",
         .chain_values_known = operator_chain_values_known(capture),
         .frontier_order_ok = operator_frontier_order_ok(capture),
         .chain_consistent = chain_frontier_snapshot_consistent(&capture->chain),
@@ -191,21 +191,21 @@ struct operator_verdict operator_snapshot_classify(
         verdict.primary = dominant ? dominant->id
                                    : "typed_blocker_operator_needed";
         verdict.next_action = "inspect authoritative typed blockers";
-        verdict.next_tool = "zcl_blockers";
-        verdict.next_tool2 = "zcl_state";
+        verdict.next_command = "zclassic23 core sync blockers";
+        verdict.next_command2 = "zclassic23 dumpstate blocker";
     } else if (capture->operator_latch_active) {
         verdict.status = "operator_needed";
         verdict.primary = capture->operator_latch_detail[0]
             ? capture->operator_latch_detail : "operator_needed";
         verdict.next_action = "inspect active conditions and operator latch";
-        verdict.next_tool = "zcl_conditions";
-        verdict.next_tool2 = "zcl_node_log";
+        verdict.next_command = "zclassic23 dumpstate condition_engine";
+        verdict.next_command2 = "zclassic23 getnodelog";
     } else if (capture->conditions.unresolved_critical_count > 0) {
         verdict.status = "operator_needed";
         verdict.primary = "critical_condition_unresolved";
         verdict.next_action = "inspect exhausted critical self-heal conditions";
-        verdict.next_tool = "zcl_conditions";
-        verdict.next_tool2 = "zcl_node_log";
+        verdict.next_command = "zclassic23 dumpstate condition_engine";
+        verdict.next_command2 = "zclassic23 getnodelog";
     } else if (capture->security_review_required) {
         verdict.status = "operator_needed";
         verdict.primary = capture->security_posture_status[0]
@@ -214,48 +214,48 @@ struct operator_verdict operator_snapshot_classify(
         verdict.next_action = capture->security_posture_next_action[0]
             ? capture->security_posture_next_action
             : "inspect security posture before serving";
-        verdict.next_tool = "zcl_operator_snapshot";
-        verdict.next_tool2 = "zcl_state";
+        verdict.next_command = "zclassic23 ops snapshot";
+        verdict.next_command2 = "zclassic23 dumpstate health";
     } else if (!verdict.serving) {
         verdict.status = "blocked";
         verdict.primary = "not_serving";
         verdict.next_action = "restore a published provable frontier";
-        verdict.next_tool = "zcl_status";
+        verdict.next_command = "zclassic23 status";
     } else if (operator_mirror_same_height_hash_gap(capture)) {
         verdict.status = "degraded";
         verdict.primary =
             "mirror_same_height_hash_unavailable_or_mismatch";
         verdict.next_action =
             "obtain exact same-height hashes and resolve the disagreement";
-        verdict.next_tool = "zcl_syncdiag";
-        verdict.next_tool2 = "zcl_state";
+        verdict.next_command = "zclassic23 core sync diagnose";
+        verdict.next_command2 = "zclassic23 dumpstate reducer_frontier";
     } else if (capture->blocker_count > 0) {
         verdict.status = "degraded";
         verdict.primary = dominant ? dominant->id : "typed_blocker_active";
         verdict.next_action = "inspect authoritative typed blockers";
-        verdict.next_tool = "zcl_blockers";
+        verdict.next_command = "zclassic23 core sync blockers";
     } else if (capture->conditions.active_count > 0 ||
                capture->conditions.unresolved_count > 0) {
         verdict.status = "degraded";
         verdict.primary = "condition_active";
         verdict.next_action = "inspect active self-heal conditions";
-        verdict.next_tool = "zcl_conditions";
+        verdict.next_command = "zclassic23 dumpstate condition_engine";
     } else if (capture->peers.available && capture->peers.peer_count == 0) {
         verdict.status = "blocked";
         verdict.primary = "no_peers";
         verdict.next_action = "connect or inspect peers";
-        verdict.next_tool = "zcl_peers";
+        verdict.next_command = "zclassic23 core network peers list";
     } else if (capture->peers.available && capture->peers.ready_known &&
                capture->peers.ready_count == 0) {
         verdict.status = "degraded";
         verdict.primary = "no_ready_peers";
         verdict.next_action = "restore at least one handshake-ready peer";
-        verdict.next_tool = "zcl_peers";
+        verdict.next_command = "zclassic23 core network peers list";
     } else if (!verdict.chain_values_known) {
         verdict.status = "degraded";
         verdict.primary = "chain_evidence_unavailable";
         verdict.next_action = "restore served and validated-header evidence";
-        verdict.next_tool = "zcl_status";
+        verdict.next_command = "zclassic23 status";
     } else if (!capture->critical_frontier_stable) {
         verdict.status = "degraded";
         verdict.primary = "chain_evidence_churn";
@@ -264,29 +264,29 @@ struct operator_verdict operator_snapshot_classify(
         verdict.status = "degraded";
         verdict.primary = "chain_binding_unavailable";
         verdict.next_action = "restore height/hash/work bindings";
-        verdict.next_tool = "zcl_status";
+        verdict.next_command = "zclassic23 status";
     } else if (!verdict.frontier_order_ok) {
         verdict.status = "degraded";
         verdict.primary = "chain_evidence_inconsistent";
         verdict.next_action = "inspect served/indexed/header ordering";
-        verdict.next_tool = "zcl_syncdiag";
+        verdict.next_command = "zclassic23 core sync diagnose";
     } else if (!verdict.chain_consistent) {
         verdict.status = "degraded";
         verdict.primary = "chain_lineage_unproven";
         verdict.next_action = "inspect durable binding, ancestry, and chainwork";
-        verdict.next_tool = "zcl_operator_snapshot";
+        verdict.next_command = "zclassic23 ops snapshot";
     } else if (!capture->peers.available || capture->peers.stale ||
                !capture->peers.direction_known ||
                !capture->peers.ready_known) {
         verdict.status = "degraded";
         verdict.primary = "peer_state_unavailable";
         verdict.next_action = "restore a coherent peer snapshot";
-        verdict.next_tool = "zcl_peers";
+        verdict.next_command = "zclassic23 core network peers list";
     } else if (!capture->download_known) {
         verdict.status = "degraded";
         verdict.primary = "download_state_unavailable";
         verdict.next_action = "restore download-manager telemetry";
-        verdict.next_tool = "zcl_syncdiag";
+        verdict.next_command = "zclassic23 core sync diagnose";
     } else if (verdict.gap > 0) {
         bool active = capture->download_in_flight > 0 ||
                       capture->download_queued > 0;
@@ -295,14 +295,14 @@ struct operator_verdict operator_snapshot_classify(
         verdict.next_action = active
             ? "wait for validated progress and recheck"
             : "inspect sync/download progress";
-        verdict.next_tool = "zcl_syncdiag";
-        verdict.next_tool2 = "zcl_node_log";
+        verdict.next_command = "zclassic23 core sync diagnose";
+        verdict.next_command2 = "zclassic23 getnodelog";
     } else if (!capture->sync_state_known ||
                capture->sync_state != SYNC_AT_TIP) {
         verdict.status = "degraded";
         verdict.primary = "sync_not_at_tip";
         verdict.next_action = "inspect the raw sync state";
-        verdict.next_tool = "zcl_syncdiag";
+        verdict.next_command = "zclassic23 core sync diagnose";
     } else if (!verdict.complete) {
         verdict.status = "degraded";
         verdict.primary = "snapshot_incomplete";
@@ -310,7 +310,7 @@ struct operator_verdict operator_snapshot_classify(
         verdict.status = "healthy";
         verdict.primary = "none";
         verdict.next_action = "none";
-        verdict.next_tool = "";
+        verdict.next_command = "";
         verdict.healthy = true;
     }
     return verdict;

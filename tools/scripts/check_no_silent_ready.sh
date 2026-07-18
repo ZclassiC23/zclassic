@@ -23,7 +23,7 @@
 # on a non-progress path MUST also route a typed blocker through the blocker
 # primitive (`blocker_set(` directly, or a helper such as
 # `activation_set_behind_blocker(`) so the stall is always visible in
-# `zcl_state subsystem=blocker` and reaches the supervisor escape / operator
+# `zclassic23 dumpstate blocker` and reaches the supervisor escape / operator
 # sink. A file that transitions to READY but never names a typed blocker is
 # the silent-ready anti-pattern.
 #

@@ -670,12 +670,6 @@ static void api_rest_index_json(struct json_value *root)
     json_push_kv(root, "drilldown", &drilldown);
     json_free(&drilldown);
 
-    struct json_value mcp;
-    json_init(&mcp);
-    api_rest_index_mcp_json(&mcp);
-    json_push_kv(root, "mcp", &mcp);
-    json_free(&mcp);
-
     struct json_value cli;
     json_init(&cli);
     api_rest_index_cli_json(&cli);

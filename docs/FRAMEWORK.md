@@ -19,7 +19,7 @@ doc is where we are going.
 
 For the concrete future-agent feature slice — REST resource first, database
 schema, ActiveRecord model, validations, relationships, service workflow,
-route contract, typed MCP/native surface, and tests — use
+route contract, typed native surface, and tests — use
 [`docs/AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md). This file is the law;
 that file is the build recipe.
 
@@ -41,7 +41,7 @@ versioned controllers, services, projections, OP_RETURN/memo/script protocols,
 and operator APIs; Equihash parameters, activation heights, block/transaction
 validity, and coin accounting remain consensus-parity territory. The working
 umbrella for that application/service layer is **ZLSP** (ZCL Layer Service
-Protocol): noun-shaped REST resources and typed MCP/native JSON methods over
+Protocol): noun-shaped REST resources and typed native JSON methods over
 ZCL-anchored services. ZSLP tokens, ZNAM names, messaging, market flows, and
 script-contract workflows are ZLSP-style services; they may build valid ZCL
 transactions, but they never become a second consensus engine.
@@ -347,7 +347,7 @@ load-bearing.
                             │ depends on PORTS (interfaces)
         ┌───────────────────┼────────────────────┐
      ┌──▼──┐  ┌──────┐  ┌───▼──┐  ┌─────┐  ┌─────┐
-     │SQLite│  │flat- │  │ Tor  │  │ MCP │  │ P2P │   ADAPTERS — swap one file,
+     │SQLite│  │flat- │  │ Tor  │  │ CLI │  │ P2P │   ADAPTERS — swap one file,
      │ /log │  │file  │  │      │  │     │  │     │   the domain doesn't move.
      └──────┘  └──────┘  └──────┘  └─────┘  └─────┘
 ```

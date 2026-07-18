@@ -88,7 +88,7 @@ crosses its **real-alarm** threshold.
 | Pattern | Meaning (emitted by) | Benign? | Real alarm if |
 |---------|----------------------|---------|---------------|
 | **header-resync WARN storm** — `staged.header_admit/validate_headers stalled …`, `condition:header_stall_at_height … action=kick_headers`, `Peer …: all N headers rejected` | At tip the node already holds every header a peer offers; "all N rejected" is the duplicate-rejection path, plus a precautionary re-request. `staged_sync_supervisor.c:76,83`, `header_stall_at_height.c:74`, `msg_headers.c:410` | Yes | `validate_headers stalled` repeats with `failed>0` climbing (genuine validation failures, not dups), or `header_stall_at_height` keeps firing with `age` growing for minutes while `peer_max` stays well above your height. Cross-check height vs zclassicd. |
-| **have_data_missing race** — `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing` / `block_missing` | A block (or tip's H+1 lookahead) has a header but its body hasn't finished `body_persist → script_validate → utxo_apply`. Finalize returns `JOB_IDLE` (cursor unchanged, txn rolled back) and retries next tick. `tip_finalize_stage.c:173` (TRANSIENT case at `:390`) | Yes | The SAME height stays `have_data_missing` for many consecutive ticks (minutes) — a body that never arrives. Confirm via `zcl_syncstate` (body frontier not advancing) + `tip_advance_age_seconds` climbing. |
+| **have_data_missing race** — `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing` / `block_missing` | A block (or tip's H+1 lookahead) has a header but its body hasn't finished `body_persist → script_validate → utxo_apply`. Finalize returns `JOB_IDLE` (cursor unchanged, txn rolled back) and retries next tick. `tip_finalize_stage.c:173` (TRANSIENT case at `:390`) | Yes | The SAME height stays `have_data_missing` for many consecutive ticks (minutes) — a body that never arrives. Confirm via `zclassic23 core sync status` (body frontier not advancing) + `tip_advance_age_seconds` climbing. |
 | **"database is locked" transient** — SQLite `SQLITE_BUSY`/`SQLITE_LOCKED` retries | Stage writers (chain-state cursor, body persist, tx index, explorer projections) share one WAL `node.db`; under a write burst two briefly contend and retry within `busy_timeout`. Bounded retry loop `chain_state_service.c:159-219`; `sqlite3_busy_timeout` on hot writers e.g. `snapshot_controller_import.c:91`, `explorer_stats_view.c:387` | Yes (retry succeeds) | The exhausted-retry surface appears (`last_persist_locked` set / "bounded retry exhausted"), or `database is locked` coincides with two live `zclassic23` PIDs on one datadir (real second-instance — see Boot Failure). A bloated WAL (>100 MB) can sustain contention — force a checkpoint (see "Disk > 99% Full"). |
 | **bg-validation undo-data-missing** — `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo missing) — block advances, not fully verified` | Snapshot/fast-sync blocks carry no undo data for the pre-snapshot range; scripts were verified at connect time, only optional historical re-verify is skipped. Skip count tallied for honesty. `bg_validation_service.c:389-392`; `health_controller.c:196` | Yes (expected post-snapshot) | `[bg-valid] script verification FAILED h=…` (`bg_validation_service.c:384`) appears, or the skip count grows for blocks connected normally (with undo data), not just the pre-snapshot range. |
 | **crash-only auto-reindex** — `[boot] crash-only recovery: post-restore tip-above-extent … requesting -reindex-chainstate; restarting …` then `… consuming auto-reindex request — rebuilding the UTXO set from block data` | A kill-9 mid-connect left the derived tip above the validated on-disk extent. blocks/ + wallet are the only durable truth and the UTXO set is derived, so the node bounded-requests a rebuild and restarts. Never deletes blocks/ or wallet; max 3 attempts/anchor. `boot_crashonly.c:22,70`; `boot_auto_reindex.c` (commit `706a7c00a`) | Yes (strictly safer self-heal) | `[boot] crash-only recovery EXHAUSTED after N reindex attempts …` (`boot_crashonly.c:81`) — blocks/ genuinely can't back the tip (real corrupt-block-data), or the same anchor keeps requesting a reindex without converging. |
@@ -121,7 +121,7 @@ build/bin/zclassic23 dumpstate chain_advance_coordinator
 build/bin/zclassic23 getblockcount
 ```
 
-If genuinely stuck, `zcl_state subsystem=chain_evidence` names the precise reason
+If genuinely stuck, `zclassic23 dumpstate chain_evidence` names the precise reason
 (a blocker, never a silent halt). Recovery is `systemctl --user restart zclassic23`
 (or `make deploy` for a new binary). Forensics: `project_bip30_stale_coins_wedge`.
 
@@ -163,10 +163,9 @@ build/bin/zclassic23 dumpstate disk_monitor
 ```bash
 build/bin/zclassic23 getpeerinfo
 build/bin/zclassic23 dumpstate peer_lifecycle
-# Via MCP:
-# zcl_peers → check banscore field
-# zcl_peer_report → offence breakdown by kind
-# zcl_events → filter for peer.misbehave, peer.banned
+build/bin/zclassic23 core network peers list
+build/bin/zclassic23 core network peers incidents
+build/bin/zclassic23 ops timeline
 ```
 
 **Fix:**
@@ -204,10 +203,10 @@ build/bin/zclassic23 dumpstate legacy_mirror
 ```
 
 `peerincidents` is the preferred no-jq entry point. If the running node is one
-deploy behind and does not expose the direct RPC yet, the native CLI/MCP path
+deploy behind and does not expose the direct RPC yet, the native CLI path
 falls back through `dumpstate peer_lifecycle incidents` and marks the response
 with `compatibility_fallback=true` while preserving the
-`zcl.peer_incidents.v1` schema.
+`zcl.peer_incidents.v2` schema.
 
 **Fix:**
 1. **No completed handshakes:** check outbound reachability and peer quality before restarting.
@@ -234,7 +233,7 @@ with `compatibility_fallback=true` while preserving the
 
 ## Wallet Backup Failed
 
-**Symptoms:** `EV_WALLET_BACKUP_FAILED`. `zcl_status` health shows wallet backup warning.
+**Symptoms:** `EV_WALLET_BACKUP_FAILED`. `zclassic23 core status` shows the wallet backup warning.
 
 **Diagnose:**
 ```bash
@@ -266,18 +265,21 @@ ls -la ~/.zclassic-c23/backups/
 build/bin/zclassic23 getblockchaininfo
 build/bin/zclassic23 getpeerinfo
 # Compare your tip hash against a trusted peer or explorer
-# Via MCP: zcl_syncstate, zcl_dataintegrity
+build/bin/zclassic23 core sync status
+build/bin/zclassic23 core consensus integrity
 ```
 
 **Fix:**
-1. If tip is just behind (syncing): wait. Check `zcl_syncstate` — `BLOCKS_DOWNLOAD` or `CONNECTING_BLOCKS` means sync in progress.
+1. If tip is just behind (syncing): wait. Check `zclassic23 core sync status` — `BLOCKS_DOWNLOAD` or `CONNECTING_BLOCKS` means sync in progress.
 2. If tip regressed after a reorg:
    - Small (<10 blocks): normal, recovers automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
    - Large (>10 blocks): investigate whether peers agree on the fork:
      ```bash
      build/bin/zclassic23 getpeerinfo
      ```
-3. If stuck on a dead fork (no peers agree), see the nuclear option below — invalidateblock / reconsiderblock RPCs are exposed (also as MCP tools zcl_invalidateblock / zcl_reconsiderblock) — use them to drop a stale fork.
+3. If stuck on a dead fork (no peers agree), use the native RPC fallback
+   (`zclassic23 rpc invalidateblock` / `zclassic23 rpc reconsiderblock`) to
+   drop a stale fork.
 4. Nuclear option (last resort): stop node, delete state, resync:
    ```bash
    systemctl --user stop zclassic23
@@ -293,7 +295,7 @@ build/bin/zclassic23 getpeerinfo
 
 ## Node Stuck (Not Syncing)
 
-**Symptoms:** Height frozen. `zcl_syncstate` returns `IDLE` or `FAILED`. No blocks connecting.
+**Symptoms:** Height frozen. `zclassic23 core sync status` returns `IDLE` or `FAILED`. No blocks connecting.
 
 **Diagnose:**
 ```bash
@@ -301,7 +303,8 @@ build/bin/zclassic23 agent
 build/bin/zclassic23 getpeerinfo
 build/bin/zclassic23 getnetworkinfo
 build/bin/zclassic23 dumpstate peer_lifecycle
-# Via MCP: zcl_syncstate, zcl_peers
+build/bin/zclassic23 core sync status
+build/bin/zclassic23 core network peers list
 ```
 
 **Fix:**
@@ -316,7 +319,8 @@ build/bin/zclassic23 dumpstate peer_lifecycle
    ```bash
    # Check recent events for reject reasons
    build/bin/zcl-rpc eventlog | grep -i reject
-   # Via MCP: zcl_events, zcl_consensus_report
+   build/bin/zclassic23 ops logs --pattern='reject'
+   build/bin/zclassic23 core consensus report
    ```
 3. **Sync state is FAILED:** restart — transient failures often clear:
    ```bash
@@ -388,7 +392,7 @@ next onion-seed pass picks the file up.
 
 **Diagnose:**
 ```bash
-# Via MCP: zcl_metrics → look at rpc_rate_limited_global, rpc_rate_limited_per_ip
+build/bin/zclassic23 ops metrics # inspect rpc_rate_limited_global/per_ip
 # Check current limits
 echo "Global: ${ZCL_RPC_RPS:-50} rps, burst ${ZCL_RPC_BURST:-100}"
 echo "Per-IP: ${ZCL_RPC_PER_IP_RPS:-5} rps, burst ${ZCL_RPC_PER_IP_BURST:-10}"
@@ -447,7 +451,7 @@ echo "Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s"
 ```bash
 ps aux | grep zclassic23 | grep -v grep
 cat /proc/$(pgrep zclassic23)/status | grep -E 'VmRSS|VmPeak'
-# Via MCP: zcl_dbstats → check cache sizes
+build/bin/zclassic23 core storage stats # inspect cache sizes
 ```
 
 **Fix:**
@@ -499,10 +503,6 @@ journalctl --user -u zclassic23 --since "5 min ago" --no-pager
 | `ZCL_RPC_AUTH_FAIL_THRESHOLD` | 5 | Auth failures before auto-ban |
 | `ZCL_RPC_BAN_SECONDS` | 3600 | Ban duration (seconds) |
 | `ZCL_RPC_COOKIE_ROTATE_SEC` | 86400 | Cookie rotation interval (0=disable) |
-| `ZCL_MCP_GLOBAL_RPS` | 100 | MCP global rate limit |
-| `ZCL_MCP_DESTRUCTIVE_RPS` | 1 | MCP write-op rate limit |
-| `ZCL_MCP_TIMEOUT_MS` | 5000 | MCP per-tool timeout |
-| `ZCL_MCP_BEARER_TOKEN` | (none) | MCP auth token (optional) |
 | `ZCL_WAL_MAX_BYTES` | 104857600 | SQLite WAL size cap (bytes) |
 | `ZCL_METRICS_HTTP_ENABLE` | 0 | Expose /metrics Prometheus endpoint |
 

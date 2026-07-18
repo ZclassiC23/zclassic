@@ -66,7 +66,7 @@ EX_GTK_LIBS := $(call GETVAR,GTK_LIBS)
 EX_WK_LIBS  := $(call GETVAR,WEBKIT_LIBS)
 
 # The full non-LTO test object tree (lib/, app/, config/, domain/,
-# application/, adapters/, tools/mcp/, lib/test/src/*.o, lib/test/spec/*.o,
+# application/, adapters/, tools/command/, lib/test/src/*.o, lib/test/spec/*.o,
 # tools/sim/sim_peer.o) minus lib/test/src/test_parallel.o's own main().
 # Paths are relative to $(ROOT) — kept that way (not re-prefixed) because the
 # compile/link recipes below `cd $(ROOT)` first, exactly where these paths,

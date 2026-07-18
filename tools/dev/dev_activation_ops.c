@@ -121,7 +121,7 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
     const char *ab[] = { cand_bin, "agentbuild", NULL };
     if (dev_run_argv(req->repo_root, ab, 30000, &res) != 0)
         return -1;
-    if (!strstr(res.output, "zcl.agent_build.v1"))
+    if (!strstr(res.output, "zcl.agent_build.v2"))
         return -1;
     char observed[65];
     if (!dev_activation_json_first_string(res.output, "source_id_sha256",
@@ -131,7 +131,7 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
     if (!source_id_sha256 ||
         strcmp(observed, source_id_sha256) != 0)
         return -1;
-    /* Native registry self-test replaces the old `mcpcall zcl_self_test`
+    /* Native registry self-test is the resident command-catalog proof
      * preflight seam: a deterministic, node-free well-formedness sweep of the
      * command catalog. Fail closed unless the candidate reports fail == 0. */
     char portbuf[16];
@@ -180,7 +180,7 @@ static int dev_op_activation_probe(void *ctx, const char *gen_id,
     const char *av[] = { cli, ddbuf, portbuf, "agent", NULL };
     if (dev_run_argv(req->repo_root, av, 12000, &res) != 0)
         return -1;
-    if (!strstr(res.output, "zcl.public_status.v1"))
+    if (!strstr(res.output, "zcl.public_status.v2"))
         return -1;
     char observed[65];
     if (!dev_activation_source_id_valid(expected_source_id_sha256) ||

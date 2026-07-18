@@ -227,7 +227,7 @@ void op_return_backfill_reset_for_test(void)
     atomic_store(&g_backfill_last_height, -1);
 }
 
-/* ── zcl_state dump: subsystem=op_return_index ──────────────────────── */
+/* ── `zclassic23 dumpstate op_return_index` ─────────────────────────── */
 
 bool op_return_index_dump_state_json(struct json_value *out, const char *key)
 {

@@ -1,11 +1,11 @@
 // one-result-type-ok:json-dump-bool — E2 (one way out): the sole public
-// function is a best-effort zcl_state JSON dumper. The dump convention
+// function is a best-effort native dump-state JSON view. The convention
 // (CLAUDE.md "Adding state introspection") returns bool (false = couldn't
 // populate), not struct zcl_result; there is no fallible service surface here.
 
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * bg_validation_dump — the zcl_state subsystem=bg_validation introspection
+ * bg_validation_dump — `zclassic23 dumpstate bg_validation` introspection
  * dumper, split out of bg_validation_service.c so that TU stays under the
  * E1 file-size ceiling. See CLAUDE.md "Adding state introspection".
  *
@@ -18,7 +18,7 @@
 
 #include <stdbool.h>
 
-/* zcl_state subsystem=bg_validation — historical-proof re-verification
+/* `zclassic23 dumpstate bg_validation` — historical-proof re-verification
  * progress: state, verified/chain height, sigs+proofs verified, throughput,
  * and the count of post-snapshot blocks whose scripts could not be verified
  * (no undo). Snapshots the service's atomics via the lock-free accessor.

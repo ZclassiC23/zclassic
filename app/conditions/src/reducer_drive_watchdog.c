@@ -360,7 +360,7 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
      * under progress_store_tx_trylock: NEVER a blocking coins/progress lock
      * from an observational surface (LOCK-ORDER LAW) — a synchronous drive
      * can hold this lock for a long stretch, and this dump function may be
-     * called from an MCP/RPC thread that must not stall behind it. */
+     * called from a native-command or RPC thread that must not stall behind it. */
     sqlite3 *db = progress_store_db();
     if (!db || !progress_store_tx_trylock()) {
         ok = ok && json_push_kv_bool(out, "coins_applied_read_ok", false);

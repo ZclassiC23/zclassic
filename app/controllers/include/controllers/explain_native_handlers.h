@@ -59,7 +59,7 @@ const char *explain_topic_summary(size_t i);
 size_t explain_topics_csv(char *out, size_t out_size);
 
 /* Node-contacting entry point: resolve `topic`, fetch the RPC bundle via
- * mcp_node_rpc, dispatch to the composer, and fill `out` (object). Returns
+ * node_rpc_call, dispatch to the composer, and fill `out` (object). Returns
  * false and fills out.error when the topic is unknown. The RPC client must be
  * initialised (bridge_ensure_rpc_client) by the caller. */
 bool explain_build(const char *topic, struct json_value *out);

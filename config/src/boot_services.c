@@ -437,7 +437,7 @@ static void boot_register_core_liveness_and_reducer(
     address_index_service_register(); /* opt-in -addressindex backfill; no-op when off */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
-     * halt that exhausts remedies reaches a human/MCP and the health
+     * halt that exhausts remedies reaches an operator and the health
      * surface instead of dead-ending. */
     alerts_init();
     self_heal_register(svc->state);
@@ -1287,7 +1287,7 @@ bool app_init_services(struct app_context *ctx,
      * data-unrecoverable — the node can still serve P2P + advance the chain. Per
      * the mandate ("never silently dies unless the data is truly unrecoverable")
      * we enter DEGRADED_SERVING and continue instead of crash-looping. It is
-     * LOUD: stderr + a structured event. (When rpc_http itself is down, zcl_state
+     * LOUD: stderr + a structured event. (When rpc_http itself is down, dumpstate
      * is unreachable whether we crash or degrade — so degrading strictly gains a
      * live node + no crash-loop. rpc_http start only fails on a NULL-ctx
      * programming invariant, so this path is effectively unreachable in prod.) */

@@ -11,7 +11,7 @@
 # `activation_blocker = "activation-no-progress"` re-firing ~5/sec
 # because there was no de-duplication at the recorder. Round 6 C1
 # shipped the typed primitive; C2/C3/C4/C5 wired it into the mirror
-# consensus, source scoring, BLOCK_FAILED model, and MCP. This gate
+# consensus, source scoring, BLOCK_FAILED model, and native diagnostics. This gate
 # is the ratchet that drives the rest of the codebase to opt in.
 #
 # A file is a "raw blocker site" if it contains one of:

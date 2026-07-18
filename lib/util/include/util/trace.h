@@ -14,8 +14,8 @@
  *
  * Usage:
  *
- *   struct trace_span *s = trace_start("mcp.dispatch");
- *   trace_attr_str(s, "tool", tool_name);
+ *   struct trace_span *s = trace_start("command.dispatch");
+ *   trace_attr_str(s, "command", command_name);
  *   trace_attr_int(s, "args_count", nargs);
  *   // ... do work ...
  *   trace_end(s);  // emits JSON span via log_jsonf, frees span

@@ -637,7 +637,7 @@ static bool uv_meta_is(sqlite3 *db, const char *key, const char *want)
 }
 
 /* True iff the utxo_apply dump_state JSON contains `needle` — the counter
- * surface for statuses without a public accessor (mirrors zcl_state). */
+ * surface for statuses without a public accessor (mirrors native dumpstate). */
 static bool uv_dump_has(const char *needle)
 {
     struct json_value v;
@@ -1918,7 +1918,7 @@ int test_utxo_apply_stage(void)
      * the same wedge; the blocker is re-derived on the first tick of every
      * boot so the stall is immediately classified "permanent_blocker_active"
      * and the node stays up degraded with a halt an operator can see via
-     * zcl_blockers.
+     * `zclassic23 blockers`.
      *
      * The site exercised is the script_validate_log verdict read
      * (script_validate_log_verdict_at < 0 → ua_fatal_permanent_blocker): a

@@ -5,15 +5,12 @@
  * CLAUDE.md "Copy-prove before live"). This controller NEVER reimplements
  * the harness — it validates+quotes agent-supplied parameters, launches
  * the script detached, and lets a caller poll progress through the
- * diagnostics registry (`zcl_state subsystem=agent_copy_prove`) instead
- * of holding an RPC/MCP worker thread for the run duration.
+ * diagnostics registry (`zclassic23 dumpstate agent_copy_prove`) instead
+ * of holding an RPC worker thread for the run duration.
  *
  * Sync-vs-async: a real copy-prove run boots a full node and watches its
  * tip for `--deadline` seconds (default 180s, up to the 3600s cap this
- * contract enforces). The MCP dispatcher's default per-call budget is 5s,
- * and even the existing `k_long_running_tools` override table
- * (tools/mcp/middleware.c) caps out at 12s — nowhere near enough headroom
- * for a multi-minute proof. So this contract is asynchronous by design:
+ * contract enforces), so this contract is asynchronous by design:
  * it returns as soon as the run is launched, and callers poll the
  * diagnostics-registry primitive (see CLAUDE.md "Adding state
  * introspection") for the result. `lib/util/src/long_op.c` was
@@ -54,7 +51,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define COPY_PROVE_CONTRACT_SCHEMA "zcl.agent_copy_prove.v1"
+#define COPY_PROVE_CONTRACT_SCHEMA "zcl.agent_copy_prove.v2"
 #define COPY_PROVE_RESULT_SCHEMA   "zcl.copy_prove_result.v1"
 #define COPY_PROVE_STATE_SCHEMA    "zcl.agent_copy_prove_state.v1"
 
@@ -270,11 +267,11 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         "  deadline_secs (int, optional, default 180, clamped 1..3600)\n"
         "  full (bool, optional, default false)     --full vs --light\n"
         "  no_run (bool, optional, default false)    --no-run\n"
-        "\nPoll a run with: zclassic23 dumpstate agent_copy_prove <slug>\n"
-        "or MCP zcl_state subsystem=agent_copy_prove key=<slug>. This\n"
+        "\nPoll a run with: zclassic23 dumpstate agent_copy_prove <slug>.\n"
+        "This\n"
         "call never blocks for the run duration — see cp_launch above.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_copy_prove.v1\", \"status\":\"started\", ... }\n");
+        "  { \"schema\":\"zcl.agent_copy_prove.v2\", \"status\":\"started\", ... }\n");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -294,7 +291,6 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     json_push_kv_str(result, "schema", COPY_PROVE_CONTRACT_SCHEMA);
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "native_command", "zclassic23 agentcopyprove");
-    json_push_kv_str(result, "mcp_tool", "zcl_agent_copy_prove");
 
     if (!cp_slug_valid(slug)) {
         json_push_kv_str(result, "status", "error");
@@ -434,12 +430,10 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     json_push_kv_str(result, "launch_log", launch_log);
     json_push_kv_str(result, "poll_native",
                      "zclassic23 dumpstate agent_copy_prove");
-    json_push_kv_str(result, "poll_mcp",
-                     "zcl_state subsystem=agent_copy_prove");
     json_push_kv_int(result, "deadline_secs", deadline_secs);
     json_push_kv_str(result, "budget_note",
-        "detached background run; does not hold an RPC/MCP worker thread. "
-        "Poll status_file via dumpstate/zcl_state instead of waiting on "
+        "detached background run; does not hold an RPC worker thread. "
+        "Poll status_file via dumpstate instead of waiting on "
         "this call.");
     return true;
 }

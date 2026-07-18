@@ -72,7 +72,7 @@ Production never opens a seed tape by hand — a live node's boot path
 (`config/src/boot.c`) wires a real tape plus `postmortem_install()` at process
 start, so a `SIGSEGV`/`SIGABRT` handler calls `postmortem_capture_write()`
 automatically, with no operator action needed. An operator (or Claude, via the
-MCP surface) inspects and replays capsules with `zcl_postmortem_list` /
-`zcl_postmortem_replay` (`tools/mcp` controllers), which are thin wrappers over
+native command surface) inspects capsules with `zclassic23 ops postmortem list`
+and replays them through the corresponding RPC fallback, which are thin wrappers over
 the same `postmortem_capsule_list()` / `postmortem_capsule_load_tape()` calls
 this example drives directly.

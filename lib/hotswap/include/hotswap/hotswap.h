@@ -2,10 +2,10 @@
  *
  * Tier 1 in-process hot-swap loader (DEV-ONLY).
  *
- * An AI agent edits an app-layer MCP controller .c, `make hotswap-so`
- * compiles the eligible stateless MCP TU into a generation .so, and this loader
- * dlopen's it into the RUNNING dev node and re-points the affected MCP
- * routes atomically — no restart. The release binary stays 100% static:
+ * An AI agent edits an eligible native-command controller, `make hotswap-so`
+ * compiles it into a generation .so, and this loader dlopen's it into the
+ * RUNNING dev node and re-points the affected native command leaves atomically
+ * — no restart. The release binary stays 100% static:
  * every dlopen/dlsym here lives inside `#ifdef ZCL_DEV_BUILD`, so a
  * release build links zero dynamic-loading code (the whole load path
  * compiles down to a stub that returns "hotswap unavailable in release").
@@ -30,10 +30,8 @@
 extern "C" {
 #endif
 
-/* Forward decls only — lib/hotswap must not include tools/mcp/router.h
- * (lib-layer purity) nor pull the full json header into consumers that
- * only need the dump signature. */
-struct mcp_tool_route;
+/* Forward declaration keeps the full JSON header out of consumers that only
+ * need the dump signature. */
 struct json_value;
 
 /* Forward decls only — the native command surface (kernel/app types) is never
@@ -45,62 +43,37 @@ struct zcl_command_reply;
 typedef void (*zcl_command_handler_fn)(const struct zcl_command_request *,
                                        struct zcl_command_reply *);
 
-/* v2 is deliberately small: the only admitted provider class is a stateless
- * MCP route set.  REST/diagnostics and every stateful provider remain reload
- * required until they can participate in the same generation transaction. */
+/* The manifest schema stays stable while the host ABI is bumped whenever its
+ * vtable layout changes. V4 deliberately admits only native command leaves;
+ * artifacts built against the retired layouts fail closed during validation. */
 #define ZCL_HOTSWAP_MANIFEST_SCHEMA_V2 2u
-#define ZCL_HOTSWAP_HOST_ABI_V2        2u
-/* v3 host: same manifest schema (v2), but the host vtable additionally exposes
- * leaf_stage for the native.leaves provider class. Strictly additive — the v3
- * struct appends one field past the v2 layout, so a v2 consumer that only reads
- * the first ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 bytes is unaffected. */
-#define ZCL_HOTSWAP_HOST_ABI_V3        3u
+#define ZCL_HOTSWAP_HOST_ABI_V4        4u
 
 enum zcl_hotswap_host_capability {
-    ZCL_HOTSWAP_CAP_MCP_STAGE          = UINT64_C(1) << 0,
     ZCL_HOTSWAP_CAP_ATOMIC_COMMIT      = UINT64_C(1) << 1,
-    /* v3: stage a native command leaf (dotted path → handler). */
     ZCL_HOTSWAP_CAP_LEAF_STAGE         = UINT64_C(1) << 2,
-    /* Deliberately unsupported in the v2 pilot.  The legacy provider macro
-     * requests this bit, so direct REST/diagnostics publication fails closed
-     * before generation code runs. */
-    ZCL_HOTSWAP_CAP_DIRECT_PROVIDER    = UINT64_C(1) << 63,
 };
 
-#define ZCL_HOTSWAP_V2_HOST_CAPABILITIES \
-    (ZCL_HOTSWAP_CAP_MCP_STAGE | ZCL_HOTSWAP_CAP_ATOMIC_COMMIT)
-
-#define ZCL_HOTSWAP_V3_HOST_CAPABILITIES \
+#define ZCL_HOTSWAP_V4_HOST_CAPABILITIES \
     (ZCL_HOTSWAP_CAP_LEAF_STAGE | ZCL_HOTSWAP_CAP_ATOMIC_COMMIT)
 
 enum zcl_hotswap_quiescence {
     ZCL_HOTSWAP_QUIESCENCE_NONE = 0,
 };
 
-/* Host vtable handed to a generation's zcl_hotswap_gen_init(). Calls to
- * mcp_stage only append to the loader-owned transaction; they NEVER publish.
- * The resident host validates the complete batch and commits one immutable
- * router snapshot only after gen_init and the generation self-test succeed. */
+/* Host vtable handed to a generation's zcl_hotswap_gen_init(). leaf_stage only
+ * appends to the loader-owned transaction; it never publishes. The resident
+ * host validates the complete batch and commits one immutable command snapshot
+ * only after gen_init and the generation self-test succeed. */
 struct zcl_hotswap_host {
     uint32_t abi_version;
     uint32_t struct_size;
     uint32_t gen;
     uint64_t capabilities;
-    bool (*mcp_stage)(const char *name, const struct mcp_tool_route *route);
-    /* v3 (appended — DO NOT reorder the fields above; a v2 consumer sees only
-     * the first ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 bytes). Present only when the
-     * host advertises ZCL_HOTSWAP_HOST_ABI_V3 / ZCL_HOTSWAP_CAP_LEAF_STAGE. */
     bool (*leaf_stage)(const char *path, zcl_command_handler_fn handler);
 };
 
-/* The v2 host layout is exactly the prefix through mcp_stage; the v3 layout is
- * the whole struct. Freezing the v2 size as an offsetof (rather than a bare
- * sizeof) keeps a routes generation compiled against this header declaring the
- * SAME host_struct_size a pre-v3 generation declared, so the byte path stays
- * identical after the struct grows. */
-#define ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 \
-    ((uint32_t)offsetof(struct zcl_hotswap_host, leaf_stage))
-#define ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3 \
+#define ZCL_HOTSWAP_HOST_STRUCT_SIZE_V4 \
     ((uint32_t)sizeof(struct zcl_hotswap_host))
 
 /* The symbol every generation .so must export. */
@@ -147,23 +120,7 @@ struct hotswap_load_report {
     char     artifact_sha256[65]; /* resident hash of the .so bytes */
 };
 
-struct zcl_hotswap_mcp_replacement {
-    const char *name;
-    const struct mcp_tool_route *route;
-};
-
-/* One all-or-zero publication callback supplied by the resident MCP
- * controller.  The loader never links upward against tools/mcp/router. */
-typedef bool (*zcl_hotswap_commit_cb)(
-    void *context,
-    uint32_t gen,
-    const struct zcl_hotswap_mcp_replacement *replacements,
-    size_t replacement_count,
-    char *why,
-    size_t why_sz);
-
-/* Parallel to zcl_hotswap_mcp_replacement for the native.leaves provider: a
- * dotted command path bound to the generation's freshly-compiled handler. */
+/* A dotted command path bound to the generation's freshly-compiled handler. */
 struct zcl_hotswap_leaf_replacement {
     const char *path;
     zcl_command_handler_fn handler;
@@ -179,31 +136,10 @@ typedef bool (*zcl_hotswap_leaf_commit_cb)(
     char *why,
     size_t why_sz);
 
-/* Load a generation .so and stage its route replacements.
- *
- *   so_path          absolute path to the gen .so (see hotswap_path_is_acceptable)
- *   resolved_datadir must resolve to the exact worker path
- *                    ~/.zclassic-c23-dev; every other lane is refused
- *   required_probe   canonical manifest probe selected by the planner
- *   commit_cb        validates + publishes one immutable route snapshot
- *   commit_context   opaque caller context passed to commit_cb
- *   report           out — always populated
- *
- * Returns true iff the .so loaded, manifest/init/self-test passed, and the
- * complete staged batch committed. DEV-ONLY: without ZCL_DEV_BUILD this refuses with an
- * "unavailable" error and performs NO dlopen. */
-bool hotswap_load(const char *so_path,
-                  const char *resolved_datadir,
-                  const char *required_probe,
-                  zcl_hotswap_commit_cb commit_cb,
-                  void *commit_context,
-                  struct hotswap_load_report *report);
-
 /* Load a `native.leaves` generation .so and stage its command-handler
- * replacements. Same fail-closed precheck/dlopen/hash/manifest-validate core
- * as hotswap_load(); diverges only in staging native leaves (v3 host,
- * leaf_stage) and invoking a zcl_hotswap_leaf_commit_cb. DEV-ONLY: without
- * ZCL_DEV_BUILD it refuses with an "unavailable" error and performs NO dlopen. */
+ * replacements. The V4 host stages only native leaves and invokes a single
+ * all-or-zero commit callback. DEV-ONLY: without ZCL_DEV_BUILD this refuses
+ * with an "unavailable" error and performs no dlopen. */
 bool hotswap_load_leaves(const char *so_path,
                          const char *datadir,
                          const char *probe_leaf,
@@ -231,26 +167,16 @@ bool hotswap_manifest_v2_validate(
 /* Number of generations loaded this process (monotone; never decremented). */
 size_t hotswap_generation_count(void);
 
-/* zcl_state subsystem=hotswap. See CLAUDE.md "Adding state introspection".
+/* `zclassic23 dumpstate hotswap` (dump-state convention).
  * Reentrant-safe; `out` is initialized (json_set_object) by this function. */
 bool hotswap_dump_state_json(struct json_value *out, const char *key);
 
 /* ── Generation entrypoint emitter ─────────────────────────────────────
  *
- * Invoke ONCE at file scope in a swap-eligible controller TU, passing the
- * controller's static route table and its element count, e.g.:
- *
- *     ZCL_HOTSWAP_EXPORT_ROUTES(k_routes, PARAM_COUNT(k_routes))
- *
- * (no trailing semicolon). Under a generation .so build (-DZCL_HOTSWAP_GEN)
- * it emits the manifest plus `zcl_hotswap_gen_init`, which stages every route
- * the controller owns — the routes (and their handlers) resolve to the .so's
- * OWN freshly-compiled copies, so dispatch runs the edited code. In the node
- * build AND in release it expands to nothing, so the symbol only ever exists
- * inside a gen .so (never in the shipped binary).
- *
- * The body is expanded in the controller TU, where `struct mcp_tool_route`
- * is complete — that is why lib/hotswap needs only a forward declaration. */
+ * Invoke once at file scope in a swap-eligible native command controller TU.
+ * Under a generation .so build (-DZCL_HOTSWAP_GEN) it emits the manifest plus
+ * zcl_hotswap_gen_init, which stages the controller's freshly-compiled command
+ * handlers. In node and release builds it expands to nothing. */
 #ifdef ZCL_HOTSWAP_GEN
 #ifndef ZCL_HOTSWAP_BUILD_IDENTITY
 /* The generation build must bind this independently of the host's runtime
@@ -269,18 +195,13 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
 #ifndef ZCL_HOTSWAP_MAPPED_TESTS
 #define ZCL_HOTSWAP_MAPPED_TESTS "hotswap_loader,hotswap_simnet"
 #endif
-#ifndef ZCL_HOTSWAP_PROBE_TOOLS
-#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_name_list"
-#endif
 #ifndef ZCL_HOTSWAP_PROBE_LEAF
 #define ZCL_HOTSWAP_PROBE_LEAF "node.status"
 #endif
 
-/* Generalized manifest emitter, parameterized by the host ABI/size/caps/probe
- * so both the v2 (mcp.routes) and v3 (native.leaves) provider classes share
- * one body. The self-test validates the host against the SAME abi/size/caps the
- * manifest declares. A TU invokes exactly one EXPORT_* macro, so the single
- * zcl_hotswap_default_self_test / zcl_hotswap_manifest_v2 symbols never clash. */
+/* The self-test validates the same ABI, size, and capability contract declared
+ * by the manifest. A TU invokes exactly one exporter, so its symbols do not
+ * collide with another generation provider. */
 #define ZCL_HOTSWAP_EXPORT_MANIFEST(host_abi_, host_size_, required_caps_,   \
                                     provider_id_, probe_csv_)                \
     static bool zcl_hotswap_default_self_test(                              \
@@ -314,31 +235,7 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
         .self_test = zcl_hotswap_default_self_test,                         \
     };
 
-/* v2 alias (unchanged emitted bytes: host_struct_size resolves to the frozen
- * v2 prefix size, identical to the pre-v3 sizeof). */
-#define ZCL_HOTSWAP_EXPORT_V2_MANIFEST(required_caps_, provider_id_)         \
-    ZCL_HOTSWAP_EXPORT_MANIFEST(ZCL_HOTSWAP_HOST_ABI_V2,                     \
-                                ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,             \
-                                required_caps_, provider_id_,                \
-                                ZCL_HOTSWAP_PROBE_TOOLS)
-
-#define ZCL_HOTSWAP_EXPORT_ROUTES(routes_arr, routes_count)                  \
-    ZCL_HOTSWAP_EXPORT_V2_MANIFEST(                                          \
-        ZCL_HOTSWAP_V2_HOST_CAPABILITIES, "mcp.routes")                     \
-    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host);          \
-    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host)           \
-    {                                                                        \
-        if (!host || !host->mcp_stage) return false;                         \
-        bool zcl__all = true;                                                \
-        for (size_t zcl__i = 0; zcl__i < (size_t)(routes_count); zcl__i++) { \
-            if (!host->mcp_stage((routes_arr)[zcl__i].name,                  \
-                                 &(routes_arr)[zcl__i]))                      \
-                zcl__all = false;                                            \
-        }                                                                    \
-        return zcl__all;                                                     \
-    }
-
-/* ── native.leaves (v3 host) generation entrypoint emitter ─────────────
+/* ── native.leaves (V4 host) generation entrypoint emitter ─────────────
  *
  * Invoke ONCE at file scope in a swap-eligible native command controller TU,
  * passing the controller's static {path,handler} table and its element count:
@@ -347,14 +244,14 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
  *
  * (no trailing semicolon). Under a generation .so build it emits the manifest
  * plus zcl_hotswap_gen_init, which stages every command leaf the controller
- * owns via the host's v3 leaf_stage vtable entry — the handlers resolve to the
+ * owns via the host's leaf_stage vtable entry — the handlers resolve to the
  * .so's OWN freshly-compiled copies. In node/release builds it expands to
  * nothing. struct zcl_command_request/reply are complete only here, which is
  * why lib/hotswap needs only a forward declaration. */
 #define ZCL_HOTSWAP_EXPORT_LEAVES(leaves_arr, leaves_count)                  \
-    ZCL_HOTSWAP_EXPORT_MANIFEST(ZCL_HOTSWAP_HOST_ABI_V3,                     \
-                                ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,             \
-                                ZCL_HOTSWAP_V3_HOST_CAPABILITIES,            \
+    ZCL_HOTSWAP_EXPORT_MANIFEST(ZCL_HOTSWAP_HOST_ABI_V4,                     \
+                                ZCL_HOTSWAP_HOST_STRUCT_SIZE_V4,             \
+                                ZCL_HOTSWAP_V4_HOST_CAPABILITIES,            \
                                 "native.leaves", ZCL_HOTSWAP_PROBE_LEAF)     \
     bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host);          \
     bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host)           \
@@ -369,36 +266,13 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
         return zcl__all;                                                     \
     }
 #else
-#define ZCL_HOTSWAP_EXPORT_ROUTES(routes_arr, routes_count) /* node/release: omitted */
 #define ZCL_HOTSWAP_EXPORT_LEAVES(leaves_arr, leaves_count) /* node/release: omitted */
 #endif
 
-/* ── Legacy direct-provider marker (reload-required under v2) ──────────
- *
- * REST/diagnostics still carry this source marker pending a unified provider
- * registry. A generation build exports an explicitly unsupported capability
- * and an init function that never evaluates the old immediate-install
- * expression. The v2 loader therefore rejects it before generation code.
- * Invoke once at file scope as before, e.g.:
- *
- *     ZCL_HOTSWAP_EXPORT_PROVIDER(
- *         api_resource_dispatch_replace(api_resource_route_dispatch_builtin))
- *
- *
- * In ordinary node and release builds it remains a no-op. */
-#ifdef ZCL_HOTSWAP_GEN
-#define ZCL_HOTSWAP_EXPORT_PROVIDER(install_expr)                            \
-    ZCL_HOTSWAP_EXPORT_V2_MANIFEST(                                          \
-        ZCL_HOTSWAP_CAP_DIRECT_PROVIDER, "reload_required.direct_provider")  \
-    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host);          \
-    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host)           \
-    {                                                                        \
-        (void)host;                                                          \
-        return false;                                                        \
-    }
-#else
+/* Source compatibility for reload-required controller markers. It never emits
+ * a provider, including in generation builds; native leaves are the sole
+ * generation-provider class. */
 #define ZCL_HOTSWAP_EXPORT_PROVIDER(install_expr) /* node/release: omitted */
-#endif
 
 #ifdef __cplusplus
 }

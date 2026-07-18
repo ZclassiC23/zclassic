@@ -72,7 +72,7 @@ P2SH HTLC fund: 162 bytes / 1620 zats; HTLC redeem: 325 bytes / 3250 zats
 ## Production counterpart
 
 - Multi-input/multi-output send: `wallet_create_transaction()` in
-  `lib/wallet/include/wallet/wallet.h`, reached via the `zcl_send` /
+  `lib/wallet/include/wallet/wallet.h`, reached via the `zclassic23 rpc z_sendmany` /
   `sendtoaddress` RPC path (`app/controllers/src/wallet_controller.c`,
   `app/controllers/src/transaction_controller.c`).
 - P2SH HTLC fund + redeem: `script/htlc.h`'s builders are already

@@ -15,23 +15,23 @@
 #include <stdio.h>
 #include <string.h>
 
-#define API_PUBLIC_REST_OP(service_, operation_, crud_, route_, rpc_, mcp_, \
-                           input_, schema_, authority_, effect_) \
+#define API_PUBLIC_REST_OP(service_, operation_, crud_, route_, rpc_,        \
+                           input_, schema_, authority_, effect_)              \
     { .service_name = service_, .operation = operation_, \
       .crud_capability = crud_, .status = "active", \
       .rest_method = "GET", .rest_route = route_, .rpc_method = rpc_, \
-      .mcp_tool = mcp_, .input_contract = input_, \
+      .input_contract = input_, \
       .output_schema = schema_, .authority = authority_, .effect = effect_, \
       .public_read = true }
 
 static const struct api_service_operation_contract k_api_service_operations[] = {
     API_PUBLIC_REST_OP("full_node", "read_status", "read_singleton",
-                       "/api/v1/agent", "agent", "zcl_agent", "none",
+                       "/api/v1/agent", "agent", "none",
                        ZCL_PUBLIC_STATUS_SCHEMA, "public_projection",
                        "read_only"),
     API_PUBLIC_REST_OP("bootstrap", "read_bootstrap_status",
                        "read_singleton", "/api/v1/bootstrap",
-                       "bootstrapstatus", "zcl_bootstrapstatus", "none",
+                       "bootstrapstatus", "none",
                        "zcl.bootstrap_status.v1", "public_projection",
                        "read_only"),
     {
@@ -40,28 +40,27 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "read_collection",
         .status = "active",
         .rpc_method = "peerincidents",
-        .mcp_tool = "zcl_peer_incidents",
         .input_contract = "none",
-        .output_schema = "zcl.peer_incidents.v1",
+        .output_schema = "zcl.peer_incidents.v2",
         .authority = "operator_diagnostics",
         .effect = "read_only",
         .operator_private = true,
     },
     API_PUBLIC_REST_OP("bootstrap", "list_peer_projection",
-                       "read_collection", "/api/v1/peers", "", "",
+                       "read_collection", "/api/v1/peers", "",
                        "limit", "zcl.peers.index.v1", "public_projection",
                        "read_only"),
     API_PUBLIC_REST_OP("znam_names", "list_names", "read_collection",
-                       "/api/v1/names", "name_list", "zcl_name_list",
+                       "/api/v1/names", "name_list",
                        "optional_owner_filter", "zcl.names.index.v1",
                        "confirmed_chain_projection", "read_only"),
     API_PUBLIC_REST_OP("znam_names", "resolve_name", "read_item",
-                       "/api/v1/names/{name}", "name_resolve",
-                       "zcl_name_resolve", "name", "zcl.names.show.v1",
+                       "/api/v1/names/{name}", "name_resolve", "name",
+                       "zcl.names.show.v1",
                        "confirmed_chain_projection", "read_only"),
     API_PUBLIC_REST_OP("znam_names", "resolve_service_directory",
                        "read_subcollection", "/api/v1/names/{name}/services",
-                       "", "", "name", ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA,
+                       "", "name", ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA,
                        "confirmed_chain_projection",
                        "read_only_service_directory_projection"),
     {
@@ -70,7 +69,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "construct_transaction",
         .status = "active",
         .rpc_method = "name_register",
-        .mcp_tool = "zcl_name_register",
         .input_contract = "name,type,value",
         .output_schema = "zcl.names.register_result.v1",
         .authority = "operator_wallet_transaction",
@@ -97,7 +95,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "read_singleton",
         .status = "active",
         .rpc_method = "healthcheck",
-        .mcp_tool = "zcl_onion_status",
         .input_contract = "none",
         .output_schema = "zcl.healthcheck.v1",
         .authority = "operator_diagnostics",
@@ -112,7 +109,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .rest_method = "GET",
         .rest_route = "/api/v1/file-services",
         .rpc_method = "zmarket_list",
-        .mcp_tool = "zcl_market_list",
         .input_contract = "limit",
         .output_schema = "zcl.file_services.index.v1",
         .authority = "public_projection",
@@ -141,7 +137,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .rest_method = "GET",
         .rest_route = "/api/v1/market",
         .rpc_method = "zmarket_list",
-        .mcp_tool = "zcl_market_list",
         .input_contract = "none",
         .output_schema = "zcl.market.index.v1",
         .authority = "public_projection",
@@ -154,7 +149,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "create_offer",
         .status = "active",
         .rpc_method = "zmarket_offer",
-        .mcp_tool = "zcl_market_offer",
         .input_contract = "filepath,price_per_mb_zat,z_addr",
         .output_schema = "zcl.market.offer_result.v1",
         .authority = "operator_local_file_and_wallet",
@@ -168,7 +162,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "create_purchase",
         .status = "active",
         .rpc_method = "zmarket_buy",
-        .mcp_tool = "zcl_market_buy",
         .input_contract = "root_hash,output_path",
         .output_schema = "zcl.market.buy_result.v1",
         .authority = "operator_wallet_payment",
@@ -184,7 +177,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .rest_method = "GET",
         .rest_route = "/api/v1/messages",
         .rpc_method = "msg_inbox",
-        .mcp_tool = "zcl_msg_inbox",
         .input_contract = "include_read",
         .output_schema = "zcl.messages.index.v1",
         .authority = "operator_local_state",
@@ -197,7 +189,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "create_message",
         .status = "active",
         .rpc_method = "msg_send",
-        .mcp_tool = "zcl_msg_send",
         .input_contract = "peer_id,message",
         .output_schema = "zcl.messages.send_result.v1",
         .authority = "operator_p2p_send",
@@ -211,7 +202,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "create_message",
         .status = "active",
         .rpc_method = "msg_send_named",
-        .mcp_tool = "zcl_msg_send_named",
         .input_contract = "name,message",
         .output_schema = "zcl.messages.send_result.v1",
         .authority = "operator_znam_resolution_and_p2p_send",
@@ -227,7 +217,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .rest_method = "GET",
         .rest_route = "/api/v1/swaps/chains",
         .rpc_method = "swap_chains",
-        .mcp_tool = "zcl_swap_chains",
         .input_contract = "none",
         .output_schema = "zcl.swaps.chains.v1",
         .authority = "static_contract_registry",
@@ -240,7 +229,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "construct_contract",
         .status = "in_progress",
         .rpc_method = "swap_initiate",
-        .mcp_tool = "zcl_swap_initiate",
         .input_contract = "my_address,counter_address,amount,locktime,chain",
         .output_schema = "zcl.swaps.contract.v1",
         .authority = "operator_script_contract_builder",
@@ -254,7 +242,6 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "construct_contract",
         .status = "in_progress",
         .rpc_method = "swap_participate",
-        .mcp_tool = "zcl_swap_participate",
         .input_contract =
             "my_address,counter_address,amount,locktime,secret_hash,chain",
         .output_schema = "zcl.swaps.contract.v1",
@@ -264,13 +251,13 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .destructive = true,
     },
     API_PUBLIC_REST_OP("events", "read_events", "read_collection",
-                       "/api/v1/events", "", "", "limit,type",
+                       "/api/v1/events", "", "limit,type",
                        "zcl.events.index.v1", "public_projection",
                        "read_only"),
     {
         .service_name = "events", .operation = "read_eventlog",
         .crud_capability = "read_collection", .status = "active",
-        .rpc_method = "eventlog", .mcp_tool = "zcl_events",
+        .rpc_method = "eventlog",
         .input_contract = "count", .output_schema = "zcl.event_log.v1",
         .authority = "operator_diagnostics", .effect = "read_only",
         .operator_private = true,
@@ -281,9 +268,8 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .crud_capability = "read_collection",
         .status = "active",
         .rpc_method = "timeline",
-        .mcp_tool = "zcl_timeline",
         .input_contract = "category,count,since_secs",
-        .output_schema = "zcl.timeline.v1",
+        .output_schema = "zcl.timeline.v2",
         .authority = "operator_diagnostics",
         .effect = "read_only",
         .operator_private = true,
@@ -338,14 +324,9 @@ const char *api_service_operation_agent_interface(
     if (!op)
         return "native_or_planned";
 
-    if ((op->operator_private || op->destructive) &&
-        op->mcp_tool && op->mcp_tool[0])
-        return "mcp";
     if (op->public_read && op->rest_method && op->rest_method[0] &&
         op->rest_route && op->rest_route[0])
         return "rest";
-    if (op->mcp_tool && op->mcp_tool[0])
-        return "mcp";
     if (op->rpc_method && op->rpc_method[0])
         return "rpc";
     if (op->rest_method && op->rest_method[0] &&
@@ -362,11 +343,9 @@ static const char *api_service_operation_agent_next_step(
     if (!op)
         return "inspect_operation_contract";
     if (op->destructive)
-        return "review_destructive_write_safety_then_call_mcp_tool";
+        return "review_destructive_write_safety_then_call_rpc_method";
     if (strcmp(iface, "rest") == 0)
         return "call_rest_route_and_validate_output_schema";
-    if (strcmp(iface, "mcp") == 0)
-        return "call_mcp_tool_with_operator_context";
     if (strcmp(iface, "rpc") == 0)
         return "call_rpc_method_with_explicit_datadir_or_port";
     return "inspect_native_or_planned_contract";
@@ -431,8 +410,6 @@ void api_service_operation_json(
         json_push_kv_str(obj, "rest_route", op->rest_route);
     if (op->rpc_method && op->rpc_method[0])
         json_push_kv_str(obj, "rpc_method", op->rpc_method);
-    if (op->mcp_tool && op->mcp_tool[0])
-        json_push_kv_str(obj, "mcp_tool", op->mcp_tool);
     json_push_kv_str(obj, "input_contract", op->input_contract);
     json_push_kv_str(obj, "output_schema", op->output_schema);
     json_push_kv_str(obj, "authority", op->authority);
@@ -440,8 +417,8 @@ void api_service_operation_json(
     json_push_kv_str(obj, "execution_surface",
                      op->rest_method && op->rest_method[0]
                          ? "rest"
-                         : op->mcp_tool && op->mcp_tool[0]
-                               ? "mcp_or_native"
+                         : op->rpc_method && op->rpc_method[0]
+                               ? "rpc"
                                : "native_or_planned");
     json_push_kv_str(obj, "write_safety",
                      api_service_operation_write_safety(op));
@@ -451,8 +428,6 @@ void api_service_operation_json(
     json_push_kv_bool(obj, "rest_callable",
                       op->rest_method && op->rest_method[0] &&
                       op->rest_route && op->rest_route[0]);
-    json_push_kv_bool(obj, "mcp_callable",
-                      op->mcp_tool && op->mcp_tool[0]);
     json_push_kv_bool(obj, "rpc_callable",
                       op->rpc_method && op->rpc_method[0]);
     json_push_kv_bool(obj, "public_read", op->public_read);

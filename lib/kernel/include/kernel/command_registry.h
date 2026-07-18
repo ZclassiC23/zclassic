@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Canonical command registry shared by native, REST, and optional MCP
- * adapters.  The registry owns command identity and policy; transport
+ * Canonical command registry shared by native, REST, and RPC adapters. The
+ * registry owns command identity and policy; transport
  * adapters only normalize input and render the bounded result.
  */
 
@@ -91,10 +91,8 @@ enum zcl_command_latency {
     ZCL_COMMAND_LATENCY_PERSISTENT,
 };
 
-/* Per-latency-bucket dispatch budget in milliseconds. Rehomes the legacy
- * agent_first_call.h budgets (250/500/750/900, MCP-only, deleted in zero-MCP
- * W3) as the kernel's own contract so every native leaf carries it, not just
- * the five MCP agent controllers that used to. */
+/* Per-latency-bucket dispatch budget in milliseconds. This kernel-owned
+ * contract gives every native leaf an explicit dispatch ceiling. */
 #define ZCL_COMMAND_LATENCY_BUDGET_INSTANT_MS    50
 #define ZCL_COMMAND_LATENCY_BUDGET_FAST_MS       250
 #define ZCL_COMMAND_LATENCY_BUDGET_FOREGROUND_MS 750
@@ -187,8 +185,7 @@ enum zcl_command_transport {
     ZCL_COMMAND_TRANSPORT_NONE = 0,
     ZCL_COMMAND_TRANSPORT_NATIVE = 1U << 0,
     ZCL_COMMAND_TRANSPORT_REST = 1U << 1,
-    ZCL_COMMAND_TRANSPORT_MCP_COMPACT = 1U << 2,
-    ZCL_COMMAND_TRANSPORT_MCP_LEGACY = 1U << 3,
+    /* Bits 2 and 3 are retired; keep RPC at bit 4 for persisted catalogs. */
     ZCL_COMMAND_TRANSPORT_RPC = 1U << 4,
 };
 
@@ -344,14 +341,13 @@ size_t zcl_command_registry_execute_json(
 /* ── Hot-swap leaf-handler override layer ─────────────────────────────
  *
  * A lock-free, all-or-nothing snapshot layer that re-points a bounded set of
- * READY read-only leaf handlers at runtime — the native analogue of the MCP
- * router's mcp_router_replace_batch (tools/mcp/router.c). Dispatch
+ * READY read-only leaf handlers at runtime. Dispatch
  * (zcl_command_registry_execute_json) consults the active override snapshot
  * for the resolved leaf path before falling back to the immutable catalog
  * handler column; with no snapshot published the cost is a single atomic load
  * + NULL check. Published snapshots are NEVER freed — an in-flight dispatch
  * that acquired an older snapshot must be allowed to finish without a UAF
- * race (same discipline as router.c).
+ * race.
  */
 #define ZCL_COMMAND_HANDLER_OVERRIDE_MAX 64U
 

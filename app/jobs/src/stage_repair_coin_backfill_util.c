@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * stage_repair_coin_backfill_util — read-only progress.kv helpers, key
- * builders, direct refusal paging, and the zcl_state snapshot for the
+ * builders, direct refusal paging, and the native dump-state snapshot for the
  * frontier coin backfill (docs/work/coin-backfill-repair.md §2). The
  * orchestration + the single write transaction live in
  * stage_repair_coin_backfill.c; this TU never writes consensus state. */
@@ -33,7 +33,7 @@ struct page_latch {
 };
 
 /* Snapshot + page latch state. Written on the self_heal supervisor thread,
- * read by the zcl_state dumper on the MCP thread — guarded by g_state_lock;
+ * read by the native dump-state handler — guarded by g_state_lock;
  * monotonic counters are lock-free atomics. */
 static pthread_mutex_t g_state_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct coin_backfill_result g_last_result;

@@ -7,7 +7,8 @@ priority queue.
 [`../HANDOFF.md`](../HANDOFF.md) owns current live facts,
 [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) owns immediate execution order, and
 [`../MVP.md`](../MVP.md) owns the v1 acceptance bar. The sovereign complete-state
-cure remains priority #1 and zero-MCP remains the secondary development track.
+cure remains priority #1. The native command registry is the sole agent
+interface.
 Nothing in this checklist authorizes runtime publication, canonical deployment,
 or mutation of the protected mint producer.
 
@@ -69,10 +70,8 @@ roadmap:
   resume, and malformed-input no-publish behavior.
 - [ ] Obtain explicit owner authorization before canonical deployment.
 - [ ] Earn MVP 8/8 and a fresh clean 168-hour exact-candidate soak.
-- [ ] Complete zero-MCP consumer migration and prove native mutation, auth,
-  audit, event, metric, notification, secret, and rollback parity.
-- [ ] Delete the MCP server only after its native replacements and deletion
-  inventory pass; do not preserve a future "compact MCP" architecture.
+- [ ] Prove native mutation, auth, audit, event, metric, notification, secret,
+  and rollback behavior end to end.
 - [ ] Complete commit-bound quality/release evidence before calling an App or
   package stable.
 
@@ -453,7 +452,7 @@ No workstream may waive an earlier applicable gate.
   latency, selected/executed proofs, retries, and final correctness.
 - [ ] Instrument canonical native dispatch so native command path, result code,
   elapsed time, requested/returned bytes, view, budget, truncation, and trace ID
-  are measured after zero-MCP.
+  are measured through canonical native dispatch.
 - [ ] Capture the current baseline without changing behavior.
 - [ ] Separate measured bytes from approximate tokenizer-specific token counts.
 - [ ] Set budgets for menus, context rooms, plans, green receipts, red receipts,

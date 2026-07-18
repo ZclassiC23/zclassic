@@ -4,7 +4,7 @@
 
 /* ZClassic23-specific bootstrap UX contract. The generic bootstrap status
  * controller owns live P2P measurements; this module owns the fresh-node
- * route plan agents consume from REST/RPC/MCP. */
+ * route plan agents consume from REST/RPC/native. */
 
 #include "controllers/network_controller.h"
 

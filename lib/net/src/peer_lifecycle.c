@@ -1638,7 +1638,7 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
         primary_pick ? primary_pick->group : NULL;
 
     json_set_object(out);
-    json_push_kv_str(out, "schema", "zcl.peer_incidents.v1");
+    json_push_kv_str(out, "schema", "zcl.peer_incidents.v2");
     json_push_kv_int(out, "schema_version", 1);
     json_push_kv_bool(out, "bounded", true);
     json_push_kv_int(out, "peer_limit", PEER_LIFECYCLE_INCIDENT_LIMIT);

@@ -45,12 +45,12 @@ static int test_attributes(void)
         trace_reset_thread();
         struct trace_span *s = trace_start("test.attrs");
         ASSERT(s != NULL);
-        trace_attr_str(s, "tool", "zcl_status");
+        trace_attr_str(s, "command", "zclassic23 status");
         trace_attr_int(s, "height", 123456);
         ASSERT(s->attr_count == 2);
         ASSERT(!s->attrs[0].is_int);
-        ASSERT(strcmp(s->attrs[0].key, "tool") == 0);
-        ASSERT(strcmp(s->attrs[0].str_val, "zcl_status") == 0);
+        ASSERT(strcmp(s->attrs[0].key, "command") == 0);
+        ASSERT(strcmp(s->attrs[0].str_val, "zclassic23 status") == 0);
         ASSERT(s->attrs[1].is_int);
         ASSERT(s->attrs[1].int_val == 123456);
         trace_end(s);

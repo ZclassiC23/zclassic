@@ -4,8 +4,8 @@
  * hodl_history_sqlite — sqlite implementation of hodl_history_port.
  *
  * The five methods below carry the EXACT SQL text and binding order of the
- * hodl-history queries, so the persisted snapshots and the explorer/MCP
- * surface stay bit-for-bit identical.
+ * hodl-history queries, so persisted snapshots and the explorer and native
+ * command surfaces stay bit-for-bit identical.
  */
 
 #include "adapters/outbound/persistence/hodl_history_sqlite.h"

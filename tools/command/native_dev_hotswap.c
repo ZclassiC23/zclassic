@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Native Tier-1 hot-swap command glue (Zero-MCP W1-B/C + activation finish).
- *
- * The MCP-free successor of the MCP hot-swap surface. The REAL, activatable
- * machinery now lives here + lib/hotswap:
+ * Native Tier-1 hot-swap command glue. The activatable machinery lives here
+ * and in lib/hotswap:
  *
  *   - `dev.hotswap.probe`  — VERIFY-ONLY, in the CLI's own throwaway process:
  *     dlopen + ABI-validate + self_test of a module .so, NEVER commits. This is
@@ -105,7 +103,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
             "dev_hotswap_native \"/absolute/module.so\" ( activate )");
         return true;
     }
-    if (!hotswap_datadir_is_dev(mcp_rpc_client_datadir())) {
+    if (!hotswap_datadir_is_dev(node_rpc_client_datadir())) {
         json_rpc_error_full(result, RPC_FORBIDDEN_BY_SAFE_MODE,
             "native hot-swap available only in the running ~/.zclassic-c23-dev node",
             "dev_hotswap_native");
@@ -133,7 +131,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     bool activate = act_v && act_v->type == JSON_BOOL && json_get_bool(act_v);
 
     struct hotswap_activate_report report;
-    hotswap_activate(so_path, mcp_rpc_client_datadir(), activate,
+    hotswap_activate(so_path, node_rpc_client_datadir(), activate,
                      registry_commit_cb, registry_quiesced_cb, NULL, &report);
 
     /* Return the full report either way; the CLI renders ok/verify_only/error. */
@@ -187,7 +185,7 @@ void zcl_native_handle_dev_hotswap_apply(
         return;
     }
 
-    char *resp = mcp_node_rpc("dev_hotswap_native", params);
+    char *resp = node_rpc_call("dev_hotswap_native", params);
     if (!resp) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
             ZCL_COMMAND_EXIT_TRANSIENT, "HOTSWAP_NO_RESIDENT", "dispatch",
@@ -237,7 +235,7 @@ void zcl_native_handle_dev_hotswap_probe(
         return;
     }
     struct hotswap_activate_report report;
-    hotswap_activate(so_path, mcp_rpc_client_datadir(), /*request_activate=*/false,
+    hotswap_activate(so_path, node_rpc_client_datadir(), /*request_activate=*/false,
                      NULL, NULL, NULL, &report);
     report_to_reply(reply, &report);
 }
@@ -249,7 +247,7 @@ bool register_dev_native_hotswap_rpc(struct rpc_table *table,
         "dev", "dev_hotswap_native", rpc_dev_hotswap_native, true,
     };
     /* Only the exact dev lane gets the resident hot-swap RPC; every other lane
-     * is a successful no-op (mirrors register_dev_mcp_rpc_commands). */
+     * is a successful no-op. */
     if (!table || rpc_port <= 0 || rpc_port > 65535 ||
         !hotswap_datadir_is_dev(datadir))
         return true;

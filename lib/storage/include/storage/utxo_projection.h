@@ -171,7 +171,7 @@ bool utxo_projection_emit_add(const uint8_t txid[32], uint32_t vout,
                               uint32_t script_len);
 bool utxo_projection_emit_spend(const uint8_t txid[32], uint32_t vout);
 
-/* For zcl_state subsystem=utxo_projection (CLAUDE.md convention).
+/* For `zclassic23 dumpstate utxo_projection` (dump-state convention).
  * `out` is initialized by the caller; this function also calls
  * json_set_object(out) defensively. `key` is unused. */
 struct json_value;

@@ -18,7 +18,6 @@ struct api_service_operation_contract {
     const char *rest_method;
     const char *rest_route;
     const char *rpc_method;
-    const char *mcp_tool;
     const char *input_contract;
     const char *output_schema;
     const char *authority;

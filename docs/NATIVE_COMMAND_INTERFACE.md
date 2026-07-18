@@ -22,7 +22,7 @@ For development, the target steady-state interaction is simpler still:
 
 Today (Phase-0 containment), steps 1--4 and proof-only inspection are available,
 but every runtime-generation publication path fails closed. No watcher script,
-deploy script, broad test command, MCP catalog, or service command belongs in
+deploy script, broad test command, or service command belongs in
 the ordinary agent loop.
 
 ## 2. Architectural law
@@ -281,7 +281,7 @@ dev
 `dev.hotswap.probe` and `dev.hotswap.apply` remain registered for compatibility
 but are deliberately contained: both return structured refusals before
 `dlopen`. A resident discard-only probe is not safe because ELF constructors
-run before manifest admission. The legacy `zcl_agent_hotswap` route and
+run before manifest admission. The native development hot-swap command and
 resident mutation RPC are contained too. Full mechanism, ABI, and prerequisites
 for disposable probing/publication: `docs/work/HOTSWAP.md`.
 
@@ -507,11 +507,10 @@ The registry generates or validates:
 - leaf input schemas;
 - human help;
 - REST/OpenAPI bindings where permitted;
-- optional compact MCP bindings;
 - compatibility aliases;
 - documentation and contract tests.
 
-Business logic never lives in a CLI, REST, or MCP adapter. All transports call
+Business logic never lives in a CLI or REST adapter. Both call
 the same typed C handler.
 
 ## 13. Risk and authority
@@ -537,7 +536,7 @@ intent. There is no generic `--force` or English `yes` confirmation.
 
 Successful mutations return an effect ID and, when reversible, a rollback ID.
 
-Local development commands are never registered as node RPC, REST, or MCP
+Local development commands are never registered as node RPC or REST
 methods. Remote input cannot gain authority over a checkout, compiler, test
 runner, generation loader, or service manager.
 
@@ -564,27 +563,14 @@ ordered events carry sequence and kind; a terminal event closes the stream.
 `--after=<seq>` resumes. Lost history emits an explicit gap event. Backpressure
 is bounded, and compiler/test logs never mix with protocol stdout.
 
-## 15. MCP posture
+## 15. Agent transport
 
-MCP is an optional compatibility transport, not the ontology or development
-engine.
-
-The compact MCP profile exposes only three generic tools:
-
-- `zcl_discover({path|query|digest})`;
-- `zcl_exec({command,input,view,budget_bytes})`;
-- `zcl_job({id,action,cursor})`.
-
-Their schemas are stable and tiny. They delegate to the same native registry.
-The current flat tool catalog remains temporarily available behind an explicit
-legacy profile and is not loaded into the default coding-agent context.
-
-REST remains useful for web clients. Native commands remain authoritative for
-local agents and operators.
+The typed native command registry is the sole local agent and operator
+interface. REST remains a read-only public view for web clients.
 
 ## 16. Compatibility
 
-Existing native commands, RPC methods, and MCP tools become aliases pointing
+Existing native commands and RPC methods become aliases pointing
 to registry command IDs. They do not retain duplicate handlers or schemas.
 
 Compatibility responses include a bounded `canonical_path` and deprecation
@@ -726,19 +712,16 @@ without renaming the grammar.
   `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
   release binary links no dev-mutation executors.
 - **Implemented, publication contained (2026-07-12):** Tier-1 in-process
-  hot-swap — previously an MCP-only tool (`zcl_agent_hotswap`) — has a native
-  `native.leaves` provider; both native apply and resident probe paths are
-  currently contained before `dlopen`. The
-  `dev.hotswap.apply`, legacy MCP apply, and resident mutation paths all now
-  refuse before loading or re-pointing handlers. They remain contained until
-  the full immutable epoch/proof/CAS/rollback transaction exists. See
-  `docs/work/HOTSWAP.md` §"`native.leaves` provider (Zero-MCP re-target,
-  Wave W1-B/C)".
+  hot-swap has a native `native.leaves` provider; both native apply and
+  resident probe paths are currently contained before `dlopen`.
+  `dev.hotswap.apply` and resident mutation paths refuse before loading or
+  re-pointing handlers. They remain contained until the full immutable
+  epoch/proof/CAS/rollback transaction exists. See `docs/work/HOTSWAP.md`.
 
-Exit: an LLM can find and run every read-only operation without MCP
+Exit: an LLM can find and run every read-only operation through native
 discovery. **Met for the registry surface** — every declared root
 (`status`, core, apps, ops, dev) resolves through the catalog before the
-RPC fallback; remaining gap is coverage breadth (not every legacy RPC/MCP
+RPC fallback; remaining gap is coverage breadth (not every RPC
 operation has a registry leaf yet), not routing.
 
 ### Phase C — Native development plane
@@ -781,15 +764,14 @@ Exit: one save can simulate and atomically publish a social App generation.
 
 Exit: the native tree covers the complete product surface.
 
-### Phase G — Compact transports and cleanup
+### Phase G — Generated public views and cleanup
 
-- Generate REST and compact three-tool MCP adapters from the registry.
-- Put the flat MCP catalog behind an explicit legacy profile.
+- Generate REST views from the registry.
 - Remove duplicate adapter logic and stale command documentation.
 - Measure command-discovery tokens and save-to-verdict latency.
 
-Exit: native is authoritative, optional transports are mechanically derived,
-and default LLM context contains only the selected branch.
+Exit: native is authoritative, public views are mechanically derived, and
+default LLM context contains only the selected branch.
 
 ## 20. Required proof
 
@@ -809,7 +791,6 @@ and default LLM context contains only the selected branch.
 - In-flight calls finish on their original generation.
 - A failed Core activation restores and verifies last-good.
 - Canonical and soak lanes are unreachable from the native dev loop.
-- Default MCP discovery contains only the compact gateway tools.
 - Ordinary App development needs at most one binary call after an edit batch.
 - The social reference simulation proves censorship bypass and deterministic
   replay within the foreground latency budget.
@@ -845,11 +826,6 @@ Known gaps before calling the interface production-ready:
 - transactional activation/status still has shell-backed compatibility paths;
 - App generation loading is not yet wired to the public App ABI;
 - `ready` versus `planned` metadata is not yet emitted by every menu node;
-- flat MCP routes still exist and remain the default MCP catalog (the owner
-  ZERO-MCP directive, `docs/work/project_zero_mcp_directive_2026-07-11.md`,
-  targets deleting the MCP server entirely; Tier-1 hot-swap's `native.leaves`
-  provider (§7, `docs/work/HOTSWAP.md`) is one dev-mutation surface already
-  re-targeted off MCP as part of that effort, dual-run with `mcp.routes`);
 - runtime generation publication is Phase-0 contained: `dev.change.apply`,
   `dev.hotswap.apply`, publication watcher modes, generation-relinking revert,
   and direct Make/script activation entry points refuse. Proof-only watcher,
@@ -859,7 +835,7 @@ Known gaps before calling the interface production-ready:
 
 As of 2026-07-10, the interface vocabulary is split across 33 native agent
 contracts, roughly 201 full-profile RPC methods (plus two exact-dev methods),
-139 MCP routes, nine service entries, 24 service operations, and numerous Make
+nine service entries, 24 service operations, and numerous Make
 or script development targets. Those counts are an inventory baseline, not the
 future public shape.
 
@@ -867,7 +843,7 @@ Canonical migration mapping:
 
 | Current surface | Canonical owner |
 |---|---|
-| status, health, sync, chain, net, wallet RPC/MCP | `status` or `core` |
+| status, health, sync, chain, net, wallet RPC methods | `status` or `core` |
 | names, messages, files, market, swaps, tokens, games, explorer | dynamic `app` subtree |
 | state, logs, timeline, SQL, metrics, lanes, postmortem | `ops` |
 | build, impact, tests, watcher, hot-swap, generations, deploy | `dev` |

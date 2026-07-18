@@ -7,7 +7,7 @@
  *                                        builder, projection-deferral counter
  *   - block_source_policy_persist.c   : node.db persist/restore of decisions
  *   - block_source_policy_decisions.c : decision predicates + event/record
- *   - block_source_policy_status.c    : status read + zcl_state JSON dumper
+ *   - block_source_policy_status.c    : status read + dump-state JSON dumper
  *
  * This header declares only the symbols that cross those file boundaries.
  * The public API stays in services/block_source_policy.h, unchanged. */

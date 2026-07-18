@@ -92,7 +92,7 @@ uint64_t header_admit_stage_produced_total(void);
 bool header_admit_stage_has_record(int32_t height,
                                    const struct uint256 *hash);
 
-/* zcl_state subsystem=header_admit (CLAUDE.md convention). */
+/* `zclassic23 dumpstate header_admit` (dump-state convention). */
 bool header_admit_stage_dump_state_json(struct json_value *out,
                                          const char *key);
 

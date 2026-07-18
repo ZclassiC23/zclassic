@@ -6,7 +6,7 @@
  * The split exists ONLY for the E1 file-size ceiling (the orchestration +
  * write transaction alone approach 800 lines); the helpers here are
  * read-only progress.kv accessors, key builders, and the direct refusal
- * paging + zcl_state snapshot state. NOT a public API — only the
+ * paging + native dump-state snapshot state. NOT a public API — only the
  * stage_repair_coin_backfill*.c TUs include this. */
 
 #ifndef ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_UTIL_H
@@ -187,7 +187,7 @@ bool coin_backfill_page_refusal(enum coin_backfill_status st, int h,
                                 const struct uint256 *hole_hash,
                                 const char *reason);
 
-/* zcl_state snapshot + monotonic counters (dumped by
+/* Native dump-state snapshot + monotonic counters (dumped by
  * coin_backfill_dump_state_json). */
 void coin_backfill_stats_note_call(void);
 void coin_backfill_stats_note_rebind(void);

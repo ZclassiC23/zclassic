@@ -304,8 +304,8 @@ OS-A4). Tests are the load-bearing proofs; the parity claim is structural.
    `app/controllers/include/controllers/diagnostics_dumpers.def` mirroring the
    `DIAG_LOCAL("sandbox", …)` row (**:62**):
    `DIAG_LOCAL("transport", net_transport_dump_state_json, "per-peer P2P transport: plaintext vs noise_xx, handshake state, frame counters; names+counts plaintext peers")`.
-   Update the `enum_csv` assertion in `lib/test/src/test_mcp_controllers.c` if it
-   pins the list (per CLAUDE.md "Adding state introspection" step 4).
+   Update the native diagnostics registry assertion if it pins the list (per
+   CLAUDE.md "Adding state introspection" step 4).
 4. **Handshake p99 bench receipt** — NEW `bench-noise-handshake` Makefile target
    modeled on `bench-crypto-verify` (**Makefile:2680**: node binary run with a
    `-bench-noise-handshake` flag, `ZCL_BENCH_COMMIT="$(BUILD_COMMIT)"`). Run N=1000

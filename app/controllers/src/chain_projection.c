@@ -11,9 +11,9 @@
 
 static int64_t chain_projection_query_i64(const char *label, const char *sql)
 {
-    const char *datadir = mcp_rpc_client_datadir();
+    const char *datadir = node_rpc_client_datadir();
     if (!datadir || !datadir[0])
-        LOG_RETURN(-1, "chain_projection", "%s: MCP datadir is unset", label);
+        LOG_RETURN(-1, "chain_projection", "%s: RPC datadir is unset", label);
 
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), datadir);

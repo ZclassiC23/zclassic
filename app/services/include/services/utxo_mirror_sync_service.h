@@ -88,7 +88,7 @@ struct utxo_mirror_sync_service {
     /* Thread management */
     pthread_t thread;
     /* Flipped by start()/stop() (boot/shutdown callers) and read from
-     * utxo_mirror_sync_dump_state_json() on the diagnostics/MCP thread —
+     * utxo_mirror_sync_dump_state_json() on the diagnostics/native thread —
      * genuinely cross-thread, so _Atomic + atomic_store/atomic_load. */
     _Atomic bool thread_started;
     _Atomic bool stop_requested;
@@ -108,7 +108,7 @@ struct utxo_mirror_sync_service {
     _Atomic int64_t last_error_unix;    /* wall time of last failed pass (0 = none) */
 };
 
-/* Global pointer for RPC/MCP/diagnostics access. Set by boot, NULL before. */
+/* Global pointer for RPC/native/diagnostics access. Set by boot, NULL before. */
 extern struct utxo_mirror_sync_service *g_utxo_mirror_sync;
 
 /* ── Lifecycle ─────────────────────────────────────────────── */

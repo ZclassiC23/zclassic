@@ -35,7 +35,8 @@
  *   FRESH `zclassic23-chaos` run will NOT reproduce the capsule's exact
  *   RNG stream (xoshiro state isn't invertible from one register). For an
  *   EXACT deterministic replay of the captured run, load the capsule
- *   directly via `postmortem_capsule_load_tape()` / `zcl_postmortem_replay`
+ *   directly via `postmortem_capsule_load_tape()` /
+ *   `zclassic23 ops postmortem replay <id>`
  *   — see examples/09_seed_replay.c. The emitted `seed` line is a labeled
  *   fingerprint for manual reduction, documented as such in the output.
  *
@@ -393,7 +394,7 @@ static void p2s_render_skeleton(const struct postmortem_to_scenario_stats *st,
         "#   reduction starting point (steps 3-5), not a proven bit-identical\n"
         "#   repro. For an EXACT deterministic replay of this run, load the\n"
         "#   capsule directly via postmortem_capsule_load_tape() /\n"
-        "#   `zcl_postmortem_replay` -- see examples/09_seed_replay.c.\n"
+        "#   `zclassic23 ops postmortem replay <id>` -- see examples/09_seed_replay.c.\n"
         "#\n",
         st->seed_slot, st->seed_slot);
 

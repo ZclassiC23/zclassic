@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * reducer_frontier_dump - zcl_state diagnostics for the reducer L0 authority.
+ * reducer_frontier_dump - native dump-state diagnostics for the reducer L0 authority.
  * Read-only: every SQLite statement is a SELECT over progress.kv. */
 
 #include "jobs/reducer_frontier.h"
@@ -446,7 +446,7 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
 
     /* Diagnostics are an observational surface, not a reducer dependency.
      * A catch-up batch can legitimately own the singleton connection for long
-     * enough to exceed the RPC deadline; queueing zcl_state/zcl_status behind
+     * enough to exceed the RPC deadline; queueing dumpstate/status requests behind
      * it made the daily operator endpoint disappear exactly while the node was
      * busiest. Return the lock-free published frontier with an explicit busy
      * durable snapshot instead. A later call can fill in the SQLite detail. */

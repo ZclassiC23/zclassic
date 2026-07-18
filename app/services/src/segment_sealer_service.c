@@ -1,5 +1,5 @@
 // one-result-type-ok:json-dump-bool — the only bool-returning export here is
-// segment_sealer_dump_state_json, the zcl_state introspection dumper, whose
+// segment_sealer_dump_state_json, the native dump-state function, whose
 // convention (CLAUDE.md "Adding state introspection") mandates a bool return.
 
 /* Copyright 2026 Rhett Creighton - Apache License 2.0

@@ -146,8 +146,8 @@ enum event_type {
     /* ── Chain activation controller ──────────────────── */
     EV_ACTIVATION_STATE_CHANGE,  /* payload: "idle->boot_pending: reason" */
 
-    /* ── MCP server (AI agent surface) ─────────────── */
-    EV_MCP_REQUEST,              /* payload: "tool=NAME code=CODE [param=P] dur_us=N" */
+    /* Retired transport event slot; retained to keep later ordinals stable. */
+    EV_RESERVED_TRANSPORT_REQUEST,
 
     /* ── Block index integrity ─────────────────────── */
     EV_BLOCK_INDEX_CORRUPT,      /* payload: "verdict=NAME body_size=N ..." */

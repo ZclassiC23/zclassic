@@ -340,5 +340,5 @@ int main(void)
  * app/models/src/explorer_index_zslp.c) for every OP_RETURN in every synced
  * block, and the resulting zslp_tokens/zslp_transfers rows are what the
  * zslp_controller.c RPC handlers (app/controllers/src/zslp_controller.c) and
- * the `zcl_tokens` MCP tool read back for callers.
+ * the `app tokens list` native command reads back for callers.
  */

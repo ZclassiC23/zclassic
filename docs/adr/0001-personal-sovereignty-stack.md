@@ -1,6 +1,6 @@
 # ADR-0001: Adopt the AI-Integrated Personal Sovereignty Stack vision
 
-> **Update:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is held below tip by incomplete shielded anchors/nullifiers (verify the live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
+> **Update:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is held below tip by incomplete shielded anchors/nullifiers (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
 
 - **Status:** Accepted 2026-05-22.
 - **Deciders:** Project maintainer.
@@ -30,7 +30,7 @@ Concretely:
 
 **Positive:**
 
-- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 112 MCP tools — stays as bedrock. Months of work retain their value.
+- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), and typed operator commands — stays as bedrock. Months of work retain their value.
 - The wedge stops being a recurring crisis; it becomes the first regression scenario for the Wave T simulator.
 
 **Negative / Risk:**

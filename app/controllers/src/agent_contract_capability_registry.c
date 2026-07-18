@@ -29,7 +29,6 @@ bool agent_push_contract_capability_json(struct json_value *arr,
     json_push_kv_str(&obj, "method", c->method);
     json_push_kv_str(&obj, "schema", c->schema);
     json_push_kv_str(&obj, "native", c->native_command);
-    json_push_kv_str(&obj, "mcp", c->mcp_tool);
     json_push_kv_str(&obj, "rest", c->rest_route);
     json_push_kv_str(&obj, "purpose", purpose);
     json_push_kv_bool(&obj, "registry_alias", alias);

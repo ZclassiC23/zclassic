@@ -216,6 +216,6 @@ int main(void)
  *     applies a block-index reorg to the on-disk `coins_kv` authority table
  *     for a live node (the persistent-storage analogue of this example's
  *     in-RAM `struct utxo_commitment` digest).
- *   - `zcl_reorg_history` (MCP tool) — inspect reorg events a live node has
+ *   - `ops timeline` — inspect reorg events a live node has
  *     actually processed.
  */

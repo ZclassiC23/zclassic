@@ -108,7 +108,7 @@ void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd)
     else
         reason = "unknown";
 
-    /* Emit one node.log line so the failure is greppable via zcl_node_log,
+    /* Emit one node.log line so the failure is greppable via `zclassic23 getnodelog`,
      * then a louder FATAL on stderr so systemd journal captures it too.
      * We can't use LOG_FAIL here — that macro `return false`s, but this
      * function is void: the only acceptable outcome is abort(). The

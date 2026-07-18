@@ -47,7 +47,7 @@ chain, every link verified in code + live logs:
    but `repair_owner=""` — the owner hint is a 3-string reason-text lookup
    (`reducer_frontier_dump.c:69-82`) that doesn't contain
    "missing-success-row"; and the frontier never registers into the typed
-   blocker registry, so `zcl_blockers` showed **0 active** during the stall.
+   blocker registry, so `zclassic23 core sync blockers` showed **0 active** during the stall.
 7. The advertised deep ladder is stubs: `targeted_rederive` returns FAILED
    ("no in-process curative surface yet", `sticky_escalator.c:118-127`),
    resnapshot / self_mint_refold / widen_peers / rebootstrap are
@@ -186,7 +186,7 @@ The response becomes total *by construction* instead of total by enumeration.
   named external halt, not a stuck internal state.
 
 Rules: every rung bounded in time; unwitnessed ⇒ next rung automatically;
-every transition emits an event AND a typed-registry blocker (zcl_blockers
+every transition emits an event AND a typed-registry blocker (`zclassic23 core sync blockers`
 can never again show 0 during a stall); ladder state is durable (crash mid-
 rung resumes at the same rung, idempotent by design).
 
@@ -409,9 +409,7 @@ behind a recursive mutex); the operator_needed-latch chain was caught.
 
 ## 6. Observability debts found during diagnosis (fix alongside)
 
-- `zcl_node_log` MCP returns "cannot open node.log" while the file exists at
-  `~/.zclassic-c23/node.log` — path resolution bug in the live MCP config.
-- `zcl_sql` cannot reach `*_log` tables (progress.kv, not node.db) — attach
+- `zclassic23 dbquery` cannot reach `*_log` tables (progress.kv, not node.db) — attach
   progress.kv read-only or add a typed read surface.
 - `legacy_mirror` WARN-spams thousands of identical lines while zclassicd
   resyncs (RPC −28) — throttle to transitions + periodic keep-alive.

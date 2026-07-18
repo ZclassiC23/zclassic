@@ -4,7 +4,7 @@
  * utxo_snapshot_inmem — in-memory implementation of utxo_snapshot_port.
  *
  * Single-writer, multi-reader. The mutator owns the writer role; any
- * reader (RPC, MCP, explorer) calls lookup() concurrently.
+ * reader (native command, RPC, or explorer) calls lookup() concurrently.
  *
  * This adapter is the reference implementation: simple, exhaustively
  * tested, no persistence. It is used by:

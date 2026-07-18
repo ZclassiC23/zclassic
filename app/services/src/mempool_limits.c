@@ -1,6 +1,6 @@
 // one-result-type-ok:json-dump-bool-only:mempool_limits_dump_state_json —
 // mempool_limits_passes_min_relay is converted to struct zcl_result below.
-// The sole remaining bool export is the zcl_state introspection dumper;
+// The sole remaining bool export is the native dump-state function;
 // the dump convention (CLAUDE.md "Adding state introspection") mandates a
 // bool return (false = couldn't populate), not struct zcl_result.
 

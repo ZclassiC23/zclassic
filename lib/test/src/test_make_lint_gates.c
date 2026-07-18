@@ -1400,7 +1400,7 @@ static int plant_long_function_file(const char *rel, const char *func_name,
 /* Gate #12 (check_long_functions.sh) ENFORCED tier, extended to config/src/
  * (this test exercises the mechanism via an isolated test-tmp/ scan dir +
  * baseline, so it stands in for either real ENFORCED root — controllers/
- * services/mcp-bridge/config-src share one code path). Matches the
+ * services/config-src share one code path). Matches the
  * shrinking-floor breadth of t_service_result_convergence_ratchet above:
  * baseline-matched is clean, a lowered baseline trips as a REGRESSION, an
  * empty baseline trips as NEW, and the `// long-function-ok:` tag exempts
@@ -1504,7 +1504,7 @@ static int t_long_functions_enforced_ratchet(void)
     unlink_rel(LONGFN_ENFORCED_KEEP_REL);
     (void)rmdir(dir_path);
 
-    TEST("[lint-gate] gate#12 ENFORCED (config/src+controllers/services/mcp): matched clean, grown/new trip, tag exempts, recovers") {
+    TEST("[lint-gate] gate#12 ENFORCED (config/src+controllers/services): matched clean, grown/new trip, tag exempts, recovers") {
         ASSERT(wrote_keep == 0);
         ASSERT(planted_a == 0);
         ASSERT(matched_rc == 0);
@@ -3238,7 +3238,7 @@ static int t_hotswap_eligible_scope_gate(void)
          * (exit 1) — proof it is not hollow. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_BAD_SCOPE_MANIFEST_REL) == 1);
-        /* An app-layer TU that does NOT invoke ZCL_HOTSWAP_EXPORT_ROUTES (so it
+        /* An app-layer TU that does NOT invoke ZCL_HOTSWAP_EXPORT_LEAVES (so it
          * could never actually export a generation) also trips the gate —
          * proof the macro-presence check added in Wave 3.1 is not hollow. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
@@ -4301,10 +4301,6 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/scripts/background_quality_lane.sh") != NULL);
         ASSERT(strstr(buf, "background-tests") != NULL);
         ASSERT(strstr(buf, "zclassic23-test-suite.timer") != NULL);
-        /* W3: the legacy MCP server is deleted — the native typed command
-         * registry is the only agent interface, so the make agent-mcp-call*
-         * targets and the mcpcall CLI subcommand no longer exist. */
-        ASSERT(strstr(buf, "agent-mcp-call") == NULL);
         ASSERT(strstr(buf, "agent-dev-status") != NULL);
         ASSERT(strstr(buf, "agent-doctor") != NULL);
         ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
@@ -4319,13 +4315,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") == NULL);
         ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
                == NULL);
-        ASSERT(strstr(buf, "mcpcall") == NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_BIN") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_DEV_BIN") != NULL);
-        ASSERT(strstr(buf, "ZCL_AGENT_MCP_BUILD") == NULL);
-        ASSERT(strstr(buf, "ZCL_AGENT_MCP_ARGS") == NULL);
-        ASSERT(strstr(buf, "MCP_CALL_BIN") == NULL);
-        ASSERT(strstr(buf, "mcp_call.c") == NULL);
         free(buf);
         buf = NULL;
 
@@ -4341,18 +4332,10 @@ static int t_agent_fast_ci_contract(void)
         free(buf);
         buf = NULL;
 
-        /* W3: src/main.c is MCP-free — the -mcp stdio server mode, the
-         * mcpcall CLI subcommand, and every cli_mcp and mcp dispatch have
-         * been deleted. The native typed command registry is the only agent
-         * interface. */
+        /* src/main.c delegates typed commands to the native registry. */
         ASSERT(repo_path(path, sizeof(path), "src/main.c") == 0);
         ASSERT(read_entire_file(path, &main_src) == 0);
-        ASSERT(strstr(main_src, "cli_run_mcp_call") == NULL);
-        ASSERT(strstr(main_src, "mcp_register_ops") == NULL);
-        ASSERT(strstr(main_src, "mcp_middleware_dispatch") == NULL);
-        ASSERT(strstr(main_src, "ZCL_MCP_CALL_BEARER_TOKEN") == NULL);
-        ASSERT(strstr(main_src, "mcp_rpc_client_init") == NULL);
-        ASSERT(strstr(main_src, "cli_mcp_register_all") == NULL);
+        ASSERT(strstr(main_src, "node_rpc_client_init") == NULL);
 
         ASSERT(repo_path(path, sizeof(path),
                          "docs/AGENT_ARCHITECTURE.md") == 0);
@@ -4364,8 +4347,7 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(arch_doc, "database_schema.c") != NULL);
         ASSERT(strstr(arch_doc, "api_controller_routes.c") != NULL);
-        /* W3: the doc is native-only — the native typed command registry is
-         * the sole agent interface; the legacy MCP one-shots are gone. */
+        /* The doc leads with the native typed command registry. */
         ASSERT(strstr(arch_doc, "Terminal agents should prefer native "
                                 "commands") != NULL);
         ASSERT(strstr(arch_doc, "`zclassic23 status`") != NULL);
@@ -4373,10 +4355,7 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(arch_doc, "zclassic23 discover help") != NULL);
         ASSERT(strstr(arch_doc, "zclassic23-dev status") != NULL);
-        ASSERT(strstr(arch_doc, "make agent-mcp-call*") == NULL);
         ASSERT(strstr(arch_doc, "make agent-dev-status") != NULL);
-        ASSERT(strstr(arch_doc, "zclassic23 mcpcall <tool> [json]")
-               == NULL);
 
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -4389,8 +4368,6 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "native_shortcuts") != NULL);
         ASSERT(strstr(buf, "zclassic23 <leaf> [--input=json]") != NULL);
         ASSERT(strstr(buf, "zclassic23-dev <leaf> [--input=json]") != NULL);
-        ASSERT(strstr(buf, "mcp_shortcuts") == NULL);
-        ASSERT(strstr(buf, "make agent-mcp-call") == NULL);
         ASSERT(strstr(buf, "green_input_cache") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
@@ -4455,7 +4432,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf,
                       "rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild")
                != NULL);
-        ASSERT(strstr(buf, "zcl.public_status.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.public_status.v2") != NULL);
         ASSERT(strstr(buf, ".status == \"healthy\"") != NULL);
         ASSERT(strstr(buf, ".healthy == true") != NULL);
         ASSERT(strstr(buf, "((.gap // 0) <= 1)") == NULL);
@@ -4489,10 +4466,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &rules) == 0);
         ASSERT(strstr(rules, "AGENT_IMPACT_RULE") != NULL);
         ASSERT(strstr(rules, "node_health_service") != NULL);
-        /* W3: the mcp_controllers test group is retired with tools/mcp/;
-         * command_registry_catalog is its native successor for the
-         * *_native_handlers.c command-registry surface. */
-        ASSERT(strstr(rules, "mcp_controllers") == NULL);
+        /* The command-registry catalog owns native handler coverage. */
         ASSERT(strstr(rules, "command_registry_catalog") != NULL);
         ASSERT(strstr(rules, "src/main.c") != NULL);
         ASSERT(strstr(rules, "app/controllers/src/agent_controller.c") != NULL);
@@ -4643,14 +4617,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "There is no external shell-wrapper fallback")
                != NULL);
         ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
-        ASSERT(strstr(buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(buf, "`make immutable-history-canaries`") != NULL);
         ASSERT(strstr(buf, "h=478544") != NULL);
         ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
-        /* W3: the MCP stdio server is removed; the native command registry
-         * is the sole agent interface, so fast-path.md no longer lists a
-         * canonical "MCP tools" API tier. */
-        ASSERT(strstr(buf, "MCP tools") == NULL);
+        /* The native command registry is the sole agent interface. */
         ASSERT(strstr(buf,
                       "Do not add Python, shell, or helper-binary")
                != NULL);
@@ -4729,7 +4699,7 @@ static int t_agent_fast_ci_contract(void)
     return failures;
 }
 
-static int t_zero_mcp_operator_docs_contract(void)
+static int t_native_operator_docs_contract(void)
 {
     int failures = 0;
     char *readme = NULL;
@@ -4743,27 +4713,17 @@ static int t_zero_mcp_operator_docs_contract(void)
         ASSERT(strstr(readme, "build/bin/zclassic23 status") != NULL);
         ASSERT(strstr(readme, "core sync diagnose") != NULL);
         ASSERT(strstr(readme, "ops logs") != NULL);
-        /* W3: the native command registry is the sole surface; README
-         * states the legacy MCP stdio server has been removed. */
-        ASSERT(strstr(readme, "MCP stdio server has been removed") != NULL);
-        ASSERT(strstr(readme, "mcpcall") == NULL);
-        ASSERT(strstr(readme, "agent-mcp-call") == NULL);
+        ASSERT(strstr(readme, "native command registry") != NULL);
 
         ASSERT(repo_path(path, sizeof(path), "docs/GETTING_STARTED.md") == 0);
         ASSERT(read_entire_file(path, &getting_started) == 0);
         ASSERT(strstr(getting_started, "native command registry") != NULL);
         ASSERT(strstr(getting_started, "discover help") != NULL);
-        ASSERT(strstr(getting_started, "MCP") == NULL);
-        ASSERT(strstr(getting_started, "mcpcall") == NULL);
-        ASSERT(strstr(getting_started, "agent-mcp-call") == NULL);
 
         ASSERT(repo_path(path, sizeof(path), "docs/BUILD.md") == 0);
         ASSERT(read_entire_file(path, &build_doc) == 0);
         ASSERT(strstr(build_doc, "zclassic23 ops selftest") != NULL);
         ASSERT(strstr(build_doc, "zclassic23 dumpstate hotswap") != NULL);
-        ASSERT(strstr(build_doc, "MCP") == NULL);
-        ASSERT(strstr(build_doc, "mcpcall") == NULL);
-        ASSERT(strstr(build_doc, "agent-mcp-call") == NULL);
         PASS();
     } _test_next:;
     free(readme);
@@ -5333,7 +5293,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(diag_manifest_buf, "DIAG_ENTRY(\"supervisor\"")
                != NULL);
         ASSERT(strstr(diag_manifest_buf, "DIAG_PROJECTION(") != NULL);
-        ASSERT(strstr(diag_catalog_buf, "zcl.state_catalog.v1") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "zcl.state_catalog.v2") != NULL);
         ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_push_entry")
                != NULL);
         ASSERT(strstr(diag_catalog_buf, "e->cost") != NULL);
@@ -5346,7 +5306,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "api_version\", \"v1\"") != NULL);
         ASSERT(strstr(event_buf, "#include \"event_agent_summary.h\"") != NULL);
         ASSERT(strstr(event_buf, "rpc_agent_summary") != NULL);
-        ASSERT(strstr(agent_summary_buf, "zcl.public_status.v1") != NULL);
+        ASSERT(strstr(agent_summary_buf, "zcl.public_status.v2") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_push_first_call_simple_json")
                != NULL);
         ASSERT(strstr(agent_summary_buf,
@@ -5367,9 +5327,9 @@ static int t_native_agent_api_contract(void)
                       "agent_push_operator_latch_contract_json") != NULL);
         ASSERT(strstr(agent_summary_buf,
                       "agent_push_condition_summary_contract_json") != NULL);
-        ASSERT(strstr(agent_operator_buf, "zcl.operator_latch.v1") != NULL);
+        ASSERT(strstr(agent_operator_buf, "zcl.operator_latch.v2") != NULL);
         ASSERT(strstr(agent_operator_buf,
-                      "zcl.condition_engine_summary.v1") != NULL);
+                      "zcl.condition_engine_summary.v2") != NULL);
         ASSERT(strstr(agent_summary_buf,
                       "legacy_mirror_sync_push_status_contract_json")
                != NULL);
@@ -5441,9 +5401,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "projection_catchup_active")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v2") != NULL);
-        ASSERT(strstr(agent_lanes_buf, "zcl.agent_lanes.v1") != NULL);
-        ASSERT(strstr(agent_liveness_buf, "zcl.agent_liveness.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v3") != NULL);
+        ASSERT(strstr(agent_lanes_buf, "zcl.agent_lanes.v2") != NULL);
+        ASSERT(strstr(agent_liveness_buf, "zcl.agent_liveness.v2") != NULL);
         ASSERT(strstr(agent_liveness_buf, "agent_push_first_call_simple_json")
                != NULL);
         ASSERT(strstr(agent_liveness_buf,
@@ -5459,7 +5419,7 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_liveness_buf, "effective_runtime_scope")
                != NULL);
-        ASSERT(strstr(agent_diagnose_buf, "zcl.agent_diagnose.v1")
+        ASSERT(strstr(agent_diagnose_buf, "zcl.agent_diagnose.v2")
                != NULL);
         ASSERT(strstr(agent_diagnose_buf,
                       "ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS") != NULL);
@@ -5469,28 +5429,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_diagnose_buf, "rpc_timeline") != NULL);
         ASSERT(strstr(agent_diagnose_buf, "diag_rpc_getmirrorstatus")
                != NULL);
-        ASSERT(strstr(agent_liveness_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, \"agent\")")
-               != NULL);
-        ASSERT(strstr(agent_liveness_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, \"agentlanes\")")
-               != NULL);
-        ASSERT(strstr(agent_liveness_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, \"agentbuild\")")
-               != NULL);
         ASSERT(strstr(event_timeline_buf,
                       "#include \"controllers/agent_controller.h\"") != NULL);
-        ASSERT(strstr(event_timeline_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, "
-                      "\"agentinterface\")")
-               != NULL);
-        ASSERT(strstr(event_timeline_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, \"agentops\")")
-               != NULL);
-        ASSERT(strstr(event_timeline_buf,
-                      "agent_push_contract_mcp_tool_json(&arr, "
-                      "\"statecatalog\")")
-               != NULL);
         ASSERT(strstr(agent_diagnose_buf,
                       "agent_push_contract_native_command_json(&commands, "
                       "\"agent\")")
@@ -5515,48 +5455,50 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_anchor_status_buf,
                       "inspect_utxo_apply_idle_reason_before_waiting_more")
                != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v2") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "app/controllers/src/agent_anchor_status_controller.c")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "anchorstatus") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v1") != NULL);
+        ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v2") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v2")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "runtime_status_alias")
                == NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT(\"status\"")
                == NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_interface.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_interface.v2")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_ops.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_diagnose.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_ops.v2") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_diagnose.v2")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_diagnose")
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 agentdiagnose")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_liveness.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_liveness.v2")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_liveness")
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 agentliveness")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_dev_status.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_dev_status.v2")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_dev_status")
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 agentdevstatus")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.timeline.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_timeline") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.state_catalog.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.timeline.v2") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 timeline")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_state_catalog")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.state_catalog.v2")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 statecatalog")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_deploy_guard.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
                       "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "zcl.operator_proof_bundle.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_proof_bundle") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+                      "zcl.operator_proof_bundle.v2") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 proofbundle")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v2") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "dev_node_binary") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make agent-loop") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_AGENT_LOOP_BIN=1 make agent-loop")
@@ -5564,18 +5506,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf,
                       "ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make agent-deploy-fast") != NULL);
-        /* W3: the agentbuild self-doc no longer emits the deleted
-         * make agent-mcp-call* targets or the mcpcall CLI subcommand; it
-         * still names the mcp tool-name taxonomy (zcl_agent_dev_status). */
-        ASSERT(strstr(agent_ctrl_buf,
-                      "build/bin/zclassic23 mcpcall <tool> [json]")
-               == NULL);
-        ASSERT(strstr(agent_ctrl_buf, "make agent-mcp-call") == NULL);
-        ASSERT(strstr(agent_ctrl_buf, "ZCL_AGENT_MCP_BUILD") == NULL);
+        /* The self-documentation names native dev-lane workflows. */
         ASSERT(strstr(agent_ctrl_buf, "make agent-dev-status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make agent-doctor") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 agentdevstatus") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_agent_dev_status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make agent-stage-dev") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make dev-bin") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "build/bin/zclassic23-dev") != NULL);
@@ -5583,22 +5517,22 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_schema_registry_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
-                      "zcl.agent_dev_status.v1") != NULL);
+                      "zcl.agent_dev_status.v2") != NULL);
         ASSERT(strstr(agent_schema_registry_buf, "zcl.first_call_contract.v1")
                != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
                       "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_schema_registry_buf, "zcl.height_contract.v1")
                != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.mirror_status.v1")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.mirror_status.v2")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "ops_surface") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "ops_rank") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "ops_name") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
-                      "zcl.operator_latch.v1") != NULL);
+                      "zcl.operator_latch.v2") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
-                      "zcl.condition_engine_summary.v1") != NULL);
+                      "zcl.condition_engine_summary.v2") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "contracts_push_agent_registry_schemas") != NULL);
         ASSERT(strstr(agent_contracts_buf,
@@ -5614,10 +5548,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "agent_contract_at(i)")
                != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
-                      "zcl.agent_runtime_availability.v2") != NULL);
+                      "zcl.agent_runtime_availability.v3") != NULL);
         ASSERT(strstr(agent_registry_buf, "schema_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "schema_registry_source") != NULL);
-        ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v2") != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_push_contract_field_surface_json(result, \"agentops.first_call\")")
                != NULL);
@@ -5696,9 +5630,6 @@ static int t_native_agent_api_contract(void)
                       "agent_push_contract_native_field_json(&loop")
                != NULL);
         ASSERT(strstr(agent_iface_buf,
-                      "agent_push_contract_mcp_field_json(&loop")
-               == NULL);
-        ASSERT(strstr(agent_iface_buf,
                       "\"preferred_transport\", \"native_cli\"")
                != NULL);
         ASSERT(strstr(agent_ops_buf,
@@ -5728,7 +5659,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_runtime_buf,
                       "zcl.agent_runtime_services.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
-                      "zcl.agent_runtime_availability.v2") != NULL);
+                      "zcl.agent_runtime_availability.v3") != NULL);
         ASSERT(strstr(agent_runtime_buf, "controllers/agent_contracts.def")
                != NULL);
         ASSERT(strstr(agent_runtime_buf, "agent_contract_count()") != NULL);
@@ -5756,7 +5687,6 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf, "agentdiagnose") != NULL);
         ASSERT(strstr(agent_registry_buf, "DIRECT_COMMAND") != NULL);
         ASSERT(strstr(agent_registry_buf, "native_override") != NULL);
-        ASSERT(strstr(agent_registry_buf, "mcp_override") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_contract_command_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
@@ -5767,10 +5697,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_work_surface_json") != NULL);
         ASSERT(strstr(agent_registry_buf,
-                      "mcp_binding_contract") != NULL);
-        ASSERT(strstr(agent_registry_buf,
                       "native_declared_count") != NULL);
-        ASSERT(strstr(agent_registry_buf, "mcp_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "rest_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "field_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "review_surface_count") != NULL);
@@ -5792,7 +5719,6 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf, "\"full_status\"") != NULL);
         ASSERT(strstr(agent_registry_buf, "\"quality_lanes\"") != NULL);
         ASSERT(strstr(agent_registry_buf, "zclassic23 status") != NULL);
-        ASSERT(strstr(agent_registry_buf, "zcl_operator_summary") == NULL);
         ASSERT(strstr(agent_registry_buf, "make quality-linger-status")
                != NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_probe_params_json")
@@ -5823,11 +5749,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_native_field_json") != NULL);
         ASSERT(strstr(agent_registry_buf,
-                      "agent_push_contract_mcp_field_json") != NULL);
-        ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_native_command_json") != NULL);
-        ASSERT(strstr(agent_registry_buf,
-                      "agent_push_contract_mcp_tool_json") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_runtime_buf,
@@ -5864,7 +5786,6 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_lanes_buf,
                       "\"agentdeployguard\"") != NULL);
         ASSERT(strstr(agent_lanes_buf, "zclassic23 agent\",") == NULL);
-        ASSERT(strstr(agent_lanes_buf, "zcl_agent\",") == NULL);
         ASSERT(strstr(agent_lanes_buf, "agent_lanes_push_external_command")
                != NULL);
         ASSERT(strstr(agent_iface_buf, "~/.zclassic-c23-dev") == NULL);
@@ -5901,19 +5822,15 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "agent_push_command(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "command_center") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "full_status") == NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "telemetry_drilldowns") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_events") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 healthcheck") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 eventlog <count>")
                == NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.sql_result.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_sql") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zclassic23 dbquery <SELECT>")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.event_log.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_events") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
                       "zclassic23 eventlog <count>") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality_lanes") != NULL);
@@ -5944,42 +5861,28 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf,
                       "app/controllers/src/agent_liveness_controller.c")
                != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_agent_liveness") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"api_command\", \"api_tool\"") != NULL);
+                      "\"api_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"app_protocols_command\", "
-                      "\"app_protocols_tool\"") != NULL);
+                      "\"app_protocols_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "zcl.application_protocols.index.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_app_protocols")
-               != NULL);
+                      "zcl.application_protocols.index.v2") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"service_catalog_command\", "
-                      "\"service_catalog_tool\"") != NULL);
+                      "\"service_catalog_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "zcl.service_catalog.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_service_catalog")
-               != NULL);
+                      "zcl.service_catalog.v2") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"first_command\", \"first_tool\"") != NULL);
+                      "\"first_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"ops_command\", \"ops_tool\"") != NULL);
+                      "\"ops_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"mirror_command\", \"mirror_tool\"") != NULL);
+                      "\"mirror_command\",") != NULL);
         ASSERT(strstr(agent_registry_buf, "api_cli_field") != NULL);
-        ASSERT(strstr(agent_registry_buf, "api_mcp_field") != NULL);
         ASSERT(strstr(api_buf,
                       "agent_push_contract_api_cli_fields_json(cli)")
                != NULL);
         ASSERT(strstr(api_buf,
-                      "agent_push_contract_api_mcp_fields_json(mcp)")
-               != NULL);
-        ASSERT(strstr(api_buf,
                       "agent_push_contract_native_field_json(cli,")
-               == NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp,")
                == NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"milestone_command\"")
@@ -5987,46 +5890,37 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"refold_command\"")
                == NULL);
-        ASSERT(strstr(api_buf,
-                      "json_push_kv_str(mcp, \"milestone_tool\"")
-               == NULL);
-        ASSERT(strstr(api_buf,
-                      "json_push_kv_str(mcp, \"refold_tool\"")
-               == NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "\"drilldown_command\", \"drilldown_tool\"") != NULL);
+                      "\"drilldown_command\",") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.healthcheck.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "zcl.milestone_status.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.refold_status.v1")
+                      "zcl.milestone_status.v2") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.refold_status.v2")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
-                      "zcl.operator_proof_bundle.v1") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_milestone") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_refold_status") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl_proof_bundle") != NULL);
+                      "zcl.operator_proof_bundle.v2") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 milestone")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 refold")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 proofbundle")
+               != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 anchorstatus") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 proofbundle") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_proof_bundle") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.operator_proof_bundle.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.operator_proof_bundle.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 appprotocols") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_app_protocols") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "zcl.application_protocols.index.v1") != NULL);
+                      "zcl.application_protocols.index.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 servicecatalog") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_service_catalog") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.service_catalog.v1") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.service_contract.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.service_catalog.v2") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.service_contract.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentliveness") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_liveness") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.agent_liveness.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_liveness.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "agent_contracts.def") != NULL);
         ASSERT(strstr(agent_doc_buf, "g_cli_static_agent_routes") != NULL);
         ASSERT(strstr(agent_doc_buf,
@@ -6040,20 +5934,19 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "Do not add a second\nallowlist") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 getmirrorstatus") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_mirror_status") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.height_contract.v1") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.mirror_status.v1") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.operator_latch.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.mirror_status.v2") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.operator_latch.v2") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "zcl.condition_engine_summary.v1") != NULL);
+                      "zcl.condition_engine_summary.v2") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "suppressed_by_mirror_contract") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "zcl_state subsystem=condition_engine") != NULL);
+                      "zclassic23 dumpstate condition_engine") != NULL);
         ASSERT(strstr(agent_doc_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "readiness_status") != NULL);
@@ -6062,18 +5955,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 status") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "registry-owned native first check") != NULL);
-        ASSERT(strstr(agent_doc_buf,
-                      "is not\ntransport-equivalent to the larger legacy")
-               != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentops") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_ops") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_ops.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdiagnose") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_diagnose") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.agent_diagnose.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_diagnose.v2") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "zcl.agent_runtime_availability.v2") != NULL);
+                      "zcl.agent_runtime_availability.v3") != NULL);
         ASSERT(strstr(agent_doc_buf, "effective_runtime_reachable") != NULL);
         ASSERT(strstr(agent_doc_buf, "effective_runtime_scope") != NULL);
         ASSERT(strstr(agent_doc_buf,
@@ -6090,11 +5977,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 statecatalog") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_state_catalog") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.state_catalog.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.state_catalog.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 timeline") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_timeline") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.timeline.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.timeline.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "no_jq_required=true") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);
         ASSERT(strstr(agent_doc_buf,
@@ -6113,30 +5998,20 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "zclassic23 agentdeployguard -operator-lane=dev deploy")
                != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "docs/AGENT_ARCHITECTURE.md") != NULL);
-        /* W3: the doc leads with native no-build probes; the deleted
-         * make agent-mcp-call* one-shots (TOOL=<tool> forms) are gone. */
-        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call TOOL=<tool>")
-               == NULL);
+        /* The doc leads with native no-build probes. */
         ASSERT(strstr(agent_doc_buf, "prefer native commands like "
                                      "`zclassic23 status`") != NULL);
-        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-hot") == NULL);
-        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-dev") == NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-dev-status") != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-doctor") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdevstatus") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_agent_dev_status") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl.agent_dev_status.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_dev_status.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "deploy_blocker") != NULL);
         ASSERT(strstr(agent_doc_buf, "auto_reindex_stale_candidate")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-stage-dev") != NULL);
-        /* W3: the mcpcall CLI subcommand is deleted; the doc teaches the
-         * native command examples that replaced it. */
-        ASSERT(strstr(agent_doc_buf, "zclassic23 mcpcall <tool>")
-               == NULL);
+        /* The doc teaches native command examples. */
         ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23 status")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23 discover help")
@@ -6153,7 +6028,6 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         ASSERT(strstr(agent_doc_buf, "make ci-reproducible") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_operator_summary") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "automation_restart_ok") != NULL);
@@ -6172,9 +6046,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "ZCL_DEPLOY_ALLOW_CANONICAL=1")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "make deploy-dev") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_state") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_node_log") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zcl_sql") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 dumpstate") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 getnodelog") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 dbquery") != NULL);
         ASSERT(strstr(agent_doc_buf, "make pre-push-ci") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "make install-quality-linger") != NULL);
@@ -7526,10 +7400,7 @@ static int t_make_ignores_ephemeral_lint_fixture_sources(void)
         ASSERT(strstr(buf,
                "ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources")
                != NULL);
-        /* W3: MCP_SRCS is deleted with tools/mcp/ — the moved transport
-         * (rpc_client/rpc_params) now builds under APP_SRCS. */
-        ASSERT(strstr(buf,
-               "MCP_SRCS = $(call zcl_filter_ephemeral_sources") == NULL);
+        /* The shared RPC transport builds under APP_SRCS. */
         ASSERT(strstr(buf,
                "TEST_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
         PASS();
@@ -8153,7 +8024,7 @@ int test_make_lint_gates(void)
     failures += t_canonical_deploy_proof_binding_contract();
     failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();
-    failures += t_zero_mcp_operator_docs_contract();
+    failures += t_native_operator_docs_contract();
     failures += t_remote_node_update_contract();
     failures += t_native_agent_api_contract();
     failures += t_mvp_reporters_resolve_live_service_rpc_contract();

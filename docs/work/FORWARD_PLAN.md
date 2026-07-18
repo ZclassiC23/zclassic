@@ -14,7 +14,7 @@
 ## #1 PRIORITY — cure canonical shielded state, then earn clean evidence
 
 > **Canonical is wedged now**, below tip, by incomplete historical shielded
-> anchors and nullifiers (verify the live H\* via `zcl_status` / `dumpstate
+> anchors and nullifiers (verify the live H\* via `zclassic23 status` / `zclassic23 dumpstate
 > reducer_frontier`; `docs/HANDOFF.md` holds current state).
 > `ab512d577` repaired an earlier transparent snapshot-loader failure; it did
 > not prove or install complete shielded history. A snapshot payload digest and
@@ -67,7 +67,7 @@ remaining criteria honest but do not promote them to ✅.
 
 Ordering principle: **land the complete sovereign state cure → prove sustained
 exact parity and liveness → make evidence commit-bound → finish native
-transactional hot swap / zero-MCP → build the sandboxed App and publishing
+transactional hot swap / native-command consolidation → build the sandboxed App and publishing
 planes.** Refactor debt does not block a working sovereign node and must not
 jump the queue.
 

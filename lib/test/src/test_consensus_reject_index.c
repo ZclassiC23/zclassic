@@ -401,7 +401,7 @@ int test_consensus_reject_index(void)
         consensus_reject_index_stop();
     }
 
-    /* ── 13b. dump_state_json (zcl_state subsystem=consensus_reject_index):
+    /* ── 13b. dump_state_json (`zclassic23 dumpstate consensus_reject_index`):
      * running/total/count/capacity plus a `recent` array with the newest
      * entry's fields intact. ─────────────────────────────────────────── */
     {

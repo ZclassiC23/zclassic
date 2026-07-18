@@ -38,6 +38,7 @@
 #
 # Env overrides:
 #   ZCL_RPC_BIN       path to the c23 zcl-rpc client (default build/bin/zcl-rpc)
+#   ZCL_NODE_BIN      path to the native command binary (default build/bin/zclassic23)
 #   ZCL_SOAK_UNIT     systemd --user unit to read soak uptime from (default zclassic23)
 #   ZD_RPCPORT        zclassicd oracle RPC port for the parity probe (default 8232)
 #   TIP_GAP_OK        max blocks-behind-peer still counted "at tip" (default 10)
@@ -46,6 +47,7 @@
 set -uo pipefail
 
 ZCL_RPC_BIN="${ZCL_RPC_BIN:-build/bin/zcl-rpc}"
+ZCL_NODE_BIN="${ZCL_NODE_BIN:-build/bin/zclassic23}"
 ZCL_SOAK_UNIT="${ZCL_SOAK_UNIT:-zclassic23}"
 ZCL_NODE_UNIT="${ZCL_NODE_UNIT:-$ZCL_SOAK_UNIT}"
 ZD_RPCPORT="${ZD_RPCPORT:-8232}"
@@ -111,6 +113,12 @@ rpc() {  # <method> [paramsjson]   -> raw json on stdout, "" on failure
         ZCL_DATADIR="$LIVE_DATADIR" ZCL_RPCPORT="$LIVE_RPCPORT" \
             "$ZCL_RPC_BIN" "$@" 2>/dev/null
     fi
+}
+# Typed read-only command against the same live node.
+native() {
+    if [[ ! -x "$ZCL_NODE_BIN" ]]; then echo ""; return 1; fi
+    "$ZCL_NODE_BIN" "$@" --format=json \
+        -datadir="$LIVE_DATADIR" -rpcport="$LIVE_RPCPORT" 2>/dev/null
 }
 # zclassicd oracle (separate RPC port) — uses the same client with ZCL_RPCPORT.
 zd_rpc() {  # <method>
@@ -182,12 +190,25 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────
-# C2 — Tor onion bootstrap <60s. getinfo does NOT expose the onion; the
-# onion address/bootstrap_state lives in the MCP zcl_onion_status /
-# zcl_state subsystem=onion. From plain RPC we cannot read it, so the
-# live verdict is BLOCKED to the MCP probe + make mvp-onion-slice budget.
+# C2 — Tor onion bootstrap <60s. The native onion-status leaf projects the
+# health snapshot from the running node. The wall-clock budget is guarded by
+# the dedicated local proof; this live probe verifies the resulting ready
+# state and v3 address without bypassing the typed command surface.
 # ────────────────────────────────────────────────────────────────────
-set_v 2 "BLOCKED" "onion bootstrap_state not on plain RPC; probe MCP zcl_onion_status / make mvp-onion-slice (<60s budget logic)" 0
+ONION_STATUS="$(native core network onion status || true)"
+TOR_READY="$(json_bool "$ONION_STATUS" tor_ready)"
+ONION_READY="$(json_bool "$ONION_STATUS" onion_service_ready)"
+ONION_ADDRESS="$(json_str "$ONION_STATUS" onion_address)"
+if [[ "$NODE_UP" != 1 ]]; then
+    set_v 2 "FAIL" "node unreachable" 0
+elif [[ ! -x "$ZCL_NODE_BIN" ]]; then
+    set_v 2 "BLOCKED" "native command binary missing: $ZCL_NODE_BIN" 0
+elif [[ "$TOR_READY" == "true" && "$ONION_READY" == "true" &&
+        "$ONION_ADDRESS" == *.onion ]]; then
+    set_v 2 "PASS" "native core network onion status reports ready ($ONION_ADDRESS); <60s budget proven by make mvp-onion-local" 1
+else
+    set_v 2 "FAIL" "native onion status not ready (tor_ready=${TOR_READY:-missing}, onion_service_ready=${ONION_READY:-missing}, address=${ONION_ADDRESS:-missing})" 0
+fi
 
 # ────────────────────────────────────────────────────────────────────
 # C3 — cold-start sync to tip <10min. The MEASURABLE live fact is "is the

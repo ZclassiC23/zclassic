@@ -148,7 +148,7 @@ int main(void)
      * any byzantine case runs (idempotent — safe even if a host process
      * already called it). Every rejection below turns into a typed,
      * observable BLOCKER_PERMANENT record here, exactly as it would on a
-     * live node (see `zcl_state subsystem=blocker` / `zcl_blockers`). */
+     * live node (see `zclassic23 dumpstate blocker` / `zclassic23 blockers`). */
     blocker_module_init();
 
     int passed = 0;
@@ -195,6 +195,6 @@ int main(void)
  *   - lib/util/include/util/blocker.h : blocker_set()
  *       — turns a production reject into a durable, typed record (class,
  *         reason, owner subsystem) instead of a log line that scrolls
- *         away; introspect live via the `zcl_blockers` MCP tool or
- *         `zcl_state subsystem=blocker`.
+ *         away; introspect live via `core sync blockers` or
+ *         `zclassic23 dumpstate blocker`.
  */

@@ -25,6 +25,12 @@ static const struct zcl_command_spec *find_spec(
     return NULL;
 }
 
+static bool bridge_has_exact_binding(const char *path)
+{
+    return (zcl_native_bridge_body_for_path(path) != NULL) !=
+           (zcl_native_bridge_rpc_for_path(path) != NULL);
+}
+
 static bool exec_leaf(const struct zcl_command_registry *reg,
                       const struct zcl_command_spec *spec,
                       char *out, size_t out_size,
@@ -61,12 +67,8 @@ static int test_catalog_wellformed(void)
 }
 
 /* Count registry entries (branches + leaves) rooted at or under `root`
- * (either path == root, or path starts with "root."). This is the native
- * command-registry analog of the old MCP-router per-domain tool counts
- * (see lib/test/src/test_mcp_controllers.c EXPECTED_TOTAL / EXPECTED_*):
- * as the zero-MCP migration (docs/work/MCP-REMOVAL-WORKLIST.md, W2) moves
- * agent-facing surface off the MCP router and onto this registry, this is
- * the "how big is the native surface, per domain" contract going forward.
+ * (either path == root, or path starts with "root."). This is the
+ * "how big is the native surface, per domain" contract.
  * Floors are set with headroom below the live count so routine additions
  * don't require bumping this file every commit (unlike the old
  * EXPECTED_TOTAL, which pinned an exact number). */
@@ -91,9 +93,7 @@ static int test_domain_leaf_counts(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("native registry per-domain counts meet the zero-MCP floor "
-         "(replaces MCP router EXPECTED_TOTAL/EXPECTED_* — see "
-         "docs/work/MCP-REMOVAL-WORKLIST.md W2)") {
+    TEST("native registry per-domain counts meet the catalog floor") {
         ASSERT(reg->count >= 120);
         ASSERT(count_domain(reg, "core") >= 60);
         ASSERT(count_domain(reg, "dev") >= 35);
@@ -247,7 +247,7 @@ static int test_ready_leaves_bound(void)
                 continue;
             ASSERT(s->handler != NULL);
             if (s->handler == zcl_native_bridge_command)
-                ASSERT(zcl_native_bridge_tool_for_path(s->path) != NULL);
+                ASSERT(bridge_has_exact_binding(s->path));
         }
         PASS();
     } _test_next:;
@@ -264,8 +264,7 @@ static int test_bridge_bindings_reverse(void)
             "ops.metrics", "core.storage.query", "core.chain.block.get",
         };
         for (size_t i = 0; i < sizeof(sample) / sizeof(sample[0]); i++) {
-            const char *tool = zcl_native_bridge_tool_for_path(sample[i]);
-            ASSERT(tool != NULL && tool[0] != 0);
+            ASSERT(bridge_has_exact_binding(sample[i]));
             const struct zcl_command_spec *s = find_spec(reg, sample[i]);
             ASSERT(s != NULL);
             ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
@@ -276,8 +275,41 @@ static int test_bridge_bindings_reverse(void)
     return failures;
 }
 
-/* Both mcp_node_rpc backends strip the JSON-RPC envelope on a node error and
- * return the bare error object. Locally-generated transport failures retain
+static int test_bridge_replacement_rejects_non_bridge_leaf(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("explicit bridge replacement rejects a non-bridge READY leaf") {
+        const struct zcl_command_spec *target = find_spec(reg, "discover.help");
+        zcl_native_body_fn replacement =
+            zcl_native_bridge_body_for_path("core.status");
+        ASSERT(target != NULL);
+        ASSERT_EQ(target->availability, ZCL_COMMAND_READY);
+        ASSERT(target->handler != zcl_native_bridge_command);
+        ASSERT(replacement != NULL);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {
+            .spec = target,
+            .input = &input,
+            .view = "normal",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, target->output_schema);
+        zcl_native_bridge_run(&request, replacement, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+        ASSERT_STR_EQ(reply.error.code, "NO_BRIDGE_BINDING");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* node_rpc_call strips the JSON-RPC envelope on a node error and returns the
+ * bare error object. Locally-generated transport failures retain
  * the older {"error": {...}} wrapper. The native bridge must fail closed for
  * both shapes; otherwise -32601 (runtime/source skew) is projected as passing
  * command data. */
@@ -323,7 +355,7 @@ static int test_bridge_rpc_errors_fail_closed(void)
         ASSERT_STR_EQ(zcl_native_bridge_rpc_for_path(s->path), "getchaintip");
 
         g_bridge_rpc_method_fixture = "getchaintip";
-        mcp_rpc_client_set_test_hook(bridge_rpc_error_mock);
+        node_rpc_client_set_test_hook(bridge_rpc_error_mock);
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             g_bridge_rpc_error_fixture = cases[i].body;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
@@ -338,7 +370,7 @@ static int test_bridge_rpc_errors_fail_closed(void)
     } _test_next:;
     g_bridge_rpc_error_fixture = NULL;
     g_bridge_rpc_method_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -410,7 +442,7 @@ static int test_bridge_rpc_success_shapes_fail_closed(void)
     };
 
     TEST("direct RPC bridge validates every legacy success shape") {
-        mcp_rpc_client_set_test_hook(bridge_rpc_error_mock);
+        node_rpc_client_set_test_hook(bridge_rpc_error_mock);
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, cases[i].path);
             ASSERT(s != NULL);
@@ -459,12 +491,12 @@ static int test_bridge_rpc_success_shapes_fail_closed(void)
     } _test_next:;
     g_bridge_rpc_error_fixture = NULL;
     g_bridge_rpc_method_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
 /* Stubs the one bounded cached status document core.status.brief projects,
- * so the envelope test below runs without a live node (mcp_node_rpc's
+ * so the envelope test below runs without a live node (node_rpc_call's
  * ZCL_TESTING hook wins over both RPC backends). */
 static const char *g_status_brief_agent_fixture;
 
@@ -476,7 +508,7 @@ static char *status_brief_mock_rpc(const char *method,
         return strdup(g_status_brief_agent_fixture);
     if (strcmp(method, "agent") == 0)
         return strdup(
-            "{\"schema\":\"zcl.public_status.v1\","
+            "{\"schema\":\"zcl.public_status.v2\","
             "\"partial_result\":false,"
             "\"served_height\":3117073,\"header_height\":3117074,"
             "\"served_height_known\":true,"
@@ -492,7 +524,7 @@ static char *status_brief_mock_rpc(const char *method,
                 "\"budget_exceeded\":false},"
             "\"peers\":{\"total\":1},"
             "\"conditions\":{"
-                "\"schema\":\"zcl.condition_engine_summary.v1\","
+                "\"schema\":\"zcl.condition_engine_summary.v2\","
                 "\"active_count\":2},"
             "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
                 "\"rss_mb\":512},"
@@ -528,21 +560,21 @@ static int test_status_brief_flat_lean_envelope(void)
         ASSERT_STR_EQ(root_status->output_schema,
                       "zcl.core_status_brief.v1");
         ASSERT((root_status->allowed_lanes & ZCL_COMMAND_LANE_LOCAL) != 0);
-        ASSERT(zcl_native_bridge_tool_for_path("status") != NULL);
+        ASSERT(bridge_has_exact_binding("status"));
         ASSERT(zcl_native_bridge_body_for_path("status") != NULL);
         ASSERT(s != NULL);
         ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
         ASSERT(s->handler == zcl_native_bridge_command);
-        ASSERT(zcl_native_bridge_tool_for_path("core.status.brief") != NULL);
+        ASSERT(bridge_has_exact_binding("core.status.brief"));
 
-        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
         enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
         enum zcl_command_exit root_code = ZCL_COMMAND_EXIT_INTERNAL;
         char root_out[ZCL_COMMAND_RESULT_BUDGET + 1];
         bool root_dispatched = exec_leaf(reg, root_status, root_out,
                                          sizeof(root_out), &root_code);
         bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
-        mcp_rpc_client_set_test_hook(NULL);
+        node_rpc_client_set_test_hook(NULL);
         ASSERT(root_dispatched);
         ASSERT_EQ(root_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(dispatched);
@@ -601,7 +633,7 @@ static int test_status_brief_flat_lean_envelope(void)
         json_free(&root);
         PASS();
     } _test_next:;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -616,12 +648,12 @@ static int test_status_brief_composite_fails_closed(void)
             "{\"code\":-32601,\"message\":\"Method not found\"}",
             "{\"error\":{\"code\":-32603,"
                 "\"message\":\"cannot connect to node\"}}",
-            "{\"schema\":\"zcl.public_status.v2\"}",
-            "{\"schema\":\"zcl.public_status.v1\","
+            "{\"schema\":\"zcl.public_status.v3\"}",
+            "{\"schema\":\"zcl.public_status.v2\","
                 "\"served_height\":\"3117073\"}",
         };
         ASSERT(s != NULL);
-        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             g_status_brief_agent_fixture = cases[i];
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
@@ -630,12 +662,12 @@ static int test_status_brief_composite_fails_closed(void)
             ASSERT(strstr(out, "\"ok\":false") != NULL);
             ASSERT(strstr(out, "\"status\":\"failed\"") != NULL);
             ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
-            ASSERT(strstr(out, "invalid zcl.public_status.v1") != NULL);
+            ASSERT(strstr(out, "invalid zcl.public_status.v2") != NULL);
         }
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -652,7 +684,7 @@ static void status_brief_fixture_write(
 {
     (void)snprintf(
         out, out_size,
-        "{\"schema\":\"zcl.public_status.v1\","
+        "{\"schema\":\"zcl.public_status.v2\","
         "\"partial_result\":%s%s,"
         "\"served_height\":%lld,\"served_height_known\":%s,"
         "\"header_height\":%lld,\"header_height_known\":%s,"
@@ -667,7 +699,7 @@ static void status_brief_fixture_write(
         "\"budget_exceeded\":%s},"
         "\"peers\":{\"total\":0},"
         "\"conditions\":{"
-        "\"schema\":\"zcl.condition_engine_summary.v1\","
+        "\"schema\":\"zcl.condition_engine_summary.v2\","
         "\"active_count\":0},%s"
         "\"reducer\":{\"tip_advance_age_seconds\":%lld},"
         "\"security_posture\":{"
@@ -703,7 +735,7 @@ static int test_status_brief_valid_unknown_and_partial_contracts(void)
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
     TEST("root status preserves valid boot/no-peer/partial unknowns") {
         ASSERT(s != NULL);
-        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
 
         /* Fresh boot: no selected frontier, header, peer height, or tip-age
          * sample is a valid v1 response, not schema skew. */
@@ -761,7 +793,7 @@ static int test_status_brief_valid_unknown_and_partial_contracts(void)
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -774,7 +806,7 @@ static int test_status_brief_rejects_contract_contradictions(void)
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
     TEST("root status rejects known/sentinel, gap, partial, and budget contradictions") {
         ASSERT(s != NULL);
-        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
         static const int cases = 4;
         for (int i = 0; i < cases; i++) {
             if (i == 0) {
@@ -811,16 +843,16 @@ static int test_status_brief_rejects_contract_contradictions(void)
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
-/* A fully valid zcl.public_status.v1 document (mirrors
+/* A fully valid zcl.public_status.v2 document (mirrors
  * status_brief_mock_rpc's default fixture) so each case below can drop or
  * corrupt exactly one field and prove the resulting error names that field
- * instead of the old one-size-fits-all "invalid zcl.public_status.v1". */
+ * instead of the old one-size-fits-all "invalid zcl.public_status.v2". */
 static const char g_status_brief_valid_doc[] =
-    "{\"schema\":\"zcl.public_status.v1\","
+    "{\"schema\":\"zcl.public_status.v2\","
     "\"partial_result\":false,"
     "\"served_height\":3117073,\"header_height\":3117074,"
     "\"served_height_known\":true,"
@@ -836,7 +868,7 @@ static const char g_status_brief_valid_doc[] =
         "\"budget_exceeded\":false},"
     "\"peers\":{\"total\":1},"
     "\"conditions\":{"
-        "\"schema\":\"zcl.condition_engine_summary.v1\","
+        "\"schema\":\"zcl.condition_engine_summary.v2\","
         "\"active_count\":2},"
     "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
         "\"rss_mb\":512},"
@@ -847,7 +879,7 @@ static const char g_status_brief_valid_doc[] =
         "\"nullifier_backfill_gap\":false}}";
 
 /* E1: the composite validation used to collapse ~30 predicates into one
- * opaque "invalid zcl.public_status.v1" message. Each case here removes (or
+ * opaque "invalid zcl.public_status.v2" message. Each case here removes (or
  * corrupts) exactly one representative field from an otherwise-valid
  * document and proves the error names that exact field, and correctly
  * classifies an entirely-absent key (an older node binary's `agent` RPC
@@ -859,16 +891,16 @@ static int test_status_brief_names_first_failing_field(void)
     const struct zcl_command_registry *reg = zcl_command_catalog();
     const struct zcl_command_spec *s = find_spec(reg, "status");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status names the first failing zcl.public_status.v1 field") {
+    TEST("root status names the first failing zcl.public_status.v2 field") {
         ASSERT(s != NULL);
-        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
 
         /* Case 1: an entirely-absent top-level bool field (as an older node
          * binary's agent RPC would omit) -> named + classified as version
          * skew, not a generic malformed-document error. */
         {
             const char *removed =
-                "{\"schema\":\"zcl.public_status.v1\","
+                "{\"schema\":\"zcl.public_status.v2\","
                 "\"partial_result\":false,"
                 "\"served_height\":3117073,\"header_height\":3117074,"
                 "\"served_height_known\":true,"
@@ -883,7 +915,7 @@ static int test_status_brief_names_first_failing_field(void)
                     "\"budget_exceeded\":false},"
                 "\"peers\":{\"total\":1},"
                 "\"conditions\":{"
-                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"schema\":\"zcl.condition_engine_summary.v2\","
                     "\"active_count\":2},"
                 "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
                     "\"rss_mb\":512},"
@@ -904,7 +936,7 @@ static int test_status_brief_names_first_failing_field(void)
          * projection an older node never emitted) -> named + version skew. */
         {
             const char *removed =
-                "{\"schema\":\"zcl.public_status.v1\","
+                "{\"schema\":\"zcl.public_status.v2\","
                 "\"partial_result\":false,"
                 "\"served_height\":3117073,\"header_height\":3117074,"
                 "\"served_height_known\":true,"
@@ -920,7 +952,7 @@ static int test_status_brief_names_first_failing_field(void)
                     "\"budget_exceeded\":false},"
                 "\"peers\":{\"total\":1},"
                 "\"conditions\":{"
-                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"schema\":\"zcl.condition_engine_summary.v2\","
                     "\"active_count\":2},"
                 "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
                     "\"rss_mb\":512},"
@@ -938,7 +970,7 @@ static int test_status_brief_names_first_failing_field(void)
          * its value just violates the contract). */
         {
             const char *malformed =
-                "{\"schema\":\"zcl.public_status.v1\","
+                "{\"schema\":\"zcl.public_status.v2\","
                 "\"partial_result\":false,"
                 "\"served_height\":3117073,\"header_height\":3117074,"
                 "\"served_height_known\":true,"
@@ -954,7 +986,7 @@ static int test_status_brief_names_first_failing_field(void)
                     "\"budget_exceeded\":false},"
                 "\"peers\":{\"total\":1},"
                 "\"conditions\":{"
-                    "\"schema\":\"zcl.condition_engine_summary.v1\","
+                    "\"schema\":\"zcl.condition_engine_summary.v2\","
                     "\"active_count\":2},"
                 "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
                     "\"rss_mb\":512},"
@@ -983,7 +1015,7 @@ static int test_status_brief_names_first_failing_field(void)
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
-    mcp_rpc_client_set_test_hook(NULL);
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -1330,16 +1362,13 @@ static int test_dev_vcs_seal_grant_release_stub(void)
     return failures;
 }
 
-/* W0-A: the native bridge dispatches WITHOUT the MCP router/middleware.
- * Every bridged READY leaf must resolve to exactly ONE MCP-free dispatch:
- * a re-homed transport-neutral body function (app/controllers/
- * *_native_handlers.c) XOR a direct JSON-RPC method (pure pass-through).
- * The MCP tool name stays as dual-run equivalence metadata. */
-static int test_bridge_mcp_free_bindings(void)
+/* Every bridged READY leaf must resolve to exactly one dispatch: a
+ * transport-neutral body function XOR a direct JSON-RPC method. */
+static int test_bridge_bindings(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("every bridged leaf has exactly one MCP-free dispatch binding") {
+    TEST("every bridged leaf has exactly one dispatch binding") {
         int checked = 0;
         for (size_t i = 0; i < reg->count; i++) {
             const struct zcl_command_spec *s = &reg->commands[i];
@@ -1347,10 +1376,8 @@ static int test_bridge_mcp_free_bindings(void)
                 continue;
             if (s->handler != zcl_native_bridge_command)
                 continue;
-            const char *tool = zcl_native_bridge_tool_for_path(s->path);
             zcl_native_body_fn body = zcl_native_bridge_body_for_path(s->path);
             const char *rpc = zcl_native_bridge_rpc_for_path(s->path);
-            ASSERT(tool != NULL && tool[0] != 0);
             /* exactly one of the two dispatch kinds */
             ASSERT((body != NULL) != (rpc != NULL));
             checked++;
@@ -1362,8 +1389,7 @@ static int test_bridge_mcp_free_bindings(void)
     return failures;
 }
 
-/* W0: ops.selftest is the native, node-free successor of the MCP
- * `zcl_self_test mode=registry`. It sweeps the catalog for the static
+/* ops.selftest is a native, node-free sweep of the catalog's static
  * well-formedness the registry guarantees. Because test_catalog_wellformed
  * already proves the whole catalog validates, ops.selftest MUST report
  * fail == 0 with a passing envelope, so the dev-lane deploy verify can gate
@@ -1391,8 +1417,7 @@ static int test_ops_selftest_registry(void)
     return failures;
 }
 
-/* W0: ops.state is the native successor of the MCP `zcl_state` primitive.
- * Its node-contacting path (dumpstate RPC) needs a live node, but its input
+/* ops.state contacts the dumpstate RPC and therefore needs a live node, but its input
  * guard is node-free: a missing `subsystem` must fail INVALID before any RPC,
  * naming MISSING_SUBSYSTEM and offering an executable next command. */
 static int test_ops_state_requires_subsystem(void)
@@ -1747,10 +1772,10 @@ static int test_describe_emits_observed_p99(void)
     return failures;
 }
 
-/* The ZCL application-feature leaves (config/commands/app_features.def) are the
- * native twin of tools/mcp/controllers/app_controller.c. The read surface
+/* The ZCL application-feature leaves (config/commands/app_features.def) expose
+ * a native read surface
  * (names resolve/list, tokens list, messaging inbox, market list/status, swap
- * chains/list) is READY and MCP-free bridge-dispatched; the destructive
+ * chains/list) that is READY and bridge-dispatched; the destructive
  * commands (name register/update/transfer/renew/set-record/set-text, message
  * send/send-named/read, market offer/buy, swap initiate/participate) are
  * PLANNED and fail closed until the app-write plan/commit handshake lands. */
@@ -1769,8 +1794,7 @@ static int test_app_features_leaves(void)
             ASSERT_STR_EQ(b->parent, "app");
         }
 
-        /* Read surface: READY, dispatched MCP-free through the bridge with a
-         * tool name AND exactly one body-fn binding (never a direct RPC). */
+        /* Read surface: READY with exactly one body-function binding. */
         const char *reads[] = {
             "app.names.resolve", "app.names.list", "app.tokens.list",
             "app.messaging.inbox", "app.market.list", "app.market.status",
@@ -1781,7 +1805,6 @@ static int test_app_features_leaves(void)
             ASSERT(s != NULL);
             ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
             ASSERT(s->handler == zcl_native_bridge_command);
-            ASSERT(zcl_native_bridge_tool_for_path(s->path) != NULL);
             ASSERT(zcl_native_bridge_body_for_path(s->path) != NULL);
             ASSERT(zcl_native_bridge_rpc_for_path(s->path) == NULL);
         }
@@ -1813,27 +1836,20 @@ static int test_app_features_leaves(void)
     return failures;
 }
 
-/* The operator rollup dashboards ported from the legacy MCP ops controller
- * (tools/mcp/controllers/ops_controller.c) that had no native twin. Each is a
- * READY read leaf under ops.debug.dash, dispatched by the MCP-free bridge via a
- * re-homed body function (never an RPC-shape binding), and named by a
- * tool-for-path entry so the selftest sweep and the "exactly one dispatch"
- * invariant both accept it. */
+/* Each operator rollup dashboard is a READY read leaf under ops.debug.dash,
+ * dispatched through a body function rather than an RPC-shape binding. */
 static int test_ops_dash_dashboards_ported(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
     TEST("ops.debug.dash operator dashboards are bridged READY leaves") {
-        const struct {
-            const char *path;
-            const char *tool;
-        } leaves[] = {
-            { "ops.debug.dash.kpi", "zcl_kpi" },
-            { "ops.debug.dash.snapshot", "zcl_operator_snapshot" },
-            { "ops.debug.dash.summary", "zcl_operator_summary" },
-            { "ops.debug.dash.milestone", "zcl_milestone" },
-            { "ops.debug.dash.mirror", "zcl_mirror_status" },
-            { "ops.debug.dash.selfheal", "zcl_self_heal_stats" },
+        const char *leaves[] = {
+            "ops.debug.dash.kpi",
+            "ops.debug.dash.snapshot",
+            "ops.debug.dash.summary",
+            "ops.debug.dash.milestone",
+            "ops.debug.dash.mirror",
+            "ops.debug.dash.selfheal",
         };
         const struct zcl_command_spec *branch =
             find_spec(reg, "ops.debug.dash");
@@ -1841,18 +1857,15 @@ static int test_ops_dash_dashboards_ported(void)
         ASSERT_EQ(branch->mode, ZCL_COMMAND_MODE_BRANCH);
         ASSERT_STR_EQ(branch->parent, "ops.debug");
         for (size_t i = 0; i < sizeof(leaves) / sizeof(leaves[0]); i++) {
-            const struct zcl_command_spec *s = find_spec(reg, leaves[i].path);
+            const struct zcl_command_spec *s = find_spec(reg, leaves[i]);
             ASSERT(s != NULL);
             ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
             ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
             ASSERT_STR_EQ(s->parent, "ops.debug.dash");
             ASSERT(s->handler == zcl_native_bridge_command);
-            const char *tool = zcl_native_bridge_tool_for_path(leaves[i].path);
-            ASSERT(tool != NULL);
-            ASSERT_STR_EQ(tool, leaves[i].tool);
             /* body-backed composition, never an RPC-shape binding */
-            ASSERT(zcl_native_bridge_body_for_path(leaves[i].path) != NULL);
-            ASSERT(zcl_native_bridge_rpc_for_path(leaves[i].path) == NULL);
+            ASSERT(zcl_native_bridge_body_for_path(leaves[i]) != NULL);
+            ASSERT(zcl_native_bridge_rpc_for_path(leaves[i]) == NULL);
         }
         PASS();
     } _test_next:;
@@ -1881,6 +1894,7 @@ int test_command_registry_catalog(void)
     failures += test_search_multiword();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
+    failures += test_bridge_replacement_rejects_non_bridge_leaf();
     failures += test_bridge_rpc_errors_fail_closed();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
@@ -1888,7 +1902,7 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
     failures += test_status_brief_names_first_failing_field();
-    failures += test_bridge_mcp_free_bindings();
+    failures += test_bridge_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();
     failures += test_dev_branch_leaves();

@@ -58,7 +58,7 @@ bool seal_candidate_emit_in_tx(struct sqlite3 *db, struct main_state *ms,
  * seal stays ratified). */
 int seal_ratify_tick(struct main_state *ms);
 
-/* zcl_state subsystem=seal — delegates to seal_kv_dump_state_json. */
+/* `zclassic23 dumpstate seal` delegates to seal_kv_dump_state_json. */
 bool seal_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_SERVICES_SEAL_SERVICE_H */

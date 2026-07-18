@@ -828,7 +828,7 @@ void net_manager_free(struct net_manager *nm)
 /* Find a matching, NON-disconnect node and take a ref on it atomically under
  * cs_nodes. Returns the node with ref_count already incremented, or NULL.
  *
- * connect_node runs on a different thread (RPC/MCP addnode -> connman_open_
+ * connect_node runs on a different thread (RPC addnode -> connman_open_
  * connection) than the socket disconnect sweep, which calls p2p_node_free()
  * the instant ref_count hits 0. A plain find that unlocks cs_nodes before
  * returning, then takes the add_ref afterwards, is a TOCTOU use-after-free:

@@ -17,7 +17,7 @@
  * a single block, two oracles agree on its hash, function clears and
  * activation re-runs — needs a real chainstate + LevelDB + zclassicd
  * to verify end-to-end. That's `make deploy` + observing
- * `zcl_status` height advance, not a unit test.
+ * `zclassic23 status` height advance, not a unit test.
  *
  * The unit-testable surface is the enum mapping + early-return paths +
  * the find_failed_pindex_at_height helper (verified through the
@@ -128,16 +128,16 @@ int test_process_block_revalidate(void)
      * test is operator-run after make deploy:
      *
      *   # before
-     *   $ zcl_status | jq .height
+     *   $ zclassic23 status | jq .height
      *   3115059
-     *   $ zcl_blockers | jq .active_count
+     *   $ zclassic23 blockers | jq .active_count
      *   0
      *
      *   # wait 900s (or one full coord_esc supervisor tick)
      *
      *   # after — chain should have advanced past 3,115,059 if zclassicd
      *   # at 127.0.0.1:8232 agreed with our pindex hash at h=3,115,060
-     *   $ zcl_status | jq .height
+     *   $ zclassic23 status | jq .height
      *   3115060+
      */
 

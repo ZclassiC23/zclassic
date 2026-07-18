@@ -345,7 +345,7 @@ static bool fetch_dumpstate_state(const char *sub, struct json_value *dst)
 {
     char params[96];
     snprintf(params, sizeof(params), "[\"%s\"]", sub);
-    char *raw = mcp_node_rpc("dumpstate", params);
+    char *raw = node_rpc_call("dumpstate", params);
     struct json_value body;
     bool ok = false;
     if (status_parse_rpc_json(&body, raw, JSON_OBJ)) {
@@ -389,16 +389,16 @@ bool explain_build(const char *topic, struct json_value *out)
     bool have_conditions = fetch_dumpstate_state("condition_engine",
                                                  &conditions);
 
-    char *health_raw = mcp_node_rpc("healthcheck", NULL);
+    char *health_raw = node_rpc_call("healthcheck", NULL);
     bool have_health = status_parse_rpc_json(&health, health_raw, JSON_OBJ);
-    char *sync_raw = mcp_node_rpc("syncstate", NULL);
+    char *sync_raw = node_rpc_call("syncstate", NULL);
     bool have_sync = status_parse_rpc_json(&sync, sync_raw, JSON_OBJ);
-    char *chain_raw = mcp_node_rpc("getblockchaininfo", NULL);
+    char *chain_raw = node_rpc_call("getblockchaininfo", NULL);
     bool have_chain = status_parse_rpc_json(&chain, chain_raw, JSON_OBJ);
-    char *count_raw = mcp_node_rpc("getblockcount", NULL);
+    char *count_raw = node_rpc_call("getblockcount", NULL);
     struct json_value count_j;
     bool have_count = status_parse_rpc_json(&count_j, count_raw, JSON_INT);
-    char *peers_raw = mcp_node_rpc("getpeerinfo", NULL);
+    char *peers_raw = node_rpc_call("getpeerinfo", NULL);
     bool have_peers = status_parse_rpc_json(&peers, peers_raw, JSON_ARR) &&
                       status_peer_array_is_valid(&peers);
 

@@ -47,7 +47,7 @@ goodwill. The core of the contract:
   `LOG_NULL()` from `util/log_macros.h`. Never `return false;` silently.
 - **Every allocation is checked** — use `zcl_malloc(size, "label")` from
   `util/safe_alloc.h`, never bare `malloc`.
-- **Every MCP handler sets an error body** — never `return -1;` without
+- **Every native command handler sets an error body** — never `return -1;` without
   explaining why.
 - **Long-running loops register with the supervisor liveness tree**
   (`lib/util/include/util/supervisor.h`), so a stalled loop is detected

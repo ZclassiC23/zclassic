@@ -49,7 +49,8 @@
  *    checking is simulated, but the address-derivation-from-prevout
  *    mechanism is the real one, byte for byte.
  * 4. `db_znam_find` / `db_znam_text_get` are the READ side: the same
- *    functions `zcl_name_resolve` / the ZNAM RPC handlers use in production.
+ *    functions behind `zclassic23 app names resolve` and the ZNAM RPC
+ *    handlers use in production.
  *
  * NOTE ON TEST-ONLY HELPERS: this file reimplements the small OP_RETURN /
  * P2PKH transaction builders that, in the test suite, live inside
@@ -431,12 +432,12 @@ int main(void)
  * transparent send path in app/controllers/src/wallet_controller.c, and the
  * RPC-facing entry point is `name_register` / the equivalent handlers in
  * app/controllers/src/name_controller.c (also reachable via the
- * `zcl_name_register` MCP tool).
+ * `app names register` native command).
  *
  * The READ side this example exercises directly IS the production path: a
  * live node's forward-sync indexer calls `explorer_index_block` ->
  * `apply_znam` (app/models/src/explorer_index.c) for every block, and the
  * resulting znam_names / znam_text_records / znam_addr_records rows are
  * exactly what `name_resolve` (name_controller.c) and the
- * `zcl_name_resolve` / `zcl_name_list` MCP tools read back for callers.
+ * `app names resolve` / `app names list` native commands read back for callers.
  */

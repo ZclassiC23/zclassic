@@ -3,7 +3,7 @@
 Fast reference for a fresh agent. Plain and technical. For the *why* (laws,
 shapes, doctrine) read `docs/FRAMEWORK.md`; for the concrete feature-slice
 contract (REST resources, ActiveRecord, validations, relationships, database
-schema, services, MCP/native) read `docs/AGENT_ARCHITECTURE.md`; for *current
+schema, services, native commands) read `docs/AGENT_ARCHITECTURE.md`; for *current
 live state* read `docs/HANDOFF.md`; for *coding rules* read
 `docs/DEFENSIVE_CODING.md`. For the one-page mental model read
 `docs/HOW_THE_NODE_WORKS.md`.
@@ -98,7 +98,7 @@ all fail closed during Phase-0 containment.
 content-addressed generation transaction (activation lock,
 `current`/`last-good` links, bounded probes, rollback, and rejection
 quarantine), but its public entry refuses before mutation. `tools/dev/agent-dev-status.sh` is the
-read-only `zcl.agent_dev_status.v1` view; `generate-compdb.sh` owns exact dev
+read-only `zcl.agent_dev_status.v2` view; `generate-compdb.sh` owns exact dev
 compilation-database generation and freshness; `dev-loop-bench.sh` owns the
 machine-readable latency evidence. Runtime hot-swap loading lives below the app
 layer in `lib/hotswap/`; the dev-only hot-swap RPC and generation commit are
@@ -202,11 +202,9 @@ actually fires.
 
 ## 3. The agent surface
 
-> **Zero-MCP is complete.** The legacy MCP stdio server has been deleted; the
-> native typed command registry is the sole agent interface — see
-> [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md). The agent
-> contract still carries `mcp_tool` taxonomy metadata (the tool-name a command
-> maps to) as durable contract metadata, not a live server.
+> The native typed command registry is the sole agent interface — see
+> [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md). Command
+> contracts carry native paths plus input/output schemas for discovery.
 
 100+ typed commands. Discover them natively with `zclassic23 discover help` /
 `zclassic23 discover search <q>`. Source of truth is the `config/commands/*.def`
@@ -218,18 +216,15 @@ bundles + `app/controllers/src/*_native_handlers.c`.
   read-only, and no external wrapper logic is required. Its `capabilities[]`
   matrix and
   `machine_contract` block are the programmatic source for agent transport,
-  schema, JSON, and compatibility expectations. Capability rows are emitted
+  schema, and JSON expectations. Capability rows are emitted
   from `agent_contracts.def` via
-  `app/controllers/src/agent_contract_capability_registry.c`; v1 compatibility
-  aliases are marked with `registry_alias=true` instead of repeating
-  schema/tool strings in the controller.
-- `zclassic23 servicecatalog [name]` / `zcl_service_catalog(name?)` /
+  `app/controllers/src/agent_contract_capability_registry.c` instead of
+  repeating schema or command strings in the controller.
+- `zclassic23 servicecatalog [name]` /
   `GET /api/v1/service-catalog` /
   `GET /api/v1/service-catalog/{service}` /
 - `zclassic23 serviceoperations [operation_id|key=value...]` /
   `zclassic23 serviceoperations service=bootstrap write_safety=public_read_only` /
-  `zcl_service_operations(operation_id?, service?, write_safety?,
-  preferred_interface?, status?, surface?)` /
   `GET /api/v1/service-operations?service=znam_names&surface=rest` /
   `GET /api/v1/service-operations/{operation_id}` /
   `GET /api/v1/names/{name}/services` /
@@ -263,40 +258,38 @@ bundles + `app/controllers/src/*_native_handlers.c`.
   remains runtime health.
 - `zclassic23 status` — the native compact first check. It emits a bounded
   `zcl.result.v1` envelope whose data schema is
-  `zcl.core_status_brief.v1`; it is owned by the command registry, not the
-  legacy agent-contract registry. `zclassic23 agent`, `zcl_agent`, and
-  `GET /api/v1/agent` remain the separate full `zcl.public_status.v1`
-  compatibility document. Its `security_posture` object is owned by
+  `zcl.core_status_brief.v1`; it is owned by the command registry.
+  `zclassic23 agent` and `GET /api/v1/agent` expose the separate full
+  `zcl.public_status.v2` document. Its `security_posture` object is owned by
   `app/controllers/src/agent_security_posture.c` and names the borrowed
   snapshot/full-history-validation posture plus Sprout/Sapling anchor and
   nullifier history coverage. Public `serving` and `healthy` fail closed while
   that posture requires review; liveness-only internals remain separately
   visible for diagnosis.
-- `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
+- `zclassic23 agentmap` — AI-coder map for the native
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
   First-call method/schema/tool metadata is centralized in
   `app/controllers/include/controllers/agent_contracts.def`; registry-backed
   `agentmap` command rows and telemetry drilldowns are grouped in
   `app/controllers/src/agent_contract_registry.c`
-  (`g_agent_command_surfaces`), including generic diagnostic primitives like
-  `dumpstate`/`zcl_state`, `getnodelog`/`zcl_node_log`, and
-  `dbquery`/`zcl_sql`, plus the raw event ring `eventlog`/`zcl_events`, not as
+  (`g_agent_command_surfaces`), including generic diagnostic commands
+  `dumpstate`, `getnodelog`, `dbquery`, and the raw event-ring command
+  `eventlog`, not as
   local string tables in the controllers. Non-method rows such as
   `compact_status`, `full_compatibility_status`, `full_status`, and
-  `quality_lanes` also live there as direct native/MCP command-surface rows.
+  `quality_lanes` also live there as direct native command-surface rows.
   `agentops` first-call scalar fields
   such as `diagnose_tool`, `anchor_status_command`, and `peer_incidents_tool`
   live there too as `g_agent_field_surfaces`, while its top-level
-  schema/method/native/MCP identity fields come from `agent_contracts.def`.
+  schema/method/native identity fields come from `agent_contracts.def`.
   The same registry owns
   `probe_params_json` for parameterized availability probes; nested schema
   rows live in `app/controllers/src/agent_contract_schema_registry.c`
   (`g_agent_schema_surfaces`). REST-index
-  operator drilldowns such as
-  `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
-  `refold`/`zcl_refold_status` also belong in that registry.
-- `zclassic23 agentops` / `zcl_agent_ops` — compact no-`jq` operator command
+  operator drilldowns such as `healthcheck`, `milestone`, and `refold` also
+  belong in that registry.
+- `zclassic23 agentops` — compact no-`jq` operator command
   center. Its first-call scalar command fields, direct/drilldown commands,
   API-gap list, and top-next-work list are registry-fed from
   `agent_contract_registry.c` (`g_agent_contracts`,
@@ -307,53 +300,50 @@ bundles + `app/controllers/src/*_native_handlers.c`.
   `agent_contract_review_registry.c` (`g_agent_review_surfaces`);
   keep controller code focused on assembling live state, not owning ranked
   planning tables. `agentcontracts.contract_summary` reports registry-derived
-  native/MCP/REST, review-surface, and schema-surface counts plus separate
-  contract/review/schema registry source fields, and MCP tests verify declared
-  tools are registered.
-- `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
+  native/REST, review-surface, and schema-surface counts plus separate
+  contract/review/schema registry source fields, and command tests verify
+  declared paths are registered.
+- `zclassic23 agentlanes` — native canonical/soak/dev lane
   topology, `zcl.operator_deployment_safety.v1` policy, and
   `zcl.operator_lane_recovery.v1` boot-recovery sentinel state. Use this before
   deciding where a fresh binary may be deployed or restarted.
-- `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
+- `zclassic23 agentliveness` — unified current-lane
   liveness rollup: compact lane identity, observed listeners, supervisor
   counts, background quality counts, direct `overall_liveness`, and next
-  drilldowns. Use `agentliveness full` /
-  `zcl_agent_liveness(mode="full")` only when embedded runtime-availability
+  drilldowns. Use `zclassic23 agentliveness full` only when embedded runtime-availability
   methods, supervisor domains, and quality lane arrays are needed.
-  Top-level schema/method/native/MCP identity fields are registry-owned by
+  Top-level schema/method/native identity fields are registry-owned by
   `agent_contracts.def`.
-- `zclassic23 proofbundle [anchor_datadir]` / `zcl_proof_bundle` — read-only
-  `zcl.operator_proof_bundle.v1` evidence artifact. It embeds the current
+- `zclassic23 proofbundle [anchor_datadir]` — read-only
+  `zcl.operator_proof_bundle.v2` evidence artifact. It embeds the current
   `agent`, `milestone`/`operator_proofs`, `refold`, `anchorstatus`,
   `agentlanes`, and `agentdevstatus` contracts so agents can capture the
   current MVP/sovereign/dev-lane proof state with one native C command.
-- `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
+- `zclassic23 agentdiagnose` — bounded no-jq
   diagnosis packet for first-call work: compact status, peer lifecycle incident
   counts/primary host issue, mirror status, drill-down pointers, and a safe
-  next action. Use `agentdiagnose full` / `zcl_agent_diagnose(mode="full")`
+  next action. Use `zclassic23 agentdiagnose full`
   only when embedded `agent`, `healthcheck`, `peer_incidents`, mirror, and
-  timeline objects are needed. Its top-level schema/method/native/MCP identity
+  timeline objects are needed. Its top-level schema/method/native identity
   fields are also registry-owned.
-- `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
+- `zclassic23 core network peers incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
   disconnect reason, flat primary issue fields, host direction/mixed-direction
   classification, services, advertised height plus whether that height is
   bootstrap-trusted, bootstrap/fast-sync readiness, and stability blocker
   verdicts. The native RPC and full-mode embedded
   `agentdiagnose.peer_incidents` payloads add registry-owned `method`,
-  `native_command`, `mcp_tool`, and
+  `native_command` and
   `contract_source` fields from `agent_contracts.def`, so help,
-  `agentcontracts`, MCP coverage, and API discovery stay in sync with the
-  native command. Native CLI and MCP automatically fall back to
-  `dumpstate peer_lifecycle incidents` when an older running target lacks the
-  direct `peerincidents` RPC, preserving the same schema and marking
-  `compatibility_fallback=true`.
-- `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
+  `agentcontracts` and API discovery stay in sync with the native command.
+  Use `zclassic23 dumpstate peer_lifecycle incidents` for the generic
+  subsystem view.
+- `zclassic23 agentimpact <files...>` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at
   `app/controllers/include/controllers/agent_impact_rules.def` and is consumed
   by both native `agentimpact` and `make fast-ci`.
-- `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
+- `zclassic23 agentbuild` — fast cached build contract:
   `make dev-watch`, `make agent-loop`, `make fast-compile`, `make build-only`,
   `make dev-bin`, `make agent-index`, `make dev-loop-bench`, `make t-fast`,
   `make fast-ci`, cache knobs, strict gates, native command registry calls,
@@ -361,16 +351,16 @@ bundles + `app/controllers/src/*_native_handlers.c`.
   dev-lane status commands, and `make ci-reproducible`. The
   `indexing` and `dev_loop_benchmark` objects report current artifact freshness
   without requiring clangd or running an activation.
-- `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
-  for every `zcl_state` subsystem: name, description, accepted key forms,
+- `zclassic23 statecatalog` — machine-readable catalog for every dump-state
+  subsystem: name, description, accepted key forms,
   expected cost, freshness, owner shape/file, read-only safety level, focused
-  tests, and native/MCP drill-down commands.
-- `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` /
-  `zcl_timeline` — versioned semantic event timeline over the structured event
+  tests, and native drill-down commands.
+- `zclassic23 ops timeline --category=sync --count=50 --since-secs=3600` —
+  versioned semantic event timeline over the structured event
   ring with bounded server-side filters for `since`, `height`, `peer`,
   `reducer_stage`, `condition`, `deploy`, and `lane`. Categories include
   `sync`, `peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
-  `mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, and `net`; responses include
+  `mirror`, `boot`, `db`, `wallet`, `disk`, and `net`; responses include
   `head_seq`, `semantic_summary`, `type_counts`, `peer_counts`,
   `log_references`, `recommended_drilldowns`, and `events[].seq` cursor fields.
   The response/category layer is
@@ -378,71 +368,68 @@ bundles + `app/controllers/src/*_native_handlers.c`.
   bounded filter matching live in
   `app/controllers/src/event_timeline_filter_controller.c`.
 - `zclassic23 api` — native API discovery from the running node. It returns the
-  same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
+  same `zcl.rest_index.v2` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
-  recommended native/MCP/REST first calls. Use this instead of wrapper scripts.
-- `zcl_agent` — shortest MCP-friendly first check: compact status with stable
+  recommended native/REST first calls. Use this instead of wrapper scripts.
+- `zclassic23 agent` — compact status with stable
   top-level `status`, heights, gap, peer counts, primary blocker, and
-  recommended next tool. Same simple contract as native `zclassic23 agent`,
-  and REST `GET /api/v1/agent`.
-  `zcl_operator_summary` is the longer compatible alias.
-- `zclassic23 milestone` / `zcl_milestone` — node-computed progress to the
-  next version milestone. Returns `zcl.milestone_status.v1` with ASCII
+  recommended next command. REST exposes the same contract at
+  `GET /api/v1/agent`.
+- `zclassic23 milestone` — node-computed progress to the
+  next version milestone. Returns `zcl.milestone_status.v2` with ASCII
   `systems`, `goals`, and `subgoals` bars, the underlying MVP criteria, and
   nested `operator_proofs` (`zcl.mvp_operator_proofs.v1`) that names each
   criterion's proof command, CI regression floor, and current blocker. REST
   serves the same contract at `GET /api/v1/milestone`.
-- `zcl_status` — full composite diagnostic tree: served H* height, target/lag,
+- `zclassic23 core status` — full composite diagnostic tree: served H* height, target/lag,
   peers, sync, onion, health, reducer frontier, tip-finalize, condition engine,
   typed blockers, and chain source scoring. It labels the composite execution
   locus; blocker data comes from the target node's native `dumpstate blocker`
   snapshot and fails closed (`blockers=null` + `blockers_error`) if that
   snapshot is unavailable or internally contradictory. Never read node-owned
   globals from a detached process.
-- `zcl_operator_summary` — compact fail-closed composite. `gap` and
+- `zclassic23 ops snapshot` — compact fail-closed composite. `gap` and
   `served_gap` are validated-header target minus served H*; `index_gap` is
   separately target minus the corroborating indexed/active frontier. Known
   adverse evidence wins over missing ancillary telemetry, while any evidence
   still required for a healthy verdict is typed or returned as `null` with an
   error. It rejects contradictory `served <= indexed <= header` ordering and
   treats an authoritative empty peer array as `no_peers` even at gap zero.
-- `zcl_blockers` — target-node blocker state with target execution provenance
-  and a derived dominant entry. It preserves the native
-  `zcl_state(subsystem=blocker).state` fields; it is not byte-identical to that
-  nested object.
-- `zcl_kpi` — aggregated KPIs (height, peer_count, sync, validation, mempool,
+- `zclassic23 core sync blockers` — target-node blocker state with target
+  execution provenance and a derived dominant entry. It preserves the
+  `dumpstate blocker` state fields; it is not byte-identical to that nested
+  object.
+- `zclassic23 ops metrics` — aggregated KPIs (height, peer_count, sync, validation, mempool,
   wallet, chain, network). Peer counts come from a parsed object array;
   malformed/error responses yield `peer_count=null` and
   `peer_count_known=false`.
 
-### Catalog and primitives (prefer these over a new bespoke tool)
-- `zcl_state_catalog()` — discover the `zcl_state` subsystem list and metadata
-  before drilling into a subsystem. Same payload as native
-  `zclassic23 statecatalog` (`zcl.state_catalog.v1`).
-- `zcl_state(subsystem=X)` — generic target state dump. The proxy-known
-  subsystem CSV is auto-populated as an advisory schema hint; it does not
-  reject a newer target-only subsystem. `zcl_state_catalog` on the target is
-  authoritative. Currently ~56 subsystems wired (supervisor, watchdog, boot,
+### Catalog and primitives (prefer these over a new bespoke command)
+- `zclassic23 statecatalog` — discover the subsystem list and metadata before
+  drilling into a subsystem. It returns `zcl.state_catalog.v2`.
+- `zclassic23 dumpstate X` — generic target state dump. The target catalog is
+  authoritative. Currently ~56 subsystems are wired (supervisor, watchdog, boot,
   block_index, health,
   chain_evidence, chain_advance_coordinator, legacy_mirror, oracle,
   header_probe, verify_engine, ...).
-- `zcl_node_log(pattern, since_secs, max_lines, level)` — server-side reverse
+- `zclassic23 getnodelog --pattern=... --since-secs=N --max-lines=N
+  --level=...` — server-side reverse
   scan of node.log in 64 KB chunks.
-- `zcl_timeline(category, count, since_secs, peer, height, reducer_stage,
-  condition, deploy, lane)` — category-filtered structured events with
-  `zcl.timeline.v1` metadata, bounded server-side filters, semantic summaries,
+- `zclassic23 ops timeline` — category-filtered structured events with
+  `zcl.timeline.v2` metadata, bounded server-side filters, semantic summaries,
   type/peer counts, log references, suggested drill-downs, and seq cursors;
-  prefer this before raw `zcl_events` when answering root-cause questions.
-- `zcl_sql("SELECT ...")` — SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
+  prefer this before raw `zclassic23 eventlog` when answering root-cause questions.
+- `zclassic23 dbquery "SELECT ..."` — SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
   budget, 100-row cap, rate-gated 1 RPS.
 
 ### Escape hatch
-- `zcl_rpc(method, params)` — any of 85+ RPC methods when no typed tool fits.
+- `zclassic23 rpc <method> '[params]'` — any node RPC method when no typed
+  command fits.
 
 ### REST API versioning
 `/api/v1` is the canonical REST base and `/api` is the compatibility base.
 `zclassic23 api` is the native no-HTTP discovery command and must return the
-same `zcl.rest_index.v1` body as both REST index paths.
+same `zcl.rest_index.v2` body as both REST index paths.
 Keep version/schema constants in
 `app/controllers/src/api_controller_internal.h`, exact resource routes in
 `app/controllers/src/api_controller_routes.c`, and contract tests in
@@ -481,7 +468,7 @@ Application protocols such as ZSLP, ZNAM, market, messaging, and future
 script-contract workflows should expose noun-shaped REST resources over
 chain-derived projections. Treat **ZLSP** as the umbrella for this
 application/service layer: ZCL remains the base layer, while zclassic23 exposes
-versioned CRUD resources and typed MCP/native JSON methods for services built
+versioned CRUD resources and typed native JSON methods for services built
 from valid ZCL transactions. Reads come from indexed projections at the served
 frontier; mutations construct/broadcast explicit transactions or operator-gated
 actions and never bypass the base-layer reducer/consensus path with direct
@@ -500,7 +487,7 @@ helper prefers the published in-memory H* frontier and falls back to the durable
 `/api/v1/hodl`, and `/api/v1/factoids` on the same visible-tip contract.
 Milestone/version progress lives beside public status in
 `api_milestone_status_json()` and is exposed through native RPC
-`milestone`/`mvpstatus`, REST `/api/v1/milestone`, and MCP `zcl_milestone`.
+`milestone`/`mvpstatus` and REST `/api/v1/milestone`.
 Keep strict MRS scoring separate from partial/proxy subgoal progress. When
 milestone says `live.source="agent_cached_summary"`, its live height, peer, and
 sync fields must match a direct agent-status packet; `test_api` and
@@ -517,7 +504,7 @@ top-level `indexed_height` on the current frontier.
 Bootstrap-service readiness is the network-facing public singleton
 `/api/v1/bootstrap` (compat alias `/api/v1/bootstrapstatus`) over the shared
 `network_bootstrap_status_json()` contract. Keep it schema-identical with RPC
-`bootstrapstatus` and MCP `zcl_bootstrapstatus`; do not duplicate bootstrap
+`bootstrapstatus`; do not duplicate bootstrap
 field assembly in a REST-only handler. The nested
 `snapshot_loader.authority` object is the C-native proof that a fast-start
 bundle actually became local durable authority (`coins_kv`,
@@ -559,9 +546,9 @@ Confirm the target before acting.
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
    use `atomic_load` for thread-touched fields; don't allocate).
 3. Register one line in `app/controllers/src/diagnostics_registry.c`
-   (`g_dumpers[]`). That's it — `zcl_state_catalog` and `zcl_state`
-   auto-expose it with owner file, accepted key forms, safety level, tests, and
-   drill-down commands. ~30 lines total.
+   (`g_dumpers[]`). That's it — `zclassic23 statecatalog` and `zclassic23
+   dumpstate` expose it with owner file, accepted key forms, safety level,
+   tests, and drill-down commands. ~30 lines total.
 
 ---
 
@@ -584,7 +571,7 @@ Confirm the target before acting.
 | `make dev-activation-selftest` | Hermetically prove the contained activation machinery in a mode-0700 `/tmp` fixture. An inherited-FD sentinel and strict path/command allowlist prevent environment variables from authorizing a real dev-lane mutation. |
 | `make agent-dev-recover` | Read-only dev recovery plan. Public `ARGS=--apply` is contained and cannot relink a generation, replace the datadir, or restart the service. |
 | `make dev-recovery-selftest` | Hermetically prove retained recovery/rollback machinery through an inherited-FD capability bound to an isolated inert fixture. |
-| `make agent-dev-status` | No-build read-only dev-lane status. Reports the explicit worker-lane contract (`role=worker`, `mutation_policy=noncanonical_dev_only`, never live/soak), source/staged binaries, service PID, RPC or pre-RPC recovery, current/running/last-good generations, activation lock, rejected generations, rollback availability, current cycle/watcher heartbeat, latency and background-quality freshness, saved deploy state, auto-reindex marker, deploy blocker/reason, and next safe action. Use `ARGS=--json`, native `zclassic23 agentdevstatus`, or MCP `zcl_agent_dev_status` for `zcl.agent_dev_status.v1`. |
+| `make agent-dev-status` | No-build read-only dev-lane status. Reports the explicit worker-lane contract (`role=worker`, `mutation_policy=noncanonical_dev_only`, never live/soak), source/staged binaries, service PID, RPC or pre-RPC recovery, current/running/last-good generations, activation lock, rejected generations, rollback availability, current cycle/watcher heartbeat, latency and background-quality freshness, saved deploy state, auto-reindex marker, deploy blocker/reason, and next safe action. Use `ARGS=--json` or native `zclassic23 agentdevstatus` for `zcl.agent_dev_status.v2`. |
 | `make agent-clear-stale-dev-reindex` | Clears a proven-stale dev-lane `auto_reindex_request` by archiving it after the dev RPC is up and served height is at or above the marker anchor. Never touches canonical or soak. |
 | `make agent-stage-dev` | Phase-0 contained: always refuses before build/stage mutation. A caller-supplied source ID cannot authorize it. |
 | `make agent-loop` | Manual one-shot AI/operator verification loop. Runs `fast-ci`; `ZCL_AGENT_LOOP_BIN=1` may also build `build/bin/zclassic23-dev`. Runtime deployment remains contained. |
@@ -601,7 +588,7 @@ Confirm the target before acting.
 | `make deploy` | Pin the outer source record through recursive Make, freeze and preflight one candidate, install those exact bytes, WAL checkpoint, restart, then verify exact source/artifact identity over the canonical systemd `MainPID`'s forced loopback RPC endpoint (`deploy_verify.sh`). Inherited lane selectors cannot redirect the proof. If RPC stays closed during crash-only recovery, the verifier reports `reindex-chainstate` progress from that service's datadir log. |
 | `make deploy-dev` | Phase-0 contained: always refuses before stopping a service or moving a generation link. |
 | `make deploy-dev-fast` / `make agent-deploy-fast` | Phase-0 contained: always refuses; there is no public runtime-activation entry point. |
-| `zcl_state subsystem=hotswap` | Read `zcl.hotswap_generation.v2`: active/retired/rejected in-process generations, source/build/input/artifact provenance, mapped tests/probes, pinned-artifact identity, and last rejection. These generations are ephemeral and currently admit only stateless MCP routes; all other providers are `reload_required`. |
+| `zclassic23 ops state --subsystem=hotswap` | Read `zcl.hotswap_generation.v2`: active/retired/rejected in-process generations, source/build/input/artifact provenance, mapped tests/probes, pinned-artifact identity, and last rejection. These generations are ephemeral and currently admit only stateless native leaf sets; all other providers are `reload_required`. |
 | `make lane-health` | Read-only canonical/soak/dev lane status, lag, peers, listeners, memory pressure, and snapshot-loader hints. |
 | `make remote-node-plan ZCL_REMOTE_HOST=<host>` | Read-only `zcl.remote_node_update.v1` source/service plan using `git ls-remote`; no fetch, merge, build, install, or restart authority. Legacy `remote-node-update*` targets refuse. |
 | `make lane-recover LANE=dev` | Read-only bounded recovery plan as `zcl.lane_recovery_plan.v1`. Public `--apply` / `ZCL_LANE_RECOVERY_APPLY=1` refuses before unit, datadir, snapshot-copy, header-import, drop-in, daemon-reload, or restart mutation; canonical/live/main is also refused. |

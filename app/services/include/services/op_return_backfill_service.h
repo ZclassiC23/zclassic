@@ -36,7 +36,7 @@
  *                                               recovery_coordinator_set_datadir)
  *   op_return_backfill_register()            — arm the supervisor child
  *   op_return_backfill_run_once()            — one bounded batch (tests + on_tick)
- *   op_return_index_dump_state_json          — zcl_state subsystem=op_return_index
+ *   op_return_index_dump_state_json — `zclassic23 dumpstate op_return_index`
  */
 
 #ifndef ZCL_SERVICES_OP_RETURN_BACKFILL_SERVICE_H

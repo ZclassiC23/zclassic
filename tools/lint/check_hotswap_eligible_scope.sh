@@ -55,8 +55,8 @@ for pair in "${PAIRS[@]}"; do
     probe_key="$probe"
     case "$probe" in
         # '.' is allowed: native.leaves probes are dotted canonical command
-        # paths (e.g. "core.status"), not just mcp.routes tool identifiers
-        # (e.g. "zcl_status").
+        # paths (e.g. "core.status"), not removed route identifiers
+        # (e.g. "zclassic23 status").
         ""|*[!A-Za-z0-9_.]*)
             violations="${violations}  $p (invalid canonical probe '$probe')"$'\n'
             ;;
@@ -84,15 +84,13 @@ for p in "${PATHS[@]}"; do
         violations="${violations}  $p (manifest references a nonexistent file)"$'\n'
         continue
     fi
-    # Genuinely-exportable: an eligible TU MUST invoke ZCL_HOTSWAP_EXPORT_ROUTES
-    # (mcp.routes provider class) OR ZCL_HOTSWAP_EXPORT_LEAVES (native.leaves
-    # provider class, W1-B/C), or `make hotswap-so` would build a .so with no
+    # Genuinely-exportable: an eligible TU MUST invoke
+    # ZCL_HOTSWAP_EXPORT_LEAVES, or `make hotswap-so` would build a .so with no
     # zcl_hotswap_gen_init / zcl_hotswap_manifest_v2 and the loader would
     # reject it at the manifest stage — a silently-unswapabble entry. Guards
     # the multi-TU expansion.
-    if ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_ROUTES[[:space:]]*\(' "$p" &&
-       ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_LEAVES[[:space:]]*\(' "$p"; then
-        violations="${violations}  $p (eligible TU does not invoke ZCL_HOTSWAP_EXPORT_ROUTES or ZCL_HOTSWAP_EXPORT_LEAVES)"$'\n'
+    if ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_LEAVES[[:space:]]*\(' "$p"; then
+        violations="${violations}  $p (eligible TU does not invoke ZCL_HOTSWAP_EXPORT_LEAVES)"$'\n'
     fi
 done
 
@@ -100,7 +98,7 @@ if [ -n "${violations//[[:space:]]/}" ]; then
     printf '%s' "$violations"
     echo "FAIL: hot-swap eligibility manifest lists an out-of-scope TU."
     echo "  Eligible TUs must be app-layer .c files that invoke"
-    echo "  ZCL_HOTSWAP_EXPORT_ROUTES, NEVER under core, lib/consensus,"
+    echo "  ZCL_HOTSWAP_EXPORT_LEAVES, NEVER under core, lib/consensus,"
     echo "  lib/validation, lib/storage, lib/net, lib/coins, or app/jobs."
     exit 1
 fi

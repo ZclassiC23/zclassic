@@ -26,7 +26,7 @@
  * config/src original uses a raw fprintf (boot/shutdown code avoids the
  * app-layer log macros); this app/services/ copy uses LOG_WARN per
  * DEFENSIVE_CODING.md so the reason travels through the same node.log
- * path (and zcl_node_log filter) as every other service failure. */
+ * path (and `zclassic23 getnodelog` filter) as every other service failure. */
 
 #include "platform/time_compat.h"
 #include "services/catchup_lifecycle_service.h"

@@ -242,7 +242,7 @@ ZCL_COMMAND_READY_READ(
     "invariants, and the summary projection, forwarded as captured.", 0,
     "operator,snapshot,coherence,invariants,evidence",
     "zcl.command.empty_input.v1",
-    "zcl.operator_snapshot.v2", "", "", "zclassic23 ops snapshot",
+    "zcl.operator_snapshot.v3", "", "", "zclassic23 ops snapshot",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -284,7 +284,7 @@ ZCL_COMMAND_READY_READ(
     "hashes, lag, reachability, running state, and catch-up counters — read "
     "live at call time.", 0,
     "mirror,lockstep,zclassicd,lag,parity", "zcl.command.empty_input.v1",
-    "zcl.mirror_status.v1", "", "", "zclassic23 ops mirror",
+    "zcl.mirror_status.v2", "", "", "zclassic23 ops mirror",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,

@@ -10,7 +10,7 @@
  * escalating until repaired.
  *
  * WINDOW_REBUILD TRIGGER SEAM: replace this re-witness remedy with
- * window_rebuild(first_div_h) (the blocker reason + zcl_state
+ * window_rebuild(first_div_h) (the blocker reason + `zclassic23 dumpstate`
  * validation_pack carry it). Clear ON WITNESSED success only. Until
  * then: HOLD + PAGE, the operator owns the repair. */
 

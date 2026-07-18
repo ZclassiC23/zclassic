@@ -97,8 +97,8 @@ an install proof (the copy is chain-detached); relink headers first via
 **Landed + pushed to `origin/main` this session** (all gate-verified with
 `tools/scripts/gate-and-report.sh`, adversarially re-verified, several
 datadir-pollution-guarded). `main` is in sync with origin, working tree clean:
-- **W3**: the legacy MCP server is DELETED (−22,962 LOC). Native command
-  registry (`zclassic23 <command>`) is the sole agent interface.
+- The native command registry (`zclassic23 <command>`) is the sole agent
+  interface.
 - **Network omniscience**: NET-1 (anchors.dat + 8-wide parallel dialer +
   feelers + one peer-floor constant), NET-2 (modal-tip truth + banked peer
   reputation + session/fork ledgers), NET-3 (range-parallel header sync),
@@ -173,7 +173,7 @@ the permanent anchor/nullifier blocker first, with end-to-end regression
 coverage. Do not mistake the old status ranking for the cause of the freeze.
 Soak (`:18242`) and dev (`:18252`) run newer builds near tip and are NOT
 wedged. **Unwedging the live node via the sovereign cure is the #1 job.**
-Verify with `zcl_status` / `zcl_state subsystem=reducer_frontier` before
+Verify with `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before
 acting — this file is a snapshot, not a live read. Root cause + mechanism:
 [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) and
 memory `project_live_wedge_anchor_frontier_rootcause_2026-07-12`. The
@@ -194,15 +194,11 @@ Recover any of them with `git log --follow -- docs/HANDOFF.md` +
 `git show <rev>:docs/HANDOFF.md`. The current live state is §0; the
 current protected producer (mint3) is described there.
 
-## 3. Zero-MCP program (complete)
+## 3. Agent interface
 
-W3 is done: the legacy MCP stdio server is deleted — no `-mcp` server mode, no
-`mcpcall` CLI subcommand, no `tools/mcp/` tree. The native typed command
-registry (`zclassic23 <command>`) is the sole agent interface. The surviving
-node RPC transport was re-homed under `app/controllers/`; the agent contract
-still carries `mcp_tool` taxonomy metadata (the tool-name a command maps to) as
-durable contract metadata, not a live server. See
-[`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) for the epitaph.
+The native typed command registry (`zclassic23 <command>`) is the sole agent
+interface. Node RPC transport lives under `app/controllers/`, and command
+contracts carry native paths plus input/output schemas for discovery.
 
 ## 4. MVP status
 
@@ -264,7 +260,7 @@ folding forward, so each restart takes about 13 minutes to replay back to the
 same permanent shielded-history gap. This is retry convergence, not a cure or
 self-healing success. `zclassicd`
 (the C++ reference) runs as a co-located service — **never stop it.**
-Ports/runbook: `docs/SYNC.md`; re-pull live state (`zcl_status`) before acting.
+Ports/runbook: `docs/SYNC.md`; re-pull live state (`zclassic23 status`) before acting.
 
 **Standing method:** `make deploy` rm's the binary first (a stale binary was
 a real multi-day outage; `deploy_verify.sh` confirms the exact source SHA-256

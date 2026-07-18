@@ -9,8 +9,8 @@
  *   getnodelog <pattern> ...      — reverse-scan node.log with regex/level
  *   dbquery <sql> [limit]         — SELECT-only SQLite passthrough
  *
- * These primitives let an MCP client (Claude Code) inspect runtime
- * state without one dedicated tool per question. */
+ * These primitives let native clients inspect runtime state without one
+ * dedicated command per question. */
 
 #ifndef ZCL_DIAGNOSTICS_CONTROLLER_H
 #define ZCL_DIAGNOSTICS_CONTROLLER_H
@@ -29,14 +29,14 @@ void diagnostics_controller_set_state(struct main_state *ms,
 
 void register_diagnostics_rpc_commands(struct rpc_table *t);
 
-/* Return the machine-readable catalog of `dumpstate` / MCP `zcl_state`
- * subsystems. Exposed so the native CLI can serve `zclassic23 statecatalog`
+/* Return the machine-readable catalog of `dumpstate` subsystems. Exposed so
+ * the native CLI can serve `zclassic23 statecatalog`
  * directly without depending on a running RPC node. */
 bool diag_rpc_statecatalog(const struct json_value *params, bool help,
                            struct json_value *result);
 
 /* Fill `out` with a comma-separated list of every subsystem name accepted
- * by `dumpstate` (and hence by the MCP `zcl_state` tool). The list is
+ * by `dumpstate`. The list is
  * derived from the live g_dumpers registry, so adding a descriptor to
  * diagnostics_dumpers.def automatically propagates here. Truncates on
  * overflow; returns the unclamped length (snprintf-style). */

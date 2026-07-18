@@ -48,7 +48,7 @@ static bool check_transaction_ctx(const struct transaction *tx,
      * internal failures unrelated to consensus) and successful runs.
      * Payload format: "hash=<64hex> reason=<name> dos=<n>".
      * Hash lets consensus_reject_index key rejections by txid so
-     * zcl_explain_reject can answer "why was this txid rejected?". */
+     * a native reject-explanation command can answer why it was rejected. */
     if (!ok && state && state->mode == MODE_INVALID &&
         state->reject_reason[0] != '\0') {
         char hex[65];

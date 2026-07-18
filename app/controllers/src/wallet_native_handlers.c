@@ -1,14 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for zcl_listunspent /
- * zcl_listtransactions / zcl_gettransaction / zcl_listaddresses.
- * Each function is the argument-parsing plus
- * RPC-composition core of the legacy MCP handler in
- * tools/mcp/controllers/wallet_controller.c, with the MCP-specific error
- * envelope stripped out — see controllers/native_handler_body.h for the
- * failure contract. Called by both the MCP wrapper handler (which maps a
- * NULL return onto the historical res->error / res->error_message) and the
- * native command bridge (tools/command/native_command.c). */
+ * Native argument parsing and RPC composition for wallet read commands. See
+ * controllers/native_handler_body.h for the failure contract. */
 
 #include "controllers/wallet_native_handlers.h"
 
@@ -30,12 +23,12 @@ char *zcl_native_listunspent_body(const struct json_value *args,
     snprintf(params, sizeof(params), "[%lld,%lld]",
              (long long)json_get_int_or(args, "minconf", 1),
              (long long)json_get_int_or(args, "maxconf", 9999999));
-    char *out = mcp_node_rpc("listunspent", params);
+    char *out = node_rpc_call("listunspent", params);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "listunspent");
-        LOG_NULL("mcp.wallet", "RPC %s returned null", "listunspent");
+        LOG_NULL("native.wallet", "RPC %s returned null", "listunspent");
     }
     return out;
 }
@@ -47,12 +40,12 @@ char *zcl_native_listtransactions_body(const struct json_value *args,
     snprintf(params, sizeof(params), "[\"\",%lld,%lld]",
              (long long)json_get_int_or(args, "count", 10),
              (long long)json_get_int_or(args, "skip",   0));
-    char *out = mcp_node_rpc("listtransactions", params);
+    char *out = node_rpc_call("listtransactions", params);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "listtransactions");
-        LOG_NULL("mcp.wallet", "RPC %s returned null", "listtransactions");
+        LOG_NULL("native.wallet", "RPC %s returned null", "listtransactions");
     }
     return out;
 }
@@ -61,11 +54,11 @@ char *zcl_native_gettransaction_body(const struct json_value *args,
                                       struct zcl_native_body_err *err)
 {
     const char *v = json_get_str(json_get(args, "txid"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, v);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("gettransaction", params) : NULL;
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, v);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *out = params ? node_rpc_call("gettransaction", params) : NULL;
     free(params);
     if (!out) {
         char ctx[192];
@@ -73,7 +66,7 @@ char *zcl_native_gettransaction_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s failed: %s", "gettransaction", ctx);
-        LOG_NULL("mcp.wallet", "%s failed: %s", "gettransaction", ctx);
+        LOG_NULL("native.wallet", "%s failed: %s", "gettransaction", ctx);
     }
     return out;
 }
@@ -85,12 +78,12 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
     /* The node RPC `listwalletkeys` returns {transparent_keys:[{address,...}],
      * sapling_keys:[...]}.  Call it without private keys and project just
      * the addresses so the caller gets a clean list. */
-    char *raw = mcp_node_rpc("listwalletkeys", "[false]");
+    char *raw = node_rpc_call("listwalletkeys", "[false]");
     if (!raw) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "listwalletkeys");
-        LOG_NULL("mcp.wallet", "RPC %s returned null", "listwalletkeys");
+        LOG_NULL("native.wallet", "RPC %s returned null", "listwalletkeys");
     }
 
     struct json_value root;
@@ -106,9 +99,9 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "listaddresses response");
         if (cap > 0)
-            LOG_NULL("mcp.wallet", "malloc failed for %s (%zu bytes)",
+            LOG_NULL("native.wallet", "malloc failed for %s (%zu bytes)",
                      "listaddresses response", cap);
-        LOG_NULL("mcp.wallet", "malloc failed for %s",
+        LOG_NULL("native.wallet", "malloc failed for %s",
                  "listaddresses response");
     }
     size_t pos = 0;

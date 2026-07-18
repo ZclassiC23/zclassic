@@ -183,7 +183,7 @@ int blocker_count_by_class(enum blocker_class c);
 /* Total active blockers. */
 int blocker_count_active(void);
 
-/* JSON dumper for diagnostics_controller g_dumpers + zcl_state subsystem=blocker.
+/* JSON dumper backing `zclassic23 dumpstate blocker`.
  * Caller initializes `out` with json_set_object before calling. */
 struct json_value;
 bool blocker_dump_state_json(struct json_value *out, const char *key);
@@ -208,8 +208,8 @@ blocker_escape_fn blocker_lookup_escape(const char *action_name);
  * escapes fired. Intended for a supervisor child running ~1 Hz. */
 int blocker_supervisor_sweep(void);
 
-/* Monotonic count of escape dispatches since module init. Exposed for
- * Prometheus + zcl_blockers MCP tool. */
+/* Monotonic count of escape dispatches since module init. Exposed through
+ * Prometheus and native blocker diagnostics. */
 int blocker_escape_dispatched_count(void);
 
 /* Lifecycle: init at boot, before any blocker_set call. shutdown is

@@ -1,5 +1,5 @@
 // one-result-type-ok:json-dump-bool — E2 (one way out): the sole remaining
-// legacy export is header_probe_dump_state_json, the zcl_state introspection
+// Dump-state export: header_probe_dump_state_json.
 // dumper. The dump convention (CLAUDE.md "Adding state introspection")
 // mandates a bool return (false = couldn't populate), not struct zcl_result;
 // every other fallible surface in this file already returns zcl_result.
@@ -178,7 +178,7 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
                                             &remote_tip, err, sizeof(err))) {
         atomic_fetch_add(&g_hp.rpc_errors, 1);
         /* Not a fatal logic failure — return OK with 0 added so the
-         * MCP/test callers can distinguish "RPC unreachable" via state. */
+         * native/test callers can distinguish "RPC unreachable" via state. */
         return ZCL_OK;
     }
     atomic_store(&g_hp.last_remote_height, remote_tip);

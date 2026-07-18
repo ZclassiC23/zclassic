@@ -171,10 +171,10 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
  * when best_header is NULL/behind/off the finalized chain). A live node that
  * starts climbing on the slow path is a silent regression back to the fixed
  * ~9s/block full-map-scan pathology (commit b1c47d1d9) — these counters make
- * that regression visible via `zcl_state subsystem=reducer_frontier`
+ * that regression visible via `zclassic23 dumpstate reducer_frontier`
  * (window_extend_fast / window_extend_slow) instead of only inferrable from a
  * throughput drop. Atomic: incremented from the reducer drive thread, read
- * from any MCP/diagnostics thread. See chainstate.c. */
+ * from any diagnostics thread. See chainstate.c. */
 uint64_t active_chain_extend_window_have_data_fast_count(void);
 uint64_t active_chain_extend_window_have_data_slow_count(void);
 /* Cumulative count of heights the fast path rescued by merging BLOCK_HAVE_DATA
@@ -182,7 +182,7 @@ uint64_t active_chain_extend_window_have_data_slow_count(void);
  * bodiless but the block_map's canonical same-hash object carried the body, so
  * the walk fills with the body twin instead of stopping short (the live H+1
  * duplicate-object window wedge). Surfaced as `window_dup_data_rescued` via
- * `zcl_state subsystem=reducer_frontier`. Same atomic contract as the counts
+ * `zclassic23 dumpstate reducer_frontier`. Same atomic contract as the counts
  * above. See chainstate.c have_data_by_hash. */
 uint64_t active_chain_extend_window_dup_data_rescued_count(void);
 struct most_work_selection_stats {

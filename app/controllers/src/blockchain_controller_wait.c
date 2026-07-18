@@ -53,7 +53,7 @@
  * OMITTED timeout_ms arrives here already as the default. An EXPLICIT 0 (or
  * negative) is honored as "no wait" — check the condition once and return the
  * current state immediately. This makes a 0-timeout call a cheap state probe
- * (and keeps zcl_self_test fast). */
+ * and keeps the native self-test fast. */
 static int wait_clamp_timeout_ms(int64_t requested)
 {
     int64_t ms = requested < 0 ? 0 : requested;

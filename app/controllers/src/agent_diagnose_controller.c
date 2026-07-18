@@ -89,7 +89,7 @@ static bool diagnose_parse_detail_mode(const struct json_value *params,
     const char *raw = rpc_permit_str(&p, 0, "mode", "brief");
     if (rpc_params_invalid(&p)) {
         json_set_object(result);
-        json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
+        json_push_kv_str(result, "schema", "zcl.agent_diagnose.v2");
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", p.error);
         json_push_kv_str(result, "allowed_modes",
@@ -106,7 +106,7 @@ static bool diagnose_parse_detail_mode(const struct json_value *params,
     }
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_diagnose.v2");
     json_push_kv_str(result, "status", "error");
     json_push_kv_str(result, "error", "invalid_agentdiagnose_mode");
     json_push_kv_str(result, "mode", raw ? raw : "");
@@ -375,7 +375,6 @@ static void diagnose_push_primary_host_issue_compact(
         json_push_kv_bool(&obj, bool_fields[i],
                           diagnose_peer_host_bool(primary, bool_fields[i]));
     json_push_kv_str(&obj, "full_detail_command", "zclassic23 peerincidents");
-    json_push_kv_str(&obj, "full_detail_tool", "zcl_peer_incidents");
     json_push_kv(out, "peer_primary_host_issue", &obj);
     json_free(&obj);
 }
@@ -475,7 +474,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         "brief mode keeps only stable decision fields and findings; full "
         "mode adds healthcheck, peer, mirror, and timeline drill-downs.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_diagnose.v1\", "
+        "  { \"schema\":\"zcl.agent_diagnose.v2\", "
         "\"verdict\":\"healthy|attention_needed\", "
         "\"findings\":[...] }\n");
 
@@ -754,8 +753,6 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         diagnose_push_brief_omissions(result);
         json_push_kv_str(result, "full_diagnose_command",
                          "zclassic23 agentdiagnose full");
-        json_push_kv_str(result, "full_diagnose_tool",
-                         "zcl_agent_diagnose(mode=\"full\")");
     } else if (agent_ok) {
         json_push_kv(result, "agent", &agent);
     } else {

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * DB-query controller — the `dbquery` / `zcl_sql` primitive.
+ * DB-query controller for the native `dbquery` primitive.
  *
  * SELECT-only SQL passthrough against the node's SQLite database. Hard
  * validation: must start with SELECT, no semicolons, no DDL/DML
@@ -9,9 +9,8 @@
  * state), auto-LIMIT appended if missing, 2 s wall-clock budget
  * enforced via sqlite3_progress_handler, 100-row hard cap.
  *
- * Marked destructive in the MCP middleware (rate-limited) — not because
- * it mutates (it can't), but because arbitrary scans against a
- * 100M-row table can be expensive.
+ * Exposed as a high-cost read: it cannot mutate, but arbitrary scans against
+ * a 100M-row table can still be expensive.
  */
 
 #include "platform/time_compat.h"
@@ -81,11 +80,11 @@ static bool sql_has_word(const char *sql, const char *word)
 
 /* ── Secret-material denylist ──────────────────────────────────────
  *
- * dbquery/zcl_sql is SELECT-only and DDL/DML-blocked, but it had no
+ * dbquery is SELECT-only and DDL/DML-blocked, but it had no
  * notion of *which* SELECTs are safe to run: `SELECT privkey FROM
- * wallet_keys` was legal SQL and dumped the plaintext keystore past
- * the (opt-in, often-unset) MCP bearer token, regardless of whether
- * the wallet was encrypted at rest.
+ * wallet_keys` was legal SQL and exposed the plaintext keystore to any
+ * authenticated loopback RPC caller, regardless of whether the wallet was
+ * encrypted at rest.
  *
  * These two lists are whole-word, case-insensitive substring checks
  * against the *entire raw query text* (not just the FROM clause), so

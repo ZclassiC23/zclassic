@@ -2,14 +2,8 @@
  *
  * Transport-neutral status/blocker composition helpers.
  *
- * Re-homed verbatim from tools/mcp/controllers/ops_controller.c: the
- * defaulted JSON accessors, RPC/dumpstate envelope folding, the peer
- * survey, and the target-node blocker-summary builder that the operator
- * read compositions (status_native_handlers.c) build on. Both the MCP
- * wrapper handlers and the native command bridge call these; nothing here
- * depends on the MCP router/middleware. Behaviour is byte-identical to the
- * legacy statics; only json_value_to_body / postmortem_default_dir were
- * renamed (zcl_ prefix) to avoid whole-program link collisions. */
+ * Shared defaulted JSON accessors, RPC/dumpstate envelope folding, peer
+ * survey, and target-node blocker-summary builder for native status bodies. */
 
 #include "controllers/status_native_helpers.h"
 
@@ -591,9 +585,9 @@ bool status_blocker_counts_match(const struct json_value *state,
     return true;
 }
 
-/* Build the blocker summary exclusively from the target node's native
- * dumpstate response.  The MCP server is often a detached proxy process;
- * reading blocker globals here would describe that empty proxy and create a
+/* Build the blocker summary exclusively from the target node's dumpstate RPC
+ * response. The native command often runs in a separate client process;
+ * reading blocker globals there would describe that empty client and create a
  * dangerous false-green status while the actual node is blocked. */
 bool status_build_blocker_summary(const char *raw,
                                          bool include_entries,

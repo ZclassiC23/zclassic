@@ -112,7 +112,6 @@ node soak.
 ## Current Truth
 
 - The reducer/staged pipeline is the authoritative chain-advance architecture.
-- The public cutover/projection-diff MCP/RPC apparatus has been removed.
 - The legacy block-connect engine (`lib/validation/src/connect_block.c`, 896
   LOC) still ships and is live-called on the reindex/recovery path
   (`config/src/boot_index.c:403`). The staged reducer is the authoritative
@@ -152,7 +151,7 @@ node soak.
 ### Delete Or Move Out Of Production
 
 - No production `shadow`/`cutover`/`projection-diff` matches remain in
-  `app/`, `lib/storage/`, `lib/validation/`, or `tools/mcp/` C/H files outside
+  `app/`, `lib/storage/`, `lib/validation/`, or `tools/` C/H files outside
   tests/views. Keep this at zero; normalize remaining historical test/doc
   wording only when it obscures current behavior.
 - No production deleted single-engine block-connection names remain in

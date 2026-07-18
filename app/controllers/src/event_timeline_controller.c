@@ -40,7 +40,6 @@ static const struct timeline_category k_timeline_categories[] = {
     { "wallet",     "wallet.",      "wallet key, transaction, UTXO, and backup events" },
     { "mempool",    "mempool.",     "mempool eviction and expiry events" },
     { "disk",       "disk.",        "disk pressure monitor events" },
-    { "mcp",        "mcp.",         "MCP request telemetry" },
     { "net",        "net.",         "network backpressure telemetry" },
 };
 
@@ -114,10 +113,10 @@ static void timeline_push_log_references(struct json_value *out,
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
-             "zcl_node_log pattern=\"%s\" max_lines=120", pattern);
+             "zclassic23 getnodelog '%s'", pattern);
     timeline_push_str(&refs, cmd);
     timeline_push_str(&refs,
-        "zcl_events count=<scan_count> for the raw retained ring view");
+        "zclassic23 eventlog <scan_count> for the raw retained ring view");
     timeline_push_str(&refs,
         "event seq cursors are in events[].seq and head_seq");
     json_push_kv(out, "log_references", &refs);
@@ -298,52 +297,49 @@ static void timeline_push_drilldowns(struct json_value *out,
     json_init(&arr);
     json_set_array(&arr);
     if (strcmp(name, "sync") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"reducer_frontier\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"chain_advance_coordinator\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"supervisor.sync.watchdog\"}");
-        timeline_push_str(&arr, "zcl_node_log pattern=\"sync|stale|lag|blocker\" max_lines=80");
+        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
+        timeline_push_str(&arr, "zclassic23 dumpstate chain_advance_coordinator");
+        timeline_push_str(&arr, "zclassic23 dumpstate supervisor sync.watchdog");
+        timeline_push_str(&arr, "zclassic23 getnodelog 'sync|stale|lag|blocker'");
     } else if (strcmp(name, "peer") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"peer_lifecycle\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"peers_projection\"}");
-        timeline_push_str(&arr, "zcl_node_log pattern=\"peer|handshake|disconnect\" max_lines=80");
+        timeline_push_str(&arr, "zclassic23 dumpstate peer_lifecycle");
+        timeline_push_str(&arr, "zclassic23 dumpstate peers_projection");
+        timeline_push_str(&arr, "zclassic23 getnodelog 'peer|handshake|disconnect'");
     } else if (strcmp(name, "chain") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"chain_evidence\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"chain_advance_coordinator\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"reducer_frontier\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate chain_evidence");
+        timeline_push_str(&arr, "zclassic23 dumpstate chain_advance_coordinator");
+        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
     } else if (strcmp(name, "validation") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"validation_pack\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"reducer_frontier\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"block_index\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate validation_pack");
+        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
+        timeline_push_str(&arr, "zclassic23 dumpstate block_index");
     } else if (strcmp(name, "condition") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"condition_engine\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"blocker\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"supervisor\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate condition_engine");
+        timeline_push_str(&arr, "zclassic23 dumpstate blocker");
+        timeline_push_str(&arr, "zclassic23 dumpstate supervisor");
     } else if (strcmp(name, "oracle") == 0 || strcmp(name, "mirror") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"oracle\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"legacy_mirror\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"quorum_oracle\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate oracle");
+        timeline_push_str(&arr, "zclassic23 dumpstate legacy_mirror");
+        timeline_push_str(&arr, "zclassic23 dumpstate quorum_oracle");
     } else if (strcmp(name, "boot") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"boot\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"service_state\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"block_index\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate boot");
+        timeline_push_str(&arr, "zclassic23 dumpstate service_state");
+        timeline_push_str(&arr, "zclassic23 dumpstate block_index");
     } else if (strcmp(name, "db") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"db_maintenance\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"progress\"}");
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"disk_monitor\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate db_maintenance");
+        timeline_push_str(&arr, "zclassic23 dumpstate progress");
+        timeline_push_str(&arr, "zclassic23 dumpstate disk_monitor");
     } else if (strcmp(name, "wallet") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"wallet_projection\"}");
+        timeline_push_str(&arr, "zclassic23 dumpstate wallet_projection");
     } else if (strcmp(name, "disk") == 0) {
-        timeline_push_str(&arr, "zcl_state {\"subsystem\":\"disk_monitor\"}");
-    } else if (strcmp(name, "mcp") == 0) {
-        agent_push_contract_mcp_tool_json(&arr, "agentinterface");
-        agent_push_contract_mcp_tool_json(&arr, "agentops");
+        timeline_push_str(&arr, "zclassic23 dumpstate disk_monitor");
     } else {
-        agent_push_contract_mcp_tool_json(&arr, "statecatalog");
-        timeline_push_str(&arr, "zcl_timeline category=\"sync\" count=50");
-        timeline_push_str(&arr, "zcl_timeline category=\"peer\" count=50");
+        agent_push_contract_native_command_json(&arr, "statecatalog");
+        timeline_push_str(&arr, "zclassic23 timeline sync 50");
+        timeline_push_str(&arr, "zclassic23 timeline peer 50");
     }
     if (problem_count > 0)
-        timeline_push_str(&arr, "zcl_node_log pattern=\"fail|reject|stale|breach|panic|halt|timeout|corrupt\" max_lines=120");
+        timeline_push_str(&arr, "zclassic23 getnodelog 'fail|reject|stale|breach|panic|halt|timeout|corrupt'");
     json_push_kv(out, "recommended_drilldowns", &arr);
     json_free(&arr);
 }
@@ -410,7 +406,7 @@ bool rpc_timeline(const struct json_value *params, bool help,
         "1. category  (string, optional, default=all) all|peer|sync|chain|...\n"
         "2. count     (numeric, optional, default=50, max=1000)\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.timeline.v1\", \"events\":[...] }\n");
+        "  { \"schema\":\"zcl.timeline.v2\", \"events\":[...] }\n");
 
     struct json_value embedded_params;
     json_init(&embedded_params);
@@ -427,7 +423,7 @@ bool rpc_timeline(const struct json_value *params, bool help,
         timeline_category_find(category_name);
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.timeline.v1");
+    json_push_kv_str(result, "schema", "zcl.timeline.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "source", "event_ring");
@@ -437,7 +433,6 @@ bool rpc_timeline(const struct json_value *params, bool help,
     json_push_kv_str(result, "cursor_field", "events[].seq");
     json_push_kv_str(result, "native_command",
                      "zclassic23 timeline <category> <count> or timeline '{\"category\":\"sync\",\"since_secs\":3600}'");
-    json_push_kv_str(result, "mcp_tool", "zcl_timeline");
     json_push_kv_str(result, "filter_model",
                      "bounded_server_side_scan_then_filter");
 

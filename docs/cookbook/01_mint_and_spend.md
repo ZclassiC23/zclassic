@@ -64,8 +64,8 @@ The example's steps map onto real node code as:
 
 - **Mint a coinbase** → the miner's block-template assembly (`app/jobs/`) followed by the same `connect_block()` in `lib/consensus`, driven live by the `utxo_apply` reducer stage (`app/jobs/src/utxo_apply_stage.c`).
 - **Coinbase maturity** → `lib/consensus/include/consensus/consensus.h` (`COINBASE_MATURITY`), enforced inside `connect_block()` for every real block, not just the sim.
-- **Spend the coin** → `wallet_create_transaction()` / `wallet_create_transaction_multi()` (`lib/wallet/include/wallet/wallet.h`) followed by `wallet_commit_transaction()`, surfaced at the RPC/MCP layer as `zcl_send` / `zcl_sendtoaddress` (`tools/mcp/controllers/`) or `sendtoaddress` on a live node.
-- **UTXO existence/value query** → `coins_view_cache_have_coins()` and friends in `lib/coins/include/coins/coins_view.h` over the real on-disk `coins_kv` table, or `zcl_listunspent` / `getrawtransaction` at the RPC layer.
+- **Spend the coin** → `wallet_create_transaction()` / `wallet_create_transaction_multi()` (`lib/wallet/include/wallet/wallet.h`) followed by `wallet_commit_transaction()`, surfaced through `zclassic23 rpc sendtoaddress` on a live node.
+- **UTXO existence/value query** → `coins_view_cache_have_coins()` and friends in `lib/coins/include/coins/coins_view.h` over the real on-disk `coins_kv` table, or `zclassic23 core wallet utxo list` / `zclassic23 core chain transaction get` at the command layer.
 
 ## See also
 

@@ -172,7 +172,7 @@ bool sapling_tree_flat_checkpoint_note(
     const uint8_t block_hash[32], bool force);
 
 /* Load-side outcome for the flat-file sapling checkpoint, surfaced via the
- * `sapling_checkpoint` diagnostics subsystem (zcl_state). */
+ * `zclassic23 dumpstate sapling_checkpoint`. */
 enum sapling_ckpt_load_result {
     SAPLING_CKPT_LOAD_NONE = 0,     /* no load attempted yet */
     SAPLING_CKPT_LOAD_ABSENT,       /* no file / read error → full replay */

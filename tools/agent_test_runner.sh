@@ -2,12 +2,12 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # agent_test_runner.sh — backing script for the `agenttest` native contract
-# (app/controllers/src/agent_test_controller.c / MCP `zcl_agent_test`),
+# (app/controllers/src/agent_test_controller.c / native `dev test run`),
 # cloned from the tools/repro_on_copy.sh + agentcopyprove pattern (see that
 # script + docs/CODEBASE_MAP.md "copy-prove").
 #
 # Runs ONE bounded, already-allowlisted test surface in the background and
-# writes a JSON status file the caller polls via `zcl_state
+# writes a JSON status file the caller polls via `zclassic23 dumpstate
 # subsystem=agent_test key=<kind>_<name>` instead of holding an RPC thread:
 #   - kind=test_group: build/bin/test_parallel --only=<name>
 #   - kind=scenario:   build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/<name>.scenario

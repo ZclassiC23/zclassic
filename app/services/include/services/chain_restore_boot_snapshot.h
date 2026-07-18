@@ -66,7 +66,7 @@ void chain_restore_record_csr_consistency(bool consistent,
 void chain_restore_record_snapshot_import(bool ok,
                                           int64_t utxo_count,
                                           int64_t snap_height);
-/* Record the Tier-2 P2 fast-restart verdict for `zcl_state subsystem=boot`. */
+/* Record the Tier-2 P2 fast-restart verdict for `zclassic23 dumpstate boot`. */
 void chain_restore_record_fast_restart(bool taken,
                                        int64_t tip_height,
                                        const char *reason);

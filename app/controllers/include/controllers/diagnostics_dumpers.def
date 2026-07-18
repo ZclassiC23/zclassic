@@ -1,7 +1,7 @@
 /* Canonical dumpstate subsystem descriptors.
  *
  * The including translation unit defines the DIAG_* category macros. Keep
- * this file data-only: dispatcher order, statecatalog metadata, MCP advisory
+ * this file data-only: dispatcher order, statecatalog metadata, native advisory
  * parameters, health rollup, and registry tests all consume these rows. */
 
 #ifndef DIAG_ENTRY

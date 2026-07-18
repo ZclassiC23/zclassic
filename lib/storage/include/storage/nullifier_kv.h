@@ -42,7 +42,7 @@
  * marker is positive; transparent-only blocks remain processable. The raw
  * writer stays available to the owner-gated backfill service. Stage init
  * surfaces the gap as the PERMANENT blocker
- * `utxo_apply.nullifier_backfill_gap` (zcl_state subsystem=blocker) every
+ * `utxo_apply.nullifier_backfill_gap` (`zclassic23 dumpstate blocker`) every
  * boot until a shielded-history backfill walker (or a snapshot-format
  * nullifier extension) lands. Malformed/unreadable completeness evidence fails
  * closed; an absent marker is unknown, never implicit cursor zero. First

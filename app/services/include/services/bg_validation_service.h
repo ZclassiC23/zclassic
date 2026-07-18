@@ -130,7 +130,7 @@ void bg_validation_reset(struct bg_validation_service *svc);
 /* Global instance pointer — set by boot_services, read by RPC handlers. */
 extern struct bg_validation_service *g_bg_validation;
 
-/* zcl_state subsystem=bg_validation — verification progress snapshot.
+/* `zclassic23 dumpstate bg_validation` — verification progress snapshot.
  * See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 struct json_value;
 bool bg_validation_dump_state_json(struct json_value *out, const char *key);

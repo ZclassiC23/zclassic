@@ -117,7 +117,7 @@ void mempool_limits_stats_snapshot(struct mempool_limits_stats *out);
 void mempool_limits_reset_stats(void); /* test helper */
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
- * Wired into the `zcl_state subsystem=mempool_limits` MCP tool. */
+ * Wired into `zclassic23 dumpstate mempool_limits`. */
 struct json_value;
 bool mempool_limits_dump_state_json(struct json_value *out, const char *key);
 

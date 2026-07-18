@@ -78,16 +78,16 @@ Gates: make lint; make -j; then find and run the existing focused test groups co
   {
     key: 'printf',
     branch: 'dry/printf-to-log',
-    spec: `TASK SPEC — printf-to-LOG_* in boot/recovery/validation + MCP-stdio protection (next-wave lane #4)
+    spec: `TASK SPEC — printf-to-LOG_* in boot/recovery/validation + native JSON-output protection (next-wave lane #4)
 
 next-wave-plan.md section 4 (removed from the tree; recover with
-\`git log --follow -- docs/work/archive/next-wave-plan.md\`) covered this: raw stdout writes from library/service code corrupt the -mcp stdio JSON protocol and hide diagnostics from node.log.
+\`git log --follow -- docs/work/archive/next-wave-plan.md\`) covered this: raw stdout writes from library/service code corrupt native command JSON output and hide diagnostics from node.log.
 
 Files (whole scope; do not expand):
 - lib/validation/src/process_block_core.c (~33/50/82 printf sites)
 - app/services/src/block_index_loader.c (~24 sites)
 - app/services/src/chain_restore_repair.c (~7 sites)
-- lib/sapling/src/params_init.c (the worst offender for -mcp)
+- lib/sapling/src/params_init.c (the highest-volume offender)
 - app/views/src/explorer_stats_view.c
 
 Convert raw printf/fprintf(stdout|stderr) DIAGNOSTIC output to the appropriate LOG_* macros from util/log_macros.h (study how neighboring code in the same subsystems logs; preserve message content and severity intent). STRICTLY NO LOGIC CHANGE — this must be a pure output-channel swap. In explorer_stats_view.c convert only diagnostics; do NOT touch HTML/page emission paths. process_block_core.c is consensus-adjacent: only the print statements may change, nothing else on any line that affects control flow or values.
@@ -96,7 +96,7 @@ After the swap, verify with grep that none of the five files still write diagnos
 
 Gates: make lint; make -j; run the focused test groups that cover these files (grep lib/test/src, e.g. block index loader / process block / explorer stats groups) via build/bin/test_zcl <group>.`,
     tests: 'focused groups covering block_index_loader / process_block / explorer stats',
-    accept: 'Pure output-channel swap: all diagnostics in the five files go through LOG_* macros, zero logic change (diff shows only print-site rewrites), stdout clean for -mcp.',
+    accept: 'Pure output-channel swap: all diagnostics in the five files go through LOG_* macros, zero logic change (diff shows only print-site rewrites), stdout reserved for native command JSON.',
   },
 ]
 

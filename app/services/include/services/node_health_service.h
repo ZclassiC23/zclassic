@@ -127,8 +127,9 @@ struct node_health_snapshot {
     /* Mirror lag SLO breach severity (none|warn|critical|fatal). When
      * "fatal" the snapshot.healthy gate flips false, which causes the
      * sd_notify heartbeat thread to skip pinging systemd's WatchdogSec
-     * timer and triggers a service restart. Surfaced via zcl_health,
-     * zcl_status, and Prometheus zcl_mirror_lag_breach_seconds. */
+     * timer and triggers a service restart. Surfaced via `zclassic23 status`,
+     * `zclassic23 dumpstate health`, and Prometheus
+     * zcl_mirror_lag_breach_seconds. */
     int64_t  mirror_lag_blocks;
     int64_t  mirror_lag_breach_seconds;
     int64_t  mirror_lag_critical_seconds;
@@ -146,7 +147,7 @@ struct node_health_snapshot {
      * auto-healing condition engine exhausts remedies for a CRITICAL
      * problem and emits EV_OPERATOR_NEEDED — the "a halt can never be
      * silent" signal. Flips healthy=false and sets degraded_reason so
-     * zcl_status shows it and the sd_notify heartbeat stops. Cleared
+     * `zclassic23 status` shows it and the sd_notify heartbeat stops. Cleared
      * automatically when the underlying condition clears. */
     bool     operator_needed;
     bool     operator_latch_recovered;

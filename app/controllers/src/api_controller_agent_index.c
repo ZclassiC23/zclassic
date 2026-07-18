@@ -10,12 +10,6 @@
 
 #include "json/json.h"
 
-void api_rest_index_mcp_json(struct json_value *mcp)
-{
-    json_set_object(mcp);
-    agent_push_contract_api_mcp_fields_json(mcp);
-}
-
 void api_rest_index_cli_json(struct json_value *cli)
 {
     json_set_object(cli);

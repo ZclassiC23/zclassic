@@ -50,8 +50,8 @@ C8 FAIL, shielded-receive surface down => C4 FAIL, node unreachable).
 - **C1** — installed single binary answers `getblockchaininfo` ⇒ PASS
   (FULL); the GLIBC/GLIBCXX/CXXABI symbol floor itself is a build gate
   (`make ci-symbol-floor`), not a runtime fact.
-- **C2** — BLOCKED: the onion `bootstrap_state` is not on plain RPC; read
-  it via MCP `zcl_onion_status` / prove the <60s budget via
+- **C2** — read the onion `bootstrap_state` with
+  `zclassic23 core network onion status` and prove the <60s budget via
   `make mvp-onion-slice`.
 - **C3** — at-tip check: `gap = max(peer startingheight, best_header) -
   blocks`. At tip ⇒ BLOCKED (the **fresh** <10min cold-boot is a distinct

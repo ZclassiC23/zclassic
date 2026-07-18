@@ -122,7 +122,7 @@ static int64_t stage_budget_from_baseline(int64_t baseline_us)
 
 /* Pure read: the current effective budget for stage `idx`, WITHOUT mutating
  * warm-up state. Safe from any thread/any call frequency (witness(), detail(),
- * an MCP dumpstate poll) — only detect() below is allowed to advance the
+ * a native dump-state query) — only detect() below is allowed to advance the
  * warm-up counters, so how often an operator reads state never perturbs
  * learning. -1 = not yet enforceable (still warming up, no env override). */
 static int64_t stage_budget_peek(int idx)

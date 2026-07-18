@@ -5,7 +5,7 @@
  * Drives the sync state machine from SYNC_IDLE through every legal
  * cold-start transition path to SYNC_AT_TIP ("ready"), measures the
  * elapsed time under a 1Hz polling loop that mirrors what the operator
- * observes via `zcl_syncstate`, and asserts the run fits within the
+ * observes via `zclassic23 core sync status`, and asserts the run fits within the
  * 10-minute MVP budget.
  *
  * Two paths are exercised because both are live in production — a
@@ -26,7 +26,7 @@
  * transitions through sync_set_state() with short artificial per-step
  * delays (milliseconds, matching the scale of real network handshakes
  * on a LAN fixture).  The main test thread polls sync_get_state() at
- * 1Hz — identical cadence to the `zcl_syncstate` MCP tool — with a
+ * 1Hz — identical cadence to `core sync status` — with a
  * 600-second ceiling.  Success = SYNC_AT_TIP observed before the
  * ceiling AND the driver reported no illegal transition.  A regression
  * anywhere in the transition table or in the state-machine API
@@ -149,7 +149,7 @@ static int p11_3_run_path(const char *label,
         return 1;
     }
 
-    /* 1Hz polling loop — mirrors operator zcl_syncstate cadence.
+    /* 1Hz polling loop — mirrors native sync-status polling cadence.
      * Budget is the full MVP #3 limit: 10 minutes = 600 seconds. */
     const int budget_sec = 600;
     time_t t0 = platform_time_wall_time_t();

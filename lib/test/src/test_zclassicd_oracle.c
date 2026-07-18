@@ -1172,7 +1172,7 @@ int test_zclassicd_oracle(void)
                  contract && contract->type == JSON_OBJ);
         ZO_CHECK("legacy mirror contract schema",
                  strcmp(json_get_str(json_get(contract, "schema")),
-                        "zcl.mirror_status.v1") == 0);
+                        "zcl.mirror_status.v2") == 0);
         ZO_CHECK("legacy mirror contract authority",
                  json_get_bool(json_get(contract, "advisory_only")) &&
                  strcmp(json_get_str(json_get(contract, "consensus_authority")),

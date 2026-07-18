@@ -34,7 +34,7 @@
  * Payload format: "hash=<64hex> reason=<name> dos=<n>".
  * The hash is computed from the supplied header (must be non-NULL).
  * Hash lets consensus_reject_index key rejections by block hash so
- * zcl_explain_reject can answer "why was this block rejected?". */
+ * a native reject-explanation command can answer why it was rejected. */
 static void consensus_reject_block_emit(const struct block_header *header,
                                          const struct validation_state *state)
 {

@@ -2,9 +2,9 @@
  *
  * Tests for the Tier-1 hot-swap loader's non-dlopen logic: path
  * acceptance, the dev-datadir guard, the generation registry, and the
- * zcl_state dumper.
+ * native dumpstate handler.
  *
- * The test binary is built WITHOUT ZCL_DEV_BUILD, so hotswap_load() here is
+ * The test binary is built WITHOUT ZCL_DEV_BUILD, so hotswap_load_leaves() is
  * the release stub (refuses, no dlopen) — that release behavior is asserted
  * too. The pure predicates + registry + dumper compile in all builds and are
  * exercised directly. A real end-to-end dlopen is proven by the standalone
@@ -96,8 +96,7 @@ static bool manifest_self_test_ok(const struct zcl_hotswap_host *host,
     return true;
 }
 
-/* The `native.leaves` provider class (V3 host: same manifest
- * schema, host vtable adds leaf_stage; see hotswap.h / hotswap_loader.c
+/* The `native.leaves` provider class (V4 host; see hotswap.h / hotswap_loader.c
  * hotswap_manifest_v2_validate()'s provider_id branch). source_identity /
  * probe_tools_csv below mirror the real native.leaves eligibility row in
  * config/hotswap_eligible.def (app/controllers/src/status_native_handlers.c,
@@ -107,9 +106,9 @@ static struct zcl_hotswap_manifest_v2 valid_leaf_manifest(void)
     return (struct zcl_hotswap_manifest_v2) {
         .schema_version = ZCL_HOTSWAP_MANIFEST_SCHEMA_V2,
         .struct_size = sizeof(struct zcl_hotswap_manifest_v2),
-        .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V3,
-        .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,
-        .required_host_capabilities = ZCL_HOTSWAP_V3_HOST_CAPABILITIES,
+        .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V4,
+        .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V4,
+        .required_host_capabilities = ZCL_HOTSWAP_V4_HOST_CAPABILITIES,
         .provider_id = "native.leaves",
         .build_identity = zcl_build_source_id_sha256(),
         .source_identity = "app/controllers/src/status_native_handlers.c",
@@ -125,28 +124,24 @@ static struct zcl_hotswap_manifest_v2 valid_leaf_manifest(void)
     };
 }
 
-static int test_hotswap_leaf_manifest_v3_contract(void)
+static int test_hotswap_leaf_manifest_v4_contract(void)
 {
     int failures = 0;
-    TEST("native.leaves manifest validates against the V3 host contract") {
+    TEST("native.leaves manifest validates against the V4 host contract") {
         char why[256];
         struct zcl_hotswap_manifest_v2 manifest = valid_leaf_manifest();
         ASSERT(hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
 
-        /* A native.leaves manifest carrying V2 host abi/size/caps is a
-         * provider/caps mismatch — the loader must reject it, not silently
-         * fall back to the mcp.routes contract. */
+        /* An artifact carrying an older host ABI is rejected. */
         manifest = valid_leaf_manifest();
-        manifest.host_abi_version = ZCL_HOTSWAP_HOST_ABI_V2;
-        manifest.host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2;
-        manifest.required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
+        manifest.host_abi_version = ZCL_HOTSWAP_HOST_ABI_V4 - 1;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "ABI/size mismatch") != NULL ||
                strstr(why, "capabilities") != NULL);
 
-        /* Same idea, isolating just the capability bits (abi/size still V3). */
+        /* Isolate the capability mismatch with the current ABI and size. */
         manifest = valid_leaf_manifest();
-        manifest.required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
+        manifest.required_host_capabilities = ZCL_HOTSWAP_CAP_ATOMIC_COMMIT;
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         ASSERT(strstr(why, "capabilities") != NULL);
 
@@ -222,15 +217,15 @@ static int test_hotswap_leaf_manifest_v3_contract(void)
     return failures;
 }
 
-static int test_hotswap_load_stub_and_registry(void)
+static int test_hotswap_load_leaves_stub_and_registry(void)
 {
     int failures = 0;
-    TEST("release build: hotswap_load refuses without loading; registry empty") {
+    TEST("release build: hotswap_load_leaves refuses; registry empty") {
         ASSERT(hotswap_generation_count() == 0);
 
         struct hotswap_load_report rep;
-        bool ok = hotswap_load("/tmp/whatever.so", "/tmp/dev-datadir",
-                               "zcl_name_list", NULL, NULL, &rep);
+        bool ok = hotswap_load_leaves("/tmp/whatever.so", "/tmp/dev-datadir",
+                                      "app.names.list", NULL, NULL, &rep);
         ASSERT(ok == false);
         ASSERT(rep.ok == false);
         ASSERT(rep.error[0] != '\0');
@@ -285,8 +280,8 @@ int test_hotswap_loader(void)
     int failures = 0;
     failures += test_hotswap_path_acceptance();
     failures += test_hotswap_datadir_guard();
-    failures += test_hotswap_leaf_manifest_v3_contract();
-    failures += test_hotswap_load_stub_and_registry();
+    failures += test_hotswap_leaf_manifest_v4_contract();
+    failures += test_hotswap_load_leaves_stub_and_registry();
     failures += test_hotswap_dump_state();
     return failures;
 }

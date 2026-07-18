@@ -10,7 +10,7 @@
  *   zclassic23 <command> [--input=…]  — typed native command call
  *   zclassic23 status                 — compact native status + next action
  *   zclassic23 proofbundle            — single read-only proof artifact
- *   zclassic23 statecatalog           — zcl_state subsystem catalog
+ *   zclassic23 statecatalog           — diagnostics subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
  *   zclassic23 agentliveness          — unified liveness rollup
  *   zclassic23 agentinterface         — preferred AI/operator interface

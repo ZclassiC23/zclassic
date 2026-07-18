@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Native Tier-1 hot-swap command glue (Zero-MCP W1-B/C). The MCP-free
- * successor of tools/mcp/controllers/dev_hotswap_controller.c +
- * tools/mcp/dev_rpc_bridge.c's rpc_dev_hotswap, kept entirely off tools/mcp/
- * so it survives the later MCP deletion.
+ * Native Tier-1 hot-swap command glue. The resident activation path is kept
+ * separate from the CLI probe so release builds link only a contained stub.
  *
  * dev.hotswap.probe and dev.hotswap.apply are hard-contained until a
  * disposable probe worker, pre-load ELF admission, immutable artifacts, and
@@ -23,8 +21,8 @@ extern "C" {
 struct rpc_table;
 
 /* Register the resident-node RPC method `dev_hotswap_native` on `table`.
- * Mirrors register_dev_mcp_rpc_commands(): DEV-ONLY, and a successful no-op on
- * a release build or a non-dev-lane datadir (returns true without registering).
+ * DEV-ONLY, and a successful no-op on a release build or a non-dev-lane
+ * datadir (returns true without registering).
  * Called once at boot from config/src/boot_services.c. Returns false only if a
  * required registration could not be completed. */
 bool register_dev_native_hotswap_rpc(struct rpc_table *table,

@@ -345,12 +345,12 @@ int main(void)
  * - RPC/controller glue: `rpc_swap_initiate` / `rpc_swap_participate` in
  *   app/controllers/src/swap_controller.c build the HTLC params + P2SH
  *   script + local swap-state record from `swap_initiate` / `swap_participate`
- *   RPCs (and the `zcl_swap_initiate` / `zcl_swap_participate` MCP tools).
+ *   RPCs and the native swap commands.
  * - What's NOT wired yet (see docs/SIMULATOR.md swap rows, Class B/C): the
  *   controller builds the contract and records local state, but there is no
  *   node-broadcast redeem/refund/settlement path today — an operator would
  *   currently have to fund/redeem/refund the P2SH address by hand (e.g. via
- *   `zcl_rpc` raw-transaction calls) the way this example does directly
+ *   `zclassic-cli` raw-transaction calls) the way this example does directly
  *   against simnet. Closing that gap is the remaining work named in
  *   docs/HOW_THE_NODE_WORKS.md's ZSWP coverage note.
  */

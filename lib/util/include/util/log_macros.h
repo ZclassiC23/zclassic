@@ -2,7 +2,7 @@
  *
  * Error return macros that force logging at every failure site.
  *
- * An agent that writes `return -1;` in an MCP handler or `return false;`
+ * An agent that writes `return -1;` in a command handler or `return false;`
  * in a service function provides zero diagnostic info. These macros
  * make the logged version SHORTER than the silent version, so the
  * path of least resistance is the correct one.
@@ -12,7 +12,7 @@
  *   LOG_FAIL("wallet", "key not found: pubkey_hash=%s", hex);
  *
  *   // Instead of: return -1;
- *   LOG_ERR("mcp", "rpc backend unreachable: method=%s", method);
+ *   LOG_ERR("command", "rpc backend unreachable: method=%s", method);
  *
  *   // Instead of: return NULL;
  *   LOG_NULL("sync", "malloc failed for %d headers", count);
@@ -66,7 +66,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
     return false; \
 } while (0)
 
-/* Log error and return -1. Use in MCP handlers / int-returning funcs. */
+/* Log error and return -1. Use in command handlers / int-returning funcs. */
 #define LOG_ERR(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
@@ -93,7 +93,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
  * CONTINUE — for the common case of a diagnostic that must NOT abort
  * the caller: progress, best-effort cleanup, and warnings on a
  * log-and-continue path. They replace raw `fprintf(stderr, ...)` (often
- * marked `// obs-ok:`) so node.log is uniform and `zcl_node_log` can
+ * marked `// obs-ok:`) so node.log is uniform and `zclassic23 getnodelog` can
  * filter by level.
  *
  * Same `[domain] LEVEL file:line func():` prefix the returning macros

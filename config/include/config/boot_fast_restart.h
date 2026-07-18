@@ -30,7 +30,7 @@ void boot_fast_restart_arm_flat_loader(void);
 /* Post-flat decision + install. Verifies the clean-shutdown bindings against the
  * loaded state; on a full match, installs the tip from the in-memory index (no
  * per-height disk header re-read) and returns true with *out_tip set. Records
- * the verdict for `zcl_state subsystem=boot`. Returns false (full boot path) on
+ * the verdict for `zclassic23 dumpstate boot`. Returns false (full boot path) on
  * any mismatch or absent binding. Call the eligibility guard (no reindex / log
  * rebuild / mint / refold / snapshot) at the caller. */
 bool boot_fast_restart_try(struct main_state *ms, struct block_index **out_tip);

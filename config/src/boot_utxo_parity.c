@@ -16,7 +16,7 @@
  * The service is a READ-ONLY OBSERVER by construction: it only recomputes the
  * local SHA3 commitment and diffs it against the reference; it never writes the
  * chain, moves the tip, or touches liveness. The EV_CHAIN_TIP_COMMIT observer
- * and MCP introspection are always installed because they are cheap and never
+ * and native introspection are always installed because they are cheap and never
  * touch the live node.
  */
 
@@ -72,7 +72,7 @@ static bool boot_utxo_parity_start(void *ctx)
     }
 
     /* Always install the cheap, live-safe finalized-frontier observer +
-     * leave the service introspectable via zcl_state. */
+     * leave the service introspectable via `zclassic23 dumpstate`. */
     utxo_parity_observe_finalization();
 
     if (boot_utxo_parity_opt_out()) {

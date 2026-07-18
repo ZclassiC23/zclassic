@@ -481,7 +481,7 @@ this session:
   `thread_registry_spawn`, `check-sandbox-wired` — no file overlap.
 - **B3b** (plan line 248, REST parity gate) — not yet fully read (its own
   file set is under `app/controllers` REST resources, per
-  `docs/work/MCP-REMOVAL-WORKLIST.md`) — no `lib/net/` or
+  the native command registry) — no `lib/net/` or
   `store_controller_pow.c` files named anywhere near it in the plan text.
 - **D2** (`OS-D2`, plan lines 165-168) — `znam_projection.c`,
   `projection_util.h` — no overlap.

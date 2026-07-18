@@ -7,8 +7,8 @@
  *
  * Cloned end-to-end from the agentcopyprove pattern
  * (app/controllers/src/agent_copy_prove_controller.c) — same async-by-design
- * rationale (a real test_parallel run or full sweep can run far longer than
- * the MCP dispatcher's 5s default budget / 12s long-running-tool ceiling),
+ * rationale (a real test_parallel run or full sweep can outlive any synchronous
+ * native-command budget),
  * same "no dest/target field the caller controls" posture (the only two
  * inputs are `kind` and `name`, both allowlist-validated below before they
  * ever reach a command line), same detached-launch + poll-via-diagnostics-
@@ -58,7 +58,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define AGENT_TEST_CONTRACT_SCHEMA "zcl.agent_test.v1"
+#define AGENT_TEST_CONTRACT_SCHEMA "zcl.agent_test.v2"
 #define AGENT_TEST_RESULT_SCHEMA   "zcl.agent_test_result.v1"
 #define AGENT_TEST_STATE_SCHEMA    "zcl.agent_test_state.v1"
 
@@ -253,11 +253,11 @@ bool rpc_agent_test(const struct json_value *params, bool help,
         "                           test_group must be a compiled group\n"
         "                           name, scenario must name an existing\n"
         "                           tools/sim/scenarios/<name>.scenario\n"
-        "\nPoll a run with: zclassic23 dumpstate agent_test <kind>-<name>\n"
-        "or MCP zcl_state subsystem=agent_test key=<kind>-<name>. This\n"
+        "\nPoll a run with: zclassic23 dumpstate agent_test <kind>-<name>.\n"
+        "This\n"
         "call never blocks for the run duration.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_test.v1\", \"status\":\"started\", ... }\n");
+        "  { \"schema\":\"zcl.agent_test.v2\", \"status\":\"started\", ... }\n");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -272,7 +272,6 @@ bool rpc_agent_test(const struct json_value *params, bool help,
     json_push_kv_str(result, "schema", AGENT_TEST_CONTRACT_SCHEMA);
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "native_command", "zclassic23 agenttest");
-    json_push_kv_str(result, "mcp_tool", "zcl_agent_test");
 
     const char *kind_lit = NULL;
     bool at_is_test_group = false;
@@ -417,10 +416,9 @@ bool rpc_agent_test(const struct json_value *params, bool help,
     json_push_kv_bool(result, "registry_precheck_skipped",
                       registry_precheck_skipped);
     json_push_kv_str(result, "poll_native", "zclassic23 dumpstate agent_test");
-    json_push_kv_str(result, "poll_mcp", "zcl_state subsystem=agent_test");
     json_push_kv_str(result, "budget_note",
-        "detached background run; does not hold an RPC/MCP worker thread. "
-        "Poll status_file via dumpstate/zcl_state instead of waiting on "
+        "detached background run; does not hold an RPC worker thread. "
+        "Poll status_file via dumpstate instead of waiting on "
         "this call.");
     return true;
 }

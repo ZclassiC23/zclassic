@@ -55,7 +55,7 @@ bool boot_header_probe_start(void *ctx)
     }
     /* Register the polling cadence as a supervised Job in the network
      * domain. Same 30 s cadence, same RPC, same accept_block_header path;
-     * the supervisor owns liveness so `zcl_state subsystem=supervisor`
+     * the supervisor owns liveness so `zclassic23 dumpstate supervisor`
      * exposes last_tick_age_us and ticks_run for the poll. */
     header_probe_poll_register();
     if (header_probe_poll_is_registered()) {
@@ -65,7 +65,7 @@ bool boot_header_probe_start(void *ctx)
     fprintf(stderr,  // obs-ok:header-probe-poll-fallback
             "[header-probe] WARN poll Job register failed; "
             "header_probe RPC + state introspection still available\n");
-    return true;  /* non-fatal — manual MCP calls still work */
+    return true;  /* non-fatal — manual native diagnostics still work */
 }
 
 /* Stop the header_probe runtime service. */
@@ -166,7 +166,7 @@ void boot_rolling_anchor_stop(void *ctx)
 
 /* Sealed-history segment sealer (runtime svc). Owns a file-static service
  * instance (the kernel calls start/stop once each); g_segment_sealer points at
- * it for `zcl_state subsystem=segment_sealer`. OFF BY DEFAULT — the thread runs
+ * it for `zclassic23 dumpstate segment_sealer`. OFF BY DEFAULT — the thread runs
  * supervised and heartbeats, but seals nothing unless ZCL_SEGMENT_SEALER=1, so a
  * default node's on-disk state is unchanged. When enabled it seals finalized
  * (fully-below-frontier) 10k segments into <datadir>/segments; the fold's block

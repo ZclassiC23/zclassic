@@ -164,7 +164,7 @@ const char *consensus_state_publication_decision_name(
 const char *consensus_state_publication_refusal_name(
     enum consensus_state_publication_refusal refusal);
 
-/* dumpstate/zcl_state surface: latest in-process decision record status. */
+/* Native dump-state surface: latest in-process decision record status. */
 bool consensus_state_publication_cas_dump_state_json(struct json_value *out,
                                                      const char *key);
 

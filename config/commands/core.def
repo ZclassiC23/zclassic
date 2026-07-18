@@ -2,7 +2,7 @@
  *
  * READ-ONLY leaves that have a genuine live handler bind the generic native
  * bridge (zcl_native_bridge_command), which proxies the resolved leaf to the
- * one canonical MCP/RPC handler for this build. The path->tool binding lives in
+ * canonical RPC handler for this build. The path-to-method binding lives in
  * the transport adapter (tools/command/native_command.c), never in this
  * metadata. Mutations and reads that are not yet bridged are PLANNED — the
  * engine fail-closes a PLANNED leaf with exit 3, so nothing is advertised as
@@ -15,7 +15,7 @@ ZCL_COMMAND_READY_READ(
     "next action, read from the running node at call time; a named "
     "blocker replaces height when sync is stalled.", 0,
     "status,height,sync,consensus,tip", "zcl.command.empty_input.v1",
-    "zcl.core_status.v1", "", "", "zclassic23 core status",
+    "zcl.core_status.v2", "", "", "zclassic23 core status",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -385,7 +385,7 @@ ZCL_COMMAND_READY_READ(
     "running node, most-recent-first as of call time; bounded to the "
     "list budget row cap, not full history.", ZCL_COMMAND_LIST_BUDGET,
     "peers,incidents,ban,misbehavior",
-    "zcl.command.empty_input.v1", "zcl.peer_incidents.v1", "", "",
+    "zcl.command.empty_input.v1", "zcl.peer_incidents.v2", "", "",
     "zclassic23 core network peers incidents",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,

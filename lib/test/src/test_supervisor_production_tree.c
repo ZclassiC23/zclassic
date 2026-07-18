@@ -2,7 +2,7 @@
  *
  * Liveness-tree membership regression: the never-stuck escalation
  * children must actually REGISTER into the supervisor tree as tickable
- * children. This was confirmed today only via live `zcl_state
+ * children. This was confirmed today only via live `zclassic23 dumpstate
  * subsystem=supervisor` — never a unit test. Dropping the
  * `supervisor_register_in_domain(g_chain_sup, ...)` call in
  * chain_tip_watchdog.c (app/services/src/chain_tip_watchdog.c:302)

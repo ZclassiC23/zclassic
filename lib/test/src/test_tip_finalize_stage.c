@@ -1392,7 +1392,7 @@ int test_tip_finalize_stage(void)
                             sizeof(status), &depth, &utxos) == false);
         /* CS-F1 WARN-storm throttle: repeated holds on the UNCHANGED
          * (height,reason) pair are counted (precondition_repeat_count in the
-         * zcl_state dump) instead of re-logging the WARN every idle tick. */
+         * native dumpstate output) instead of re-logging the WARN every idle tick. */
         TF_CHECK("precondition: repeat hold stays IDLE",
                  tip_finalize_stage_step_once() == JOB_IDLE);
         TF_CHECK("precondition: repeat hold stays IDLE x2",

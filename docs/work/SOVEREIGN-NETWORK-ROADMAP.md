@@ -45,7 +45,7 @@ higher one.
 ## Current red baseline
 
 - Canonical is wedged below tip on missing historical shielded
-  anchors/nullifiers (verify the live H\* via `zcl_status` / `dumpstate
+  anchors/nullifiers (verify the live H\* via `zclassic23 status` / `zclassic23 dumpstate
   reducer_frontier`; `docs/HANDOFF.md` holds current state). Downstream peer,
   download, script, mirror, or operator-latch symptoms must not outrank that
   causal gap.
@@ -205,8 +205,8 @@ Goal: an edit is either a complete proven generation or it never becomes live.
   postprobe/liveness → durable accept or exact rollback.
 - Finish authenticated per-workspace Unix control sockets, typed dotted probes,
   candidate fixture invocation, generation attribution/retention/GC, bounded
-  reload, and restricted-ELF ABI admission. Remove MCP only after all mutation,
-  auth, audit, events, secrets, and edit/apply/rollback parity is native.
+  reload, and restricted-ELF ABI admission. Prove mutation, auth, audit,
+  events, secrets, and edit/apply/rollback behavior through native commands.
 
 Phase gate: 100% accepted publications bind source/artifact/proofs; stale or
 superseded publications are zero; a real edit → build → native probe → apply →
@@ -269,8 +269,8 @@ changing canonical datadir, wallet keys, or H\*.
 Goal: delete transitional machinery only after its replacement is proven and
 make quality monotonic.
 
-- Delete borrowed recovery after sovereign cutover; MCP after native parity;
-  duplicated OS/write/repair paths after their owners are complete. Keep one
+- Delete borrowed recovery after sovereign cutover and duplicated
+  OS/write/repair paths after their owners are complete. Keep one
   boot lifecycle and shrink it.
 - Ratchet lint exceptions, oversized/orphan files, raw booleans, coverage,
   binary/BSS size, startup/RSS, generation storage, and discovery size.

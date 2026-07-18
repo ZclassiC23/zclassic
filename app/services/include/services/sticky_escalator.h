@@ -84,7 +84,7 @@ void sticky_escalator_note_stall(const char *cause);
  * ladder advances even if one driver stalls. No-op while disarmed. */
 void sticky_escalator_drive(void);
 
-/* `zcl_state subsystem=sticky_escalator` dumper. `out` is an already-initialized
+/* `zclassic23 dumpstate sticky_escalator` dumper. `out` is already initialized
  * json object; `key` is ignored. */
 bool sticky_escalator_dump_state_json(struct json_value *out, const char *key);
 

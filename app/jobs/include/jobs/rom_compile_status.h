@@ -3,7 +3,7 @@
  * rom_compile_status — read-only ASCII-progress telemetry for the ROM
  * compilation fold (genesis -> the compiled SHA3 UTXO checkpoint anchor,
  * REDUCER_FRONTIER_TRUSTED_ANCHOR, see jobs/reducer_frontier.h). Backs
- * `zcl_state subsystem=rom_compile` and the `ops.rom` native leaf.
+ * `zclassic23 dumpstate rom_compile` and the `ops.rom` native leaf.
  *
  * See CLAUDE.md "Adding state introspection". This module composes EXISTING
  * accessors only — the per-stage step-EWMA counters (the eight app/jobs
@@ -21,7 +21,7 @@
 
 struct json_value;
 
-/* `zcl_state subsystem=rom_compile` / `ops.rom`: schema zcl.rom_compile.v1.
+/* `zclassic23 dumpstate rom_compile` / `ops.rom`: schema zcl.rom_compile.v1.
  * Reports whether a fold (from-genesis or from-anchor refold) is active, its
  * height/target/percent/rate/ETA (rate sampled across successive calls to
  * THIS process — first call in a session reports rate=0/eta unknown), the

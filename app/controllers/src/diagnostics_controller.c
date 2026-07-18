@@ -6,8 +6,7 @@
  * Focused diagnostics controller files own each read-only concern; this file
  * is the dispatch table that wires their RPC handlers into the rpc_table:
  *
- *   diagnostics_registry.c          dumpstate / statecatalog / zcl_state
- *                                   + zcl_state_catalog + g_dumpers[]
+ *   diagnostics_registry.c          dumpstate / statecatalog + g_dumpers[]
  *                                   + controller-level state ownership
  *   nodelog_controller.c            getnodelog
  *   dbquery_controller.c            dbquery

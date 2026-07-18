@@ -43,11 +43,11 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .crypto_model =
             "base_layer_bytes_verified_by_full_node_protocol_objects_versioned",
         .transport_model =
-            "mcp_native_json_first_rest_public_read_mirror",
+            "native_json_first_rest_public_read_mirror",
         .privacy_model =
             "public_catalog_no_private_wallet_material",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_api_v1_protocols",
+            "zclassic23_appprotocols_api_v1_protocols",
     },
     {
         .name = "zslp",
@@ -74,11 +74,11 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .crypto_model =
             "transaction_hash_and_script_bytes_verified_by_zcl_consensus",
         .transport_model =
-            "chain_anchored_reads_rest_mcp_native_transaction_builders_private",
+            "chain_anchored_reads_rest_native_transaction_builders_private",
         .privacy_model =
             "token_activity_is_public_chain_metadata",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_zslp_projection",
+            "zclassic23_appprotocols_dumpstate_zslp_projection",
     },
     {
         .name = "znam",
@@ -111,7 +111,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .privacy_model =
             "name_records_are_public_and_should_use_dedicated_identity_keys",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_znam_projection",
+            "zclassic23_appprotocols_dumpstate_znam_projection",
     },
     {
         .name = "market",
@@ -145,7 +145,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .privacy_model =
             "content_hosting_explicit_allowlist_chain_stores_commitments_not_files",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_file_market_projection",
+            "zclassic23_appprotocols_dumpstate_file_market_projection",
     },
     {
         .name = "messaging",
@@ -178,7 +178,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .privacy_model =
             "p2p_channel_currently_plaintext_memo_channel_planned_for_private_content",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_message_projection",
+            "zclassic23_appprotocols_dumpstate_message_projection",
     },
     {
         .name = "script_contracts",
@@ -212,7 +212,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .privacy_model =
             "transparent_contract_terms_are_public_unless_settled_through_shielded_flows",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_swap_contract_projection",
+            "zclassic23_appprotocols_dumpstate_swap_contract_projection",
     },
     {
         .name = "atomic_swaps",
@@ -246,7 +246,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .privacy_model =
             "counterparty_metadata_local_confirmed_script_state_public",
         .diagnostics_surface =
-            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_swap_contract_projection",
+            "zclassic23_appprotocols_dumpstate_swap_contract_projection",
     },
 };
 

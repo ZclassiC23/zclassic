@@ -201,7 +201,7 @@ int test_mirror_divergence_locator(void)
         mirror_divergence_reset_for_testing();
     }
 
-    /* 9. dump_state_json (zcl_state subsystem=mirror_divergence) reflects
+    /* 9. dump_state_json (`zclassic23 dumpstate mirror_divergence`) reflects
      * a located-and-latched divergence. */
     {
         mirror_divergence_reset_for_testing();

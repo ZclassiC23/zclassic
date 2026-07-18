@@ -263,7 +263,7 @@ bool utxo_recovery_heal_torn_legacy_coins_anchor(
  * SAFETY: only a single-block overshoot of <= UTXO_BOOT_REWIND_MAX_ROWS (32)
  * rows is auto-healable; a larger proposed wipe is refused (tip is likely
  * wrong — investigate block_index/coins drift instead). A refusal raises
- * UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID (dumpstate blocker / zcl_state
+ * UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID (`zclassic23 dumpstate blocker`
  * subsystem=blocker).
  * Returns count of UTXOs deleted (0 if refused or none found).
  * NOTE: this is also the single heal mechanism reused by the continuous

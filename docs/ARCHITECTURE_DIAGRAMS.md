@@ -193,7 +193,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph Create["Transaction Creation"]
-        USER[User: zcl_send<br/>from, to, amount] --> SELECT[Coin selection<br/>BnB / knapsack]
+        USER[User: zclassic23 rpc z_sendmany<br/>from, to, amount] --> SELECT[Coin selection<br/>BnB / knapsack]
         SELECT --> TRANSPARENT{Shielded<br/>output?}
         TRANSPARENT -->|t-addr to t-addr| BUILD_T[Build transparent tx<br/>inputs, outputs, change]
         TRANSPARENT -->|involves z-addr| BUILD_S[Build Sapling tx<br/>spend proofs, output proofs]
@@ -229,77 +229,8 @@ flowchart TD
     end
 
     subgraph Query["Balance Query"]
-        CONF_N --> BALANCE[zcl_balance<br/>transparent + shielded]
-        CONF_N --> LIST[zcl_listtransactions<br/>history with confirmations]
-    end
-```
-
----
-
-## MCP Request Routing
-
-```mermaid
-flowchart TD
-    CLIENT[Claude Code<br/>or MCP client] -->|stdio JSON-RPC| MCP_READ[Read request<br/>from stdin]
-
-    MCP_READ --> PARSE[Parse JSON-RPC envelope<br/>method, params, id]
-    PARSE -->|tools/call| MIDDLEWARE
-
-    subgraph Middleware["MCP Middleware"]
-        MIDDLEWARE[mcp_middleware_dispatch] --> AUTH{Bearer token<br/>required?}
-        AUTH -->|yes, missing| AUTH_DENY([MCP_ERR_AUTH_REQUIRED])
-        AUTH -->|ok or disabled| RATE_GLOBAL{Global rate<br/>limit ok?}
-        RATE_GLOBAL -->|no| RATE_DENY([MCP_ERR_RATE_LIMITED])
-        RATE_GLOBAL -->|yes| DESTRUCTIVE{Destructive<br/>tool?}
-        DESTRUCTIVE -->|yes| RATE_DESTR{Destructive<br/>rate ok?}
-        DESTRUCTIVE -->|no| ROUTE
-        RATE_DESTR -->|no| RATE_DENY
-        RATE_DESTR -->|yes| ROUTE
-    end
-
-    subgraph Router["MCP Router"]
-        ROUTE[mcp_router_dispatch] --> FIND{Tool exists?}
-        FIND -->|no| UNKNOWN([MCP_ERR_UNKNOWN_TOOL])
-        FIND -->|yes| VALIDATE[Validate params<br/>type, range, enum, required]
-        VALIDATE -->|fail| PARAM_ERR([MCP_ERR_MISSING_PARAM<br/>or INVALID_TYPE<br/>or OUT_OF_RANGE])
-        VALIDATE -->|ok| HANDLER[Call tool handler<br/>with timeout]
-        HANDLER -->|timeout| TIMEOUT([MCP_ERR_TOOL_TIMEOUT])
-        HANDLER -->|error| HANDLER_ERR([MCP_ERR_HANDLER_FAILED])
-        HANDLER -->|ok| RESULT[Build result JSON]
-    end
-
-    subgraph Handlers["Tool Handler Layer"]
-        direction LR
-        H_OPS[ops_controller<br/>status, health, kpi]
-        H_CHAIN[chain RPCs<br/>getblock, syncstate]
-        H_NET[net RPCs<br/>peers, addnode]
-        H_WALLET[wallet RPCs<br/>balance, send]
-        H_APP[app RPCs<br/>names, messages, market]
-    end
-
-    HANDLER --> H_OPS
-    HANDLER --> H_CHAIN
-    HANDLER --> H_NET
-    HANDLER --> H_WALLET
-    HANDLER --> H_APP
-
-    H_OPS --> RPC_LAYER
-    H_CHAIN --> RPC_LAYER
-    H_NET --> RPC_LAYER
-    H_WALLET --> RPC_LAYER
-    H_APP --> RPC_LAYER
-
-    subgraph RPC["RPC Layer"]
-        RPC_LAYER[rpc_table_execute] --> NODE[Node internals<br/>chain, mempool, wallet, connman]
-    end
-
-    RESULT -->|EV_MCP_REQUEST| METRICS[Record metrics<br/>tool, code, latency]
-    METRICS --> RESPOND[Write JSON-RPC response<br/>to stdout]
-    RESPOND --> CLIENT
-
-    subgraph Observability
-        METRICS --> PROM[/metrics endpoint<br/>Prometheus format]
-        METRICS --> WS[WebSocket /events<br/>real-time stream]
+        CONF_N --> BALANCE[zclassic23 core wallet balance<br/>transparent + shielded]
+        CONF_N --> LIST[zclassic23 core wallet transaction list<br/>history with confirmations]
     end
 ```
 

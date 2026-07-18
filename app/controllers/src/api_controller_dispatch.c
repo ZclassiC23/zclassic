@@ -13,10 +13,9 @@
  * that binds to this resident copy under RTLD_LOCAL) at the .so's own
  * recompiled builtin, and the read path below picks it up on its next call.
  *
- * The atomic slot follows the same release-store / acquire-load discipline as
- * the MCP router (tools/mcp/router.c): a worker thread dispatching a request
- * observes either the old or the new provider, never a torn pointer, with no
- * lock on the hot path. See docs/work/HOTSWAP.md. */
+ * The atomic slot uses release-store / acquire-load publication: a worker
+ * thread observes either the old or new provider, never a torn pointer, with
+ * no lock on the hot path. See docs/work/HOTSWAP.md. */
 
 #include "api_controller_internal.h"
 

@@ -15,10 +15,8 @@ struct agent_contract {
     const char *capability;
     const char *schema;
     const char *native_command;
-    const char *mcp_tool;
     const char *rest_route;
     const char *api_cli_field;
-    const char *api_mcp_field;
     const char *ops_surface;
     int ops_rank;
     const char *ops_name;
@@ -109,17 +107,11 @@ bool agent_push_contract_command_json(struct json_value *arr,
 bool agent_push_contract_native_field_json(struct json_value *obj,
                                            const char *key,
                                            const char *method);
-bool agent_push_contract_mcp_field_json(struct json_value *obj,
-                                        const char *key,
-                                        const char *method);
 size_t agent_push_contract_identity_fields_json(struct json_value *obj,
                                                 const char *method);
 bool agent_push_contract_native_command_json(struct json_value *arr,
                                              const char *method);
-bool agent_push_contract_mcp_tool_json(struct json_value *arr,
-                                       const char *method);
 void agent_push_contract_api_cli_fields_json(struct json_value *obj);
-void agent_push_contract_api_mcp_fields_json(struct json_value *obj);
 void agent_print_native_usage(FILE *out, const char *prog);
 void agent_push_operator_lane_fields_json(struct json_value *out);
 void agent_push_operator_lane_json(struct json_value *out,

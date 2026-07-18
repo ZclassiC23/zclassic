@@ -22,7 +22,7 @@ void register_net_rpc_commands(struct rpc_table *t);
 
 struct json_value;
 
-/* Shared bootstrap-service readiness contract for RPC, REST, and MCP. */
+/* Shared bootstrap-service readiness contract for RPC, REST, and native. */
 bool network_bootstrap_status_json(struct json_value *out);
 const char *network_bootstrap_readiness_label(bool p2p_serving,
                                               bool addr_relay_ready);

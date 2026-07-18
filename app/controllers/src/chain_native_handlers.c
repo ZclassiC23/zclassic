@@ -1,13 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for zcl_getblock / zcl_getrawtransaction
- * / zcl_utxo_audit. Each function is the argument-parsing
- * plus RPC-composition core of the legacy MCP handler in
- * tools/mcp/controllers/chain_controller.c, with the MCP-specific error
- * envelope stripped out — see controllers/native_handler_body.h for the
- * failure contract. Called by both the MCP wrapper handler (which maps a
- * NULL return onto the historical res->error / res->error_message) and the
- * native command bridge (tools/command/native_command.c). */
+ * Native argument parsing and RPC composition for chain read commands. See
+ * controllers/native_handler_body.h for the failure contract. */
 
 #include "controllers/chain_native_handlers.h"
 
@@ -24,12 +18,12 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
                                          struct zcl_native_body_err *err)
 {
     const char *txid = json_get_str(json_get(args, "txid"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, txid);
-    mcp_params_push_int(&p, json_get_int_or(args, "verbose", 1));
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("getrawtransaction", params) : NULL;
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, txid);
+    rpc_arg_builder_push_int(&p, json_get_int_or(args, "verbose", 1));
+    char *params = rpc_arg_builder_to_json(&p);
+    char *out = params ? node_rpc_call("getrawtransaction", params) : NULL;
     free(params);
     if (!out) {
         char ctx[192];
@@ -37,7 +31,7 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s failed: %s", "getrawtransaction", ctx);
-        LOG_NULL("mcp.chain", "%s failed: %s", "getrawtransaction", ctx);
+        LOG_NULL("native.chain", "%s failed: %s", "getrawtransaction", ctx);
     }
     return out;
 }
@@ -55,11 +49,11 @@ char *zcl_native_getblock_body(const struct json_value *args,
     char clean[128] = {0};
     const char *hash_str = id_str;
     if (is_num) {
-        struct mcp_params ph;
-        mcp_params_init(&ph);
-        mcp_params_push_int(&ph, id_str ? atoll(id_str) : 0);
-        char *php = mcp_params_to_json(&ph);
-        char *hash = php ? mcp_node_rpc("getblockhash", php) : NULL;
+        struct rpc_arg_builder ph;
+        rpc_arg_builder_init(&ph);
+        rpc_arg_builder_push_int(&ph, id_str ? atoll(id_str) : 0);
+        char *php = rpc_arg_builder_to_json(&ph);
+        char *hash = php ? node_rpc_call("getblockhash", php) : NULL;
         free(php);
         if (!hash) {
             char ctx[192];
@@ -67,7 +61,7 @@ char *zcl_native_getblock_body(const struct json_value *args,
             err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
             snprintf(err->message, sizeof(err->message),
                      "RPC %s failed: %s", "getblockhash", ctx);
-            LOG_NULL("mcp.chain", "%s failed: %s", "getblockhash", ctx);
+            LOG_NULL("native.chain", "%s failed: %s", "getblockhash", ctx);
         }
         size_t ci = 0;
         for (size_t i = 0; hash[i] && ci < 127; i++)
@@ -77,12 +71,12 @@ char *zcl_native_getblock_body(const struct json_value *args,
         hash_str = clean;
     }
 
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, hash_str);
-    mcp_params_push_int(&p, verbosity);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("getblock", params) : NULL;
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, hash_str);
+    rpc_arg_builder_push_int(&p, verbosity);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *out = params ? node_rpc_call("getblock", params) : NULL;
     free(params);
     if (!out) {
         char ctx[192];
@@ -90,7 +84,7 @@ char *zcl_native_getblock_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s failed: %s", "getblock", ctx);
-        LOG_NULL("mcp.chain", "%s failed: %s", "getblock", ctx);
+        LOG_NULL("native.chain", "%s failed: %s", "getblock", ctx);
     }
     return out;
 }
@@ -101,21 +95,21 @@ char *zcl_native_utxo_audit_body(const struct json_value *args,
     const char *remote = json_get_str_or(args, "remote_sha3", NULL);
     const char *source = json_get_str_or(args, "source",      NULL);
 
-    struct mcp_params p;
-    mcp_params_init(&p);
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
     if (remote && remote[0]) {
-        mcp_params_push_str(&p, remote);
-        mcp_params_push_int(&p, json_get_int_or(args, "remote_height", 0));
-        mcp_params_push_str(&p, source && source[0] ? source : "trusted-peer");
+        rpc_arg_builder_push_str(&p, remote);
+        rpc_arg_builder_push_int(&p, json_get_int_or(args, "remote_height", 0));
+        rpc_arg_builder_push_str(&p, source && source[0] ? source : "trusted-peer");
     }
-    char *params = mcp_params_to_json(&p);
-    char *out = mcp_node_rpc("getutxoaudit", params);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *out = node_rpc_call("getutxoaudit", params);
     free(params);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "getutxoaudit");
-        LOG_NULL("mcp.chain", "RPC %s returned null", "getutxoaudit");
+        LOG_NULL("native.chain", "RPC %s returned null", "getutxoaudit");
     }
     return out;
 }

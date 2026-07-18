@@ -746,8 +746,8 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
 
         /* Advance-or-named-blocker law: this refusal is a no-op an operator
          * must investigate, not just a log line that scrolls away. Register
-         * a typed, dumpstate-visible blocker (dumpstate blocker / zcl_state
-         * subsystem=blocker) carrying the guard's own numbers. Semantics are
+         * a typed blocker visible through `zclassic23 dumpstate blocker`,
+         * carrying the guard's own numbers. Semantics are
          * unchanged — the refusal above still refuses and still returns 0;
          * this only makes it observable. */
         int64_t overshoot_rows = -1, overshoot_max_h = -1;

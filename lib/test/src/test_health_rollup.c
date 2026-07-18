@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the `unhealthy` zcl_state rollup
+ * Tests for the native `unhealthy` dumpstate rollup
  * (app/controllers/src/diagnostics_health_rollup.c): walks every OTHER
  * dumper in the g_dumpers[] registry, looks for the reserved `_health`
  * { ok, reason } key (see CLAUDE.md "Adding state introspection" +

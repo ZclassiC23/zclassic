@@ -544,7 +544,7 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
                          pindex->nHeight);
                 /* Validation pack: a by-height fallback is exactly the
                  * ambiguity a label splice exploits — counted so it
-                 * surfaces in zcl_state subsystem=validation_pack. */
+                 * surfaces in `zclassic23 dumpstate validation_pack`. */
                 invariant_sentinel_note_loader_height_fallback();
             }
         }

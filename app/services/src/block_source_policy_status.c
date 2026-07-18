@@ -12,7 +12,7 @@
 
 /* Status / introspection seam for the block-source policy stateful runtime.
  * The status read (block_source_policy_get_status), the per-source and
- * per-decision JSON serializers, and the zcl_state dumper
+ * per-decision JSON serializers, and the native dump-state function
  * (block_source_policy_dump_state_json). Runtime mutation, persistence, and
  * decision recording stay in sibling files. */
 

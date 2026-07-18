@@ -20,7 +20,7 @@
  * The full disconnect-and-reorg of the *active* chain (which calls the
  * real disconnect_tip against coins/undo + LevelDB via the activation
  * controller) is an integration concern — exercised by test_reorg_safety
- * for the disconnect machinery and by `make deploy` + zcl_status for the
+ * for the disconnect machinery and by `make deploy` + `zclassic23 status` for the
  * end-to-end lever. Here we prove the mark/clear core + that the
  * canonical selector honors it, which is the consensus-relevant contract.
  *
@@ -89,7 +89,7 @@ int test_invalidateblock(void)
     printf("\n=== invalidateblock / reconsiderblock tests ===\n");
     int failures = 0;
 
-    /* ── 1. Result-name mappings (stable strings for RPC/MCP/logs) ── */
+    /* ── 1. Result-name mappings (stable strings for RPC/native/logs) ── */
     IB_CHECK("name(INVALIDATE_OK)",
              strcmp(invalidate_result_name(INVALIDATE_OK), "ok") == 0);
     IB_CHECK("name(INVALIDATE_BLOCK_NOT_FOUND)",

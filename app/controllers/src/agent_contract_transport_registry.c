@@ -73,27 +73,20 @@ void agent_push_contract_transport_summary_json(struct json_value *arr)
         return;
 
     char native[4096];
-    char mcp[4096];
     char rest[2048];
     const char *native_seen[128] = {0};
-    const char *mcp_seen[128] = {0};
     const char *rest_seen[128] = {0};
     size_t native_seen_len = 0;
-    size_t mcp_seen_len = 0;
     size_t rest_seen_len = 0;
     size_t native_pos = 0;
-    size_t mcp_pos = 0;
     size_t rest_pos = 0;
     bool native_first = true;
-    bool mcp_first = true;
     bool rest_first = true;
 
     native[0] = '\0';
-    mcp[0] = '\0';
     rest[0] = '\0';
     agent_transport_append(native, sizeof(native), &native_pos, "",
                            "native: ");
-    agent_transport_append(mcp, sizeof(mcp), &mcp_pos, "", "mcp: ");
     agent_transport_append(rest, sizeof(rest), &rest_pos, "", "rest: ");
 
     for (size_t i = 0; i < agent_contract_count(); i++) {
@@ -104,16 +97,12 @@ void agent_push_contract_transport_summary_json(struct json_value *arr)
                                       &native_first, " | ",
                                       c->native_command, native_seen,
                                       &native_seen_len, 128);
-        agent_transport_append_unique(mcp, sizeof(mcp), &mcp_pos, &mcp_first,
-                                      ", ", c->mcp_tool, mcp_seen,
-                                      &mcp_seen_len, 128);
         agent_transport_append_unique(rest, sizeof(rest), &rest_pos,
                                       &rest_first, "; ", c->rest_route,
                                       rest_seen, &rest_seen_len, 128);
     }
 
     agent_transport_push_str(arr, native);
-    agent_transport_push_str(arr, mcp);
     agent_transport_push_str(arr,
                              rest_first ? "rest: no REST-only agent route"
                                         : rest);

@@ -42,7 +42,7 @@
  *     CLTV timeout passes and the seller REFUNDS it back to themselves —
  *     provably, not just "nothing happened."
  *  5. Closing block: what every step here maps to in the production node —
- *     RPCs, MCP tools, and the one real gap (Market's on-chain settlement
+ *     RPCs, native commands, and the one real gap (Market's on-chain settlement
  *     glue), named plainly rather than glossed over.
  *
  * MENTAL MODEL
@@ -814,10 +814,10 @@ int main(void)
     printf("\n[6/6] production counterpart — same primitives, real node:\n"
           "      - Mint the deed:     zslp_createtoken RPC (app/controllers/"
           "src/zslp_controller.c) builds the exact slp_build_genesis "
-          "OP_RETURN this example built by hand; `zcl_tokens` MCP tool "
+          "OP_RETURN this example built by hand; `app tokens list` command "
           "reads it back (maps to zslp_listtokens).\n"
           "      - Storefront name:   name_register RPC (app/controllers/"
-          "src/name_controller.c, `zcl_name_register` MCP tool) wires "
+          "src/name_controller.c, `app names register`) wires "
           "REGISTER end to end today; UPDATE/SET_TEXT are assembled the "
           "same way (znam_build_update/set_text + a normal transparent "
           "send) but have no dedicated RPC yet — see examples/"
@@ -828,7 +828,7 @@ int main(void)
           "controllers/src/wallet_controller.c's normal broadcast path, "
           "exactly like this example's plain payment tx.\n"
           "      - Escrow sale:       swap_initiate / swap_participate RPCs "
-          "(app/controllers/src/swap_controller.c, `zcl_swap_initiate` MCP "
+          "(app/controllers/src/swap_controller.c, native swap "
           "tool) build the same htlc_build_script contract this example "
           "built by hand; there is still no node-broadcast redeem/refund/"
           "settlement path today (see examples/06_htlc_swap.c's "
@@ -842,7 +842,8 @@ int main(void)
           "net/src/msgprocessor.c) — the same \"pay, then receive\" shape "
           "as this example's direct sale, at the byte-transport layer "
           "instead of the token layer. The buy/offer RPC-to-transfer glue "
-          "(`zcl_market_buy`/`zcl_market_offer`) is not yet wired end to "
+          "(`zclassic23 app market buy`/`zclassic23 app market offer`) is "
+          "not yet wired end to "
           "end to on-chain settlement.\n");
 
     printf("\n=== SUCCESS: three one-of-one collectibles minted and "

@@ -147,7 +147,7 @@ void utxo_apply_upstream_hole_note(int height, uint64_t pv_cursor)
 
     /* Registry-visible typed blocker alongside the WARN + dump counters. A
      * durable hole holds utxo_apply (and therefore H*) indefinitely, and
-     * without this record zcl_blockers reads 0 for the whole stall — the
+     * without this record, native blocker diagnostics read 0 for the stall — the
      * 3166989 script_validate_log/proof_validate_log hole ran 3 h with zero
      * named blockers. DEPENDENCY, not TRANSIENT: utxo_apply cannot fill the
      * row itself — it waits on the reducer_frontier_reconcile_light condition

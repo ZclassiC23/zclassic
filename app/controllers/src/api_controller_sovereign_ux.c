@@ -19,7 +19,7 @@ void api_sovereign_ux_contract_json(struct json_value *out)
         return;
 
     json_set_object(out);
-    json_push_kv_str(out, "schema", "zcl.sovereign_ux_contract.v1");
+    json_push_kv_str(out, "schema", "zcl.sovereign_ux_contract.v2");
     json_push_kv_str(out, "base_layer", "zclassic_l1");
     json_push_kv_str(out, "service_layer", "zclassic23_application_layer");
     json_push_kv_str(out, "verification_spine",
@@ -29,7 +29,7 @@ void api_sovereign_ux_contract_json(struct json_value *out)
                      "public_rest_reads_projection_state_private_writes_are "
                      "operator_authorized_transaction_builders_or_local_state");
     json_push_kv_str(out, "preferred_operator_interface",
-                     "mcp_typed_json_then_native_json_then_public_rest_reads");
+                     "native_json_then_public_rest_reads");
 
     json_init(&flow);
     api_app_protocol_csv_json(

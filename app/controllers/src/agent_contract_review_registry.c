@@ -22,10 +22,10 @@ static const struct agent_contract_review_surface g_agent_review_surfaces[] = {
         "progress.kv fact log plus reducer stages; projections and API are derived views"),
     REVIEW_FIELD(
         "agentops.architecture_review", 2, "best_existing_primitive",
-        "diagnostics_registry + zcl_state: one table maps subsystem names to C dumpers"),
+        "diagnostics_registry + dumpstate: one table maps subsystem names to C dumpers"),
     REVIEW_FIELD(
         "agentops.architecture_review", 3, "main_dry_problem",
-        "native CLI, live RPC, MCP, REST, and helper scripts still expose overlapping shapes"),
+        "native CLI, live RPC, REST, and helper scripts still expose overlapping shapes"),
     REVIEW_FIELD(
         "agentops.architecture_review", 4, "api_direction",
         "one C-owned JSON builder per contract; transports proxy it without reshaping"),

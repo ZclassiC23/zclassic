@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry. **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -11,7 +11,7 @@ See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-l
 ## Security model for AI agents
 
 ZClassic23 is operator-owned full-node infrastructure. Tor, wallet/key
-handling, P2P networking, MCP operator tools, fuzzers, and crash harnesses
+handling, P2P networking, native operator commands, fuzzers, and crash harnesses
 exist to run, observe, and harden nodes the operator controls. Keep
 development, tests, and diagnostics scoped to local fixtures, isolated
 datadirs, and consenting peers.
@@ -40,7 +40,7 @@ then deletes the borrowed `zclassicd`-minted seed path.
 
 **Current canonical state is wedged, not synced.** The public daily-driver is
 held below tip by incomplete historical shielded anchors and nullifiers; verify
-the live H\* via `zcl_status` / `dumpstate reducer_frontier` before acting
+the live H\* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before acting
 (`docs/HANDOFF.md` holds current state). The consolidated loader did
 previously seed transparent `coins_kv` from a `zclassicd`-minted snapshot and
 reach tip, but matching that artifact's anchor hash to a validated local header
@@ -81,7 +81,7 @@ is a regression floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 > **Check the live node before treating MVP/soak as the active mission.** The
-> canonical node is currently wedged below tip (live H\* via `zcl_status`) on the permanent
+> canonical node is currently wedged below tip (live H\* via `zclassic23 status`) on the permanent
 > `utxo_apply.anchor_backfill_gap` / nullifier-history dependency. A prior
 > transparent borrowed seed reaching tip did not prove complete shielded state.
 > No canonical soak time is clean evidence while this gap exists; cure and
@@ -90,18 +90,9 @@ is a regression floor, not a liveness proof.
 > [`docs/work/self-verified-tip-plan.md`](./docs/work/self-verified-tip-plan.md).
 
 **The active #1 track is the sovereign shielded-state cure and copy proof.**
-Zero-MCP removal remains the secondary development track. The owner directive is to
-delete the MCP server entirely — the native CLI (`zclassic23 <command>`) is
-becoming the ONLY agent interface. W0 (bridge re-homed to
-`app/controllers`) + W1-A (kernel handler-snapshot) + W1-B/C (Tier-1
-hot-swap re-targeted onto the command registry, commit `88b4e1030`) are
-DONE; W2 (the remaining ~47 call sites) and W3 (delete the MCP server) are
-next. See [`docs/work/MCP-REMOVAL-PLAN.md`](./docs/work/MCP-REMOVAL-PLAN.md)
-(prose rationale) + [`docs/work/MCP-REMOVAL-WORKLIST.md`](./docs/work/MCP-REMOVAL-WORKLIST.md)
-(the authoritative 114-site inventory) — that worklist is the plan of
-record for this track, ranking above MVP/soak below. A new source-code
-navigator subsystem (`lib/codeindex/` + a `code` command branch) is also in
-flight alongside it.
+The typed native CLI (`zclassic23 <command>`) is the only agent interface.
+The source-code navigator lives under `lib/codeindex/` and is exposed through
+the native `code` command branch.
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: complete and copy-prove the sovereign shielded-state cure; only then start a fresh exact-candidate soak.**
@@ -114,9 +105,10 @@ flight alongside it.
 
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
-2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only `progress.kv` log → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and MCP/native surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
+2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only `progress.kv` log → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and native command surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
 3. `cat docs/HANDOFF.md` FIRST (the current entry point / live state), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan; the sovereign-cure spine is `docs/work/self-verified-tip-plan.md`). `docs/FRAMEWORK.md` + `docs/REFACTOR_STATUS.md` are architecture reference, off the v1 path.
-4. Check the live node before trusting any doc: `zcl_status`, then `zcl_state subsystem=reducer_frontier`. A doc can be stale; the node cannot.
+4. Check the live node before trusting any doc: `zclassic23 status`, then
+   `zclassic23 dumpstate reducer_frontier`. A doc can be stale; the node cannot.
 5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments.
 
 ## Defensive Coding Standards (MANDATORY)
@@ -136,30 +128,27 @@ Key rules enforced by the compiler and CI:
 - **Every write goes through the AR lifecycle** — `AR_BEGIN_SAVE` + `AR_FINISH_SAVE`, or the combined `AR_ADHOC_SAVE` (locally-prepared stmt) / `AR_CACHED_SAVE` (cached stmt). No raw `sqlite3_step()` in app code. See `app/models/include/models/activerecord.h`.
 - **Every error return must log context** — use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
 - **Every malloc must be checked** — use `zcl_malloc(size, "label")` from `util/safe_alloc.h`
-- **Every native command handler must set an error body** (the legacy MCP handler rule still applies too, removed in W3) — never `return -1;` without explaining why
+- **Every native command handler must set an error body** — never `return -1;` without explaining why
 - **Before/after save hooks** — wire them for wallet keys, UTXOs, blocks
 
 `make lint` checks for violations. `make ci` runs lint before tests.
 
-## Agent interface — native commands (legacy MCP server, removed in W3)
+## Agent interface — native commands
 
 The interface is the native command registry: `zclassic23 <command>` under
 `core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`. Start with `zclassic23 status`;
 enumerate with `discover help` / `discover search <q>`; three diagnostic
-primitives (`dumpstate <subsystem>`, the node-log tail, SELECT-only SQL)
+primitives (`ops state --subsystem=<name>`, `ops logs`, and
+`core storage query` for SELECT-only SQL)
 answer most one-off questions. Full doc:
 [`docs/NATIVE_COMMAND_INTERFACE.md`](./docs/NATIVE_COMMAND_INTERFACE.md);
-daily usage patterns are in the `zclassic23-dev` skill. The **legacy MCP
-server** (`-mcp`, `zclassic23 mcpcall <tool>`, the `zcl_*` tool surface)
-still works today and is deleted in W3 — prefer native. Its opt-in two-tier
-bearer auth (`ZCL_MCP_BEARER_TOKEN` / `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN`) is
-documented in [`docs/SECURITY_AND_INTEGRITY.md`](./docs/SECURITY_AND_INTEGRITY.md).
+daily usage patterns are in the `zclassic23-dev` skill.
 
 ### Adding state introspection
 
-The MCP has three **primitives** (`zcl_state`, `zcl_node_log`, `zcl_sql`)
-that cover most diagnostic questions without needing a new bespoke
-tool per question. When adding a new subsystem that has interesting
+The native registry has three **diagnostic primitives** (`ops state`,
+`ops logs`, and `core storage query`) that cover most diagnostic questions
+without needing a new bespoke command per question. When adding a new subsystem that has interesting
 runtime state, follow the convention:
 
 1. Add an entry to the subsystem's public header:
@@ -179,14 +168,12 @@ runtime state, follow the convention:
 3. Register the dump function in the dispatcher table at
    `app/controllers/src/diagnostics_registry.c:g_dumpers`. One line.
 
-4. No edit to `diagnostics_controller.c` is needed — `p_state[0].enum_csv`
-   is auto-populated at runtime from the diagnostics registry via
-   `diagnostics_subsystems_csv()` / `g_state_subsystems_csv`
-   (`diagnostics_controller.c:574`). Only update the `enum_csv` assertion
-   in `lib/test/src/test_mcp_controllers.c` if it asserts the list.
+4. No edit to the state command handler is needed; its subsystem catalog is
+   populated at runtime from the diagnostics registry. Update the native
+   diagnostics registry test if it asserts the list.
 
-That's it — no new RPC handler, no new MCP route, no new schema.
-Every future subsystem becomes introspectable via `zcl_state` with
+That's it — no new RPC handler, command route, or schema.
+Every future subsystem becomes introspectable via `zclassic23 ops state` with
 ~30 lines of changes total. Currently wired: `supervisor`, `watchdog`,
 `boot`, `block_index`, plus the existing services that follow the
 same convention (`health`, `chain_evidence`, `chain_advance_coordinator`,
@@ -202,14 +189,13 @@ contract API and `DEFENSIVE_CODING.md` Gate #15 for the lint gate that
 ratchets adoption.
 
 For raw SQL inspection of node tables (blocks, utxos, mempool, etc),
-use `zcl_sql`: SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
-wall-clock budget, 100-row hard cap. Marked destructive in the MCP
-middleware (rate-gated at 1 RPS) because arbitrary scans can be
-expensive.
+use `zclassic23 core storage query --sql='SELECT ...'`: SELECT-only,
+semicolon-rejected, auto-LIMIT, 2 s wall-clock budget, and a 100-row hard cap.
+Arbitrary scans can still be expensive, so keep queries bounded.
 
 For tailing node.log without downloading the whole file, use
-`zcl_node_log(pattern, since_secs, max_lines, level)` — server-side
-reverse scan in 64 KB chunks.
+`zclassic23 ops logs --pattern='<regex>'` with the optional time, line-count,
+and level arguments — a server-side reverse scan in 64 KB chunks.
 
 ---
 
@@ -231,7 +217,6 @@ systemctl --user start zclassic23
 -rpcport=N            RPC port (default: 18232)
 -tor                  Enable embedded Tor onion service
 -nobgvalidation       Skip background proof verification (saves RAM)
--mcp                  Run as legacy MCP server on stdio (for Claude Code; removed in W3 — prefer `zclassic23 <command>` native calls)
 -txindex              Enable full transaction index
 -addnode=IP:PORT      Connect to specific peer
 ```
@@ -255,7 +240,8 @@ When `-tor` is enabled (with the real Tor built), zclassic23 embeds a modified T
 3. Serves the full REST API + block explorer over .onion
 4. Handles requests via direct C function calls — no SOCKS, no ports, no HTTP parsing overhead
 
-The .onion address is visible via `zcl_status` → `health.checks.onion_address`.
+The .onion address is visible via `zclassic23 core status` →
+`health.checks.onion_address`.
 
 Architecture: `Client → Tor network → onion_service.c → onion_service_handle_request() → same controllers as HTTPS`
 
@@ -292,15 +278,16 @@ The ~60-second goal is assisted operational readiness, not sovereignty. Mining,
 wallet spending, snapshot re-serving, and canonical publication remain disabled
 until complete-state validation and local full-history promotion succeed.
 
-Key MCP tools: `zcl_mmb`, `zcl_utxocommitment`, `zcl_syncstate`, `zcl_validationstatus`
+Native checks: `zclassic23 core consensus mmb`,
+`zclassic23 core consensus utxo commitment`, `zclassic23 core sync status`,
+and `zclassic23 core sync validation`.
 
 ### P2P Game Service
 
 Built-in P2P game framework for latency measurement and gameplay:
 
 **Ping (Type 0)** — Measures round-trip latency in microseconds. Used by:
-- `zcl_pingpeer(peer_id=N)` — Ping specific peer
-- `zcl_peerlatency` — All peer latencies
+- `zclassic23 core network peers latency` — round-trip latency for every peer
 
 **TicTacToe (Type 1)** — Extensible game framework demonstrating P2P messaging:
 - Binary wire protocol over `zgame` P2P message
@@ -360,7 +347,7 @@ Optional (`-nobgvalidation` to disable). Walks every block from genesis verifyin
 
 RAM-aware: auto-detects system memory, caps script batch size on <8GB machines.
 
-Progress via: `zcl_validationstatus`
+Progress via: `zclassic23 core sync validation`
 
 ---
 

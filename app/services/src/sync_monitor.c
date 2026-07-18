@@ -73,7 +73,7 @@ static struct {
 
 /* Guards the multi-word g_local_recovery diagnostic struct: the condition
  * engine writes it from sync_monitor_local_header_refill() while the legacy
- * mirror, health, and MCP threads read it via
+ * mirror, health, and native threads read it via
  * sync_monitor_get_local_recovery_stats(). This lock must NEVER be held while
  * taking cm->manager.cs_nodes (or cs_main/coins_kv): the refill path snapshots
  * cs_nodes-derived state to locals and only touches g_local_recovery after
@@ -694,7 +694,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     return "UNKNOWN";
 }
 
-/* zcl_state subsystem=sync_monitor — the sync watchdog's recovery counters
+/* `zclassic23 dumpstate sync_monitor` — sync watchdog recovery counters
  * plus the local-recovery (header-refill) sub-state. See CLAUDE.md "Adding
  * state introspection". Reentrant-safe (both accessors snapshot internally). */
 bool sync_monitor_dump_state_json(struct json_value *out, const char *key)

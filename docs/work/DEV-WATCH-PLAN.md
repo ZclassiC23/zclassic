@@ -37,8 +37,8 @@ generation if bounded probes fail. Canonical and soak lanes are never touched.
 - `make agent-stage-dev`, `make agent-deploy-fast`, and
   `tools/dev/deploy-dev-lane.sh`: contained staging/dev activation backends;
   each currently refuses unconditionally before publication.
-- `make agent-mcp-call-dev`, `zcl_tools_list`, and bounded candidate-local
-  `zcl_self_test {"mode":"registry"}`: candidate
+- native `discover help`, `ops selftest`, and bounded candidate-local
+  `zclassic23 ops selftest --mode=registry`: candidate
   and running-node introspection.
 
 The host has `ccache`, but no `mold`, `lld`, `inotifywait`, `entr`, or
@@ -114,12 +114,12 @@ Harden `tools/dev/deploy-dev-lane.sh` before automatic watching:
 3. Install at `~/.local/lib/zclassic23-dev/<generation>/zclassic23-dev`.
 4. Maintain atomic `current` and `last-good` symlinks; make the dev unit execute
    `current`.
-5. Preflight native `agentbuild`, the MCP catalog, and candidate-local
-   `zcl_self_test {"mode":"registry"}`; failure
+5. Preflight native `agentbuild`, the command catalog, and candidate-local
+   `zclassic23 ops selftest --mode=registry`; failure
    leaves the old process untouched.
 6. Flip `current`, restart only `zclassic23-dev`, and run a bounded warm probe:
    unit active, RPC ready, native `agent`, operator snapshot, exact running
-   generation, and MCP self-test.
+   generation, and native registry self-test.
 7. On failure, restore `last-good`, restart, verify recovery, and record the
    rejected generation. On success, promote the candidate to `last-good`.
 
@@ -158,7 +158,7 @@ first bootstrap remains explicit, never part of watch mode.
 The activation/status contracts persist `candidate_generation`,
 `running_generation`, `last_good_generation`, `rollback_available`,
 `activation_status`, `rollback_status`, rejected generations, current cycle,
-watcher heartbeat, index freshness, mapped tests, and MCP probe outcomes.
+watcher heartbeat, index freshness, mapped tests, and native probe outcomes.
 
 `make agent-index` derives `compile_commands.json` from dry-runs of the exact
 dev-object recipes, preserving generated-header prerequisites and the `-Og` /

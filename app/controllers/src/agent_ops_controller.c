@@ -42,7 +42,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "direct fields, drill-down commands, and the top next architecture\n"
         "work items.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_ops.v1\", \"no_jq_required\":true, "
+        "  { \"schema\":\"zcl.agent_ops.v2\", \"no_jq_required\":true, "
         "\"top_next_work\":[...] }\n");
 
     struct json_value commands, api_rules, review, gaps, workflow, ux, work;

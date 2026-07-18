@@ -26,7 +26,7 @@ DEV_LOOP_STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev
 LATEST_CYCLE="$DEV_LOOP_STATE_DIR/latest-cycle.json"
 WATCHER_HEARTBEAT="$DEV_LOOP_STATE_DIR/watcher-heartbeat.json"
 QUALITY_STATE_DIR="${ZCL_QUALITY_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/zclassic23-quality}"
-SCHEMA="zcl.agent_dev_status.v1"
+SCHEMA="zcl.agent_dev_status.v2"
 MODE="${1:-text}"
 
 json_escape() {

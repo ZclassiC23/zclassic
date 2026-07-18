@@ -1,4 +1,4 @@
-> **Correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged below tip on incomplete shielded anchors/nullifiers (verify the live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
+> **Correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged below tip on incomplete shielded anchors/nullifiers (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 
@@ -61,8 +61,9 @@ Steps 1–4 (frontier reader, Invariant B, **Invariant A**, restore tip-selectio
    highest validated tip; no post-restore FATAL to crash-loop on.
 3. **service-restart / supervisor** — `chain_tip_watchdog` (300/600/1200s, bounded 3) —
    now fires only on genuine peer/network stalls.
-4. **external / systemd + MCP** — after the bounded budget, emit `EV_OPERATOR_NEEDED`,
-   leave node up degraded; `zcl_state subsystem=chain_tip_watchdog` surfaces it. No silent halt.
+4. **external / systemd + native command** — after the bounded budget, emit
+   `EV_OPERATOR_NEEDED`, leave node up degraded; `zclassic23 ops state
+   --subsystem=chain_tip_watchdog` surfaces it. No silent halt.
 
 ## Real-data proof (copies only, never live)
 

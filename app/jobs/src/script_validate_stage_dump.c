@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * script_validate_stage_dump — the zcl_state JSON dump for the
+ * script_validate_stage_dump — the native dump-state JSON view for the
  * script_validate Job. Reads the stage-owned state through sibling-private
  * accessors so the reducer step logic stays focused on validation and cursor
  * movement.
@@ -29,7 +29,7 @@
  * height with ok=0 — i.e. the first row holding the pipeline back. Reads the
  * status + first_failure_* columns persisted by step_validate and composes
  * the full typed reason (e.g. "prevout_unresolved tx=<hex> vin=<n>"), so
- * zcl_state answers "why is the pipeline stuck" without a separate query.
+ * `zclassic23 dumpstate script_validate` answers why the pipeline is stuck.
  * No-op (emits blocking_height=-1) when nothing is blocking. Mirrors the
  * sqlite access already used by body_persist_log_at in the stage file. */
 static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
@@ -154,7 +154,7 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
                      db ? stage_log_row_count(db, STAGE_NAME,
                                               "script_validate_log") : 0);
     /* "Why is the pipeline stuck": surface the lowest ok=0 row's typed
-     * reason (status + txid + vin) so zcl_state pinpoints the blocker. */
+     * reason (status + txid + vin) so dumpstate pinpoints the blocker. */
     dump_blocking_failure(out, db);
     stage_dump_counters(out, stage);
     stage_dump_health(out, STAGE_NAME, stage);

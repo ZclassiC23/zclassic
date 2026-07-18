@@ -16,7 +16,7 @@
 
 struct json_value;
 
-/* zcl_state subsystem=sovereignty (`zclassic23 dumpstate sovereignty`).
+/* `zclassic23 dumpstate sovereignty`.
  * Reports coins_kv_proven_authority, self_folded_marker, coins_applied_height,
  * hstar, self_derived_tip_static_checks (the G-SOV parts 2+3 predicate),
  * self_derived_reason, authority_posture, trust_mode

@@ -7,11 +7,10 @@
  * side effect; an unknown branch fails with nearby valid paths plus one
  * executable next action and NEVER becomes an arbitrary RPC method.
  *
- * READ-ONLY Core/Ops leaves execute through zcl_native_bridge_command, which
- * dispatches WITHOUT the MCP router/middleware (ZERO-MCP W0-A): a leaf either
- * calls its re-homed transport-neutral body function (app/controllers/
- * *_native_handlers.c — the same composition the MCP controller now wraps) or,
- * for a pure 1:1 proxy, calls the backing JSON-RPC method directly. Discovery
+ * READ-ONLY Core/Ops leaves execute through zcl_native_bridge_command: a leaf
+ * either calls its transport-neutral body function (app/controllers/
+ * *_native_handlers.c) or, for a pure 1:1 proxy, calls the backing JSON-RPC
+ * method directly. Discovery
  * leaves (help/search/describe/schema) render the native discovery document
  * directly. The `dev` subtree uses this same resolver; its process and watcher
  * handlers are injected only in a ZCL_DEV_BUILD catalog.
@@ -79,94 +78,11 @@ bool zcl_native_command_is_root(const char *word)
     return false;
 }
 
-/* ── path -> compatibility IDs for READ-ONLY native bridge leaves ──────
- * Transport binding lives here, never in registry metadata. Every entry MUST
- * name a READY native leaf whose .handler is zcl_native_bridge_command; the
- * golden catalog test proves the two sets agree. */
-static const struct {
-    const char *path;
-    const char *tool;
-} g_bridge_tools[] = {
-    { "status", "zcl_status_brief" },
-    { "core.status", "zcl_status" },
-    { "core.status.brief", "zcl_status_brief" },
-    { "core.chain.tip", "zcl_chain_tip" },
-    { "core.chain.block.get", "zcl_getblock" },
-    { "core.chain.transaction.get", "zcl_getrawtransaction" },
-    { "core.chain.mempool.status", "zcl_getmempoolinfo" },
-    { "core.chain.mempool.list", "zcl_getrawmempool" },
-    { "core.sync.status", "zcl_syncstate" },
-    { "core.sync.validation", "zcl_validationstatus" },
-    { "core.sync.blockers", "zcl_blockers" },
-    { "core.sync.diagnose", "zcl_syncdiag" },
-    { "core.consensus.report", "zcl_consensus_report" },
-    { "core.consensus.integrity", "zcl_dataintegrity" },
-    { "core.consensus.utxo.commitment", "zcl_utxocommitment" },
-    { "core.consensus.utxo.audit", "zcl_utxo_audit" },
-    { "core.consensus.mmb", "zcl_mmb" },
-    { "core.network.status", "zcl_networkinfo" },
-    { "core.network.peers.list", "zcl_peers" },
-    { "core.network.peers.incidents", "zcl_peer_incidents" },
-    { "core.network.peers.latency", "zcl_peerlatency" },
-    { "core.network.onion.status", "zcl_onion_status" },
-    { "core.network.onion.health", "zcl_onion_health" },
-    { "core.wallet.status", "zcl_getwalletinfo" },
-    { "core.wallet.balance", "zcl_balance" },
-    { "core.wallet.address.list", "zcl_listaddresses" },
-    { "core.wallet.utxo.list", "zcl_listunspent" },
-    { "core.wallet.transaction.list", "zcl_listtransactions" },
-    { "core.wallet.transaction.get", "zcl_gettransaction" },
-    { "core.wallet.backup.status", "zcl_wallet_backup_status" },
-    { "core.wallet.audit", "zcl_walletaudit" },
-    { "core.storage.stats", "zcl_dbstats" },
-    { "core.storage.query", "zcl_sql" },
-    { "core.mining.status", "zcl_getmininginfo" },
-    { "core.mining.benchmark", "zcl_benchmark" },
-    { "ops.health", "zcl_health" },
-    { "ops.diagnose", "zcl_agent_diagnose" },
-    { "ops.lanes", "zcl_agent_lanes" },
-    { "ops.logs", "zcl_node_log" },
-    { "ops.timeline", "zcl_timeline" },
-    { "ops.metrics", "zcl_metrics" },
-    { "ops.postmortem.list", "zcl_postmortem_list" },
-    { "ops.recovery.status", "zcl_refold_status" },
-    { "ops.debug.dash.kpi", "zcl_kpi" },
-    { "ops.debug.dash.snapshot", "zcl_operator_snapshot" },
-    { "ops.debug.dash.summary", "zcl_operator_summary" },
-    { "ops.debug.dash.milestone", "zcl_milestone" },
-    { "ops.debug.dash.mirror", "zcl_mirror_status" },
-    { "ops.debug.dash.selfheal", "zcl_self_heal_stats" },
-    /* app features (ZCL app controller port — read surface) */
-    { "app.names.resolve", "zcl_name_resolve" },
-    { "app.names.list", "zcl_name_list" },
-    { "app.tokens.list", "zcl_tokens" },
-    { "app.messaging.inbox", "zcl_msg_inbox" },
-    { "app.market.list", "zcl_market_list" },
-    { "app.market.status", "zcl_market_status" },
-    { "app.swap.chains", "zcl_swap_chains" },
-    { "app.swap.list", "zcl_swap_list" },
-};
-
-const char *zcl_native_bridge_tool_for_path(const char *path)
-{
-    if (!path)
-        return NULL;
-    for (size_t i = 0; i < sizeof(g_bridge_tools) / sizeof(g_bridge_tools[0]);
-         i++) {
-        if (strcmp(g_bridge_tools[i].path, path) == 0)
-            return g_bridge_tools[i].tool;
-    }
-    return NULL;
-}
-
-/* ── MCP-free dispatch bindings for the bridge (W0-A) ─────────────────
+/* ── dispatch bindings for the bridge ─────────────────────────────────
  * Every bridged leaf resolves to exactly ONE of:
- *   - a re-homed transport-neutral body function (the same composition the
- *     MCP controller now wraps — app/controllers *_native_handlers.c), or
- *   - a direct JSON-RPC method (the leaf's legacy MCP handler was a pure
- *     DEFINE_PT pass-through, so the composition already lives in the RPC
- *     layer and the tool added nothing but transport).
- * The golden catalog test proves the union covers g_bridge_tools[] exactly. */
+ *   - a transport-neutral body function, or
+ *   - a direct JSON-RPC method for a pure pass-through leaf.
+ * The golden catalog test proves the union covers every bridged leaf exactly. */
 static const struct {
     const char *path;
     zcl_native_body_fn body;
@@ -433,6 +349,12 @@ const char *zcl_native_bridge_rpc_for_path(const char *path)
     return binding ? binding->rpc_method : NULL;
 }
 
+static bool bridge_has_exact_binding(const char *path)
+{
+    return (zcl_native_bridge_body_for_path(path) != NULL) !=
+           (zcl_native_bridge_rpc_for_path(path) != NULL);
+}
+
 /* ── one-shot RPC client bootstrap ──────────────────────────────────── */
 static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
@@ -444,15 +366,14 @@ static void bridge_ensure_rpc_client(void)
         return;
     /* A one-shot native process has no app_init(): initialize the JSON-RPC
      * client (datadir cookie + port) and select mainnet chain params for any
-     * body function that consults them. No MCP router/middleware is built. */
-    mcp_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
+     * body function that consults them. */
+    node_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
     chain_params_select(CHAIN_MAIN);
     g_bridge_rpc_ready = true;
 }
 
-/* Translate the CLI leaf input into the exact argument object the bound MCP
- * tool expects. Most leaves are pass-through (their input_keys already match
- * the tool's parameter names); a few need a rename. */
+/* Translate the CLI leaf input into the exact argument object its handler
+ * expects. Most leaves are pass-through; a few need a rename. */
 static bool bridge_build_args(const char *path,
                               const struct json_value *input,
                               struct json_value *out, bool *use_out)
@@ -491,7 +412,7 @@ static bool bridge_build_args(const char *path,
 }
 
 /* ── progressive-disclosure projection (contract §8/§9) ──────────────────
- * A bridged tool body can exceed the 4096-byte ordinary-result budget. Rather
+ * A bridged command body can exceed the 4096-byte ordinary-result budget. Rather
  * than fail with RESPONSE_BUDGET_EXCEEDED, project the top-level object to fit:
  *   summary — scalar top-level fields only (containers dropped);
  *   normal  — greedy top-level fields in order until the budget (default);
@@ -657,7 +578,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
                                "serialize", false, false,
-                               "tool returned an unsupported body shape",
+                               "command returned an unsupported body shape",
                                request && request->spec
                                    ? request->spec->path : "");
         return;
@@ -718,7 +639,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
             truncated = true;
             /* A single field larger than the whole page budget must not stall
              * the cursor: advance past it and name it so the caller can fetch
-             * it narrowly (a wider budget, --fields, or the tool directly). */
+             * it narrowly (a wider budget, --fields, or the command directly). */
             if (included == 0) {
                 next_cursor = i + 1;
                 oversize_key = body->keys[i];
@@ -762,7 +683,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
 
 /* Run a bridged leaf with an EXPLICIT body function — everything
  * zcl_native_bridge_command does after resolving the body pointer: build the
- * tool arguments from the request, dispatch (the supplied body function, or —
+ * command arguments from the request, dispatch (the supplied body function, or —
  * when `body` is NULL and the leaf is a pure 1:1 proxy — the backing JSON-RPC
  * method directly), then project the resulting body into the reply envelope.
  * A hot-swap generation supplies its OWN freshly-compiled body here; the
@@ -776,15 +697,20 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
 {
     if (!request || !request->spec || !reply)
         return;
-    const char *tool = zcl_native_bridge_tool_for_path(request->spec->path);
+    zcl_native_body_fn resident_body =
+        zcl_native_bridge_body_for_path(request->spec->path);
     const struct bridge_rpc_binding *rpc_binding =
         bridge_rpc_binding_for_path(request->spec->path);
     const char *rpc_method = rpc_binding ? rpc_binding->rpc_method : NULL;
-    if (!tool || (!body && !rpc_method)) {
+    bool valid_binding = body ? (resident_body != NULL && rpc_method == NULL)
+                              : (resident_body == NULL && rpc_method != NULL);
+    if (!valid_binding) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "NO_BRIDGE_BINDING",
                                "dispatch", false, false,
-                               "ready leaf has no MCP-free bridge binding",
+                               body && rpc_method
+                                   ? "ready leaf has ambiguous dispatch bindings"
+                                   : "ready leaf has no dispatch binding",
                                request->spec->path);
         return;
     }
@@ -805,22 +731,19 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
     const struct json_value *args =
         use_translated ? &translated : request->input;
 
-    /* Dispatch WITHOUT the MCP router/middleware: the supplied body function
-     * (identical composition to the MCP tool) or the backing RPC directly. */
+    /* Dispatch through the supplied body function or the backing RPC. */
     struct zcl_native_body_err body_err = { 0 };
     char *result = body ? body(args, &body_err)
-                        : mcp_node_rpc(rpc_method, NULL);
+                        : node_rpc_call(rpc_method, NULL);
     if (use_translated)
         json_free(&translated);
 
     if (!result) {
-        /* Match the legacy surface: a failed dispatch produced an error
-         * envelope whose message the bridge surfaced as TOOL_ERROR. */
         char msgbuf[224];
         const char *msg;
         if (body) {
             msg = body_err.message[0] ? body_err.message
-                                      : "tool reported an error";
+                                      : "command handler reported an error";
         } else {
             (void)snprintf(msgbuf, sizeof(msgbuf), "RPC %s returned null",
                            rpc_method);
@@ -828,7 +751,8 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         }
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
-                               "execute", false, false, msg, tool);
+                               "execute", false, false, msg,
+                               request->spec->path);
         nc_add_describe_next(reply, request->spec->path,
                              "inspect this command before retrying");
         return;
@@ -841,7 +765,8 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
                                "serialize", false, false,
-                               "tool returned a non-object body", tool);
+                               "command returned an invalid JSON body",
+                               request->spec->path);
         return;
     }
     free(result);
@@ -859,8 +784,8 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
                                "execute", false, false,
-                               msg && msg[0] ? msg : "tool reported an error",
-                               tool);
+                               msg && msg[0] ? msg : "command reported an error",
+                               request->spec->path);
         json_free(&body_doc);
         return;
     }
@@ -870,7 +795,8 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
                                "serialize", false, false,
-                               "tool returned a non-object body", tool);
+                               "command returned a non-object body",
+                               request->spec->path);
         return;
     }
     if (!body) {
@@ -890,7 +816,7 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
         }
     }
 
-    /* Success: project the tool body into the result envelope's data, bounded
+    /* Success: project the command body into the result envelope's data, bounded
      * by view + budget so a large read pages instead of overflowing (§8/§9). */
     zcl_native_bridge_project(request, &body_doc, reply);
     json_free(&body_doc);
@@ -1056,15 +982,9 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
     (void)json_push_kv_str(&reply->data, "authority", "definition-only");
 }
 
-/* ── ops.state / ops.selftest native leaves (W0 §3) ──────────────────────
- * These two leaves are the native successors of the MCP `zcl_state` and
- * `zcl_self_test` tools. They do NOT enter mcp_middleware / mcp_router:
- *   - ops.state calls the `dumpstate` RPC method directly (the same path
- *     h_zcl_state used, minus the router), so the generic subsystem dump is
- *     reachable natively with the MCP dispatch table uninvoked;
- *   - ops.selftest is a node-free, deterministic well-formedness sweep of the
- *     registry (the native analogue of `zcl_self_test mode=registry`), so the
- *     dev-lane deploy verify can gate on `fail == 0` without a running node. */
+/* ── ops.state / ops.selftest native leaves ──────────────────────────────
+ * ops.state calls the `dumpstate` RPC method directly, while ops.selftest is
+ * a node-free, deterministic well-formedness sweep of the registry. */
 void zcl_native_handle_ops_state(const struct zcl_command_request *request,
                                  struct zcl_command_reply *reply)
 {
@@ -1109,9 +1029,8 @@ void zcl_native_handle_ops_state(const struct zcl_command_request *request,
     }
 
     bridge_ensure_rpc_client();
-    /* Call the RPC layer directly — the MCP router/middleware is never entered
-     * (W0: nothing native depends on the MCP dispatch path). */
-    char *result = mcp_node_rpc("dumpstate", params_json);
+    /* Call the RPC layer directly. */
+    char *result = node_rpc_call("dumpstate", params_json);
     if (!result) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
@@ -1132,7 +1051,7 @@ void zcl_native_handle_ops_state(const struct zcl_command_request *request,
         return;
     }
     free(result);
-    /* mcp_node_rpc surfaces a JSON-RPC failure as either {"error":{...}}
+    /* node_rpc_call surfaces a JSON-RPC failure as either {"error":{...}}
      * (transport) or a bare {"code":..,"message":..} (RPC-level). Treat both
      * as a failed dump — e.g. an unknown subsystem. */
     const struct json_value *err = json_get(&body, "error");
@@ -1170,7 +1089,7 @@ void zcl_native_handle_network_chain_view(
      * network_monitor subsystem; surface it through the same SELECT-only
      * dumpstate RPC that ops.state uses, pinned to that subsystem. */
     bridge_ensure_rpc_client();
-    char *result = mcp_node_rpc("dumpstate", "[\"network_monitor\"]");
+    char *result = node_rpc_call("dumpstate", "[\"network_monitor\"]");
     if (!result) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
@@ -1260,8 +1179,8 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
                  (s->budget_bytes < 256 || s->budget_bytes > 65536))
             reason = "budget-out-of-range";
         else if (s->handler == zcl_native_bridge_command &&
-                 !zcl_native_bridge_tool_for_path(s->path))
-            reason = "bridge-leaf-without-binding";
+                 !bridge_has_exact_binding(s->path))
+            reason = "bridge-leaf-without-exact-binding";
 
         if (reason) {
             failed++;
@@ -1294,8 +1213,7 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
 }
 
 /* ── ops.debug.backtrace native leaf ───────────────────────────────────────
- * Dispatches the `selfbacktrace` RPC method directly (the MCP router/middleware
- * is never entered, same as ops.state → dumpstate) so the running node dumps a
+ * Dispatches the `selfbacktrace` RPC method directly so the running node dumps a
  * backtrace for every thread and returns the log path + thread_count. This is
  * the typed answer to "what is every thread doing right now" on hosts where
  * perf_event_paranoid / yama ptrace_scope block perf and gdb attach. */
@@ -1306,7 +1224,7 @@ void zcl_native_handle_ops_debug_backtrace(
         return;
 
     bridge_ensure_rpc_client();
-    char *result = mcp_node_rpc("selfbacktrace", "[]");
+    char *result = node_rpc_call("selfbacktrace", "[]");
     if (!result) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
@@ -1412,7 +1330,7 @@ void zcl_native_handle_ops_profile(const struct zcl_command_request *request,
                    (long long)seconds, (long long)top_n);
 
     bridge_ensure_rpc_client();
-    char *result = mcp_node_rpc("profile", params);
+    char *result = node_rpc_call("profile", params);
     struct json_value body;
     if (!result || !json_read(&body, result, strlen(result)) ||
         body.type != JSON_OBJ) {
@@ -1771,7 +1689,7 @@ void zcl_native_handle_ops_rom(const struct zcl_command_request *request,
         return;
 
     bridge_ensure_rpc_client();
-    char *result = mcp_node_rpc("dumpstate", "[\"rom_compile\"]");
+    char *result = node_rpc_call("dumpstate", "[\"rom_compile\"]");
     if (!result) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
@@ -1835,7 +1753,7 @@ static bool nc_rom_fetch_live(void *ctx, struct json_value *out, char *err,
 {
     (void)ctx;
     bridge_ensure_rpc_client();
-    char *result = mcp_node_rpc("dumpstate", "[\"rom_compile\"]");
+    char *result = node_rpc_call("dumpstate", "[\"rom_compile\"]");
     if (!result) {
         (void)snprintf(err, errlen, "node did not return a rom_compile body");
         return false;

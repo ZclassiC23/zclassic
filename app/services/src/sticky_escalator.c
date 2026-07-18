@@ -312,7 +312,7 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
 }
 
 /* Name a typed DEPENDENCY blocker (retry-forever, never latching) so a stall
- * that reaches a precondition-absent rung is escalatable in zcl_blockers
+ * that reaches a precondition-absent rung is escalatable in blocker diagnostics
  * instead of a silent cycle. Reason text is truncated to fit, never rejected. */
 static void name_dependency_blocker(const char *id, const char *reason)
 {

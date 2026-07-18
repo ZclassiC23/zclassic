@@ -26,7 +26,8 @@ only mainnet node yet.
 
 It runs on ZClassic mainnet on the `zclassicd` consensus floor, but the public
 canonical node is currently **wedged below tip** (verify the live H\* via
-`zcl_status` / `dumpstate reducer_frontier`; [`docs/HANDOFF.md`](docs/HANDOFF.md)
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`;
+[`docs/HANDOFF.md`](docs/HANDOFF.md)
 holds current state) by incomplete historical
 shielded anchors/nullifiers. A borrowed snapshot previously brought its
 transparent state to tip. Its anchor hash is checked against a validated local
@@ -275,8 +276,7 @@ Start with `status` (height, peers, sync, blocker, health in one call);
 catalog. Full doc: [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md);
 daily-driver reference in [`CLAUDE.md`](CLAUDE.md).
 
-The typed native command registry is the sole AI/operator surface. The legacy
-MCP stdio server has been removed.
+The typed native command registry is the sole AI/operator surface.
 
 ## Block explorer
 
@@ -344,7 +344,7 @@ zclassic23 (single static binary)
 - **Capability-fd discipline:** privileged reads (the replay receipt, the
   consensus-bundle exporter) go through capability file descriptors, not bare
   pathnames.
-- **`zcl_sql`** is SELECT-only, semicolon-rejected, auto-LIMIT, and denies a
+- **`zclassic23 dbquery`** is SELECT-only, semicolon-rejected, auto-LIMIT, and denies a
   set of wallet-secret tables/columns by name.
 - **83 lint gates** (`make lint`) enforce these and the defensive-coding
   rules below on every change. Full list:

@@ -619,7 +619,7 @@ bool bundle_exporter_register_service(struct zcl_service_kernel *kernel,
     return zcl_service_kernel_register(kernel, &spec);
 }
 
-/* ── Introspection (zcl_state subsystem=bundle_exporter) ────────── */
+/* ── `zclassic23 dumpstate bundle_exporter` ────────────────────── */
 
 bool bundle_exporter_dump_state_json(struct json_value *out, const char *key)
 {

@@ -2,16 +2,12 @@
  *
  * HTTP RPC middleware — rate limit, IP ban, request timeout.
  *
- * The MCP surface (tools/mcp/middleware.{h,c}) gates every tool call
- * with auth + token-bucket rate limit + per-tool timeout.  The HTTP
- * RPC server (lib/rpc/src/httpserver.c) gets none of that — it has
- * basic auth (username/password or cookie), a 5-second slowloris
- * recv timeout, and that's it.  An attacker who gets past auth (or
- * a misbehaving operator script) can pound the server as fast as
- * the worker pool can handle.
+ * The HTTP RPC server has basic auth (username/password or cookie) and a
+ * 5-second slowloris receive timeout. An attacker who gets past auth (or a
+ * misbehaving operator script) can otherwise pound the server as fast as the
+ * worker pool can handle.
  *
- * This module adds three guard layers, mirroring the MCP design but
- * keyed on IP address instead of tool name:
+ * This module adds three guard layers keyed on IP address:
  *
  *   1. Global token bucket — caps total RPC requests per second
  *      across the whole server.  Defaults to 50 rps / 100 burst.
@@ -102,7 +98,7 @@ struct rpc_http_middleware {
     struct rpc_http_mw_ban_entry bans[RPC_HTTP_MW_MAX_BANS];
     size_t                        num_bans;
 
-    /* Stats — read by tests and the future zcl_rpc_report tool */
+    /* Stats — read by tests and native RPC diagnostics. */
     uint64_t stat_allowed;
     uint64_t stat_rate_limited_global;
     uint64_t stat_rate_limited_per_ip;
@@ -148,7 +144,7 @@ void rpc_http_middleware_record_auth_fail(
 void rpc_http_middleware_record_success(
     struct rpc_http_middleware *mw, uint32_t client_ip_be);
 
-/* Inspection helpers (for tests + zcl_rpc_report). */
+/* Inspection helpers for tests and native RPC diagnostics. */
 bool   rpc_http_middleware_is_banned(struct rpc_http_middleware *mw,
                                       uint32_t client_ip_be);
 size_t rpc_http_middleware_active_bans(struct rpc_http_middleware *mw);
@@ -161,7 +157,7 @@ void rpc_http_middleware_reset_state(struct rpc_http_middleware *mw);
 
 /* Global middleware handle.  The RPC server owns the singleton (a
  * file-scope struct in httpserver.c) and registers its pointer here at
- * startup so observability code (metrics.c, zcl_rpc_report) can read
+ * startup so observability code and native RPC diagnostics can read
  * the live config + counters without having to reach into httpserver.c.
  *
  * `rpc_http_middleware_set_global(NULL)` at shutdown clears the pointer

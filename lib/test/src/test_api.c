@@ -1706,7 +1706,7 @@ int test_api(void)
         json_init(&root);
         bool ok = n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.rest_index.v1") == 0;
+                          "zcl.rest_index.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "base_path")),
@@ -1802,7 +1802,7 @@ int test_api(void)
                                     "agent_command_center");
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "schema")),
-                    "zcl.application_protocol_contract.v1") == 0;
+                    "zcl.application_protocol_contract.v2") == 0;
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "status")),
                     "active") == 0;
@@ -2109,7 +2109,7 @@ int test_api(void)
         ok = ok && protocols_route &&
              strcmp(json_get_str(json_get(protocols_route,
                                     "response_schema")),
-                    "zcl.application_protocols.index.v1") == 0;
+                    "zcl.application_protocols.index.v2") == 0;
         ok = ok && protocols_route &&
              strcmp(json_get_str(json_get(protocols_route,
                                     "application_protocol")),
@@ -2121,7 +2121,7 @@ int test_api(void)
         ok = ok && service_catalog_route &&
              strcmp(json_get_str(json_get(service_catalog_route,
                                     "response_schema")),
-                    "zcl.service_catalog.v1") == 0;
+                    "zcl.service_catalog.v2") == 0;
         ok = ok && service_catalog_route &&
              strcmp(json_get_str(json_get(service_catalog_route,
                                     "crud_name")),
@@ -2133,7 +2133,7 @@ int test_api(void)
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                     "response_schema")),
-                    "zcl.service_contract.v1") == 0;
+                    "zcl.service_contract.v2") == 0;
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                     "crud_name")),
@@ -2143,7 +2143,7 @@ int test_api(void)
         ok = ok && service_operations_route &&
              strcmp(json_get_str(json_get(service_operations_route,
                                     "response_schema")),
-                    "zcl.service_operations.index.v1") == 0;
+                    "zcl.service_operations.index.v2") == 0;
         ok = ok && service_operations_route &&
              strcmp(json_get_str(json_get(service_operations_route,
                                     "crud_name")),
@@ -2181,7 +2181,7 @@ int test_api(void)
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                     "response_schema")),
-                    "zcl.service_operation.v1") == 0;
+                    "zcl.service_operation.v2") == 0;
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                     "crud_name")),
@@ -2418,30 +2418,6 @@ int test_api(void)
                                                 "drilldown"),
                                                 "service_operations")),
                           "/api/v1/service-operations") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "first_tool")),
-                          "zcl_agent") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "api_tool")),
-                          "zcl_openapi") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "app_protocols_tool")),
-                          "zcl_app_protocols") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "service_catalog_tool")),
-                          "zcl_service_catalog") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "service_operations_tool")),
-                          "zcl_service_operations") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "drilldown_tool")),
-                          "zcl_health") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "milestone_tool")),
-                          "zcl_milestone") == 0;
-        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
-                                                "refold_tool")),
-                          "zcl_refold_status") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "api_command")),
                           "zclassic23 api") == 0;
@@ -2578,7 +2554,7 @@ int test_api(void)
         json_init(&root);
         bool ok = n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.application_protocols.index.v1") == 0;
+                          "zcl.application_protocols.index.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "base_layer")),
                           "zclassic_l1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "service_layer")),
@@ -2619,7 +2595,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.application_protocol_contract.v1") == 0;
+                          "zcl.application_protocol_contract.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "name")),
                           "script_contracts") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "anchor_kind")),
@@ -2662,7 +2638,7 @@ int test_api(void)
         json_init(&root);
         bool ok = n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.service_catalog.v1") == 0;
+                          "zcl.service_catalog.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "base_layer")),
                           "zclassic_l1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "service_layer")),
@@ -2682,7 +2658,7 @@ int test_api(void)
                           "/api/v1/service-operations") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "operation_schema")),
-                          "zcl.service_operation.v1") == 0;
+                          "zcl.service_operation.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "runtime_probe_schema")),
                           "zcl.service_runtime_probe.v1") == 0;
@@ -2692,7 +2668,7 @@ int test_api(void)
         const struct json_value *ux = json_get(&root, "sovereign_ux");
         ok = ok && ux &&
              strcmp(json_get_str(json_get(ux, "schema")),
-                    "zcl.sovereign_ux_contract.v1") == 0;
+                    "zcl.sovereign_ux_contract.v2") == 0;
         ok = ok && ux &&
              strcmp(json_get_str(json_get(ux, "base_layer")),
                     "zclassic_l1") == 0;
@@ -2757,7 +2733,7 @@ int test_api(void)
                     "/api/v1/bootstrap") == 0;
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "schema")),
-                    "zcl.service_contract.v1") == 0;
+                    "zcl.service_contract.v2") == 0;
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "self_route")),
                     "/api/v1/service-catalog/bootstrap") == 0;
@@ -2822,14 +2798,14 @@ int test_api(void)
                                    "preferred_rest_count")) == 2;
         ok = ok && bootstrap_summary &&
              json_get_int(json_get(bootstrap_summary,
-                                   "preferred_mcp_count")) == 1;
+                                   "preferred_rpc_count")) == 1;
         const struct json_value *bootstrap_status_op =
             api_test_find_str_field(json_get(bootstrap, "operations"),
                                     "operation",
                                     "read_bootstrap_status");
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op, "schema")),
-                    "zcl.service_operation.v1") == 0;
+                    "zcl.service_operation.v2") == 0;
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op,
                                           "operation_id")),
@@ -2845,17 +2821,11 @@ int test_api(void)
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op, "rest_route")),
                     "/api/v1/bootstrap") == 0;
-        /* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2):
-         * rpc_method is the native RPC/CLI surface for this operation
-         * (`zclassic23 bootstrapstatus`), asserted alongside mcp_tool
-         * rather than instead of it — mcp_tool stays accurate until W3. */
+        /* rpc_method is the native RPC/CLI surface for this operation. */
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op,
                                           "rpc_method")),
                     "bootstrapstatus") == 0;
-        ok = ok && bootstrap_status_op &&
-             strcmp(json_get_str(json_get(bootstrap_status_op, "mcp_tool")),
-                    "zcl_bootstrapstatus") == 0;
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op,
                                           "execution_surface")),
@@ -2875,8 +2845,6 @@ int test_api(void)
         ok = ok && json_get_bool(json_get(bootstrap_status_op,
                                           "rest_callable"));
         ok = ok && json_get_bool(json_get(bootstrap_status_op,
-                                          "mcp_callable"));
-        ok = ok && json_get_bool(json_get(bootstrap_status_op,
                                           "rpc_callable"));
         const struct json_value *bootstrap_peers_op =
             api_test_find_str_field(json_get(bootstrap, "operations"),
@@ -2895,7 +2863,7 @@ int test_api(void)
         ok = ok && bootstrap_peers_op &&
              json_get_bool(json_get(bootstrap_peers_op, "rest_callable"));
         ok = ok && bootstrap_peers_op &&
-             !json_get_bool(json_get(bootstrap_peers_op, "mcp_callable"));
+             !json_get_bool(json_get(bootstrap_peers_op, "rpc_callable"));
         ok = ok && names &&
              strcmp(json_get_str(json_get(names, "application_protocol")),
                     "znam") == 0;
@@ -2940,8 +2908,6 @@ int test_api(void)
         ok = ok && name_services_op &&
              json_get_bool(json_get(name_services_op, "rest_callable"));
         ok = ok && name_services_op &&
-             !json_get_bool(json_get(name_services_op, "mcp_callable"));
-        ok = ok && name_services_op &&
              !json_get_bool(json_get(name_services_op, "rpc_callable"));
         const struct json_value *name_register_op =
             api_test_find_str_field(json_get(names, "operations"),
@@ -2950,9 +2916,6 @@ int test_api(void)
         ok = ok && name_register_op &&
              strcmp(json_get_str(json_get(name_register_op, "rpc_method")),
                     "name_register") == 0;
-        ok = ok && name_register_op &&
-             strcmp(json_get_str(json_get(name_register_op, "mcp_tool")),
-                    "zcl_name_register") == 0;
         ok = ok && name_register_op &&
              strcmp(json_get_str(json_get(name_register_op,
                                           "operation_id")),
@@ -2972,15 +2935,13 @@ int test_api(void)
         ok = ok && name_register_op &&
              strcmp(json_get_str(json_get(name_register_op,
                                           "agent_preferred_interface")),
-                    "mcp") == 0;
+                    "rpc") == 0;
         ok = ok && name_register_op &&
              strcmp(json_get_str(json_get(name_register_op,
                                           "agent_next_step")),
-                    "review_destructive_write_safety_then_call_mcp_tool") == 0;
+                    "review_destructive_write_safety_then_call_rpc_method") == 0;
         ok = ok && !json_get_bool(json_get(name_register_op,
                                            "rest_callable"));
-        ok = ok && json_get_bool(json_get(name_register_op,
-                                          "mcp_callable"));
         ok = ok && json_get_bool(json_get(name_register_op,
                                           "rpc_callable"));
         ok = ok && name_register_op &&
@@ -3016,7 +2977,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.service_operations.index.v1") == 0;
+                          "zcl.service_operations.index.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "catalog_route")),
                           "/api/v1/service-catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
@@ -3026,7 +2987,7 @@ int test_api(void)
                           "/api/v1/service-operations/{operation_id}") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "operation_schema")),
-                          "zcl.service_operation.v1") == 0;
+                          "zcl.service_operation.v2") == 0;
         const struct json_value *operations = json_get(&root, "operations");
         ok = ok && operations && operations->type == JSON_ARR &&
              json_get_int(json_get(&root, "operation_count")) ==
@@ -3045,14 +3006,7 @@ int test_api(void)
              json_get_int(json_get(summary, "service_count")) ==
              (int64_t)json_size(service_facets);
         ok = ok && json_get_int(json_get(summary, "rest_callable_count")) > 0;
-        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): no
-         * counterpart "native_callable_count"/"rpc_callable_count" field
-         * exists yet in api_controller_service_operations_index.c — adding
-         * one is a product-code change, out of scope for this
-         * test-assertion migration pass. Deferred to W3 (this assert dies
-         * with mcp_callable_count when tools/mcp/ (entire tree) is deleted), unless a
-         * native counter is added first, in which case migrate here then. */
-        ok = ok && json_get_int(json_get(summary, "mcp_callable_count")) > 0;
+        ok = ok && json_get_int(json_get(summary, "rpc_callable_count")) > 0;
         ok = ok && json_get_int(json_get(summary, "destructive_count")) > 0;
         const struct json_value *znam_facet =
             api_test_find_str_field(service_facets, "service", "znam_names");
@@ -3067,15 +3021,15 @@ int test_api(void)
                                    "preferred_rest_count")) == 3;
         ok = ok && znam_facet &&
              json_get_int(json_get(znam_facet,
-                                   "preferred_mcp_count")) == 1;
+                                   "preferred_rpc_count")) == 1;
         const struct json_value *rest_facet =
             api_test_find_named(interface_facets, "rest");
-        const struct json_value *mcp_facet =
-            api_test_find_named(interface_facets, "mcp");
+        const struct json_value *rpc_facet =
+            api_test_find_named(interface_facets, "rpc");
         ok = ok && rest_facet &&
              json_get_int(json_get(rest_facet, "operation_count")) > 0;
-        ok = ok && mcp_facet &&
-             json_get_int(json_get(mcp_facet, "operation_count")) > 0;
+        ok = ok && rpc_facet &&
+             json_get_int(json_get(rpc_facet, "operation_count")) > 0;
         const struct json_value *destructive_facet =
             api_test_find_named(safety_facets,
                                 "operator_private_destructive");
@@ -3113,7 +3067,7 @@ int test_api(void)
         ok = ok && register_op &&
              strcmp(json_get_str(json_get(register_op,
                                           "agent_preferred_interface")),
-                    "mcp") == 0;
+                    "rpc") == 0;
         ok = ok && register_op &&
              json_get_bool(json_get(register_op, "destructive"));
         static uint8_t filtered_ops_resp[131072];
@@ -3178,7 +3132,7 @@ int test_api(void)
         ok = ok && allowed_filters &&
              strcmp(json_get_str(json_get(allowed_filters,
                                           "preferred_interface")),
-                    "rest,mcp,rpc,native_or_planned") == 0;
+                    "rest,rpc,native_or_planned") == 0;
         ok = ok && allowed_filters &&
              strcmp(json_get_str(json_get(allowed_filters, "interface")),
                     "alias_for_preferred_interface") == 0;
@@ -3239,7 +3193,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.service_contract.v1") == 0;
+                          "zcl.service_contract.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "name")),
                           "znam_names") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "catalog_route")),
@@ -3274,13 +3228,13 @@ int test_api(void)
                                    "rest_callable_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
-                                   "mcp_callable_count")) == 3;
+                                   "rpc_callable_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
                                    "preferred_rest_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
-                                   "preferred_mcp_count")) == 1;
+                                   "preferred_rpc_count")) == 1;
         ok = ok && strcmp(json_get_str(json_get(&root, "read_model")),
                           "znam_projection_confirmed_chain_records") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "write_model")),
@@ -3323,7 +3277,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.service_operation.v1") == 0;
+                          "zcl.service_operation.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "operation_id")),
                           "znam_names.resolve_name") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "self_route")),
@@ -3338,8 +3292,6 @@ int test_api(void)
                           "resolve_name") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "rest_route")),
                           "/api/v1/names/{name}") == 0;
-        ok = ok && strcmp(json_get_str(json_get(&root, "mcp_tool")),
-                          "zcl_name_resolve") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "catalog_route")),
                           "/api/v1/service-catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "operation_route")),
@@ -3355,7 +3307,6 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root, "agent_next_step")),
                           "call_rest_route_and_validate_output_schema") == 0;
         ok = ok && json_get_bool(json_get(&root, "rest_callable"));
-        ok = ok && json_get_bool(json_get(&root, "mcp_callable"));
         ok = ok && json_get_bool(json_get(&root, "rpc_callable"));
         ok = ok && json_get_bool(json_get(&root, "public_read"));
         ok = ok && !json_get_bool(json_get(&root, "destructive"));
@@ -3384,7 +3335,6 @@ int test_api(void)
                                                 "agent_preferred_interface")),
                           "rest") == 0;
         ok = ok && json_get_bool(json_get(&root, "rest_callable"));
-        ok = ok && !json_get_bool(json_get(&root, "mcp_callable"));
         ok = ok && !json_get_bool(json_get(&root, "rpc_callable"));
         json_free(&root);
 
@@ -3617,11 +3567,11 @@ int test_api(void)
                     "operator_wallet_transaction") == 0;
         ok = ok && protocols &&
              strcmp(json_get_str(json_get(protocols, "x-response-schema")),
-                    "zcl.application_protocols.index.v1") == 0;
+                    "zcl.application_protocols.index.v2") == 0;
         ok = ok && service_catalog &&
              strcmp(json_get_str(json_get(service_catalog,
                                           "x-response-schema")),
-                    "zcl.service_catalog.v1") == 0;
+                    "zcl.service_catalog.v2") == 0;
         ok = ok && service_catalog &&
              strcmp(json_get_str(json_get(service_catalog,
                                           "x-crud-name")),
@@ -3629,7 +3579,7 @@ int test_api(void)
         ok = ok && service_operations &&
              strcmp(json_get_str(json_get(service_operations,
                                           "x-response-schema")),
-                    "zcl.service_operations.index.v1") == 0;
+                    "zcl.service_operations.index.v2") == 0;
         ok = ok && service_operations &&
              strcmp(json_get_str(json_get(service_operations,
                                           "x-crud-name")),
@@ -3666,11 +3616,11 @@ int test_api(void)
         ok = ok && service_operations_openapi_allowed &&
              strcmp(json_get_str(json_get(
                         service_operations_openapi_allowed, "surface")),
-                    "rest,mcp,rpc") == 0;
+                    "rest,rpc") == 0;
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                           "x-response-schema")),
-                    "zcl.service_contract.v1") == 0;
+                    "zcl.service_contract.v2") == 0;
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                           "x-crud-name")),
@@ -3681,7 +3631,7 @@ int test_api(void)
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                           "x-response-schema")),
-                    "zcl.service_operation.v1") == 0;
+                    "zcl.service_operation.v2") == 0;
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                           "x-crud-name")),
@@ -3896,7 +3846,7 @@ int test_api(void)
         const struct json_value *live = json_get(&root, "live");
         const char *live_source = json_get_str(json_get(live, "source"));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.milestone_status.v1") == 0;
+                          "zcl.milestone_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "milestone")),
                           "v1 MVP") == 0;
         ok = ok && json_get_int(json_get(&root,
@@ -3937,7 +3887,7 @@ int test_api(void)
                    "agent_cached_summary_with_fallbacks") == 0;
         ok = ok && live && (live_full_agent || live_agent_fallback);
         ok = ok && strcmp(json_get_str(json_get(live, "source_schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && json_get_bool(json_get(live,
                                           "agent_summary_available"));
         ok = ok && json_get_bool(json_get(live, "agent_fields_complete")) ==
@@ -4006,7 +3956,7 @@ int test_api(void)
         const struct json_value *snap = json_get(&root, "anchor_snapshot");
         const struct json_value *commands = json_get(&root, "commands");
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.refold_status.v1") == 0;
+                          "zcl.refold_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
         ok = ok && strstr(json_get_str(json_get(&root, "purpose")),
@@ -4656,7 +4606,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
@@ -4704,7 +4654,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
@@ -4838,7 +4788,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
@@ -4852,7 +4802,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
@@ -4882,7 +4832,7 @@ int test_api(void)
         bool ok = json_read(&params, params_json, strlen(params_json));
         ok = ok && rpc_agent_impact(&params, false, &result);
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.agent_impact.v1") == 0;
+                          "zcl.agent_impact.v2") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
         ok = ok && json_get_int(json_get(&result,
                                          "relevant_test_groups_count")) == 3;
@@ -4915,7 +4865,7 @@ int test_api(void)
         bool ok = json_read(&params, params_json, strlen(params_json));
         ok = ok && rpc_agent_impact(&params, false, &result);
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.agent_impact.v1") == 0;
+                          "zcl.agent_impact.v2") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 1;
         ok = ok && json_get_int(json_get(&result,
                                          "relevant_test_groups_count")) == 4;
@@ -4946,7 +4896,7 @@ int test_api(void)
         bool ok = json_read(&params, params_json, strlen(params_json));
         ok = ok && rpc_agent_impact(&params, false, &result);
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.agent_impact.v1") == 0;
+                          "zcl.agent_impact.v2") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
         ok = ok && json_get_int(json_get(&result,
                                          "relevant_test_groups_count")) == 5;
@@ -4989,7 +4939,7 @@ int test_api(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v1") == 0;
+                          "zcl.public_status.v2") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                           "blocked") == 0;
         ok = ok && !json_get_bool(json_get(&root, "healthy"));

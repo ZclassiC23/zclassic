@@ -274,7 +274,7 @@ whole log walk.
 
 `generation_sha256` is what binds a source snapshot to the *binary* it
 produced: a raw SHA-256 digest of the exact hot-swap `.so` (`artifact_sha256`
-from `zcl_agent_hotswap`) or the exact reload generation
+from the native hot-swap result) or the exact reload generation
 (`candidate_sha256` from the `zcl.agent_dev_deploy.v1` state file), decoded
 by `vcs_devloop_hex32_decode()`. A `check` cycle (docs-only, no build) has no
 generation to bind, so it commits with an all-zero `generation_sha256` —
@@ -380,6 +380,6 @@ sealed-refusal path). Both are registered in `lib/test/src/test_parallel.c`.
 The native dev registry exposes `dev.vcs.revert` for append-only source-tree
 reverts. It requires a dev build and a 64-hex ZVCS commit id; use
 `relink_generation=false` under current containment. There is still no native
-`dev.vcs.status` or `dev.vcs.log` leaf and no supported MCP `zcl_vcs_*`
-surface. Do not infer additional ZVCS or runtime-publication authority from the
+`dev.vcs.status` or `dev.vcs.log` leaf. Do not infer additional ZVCS or
+runtime-publication authority from the
 existence of the façade functions in `vcs.h`.

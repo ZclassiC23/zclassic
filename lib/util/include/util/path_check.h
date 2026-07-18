@@ -7,7 +7,7 @@
 #include <stddef.h>
 
 /* Defensive input checks for user-supplied path-like strings reaching
- * MCP / RPC handlers. Auth gates which callers can invoke these
+ * native / RPC handlers. Auth gates which callers can invoke these
  * handlers; these checks are belt-and-suspenders against malformed
  * input (control chars, oversized strings, NULs slipping through a
  * stray JSON decoder bug).

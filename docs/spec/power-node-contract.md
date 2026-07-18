@@ -2,7 +2,7 @@
 
 The stable architecture and observability contract for a ZClassic23 power
 node: one C23 process serving chain state, application services, onion-hosted
-surfaces, ZClassicDNS name resolution, and MCP tools. A contract, not an
+surfaces, ZClassicDNS name resolution, and typed native commands. A contract, not an
 implementation plan.
 
 ## Scope
@@ -10,14 +10,11 @@ implementation plan.
 Authoritative references:
 
 - `CLAUDE.md` — current power-node feature set (full chain node, embedded Tor
-  hidden service, fast sync, MVC web framework, ZSLP, Sapling, games, store,
-  MCP server).
+  hidden service, fast sync, MVC web framework, ZSLP, Sapling, games, and store).
 - `app/services/README.md` — service-layer boundary.
 - `lib/event/include/event/event.h` — event taxonomy.
-- `tools/mcp/controllers/app_controller.c` — app MCP surface (names,
-  messaging, market, swaps).
-- `tools/mcp/controllers/{ops,chain,net,wallet}_controller.c` — remaining MCP
-  domains.
+- `config/commands/*.def` — typed native command catalog.
+- `app/controllers/src/*_native_handlers.c` — command handler bodies.
 
 Consensus, P2P wire parsing, rendering, and application orchestration stay
 separated. Services may coordinate work and expose status, but must not define
@@ -42,7 +39,7 @@ Invariants:
   UTXO, wallet, or Sapling data.
 - Readers must treat missing keys as a recoverable cold-start condition unless
   the owning subsystem explicitly marks the key mandatory for that phase.
-- MCP and controller reads may report `node_state` values, but mutation remains
+- Native commands and controller reads may report `node_state` values, but mutation remains
   behind the owning subsystem APIs.
 
 Concrete files: `db/schema.sql`, `app/models/src/database.c`,
@@ -63,7 +60,7 @@ Invariants:
 - Service startup must be idempotent. Registering or initializing the same
   service twice must leave one coherent owner, not duplicate workers.
 - Services that run background work must expose a bounded status snapshot for
-  `zcl_status`, `zcl_kpi`, `zcl_health`, or domain-specific MCP tools.
+  `zclassic23 status`, `zclassic23 ops health`, or domain-specific native commands.
 - Service failures must be observable through events and/or health status.
   Silent loops are contract violations.
 - Service APIs must state thread ownership for mutable state and must avoid
@@ -86,12 +83,12 @@ Invariants:
 - Onion ingress must call the same controller/business logic as local HTTP or
   internal routes. It must not fork a second app implementation.
 - Onion status must be visible through health/status surfaces, especially
-  `zcl_status` and node UI status views.
+  `zclassic23 core status` and node UI status views.
 - Onion request handling must preserve normal authentication, permission, and
   destructive-action rules.
 - Directory publishing must expose only intended discovery metadata: onion
   address, optional clearnet endpoint, height, and version.
-- The gateway must not bypass consensus, wallet, database, or MCP middleware.
+- The gateway must not bypass consensus, wallet, database, or command authorization.
 
 Concrete files: `lib/net/src/onion_service.c`,
 `lib/net/src/tor_integration.c`, `lib/net/src/https_server.c`,
@@ -122,38 +119,35 @@ Invariants:
 
 Concrete files: `lib/znam/include/znam/znam.h`,
 `lib/znam/src/znam.c`, `app/controllers/src/name_controller.c`,
-`tools/mcp/controllers/app_controller.c`, `app/models/src/database.c`.
+`config/commands/app_features.def`, `app/models/src/database.c`.
 
-## MCP Surface
+## Native Command Surface
 
-The MCP surface is the typed AI-agent API, divided by domain (see Scope) and
-registered through controller route tables.
+The native command registry is the typed AI-agent API, divided by domain and
+compiled from the declarative command catalog.
 
 Invariants:
 
-- Every MCP tool must have a stable `zcl_` name, domain label, description,
+- Every command must have a stable dotted path, domain label, description,
   handler, and parameter schema when it accepts input.
 - Handlers must validate parameters before dispatching to node RPCs or internal
-  services. On failure they must set an MCP error body and log context.
+  services. On failure they must set a structured error body and log context.
 - Destructive tools must be explicit and gated by middleware policy. Read-only
   diagnostics must remain safe to call during incident response.
-- Tool calls must emit `EV_MCP_REQUEST` with tool name, result code, and
-  latency so `zcl_events` and MCP metrics can explain agent activity.
-- The `zcl_rpc` escape hatch is not the contract for new features. New stable
-  functionality should get a typed tool.
+- Command calls must record path, result code, and latency so `zclassic23 ops
+  timeline` and `zclassic23 ops metrics` can explain agent activity.
+- The `zclassic23 rpc` escape hatch is not the contract for new features. New
+  stable functionality should get a typed command.
 
-Concrete files: `tools/mcp/router.c`, `tools/mcp/middleware.c`,
-`tools/mcp/metrics.c`, `tools/mcp/controllers/app_controller.c`,
-`tools/mcp/controllers/ops_controller.c`,
-`tools/mcp/controllers/chain_controller.c`,
-`tools/mcp/controllers/net_controller.c`,
-`tools/mcp/controllers/wallet_controller.c`,
-`lib/test/src/test_mcp_controllers.c`.
+Concrete files: `lib/kernel/include/kernel/command_registry.h`,
+`lib/kernel/src/command_registry.c`, `config/commands/*.def`,
+`tools/command/native_command.c`, and
+`lib/test/src/test_command_registry_catalog.c`.
 
 ## Permissions
 
 `permissions` are enforced at endpoint, controller, middleware, and filesystem
-boundaries. The power node exposes local, onion, RPC, and MCP surfaces, so
+boundaries. The power node exposes local, onion, RPC, and native command surfaces, so
 checks must sit close to each ingress and repeat before destructive state
 changes.
 
@@ -168,11 +162,11 @@ Invariants:
   filesystem permissions and must never be returned by diagnostics.
 - Onion-hosted views must not weaken local authentication or turn local-only
   actions into remote actions.
-- Middleware must classify destructive MCP tools independently from tool
+- The registry must classify destructive native commands independently from command
   descriptions so wording changes cannot alter permission policy.
 
-Concrete files: `tools/mcp/middleware.c`,
-`lib/test/src/test_mcp_middleware.c`,
+Concrete files: `lib/kernel/src/command_registry.c`,
+`app/services/src/authz_policy.c`,
 `lib/test/src/test_rpc_auth_hardening.c`,
 `app/controllers/include/controllers/file_controller.h`,
 `app/controllers/src/wallet_controller.c`.
@@ -181,7 +175,7 @@ Concrete files: `tools/mcp/middleware.c`,
 
 `event expectations` are the observability contract. The event log is the
 shared explanation surface for networking, sync, validation, chain, boot,
-database, model lifecycle, recovery, MCP, wallet backup, disk, mempool, and
+database, model lifecycle, recovery, native commands, wallet backup, disk, mempool, and
 integrity behavior. The event/projection model is canonical in
 `docs/FRAMEWORK.md`.
 
@@ -190,18 +184,18 @@ Invariants:
 - State-machine transitions must emit typed events with old state, new state,
   and reason where applicable.
 - Rejections and recoverable failures must emit events with enough context to
-  debug from `zcl_events` and `zcl_logtail` without attaching a debugger.
+  debug from `zclassic23 eventlog` and `zclassic23 getnodelog` without attaching a debugger.
 - Long-running services must emit progress or status events at bounded
   intervals and completion/failure events at terminal states.
-- MCP dispatch must emit `EV_MCP_REQUEST`; crash handlers must retain recent
-  events; health/KPI surfaces should derive from event-backed counters where
+- Native dispatch must retain bounded request evidence; crash handlers must
+  retain recent events; health/KPI surfaces should derive from event-backed counters where
   practical.
 - Event payloads are bounded by `EVENT_PAYLOAD_SIZE`; emit compact structured
   text rather than unbounded JSON blobs.
 
 Concrete files: `lib/event/include/event/event.h`,
-`lib/event/src/event.c`, `tools/mcp/router.c`, `tools/mcp/metrics.c`,
-`tools/mcp/controllers/ops_controller.c`.
+`lib/event/src/event.c`, `lib/kernel/src/command_registry.c`, and
+`app/controllers/src/ops_native_handlers.c`.
 
 ## Change Control
 
@@ -209,4 +203,4 @@ Changing serialized block/transaction formats, consensus constants, P2P wire
 formats, or the meaning of existing `node_state_api` keys is outside this spec
 row and requires coordinator review. New code should update this contract when
 it adds a stable power-node surface, persistent state key, service, permission
-class, MCP tool family, or event family.
+class, native command family, or event family.

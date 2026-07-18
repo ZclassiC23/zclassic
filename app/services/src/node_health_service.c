@@ -754,7 +754,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * auto-healing condition engine exhausts its remedies it emits
      * EV_OPERATOR_NEEDED, which lib/util/alerts.c latches. Reflect it here
      * so a halt that no remedy could clear shows up as DEGRADED in
-     * zcl_status and stops the sd_notify heartbeat. Overrides any softer
+     * `zclassic23 status` and stops the sd_notify heartbeat. Overrides any softer
      * degraded_reason because it means automation has given up. */
     {
         char detail[sizeof(snapshot->operator_needed_detail)] = {0};

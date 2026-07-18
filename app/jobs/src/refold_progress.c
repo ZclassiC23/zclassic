@@ -305,11 +305,11 @@ static void refold_snapshot_candidate_dump_json(struct json_value *out)
                      present ? (int64_t)st.st_size : 0);
     json_push_kv_bool(out, "anchor_snapshot_verified", false);
     json_push_kv_str(out, "anchor_snapshot_verification",
-                     "not checked by zcl_state; boot verifies full SHA3/count "
+                     "not checked by dumpstate; boot verifies full SHA3/count "
                      "before use");
 }
 
-/* ── zcl_state introspection ────────────────────────────────────────────────
+/* ── Native dump-state introspection ───────────────────────────────────────
  *
  * See CLAUDE.md "Adding state introspection". Read-only: this dumper observes
  * the cached atomics and the durable progress.kv keys; it never marks, clears,

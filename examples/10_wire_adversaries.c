@@ -228,12 +228,12 @@ int main(void)
  *   - Real per-peer disconnect/reconnect + no-silent-halt liveness:
  *     app/services/src/sync_monitor.c and lib/util/src/supervisor.c (the
  *     supervisor liveness tree — see CLAUDE.md "Adding state
- *     introspection" and `zcl_state subsystem=supervisor`) are what detect
+ *     introspection" and `zclassic23 dumpstate supervisor`) are what detect
  *     and surface a stalled or partitioned peer set on a live node, instead
  *     of this file's direct simnet_wire_get_stats() polling.
  *
  *   - Typed blocker registry used for the no-silent-halt check:
  *     lib/util/include/util/blocker.h / lib/util/src/blocker.c — the same
  *     PERMANENT/TRANSIENT blocker classes a live node reports via
- *     `zcl_state subsystem=blocker`.
+ *     `zclassic23 dumpstate blocker`.
  */

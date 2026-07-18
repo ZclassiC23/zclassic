@@ -1,9 +1,9 @@
 /* ZCL built-in application features, mounted under the `app` root (the frozen
  * root set stays at seven: status/core/app/dev/ops/discover/code). These are the
- * native-command twin of tools/mcp/controllers/app_controller.c: names (ZNAM),
- * ZSLP tokens, messaging (ZMSG), the file market, and cross-chain atomic swaps.
+ * native command surface for names (ZNAM), ZSLP tokens, messaging (ZMSG), the
+ * file market, and cross-chain atomic swaps.
  *
- * Read leaves are READY and dispatch MCP-free through zcl_native_bridge_command
+ * Read leaves are READY and dispatch through zcl_native_bridge_command
  * (body functions in app/controllers/src/app_native_handlers.c, bound in
  * tools/command/native_command.c's g_bridge_tools[]/g_bridge_native_body[]).
  * The destructive app-layer commands are PLANNED (fail-closed, exit 3) until the

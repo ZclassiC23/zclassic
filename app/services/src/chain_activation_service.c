@@ -488,7 +488,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
          * actionable reason and reaching no operator sink. */
         if (activation_eval_tip_blocker(tip_h, best_h)) {
             /* BEHIND the most-work valid-header chain; blocker now names
-             * WHY + height + escape (visible in zcl_state subsystem=blocker).
+             * WHY + height + escape (visible via `zclassic23 dumpstate blocker`).
              * Stay READY to keep the download/connect pipeline active, but it
              * is NOT a silent ready — the blocker is the truth. */
             activation_set_state(ctl, ACTIVATION_READY,

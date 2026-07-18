@@ -72,7 +72,7 @@ struct rpc_timeout_mgr {
     bool            watchdog_running;
     bool            watchdog_started;
 
-    /* Stats — read by tests + zcl_rpc_report */
+    /* Stats — read by tests and native RPC diagnostics. */
     uint64_t stat_registered;
     uint64_t stat_completed;
     uint64_t stat_killed;
@@ -126,7 +126,7 @@ void                    rpc_timeout_set_global(struct rpc_timeout_mgr *mgr);
 struct rpc_timeout_mgr *rpc_timeout_get_global(void);
 
 /* Lock-consistent counters + config snapshot, for rendering into
- * zcl_rpc_report / Prometheus. */
+ * native RPC diagnostics and Prometheus. */
 struct rpc_timeout_snapshot {
     int      timeout_ms;
     int      watchdog_period_ms;

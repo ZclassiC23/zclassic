@@ -1,13 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for the zcl_metrics and
- * zcl_consensus_report MCP tools. Moved out of
- * tools/mcp/controllers/meta_controller.c so both the MCP wrapper and
- * the future native command bridge can call the same composition;
- * see controllers/native_handler_body.h for the contract these
- * functions satisfy. The MCP wrapper (meta_controller.c) maps a NULL
- * return + err->status back onto the historical res->error /
- * res->error_message so the MCP surface stays byte-identical. */
+ * Native bodies for metrics and consensus-report commands. See
+ * controllers/native_handler_body.h for their shared contract. */
 
 #include "controllers/meta_native_handlers.h"
 
@@ -21,22 +15,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Mirrors the legacy mcp_res_set_oom (tools/mcp/controllers.h) tail but
- * returns NULL (this TU's functions are char*-returning body fns, not
- * int-returning MCP handlers). cap==0 means no single byte count applies,
- * matching the legacy convention (never hit by the call sites below, both
- * pass a nonzero cap). */
+/* Set a contextual allocation failure and return NULL. */
 static char *meta_native_oom(struct zcl_native_body_err *err, size_t cap,
                              const char *what)
 {
     err->status = ZCL_NATIVE_BODY_INTERNAL;
     snprintf(err->message, sizeof(err->message), "malloc failed for %s", what);
     if (cap > 0)
-        LOG_NULL("mcp.meta", "malloc failed for %s (%zu bytes)", what, cap);
-    LOG_NULL("mcp.meta", "malloc failed for %s", what);
+        LOG_NULL("native.meta", "malloc failed for %s (%zu bytes)", what, cap);
+    LOG_NULL("native.meta", "malloc failed for %s", what);
 }
 
-/* ── zcl_metrics ─────────────────────────────────────────────────── */
+/* ── Metrics command body ─────────────────────────────────────────────────── */
 
 char *zcl_native_metrics_body(const struct json_value *args,
                               struct zcl_native_body_err *err)
@@ -48,8 +38,8 @@ char *zcl_native_metrics_body(const struct json_value *args,
         return meta_native_oom(err, cap, "metrics buffer");
     size_t n = metrics_prometheus_render_prometheus(raw, cap);
 
-    /* Wrap the Prometheus text in a JSON envelope so the stdio layer
-     * can shuttle it as a tool result.  Escape quotes + newlines. */
+    /* Wrap the Prometheus text in the native command's JSON envelope.
+     * Escape quotes and newlines. */
     size_t out_cap = n * 2 + 128;
     char *out = zcl_malloc(out_cap, "metrics_json_body");
     if (!out) {
@@ -68,23 +58,19 @@ char *zcl_native_metrics_body(const struct json_value *args,
         else if (c == '\t') { out[pos++] = '\\'; out[pos++] = 't'; }
         else                { out[pos++] = c; }
     }
-    pos += (size_t)snprintf(out + pos, out_cap - pos,
-        "\",\"total_requests\":%llu,\"total_errors\":%llu,\"counter_count\":%zu}",
-        (unsigned long long)metrics_prometheus_total_requests(),
-        (unsigned long long)metrics_prometheus_total_errors(),
-        metrics_prometheus_counter_count());
+    pos += (size_t)snprintf(out + pos, out_cap - pos, "\"}");
 
     free(raw);
     return out;
 }
 
-/* ── zcl_consensus_report ────────────────────────────────────────── */
+/* ── Consensus-report command body ────────────────────────────────────────── */
 
-/* zcl_consensus_report — consensus-reject counter snapshot.
+/* Consensus-reject counter snapshot.
  * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring as a bounded
  * (kind, reason) -> count table plus per-kind totals and overflow
  * buckets. This is the dashboards/alerting view; the per-hash
- * `zcl_explain_reject` lookup is the targeted companion. */
+ * `zclassic23 core consensus reject explain` is the targeted companion. */
 char *zcl_native_consensus_report_body(const struct json_value *args,
                                        struct zcl_native_body_err *err)
 {
@@ -97,14 +83,14 @@ char *zcl_native_consensus_report_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "consensus report generation returned empty");
-        LOG_NULL("mcp.meta", "consensus_report_json returned 0 bytes");
+        LOG_NULL("native.meta", "consensus_report_json returned 0 bytes");
     }
     char *out = strdup(body);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "strdup failed for consensus report");
-        LOG_NULL("mcp.meta", "strdup failed for consensus_report (%zu bytes)", n);
+        LOG_NULL("native.meta", "strdup failed for consensus_report (%zu bytes)", n);
     }
     return out;
 }

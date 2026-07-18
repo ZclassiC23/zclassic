@@ -37,7 +37,7 @@ dev_status_json() {
     if out="$($DEV_STATUS_CMD 2>/dev/null)"; then
         printf '%s\n' "$out"
     else
-        printf '{"schema":"zcl.agent_dev_status.v1","status":"error","next_action":"make agent-dev-status","error":"collector_failed"}\n'
+        printf '{"schema":"zcl.agent_dev_status.v2","status":"error","next_action":"make agent-dev-status","error":"collector_failed"}\n'
     fi
 }
 

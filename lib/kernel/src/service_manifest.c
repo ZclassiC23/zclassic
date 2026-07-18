@@ -458,7 +458,7 @@ bool zcl_service_manifest_catalog_digest_v1(
     if (zcl_service_manifest_catalog_validate_v1(manifests, count, NULL) !=
         ZCL_SERVICE_MANIFEST_OK)
         return false;
-    static const uint8_t domain[] = "zcl.service_catalog.v1";
+    static const uint8_t domain[] = "zcl.service_catalog.v2";
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
     sha3_256_write(&ctx, domain, sizeof(domain));

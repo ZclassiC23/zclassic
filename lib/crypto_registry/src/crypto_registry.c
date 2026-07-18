@@ -8,7 +8,7 @@
  * false. Lookup is lock-free atomic_load.
  *
  * Consensus and key-verification callers use this table for registered
- * verifier implementations, while diagnostics expose it through zcl_state.
+ * verifier implementations, while diagnostics expose it through dumpstate.
  */
 
 #include "crypto_registry/crypto_registry.h"

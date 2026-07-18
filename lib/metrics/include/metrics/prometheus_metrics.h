@@ -1,16 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * MCP Metrics — Prometheus-style in-process counters and histograms.
- *
- * Observes EV_MCP_REQUEST and maintains:
- *   - per-(tool, code) request counters
- *   - per-tool latency histogram (5 buckets: 1ms, 5ms, 25ms, 100ms, 500ms)
- *   - aggregated summary counters (total, ok, error, rate-limited, etc.)
- *
- * The metrics view is exposed by the `zcl_metrics` tool, which emits a
- * Prometheus text-format dump that any operator or scraper can consume.
- *
- * `zcl_metrics_reset` clears every counter (destructive-gated).
+ * Prometheus-style in-process node metrics: peer scoring, consensus rejects,
+ * RPC middleware decisions, node gauges, and threshold alerts.
  */
 
 #ifndef ZCL_METRICS_PROMETHEUS_H
@@ -24,17 +15,6 @@
 extern "C" {
 #endif
 
-/* Max distinct tool names tracked.  Beyond this limit new tools are
- * folded into a "__other__" bucket rather than growing the table. */
-#define METRICS_PROMETHEUS_MAX_TOOLS 80
-
-/* Max distinct (tool, code) pairs.  Bounded to keep memory predictable
- * and to protect against unbounded-cardinality attacks via tool spoofing. */
-#define METRICS_PROMETHEUS_MAX_COUNTERS 512
-
-/* Histogram bucket count. */
-#define METRICS_PROMETHEUS_HIST_BUCKETS 6
-
 /* Max distinct (kind, reason) pairs tracked for consensus rejects.
  * Beyond this limit, rejects still count toward the per-kind totals but
  * their reason is folded into a "__other__" bucket.  The REJECT_IF/UNLESS
@@ -42,32 +22,19 @@ extern "C" {
  * practical upper bound is known, but we cap cardinality defensively. */
 #define METRICS_PROMETHEUS_MAX_REJECT_REASONS 48
 
-/* Register the EV_MCP_REQUEST observer.  Idempotent — calling twice does
- * nothing on the second call. */
+/* Register peer and consensus event observers. Idempotent. */
 void metrics_prometheus_init(void);
 
-/* Manual counter increment — used by tests and call sites that don't
- * route through the event system.  Code "OK" for success; any other
- * string for an error code (AUTH_REQUIRED, RATE_LIMITED, …). */
-void metrics_prometheus_record(const char *tool, const char *code, int64_t dur_us);
-
-/* Clear all counters.  Tests and `zcl_metrics_reset`. */
+/* Clear all counters and alert state. */
 void metrics_prometheus_reset(void);
 
 /* Write the Prometheus text format dump into buf.  Returns bytes
  * written (excluding NUL).  Truncates silently if the buffer is small. */
 size_t metrics_prometheus_render_prometheus(char *buf, size_t cap);
 
-/* Introspection (tests). */
-size_t metrics_prometheus_counter_count(void);
-uint64_t metrics_prometheus_get(const char *tool, const char *code);
-uint64_t metrics_prometheus_total_requests(void);
-uint64_t metrics_prometheus_total_errors(void);
-
 /* ── Peer scoring counters ────────────────────────────────────
  *
- * Subscribed to EV_PEER_MISBEHAVE and EV_PEER_BANNED via the same
- * observer install path as the MCP request counters.  The handler
+ * Subscribed to EV_PEER_MISBEHAVE and EV_PEER_BANNED. The handler
  * extracts the offence kind from the event payload (the first
  * whitespace-separated word after the score header) and buckets it
  * into a small allowlisted set; anything unrecognised goes into
@@ -77,9 +44,8 @@ uint64_t metrics_prometheus_total_errors(void);
  *   zcl_peer_offences_total{kind="all"} N         # convenience aggregate
  *   zcl_peer_bans_total N
  *
- * The `zcl_peer_report` MCP tool wraps these in a small JSON object
- * with the live peer-scoring config so an operator can see the
- * threshold/decay/bans-since-boot in one call.
+ * Native diagnostics can wrap these in a small JSON object with the live
+ * peer-scoring config.
  */
 
 /* Manual record helpers — used by tests and by the in-process event
@@ -92,13 +58,12 @@ uint64_t metrics_prometheus_total_errors(void);
 void metrics_prometheus_record_peer_offence(const char *kind);
 void metrics_prometheus_record_peer_ban(void);
 
-/* Aggregate query helpers (tests + zcl_peer_report). */
+/* Aggregate query helpers. */
 uint64_t metrics_prometheus_peer_offences_total(void);
 uint64_t metrics_prometheus_peer_offences_for_kind(const char *kind);
 uint64_t metrics_prometheus_peer_bans_total(void);
 
-/* Render the peer-scoring summary as a small JSON object suitable
- * for embedding in an MCP response body.  Includes the live config
+/* Render the peer-scoring summary as a small JSON object. Includes the live config
  * (threshold / ban_hours / decay_per_min) and the per-kind counters.
  * Returns bytes written (excluding NUL); silently truncates on a
  * too-small buffer the same way the Prometheus dump does. */
@@ -108,8 +73,7 @@ size_t metrics_prometheus_peer_report_json(char *buf, size_t cap);
  *
  * Snapshots the live RPC middleware stats (from the global handle
  * registered by httpserver.c via rpc_http_middleware_set_global) and
- * renders a small JSON object suitable for embedding in an MCP
- * response body.  Shape:
+ * renders a small JSON object. Shape:
  *
  *   {
  *     "config": { global_rps, global_burst, per_ip_rps, per_ip_burst,
@@ -146,20 +110,17 @@ size_t metrics_prometheus_rpc_report_json(char *buf, size_t cap);
  *   zcl_consensus_rejects_total{kind="block",reason="__other__"} N
  *   zcl_consensus_rejects_total{kind="all",reason="all"}    N
  *
- * The `zcl_consensus_report` MCP tool wraps the counters in a small
- * JSON envelope for operators who want a single-call snapshot.  This
- * is the observability counterpart to AGENT2's upcoming
- * `zcl_explain_reject` lookup tool. */
+ * Native diagnostics may wrap the counters in a small JSON envelope. */
 
 /* Manual record helper — used by tests and the in-process observer. */
 void metrics_prometheus_record_consensus_reject(const char *kind, const char *reason);
 
-/* Query helpers (tests + zcl_consensus_report). */
+/* Query helpers. */
 uint64_t metrics_prometheus_consensus_rejects_total(void);
 uint64_t metrics_prometheus_consensus_rejects_for_kind(const char *kind);
 uint64_t metrics_prometheus_consensus_rejects_tracked_reasons(void);
 
-/* JSON snapshot for `zcl_consensus_report`.
+/* JSON snapshot for consensus diagnostics.
  *
  * Shape:
  *   {
@@ -259,7 +220,7 @@ size_t metrics_prometheus_alert_rule_count(void);
 uint64_t metrics_prometheus_alert_fire_count(const char *rule_event_name);
 
 /* Reset per-rule edge/cooldown state and fire counters. Tests call
- * this to isolate; folded into metrics_prometheus_reset() for `zcl_metrics_reset`. */
+ * this to isolate; folded into metrics_prometheus_reset(). */
 void metrics_prometheus_alerts_reset(void);
 
 #ifdef __cplusplus

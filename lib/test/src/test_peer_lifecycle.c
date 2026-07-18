@@ -726,7 +726,7 @@ static int test_peer_lifecycle_incident_view(void)
         json_init(&incidents);
         ASSERT(peer_lifecycle_incidents_json(&incidents));
         ASSERT(strcmp(json_get_str(json_get(&incidents, "schema")),
-                      "zcl.peer_incidents.v1") == 0);
+                      "zcl.peer_incidents.v2") == 0);
         ASSERT(json_get_bool(json_get(&incidents, "bounded")));
         ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 2);
         ASSERT(json_get_int(json_get(&incidents,
@@ -914,7 +914,7 @@ static int test_peer_lifecycle_incident_view(void)
         json_set_object(&keyed);
         ASSERT(peer_lifecycle_dump_state_json(&keyed, "incidents"));
         ASSERT(strcmp(json_get_str(json_get(&keyed, "schema")),
-                      "zcl.peer_incidents.v1") == 0);
+                      "zcl.peer_incidents.v2") == 0);
         ASSERT(json_get(&keyed, "peers") == NULL);
         json_free(&keyed);
     } TEST_END
@@ -1383,7 +1383,7 @@ static int test_peer_lifecycle_empty_incident_readiness(void)
         json_init(&incidents);
         ASSERT(peer_lifecycle_incidents_json(&incidents));
         ASSERT(strcmp(json_get_str(json_get(&incidents, "schema")),
-                      "zcl.peer_incidents.v1") == 0);
+                      "zcl.peer_incidents.v2") == 0);
         ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 0);
         ASSERT(strcmp(json_get_str(json_get(&incidents,
                                             "bootstrap_readiness")),

@@ -161,7 +161,7 @@ static bool rpc_api_index(const struct json_value *params, bool help,
         "headers, so native clients can start with `zclassic23 api` instead\n"
         "of a shell helper or curl.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.rest_index.v1\", \"base_path\":\"/api/v1\", "
+        "  { \"schema\":\"zcl.rest_index.v2\", \"base_path\":\"/api/v1\", "
         "\"first_call\":\"/api/v1/agent\" }\n");
 
     const char *body = api_rest_index_body_json();
@@ -181,10 +181,9 @@ bool rpc_app_protocols(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "appprotocols\n"
         "\nReturn the versioned zclassic23 application-protocol catalog. This\n"
-        "is the same JSON body served by GET /api/v1/protocols and exposed\n"
-        "through MCP zcl_app_protocols.\n"
+        "is the same JSON body served by GET /api/v1/protocols.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.application_protocols.index.v1\", "
+        "  { \"schema\":\"zcl.application_protocols.index.v2\", "
         "\"base_layer\":\"zclassic_l1\", \"protocols\":[...] }\n");
 
     return api_app_protocols_index_json(result);
@@ -196,16 +195,16 @@ bool rpc_service_catalog(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "servicecatalog ( name )\n"
         "\nReturn the versioned zclassic23 sovereign service catalog. This\n"
-        "is the same JSON body served by GET /api/v1/service-catalog and\n"
-        "exposed through MCP zcl_service_catalog. Pass an optional service\n"
+        "is the same JSON body served by GET /api/v1/service-catalog. Pass\n"
+        "an optional service\n"
         "name to return the same contract as GET\n"
         "/api/v1/service-catalog/{service}.\n"
         "\nArguments:\n"
         "1. name      (string, optional) Service name, e.g. bootstrap\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.service_catalog.v1\", "
+        "  { \"schema\":\"zcl.service_catalog.v2\", "
         "\"base_layer\":\"zclassic_l1\", \"services\":[...] }\n"
-        "  or { \"schema\":\"zcl.service_contract.v1\", \"name\":\"...\" }\n");
+        "  or { \"schema\":\"zcl.service_contract.v2\", \"name\":\"...\" }\n");
 
     const char *name = NULL;
     if (params && params->type == JSON_ARR && params->num_children > 0)
@@ -308,8 +307,8 @@ bool rpc_service_operations(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "serviceoperations ( operation_id | key=value... )\n"
         "\nReturn the versioned zclassic23 service-operation catalog. This\n"
-        "is the same JSON body served by GET /api/v1/service-operations\n"
-        "and exposed through MCP zcl_service_operations. Pass an optional\n"
+        "is the same JSON body served by GET /api/v1/service-operations.\n"
+        "Pass an optional\n"
         "service.operation id, such as znam_names.resolve_name, to return\n"
         "the same contract as GET /api/v1/service-operations/{operation_id}.\n"
         "Pass filters as key=value pairs for a bounded collection subset.\n"
@@ -318,9 +317,9 @@ bool rpc_service_operations(const struct json_value *params, bool help,
         "   or key=value filters: service, write_safety,\n"
         "   preferred_interface, status, surface\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.service_operations.index.v1\", "
+        "  { \"schema\":\"zcl.service_operations.index.v2\", "
         "\"operations\":[...] }\n"
-        "  or { \"schema\":\"zcl.service_operation.v1\", "
+        "  or { \"schema\":\"zcl.service_operation.v2\", "
         "\"operation_id\":\"...\" }\n");
 
     const char *operation_id = NULL;
@@ -393,7 +392,7 @@ static bool rpc_milestone_status(const struct json_value *params, bool help,
         "\nReturn node-computed ASCII and JSON progress toward the next "
         "version milestone.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.milestone_status.v1\", "
+        "  { \"schema\":\"zcl.milestone_status.v2\", "
         "\"milestone\":\"v1 MVP\", \"mvp_readiness_score\":4, "
         "\"ascii\":{\"goals\":\"goals [#####-----] 4/8 ...\"} }\n");
 
@@ -412,7 +411,7 @@ static bool rpc_refold_status(const struct json_value *params, bool help,
         "that can replace the borrowed snapshot seed. Internal boot flag: "
         "-refold-from-anchor.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.refold_status.v1\", "
+        "  { \"schema\":\"zcl.refold_status.v2\", "
         "\"ready_for_refold\":false, "
         "\"primary_blocker\":\"missing_verified_anchor_snapshot\" }\n");
 
@@ -484,7 +483,7 @@ bool rpc_agent_proof_bundle(const struct json_value *params, bool help,
         "1. anchor_datadir (string, optional) Anchor mint datadir. Defaults\n"
         "   to ZCL_ANCHOR_MINT_DATADIR or ~/.zclassic-c23-anchor-mint.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.operator_proof_bundle.v1\", "
+        "  { \"schema\":\"zcl.operator_proof_bundle.v2\", "
         "\"proofs\":{...}, \"anchor_status\":{...} }\n");
 
     char anchor_default[600];
@@ -505,7 +504,7 @@ bool rpc_agent_proof_bundle(const struct json_value *params, bool help,
     json_free(&anchor_value);
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.operator_proof_bundle.v1");
+    json_push_kv_str(result, "schema", "zcl.operator_proof_bundle.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_int(result, "captured_at_unix", platform_time_wall_unix());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
@@ -518,7 +517,6 @@ bool rpc_agent_proof_bundle(const struct json_value *params, bool help,
     json_set_object(&commands);
     json_push_kv_str(&commands, "native",
                      "zclassic23 proofbundle [anchor_datadir]");
-    json_push_kv_str(&commands, "mcp", "zcl_proof_bundle");
     json_push_kv_str(&commands, "save_example",
                      "build/bin/zclassic23 proofbundle > build/proofs/operator-proof.json");
     json_push_kv_str(&commands, "anchor_status",

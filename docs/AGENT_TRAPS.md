@@ -59,14 +59,14 @@ historical fixture passes, then deploy/restart intentionally.
   service; only the isolated inherited-FD self-test reaches recovery machinery.
 - **“Non-consensus” does not automatically mean hot-swappable.** The v2 loader
   admits only exact `config/hotswap_eligible.def` entries that export a
-  stateless MCP route manifest with the required ABI, capabilities, hashes,
+  stateless native-leaf manifest with the required ABI, capabilities, hashes,
   tests, probes, self-test, and no-quiescence contract. REST, diagnostics,
   services, models, storage, events, conditions, supervisors, networking,
   wallet/key/crypto state, reducers, and process ownership are
   `reload_required`. Never widen the allowlist to silence that blocker.
 - **Do not interpret a contained hot-swap call as a transport failure.**
   `make hotswap`, `tools/dev/hotswap-running-dev.sh`, native
-  `dev.hotswap.apply`, and legacy `zcl_agent_hotswap` refuse before `dlopen` or
+  `dev.hotswap.apply` and `dev.hotswap.probe` refuse before `dlopen` or
   resident RPC mutation. There is no exit-69 reload fallback and no successful
   committed generation to inspect during containment.
 - **ZVCS revert is source-only.** `dev.vcs.revert` is available with

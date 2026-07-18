@@ -120,8 +120,8 @@ struct json_value;
 bool block_index_projection_dump_state_json(struct json_value *out,
                                             const char *key);
 
-/* Process-wide singleton accessor (set by boot_services). NULL until
- * boot has wired it. Diagnostics + MCP go through this. */
+/* Process-wide singleton accessor (set by boot_services). NULL until boot has
+ * wired it. Native diagnostics use this accessor. */
 block_index_projection_t *block_index_projection_singleton(void);
 void block_index_projection_set_singleton(block_index_projection_t *p);
 

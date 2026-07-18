@@ -49,9 +49,9 @@ static struct agent_runtime_context g_agent_runtime = {
 
 enum {
     AGENT_RUNTIME_METHOD_CAPACITY = 0
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest,          \
-                       api_cli_field, api_mcp_field, ops_surface, ops_rank,   \
-                       ops_name, ops_purpose, purpose) + 1
+#define AGENT_CONTRACT(method, capability, schema, native, rest,              \
+                       api_cli_field, ops_surface, ops_rank, ops_name,        \
+                       ops_purpose, purpose) + 1
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };
@@ -379,8 +379,8 @@ void agent_push_runtime_availability_json(struct json_value *out,
     json_init(&obj);
     json_set_object(&obj);
     json_push_kv_str(&obj, "schema",
-                     "zcl.agent_runtime_availability.v2");
-    json_push_kv_int(&obj, "schema_version", 2);
+                     "zcl.agent_runtime_availability.v3");
+    json_push_kv_int(&obj, "schema_version", 3);
     json_push_kv_str(&obj, "source_identity_authority",
                      "sha256_source_tree_v2");
     json_push_kv_str(&obj, "producer_source_id_sha256",
@@ -444,7 +444,6 @@ void agent_push_runtime_availability_json(struct json_value *out,
         json_push_kv_str(&method, "method", pm->method);
         json_push_kv_str(&method, "capability", pm->capability);
         json_push_kv_str(&method, "native_command", pm->native_command);
-        json_push_kv_str(&method, "mcp_tool", pm->mcp_tool);
         json_push_kv_str(&method, "schema", pm->schema);
         json_push_kv_str(&method, "probe_params_json",
                          agent_contract_probe_params_json(pm->method));
@@ -605,7 +604,7 @@ void agent_push_runtime_services_json(struct json_value *out,
     json_push_kv_int(&svc, "p2p_configured_port", g_agent_runtime.p2p_port);
     json_push_kv_bool(&svc, "p2p_observed_here", false);
     json_push_kv_str(&svc, "p2p_observed_source",
-                     "zcl_agent, zcl_peers, or lane_health");
+                     "zclassic23 agent, peer projection, or lane_health");
     json_push_kv_int(&svc, "https_configured_port",
                      g_agent_runtime.https_port);
     json_push_kv_bool(&svc, "https_running", https_running);

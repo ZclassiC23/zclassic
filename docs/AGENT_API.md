@@ -2,72 +2,64 @@
 
 The agent interface is the **native command registry** (`zclassic23 <command>`);
 [`docs/NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) is the primary
-reference. The legacy MCP tools listed here are backed by the same native RPC
-methods and are being removed in W3 (see
-[`docs/work/MCP-REMOVAL-PLAN.md`](./work/MCP-REMOVAL-PLAN.md)) — prefer the native
-command in every row below; the `zcl_*` MCP column is transitional. Shell
-wrappers are compatibility shims only. New feature work follows
+reference. Shell wrappers are compatibility shims only. New feature work follows
 [`docs/AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md): REST resource first,
 database schema, ActiveRecord model, validations, relationships, service
 workflow, REST route contract, then the native surface.
 
 ## First calls
 
-| need | native command | MCP tool |
-|---|---|---|
-| No-jq command center | `zclassic23 agentops` | `zcl_agent_ops` |
-| Bounded diagnosis | `zclassic23 agentdiagnose` | `zcl_agent_diagnose` |
-| Compact live status | `zclassic23 status` | — |
-| Full compatibility status | `zclassic23 agent` | `zcl_agent` |
-| Code/docs/test map | `zclassic23 agentmap` | `zcl_agent_map` |
-| Lane topology | `zclassic23 agentlanes` | `zcl_agent_lanes` |
-| Unified liveness | `zclassic23 agentliveness` | `zcl_agent_liveness` |
-| Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
-| Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
-| Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
-| Unified save loop | `make dev-watch [MODE=verify\|check]` (`verify` default; publication modes refuse) | `zcl_agent_dev_status` reports its latest verdict |
-| Compilation database | `make agent-index` | `zcl_agent_build` embeds index freshness |
-| Developer-loop benchmark | `make dev-loop-bench` | `zcl_agent_build` embeds the latest artifact status |
-| In-process hot-swap status | `zclassic23 dumpstate hotswap` | `zcl_state(subsystem="hotswap")` |
-| Dev-process MCP bridge | mutation `dev_hotswap` is contained; read-only `dev_mcp_call` remains | resident MCP router |
-| Read-only fast-lane plan | `make agent-plan` | `zcl_agent_build` advertises it |
-| Combined dev doctor | `make agent-doctor` | `zcl_agent_build` advertises it |
-| Generic state dump | `zclassic23 dumpstate <subsystem>` | `zcl_state` |
-| Registry / tool discovery | `zclassic23 discover help` | `zcl_tools_list` |
-| Dev-lane status | `zclassic23 agentdevstatus` (`make agent-dev-status`) | `zcl_agent_dev_status` |
-| Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
-| Operator proof bundle | `zclassic23 proofbundle [anchor_datadir]` | `zcl_proof_bundle(anchor_datadir?)` |
-| Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
-| Sovereign service catalog | `zclassic23 servicecatalog [name]` | `zcl_service_catalog(name?)` |
-| Sovereign operation catalog | `zclassic23 serviceoperations [operation_id|key=value...]` | `zcl_service_operations(operation_id?, service?, write_safety?, preferred_interface?, status?, surface?)` |
-| Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
-| State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
-| Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
-| Peer incident view | `zclassic23 peerincidents` | `zcl_peer_incidents` |
-| Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
-| Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
+| need | native command |
+|---|---|
+| No-jq command center | `zclassic23 agentops` |
+| Bounded diagnosis | `zclassic23 agentdiagnose` |
+| Compact live status | `zclassic23 status` |
+| Full compatibility status | `zclassic23 agent` |
+| Code/docs/test map | `zclassic23 agentmap` |
+| Lane topology | `zclassic23 agentlanes` |
+| Unified liveness | `zclassic23 agentliveness` |
+| Changed files to tests/risk | `zclassic23 agentimpact <files...>` |
+| Versioned contracts | `zclassic23 agentcontracts` |
+| Fast build contract | `zclassic23 agentbuild` |
+| Unified save loop | `make dev-watch [MODE=verify\|check]` (`verify` default; publication modes refuse) |
+| Compilation database | `make agent-index` |
+| Developer-loop benchmark | `make dev-loop-bench` |
+| In-process hot-swap status | `zclassic23 ops state --subsystem=hotswap` |
+| Read-only fast-lane plan | `make agent-plan` |
+| Combined dev doctor | `make agent-doctor` |
+| Generic state dump | `zclassic23 ops state --subsystem=<name>` |
+| Registry discovery | `zclassic23 discover help` |
+| Dev-lane status | `zclassic23 agentdevstatus` (`make agent-dev-status`) |
+| Anchor producer status | `zclassic23 anchorstatus` |
+| Operator proof bundle | `zclassic23 proofbundle [anchor_datadir]` |
+| Application protocol catalog | `zclassic23 appprotocols` |
+| Sovereign service catalog | `zclassic23 servicecatalog [name]` |
+| Sovereign operation catalog | `zclassic23 serviceoperations [operation_id|key=value...]` |
+| Preferred interface contract | `zclassic23 agentinterface` |
+| State subsystem catalog | `zclassic23 statecatalog` |
+| Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` |
+| Peer incident view | `zclassic23 peerincidents` |
+| Deploy/restart guard | `zclassic23 agentdeployguard [action]` |
+| Mirror lag/blocker contract | `zclassic23 getmirrorstatus` |
 
 The native RPC contracts are implemented in `app/controllers/src/agent_controller.c`
 for the agent map/build surface, `app/controllers/src/agent_contracts_controller.c`
 for the versioned contract registry, and `app/controllers/src/agent_ops_controller.c`
 for the focused no-jq command center. `app/controllers/src/agent_diagnose_controller.c`
-owns the bounded diagnosis packet. MCP routes in
-`tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
-currently exposes the public status contract at `GET /api/v1/agent`.
-First-call method/schema/tool metadata lives in the C-owned registry
+owns the bounded diagnosis packet. REST currently exposes the public status
+contract at `GET /api/v1/agent`. First-call method/schema/command metadata lives in the C-owned registry
 `app/controllers/include/controllers/agent_contracts.def`; runtime availability,
 the contract registry, the interface capability matrix, the `agentops`
-direct/drilldown command lists, and the REST API index's native/MCP command
+direct/drilldown command lists, and the REST API index's native command
 fields consume that table instead of maintaining separate lists. Generic
-diagnostic primitives such as `dumpstate` / `zcl_state`, `getnodelog` /
-`zcl_node_log`, the bounded SQL primitive `dbquery` / `zcl_sql`, and the raw
-event-ring primitive `eventlog` / `zcl_events` are registry rows too, so agent
-command catalogs do not hand-copy their native/MCP names. `agentmap` rows that
+diagnostic primitives such as `ops state`, `ops logs`, `core storage query`,
+and `ops timeline` are registry rows too, so agent command catalogs do not
+hand-copy their native names. `agentmap` rows that
 are not one-to-one method contracts, such as `compact_status`,
 `full_compatibility_status`, `full_status`, and `quality_lanes`, live in
-`app/controllers/src/agent_contract_registry.c` with direct native/MCP fields
+`app/controllers/src/agent_contract_registry.c` with direct native fields
 instead of local controller tuples. `agentops` first-call envelope fields
-(`schema`, `method`, `native_command`, `mcp_tool`, and `contract_source`) plus
+(`schema`, `method`, `native_command`, and `contract_source`) plus
 scalar fields such as `diagnose_tool`, `timeline_tool`,
 `anchor_status_command`, and `peer_incidents_tool` are grouped in the same file as
 `g_agent_field_surfaces`, so the compact no-jq command center also reads
@@ -75,9 +67,8 @@ method names from registry data instead of hand-copying them. Registry rows
 also own `probe_params_json`; parameterized first-call probes such as `dbquery`
 and `eventlog` must declare a bounded sample there instead of adding
 method-specific CLI branches. Operator drilldowns exposed by the REST index
-(`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
-`zcl_refold_status`) also live there, so native, MCP, and REST discovery share
-the same command/tool/schema metadata. Nested first-call schema rows such as
+(`healthcheck`, `milestone`, and `refold`) also live there, so native and REST
+discovery share the same command/schema metadata. Nested first-call schema rows such as
 `zcl.first_call_contract.v1`, `zcl.operator_lane.v1`,
 `zcl.security_posture.v1`, and `zcl.node_resources.v1` are also registry-owned in
 `agent_contract_schema_registry.c` instead of being hand-listed inside the
@@ -86,12 +77,11 @@ The native `zclassic23 -help` agent/operator command section is generated by
 `agent_print_native_usage()` from the same registry; do not hand-copy agent
 command rows into `src/main.c` usage text.
 `zclassic23 status` is the registry-owned native first check. It emits a
-`zcl.result.v1` envelope with `zcl.core_status_brief.v1` data and is not
-transport-equivalent to the larger legacy `zclassic23 agent` / `zcl_agent` /
-`GET /api/v1/agent` `zcl.public_status.v1` document.
+`zcl.result.v1` envelope with `zcl.core_status_brief.v1` data. The larger
+`zclassic23 agent` / `GET /api/v1/agent` document uses the distinct
+`zcl.public_status.v2` contract.
 First-call recommendation arrays should use
-`agent_push_contract_native_command_json()` or
-`agent_push_contract_mcp_tool_json()` for registry-owned command/tool names;
+`agent_push_contract_native_command_json()` for registry-owned command names;
 keep only parameterized, composite, or subsystem-local commands inline.
 Structured command arrays such as `agentlanes.commands` should use
 `agent_push_contract_command_json()` for registry-owned commands and keep only
@@ -102,7 +92,7 @@ routes whose method also exists in `agent_contracts.def`. Do not add a second
 allowlist or a parallel `if/else` dispatch ladder for agent commands.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
-`zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,
+`zclassic23 appprotocols`, `GET /api/v1/protocols`,
 `GET /api/v1/protocols/{name}`, `layer_model`, route-contract
 `application_protocol` fields, and generated OpenAPI
 `x-zcl-application-protocol` / protocol CRUD extensions for ZLSP, ZSLP, ZNAM,
@@ -111,7 +101,7 @@ object types, UX surfaces, projection/reorg behavior, cryptographic model,
 transport model, privacy model, and diagnostics surface, so agents can reason
 about what the node can safely read, construct, rebuild, expose, and explain
 without scanning per-feature prose first. Treat
-`zcl.application_protocols.index.v1` as the layer-2 overlay catalog: ZCL
+`zcl.application_protocols.index.v2` as the layer-2 overlay catalog: ZCL
 remains the base layer; zclassic23 exposes ZLSP-style versioned application
 services that read, index, or construct valid ZCL transactions without changing
 consensus rules. ZSLP is the token protocol inside this model; ZLSP is the
@@ -119,13 +109,11 @@ broader service/protocol umbrella.
 
 The UX-facing service catalog lives in
 `app/controllers/src/api_controller_service_catalog.c` and is exposed as
-`zclassic23 servicecatalog [name]`, `zcl_service_catalog(name?)`,
-`GET /api/v1/service-catalog`, and
+`zclassic23 servicecatalog [name]`, `GET /api/v1/service-catalog`, and
 `GET /api/v1/service-catalog/{service}`. Operations are first-class too:
 `zclassic23 serviceoperations [operation_id|key=value...]`,
-`zcl_service_operations(operation_id?, service?, write_safety?,
-preferred_interface?, status?, surface?)`, `GET /api/v1/service-operations`,
-and `GET /api/v1/service-operations/{operation_id}` list operations, filter
+`GET /api/v1/service-operations`, and
+`GET /api/v1/service-operations/{operation_id}` list operations, filter
 the operation set, or fetch one stable `service.operation` contract such as
 `znam_names.resolve_name`. Server-side filters are exact-match:
 `service`, `write_safety`, `preferred_interface`, `status`, and `surface`.
@@ -151,21 +139,21 @@ For bootstrap specifically, public peer listing is
 `bootstrap.list_peer_projection` (`GET /api/v1/peers`,
 `zcl.peers.index.v1`); peer incident analysis remains the operator diagnostic
 operation `bootstrap.inspect_peer_bootstrap_readiness` via
-`zcl_peer_incidents` / `peerincidents`.
-The collection schema is `zcl.service_catalog.v1`; the member schema is
-`zcl.service_contract.v1`; the operation collection schema is
-`zcl.service_operations.index.v1`; operation members use
-`zcl.service_operation.v1`. Together they cover names, bootstrap, Tor/onion
+`zclassic23 core network peers incidents`.
+The collection schema is `zcl.service_catalog.v2`; the member schema is
+`zcl.service_contract.v2`; the operation collection schema is
+`zcl.service_operations.index.v2`; operation members use
+`zcl.service_operation.v2`. Together they cover names, bootstrap, Tor/onion
 discovery, direct P2P, files, market, messaging, script contracts, CRUD
 capabilities, transports, verification model, trust model, privacy model, and a
 concrete UX story per service. Each service also carries an `operations[]`
 array of operation objects that names the action, CRUD capability, REST route
-when public, RPC method, MCP tool, input/output contract, authority, execution
+when public, RPC method, native command, input/output contract, authority, execution
 surface, write-safety class, and whether the operation is destructive or
 operator-private. Each operation also carries `service_catalog_route`,
 `agent_preferred_interface`, `agent_next_step`, and `*_callable` booleans so an
-agent can choose REST for public reads, MCP for operator/private or destructive
-actions, and RPC only when that is the explicit fallback. This is the
+agent can choose REST for public reads, native commands for operator/private or
+destructive actions, and RPC only when that is the explicit fallback. This is the
 no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
 market, messaging, and script-contract capabilities. The operation collection
 also carries `summary`, `service_facets`, `preferred_interface_facets`, and
@@ -176,7 +164,7 @@ the user selected. Name service-directory reads are first-class:
 `GET /api/v1/names/{name}/services` and returns
 `zcl.names.service_directory.v1` without requiring a client to parse the full
 name profile.
-The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
+The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v2`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.
 The collection-level `runtime_probes[]` matrix is the compact first-pass live
@@ -261,19 +249,14 @@ The best interface for an AI coding operator is the native command registry
 `zclassic23 getmirrorstatus`, `zclassic23 agentimpact`, `zclassic23 agentbuild`,
 `zclassic23 dumpstate <subsystem>`, `zclassic23 timeline`,
 `zclassic23 appprotocols`, `zclassic23 servicecatalog`, and `discover
-help`/`discover search <q>` as needed. The legacy MCP tools
-(`zcl_agent_ops`, `zcl_agent`, `zcl_agent_interface`, `zcl_state`, `zcl_sql`,
-etc.) call the same native RPC methods and still work today, but MCP is being
-removed entirely in zero-MCP W3 (`docs/work/MCP-REMOVAL-PLAN.md`) — do not
-build new tooling against it. REST is the public read-only mirror.
+help`/`discover search <q>` as needed. REST is the public read-only mirror.
 
 For terminal work, keep the operator path inside the same binary: use native
 commands such as `build/bin/zclassic23 status`, `build/bin/zclassic23 dumpstate
 supervisor`, or `build/bin/zclassic23 discover help`. Against the dev lane,
 `build/bin/zclassic23-dev status` queries the installed dev binary at
 `~/.zclassic-c23-dev` on RPC port `18252`. The native command registry is the
-sole agent interface; the legacy MCP stdio server (the `-mcp` mode and the
-`mcpcall` CLI subcommand) has been removed.
+sole agent interface.
 Use `make agent-plan` before a build when you need the exact no-build fast-lane
 decision: changed-path/test classification hints, source-wide compile plan, cache
 hit/miss, dev-lane stage/deploy commands, and native command shortcuts.
@@ -284,8 +267,7 @@ a zclassic23 status oracle: local defaults, cookies, datadirs, or environment
 can point it at another RPC target and create a false "zclassic23 is behind"
 diagnosis. If a height/peer answer matters, the target lane must be explicit in
 the command or supplied by the C-owned agent surface (`zclassic23 agent`,
-`zclassic23 agentdiagnose`, `zclassic23 getmirrorstatus`, or the equivalent MCP
-tools).
+`zclassic23 agentdiagnose`, or `zclassic23 getmirrorstatus`).
 
 The transport can vary, but the payload should not: AI-facing status surfaces
 return stable JSON objects with a `schema` or an explicit command contract, and
@@ -295,7 +277,7 @@ additive display-only GitHub trace metadata. `getmirrorstatus` follows this
 rule so an operator can distinguish a stale runtime binary from current source
 or a freshly deployed dev lane.
 
-`getmirrorstatus` also includes `mirror_contract` (`zcl.mirror_status.v1`).
+`getmirrorstatus` also includes `mirror_contract` (`zcl.mirror_status.v2`).
 Agents should prefer it over string-scraping top-level legacy fields. It names
 that the mirror is advisory-only, the local consensus authority, whether the
 mirror is running/reachable, and whether lag is known. Tip hashes are comparable
@@ -307,17 +289,16 @@ agreement below a previously observed mismatch cannot clear it. Unknown or
 failed comparison RPCs never count as agreement. The contract also names
 whether a blocker is active and whether operator action is required.
 
-`agentliveness` (`zcl.agent_liveness.v1`) is the one-call runtime liveness
+`agentliveness` (`zcl.agent_liveness.v2`) is the one-call runtime liveness
 rollup. Its default mode is compact: it composes `current_runtime_lane`,
 observed runtime listeners, compact `runtime_availability`,
 `supervisor_state`, and `background_quality_status` count fields, then adds
 direct fields such as `overall_liveness`, `agent_next_action`,
 `liveness_summary`, `recommended_drilldowns`, `omitted_sections`, and
-`full_mode_command`. Use `agentliveness full` or
-`zcl_agent_liveness(mode="full")` when you need embedded
+`full_mode_command`. Use `zclassic23 agentliveness full` when you need embedded
 `runtime_availability.methods[]`, supervisor `domains` / `root_orphans`, or
 background quality `lanes[]`. Its top-level `schema`, `method`,
-`native_command`, `mcp_tool`, and `contract_source` fields are populated from
+`native_command` and `contract_source` fields are populated from
 `agent_contracts.def`, not handwritten in the controller.
 `runtime_services` is only the producer process' in-process listener state;
 when a native static command has successfully probed a target lane over RPC,
@@ -329,14 +310,14 @@ offline target lane. Use it when deciding whether a lane is alive, stalled,
 missing quality verdicts, or merely being inspected from a static binary outside
 a running node.
 
-`agentdiagnose` (`zcl.agent_diagnose.v1`) is the bounded "what should I look
+`agentdiagnose` (`zcl.agent_diagnose.v2`) is the bounded "what should I look
 at next?" packet. The default mode is compact: it uses cheap `agent` status,
 peer lifecycle incident summary fields, advisory `getmirrorstatus`, and
 explicit drill-down commands while staying inside `zcl.first_call_contract.v1`.
-`agentdiagnose full` / `zcl_agent_diagnose(mode="full")` expands the packet with
+`zclassic23 agentdiagnose full` expands the packet with
 embedded `agent`, bounded `healthcheck`, `peer_incidents`, mirror, and timeline
 objects. Its
-top-level `schema`, `method`, `native_command`, `mcp_tool`, and
+top-level `schema`, `method`, `native_command`, and
 `contract_source` fields come from `agent_contracts.def`. The response
 duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 `gap`, `peer_count`,
@@ -357,8 +338,8 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 marks skipped lower-priority sections as `partial_result=true` instead of
 hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
-`zclassic23 agentdiagnose`, `zclassic23 agentdiagnose brief`, and
-`zcl_agent_diagnose(mode="brief")` all use the compact first-call shape: it
+`zclassic23 agentdiagnose` and `zclassic23 agentdiagnose brief` use the compact
+first-call shape: it
 preserves the top-level verdict,
 safe next action, peer/mirror counts, compact `peer_primary_host_issue`,
 findings, and recommended commands while omitting the embedded `agent`,
@@ -402,15 +383,14 @@ incident view found material duplicate, reconnect, timeout, reject, or no-peer
 signals and `safe_next_action` will point at a host-specific
 `peer_primary_host_next_action` when the compact host scorer can name one;
 otherwise it falls back to the generic peer-lifecycle drill-down.
-For a peer-only packet without the rest of `agentdiagnose`, use native
-`zclassic23 peerincidents` or MCP `zcl_peer_incidents`; the generic fallback is
-`zclassic23 dumpstate peer_lifecycle incidents` / `zcl_state
-subsystem=peer_lifecycle key=incidents`. The first-class response schema is
-`zcl.peer_incidents.v1` and is bounded by design: it returns aggregate incident
+For a peer-only packet without the rest of `agentdiagnose`, use
+`zclassic23 peerincidents`; the generic fallback is
+`zclassic23 ops state --subsystem=peer_lifecycle --key=incidents`. The first-class response schema is
+`zcl.peer_incidents.v2` and is bounded by design: it returns aggregate incident
 counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
-fast-sync usefulness without requiring log scraping. The native/MCP controller
-adds registry-owned `method`, `native_command`, `mcp_tool`, and
+fast-sync usefulness without requiring log scraping. The native handler
+adds registry-owned `method`, `native_command`, and
 `contract_source` fields, and the full-mode embedded
 `agentdiagnose.peer_incidents` object carries the same identity fields.
 Host-level objects expose
@@ -460,37 +440,36 @@ node. `body_position_preflight` also fails loud on the header-only/body-gap
 shape because imported block-index offsets are trustworthy only with the exact
 source `blk*.dat` corpus, not a filename-matched foreign copy.
 
-`proofbundle` (`zcl.operator_proof_bundle.v1`) is the read-only evidence
+`proofbundle` (`zcl.operator_proof_bundle.v2`) is the read-only evidence
 artifact command for agents. Run
-`zclassic23 proofbundle /path/to/anchor-datadir` or
-`zcl_proof_bundle(anchor_datadir="/path/to/anchor-datadir")` to collect live
+`zclassic23 proofbundle /path/to/anchor-datadir` to collect live
 `agent`, `milestone` / `zcl.mvp_operator_proofs.v1`, `refold`,
 `anchorstatus`, `agentlanes`, and `agentdevstatus` payloads into one JSON
 object. Redirect stdout when a durable artifact is needed; the command itself
 does not mutate services or write files.
 
-`zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
+`zclassic23 agentinterface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a
 top-level `build_commit`, a `runtime_identity` block for the binary that
 produced the interface contract, a `capabilities[]` matrix that names each
-first-class agent operation, its schema, and its native/MCP/REST transport,
-including the `zcl.mirror_status.v1` mirror lag/blocker contract, plus
+first-class agent operation, its schema, and its native/REST transport,
+including the `zcl.mirror_status.v2` mirror lag/blocker contract, plus
 a `machine_contract` block declaring that payloads are JSON objects with
 required `schema`, `api_version`, and `status` fields. Those nested shapes are
-versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
+versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v2`, and
 `zcl.agent_machine_contract.v2`. Future operator APIs should extend that matrix
 before adding new wrapper behavior.
 
 `capabilities[]` is registry-owned: canonical rows and append-only v1 aliases
 are emitted through `agent_push_contract_capability_json()` from
-`agent_contracts.def`, so `method`, `schema`, `native`, `mcp`, `rest`, and
+`agent_contracts.def`, so `method`, `schema`, `native`, `rest`, and
 `contract_source` do not drift between `agentinterface`, `agentcontracts`,
-MCP, and native CLI help. Alias rows set `registry_alias=true` and name their
+and native CLI help. Alias rows set `registry_alias=true` and name their
 `canonical_capability`; keep compatibility aliases there instead of repeating
 schema/tool strings in `agent_interface_controller.c`.
 
 `agentinterface`, `agentops`, `agentlanes`, and full-mode `agentliveness` also include
-`runtime_availability` (`zcl.agent_runtime_availability.v2`). Native static
+`runtime_availability` (`zcl.agent_runtime_availability.v3`). Native static
 first-call commands are
 produced by the binary you just ran, but that producer may be newer than the
 target lane still serving RPC. The availability block separates those facts:
@@ -525,8 +504,8 @@ belong in C under `app/controllers/src/agent_controller.c`,
 `app/controllers/src/agent_contracts_controller.c`, and
 `app/controllers/src/agent_interface_controller.c`; compact
 operator/architecture answers that should not require `jq` belong in
-`app/controllers/src/agent_ops_controller.c`, then get exposed through
-MCP/native/REST. Registry-backed command groupings for `agentmap` and
+`app/controllers/src/agent_ops_controller.c`, then get exposed through native
+commands and REST. Registry-backed command groupings for `agentmap` and
 telemetry live in `app/controllers/src/agent_contract_registry.c`
 (`g_agent_command_surfaces`); `agentinterface` capability rows are emitted
 from `app/controllers/src/agent_contract_capability_registry.c`, while
@@ -540,31 +519,31 @@ controller that assembles the response. Ranked `agentops` planning lists
 (`api_gaps` and `top_next_work`) live beside them in `g_agent_work_surfaces`
 so the compact command center is data-owned by registries, not by response
 assembly code. `agentcontracts` also exposes `contract_summary`, generated
-from the same registries, so agents can read native/MCP/REST declaration
+from the same registries, so agents can read native/REST declaration
 counts plus review/schema-surface counts without scanning the full contract
 array. `registry_source` names the contract/command registry and
 `review_registry_source` / `schema_registry_source` name the review and nested
-schema registries, so API clients can pin reviews to the owning C tables. MCP
-tests verify every non-empty registry `mcp` tool resolves in the live router.
+schema registries, so API clients can pin reviews to the owning C tables.
 
 ## Command Center
 
-For architecture and operator planning, the first call is `zcl_agent_ops`
-through MCP, or `zclassic23 agentops` from the native binary. It returns
-`zcl.agent_ops.v1`: direct decision fields, `no_jq_required=true`, current lane
+For architecture and operator planning, the first call is `zclassic23
+agentops`. It returns
+`zcl.agent_ops.v2`: direct decision fields, `no_jq_required=true`, current lane
 and runtime build contracts, background quality summary fields, named
-drill-down commands, direct scalar pointers such as `peer_incidents_command` /
-`peer_incidents_tool`, API gaps, the registry-owned `workflow` for the expected
-agent loop, and the top next architecture work list. `api_ux` names the
-preferred drill-down primitives (`zcl_state`, `zcl_node_log`, `zcl_sql`, and
-`zcl_timeline`) so agents can keep one-off diagnostics simple before adding new
+drill-down commands, direct scalar pointers such as `peer_incidents_command`,
+API gaps, the registry-owned `workflow` for the expected agent loop, and the
+top next architecture work list. `api_ux` names the preferred drill-down
+commands (`zclassic23 dumpstate`, `zclassic23 getnodelog`, `zclassic23
+dbquery`, and `zclassic23 ops timeline`) so agents can keep one-off diagnostics
+simple before adding new
 typed routes. Do not pipe larger discovery payloads through `jq` to build this
 answer by hand; add a field to `agentops` when an agent repeatedly needs the
 same decision.
 
 The native first-call view is `zclassic23 status`; it returns the terse H*, gap,
-peer, health, and causal-blocker projection. The separate compatibility view is
-`zclassic23 agent` or MCP `zcl_agent`. That larger document returns the running
+peer, health, and causal-blocker projection. The expanded `zclassic23 agent`
+document returns the running
 binary `build_commit`, height/gap, peer summary, active blockers, next action,
 and recommended drill-down tools. It also includes
 `security_posture` (`zcl.security_posture.v1`), which separates liveness from
@@ -581,20 +560,19 @@ particular, incomplete anchor or
 nullifier history must hold shielded spends fail-closed. The compact packet also includes
 `provable_tip_published` and `indexer.block_source_status_cached` so agents can
 tell when the first-call fast path intentionally avoided blocking projection
-reads during startup or catch-up; use `zcl_status`, `zcl_state`, or
-`getmirrorstatus` for heavier detail instead of making `agent` wait on SQLite.
+reads during startup or catch-up; use `zclassic23 core status`, `zclassic23
+dumpstate <subsystem>`, or `zclassic23 ops mirror` for heavier detail instead
+of making `agent` wait on SQLite.
 The same fast path uses cached mirror state and an internal optional-detail
 budget. If that budget is already spent, `agent.partial_result=true` and
 `first_call.partial_result=true`; the core status/readiness/height/peer/mirror
 fields remain present, while lower-priority detail such as `resources` and
 `restart_watchdog` can be deferred. Follow `first_call.full_mode_command`
 (`zclassic23 healthcheck`) when the omitted detail matters.
-`zcl_operator_summary` remains a longer MCP compatibility aggregate with raw
-drill-down payloads, not the canonical bounded status contract.
-The native `zcl.operator_snapshot.v2` payload binds both its root and embedded
-`zcl.operator_summary.v2`
-to the same exact lowercase 64-hex `source_id_sha256`. The MCP projection
-fails closed when either identity is absent, malformed, or unequal. Its
+The native `zcl.operator_snapshot.v3` payload binds both its root and embedded
+`zcl.operator_summary.v3`
+to the same exact lowercase 64-hex `source_id_sha256`. The projection fails
+closed when either identity is absent, malformed, or unequal. Its
 `build_commit` fields are optional display-only GitHub trace metadata; they do
 not participate in snapshot trust or acceptance.
 Legacy native `zcl.operator_snapshot.v1` responses are classified explicitly
@@ -612,20 +590,20 @@ running service's `/proc/<MainPID>/exe`, closing the same-source/different-
 artifact gap. Because Git state is not embedded, `dirty_build_known=false` and
 `dirty_build_state="unknown"`; the API never manufactures a clean-tree claim
 from display-only Git metadata.
-It also includes `operator_latch` (`zcl.operator_latch.v1`), `conditions`
-(`zcl.condition_engine_summary.v1`), and `mirror_contract`
-(`zcl.mirror_status.v1`). `operator_latch.active` names whether an
+It also includes `operator_latch` (`zcl.operator_latch.v2`), `conditions`
+(`zcl.condition_engine_summary.v2`), and `mirror_contract`
+(`zcl.mirror_status.v2`). `operator_latch.active` names whether an
 `EV_OPERATOR_NEEDED` page is still latched; `operator_action_required` is the
 machine decision agents should use before interrupting work. Mirror-only stale
 hash-disagreement latches can be marked
 `suppressed_by_mirror_contract=true` when the mirror contract proves there is
 no active advisory blocker. `conditions` gives cheap active/unresolved counts
-and points to `zcl_state subsystem=condition_engine` for the full registered
-condition list, attempts, thresholds, and detail. The MCP
-`zcl_operator_summary` `mirror` object exposes `contract_trusted`,
+and points to `zclassic23 dumpstate condition_engine` for the full registered
+condition list, attempts, thresholds, and detail. The operator summary's
+`mirror` object exposes `contract_trusted`,
 `blocker_active`, and `operator_action_required`; agents should key on those
-booleans before any legacy `blocker` string. When `getmirrorstatus` includes
-`mirror_contract.blocker_active=false`, `zcl_operator_summary` suppresses stale
+booleans before any older `blocker` string. When `getmirrorstatus` includes
+`mirror_contract.blocker_active=false`, the native operator summary suppresses stale
 top-level mirror blocker strings.
 
 `healthcheck` is also a first-call API, but its default shape is bounded:
@@ -657,10 +635,10 @@ fields (`consensus_authority`, `candidate_source`, `candidate_trust`) so
 deploy verification and first-call clients do not need to parse nested
 diagnostic objects for the node authority posture.
 
-`milestone` (`zcl.milestone_status.v1`) is the v1 progress view, not a second
+`milestone` (`zcl.milestone_status.v2`) is the v1 progress view, not a second
 health authority. Its `live` block is derived from the bounded
-`zcl.public_status.v1` agent summary when available and names that with
-`live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v1"`.
+`zcl.public_status.v2` agent summary when available and names that with
+`live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v2"`.
 When the agent packet is available, `live.agent_fields_complete=true` means the
 milestone live fields are copied from that same agent contract and are regression
 tested against a direct `/api/v1/agent` read. If any required first-call field is
@@ -724,49 +702,44 @@ previous wake raced the message-handler wait. `download.message_cycles`,
 sends outbound work before inbound processing, then yields from inbound
 processing after a bounded batch (`ZCL_MSG_PROCESS_MAX_PER_CYCLE`) so the
 outbound send/assignment phase keeps running even under a large receive backlog
-or slow local reducer work. Use `zcl_status`
-for the larger health packet, `zcl_state_catalog` to discover every state
+or slow local reducer work. Use `zclassic23 core status`
+for the larger health packet, `zclassic23 statecatalog` to discover every state
 subsystem and its accepted keys, cost, freshness, owner file, safety level,
-tests, and drill-down commands, `zcl_state` for subsystem internals,
-`zcl_timeline` for category-filtered structured event history with bounded
+tests, and drill-down commands, `zclassic23 dumpstate <subsystem>` for
+subsystem internals, `zclassic23 ops timeline` for category-filtered structured event history with bounded
 server-side filters, semantic summaries, log-reference hints, type/peer counts,
 recommended drill-downs, and seq cursors,
-`zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
-inspection, and `zcl_events` for the raw recent event ring.
+`zclassic23 getnodelog` for bounded log search, `zclassic23 dbquery` for
+SELECT-only database inspection, and `zclassic23 eventlog` for the raw recent
+event ring.
 
 Every new subsystem that has runtime state should expose it through the
-diagnostics registry and become reachable through `zcl_state`. The same
-registry feeds `zclassic23 statecatalog` / `zcl_state_catalog`
-(`zcl.state_catalog.v1`), so agents can discover the subsystem name,
+diagnostics registry and become reachable through `zclassic23 dumpstate`. The
+same registry feeds `zclassic23 statecatalog`
+(`zcl.state_catalog.v2`), so agents can discover the subsystem name,
 description, owner shape/file, expected cost, freshness, accepted keys, safety
 level, focused tests, and drill-down commands without source search. Expensive
 development proof state belongs in a named background quality lane with a JSON
 verdict, not in an untracked terminal scrollback.
 
-For "what happened?" questions, start with `zclassic23 timeline sync 50` or
-`zcl_timeline(category="sync", count=50, since_secs=3600)` and switch category
+For "what happened?" questions, start with `zclassic23 ops timeline
+--category=sync --count=50 --since-secs=3600` and switch category
 as needed (`peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
-`mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, `net`). Use object/MCP filters
+`mirror`, `boot`, `db`, `wallet`, `disk`, `net`). Use object filters
 for `since_secs`, `since_us`, `peer`, `height`, `reducer_stage`, `condition`,
 `deploy`, and `lane`; the node scans a bounded retained window server-side
 instead of making agents pipe raw events through `jq`. The response is
-`zcl.timeline.v1`, includes `head_seq`, and returns `events[].seq` so agents can
+`zcl.timeline.v2`, includes `head_seq`, and returns `events[].seq` so agents can
 tie a timeline slice to later drill-downs. The same payload includes
 `semantic_summary`, `type_counts`, `peer_counts`, `log_references`,
 `safe_next_action`, and `recommended_drilldowns` so common root-cause triage
 stays server-side.
 
 For peer churn, reconnect, or duplicate-entry reports, start with
-`zclassic23 peerincidents` / `zcl_peer_incidents`; use
-`zclassic23 dumpstate peer_lifecycle incidents` /
-`zcl_state(subsystem="peer_lifecycle", key="incidents")` only as the generic
-fallback. If a running target predates the direct `peerincidents` RPC but still
-supports `dumpstate`, the native CLI and MCP tool automatically normalize
-`dumpstate peer_lifecycle incidents` back into the same
-`zcl.peer_incidents.v1` contract and add
-`compatibility_fallback=true` plus `compatibility_source` /
-`compatibility_reason` fields. The first-class command returns bounded
-`zcl.peer_incidents.v1` JSON
+`zclassic23 core network peers incidents`; use `zclassic23 dumpstate
+peer_lifecycle incidents` only as the generic fallback. The first-class command
+returns bounded
+`zcl.peer_incidents.v2` JSON
 with `primary_host_issue`, `top_host_incidents`, flat `primary_issue_host` /
 `primary_issue_class` / `primary_issue_next_action` fields, `top_incidents`,
 `duplicate_host_groups`, reconnect counts, last reasons,
@@ -790,8 +763,7 @@ host or peer worth drilling into.
 
 ## Operator Lane
 
-`zclassic23 agent`, REST `GET /api/v1/agent`, and MCP
-`zcl_operator_summary` include `operator_lane`
+`zclassic23 agent` and REST `GET /api/v1/agent` include `operator_lane`
 (`zcl.operator_lane.v1`). The lane is normally declared by the node's own boot
 context (`-operator-lane=canonical|soak|dev|test|copy`, or
 `ZCL_OPERATOR_LANE`) and reports the lane name, runtime profile, datadir, ports,
@@ -823,7 +795,7 @@ before any restart or binary deployment:
 Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
 
-For fast deploy loops and MCP summaries, the most important lane-safety values
+For fast deploy loops and native summaries, the most important lane-safety values
 are also duplicated as compact top-level fields on the public agent packet:
 `operator_lane_name`, `automation_restart_ok`, `automation_deploy_ok`,
 `requires_operator_confirmation`, `preferred_deploy_target`, and
@@ -835,8 +807,8 @@ lane object. A canonical packet should therefore say
 `automation_deploy_ok=false`, and
 `safe_default_action="observe_only_or_use_dev_lane"`.
 
-`zclassic23 agentlanes` / `zcl_agent_lanes` returns the native
-`zcl.agent_lanes.v1` topology contract for all first-class operator lanes:
+`zclassic23 agentlanes` returns the native
+`zcl.agent_lanes.v2` topology contract for all first-class operator lanes:
 canonical (`zclassic23`, `~/.zclassic-c23`, RPC 18232 / P2P 8033), soak
 (`zclassic23-soak`, `~/.zclassic-c23-soak`, RPC 18242 / P2P 8043), and dev
 (`zcl23-dev`, `~/.zclassic-c23-dev`, RPC 18252 / P2P 8053). It also embeds
@@ -923,7 +895,7 @@ The same readiness booleans are also duplicated as compact top-level fields:
 `readiness_status`, `chain_serving_ready`, `index_projection_ready`,
 `agent_work_ready`, `operator_action_required`, and
 `readiness_next_action`. They are computed by the same C helper that builds the
-nested readiness object, so shell deploy guards and MCP callers can read one
+nested readiness object, so shell deploy guards and native callers can read one
 flat key without re-parsing nested JSON.
 The dev-lane deploy probe declares `AGENT READY` from `agent_work_ready=true`,
 so projection lag stays visible without blocking unrelated development work.
@@ -1008,8 +980,8 @@ The intended immutable source/proof/CAS/rollback transaction must be completed
 before these entry points are re-enabled. The activator and
 unit are hard-bound to the dev service, datadir, and ports; canonical and soak
 targets are rejected.
-`make agent-dev-status` / `zclassic23 agentdevstatus` /
-`zcl_agent_dev_status` expose the same restart hazard before deploy as
+`make agent-dev-status` / `zclassic23 agentdevstatus` expose the same restart
+hazard before deploy as
 `deploy_blocker`, `deploy_blocker_reason`, `explicit_recovery_env`, and
 `auto_reindex_stale_candidate`. The same response starts with the explicit
 `worker_lane` contract (`role=worker`, `mutation_policy=noncanonical_dev_only`,
@@ -1021,8 +993,8 @@ agent contract is not blocked; it does not restart or mutate canonical/soak.
 
 ## Bootstrap Service Status
 
-Use REST `GET /api/v1/bootstrap`, MCP `zcl_bootstrapstatus`, or raw RPC
-`bootstrapstatus` before claiming a zclassic23 node is helping fresh peers
+Use REST `GET /api/v1/bootstrap` or native RPC `bootstrapstatus` before
+claiming a zclassic23 node is helping fresh peers
 bootstrap. Compatibility alias: `GET /api/v1/bootstrapstatus`. The response is
 versioned as `zcl.bootstrap_status.v1` and separates two surfaces:
 
@@ -1090,7 +1062,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   hits and mapped tests, selected path and reason, phase timings,
   candidate/running/last-good generations, probes, rollback result, failure
   capsule, and one executable `agent_next_action`. A heartbeat lets
-  `zcl.agent_dev_status.v1` distinguish an idle watcher from a dead one.
+  `zcl.agent_dev_status.v2` distinguish an idle watcher from a dead one.
 - Process-activation machinery and its lock under
   `~/.local/lib/zclassic23-dev/` remain in-tree for completion and hermetic
   tests, but every public backend refuses before using them. Neither
@@ -1104,7 +1076,7 @@ This is a C23 project, so the edit loop should compile only what changed.
 - `make agent-plan` is the read-only fast-lane decision packet
   (`zcl.agent_fast_plan.v1`). It reports changed-path/test classification hints,
   unmapped code changes, the source-wide compile plan, green-input cache hit/miss,
-  dev-lane stage/deploy commands, and the MCP one-shot shortcuts.
+  dev-lane stage/deploy commands, and native command shortcuts.
 - `make immutable-history-canaries` runs the fast real-chain consensus KATs:
   the h=478544 125,811-byte canonical transaction fixture
   (`domain_consensus_tx_structural`) plus `consensus_parity`. Use it whenever a
@@ -1143,9 +1115,8 @@ This is a C23 project, so the edit loop should compile only what changed.
   deploy state, current `zcl.dev_cycle.v1`, watcher heartbeat, latency-SLO and
   background-quality freshness, auto-reindex state, deploy blocker/reason, and
   the next safe action. Use `make agent-dev-status ARGS=--json` for
-  `zcl.agent_dev_status.v1`;
-  use `zclassic23 agentdevstatus` or MCP `zcl_agent_dev_status` for the
-  first-class native/MCP contract.
+  `zcl.agent_dev_status.v2`;
+  use `zclassic23 agentdevstatus` for the first-class native contract.
 - `make agent-clear-stale-dev-reindex` archives a proven-stale dev-lane
   `auto_reindex_request` after the dev RPC serves at or above the marker anchor.
   It does not restart the lane and never touches canonical or soak.
@@ -1156,8 +1127,8 @@ This is a C23 project, so the edit loop should compile only what changed.
   `make dev-recovery-selftest` can exercise that retained machinery.
 - `make agent-doctor` is the no-build combined development check. It reports
   build binary identity, dev-lane status, the embedded `zcl.agent_fast_plan.v1`
-  fast-lane decision, recent focused-test failure hints, dirty-file count, MCP
-  shortcuts, and a single next safe command. Use `ARGS=--json` for
+  fast-lane decision, recent focused-test failure hints, dirty-file count,
+  native shortcuts, and a single next safe command. Use `ARGS=--json` for
   `zcl.agent_doctor.v1`.
 - `make agent-stage-dev` is contained and always refuses before building or
   moving `staged`. The same is true of `deploy-dev*` and
@@ -1173,7 +1144,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   and separate hot-swap/reload SLO verdicts. Activation cases remain
   `not_measured` during containment; there is no operator opt-in. Build/check
   timings cannot satisfy an activation SLO.
-- `zcl.hotswap_manifest.v2` currently admits only stateless MCP route sets. A
+- `zcl.hotswap_manifest.v2` currently admits only stateless native leaf sets. A
   load validates schema/host ABI, capabilities, build/source identities, exact
   input hash, mapped tests/probes, stateless state schema, and quiescence before
   generation code runs. It stages all route replacements, runs the generation
@@ -1183,12 +1154,11 @@ This is a C23 project, so the edit loop should compile only what changed.
   consensus, and process/bootstrap ownership remain `reload_required`.
   Successful generations stay mapped so in-flight calls finish against their
   original code. Inspect provenance and rejection detail through
-  `zcl_state(subsystem="hotswap")`, schema `zcl.hotswap_generation.v2`.
+  `zclassic23 dumpstate hotswap`, schema `zcl.hotswap_generation.v2`.
 - The hot-swap loader and manifest contract can still be built and simulated,
   but resident probing and publication are not reachable.
-  `make hotswap`, `tools/dev/hotswap-running-dev.sh`, native
-  `dev.hotswap.apply`, resident `dev_hotswap`, and legacy
-  `dev.hotswap.probe`, `zcl_agent_hotswap` all refuse before `dlopen` or
+  `make hotswap`, `tools/dev/hotswap-running-dev.sh`,
+  `dev.hotswap.apply`, `dev_hotswap`, and `dev.hotswap.probe` all refuse before `dlopen` or
   registry replacement.
   There is no exit-69 reload fallback and no asynchronous post-swap stage.
   Use `make hotswap-sim` for the focused
@@ -1198,9 +1168,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   / `zclassic23 dumpstate <subsystem>` run directly against a binary that
   already exists: `build/bin/zclassic23 <command>` for the source-tree node, or
   `build/bin/zclassic23-dev <command>` for the installed `zcl23-dev` linger
-  lane (pass `-datadir=... -rpcport=...` for a custom target). The legacy
-  `make agent-mcp-call*` family and the `mcpcall` CLI subcommand have been
-  removed with the MCP server.
+  lane (pass `-datadir=... -rpcport=...` for a custom target).
 - `make t-fast ONLY=<group>` uses
   `build/test-obj/epochs/<compile-epoch>/` and the exact candidate under
   `build/bin/test-fast/epochs/<compile-epoch>/`, a cached non-LTO test harness
@@ -1210,7 +1178,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   native linger-service probe when the service is available. Repeated identical
   green inputs hit `.cache/zcl-agent-fast-ci/` and skip the repeated proven
   source-wide lint/build/test scope while still refreshing the live probe. The live probe trusts the
-  native `zcl.public_status.v1` health contract instead of duplicating height
+  native `zcl.public_status.v2` health contract instead of duplicating height
   gap policy in shell, and prints compact status JSON when it fails.
 - Focused test routing is DRY: both native `zclassic23 agentimpact` and
   `tools/agent_fast_ci.sh` read
@@ -1243,8 +1211,8 @@ node condition is visible through telemetry but does not block a code push. Set
 tests. Full-suite, fuzz, and coverage evidence belongs to the background quality lanes: install them with
 `make install-quality-linger` and inspect them with `make quality-linger-status`.
 Status JSON is written under `~/.local/state/zclassic23-quality`. The native
-`zclassic23 agentbuild` / `zcl_agent_build` response also embeds
-`recommended_loop` (`zcl.agent_build_loop.v1`) with the cheapest command for
+`zclassic23 agentbuild` response also embeds
+`recommended_loop` (`zcl.agent_build_loop.v2`) with the cheapest command for
 each intent (`agent-plan`, `agent-loop`, `fast-changed-compile`, `fast-compile`,
 `fast-rebuild`, `agent-index`, `dev-loop-bench`,
 `immutable-history-canaries`, focused `t-fast`, and `pre-push-ci`),
@@ -1276,7 +1244,7 @@ they need systemd timer logs or human-formatted service output.
 Use `tools/scripts/remote_node_update.sh <ssh-host>` or
 `make remote-node-plan ZCL_REMOTE_HOST=<ssh-host>` to compare a remote node's
 checkout and service with `origin/main`. The contract schema is
-`zcl.remote_node_update.v1`; `zclassic23 agentbuild` / `zcl_agent_build`
+`zcl.remote_node_update.v1`; `zclassic23 agentbuild`
 exposes the same read-only plan under `remote_node_update`.
 
 The implementation is intentionally observe-only:

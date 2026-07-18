@@ -2,19 +2,9 @@
  *
  * Transport-neutral operator rollup-dashboard bodies.
  *
- * The native successors of the legacy MCP ops controller's operator read
- * tools that had no native twin: zcl_operator_snapshot, zcl_operator_summary,
- * zcl_milestone, zcl_mirror_status, zcl_self_heal_stats. Each takes the
- * leaf's argument object and returns one heap-allocated JSON body (caller
- * frees) — the native command bridge (tools/command/native_command.c) calls
- * these directly and wraps the body in the zcl.result.v1 envelope; the MCP
- * router is never entered. On failure each returns NULL and fills
- * struct zcl_native_body_err with the error tier + a human-readable message,
- * having already logged the failure (LOG_NULL). A body that itself carries an
- * RPC-level {"error":...} object is a SUCCESS return, forwarded verbatim — the
- * bridge decides how to surface it. These are native-only leaves (not shared
- * with an MCP wrapper), so the dual-run byte-identity constraint does not
- * apply. */
+ * Native bodies for operator snapshot, summary, milestone, mirror, and
+ * self-heal reads. Each returns heap-allocated JSON or fills a contextual
+ * zcl_native_body_err after logging the failure. */
 
 #include "controllers/ops_native_handlers.h"
 #include "controllers/native_handler_body.h"
@@ -30,13 +20,13 @@
 #include <stdlib.h>
 
 /* Forward the raw body of a no-argument, read-only RPC. The node RPC returns
- * the composition already (the legacy MCP tool was a pure pass-through), so the
- * only failure this body distinguishes is a null response; a returned RPC-level
+ * the composition already, so the only failure this body distinguishes is a
+ * null response; a returned RPC-level
  * error object is forwarded verbatim for the bridge to surface. */
 static char *ops_rpc_passthrough_body(const char *method,
                                       struct zcl_native_body_err *err)
 {
-    char *raw = mcp_node_rpc(method, NULL);
+    char *raw = node_rpc_call(method, NULL);
     if (!raw) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         (void)snprintf(err->message, sizeof(err->message),
@@ -57,7 +47,7 @@ char *zcl_native_operator_summary_body(const struct json_value *args,
                                        struct zcl_native_body_err *err)
 {
     (void)args;
-    char *raw = mcp_node_rpc("operatorsnapshot", NULL);
+    char *raw = node_rpc_call("operatorsnapshot", NULL);
     struct json_value root;
     if (!status_parse_rpc_json(&root, raw, JSON_OBJ)) {
         json_free(&root);

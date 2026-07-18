@@ -80,7 +80,7 @@ The equivalent live-node machinery:
 - `app/jobs/src/utxo_apply_delta_reorg.c` — the reducer-side job that applies
   a block-index reorg to the on-disk `coins_kv` authority table (the
   persistent-storage analogue of this example's in-RAM UTXO digest).
-- `zcl_reorg_history` (MCP tool) — inspect reorg events a live node has
+- `zclassic23 ops timeline` — inspect recent reorg events a live node has
   actually processed.
 
 See also: `docs/SIMULATOR.md` (simulator model), `lib/test/src/test_simnet_cluster.c`

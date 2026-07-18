@@ -147,7 +147,8 @@ either live path by construction, see §2):
      script's full evidence block per its own false-green warning.
    - No `download_queue_starved` escalation to `EV_OPERATOR_NEEDED` and no
      finalized row whose upstream verdict was not `ok=1`
-     (`zcl_self_heal_stats` / `zcl_conditions`, or `zcl_sql` over
+     (`zclassic23 ops debug dash selfheal` / `zclassic23 dumpstate
+     condition_engine`, or `zclassic23 dbquery` over
      `tip_finalize_log` vs `utxo_apply_log`, on the copy).
 2. **The fix is on `main`, gates green.** `git log --oneline -- app/services/src/shielded_history_import_service.c src/main.c` on the checked-out `origin/main` shows the tip-bind fix (`2477bc499`), the Pedersen fast-fix (`63e40f347`), and the bulk-reader integration (`b9aacbaaa`); `make build-only`, `make lint`, and `make test-parallel` are clean on that exact commit (read the `N passed, M failed` line, not the pipe exit).
 3. **Binary identity is pinned end-to-end.** The binary that ran the
@@ -314,7 +315,7 @@ Check, in order:
    client) returning a normal explorer page, not a connection refusal.
 6. **P2P is healthy.** Peer count above the coordinator floor (3), no
    `download_queue_starved` escalation in the minutes after restart
-   (`zcl_self_heal_stats` / `zcl_conditions`).
+   (`zclassic23 ops debug dash selfheal` / `zclassic23 dumpstate condition_engine`).
 7. **No new consensus-parity divergence.** Continue the hash-parity check at
    the live tip periodically for the first hour post-cutover — a divergence
    surfacing only after real-time P2P blocks (not just replayed history) is
@@ -362,7 +363,7 @@ root-caused; they are the only evidence of what went wrong.
 
 1. Update `docs/HANDOFF.md`: new live `H*`, confirm
    `utxo_apply.anchor_backfill_gap` / `utxo_apply.nullifier_backfill_gap`
-   are clear in `zcl_conditions` / `zcl_self_heal_stats`, note
+   are clear in `zclassic23 dumpstate condition_engine` / `zclassic23 ops debug dash selfheal`, note
    `trust_mode=release_assisted` (not yet `sovereign` — see scope note at
    the top of this doc) via the `sovereignty` dumpstate subsystem if
    registered on the deployed build.

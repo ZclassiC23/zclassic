@@ -64,7 +64,7 @@ _gsov_green() {
         "$ISO_DD/node.log" 2>/dev/null; then
         return 1   # coin tear = borrowed/torn serve, NOT sovereign
     fi
-    # FUTURE: once getbestblockhash/zcl_state exposes not-borrowed, assert
+    # FUTURE: once getbestblockhash/native dumpstate exposes not-borrowed, assert
     #   coins_applied_height == H*+1 AND refold marker present here.
     return 0
 }

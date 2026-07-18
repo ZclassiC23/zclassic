@@ -109,7 +109,7 @@ void sync_monitor_get_stats(struct watchdog_stats *out);
 
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type);
 
-/* zcl_state subsystem=sync_monitor — watchdog recovery counters + local
+/* `zclassic23 dumpstate sync_monitor` — watchdog recovery counters + local
  * recovery sub-state. See CLAUDE.md "Adding state introspection".
  * Reentrant-safe. */
 bool sync_monitor_dump_state_json(struct json_value *out, const char *key);

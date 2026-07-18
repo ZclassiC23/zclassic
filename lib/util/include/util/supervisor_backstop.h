@@ -83,7 +83,7 @@ void supervisor_backstop_stop(void);
  * chain_tip_watchdog_respawn_requested() after app_shutdown(). */
 bool supervisor_backstop_respawn_requested(void);
 
-/* `zcl_state subsystem=supervisor_backstop` dumper. `out` must already
+/* `zclassic23 dumpstate supervisor_backstop` dumper. `out` must already
  * be JSON-initialized (json_set_object) by the caller. `key` is unused. */
 struct json_value;
 bool supervisor_backstop_dump_state_json(struct json_value *out,

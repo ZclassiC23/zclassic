@@ -392,7 +392,7 @@ enum disk_monitor_level disk_monitor_level(void)
     return (enum disk_monitor_level)atomic_load(&g_dm.atomic_level);
 }
 
-/* zcl_state subsystem=disk_monitor — free-space watchdog state: running
+/* `zclassic23 dumpstate disk_monitor` — free-space watchdog state: running
  * flag, current level (ok/low/critical), last poll's free bytes + time, and
  * the resolved warn/refuse thresholds. See CLAUDE.md "Adding state
  * introspection". Reentrant-safe (the snapshot takes the brief poll lock). */

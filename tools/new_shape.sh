@@ -389,7 +389,7 @@ NEXT — wire the stage into its supervisor and (optionally) the diagnostics dum
     (app/supervisors/src/staged_sync_supervisor.c) and tick
     ${stage_name}_stage_step_once() on its schedule.
   - declare the public fns in a header under app/jobs/include/jobs/${base}.h.
-  - to expose runtime state via zcl_state, add a *_dump_state_json and register
+  - to expose runtime state via zclassic23 dumpstate, add a *_dump_state_json and register
     it (see CLAUDE.md "Adding state introspection").
 EOF
 }

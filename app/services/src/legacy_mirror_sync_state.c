@@ -195,7 +195,7 @@ void legacy_mirror_sync_push_status_contract_json(
         blocker_active && legacy_mirror_sync_blocker_should_surface(s, false);
     struct json_value obj = {0};
     json_set_object(&obj);
-    json_push_kv_str(&obj, "schema", "zcl.mirror_status.v1");
+    json_push_kv_str(&obj, "schema", "zcl.mirror_status.v2");
     json_push_kv_int(&obj, "schema_version", 1);
     json_push_kv_bool(&obj, "advisory_only", true);
     json_push_kv_str(&obj, "consensus_authority", s->consensus_authority);

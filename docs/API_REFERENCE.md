@@ -4,12 +4,9 @@ This is a **reference table**, not a spec. For the grammar, envelope shapes,
 budgets, and migration status, read
 [`docs/NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) first —
 that document is the frozen contract; this one enumerates every leaf the
-contract currently declares. For the pre-existing MCP/RPC-era agent surface
-(`agentops`, `agentdiagnose`, `zcl_agent_*`, `servicecatalog`, ZNAM/ZMSG/
-Market/ZSWP RPCs, etc.) see [`docs/AGENT_API.md`](./AGENT_API.md) — that
-surface predates the command registry and is not yet folded into it; the
-[ZERO-MCP removal program](./work/MCP-REMOVAL-PLAN.md) is
-retargeting agent interaction onto the tree documented here.
+contract currently declares. For additional native aliases and operator
+contracts (`agentops`, `agentdiagnose`, `servicecatalog`, and the ZNAM/ZMSG/
+Market/ZSWP methods), see [`docs/AGENT_API.md`](./AGENT_API.md).
 
 ## Source of truth
 
@@ -66,21 +63,19 @@ command against `zclassic23-dev` instead. `tools/lint/check_release_no_dev_symbo
 proves via `nm` that the release binary links none of the dev executors, so
 this is a structural guarantee, not a convention.
 
-**Never RPC/REST/MCP-bound**: everything under `dev.*` is checkout-local by
+**Never RPC/REST-bound**: everything under `dev.*` is checkout-local by
 design (`config/commands/README.md`: "No `lib/` source may include App,
 controller, service, or development handler headers"). Almost every `ready`
 leaf under `core.*` and `ops.*` dispatches through `zcl_native_bridge_command`
-— a direct, MCP-router-free call into either a re-homed native handler body
+— a direct call into either a native handler body
 (`app/controllers/src/*_native_handlers.c`) or the backing JSON-RPC method,
-per the Zero-MCP W0-A re-home. Two `ops.*` leaves bind their own dedicated
+through the command bridge. Two `ops.*` leaves bind their own dedicated
 handler instead of the generic bridge: `ops.state`
-(`zcl_native_handle_ops_state`, the native `zcl_state` primitive — its input
+(`zcl_native_handle_ops_state`, the native `ops state` primitive—its input
 guard is node-free, but a successful dump still calls the `dumpstate` RPC
 against a live node) and `ops.selftest`
-(`zcl_native_handle_ops_selftest`, a pure registry sweep with no RPC/MCP tool
-behind it at all — it never contacts a node). The MCP tool name
-named in `docs/AGENT_API.md` for the same operation is dual-run equivalence
-metadata, not a second implementation.
+(`zcl_native_handle_ops_selftest`, a pure registry sweep with no RPC method
+behind it at all — it never contacts a node).
 
 ---
 
@@ -120,7 +115,7 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 
 | Path | CLI | Avail | Risk / Auth | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|---|
-| `core.status` | `core status` | ready | read / public | none | `zcl.core_status.v1` | Consensus node status: height, sync, health |
+| `core.status` | `core status` | ready | read / public | none | `zcl.core_status.v2` | Consensus node status: height, sync, health |
 | `core.chain.tip` | `core chain tip` | ready | read / public | none | `zcl.chain_tip.v1` | Active chain tip in one call |
 | `core.chain.block.get` | `core chain block get --height=N \| --hash=H` | ready | read / public | `height,hash,verbosity` (**`height`**) | `zcl.block.v1` | Get one block by height or hash |
 | `core.chain.transaction.get` | `core chain transaction get --txid=<hex>` | ready | read / public | `txid,verbose` (**`txid`**) | `zcl.transaction.v1` | Get one transaction by id |
@@ -157,7 +152,7 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 |---|---|---|---|---|---|---|
 | `core.network.status` | `core network status` | ready | read / public | none | `zcl.network_status.v1` | Network info and connections |
 | `core.network.peers.list` | `core network peers list` | ready | read / public | none | `zcl.peers.v1` | List connected peers |
-| `core.network.peers.incidents` | `core network peers incidents` | ready | read / operator | none | `zcl.peer_incidents.v1` | Recent peer misbehavior incidents |
+| `core.network.peers.incidents` | `core network peers incidents` | ready | read / operator | none | `zcl.peer_incidents.v2` | Recent peer misbehavior incidents |
 | `core.network.peers.latency` | `core network peers latency` | ready | read / public | none | `zcl.peer_latency.v1` | Round-trip latency for every peer |
 | `core.network.peers.add` | `core network peers add --address=<ip:port>` | **planned** | mutate / core-recovery / operator | **`address`** | `zcl.peer_add.v1` | Add an outbound peer connection — *Wave 2.2* |
 | `core.network.onion.status` | `core network onion status` | ready | read / public | none | `zcl.onion_status.v1` | Onion address and bootstrap status |
@@ -205,7 +200,7 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 |---|---|---|---|---|---|---|
 | `app.list` | `app list` | ready | read / public | none | `zcl.app_index.v1` | List installed App manifests |
 | `app.inspect` | `app inspect <app_id>` | ready | read / public | **`app_id`** | `zcl.app_manifest_summary.v1` | Inspect one App manifest and bindings |
-| `app.protocols` | `app protocols` | compat → `zclassic23 appprotocols` (alias) | read / public | none | `zcl.app_protocols.v1` | List App protocol contracts (also native/RPC/MCP-legacy today) |
+| `app.protocols` | `app protocols` | compat → `zclassic23 appprotocols` (alias) | read / public | none | `zcl.app_protocols.v1` | List App protocol contracts (also available through native RPC today) |
 | `app.invoke` | `app invoke <id> [path...]` | ready (branch) | read / public | — | — | Invoke a manifest-owned App route; children are dynamic per `apps/<id>/app.def` (contract §6) — today only `social` is installed |
 
 `app.list`/`app.inspect` are checkout-local: they enumerate
@@ -225,8 +220,8 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 | `ops.logs` | `ops logs --pattern='blocker'` | ready | read / operator | `pattern,since_secs,max_lines,level` (**`pattern`**) | `zcl.ops_logs.v1` | Server-side regex tail of node.log |
 | `ops.timeline` | `ops timeline` | ready | read / operator | none | `zcl.ops_timeline.v1` | Event timeline |
 | `ops.metrics` | `ops metrics` | ready | read / operator | none | `zcl.ops_metrics.v1` | Runtime metrics |
-| `ops.state` | `ops state --subsystem=reducer_frontier` | ready | read / operator | `subsystem,key` (**`subsystem`**) | `zcl.ops_state.v1` | Subsystem state dump (the `zcl_state` primitive) — missing `subsystem` fails `MISSING_SUBSYSTEM`/INVALID before any node call (`test_command_registry_catalog.c::test_ops_state_requires_subsystem`) |
-| `ops.selftest` | `ops selftest` | ready | read / operator | none | `zcl.ops_selftest.v1` | Registry self-test — node-free catalog sweep, the native successor of MCP `zcl_self_test mode=registry` |
+| `ops.state` | `ops state --subsystem=reducer_frontier` | ready | read / operator | `subsystem,key` (**`subsystem`**) | `zcl.ops_state.v1` | Subsystem state dump—missing `subsystem` fails `MISSING_SUBSYSTEM`/INVALID before any node call (`test_command_registry_catalog.c::test_ops_state_requires_subsystem`) |
+| `ops.selftest` | `ops selftest` | ready | read / operator | none | `zcl.ops_selftest.v1` | Registry self-test — node-free catalog sweep |
 | `ops.postmortem.list` | `ops postmortem list` | ready | read / operator, cap `DEV_STATE_READ` | none | `zcl.postmortem_list.v1` | List captured postmortems |
 | `ops.postmortem.replay` | `ops postmortem replay <id>` | **planned** | read / operator | **`id`** | `zcl.postmortem_replay.v1` | Replay one captured postmortem — *Wave 2.2 arg mapping* |
 | `ops.config.show` | `ops config show` | **planned** | read / operator | none | `zcl.ops_config.v1` | Show effective runtime configuration — *Wave 2.2* |
@@ -295,9 +290,8 @@ generation activation.
 | `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"...","probe_leaf":"..."}'` | **contained — always refuses before `dlopen`** | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Registered compatibility entry point; returns `resident_probe_contained` pending disposable-worker and ELF admission |
 
 See [`docs/work/HOTSWAP.md`](./work/HOTSWAP.md) for the full mechanism, ABI,
-eligibility rules, and re-enable gates. The native leaves replace the former
-MCP-only design; both native apply and legacy `zcl_agent_hotswap` are currently
-contained. Native probing is contained too.
+eligibility rules, and re-enable gates. Native apply and probing are both
+contained.
 
 ### `dev.loop.*` (persistent save-to-verdict watcher)
 
@@ -374,5 +368,5 @@ internal contract failure.
 | Search returns ≤5 ranked matches | `test_command_registry_catalog.c::test_search_bounded` |
 | `ops.state` and a second, disjoint set (`discover.describe`, `discover.schema`, `dev.app.describe`, `dev.app.plan`) reject missing required input with a structured `zcl.result.v1` error, not a silent pass | `test_command_registry_catalog.c::test_ops_state_requires_subsystem`; `test_native_api_contract.c::test_missing_required_input_fails_closed_structured` |
 | `dev.*` leaves are release-`compat`, never falsely `ready`; `dev.vcs.revert`/`dev.vcs.seal.grant` fail closed outside a dev build | `test_command_registry_catalog.c::test_dev_branch_leaves`, `test_dev_vcs_revert_release_stub`, `test_dev_vcs_seal_grant_release_stub` |
-| Every bridged `ready` leaf has exactly one MCP-free dispatch binding (body fn XOR direct RPC) | `test_command_registry_catalog.c::test_bridge_mcp_free_bindings` |
+| Every bridged `ready` leaf has exactly one dispatch binding (body fn XOR direct RPC) | `test_command_registry_catalog.c` bridge-binding coverage |
 | Release binary links no dev-mutation executor symbols | `tools/lint/check_release_no_dev_symbols.sh` |

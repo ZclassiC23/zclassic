@@ -58,7 +58,7 @@ const char *service_state_reason(void);
  * No-op if buf is NULL or cap is 0. */
 void service_state_reason_copy(char *buf, size_t cap);
 
-/* `zcl_state subsystem=service_state` dumper. `out` is initialized by the
+/* `zclassic23 dumpstate service_state` dumper. `out` is initialized by the
  * caller; `key` is unused. Reentrant-safe. */
 struct json_value;
 bool service_state_dump_state_json(struct json_value *out, const char *key);

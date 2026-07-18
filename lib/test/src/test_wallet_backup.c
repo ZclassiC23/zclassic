@@ -440,7 +440,7 @@ static int t_status_snapshot(void)
     return failures;
 }
 
-/* ── dump_state_json: zcl_state subsystem=wallet_backup ────────── */
+/* ── dump_state_json: `zclassic23 dumpstate wallet_backup` ─────── */
 
 static int t_dump_state_json(void)
 {

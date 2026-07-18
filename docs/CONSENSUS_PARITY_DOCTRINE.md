@@ -47,7 +47,7 @@ Relay/mempool/propagation **policy** does not change which blocks are valid and
 is *not* covered by this doctrine: mempool acceptance policy, fee estimation,
 transaction-relay strategy (e.g. Dandelion BIP156 — relay-only privacy), P2P
 service bits and inv types (unknown ones ignored by both sides), peer scoring,
-RPC/MCP surface, the explorer, wallet UX, sync strategy, storage layout, and
+RPC/native command surface, the explorer, wallet UX, sync strategy, storage layout, and
 observability. Here zclassic23 is free to be better than zclassicd.
 
 ## The enforced guards
@@ -56,7 +56,7 @@ observability. Here zclassic23 is free to be better than zclassicd.
 |---|---|---|
 | **1. `check-consensus-parity` (lint gate E13)** | Forbids the *shape* of a divergence | `tools/scripts/check_consensus_parity.sh`; run by `make lint` / `make ci` / `make deploy` |
 | **2. `test_consensus_parity` (test group)** | Pins the consensus *values* | `lib/test/src/test_consensus_parity.c`; run by `make test_parallel` / `make ci` |
-| **3. Runtime cross-check** | Compares live block hashes against zclassicd | `legacy_mirror` / `zcl_probe_zclassicd` / `zcl_consensus_report` |
+| **3. Runtime cross-check** | Compares live block hashes against zclassicd | `legacy_mirror` / `zclassic23 ops mirror` / `zclassic23 core consensus report` |
 
 **Lint gate E13** fails if a **non-zclassicd consensus mechanism** appears in
 the consensus source path (`lib/consensus`, `lib/validation`, `lib/chain`,

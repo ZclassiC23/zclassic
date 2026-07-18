@@ -246,7 +246,7 @@ bool chain_linkage_check_advance(const struct active_chain *c,
      * splice, and a splice is already refused above at its boundary block
      * (where pprev->nHeight != nHeight-1 must hold). Refusing here would
      * false-HOLD routine 1-block network reorgs applied as one move, so
-     * we count it for zcl_state and let the move proceed. */
+     * we count it for native dump-state inspection and let the move proceed. */
     int win_h = c->height;
     if (win_h >= 0 && bi->nHeight == win_h + 1) {
         struct block_index *t = active_chain_at(c, win_h);

@@ -2,9 +2,9 @@
  *
  * utxo_apply_stage_internal — sibling-private declarations shared between
  * utxo_apply_stage.c (the Job, which owns and writes this state) and
- * utxo_apply_stage_dump.c (the zcl_state JSON dump, which only reads it).
+ * utxo_apply_stage_dump.c (the native dump-state JSON view, which only reads it).
  * Not a public header. Dump-side access is atomic_load only — the dump runs
- * on MCP/RPC threads while the supervisor thread steps the stage (see
+ * on native/RPC threads while the supervisor thread steps the stage (see
  * CLAUDE.md "Adding state introspection"). Prefixed g_ua_ so the symbols
  * stay unique at global linkage (proof_validate_stage.c keeps its own
  * static counters with the unprefixed names). */

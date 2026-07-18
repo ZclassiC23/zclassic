@@ -328,7 +328,7 @@ void supervisor_reset_for_testing(void);
 void supervisor_sweep_once_for_testing(void);
 #endif
 
-/* ── Introspection (zcl_state subsystem=supervisor) ────────────────── */
+/* ── `zclassic23 dumpstate supervisor` ────────────────────────────── */
 
 struct supervisor_snapshot {
     char     name[SUPERVISOR_NAME_MAX];

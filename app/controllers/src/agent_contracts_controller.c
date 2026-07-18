@@ -38,14 +38,12 @@ static void contracts_push_registry_schema(
         return;
     char producer[320];
     if (contract->rest_route && contract->rest_route[0]) {
-        snprintf(producer, sizeof(producer), "%s / %s / %s",
-                 contract->native_command ? contract->native_command : "",
-                 contract->mcp_tool ? contract->mcp_tool : "",
-                 contract->rest_route);
-    } else {
         snprintf(producer, sizeof(producer), "%s / %s",
                  contract->native_command ? contract->native_command : "",
-                 contract->mcp_tool ? contract->mcp_tool : "");
+                 contract->rest_route);
+    } else {
+        snprintf(producer, sizeof(producer), "%s",
+                 contract->native_command ? contract->native_command : "");
     }
     contracts_push_schema(arr, contract->schema, producer,
                           contract->purpose);
@@ -67,19 +65,19 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "agentcontracts\n"
-        "\nReturn the versioned AI/operator API contracts and their native,\n"
-        "MCP, and REST transport names.\n"
+        "\nReturn the versioned AI/operator API contracts and their native\n"
+        "and REST transport names.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_contracts.v1\", "
+        "  { \"schema\":\"zcl.agent_contracts.v2\", "
         "\"schemas\":[...] }\n");
 
     struct json_value contract_list, schemas, transports, rules;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_contracts.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_contracts.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "canonical_interface",
-                     "native zclassic23 agent* RPCs and MCP zcl_agent_* tools");
+                     "native zclassic23 commands and REST reads");
     agent_push_contract_summary_json(result, "contract_summary");
 
     json_init(&contract_list);
@@ -105,7 +103,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_set_array(&rules);
     contracts_push_str(&rules, "Do not put new logic in shell wrappers.");
     contracts_push_str(&rules,
-                       "Build JSON once in native services/controllers, then expose through MCP/REST.");
+                       "Build JSON once in native services/controllers, then expose through native commands and REST.");
     contracts_push_str(&rules,
                        "Every new contract needs schema, docs, and focused tests.");
     contracts_push_str(&rules,

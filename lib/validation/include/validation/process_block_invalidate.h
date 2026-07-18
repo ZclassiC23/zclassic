@@ -49,8 +49,8 @@ struct coins_view_cache;
 struct chain_params;
 struct validation_state;
 
-/* Result enum — every attempt returns exactly one value. Names are
- * stable for logging / RPC / MCP consumers. */
+/* Result enum — every attempt returns exactly one value. Names are stable for
+ * logging, native commands, and RPC consumers. */
 enum invalidate_result {
     INVALIDATE_NOT_ATTEMPTED   = 0,  /* prereqs unmet (NULL ms/hash) */
     INVALIDATE_BLOCK_NOT_FOUND = 1,  /* no pindex with that hash */

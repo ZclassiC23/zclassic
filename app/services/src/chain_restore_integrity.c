@@ -6,8 +6,8 @@
 // entry points return void and produce a single domain output struct each
 // (struct chain_restore_validation, struct chain_integrity_result). Each
 // struct carries its own ok/all_ok verdict plus the per-check diagnostic
-// breakdown (zero_nbits_count, hole/mismatch heights, ...) that callers and
-// `zcl_state` inspect. There is no fallible bool/int surface; collapsing the
+// breakdown (zero_nbits_count, hole/mismatch heights, ...) used by callers and
+// exposed through `zclassic23 dumpstate boot`. There is no fallible bool/int surface;
 // rich verdict to zcl_result would discard the breakdown the boot fail-fast
 // gate switches on. chain_integrity records via
 // chain_restore_record_integrity_result() for diagnostics.
@@ -131,7 +131,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                out->active_chain_mismatches == 0 &&
                out->tip_slot_ok && out->tip_real);
 
-    /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
+    /* Cache the result for `zclassic23 dumpstate boot`. */
     chain_restore_record_integrity_result(out);
 }
 

@@ -80,8 +80,8 @@ static pthread_t g_cookie_rotate_thread;
 static bool g_cookie_rotate_started = false;
 static int g_cookie_rotate_sec = 86400; /* default 24h, env ZCL_RPC_COOKIE_ROTATE_SEC */
 /* Prometheus /metrics HTTP endpoint. Off by default; an operator
- * sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text that
- * `zcl_metrics` returns via MCP. Gated behind the same RPC Basic-auth
+ * sets ZCL_METRICS_HTTP_ENABLE=1 to expose the metrics renderer. Gated behind
+ * the same RPC Basic-auth
  * cookie the wallet endpoints use. Prometheus `scrape_configs`
  * supports `basic_auth: { username_file: ..., password_file: ... }` —
  * point
@@ -951,11 +951,6 @@ int rpc_http_cookie_rotate_sec(void)
 
 /* ── Server start/stop ──────────────────────────────────────────── */
 
-const struct rpc_table *rpc_http_active_table(void)
-{
-    return g_table;
-}
-
 bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      const char *rpc_user, const char *rpc_password,
                      const char *datadir)
@@ -1037,7 +1032,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         rpc_http_middleware_load_from_env(&g_middleware);
         g_middleware_active = true;
     }
-    /* Publish the global handle so metrics.c + zcl_rpc_report can read
+    /* Publish the global handle so metrics and native RPC diagnostics can read
      * the live config and stats without reaching into httpserver.c. */
     rpc_http_middleware_set_global(&g_middleware);
 

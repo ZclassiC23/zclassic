@@ -870,7 +870,7 @@ validate_agent_json() {
     local json="$1"
     if command -v jq >/dev/null 2>&1; then
         if ! printf '%s\n' "$json" |
-            jq -e '.schema == "zcl.public_status.v1" and
+            jq -e '.schema == "zcl.public_status.v2" and
                    .status == "healthy" and
                    .healthy == true and
                    .serving == true and
@@ -882,7 +882,7 @@ validate_agent_json() {
         fi
     else
         printf '%s\n' "$json" |
-            grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"'
+            grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v2"'
         printf '%s\n' "$json" |
             grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"'
         printf '%s\n' "$json" |

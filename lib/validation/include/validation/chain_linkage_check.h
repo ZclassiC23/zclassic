@@ -14,7 +14,7 @@
  * CRASH-ONLY RULE: a firing check NEVER kills the process. It latches a
  * HOLD (this module), registers a typed blocker (util/blocker.h), emits
  * EV_OPERATOR_NEEDED once (dedup via blocker_set rc), and surfaces in
- * zcl_state subsystem=validation_pack + health. FATAL stays reserved for
+ * `zclassic23 dumpstate validation_pack` and health. FATAL stays reserved for
  * boot integrity.
  *
  * The HOLD latch

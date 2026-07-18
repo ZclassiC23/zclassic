@@ -1,7 +1,7 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
 > **STATUS: canonical is wedged below tip** on incomplete
-> shielded anchor/nullifier history (verify the live H* via `zcl_status` /
+> shielded anchor/nullifier history (verify the live H* via `zclassic23 status` /
 > `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state).
 > Commit `ab512d577` repaired the earlier
 > transparent-loader failure and temporarily reached tip from the borrowed
@@ -148,7 +148,7 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 
 The 2026-06-23 node briefly reached tip after `ab512d577` repaired the
 transparent loader, but canonical is now wedged below tip on incomplete
-shielded history (verify the live H* via `zcl_status` / `dumpstate
+shielded history (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate
 reducer_frontier`; `docs/HANDOFF.md` holds current state). This Step-0 recipe remains only a fallback. On a COPY first
 (`cp -a`, `--importblockindex` then normal boot), verify tip==network + healthy + hash-match
 vs zclassicd at ≥2 heights, then deploy to live. `rm -f build/bin/zclassic23` + verify

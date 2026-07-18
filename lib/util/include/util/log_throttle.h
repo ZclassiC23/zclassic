@@ -28,7 +28,7 @@
  * Concurrency: all state is in atomics, so should_emit() is torn-read-safe
  * without a lock. Callers that already serialize their throttle update under a
  * mutex (tip_finalize's g_block_reason_mu) may keep doing so; the atomics make
- * a concurrent lock-free dump read (e.g. zcl_state) safe regardless. Sites that
+ * a concurrent lock-free dump read safe regardless. Sites that
  * run on a single serial thread (the reducer step path, the condition-engine
  * tick) pay only relaxed atomic ops.
  */
@@ -83,7 +83,7 @@ bool log_throttle_should_emit_changed(struct log_throttle *t, bool changed,
 void log_throttle_reset(struct log_throttle *t);
 
 /* Lock-free read of the current suppressed-repeat counter, for diagnostics
- * (zcl_state) that surface the running count without driving an emit. */
+ * (native dumpstate) that surface the running count without driving an emit. */
 uint64_t log_throttle_reps(const struct log_throttle *t);
 
 #endif /* ZCL_UTIL_LOG_THROTTLE_H */

@@ -178,7 +178,7 @@ static bool validation_precedence_cases(void)
         { API_QUERY_FILTER_SERVICE_OPERATIONS, "/?service=abc=def",
           "invalid service 'abc=def' (allowed: letters,digits,underscore,dash,dot)" },
         { API_QUERY_FILTER_SERVICE_OPERATIONS, "/?preferred_interface=REST",
-          "invalid preferred_interface 'REST' (allowed: rest,mcp,rpc,native_or_planned)" },
+          "invalid preferred_interface 'REST' (allowed: rest,rpc,native_or_planned)" },
         { API_QUERY_FILTER_SERVICE_OPERATIONS, "/?surface=BAD&write_safety=BAD",
           "invalid write_safety 'BAD' (allowed: public_read_only,operator_private,operator_private_destructive)" },
         { API_QUERY_FILTER_NAME_SERVICE_DIRECTORY,
@@ -236,7 +236,7 @@ static bool internal_contract_errors_are_logged(void)
            strcmp(internal_err,
                   "unknown query-filter contract 'service_operation'") == 0 &&
            strcmp(user_err,
-                  "invalid surface 'BAD' (allowed: rest,mcp,rpc)") == 0 &&
+                  "invalid surface 'BAD' (allowed: rest,rpc)") == 0 &&
            strstr(log, "[api.query_filter]") &&
            strstr(log, "unknown query-filter contract 'service_operation'") &&
            !strstr(log, "invalid surface 'BAD'");

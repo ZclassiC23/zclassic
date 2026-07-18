@@ -6,7 +6,7 @@
  * sqlite3 CLI is not installed on the host, so ad-hoc inspection of the
  * node's sqlite stores (progress.kv stage cursors, node.db tables) from a
  * shell needs a vendored-sqlite C tool (same precedent as
- * tools/p2_invariant_check.c). zcl_sql covers node.db via MCP but cannot
+ * tools/p2_invariant_check.c). `core storage query` covers node.db but cannot
  * reach progress.kv or a copied fixture datadir.
  *
  *   build/bin/sqlq <db-path> <SELECT ...>

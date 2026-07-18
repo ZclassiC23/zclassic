@@ -328,7 +328,7 @@ void ap_audit_reset_for_test(void)
     pthread_mutex_unlock(&g_ap_detail_lock);
 }
 
-/* ── zcl_state dump ─────────────────────────────────────────────────── */
+/* ── Native dump-state view ─────────────────────────────────────────── */
 
 bool ap_audit_dump_state_json(struct json_value *out, const char *key)
 {

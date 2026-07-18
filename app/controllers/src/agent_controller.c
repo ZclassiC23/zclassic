@@ -104,25 +104,24 @@ bool rpc_agent_dev_status(const struct json_value *params, bool help,
         "systemd user service state, RPC/pre-RPC recovery, deploy state,\n"
         "auto-reindex marker, and next safe action.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_dev_status.v1\", ... }\n");
+        "  { \"schema\":\"zcl.agent_dev_status.v2\", ... }\n");
 
     const char *cmd_env = getenv("ZCL_AGENT_DEV_STATUS_CMD");
     const char *cmd = (cmd_env && cmd_env[0])
         ? cmd_env : "tools/dev/agent-dev-status.sh --json";
-    agent_collect_optional_status(result, cmd, "zcl.agent_dev_status.v1");
+    agent_collect_optional_status(result, cmd, "zcl.agent_dev_status.v2");
     json_push_kv_str(result, "api_version", "v1");
     if (strcmp(json_get_str(json_get(result, "status")), "unavailable") != 0)
         json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "collector_command", cmd);
     json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
-    json_push_kv_str(result, "mcp_tool", "zcl_agent_dev_status");
     json_push_kv_str(result, "safe_next_action", "run make agent-dev-status");
     return true;
 }
 
 static void agent_push_subsystem(struct json_value *arr, const char *name,
                                  const char *purpose, const char *files, const char *docs,
-                                 const char *tests, const char *mcp_tool)
+                                 const char *tests)
 {
     struct json_value obj;
     json_init(&obj);
@@ -132,7 +131,6 @@ static void agent_push_subsystem(struct json_value *arr, const char *name,
     json_push_kv_str(&obj, "files", files);
     json_push_kv_str(&obj, "docs", docs);
     json_push_kv_str(&obj, "tests", tests);
-    json_push_kv_str(&obj, "mcp_tool", mcp_tool);
     json_push_back(arr, &obj);
     json_free(&obj);
 }
@@ -283,15 +281,15 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "agentmap\n"
-        "\nReturn the native-first AI-coder map with MCP tool-name taxonomy:\n"
+        "\nReturn the native-first AI-coder map:\n"
         "where the operator API lives, which docs explain it, and which tests cover it.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_map.v2\", \"commands\":[...], "
+        "  { \"schema\":\"zcl.agent_map.v3\", \"commands\":[...], "
         "\"subsystems\":[...] }\n");
 
     struct json_value commands, subsystems, telemetry;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_map.v2");
+    json_push_kv_str(result, "schema", "zcl.agent_map.v3");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(
@@ -321,32 +319,27 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "first-call binary JSON contracts",
                          "app/controllers/src/agent_controller.c, app/controllers/src/agent_contracts_controller.c, app/controllers/src/agent_anchor_status_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lane_runtime.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_liveness_controller.c, app/controllers/src/agent_runtime_controller.c, app/controllers/include/controllers/agent_contracts.def, src/main.c",
                          "docs/AGENT_API.md",
-                         "syncdiag_rpc, command_registry_catalog, make_lint_gates",
-                         "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map");
+                         "syncdiag_rpc, command_registry_catalog, make_lint_gates");
     agent_push_subsystem(&subsystems, "rest_agent_api",
                          "public HTTP status/discovery mirror",
                          "app/controllers/src/api_controller_status.c",
                          "docs/CODEBASE_MAP.md",
-                         "api",
-                         "zcl_openapi");
+                         "api");
     agent_push_subsystem(&subsystems, "health_and_blockers",
                          "serving/healthy/blocker semantics",
                          "app/services/src/node_health_service.c",
                          "docs/RUNBOOK.md",
-                         "node_health_service, syncdiag_rpc",
-                         "zcl_health, zcl_conditions");
+                         "node_health_service, syncdiag_rpc");
     agent_push_subsystem(&subsystems, "fast_ci",
                          "cache-aware edit loop and focused test routing",
                          "app/controllers/include/controllers/agent_impact_rules.def, tools/agent_fast_ci.sh, Makefile",
                          "docs/work/fast-path.md",
-                         "make_lint_gates",
-                         "zcl_agent_impact, zcl_agent_build");
+                         "make_lint_gates");
     agent_push_subsystem(&subsystems, "background_quality_lanes",
                          "long fuzz and coverage proof work outside the push path",
                          "app/controllers/src/agent_background_quality.c, tools/scripts/background_quality_lane.sh, deploy/zclassic23-fuzz.service, deploy/zclassic23-coverage.service",
                          "docs/work/fast-path.md",
-                         "make_lint_gates",
-                         "zcl_agent_build");
+                         "make_lint_gates");
     json_push_kv(result, "subsystems", &subsystems);
     json_free(&subsystems);
 
@@ -361,7 +354,7 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
         "\nMap changed file paths to subsystem, risk, docs, and relevant tests.\n"
         "Pass explicit paths; the node never shells out to git.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_impact.v1\", "
+        "  { \"schema\":\"zcl.agent_impact.v2\", "
         "\"relevant_test_groups\":[\"syncdiag_rpc\"], ... }\n");
 
     struct agent_impact_acc acc = {0};
@@ -439,7 +432,7 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
                    "long fuzz/coverage evidence runs in background quality lanes");
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_impact.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_impact.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_int(result, "files_count", (int64_t)file_count);
@@ -482,14 +475,14 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "object rebuilds, cache knobs, focused tests, and the byte-identity\n"
         "reproducibility gate.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_build.v1\", "
+        "  { \"schema\":\"zcl.agent_build.v2\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
     struct json_value loop, incremental, dev, indexing, benchmark, cache,
                       knobs, history, commands, repro, background,
                       quality_status, lanes, remote, gates;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_build.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_build.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "source_id_sha256", zcl_build_source_id_sha256());
@@ -500,8 +493,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
 
     json_init(&loop);
     json_set_object(&loop);
-    json_push_kv_str(&loop, "schema", "zcl.agent_build_loop.v1");
-    json_push_kv_int(&loop, "schema_version", 1);
+    json_push_kv_str(&loop, "schema", "zcl.agent_build_loop.v2");
+    json_push_kv_int(&loop, "schema_version", 2);
     json_push_kv_str(&loop, "default_edit_gate", "make agent-loop");
     json_push_kv_str(&loop, "default_underlying_gate", "make fast-ci");
     json_push_kv_str(&loop, "read_only_fast_plan", "make agent-plan");
@@ -509,8 +502,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "dev_lane_status", "make agent-dev-status");
     json_push_kv_str(&loop, "native_dev_lane_status",
                      "zclassic23 agentdevstatus");
-    json_push_kv_str(&loop, "mcp_dev_lane_status",
-                     "zcl_agent_dev_status");
     json_push_kv_str(&loop, "direct_changed_compile",
                      "make fast-changed-compile");
     json_push_kv_str(&loop, "fast_no_link_compile", "make fast-compile");
@@ -584,7 +575,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&dev, "status_command", "make agent-dev-status");
     json_push_kv_str(&dev, "native_status_command",
                      "zclassic23 agentdevstatus");
-    json_push_kv_str(&dev, "mcp_status_tool", "zcl_agent_dev_status");
     json_push_kv_str(&dev, "status_json_command",
                      "make agent-dev-status ARGS=--json");
     json_push_kv_str(&dev, "binary", "build/bin/zclassic23-dev");
@@ -742,9 +732,6 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_command(&commands, "agent_dev_status_native",
                              "zclassic23 agentdevstatus",
                              "native typed dev-lane status contract");
-    agent_push_build_command(&commands, "agent_dev_status_mcp",
-                             "zcl_agent_dev_status",
-                             "MCP typed dev-lane status contract");
     agent_push_build_command(&commands, "stage_dev_binary",
                              "make agent-stage-dev",
                              "contained entrypoint: refuses until the complete publication transaction exists");

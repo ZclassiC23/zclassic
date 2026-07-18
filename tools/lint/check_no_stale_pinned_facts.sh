@@ -194,7 +194,7 @@ if (( total > 0 )); then
     fi
     if (( hgt_violations > 0 )); then
         echo "  height-pin:  live state lives in docs/HANDOFF.md — point there, don't pin a height." >&2
-        echo "               Verify the live H* (zcl_state subsystem=reducer_frontier) before writing." >&2
+        echo "               Verify the live H* (zclassic23 dumpstate reducer_frontier) before writing." >&2
         echo "               A legitimately-constant/dated line may add a trailing" >&2
         echo "               <!-- stale-ok: <reason> --> marker." >&2
     fi

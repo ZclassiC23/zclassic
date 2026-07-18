@@ -124,7 +124,7 @@ bool seal_kv_nearest_rewind_base(struct sqlite3 *db, int32_t H,
 bool seal_kv_mark_ratified_in_tx(struct sqlite3 *db, int slot,
                                  struct seal_record *r);
 
-/* zcl_state subsystem=seal — dump the whole ring (4 slots + head) as JSON. */
+/* `zclassic23 dumpstate seal` dumps the whole ring (4 slots + head) as JSON. */
 bool seal_kv_dump_state_json(struct json_value *out, const char *key);
 
 /* ── prune on ratify — seal advance IS retention (M1 LANDS DARK) ──

@@ -25,7 +25,6 @@ static void agent_lanes_push_str(struct json_value *arr, const char *s)
 static void agent_lanes_push_external_command(struct json_value *arr,
                                               const char *name,
                                               const char *native,
-                                              const char *mcp,
                                               const char *purpose)
 {
     if (!arr)
@@ -36,7 +35,6 @@ static void agent_lanes_push_external_command(struct json_value *arr,
     json_set_object(&cmd);
     json_push_kv_str(&cmd, "name", name);
     json_push_kv_str(&cmd, "native", native);
-    json_push_kv_str(&cmd, "mcp", mcp);
     json_push_kv_str(&cmd, "purpose", purpose);
     json_push_back(arr, &cmd);
     json_free(&cmd);
@@ -62,12 +60,12 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
         "\nReturn the native lane topology contract for long-running canonical,\n"
         "soak-evidence, and restartable development nodes.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_lanes.v1\", "
+        "  { \"schema\":\"zcl.agent_lanes.v2\", "
         "\"lanes\":[...], \"current_runtime_lane\":{...} }\n");
 
     struct json_value lanes, rules, commands;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_lanes.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_lanes.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
@@ -119,7 +117,6 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
                                      "current-lane deploy/restart allow/refuse");
     agent_lanes_push_external_command(
         &commands, "lane_health", "tools/scripts/lane_health.sh --json",
-        "zcl_agent_lanes",
         "external systemd/RPC readiness probe for all lanes");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);

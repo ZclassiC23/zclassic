@@ -56,27 +56,27 @@ extern struct api_rpc_backend g_api_rpc;
 #define ZCL_REST_API_VERSION "v1"
 #define ZCL_REST_API_BASE_PATH "/api/v1"
 #define ZCL_REST_API_COMPAT_BASE_PATH "/api"
-#define ZCL_REST_INDEX_SCHEMA "zcl.rest_index.v1"
+#define ZCL_REST_INDEX_SCHEMA "zcl.rest_index.v2"
 #define ZCL_REST_OPENAPI_SCHEMA "zcl.openapi.v1"
 #define ZCL_REST_ERROR_SCHEMA "zcl.rest_error.v1"
 #define ZCL_REST_ROUTE_CONTRACT_SCHEMA "zcl.rest_route_contract.v1"
 #define ZCL_APP_PROTOCOL_CONTRACT_SCHEMA \
-    "zcl.application_protocol_contract.v1"
+    "zcl.application_protocol_contract.v2"
 #define ZCL_APP_PROTOCOLS_INDEX_SCHEMA \
-    "zcl.application_protocols.index.v1"
-#define ZCL_SERVICE_CATALOG_SCHEMA "zcl.service_catalog.v1"
-#define ZCL_SERVICE_CONTRACT_SCHEMA "zcl.service_contract.v1"
+    "zcl.application_protocols.index.v2"
+#define ZCL_SERVICE_CATALOG_SCHEMA "zcl.service_catalog.v2"
+#define ZCL_SERVICE_CONTRACT_SCHEMA "zcl.service_contract.v2"
 #define ZCL_SERVICE_RUNTIME_PROBE_SCHEMA "zcl.service_runtime_probe.v1"
-#define ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA "zcl.service_operations.index.v1"
-#define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v1"
+#define ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA "zcl.service_operations.index.v2"
+#define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v2"
 #define ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA "zcl.names.service_directory.v1"
 #define ZCL_QUERY_FILTER_CONTRACT_SCHEMA "zcl.query_filter_contract.v1"
 #define API_QUERY_FILTER_SERVICE_OPERATIONS "service_operations"
 #define API_QUERY_FILTER_NAME_SERVICE_DIRECTORY "name_service_directory"
 #define ZCL_PATH_PARAM_CONTRACT_SCHEMA "zcl.path_param_contract.v1"
-#define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
-#define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
-#define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
+#define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v2"
+#define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v2"
+#define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v2"
 
 /* ── HTTP response headers (kept here so siblings can emit errors) ── */
 
@@ -172,7 +172,6 @@ size_t api_json_status(uint8_t *r, size_t max, const char *status,
 size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body);
 const char *api_rest_index_body_json(void);
 void api_rest_index_resources_json(struct json_value *resources);
-void api_rest_index_mcp_json(struct json_value *mcp);
 void api_rest_index_cli_json(struct json_value *cli);
 void api_rest_layer_model_json(struct json_value *layer_model);
 const struct api_app_protocol_contract *

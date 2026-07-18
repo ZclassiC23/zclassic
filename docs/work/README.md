@@ -7,8 +7,7 @@ parallel-worktree protocol. It is not itself a priority queue:
 2. [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) is the sole ordered execution plan.
 3. [`../MVP.md`](../MVP.md) owns the v1 acceptance contract.
 
-The active #1 track is the sovereign complete-state cure. Zero-MCP is the
-secondary development track. Architecture cleanup remains off the v1 path
+The active #1 track is the sovereign complete-state cure. Architecture cleanup remains off the v1 path
 unless the owner explicitly promotes an item.
 
 Worktrees are dynamic; never infer current workers from a hard-coded path list.
@@ -35,8 +34,6 @@ any of these three ever disagree, HANDOFF wins.
   [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md) (bundle naming/
   ownership authority), and [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)
   (install runbook).
-- **Secondary track:** [`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md)
-  (the authoritative zero-MCP inventory).
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,
   off the v1 path — see `../REFACTOR_STATUS.md` for the debt board, which
   self-labels NOT the v1 path).

@@ -24,7 +24,7 @@
  *
  * See CLAUDE.md "Adding state introspection" — this module follows
  * the *_dump_state_json convention and is wired into the generic
- * zcl_state dispatcher.
+ * native dump-state dispatcher.
  */
 
 #ifndef ZCL_SERVICES_HEADER_PROBE_H
@@ -64,7 +64,7 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
  * RPC, same validation, same accept_block_header path. */
 void header_probe_tick_once(void);
 
-/* Synchronous one-shot for the MCP tool + tests:
+/* Synchronous one-shot for native diagnostics and tests:
  *   start_height: where to begin (inclusive). Use our_tip+1 normally.
  *   max_headers:  cap on number of headers to pull in this call
  *                 (clamped to [1, 5000]).
@@ -87,7 +87,7 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
  *            depend on it).
  * The stale_validate_headers_repair Condition orchestrates the ordering and
  * records which source acted via the note_* functions below, so the
- * zcl_state subsystem=header_probe dump reports the last repair source and
+ * `zclassic23 dumpstate header_probe` reports the last repair source and
  * per-source counters (which source served the last repair, how many repairs
  * each source served, how many P2P re-fetches were requested, and how many of
  * those fired with zero connected peers = a missing-input event). */
@@ -112,8 +112,7 @@ void header_probe_note_repair_served(enum header_probe_repair_source src,
  * repair right now (missing input) and is counted separately. */
 void header_probe_note_p2p_request(int height, int peers_available);
 
-/* zcl_state subsystem=header_probe dispatcher entry. See CLAUDE.md
- * "Adding state introspection". Reentrant-safe. */
+/* Reentrant-safe dispatcher entry for `zclassic23 dumpstate header_probe`. */
 bool header_probe_dump_state_json(struct json_value *out, const char *key);
 
 /* Test hooks — reset state between unit tests. */

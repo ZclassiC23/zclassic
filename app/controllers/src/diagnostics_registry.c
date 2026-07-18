@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Diagnostics registry: the `g_dumpers[]` table plus the `dumpstate` /
- * `zcl_state` dispatcher. Adding a subsystem is one descriptor row in
+ * dumpstate dispatcher. Adding a subsystem is one descriptor row in
  * diagnostics_dumpers.def plus one dump function in the owning module.
  *
  * It also owns controller-level state (main_state + datadir) shared across
@@ -371,7 +371,7 @@ static bool sandbox_dump_state_json(struct json_value *out, const char *key)
 
 /* ── RPC: getmirrorstatus ──────────────────────────────────────────
  *
- * Backs the `zcl_mirror_status` MCP tool: the legacy_mirror
+ * Backs the native mirror-status command: the legacy_mirror
  * drift-detection introspection surface.
  */
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
@@ -561,7 +561,7 @@ bool diag_rpc_profile(const struct json_value *params, bool help,
                "persisted_projection_snapshot", "bounded_lookup", NULL, \
                NULL, NULL, test_, true)
 
-/* One descriptor source drives dumpstate dispatch, the state catalog, MCP's
+/* One descriptor source drives dumpstate dispatch, the state catalog, native's
  * advisory subsystem enum, health rollup, and registry invariants. */
 static const struct diagnostics_dump_entry g_dumpers[] = {
 #include "controllers/diagnostics_dumpers.def"

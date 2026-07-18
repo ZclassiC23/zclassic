@@ -4,7 +4,7 @@
 
 /* UX-oriented service catalog for sovereign-node clients. Runtime health stays
  * in /api/v1/services; this catalog declares what the node can host, advertise,
- * or verify and how those capabilities map to REST/native/MCP surfaces. */
+ * or verify and how those capabilities map to REST/native surfaces. */
 
 #include "api_controller_internal.h"
 
@@ -47,12 +47,10 @@ struct api_service_operation_summary_counts {
     int64_t operator_private_count;
     int64_t destructive_count;
     int64_t rest_callable_count;
-    int64_t mcp_callable_count;
     int64_t rpc_callable_count;
     int64_t active_count;
     int64_t in_progress_count;
     int64_t preferred_rest_count;
-    int64_t preferred_mcp_count;
     int64_t preferred_rpc_count;
     int64_t preferred_native_count;
 };
@@ -74,7 +72,7 @@ static const struct api_service_contract k_api_services[] = {
             "chain_serving_ready=true_and_operator_action_required=false",
         .runtime_probe_failure_next_action = "inspect_agentdiagnose",
         .crud_capabilities_csv = "read_singleton",
-        .transports_csv = "rest,mcp,native,p2p",
+        .transports_csv = "rest,native,p2p",
         .object_types_csv = "block_header,block,transaction,peer",
         .depends_on_services_csv = "",
         .read_model = "reducer_frontier_and_node_health_projection",
@@ -106,7 +104,7 @@ static const struct api_service_contract k_api_services[] = {
         .runtime_probe_failure_next_action =
             "inspect_peer_bootstrap_readiness",
         .crud_capabilities_csv = "read_singleton",
-        .transports_csv = "rest,mcp,native,p2p",
+        .transports_csv = "rest,native,p2p",
         .object_types_csv = "bootstrap_status,snapshot_offer,peer_capability",
         .depends_on_services_csv = "full_node",
         .read_model = "network_bootstrap_status_and_peer_projection",
@@ -140,7 +138,7 @@ static const struct api_service_contract k_api_services[] = {
             "inspect_agent_readiness_and_znam_projection",
         .crud_capabilities_csv =
             "read_collection,read_item,read_subcollection,construct_transaction",
-        .transports_csv = "rest,mcp,native,chain",
+        .transports_csv = "rest,native,chain",
         .object_types_csv = "name_record,service_record,endpoint_record,text_record",
         .depends_on_services_csv = "full_node",
         .read_model = "znam_projection_confirmed_chain_records",
@@ -268,9 +266,9 @@ static const struct api_service_contract k_api_services[] = {
         .runtime_probe_success_signal =
             "operator_private_message_projection_route_returns_valid_json",
         .runtime_probe_failure_next_action =
-            "call_mcp_msg_inbox_with_operator_context",
+            "call_msg_inbox_with_operator_context",
         .crud_capabilities_csv = "read_collection,create_message",
-        .transports_csv = "mcp,native,p2p,planned_sapling_memo",
+        .transports_csv = "native,p2p,planned_sapling_memo",
         .object_types_csv = "p2p_message,delivery_receipt,planned_memo_message",
         .depends_on_services_csv = "full_node,znam_names,onion_directory",
         .read_model = "local_message_projection",
@@ -303,7 +301,7 @@ static const struct api_service_contract k_api_services[] = {
         .runtime_probe_failure_next_action =
             "inspect_script_contract_registry_build",
         .crud_capabilities_csv = "read_capabilities,construct_contract",
-        .transports_csv = "rest,mcp,native,chain",
+        .transports_csv = "rest,native,chain",
         .object_types_csv = "htlc_contract,redeem_script,refund_path",
         .depends_on_services_csv = "full_node,znam_names",
         .read_model = "swap_contract_projection_and_static_script_registry",
@@ -335,7 +333,7 @@ static const struct api_service_contract k_api_services[] = {
         .runtime_probe_failure_next_action =
             "inspect_timeline_or_node_log",
         .crud_capabilities_csv = "read_collection",
-        .transports_csv = "rest,mcp,native",
+        .transports_csv = "rest,native",
         .object_types_csv = "event,incident,timeline_cursor",
         .depends_on_services_csv = "full_node",
         .read_model = "append_only_event_log_projection",
@@ -407,8 +405,6 @@ static void api_service_operation_summary_count(
         counts->destructive_count++;
     if (json_get_bool(json_get(op, "rest_callable")))
         counts->rest_callable_count++;
-    if (json_get_bool(json_get(op, "mcp_callable")))
-        counts->mcp_callable_count++;
     if (json_get_bool(json_get(op, "rpc_callable")))
         counts->rpc_callable_count++;
     if (strcmp(status, "active") == 0)
@@ -417,8 +413,6 @@ static void api_service_operation_summary_count(
         counts->in_progress_count++;
     if (strcmp(iface, "rest") == 0)
         counts->preferred_rest_count++;
-    else if (strcmp(iface, "mcp") == 0)
-        counts->preferred_mcp_count++;
     else if (strcmp(iface, "rpc") == 0)
         counts->preferred_rpc_count++;
     else
@@ -448,8 +442,6 @@ static void api_service_operation_summary_json(
                      counts.destructive_count);
     json_push_kv_int(summary, "rest_callable_count",
                      counts.rest_callable_count);
-    json_push_kv_int(summary, "mcp_callable_count",
-                     counts.mcp_callable_count);
     json_push_kv_int(summary, "rpc_callable_count",
                      counts.rpc_callable_count);
     json_push_kv_int(summary, "active_count", counts.active_count);
@@ -457,8 +449,6 @@ static void api_service_operation_summary_json(
                      counts.in_progress_count);
     json_push_kv_int(summary, "preferred_rest_count",
                      counts.preferred_rest_count);
-    json_push_kv_int(summary, "preferred_mcp_count",
-                     counts.preferred_mcp_count);
     json_push_kv_int(summary, "preferred_rpc_count",
                      counts.preferred_rpc_count);
     json_push_kv_int(summary, "preferred_native_count",

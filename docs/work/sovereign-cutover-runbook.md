@@ -149,7 +149,7 @@ Notes:
   bundle's own anchor height (3,056,758). The point of this gate is to prove
   the forward fold actually clears the exact height the borrowed-seed path
   got stuck on — re-derive this number fresh from `docs/HANDOFF.md` /
-  `zcl_state subsystem=reducer_frontier` before running; it rots.
+  `zclassic23 dumpstate reducer_frontier` before running; it rots.
 - `--full` is required (the forward fold reads on-disk block bodies); the
   harness refuses `--install-consensus-bundle` on a `--light` copy.
 - `--deadline` bounds *both* phases: the install call (which should return in
@@ -170,7 +170,7 @@ Notes:
 **Acceptance (all of G-SOV, not just a green exit code):**
 1. `H*` climbs strictly past 3,176,325 (or whatever the live wedge height is
    at run time) toward the header tip. Watch via `getblockcount` (the harness
-   does this for you) and cross-check `zcl_state subsystem=reducer_frontier`
+   does this for you) and cross-check `zclassic23 dumpstate reducer_frontier`
    on a live probe of the copy's own RPC port.
 2. `coins_applied_height == H* + 1` at every observed step — no rowless span.
    The decisive positive proof in-tree is
@@ -179,7 +179,7 @@ Notes:
 3. `coins_kv_is_proven_authority() == true` **and**
    `coins_kv_contains_refold_marker() == true` on the copy after the run
    (both markers are set by the ACTIVATE install itself — confirm via
-   `zcl_sql` `SELECT key FROM progress_meta WHERE key IN
+   `zclassic23 dbquery` `SELECT key FROM progress_meta WHERE key IN
    ('coins_kv_migration_complete','coins_kv_self_folded')` or the equivalent
    native `dumpstate` call, not by assumption).
 4. **Mirror same-height hash-agree:** cross-check the copy's block hash at
@@ -189,9 +189,10 @@ Notes:
    A hash mismatch at either height is a hard stop — do not proceed to the
    live cutover.
 5. No `download_queue_starved` escalation to `EV_OPERATOR_NEEDED` during the
-   climb (`zcl_self_heal_stats` / `zcl_conditions` on the copy), and no
+   climb (`zclassic23 ops debug dash selfheal` / `zclassic23 dumpstate
+   condition_engine` on the copy), and no
    finalized row at any height whose own upstream verdict was not `ok=1`
-   (`zcl_sql` over `tip_finalize_log` vs `utxo_apply_log`).
+   (`zclassic23 dbquery` over `tip_finalize_log` vs `utxo_apply_log`).
 
 Only a run that clears all five items is a PASS. `test_parallel` green on the
 candidate build is a regression floor, not evidence of any of the above.
@@ -249,7 +250,7 @@ of this sequence; the only unavailable window is between step 2 and step 5.
    tip. Re-derive the actual block count fresh at execution time
    (`current header tip − 3,056,758`) rather than trusting this figure — the
    chain has grown since this was written. Watch progress with
-   `zclassic23 status`, `zcl_state subsystem=reducer_frontier`, and
+   `zclassic23 status`, `zclassic23 dumpstate reducer_frontier`, and
    `zclassic23 anchorstatus`.
 6. **Verification (same G-SOV items as copy-prove, now against the live
    node):** `H*` climbs strictly past 3,176,325 and keeps advancing;
@@ -262,7 +263,7 @@ of this sequence; the only unavailable window is between step 2 and step 5.
    historically hit (it no-ops once `coins_kv_is_proven_authority()` is true).
 7. Update `docs/HANDOFF.md` with the new live H\* and confirm the wedge
    condition (`utxo_apply.anchor_backfill_gap`) has cleared in
-   `zcl_conditions` / `zcl_self_heal_stats`.
+   `zclassic23 dumpstate condition_engine` / `zclassic23 ops debug dash selfheal`.
 
 ## Rollback
 

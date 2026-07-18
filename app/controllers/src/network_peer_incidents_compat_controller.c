@@ -23,7 +23,7 @@ bool peer_incidents_from_dumpstate_result_json(const struct json_value *result,
         return false;
 
     const char *schema = json_get_str(json_get(state, "schema"));
-    if (strcmp(schema, "zcl.peer_incidents.v1") != 0)
+    if (strcmp(schema, "zcl.peer_incidents.v2") != 0)
         return false;
 
     json_copy(out, state);
@@ -37,7 +37,5 @@ bool peer_incidents_from_dumpstate_result_json(const struct json_value *result,
                          : "target_peerincidents_method_not_found");
     json_push_kv_str(out, "fallback_native_command",
                      "zclassic23 dumpstate peer_lifecycle incidents");
-    json_push_kv_str(out, "fallback_mcp_tool",
-                     "zcl_state subsystem=peer_lifecycle key=incidents");
     return true;
 }

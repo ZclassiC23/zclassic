@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Node-log controller — the `getnodelog` / `zcl_node_log` primitive.
+ * Node-log controller for the native `getnodelog` primitive.
  *
  * Reverse-scans <datadir>/node.log in 64 KB chunks, matches each line
  * against a POSIX-extended regex, filters by level, and stops at

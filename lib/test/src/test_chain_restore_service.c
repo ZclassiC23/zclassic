@@ -116,7 +116,7 @@ static int test_plan_no_utxos(void) {
 }
 
 /* Round 7 A4: plan result must land in the boot snapshot so
- * zcl_state(subsystem="boot") shows WHY chain_restore failed. */
+ * `zclassic23 dumpstate boot` shows WHY chain_restore failed. */
 static int test_plan_records_failed_state_in_boot_snapshot(void) {
     int failures = 0;
     TEST("chain_restore_plan: FAILED case records reason in boot snapshot") {

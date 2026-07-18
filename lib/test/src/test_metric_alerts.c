@@ -304,7 +304,7 @@ static int test_rss_high_rule(void)
  * their clock basis (not wall-clock GetTime()), specifically so a
  * hermetic test can drive "time" deterministically by passing
  * increasing `uptime_seconds` values to metrics_prometheus_set_node_gauges()
- * instead of sleeping — see tools/mcp/metrics.c's "New (Lane 1a)
+ * instead of sleeping — see the Prometheus backend's "New (Lane 1a)
  * hysteresis gauges" comment. */
 
 static int test_header_gap_growing_rule(void)

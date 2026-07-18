@@ -121,7 +121,7 @@ the single trusted UTXO commitment).
 ## 7. Sequencing
 
 1. **Live-wedge precondition — NOT MET.** Canonical is held below tip on
-   incomplete shielded state (verify the live H* via `zcl_status` /
+   incomplete shielded state (verify the live H* via `zclassic23 status` /
    `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state).
    `ab512d577` repaired only the earlier transparent
    loader. No shadow/soak promotion may treat the borrowed snapshot as a

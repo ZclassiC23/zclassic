@@ -10,28 +10,28 @@
  * which escapes the dangerous characters.
  *
  * Usage (flat case):
- *   struct mcp_params p;
- *   mcp_params_init(&p);
- *   mcp_params_push_str(&p, untrusted_addr);
- *   mcp_params_push_real(&p, amount);
- *   char *params = mcp_params_to_json(&p);   // consumes p
- *   char *out = mcp_node_rpc("sendtoaddress", params);
+ *   struct rpc_arg_builder p;
+ *   rpc_arg_builder_init(&p);
+ *   rpc_arg_builder_push_str(&p, untrusted_addr);
+ *   rpc_arg_builder_push_real(&p, amount);
+ *   char *params = rpc_arg_builder_to_json(&p);   // consumes p
+ *   char *out = node_rpc_call("sendtoaddress", params);
  *   free(params);
  *
  * Usage (nested case — z_sendmany's [from, [{address, amount}]]):
- *   struct mcp_params p;
- *   mcp_params_init(&p);
- *   mcp_params_push_str(&p, from);
+ *   struct rpc_arg_builder p;
+ *   rpc_arg_builder_init(&p);
+ *   rpc_arg_builder_push_str(&p, from);
  *
  *   struct json_value recip; json_init(&recip); json_set_object(&recip);
  *   json_push_kv_str(&recip,  "address", to);
  *   json_push_kv_real(&recip, "amount",  amount);
  *   struct json_value recip_arr; json_init(&recip_arr);
  *   json_set_array(&recip_arr); json_push_back(&recip_arr, &recip);
- *   mcp_params_push_value(&p, &recip_arr);
+ *   rpc_arg_builder_push_value(&p, &recip_arr);
  *   json_free(&recip); json_free(&recip_arr);
  *
- *   char *params = mcp_params_to_json(&p);
+ *   char *params = rpc_arg_builder_to_json(&p);
  */
 
 #ifndef ZCL_CONTROLLERS_RPC_PARAMS_H
@@ -42,27 +42,27 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct mcp_params {
+struct rpc_arg_builder {
     struct json_value arr;  /* JSON_ARR — do not touch directly */
 };
 
-void mcp_params_init(struct mcp_params *p);
-void mcp_params_free(struct mcp_params *p);
+void rpc_arg_builder_init(struct rpc_arg_builder *p);
+void rpc_arg_builder_free(struct rpc_arg_builder *p);
 
 /* Append a typed value. NULL strings are treated as the empty string. */
-void mcp_params_push_str(struct mcp_params *p, const char *s);
-void mcp_params_push_int(struct mcp_params *p, int64_t i);
-void mcp_params_push_real(struct mcp_params *p, double d);
-void mcp_params_push_bool(struct mcp_params *p, bool b);
+void rpc_arg_builder_push_str(struct rpc_arg_builder *p, const char *s);
+void rpc_arg_builder_push_int(struct rpc_arg_builder *p, int64_t i);
+void rpc_arg_builder_push_real(struct rpc_arg_builder *p, double d);
+void rpc_arg_builder_push_bool(struct rpc_arg_builder *p, bool b);
 
 /* Append a pre-built json_value (object, array, nested — anything).
  * Copies v; caller retains ownership and must json_free() it. */
-void mcp_params_push_value(struct mcp_params *p, const struct json_value *v);
+void rpc_arg_builder_push_value(struct rpc_arg_builder *p, const struct json_value *v);
 
 /* Serialize to a malloc'd, NUL-terminated JSON array string ready to
- * pass as the params_json argument to mcp_node_rpc(). Also frees the
- * builder's internal storage (equivalent to mcp_params_free(p)).
+ * pass as the params_json argument to node_rpc_call(). Also frees the
+ * builder's internal storage (equivalent to rpc_arg_builder_free(p)).
  * Returns NULL on allocation failure. */
-char *mcp_params_to_json(struct mcp_params *p);
+char *rpc_arg_builder_to_json(struct rpc_arg_builder *p);
 
 #endif

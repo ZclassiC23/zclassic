@@ -96,7 +96,7 @@ struct db_maintenance_status {
 
 void db_maintenance_status_snapshot(struct db_maintenance_status *out);
 
-/* zcl_state subsystem=db_maintenance — WAL/ANALYZE/VACUUM worker snapshot.
+/* `zclassic23 dumpstate db_maintenance` — WAL/ANALYZE/VACUUM worker snapshot.
  * See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 struct json_value;
 bool db_maintenance_dump_state_json(struct json_value *out, const char *key);

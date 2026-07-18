@@ -211,11 +211,12 @@ int main(void)
  *       wallet_create_transaction_multi() in lib/wallet/include/wallet/wallet.h,
  *       followed by wallet_commit_transaction() (validate -> admit to
  *       mempool -> record in wallet), and ultimately the RPC surface
- *       `zcl_send` / `zcl_sendtoaddress` (tools/mcp/controllers) or
+ *       native wallet-send commands or
  *       `sendtoaddress` for a live node.
  *
  *   simnet_coin_exists() /
  *   simnet_coin_value()        -> lib/coins/include/coins/coins_view.h
  *       (coins_view_cache_have_coins() etc.) over the real on-disk coins_kv
- *       table, or `zcl_listunspent` / `getrawtransaction` at the RPC layer.
+ *       table, or `zclassic23 core wallet utxo list` / `getrawtransaction`
+ *       at the RPC layer.
  */

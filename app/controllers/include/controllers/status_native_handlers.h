@@ -2,13 +2,9 @@
  *
  * Transport-neutral operator read compositions.
  *
- * Body functions for the operator read tools: each takes the tool's
- * argument object and returns one heap-allocated JSON body (caller frees),
- * exactly the bytes the legacy MCP handler set as res->body. On failure it
- * returns NULL and fills struct zcl_native_body_err (see
- * controllers/native_handler_body.h) with the legacy MCP error tier and the
- * byte-identical error_message text, having already logged the failure.
- * Both the MCP wrapper handlers and the native command bridge call these.
+ * Each function takes a command argument object and returns one
+ * heap-allocated JSON body (caller frees). On failure it returns NULL and
+ * fills struct zcl_native_body_err after logging context.
  */
 
 #ifndef ZCL_CONTROLLERS_STATUS_NATIVE_HANDLERS_H

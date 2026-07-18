@@ -2,9 +2,9 @@
  *
  * Tier-1 hot-swap — the REAL (activatable) single-handler module ABI.
  *
- * This is the "finished" successor to the contained manifest/staging pilot in
- * hotswap.h (the `mcp.routes` / `native.leaves` provider classes). Where the
- * pilot re-points a whole controller's route/leaf table via a host vtable and
+ * This is the single-handler successor to the native-leaf generation loader in
+ * hotswap.h. Where that loader re-points a whole controller's leaf table via a
+ * host vtable and
  * NEVER dlcloses (a deliberate permanent leak), this module ABI is:
  *
  *   - single-handler: one swappable leaf per .so, keyed by its canonical
@@ -168,8 +168,8 @@ bool hotswap_handler_is_swappable(const char *handler_name);
 uint64_t hotswap_activation_count(void);
 
 /* Append the activation subsystem's telemetry into an already-open object.
- * Called by hotswap_dump_state_json() (hotswap_loader.c) so `zcl_state
- * subsystem=hotswap` shows both the pilot generations and the activation
+ * Called by hotswap_dump_state_json() so `zclassic23 dumpstate hotswap` shows
+ * both the generation loader and activation
  * slots/epochs/containment in one document. */
 void hotswap_activate_dump_json(struct json_value *out);
 

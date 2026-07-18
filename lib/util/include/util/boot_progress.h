@@ -31,7 +31,7 @@
  *
  * Safe to call before/after boot — no init required, never blocks,
  * no allocation. The label is for debug observability only; it gets
- * round-tripped into `zcl_state subsystem=boot` so operators can see
+ * round-tripped into `zclassic23 dumpstate boot` so operators can see
  * which subsystem is keeping the watchdog alive.
  */
 

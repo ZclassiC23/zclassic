@@ -62,7 +62,7 @@ struct block_index_projection {
     int64_t        last_catch_up_ms;
 };
 
-/* ── singleton glue (boot wires this; diagnostics + MCP read it) ──── */
+/* ── singleton glue (boot wires this; native diagnostics read it) ──── */
 
 static _Atomic(block_index_projection_t *) g_singleton = NULL;
 

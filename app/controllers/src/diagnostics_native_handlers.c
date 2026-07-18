@@ -1,13 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for zcl_sql / zcl_node_log.
- * Each function is the argument-parsing plus
- * RPC-composition core of the legacy MCP handler in
- * tools/mcp/controllers/diagnostics_controller.c, with the MCP-specific
- * error envelope stripped out — see controllers/native_handler_body.h for
- * the failure contract. Called by both the MCP wrapper handler (which maps
- * a NULL return onto the historical res->error / res->error_message) and
- * the native command bridge (tools/command/native_command.c). */
+ * Native argument parsing and RPC composition for diagnostic commands. See
+ * controllers/native_handler_body.h for the failure contract. */
 
 #include "controllers/diagnostics_native_handlers.h"
 
@@ -27,19 +21,19 @@ char *zcl_native_sql_body(const struct json_value *args,
 {
     const char *sql = json_get_str(json_get(args, "sql"));
 
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, sql ? sql : "");
-    mcp_params_push_int(&p, json_get_int_or(args, "limit", 10));
-    char *pjson = mcp_params_to_json(&p);
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, sql ? sql : "");
+    rpc_arg_builder_push_int(&p, json_get_int_or(args, "limit", 10));
+    char *pjson = rpc_arg_builder_to_json(&p);
 
-    char *out = pjson ? mcp_node_rpc("dbquery", pjson) : NULL;
+    char *out = pjson ? node_rpc_call("dbquery", pjson) : NULL;
     free(pjson);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "dbquery");
-        LOG_NULL("mcp.diag", "RPC %s returned null", "dbquery");
+        LOG_NULL("native.diag", "RPC %s returned null", "dbquery");
     }
     return out;
 }
@@ -55,21 +49,21 @@ char *zcl_native_node_log_body(const struct json_value *args,
     const char *pattern = json_get_str(json_get(args, "pattern"));
     const char *level = json_get_str(json_get(args, "level"));
 
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, pattern ? pattern : "");
-    mcp_params_push_int(&p, json_get_int_or(args, "since_secs", 300));
-    mcp_params_push_int(&p, json_get_int_or(args, "max_lines",   50));
-    mcp_params_push_str(&p, level && level[0] ? level : "all");
-    char *pjson = mcp_params_to_json(&p);
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, pattern ? pattern : "");
+    rpc_arg_builder_push_int(&p, json_get_int_or(args, "since_secs", 300));
+    rpc_arg_builder_push_int(&p, json_get_int_or(args, "max_lines",   50));
+    rpc_arg_builder_push_str(&p, level && level[0] ? level : "all");
+    char *pjson = rpc_arg_builder_to_json(&p);
 
-    char *out = pjson ? mcp_node_rpc("getnodelog", pjson) : NULL;
+    char *out = pjson ? node_rpc_call("getnodelog", pjson) : NULL;
     free(pjson);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "getnodelog");
-        LOG_NULL("mcp.diag", "RPC %s returned null", "getnodelog");
+        LOG_NULL("native.diag", "RPC %s returned null", "getnodelog");
     }
     return out;
 }

@@ -3,7 +3,7 @@
  * Lag-SLO breach tests for the legacy_mirror_sync_service.
  *
  * Asserts the contract every downstream consumer (Prometheus,
- * node_health, MCP) hangs off:
+ * node_health, native diagnostics) hangs off:
  *
  *   - lag ≥ breach_blocks for ≥ breach_secs  → EV_LAG_SLO_BREACH (warn|critical)
  *   - lag ≥ critical_blocks for ≥ critical_secs → EV_LAG_SLO_BREACH (fatal)
@@ -199,8 +199,8 @@ static int test_legacy_mirror_registers_supervisor_contract(void)
 
 /* C2 monitor-extraction pin: the lean monitor's dump_state_json must
  * keep emitting every key that downstream consumers (node_health,
- * metrics, chain_advance_coordinator, deploy_verify.sh, and the MCP
- * zcl_state=legacy_mirror primitive) read. A careless lean-up that
+ * metrics, chain_advance_coordinator, deploy_verify.sh, and the native
+ * legacy_mirror state primitive) read. A careless lean-up that
  * drops an include or a stats field would silently shrink this shape;
  * this test fails loudly if any contract key disappears. */
 static int test_dump_shape_is_stable(void)

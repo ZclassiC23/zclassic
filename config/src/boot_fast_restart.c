@@ -223,7 +223,7 @@ void boot_fast_restart_arm_quick_check_skip_probe(void)
 /* Runs one quick_check on a fresh read-only connection (no contention with the
  * live write handle). A failure is raised LOUDLY via EV_DB_ERROR +
  * EV_OPERATOR_NEEDED (the latter latches DEGRADED in the health surface until
- * an operator/MCP acts) — never silent. */
+ * an operator acts) — never silent. */
 static void *boot_bg_quick_check_entry(void *arg)
 {
     char *path = (char *)arg;

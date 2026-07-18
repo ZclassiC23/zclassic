@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Target-owned operator snapshot.  The detached MCP process must not stitch
+ * Target-owned operator snapshot. The native client process must not stitch
  * verdict-critical state together across eight HTTP requests: a target restart
  * or ordinary progress between calls can manufacture a state that never
  * existed.  This collector copies each subsystem under its own leaf lock,
@@ -257,9 +257,9 @@ static void operator_build_summary(struct json_value *summary,
                                    const struct operator_verdict *verdict)
 {
     json_set_object(summary);
-    json_push_kv_str(summary, "schema", "zcl.operator_summary.v2");
-    json_push_kv_int(summary, "schema_version", 2);
-    json_push_kv_str(summary, "api_version", "v2");
+    json_push_kv_str(summary, "schema", "zcl.operator_summary.v3");
+    json_push_kv_int(summary, "schema_version", 3);
+    json_push_kv_str(summary, "api_version", "v3");
     json_push_kv_str(summary, "execution_locus", "target_node");
     json_push_kv_str(summary, "source_rpc", "operatorsnapshot");
     json_push_kv_int(summary, "captured_at",
@@ -307,9 +307,9 @@ static void operator_build_summary(struct json_value *summary,
     json_push_kv_str(summary, "primary_blocker", verdict->primary);
     json_push_kv_str(summary, "blocking_reason", verdict->primary);
     json_push_kv_str(summary, "next_action", verdict->next_action);
-    json_push_kv_str(summary, "next_tool", verdict->next_tool);
-    operator_push_string_array(summary, "recommended_tools",
-                               verdict->next_tool, verdict->next_tool2);
+    json_push_kv_str(summary, "next_command", verdict->next_command);
+    operator_push_string_array(summary, "recommended_commands",
+                               verdict->next_command, verdict->next_command2);
 
     operator_push_int_known(summary, "height",
                             capture->chain.served.height_known,
@@ -428,9 +428,9 @@ static void operator_build_snapshot(struct json_value *result,
 {
     struct operator_verdict verdict = operator_snapshot_classify(capture);
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.operator_snapshot.v2");
-    json_push_kv_int(result, "schema_version", 2);
-    json_push_kv_str(result, "api_version", "v2");
+    json_push_kv_str(result, "schema", "zcl.operator_snapshot.v3");
+    json_push_kv_int(result, "schema_version", 3);
+    json_push_kv_str(result, "api_version", "v3");
     json_push_kv_str(result, "execution_locus", "target_node");
     json_push_kv_str(result, "producer",
                      "event_operator_snapshot_controller");
@@ -676,7 +676,7 @@ bool rpc_operator_snapshot(const struct json_value *params, bool help,
         "The response names its bounded component-snapshot coherence model;\n"
         "it never claims global transaction linearizability and never emits\n"
         "healthy when verdict-critical evidence is partial or unstable.\n"
-        "\nResult: { schema:\"zcl.operator_snapshot.v2\", "
+        "\nResult: { schema:\"zcl.operator_snapshot.v3\", "
         "source_id_sha256:\"...\", capture:{...}, "
         "chain:{...}, blockers:{...}, summary:{...} }\n");
 

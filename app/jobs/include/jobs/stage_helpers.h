@@ -220,7 +220,7 @@ static inline bool stage_read_block(struct block *out,
  * (utxo_apply_upstream_hole_note, "reducer_frontier.upstream_log_hole") —
  * after a rowless hole at height 3166989 in script_validate_log AND
  * proof_validate_log pinned H* for THREE HOURS on 2026-07-02 with
- * zcl_blockers reporting nothing (only a bare last_blocked_unix
+ * `zclassic23 core sync blockers` reporting nothing (only last_blocked_unix
  * timestamp — see reducer_frontier_reconcile_light.c's detect function for
  * the incident and its now-generic refill-hole scan). body_fetch,
  * body_persist, script_validate, and proof_validate had the exact same shape
@@ -427,7 +427,8 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * site (chainstate.c), but the CALLER here historically discarded the boolean
  * via (void), so a persistently-failing window extend on the fold path made the
  * stage silently stop making progress with no attribution. LOG_WARN below names
- * every failure loudly on ALL EIGHT stages uniformly (node.log / zcl_node_log),
+ * every failure loudly on ALL EIGHT stages uniformly (node.log /
+ * `zclassic23 getnodelog`),
  * and this counter is for direct white-box inspection (the drain-harness test).
  *
  * Deliberately NOT rolled into stage_dump_counters(): this header is

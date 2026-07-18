@@ -16,7 +16,7 @@
 | 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | `time build/bin/zclassic23 -bench-coldstart` |
 | 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | `time build/bin/zclassic23 -bench-warmstart` |
 | 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | 30-day chaos soak (kill -9, net blip, peer churn) |
-| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | `zcl_status.memory_rss_mb` over a soak |
+| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | `zclassic23 core status` → `memory_rss_mb` over a soak |
 | 5 | **Recovery from kill -9** | ≤ **60 s** | scripted kill loop, recovery histogram |
 
 ### Soak: hermetic proxy vs. operational acceptance (#3/#4)
@@ -32,7 +32,7 @@ It is **not** the acceptance run. The real #3 (≥ 30-day MTBF) and #4
 (≤ 1 GB steady-state RSS) require **168 h+ of live wall time under real
 tx load** with zero operator restarts. Canonical is currently wedged below tip
 on incomplete historical shielded anchors/nullifiers (verify the live H\* via
-`zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
 state), so its current wall time is not clean soak evidence. `ab512d577` fixed an earlier
 transparent-loader failure but did not prove complete shielded state. After a
 complete atomic cure passes copy proof, start a fresh exact-same-height-parity

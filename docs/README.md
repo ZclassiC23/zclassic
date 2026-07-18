@@ -27,7 +27,7 @@ points in order; dated evidence and backlog material are intentionally omitted.
 - [`ROM.md`](./ROM.md) — the L0-L3 trust machine: what the compiled checkpoint commits, what each layer guarantees, how to read `dumpstate rom`.
 - [`CODEBASE_MAP.md`](./CODEBASE_MAP.md) — where things live + how to do each thing.
 - [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) — things that look broken but are intentional or already-done; read before "fixing" or re-proposing anything.
-- [`AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md) — the required feature-slice recipe: REST resources, ActiveRecord models, validations, relationships, schema, services, MCP/native surfaces.
+- [`AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md) — the required feature-slice recipe: REST resources, ActiveRecord models, validations, relationships, schema, services, and native command surfaces.
 
 ## Active plans
 
@@ -39,8 +39,6 @@ points in order; dated evidence and backlog material are intentionally omitted.
   experiments and measurements; `HANDOFF.md` owns the current verdict.
 - [`work/sovereign-cutover-runbook.md`](./work/sovereign-cutover-runbook.md) —
   owner-gated copy-proof and cutover sequence.
-- [`work/MCP-REMOVAL-PLAN.md`](./work/MCP-REMOVAL-PLAN.md) — zero-MCP program: delete the MCP server, native CLI becomes the only agent interface (prose rationale).
-- [`work/MCP-REMOVAL-WORKLIST.md`](./work/MCP-REMOVAL-WORKLIST.md) — the authoritative 114-site execution inventory for the zero-MCP program.
 
 ## Dated review evidence
 
@@ -79,7 +77,7 @@ points in order; dated evidence and backlog material are intentionally omitted.
 
 ## Contributor docs
 
-- [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents; MCP setup; build/run quick reference.
+- [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents; native command setup; build/run quick reference.
 - [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md) — mandatory coding standards, enforced by `make lint`.
 - [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md) — concept/code attributions (companion to the root `NOTICE`).
 - [`BOOT_INVARIANTS.md`](./BOOT_INVARIANTS.md) — boot stage ordering invariants (`enum boot_stage`).

@@ -7,11 +7,12 @@ measurement. This is the source for the "now" column and the bars on the board
 
 ## How to add a measurement (from Claude Code)
 
-1. Pull live gauges: `zcl_status` (RSS, height, peers, uptime) and `zcl_metrics`.
+1. Pull live gauges: `zclassic23 core status` (RSS, height, peers, uptime) and
+   `zclassic23 ops metrics`.
 2. For timing benchmarks, run the harness (only meaningful on a *healthy* node):
    - `#1 cold`  → `build/bin/zclassic23 -bench-coldstart`
    - `#2 warm`  → `build/bin/zclassic23 -bench-warmstart`
-   - `#4 thru`  → `zcl_validationstatus` `blocks_per_sec` during bg-verify
+   - `#4 thru`  → `zclassic23 core sync validation` `blocks_per_sec` during bg-verify
    - `#6 kill-9`→ `build/bin/zclassic23 -bench-kill9`
 3. Append rows below with today's date + `git rev-parse --short HEAD`.
 4. Leave a metric out rather than guess. `—` = not measured this run.

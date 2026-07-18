@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * `sapling_checkpoint` zcl_state dumper: flat-file Sapling note-commitment
+ * `sapling_checkpoint` dumpstate entry: flat-file Sapling note-commitment
  * tree cache. Shows the last periodic write (height/count/fails) and the
  * boot-time load outcome (absent/loaded_verified/discarded) so an operator
  * can confirm the fast-resume path fired instead of the ~16-min full

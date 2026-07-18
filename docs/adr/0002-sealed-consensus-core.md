@@ -205,7 +205,7 @@ versioned or shipped standalone (it does not, today — one binary, one
 sealed core).
 
 **(c) Runtime capability check instead of a build-time seal.** Gate
-consensus-affecting RPC/MCP calls behind a runtime permission model instead
+consensus-affecting RPC/native command calls behind a runtime permission model instead
 of sealing the source tree. Rejected: this ADR is about the *source-editing*
 surface (an agent's dev-loop cycle), not the *runtime* RPC surface — those
 are different threat models (see `docs/SECURITY_AND_INTEGRITY.md` for the

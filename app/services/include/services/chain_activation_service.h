@@ -272,7 +272,7 @@ void activation_should_allow_utxo_wipe(struct utxo_wipe_decision *out,
 /* ── Advance-or-block decision (the silent-ready guard) ─────────── */
 
 /* The id of the single typed blocker the activation authority owns. Visible
- * in `zcl_state subsystem=blocker`. */
+ * in `zclassic23 dumpstate blocker`. */
 #define ACTIVATION_BEHIND_BLOCKER_ID "chain.tip_behind_header_chain"
 
 /* Single source of truth for the post-activate advance-or-block decision.

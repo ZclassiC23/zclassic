@@ -1375,8 +1375,8 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                                 root, NULL);
         }
         /* The route-generation id for a hotswap cycle: dev_hotswap's JSON
-         * result (same shape as zcl_agent_hotswap's, see
-         * tools/mcp/controllers/dev_hotswap_controller.c) already carries
+         * result (same shape as the native hot-swap command's, see
+         * the resident hot-swap handler already carries
          * artifact_sha256 — the sha256 of the exact .so this cycle dlopen'd.
          * Best-effort: an empty/unparsable value just means the anchor binds
          * a zero generation, never a cycle failure. */

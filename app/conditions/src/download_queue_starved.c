@@ -133,8 +133,8 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
     /* Same defer as detect() above: if a permanent fold blocker becomes (or
      * already is) active while this episode is active, honestly treat the
      * episode as resolved from THIS condition's point of view — the real
-     * cause is the named fold blocker (visible via zcl_blockers / the
-     * chain_tip_watchdog cause probe), not a queue refill this remedy could
+     * cause is the named fold blocker (visible via native blocker diagnostics
+     * and the chain_tip_watchdog cause probe), not a queue refill this remedy could
      * ever fix. detail_download_queue_starved() below still reports the
      * deferral (permanent_blocker_active / permanent_blocker_id /
      * permanent_blocker_reason) so the clear is never silent. */

@@ -1,15 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral operator rollup-dashboard bodies (native successors of the
- * legacy MCP ops controller's zcl_operator_snapshot / zcl_operator_summary /
- * zcl_milestone / zcl_mirror_status / zcl_self_heal_stats tools). Each takes
- * the leaf's argument object and returns one heap-allocated JSON body (caller
- * frees); on failure it returns NULL and fills struct zcl_native_body_err with
- * the error tier + a human-readable message, having already logged the failure.
- * The native command bridge (tools/command/native_command.c) calls these
- * directly and wraps the body in the zcl.result.v1 envelope — no MCP router.
- * These are native-only (not wired into any MCP wrapper), so the byte-identity
- * dual-run constraint does not apply. */
+ * Native operator rollup-dashboard bodies. Each takes the command argument
+ * object and returns one heap-allocated JSON body (caller frees); on failure
+ * it returns NULL and fills struct zcl_native_body_err after logging context. */
 
 #ifndef ZCL_CONTROLLERS_OPS_NATIVE_HANDLERS_H
 #define ZCL_CONTROLLERS_OPS_NATIVE_HANDLERS_H

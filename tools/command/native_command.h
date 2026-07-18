@@ -25,12 +25,10 @@ int zcl_native_command_main(const char *root_word,
                             const char *datadir, int rpc_port);
 
 /* Generic transport binding for READ-ONLY Core/Ops leaves. Resolves the
- * leaf's canonical path to exactly one MCP-free dispatch (W0-A): either a
- * re-homed transport-neutral body function (the same composition the MCP
- * controller now wraps — app/controllers *_native_handlers.c) or, for a
- * pure pass-through leaf, the backing JSON-RPC method directly. The MCP
- * router/middleware is never entered. The body is wrapped in the common
- * zcl.result.v1 envelope. Bound by config/src/command_catalog.c. */
+ * leaf's canonical path to exactly one dispatch: either a transport-neutral
+ * body function or, for a pure pass-through leaf, the backing JSON-RPC method
+ * directly. The body is wrapped in the common zcl.result.v1 envelope. Bound
+ * by config/src/command_catalog.c. */
 void zcl_native_bridge_command(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply);
 
@@ -40,14 +38,14 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
  * backing JSON-RPC method directly), then project the body into the reply
  * envelope. zcl_native_bridge_command is a thin wrapper that supplies
  * zcl_native_bridge_body_for_path(path); a hot-swap generation instead
- * supplies its own freshly-compiled body. A NULL `body` on a path with no
- * direct-RPC binding yields the same NO_BRIDGE_BINDING reply as an unknown
- * path. */
+ * supplies its own freshly-compiled body for an existing body-backed bridge
+ * path. Non-bridge paths and ambiguous/missing bindings fail closed with
+ * NO_BRIDGE_BINDING. */
 void zcl_native_bridge_run(const struct zcl_command_request *request,
                            zcl_native_body_fn body,
                            struct zcl_command_reply *reply);
 
-/* Project a bridged tool body into reply->data bounded by request->view
+/* Project a bridged command body into reply->data bounded by request->view
  * (summary|normal|full), request->budget_bytes, request->max_items, and
  * request->cursor, emitting an explicit `_page` descriptor and — when
  * truncated — one structured retrieval next-command. Exposed for golden tests
@@ -56,14 +54,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
                                const struct json_value *body,
                                struct zcl_command_reply *reply);
 
-/* Return the MCP tool name bound to a canonical READ-ONLY leaf path, or NULL
- * when the path has no bridge binding. Pure lookup — no node contact. Used by
- * the golden catalog test to prove every bridged READY leaf has a binding.
- * (Kept as dual-run equivalence metadata: it names which MCP tool a native
- * leaf mirrors; the native dispatch itself no longer routes through it.) */
-const char *zcl_native_bridge_tool_for_path(const char *path);
-
-/* MCP-free dispatch lookups (W0-A). Every bridged leaf resolves to exactly
+/* Dispatch lookups. Every bridged leaf resolves to exactly
  * one of the two: a re-homed body function OR a direct JSON-RPC method.
  * Pure lookups — no node contact. The golden catalog test proves the union
  * covers every bridged leaf and never overlaps. */
@@ -178,9 +169,8 @@ void zcl_native_handle_app_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
-/* ops.state — generic subsystem state dump (the native successor of the MCP
- * `zcl_state` primitive). Dispatches the `dumpstate` RPC method directly; the
- * MCP router/middleware is never entered. `subsystem` (required) selects the
+/* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
+ * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
  * block_index height/hash). Bound by config/src/command_catalog.c. */
 void zcl_native_handle_ops_state(
@@ -189,15 +179,15 @@ void zcl_native_handle_ops_state(
 
 /* core.network.chain_view — the reachable-network chain view (modal tip, max
  * advertised height, our delta, fork clusters) from the node's network_monitor.
- * Reads the running node's network_monitor dumpstate over the SELECT-only RPC;
- * the MCP router/middleware is never entered. Bound by
+ * Reads the running node's network_monitor dumpstate over the read-only RPC.
+ * Bound by
  * config/src/command_catalog.c. */
 void zcl_native_handle_network_chain_view(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
-/* ops.selftest — node-free registry self-test (the native successor of the MCP
- * `zcl_self_test mode=registry`). Sweeps every catalog leaf for the static
+/* ops.selftest — node-free registry self-test. Sweeps every catalog leaf for
+ * the static
  * well-formedness the registry guarantees (READY ⇒ dispatchable handler +
  * schema/example + read-effect/risk agreement + a bound bridge tool) and
  * reports total/pass/fail/skip + the failing paths. Deterministic and
@@ -207,7 +197,7 @@ void zcl_native_handle_ops_selftest(
     struct zcl_command_reply *reply);
 
 /* ops.debug.backtrace — dump a live backtrace for every thread of the running
- * node. Dispatches the `selfbacktrace` RPC method directly (no MCP router) and
+ * node. Dispatches the `selfbacktrace` RPC method directly and
  * projects { path, thread_count }. Answers "what is every thread doing right
  * now" where perf/gdb/ptrace are blocked. Bound by config/commands/ops.def. */
 void zcl_native_handle_ops_debug_backtrace(

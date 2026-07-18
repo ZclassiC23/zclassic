@@ -69,7 +69,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
 | `make dev-bin` | incremental non-LTO node executable at `build/bin/zclassic23-dev`; local AI/operator iteration only, not for release/deploy |
 | `make agent-doctor` | no-build combined build/dev-lane/recent-test-failure status with one next safe command |
-| `make agent-dev-status` / `zclassic23 agentdevstatus` / `zcl_agent_dev_status` | no-build read-only dev-lane status: service, RPC/pre-RPC recovery, staged binary, saved deploy state, auto-reindex marker, deploy blocker/reason, stale-marker candidate, next action |
+| `make agent-dev-status` / `zclassic23 agentdevstatus` | no-build read-only dev-lane status: service, RPC/pre-RPC recovery, staged binary, saved deploy state, auto-reindex marker, deploy blocker/reason, stale-marker candidate, next action |
 | `make agent-clear-stale-dev-reindex` | archive a proven-stale dev-lane `auto_reindex_request` after RPC height is at/above the marker anchor; no restart, no canonical/soak mutation |
 | `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
@@ -133,7 +133,7 @@ check uses the C binary first (`build/bin/zclassic23 agent` +
 `build/bin/zclassic23 healthcheck`) against the linger service; override the
 binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 `ZCL_FAST_LIVE=0` for isolated/offline work. The shell gate trusts the native
-`zcl.public_status.v1` status/serving/operator-needed contract rather than
+`zcl.public_status.v2` status/serving/operator-needed contract rather than
 re-encoding height-gap policy, and emits compact JSON summaries when a probe
 fails. There is no external shell-wrapper fallback in the agent fast path; if
 the native binary JSON interface is unavailable, rebuild
@@ -156,8 +156,8 @@ the right binary for
 local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.
 
-The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
-(agent contract `mcp_tool` taxonomy name: `zcl_agent_build`); it advertises
+The native build contract is discoverable with `build/bin/zclassic23 agentbuild`;
+it advertises
 `make agent-plan`, the stage-without-restart path, and the same native command
 shortcuts.
 
@@ -165,8 +165,8 @@ Native commands are the agent interface. In the source tree, prefer
 `build/bin/zclassic23 status` and
 `build/bin/zclassic23 dumpstate supervisor` for fresh-code smoke checks, and
 `build/bin/zclassic23 discover help` to enumerate the command registry. Against
-the dev lane use `build/bin/zclassic23-dev status`. The legacy MCP stdio server
-has been removed; the native command registry is the sole agent interface.
+the dev lane use `build/bin/zclassic23-dev status`. The native command registry
+is the sole agent interface.
 Do not add Python, shell, or helper-binary wrappers for new agent workflows.
 
 Canonical operator APIs, in priority order:

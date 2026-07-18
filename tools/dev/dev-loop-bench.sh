@@ -162,7 +162,7 @@ configure_cases()
         default_safe_watch_command app/services/src/block_source_policy.c)}"
     CASE_COMMAND[one_header]="${ZCL_DEV_BENCH_CMD_HEADER:-$(
         default_safe_watch_command lib/json/include/json/json.h)}"
-    CASE_COMMAND[hot_swap]="${ZCL_DEV_BENCH_CMD_HOTSWAP:-make --no-print-directory hotswap FILES=tools/mcp/controllers/app_controller.c PROBE=zcl_name_list}"
+    CASE_COMMAND[hot_swap]="${ZCL_DEV_BENCH_CMD_HOTSWAP:-make --no-print-directory hotswap FILES=app/controllers/src/app_native_handlers.c PROBE=app.names.list}"
     CASE_COMMAND[process_reload]="${ZCL_DEV_BENCH_CMD_RELOAD:-$(
         default_safe_watch_command app/controllers/src/agent_controller.c |
             sed 's/ZCL_DEV_WATCH_MODE=check/ZCL_DEV_WATCH_MODE=reload/')}"

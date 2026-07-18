@@ -10,7 +10,7 @@
  *   - The heartbeat ring is a shared sweeper thread (single point of
  *     failure; the supervisor split was motivated by an 8.6 h
  *     wedge of that thread). Moving each periodic to its own
- *     supervisor child gives operators (and `zcl_state
+ *     supervisor child gives operators (and `zclassic23 dumpstate
  *     subsystem=supervisor`) visibility into stall age + ticks_run.
  *   - The Job owns scheduling ONLY. Peer selection, RPC, batched
  *     validation, accept_block_header — all stay in

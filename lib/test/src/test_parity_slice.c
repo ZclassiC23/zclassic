@@ -9,8 +9,8 @@
  * in-process FIXTURE reference (no sockets, no oracle, no params).
  *
  * The teeth are a paired control over the service's own `mismatches` stat
- * (read back through utxo_parity_dump_state_json, the same surface zcl_state
- * exposes), driven by REAL UTXO sets through the live SHA3 commitment:
+ * (read back through utxo_parity_dump_state_json, which backs the native
+ * dumpstate command), driven by REAL UTXO sets through the live SHA3 commitment:
  *
  *   (A) CONSISTENT  reducer-vs-fixture set at one height → the service reports
  *                   a MATCH and mismatches==0 (the parity assertion).
@@ -105,7 +105,7 @@ static void slice_local_commitment(struct node_db *ndb, char hex_out[65])
 }
 
 /* Read one int field out of the parity service's state dump (the same surface
- * zcl_state exposes), so the gate asserts the SERVICE counter, not just the
+ * dumpstate exposes), so the gate asserts the SERVICE counter, not just the
  * one-shot comparator return. Returns -1 if absent. */
 static int64_t slice_parity_stat(const char *field)
 {

@@ -135,11 +135,6 @@ is maintained in ATTRIBUTIONS.md.
       Erigon code is incorporated.
       Upstream: https://github.com/erigontech/erigon
 
-  * mcp-language-server — MIT
-      LSP-to-MCP bridge pattern (clangd subprocess + MCP-exposed tools).
-      AGENT.md row P22.3.
-      Upstream: https://github.com/isaacphi/mcp-language-server
-
   * AGENTS.md community convention
       Portable AI-agent onboarding file at repo root. AGENT.md row P22.1.
 

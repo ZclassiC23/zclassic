@@ -10,7 +10,7 @@
  * disk_block_index that lib/storage/block_index_db.c serializes). hashPrev is
  * the parent's phashBlock (all-zero for genesis). Best-effort/counted, never
  * fatal — exactly the block_index_db.c semantics. Counters are caller-owned
- * (per-stage observability via zcl_state); pass NULL to skip. */
+ * (per-stage observability via `zclassic23 dumpstate`); pass NULL to skip. */
 
 #ifndef ZCL_JOBS_BLOCK_HEADER_EMIT_H
 #define ZCL_JOBS_BLOCK_HEADER_EMIT_H

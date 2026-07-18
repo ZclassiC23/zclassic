@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Sibling-private declarations shared between script_validate_stage.c (the Job
- * state owner) and script_validate_stage_dump.c (the read-only zcl_state JSON
+ * state owner) and script_validate_stage_dump.c (the read-only dump-state JSON
  * dump). Not a public header.
  */
 

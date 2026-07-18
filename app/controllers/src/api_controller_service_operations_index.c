@@ -22,12 +22,10 @@ struct api_service_operation_counts {
     int64_t operator_private_count;
     int64_t destructive_count;
     int64_t rest_callable_count;
-    int64_t mcp_callable_count;
     int64_t rpc_callable_count;
     int64_t active_count;
     int64_t in_progress_count;
     int64_t preferred_rest_count;
-    int64_t preferred_mcp_count;
     int64_t preferred_rpc_count;
     int64_t preferred_native_count;
 };
@@ -43,8 +41,6 @@ static bool api_service_operation_surface_matches(
     if (strcmp(surface, "rest") == 0)
         return op->rest_method && op->rest_method[0] &&
                op->rest_route && op->rest_route[0];
-    if (strcmp(surface, "mcp") == 0)
-        return op->mcp_tool && op->mcp_tool[0];
     if (strcmp(surface, "rpc") == 0)
         return op->rpc_method && op->rpc_method[0];
     return false; /* raw-return-ok:predicate-negative-match */
@@ -99,8 +95,6 @@ static void api_service_operation_counts_add(
     if (op->rest_method && op->rest_method[0] &&
         op->rest_route && op->rest_route[0])
         counts->rest_callable_count++;
-    if (op->mcp_tool && op->mcp_tool[0])
-        counts->mcp_callable_count++;
     if (op->rpc_method && op->rpc_method[0])
         counts->rpc_callable_count++;
     if (op->status && strcmp(op->status, "active") == 0)
@@ -109,8 +103,6 @@ static void api_service_operation_counts_add(
         counts->in_progress_count++;
     if (strcmp(iface, "rest") == 0)
         counts->preferred_rest_count++;
-    else if (strcmp(iface, "mcp") == 0)
-        counts->preferred_mcp_count++;
     else if (strcmp(iface, "rpc") == 0)
         counts->preferred_rpc_count++;
     else
@@ -132,14 +124,11 @@ static void api_service_operation_counts_json(
     json_push_kv_int(out, "destructive_count", counts->destructive_count);
     json_push_kv_int(out, "rest_callable_count",
                      counts->rest_callable_count);
-    json_push_kv_int(out, "mcp_callable_count", counts->mcp_callable_count);
     json_push_kv_int(out, "rpc_callable_count", counts->rpc_callable_count);
     json_push_kv_int(out, "active_count", counts->active_count);
     json_push_kv_int(out, "in_progress_count", counts->in_progress_count);
     json_push_kv_int(out, "preferred_rest_count",
                      counts->preferred_rest_count);
-    json_push_kv_int(out, "preferred_mcp_count",
-                     counts->preferred_mcp_count);
     json_push_kv_int(out, "preferred_rpc_count",
                      counts->preferred_rpc_count);
     json_push_kv_int(out, "preferred_native_count",
@@ -245,8 +234,6 @@ static void api_service_operation_interface_facets_json(
 
     api_service_operation_named_count_json(out, "rest",
                                            counts->preferred_rest_count);
-    api_service_operation_named_count_json(out, "mcp",
-                                           counts->preferred_mcp_count);
     api_service_operation_named_count_json(out, "rpc",
                                            counts->preferred_rpc_count);
     api_service_operation_named_count_json(out, "native_or_planned",

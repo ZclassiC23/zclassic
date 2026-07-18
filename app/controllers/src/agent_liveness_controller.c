@@ -81,7 +81,7 @@ static bool agent_liveness_parse_detail_mode(
     const char *raw = rpc_permit_str(&p, 0, "mode", "brief");
     if (rpc_params_invalid(&p)) {
         json_set_object(result);
-        json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
+        json_push_kv_str(result, "schema", "zcl.agent_liveness.v2");
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", p.error);
         json_push_kv_str(result, "allowed_modes",
@@ -98,7 +98,7 @@ static bool agent_liveness_parse_detail_mode(
     }
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_liveness.v2");
     json_push_kv_str(result, "status", "error");
     json_push_kv_str(result, "error", "invalid_agentliveness_mode");
     json_push_kv_str(result, "mode", raw ? raw : "");
@@ -188,8 +188,6 @@ static void agent_liveness_push_availability_compact(
     json_push_kv_str(&obj, "object_completeness", "compact");
     json_push_kv_str(&obj, "full_detail_command",
                      "zclassic23 agentliveness full");
-    json_push_kv_str(&obj, "full_detail_tool",
-                     "zcl_agent_liveness(mode=\"full\")");
     json_push_kv(out, "runtime_availability", &obj);
     json_free(&obj);
 }
@@ -213,8 +211,6 @@ static void agent_liveness_push_quality_compact(
     json_push_kv_str(&obj, "object_completeness", "compact");
     json_push_kv_str(&obj, "full_detail_command",
                      "zclassic23 agentliveness full");
-    json_push_kv_str(&obj, "full_detail_tool",
-                     "zcl_agent_liveness(mode=\"full\")");
     json_push_kv(out, "background_quality_status", &obj);
     json_free(&obj);
 }
@@ -241,8 +237,6 @@ static void agent_liveness_push_supervisor_compact(
                      counts ? counts->restart_count_total : 0);
     json_push_kv_str(&obj, "full_detail_command",
                      "zclassic23 agentliveness full");
-    json_push_kv_str(&obj, "full_detail_tool",
-                     "zcl_agent_liveness(mode=\"full\")");
     json_push_kv(out, "supervisor_state", &obj);
     json_free(&obj);
 }
@@ -253,14 +247,14 @@ static void agent_liveness_push_drilldowns(struct json_value *out,
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
-    agent_push_contract_mcp_tool_json(&arr, "agent");
-    agent_push_contract_mcp_tool_json(&arr, "agentlanes");
-    agent_liveness_push_str(&arr, "zcl_state {\"subsystem\":\"supervisor\"}");
-    agent_push_contract_mcp_tool_json(&arr, "agentbuild");
+    agent_push_contract_native_command_json(&arr, "agent");
+    agent_push_contract_native_command_json(&arr, "agentlanes");
+    agent_liveness_push_str(&arr, "zclassic23 dumpstate supervisor");
+    agent_push_contract_native_command_json(&arr, "agentbuild");
     agent_liveness_push_str(&arr, "make quality-linger-status");
     if (attention_needed) {
         agent_liveness_push_str(&arr,
-            "zcl_node_log pattern=\"stall|stale|fail|restart|quality\" max_lines=120");
+            "zclassic23 getnodelog 'stall|stale|fail|restart|quality'");
     }
     json_push_kv(out, "recommended_drilldowns", &arr);
     json_free(&arr);
@@ -325,7 +319,7 @@ static void agent_liveness_push_summary(struct json_value *out,
         ? "inspect_agent_liveness_drilldowns"
         : (in_process_runtime_active ? "monitor_liveness_and_quality_lanes"
           : (target_rpc_reachable
-                 ? "monitor_target_runtime_or_use_mcp"
+                 ? "monitor_target_runtime"
                  : "probe_target_runtime_or_start_dev_lane"));
 
     struct json_value summary;
@@ -396,7 +390,7 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
         "Default brief mode keeps bounded summary/count fields; full mode embeds\n"
         "availability methods, supervisor domains, and quality lane details.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_liveness.v1\", "
+        "  { \"schema\":\"zcl.agent_liveness.v2\", "
         "\"liveness_summary\":{...} }\n");
 
     int64_t first_call_started_us = agent_first_call_start_us();

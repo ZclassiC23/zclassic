@@ -439,7 +439,7 @@ static int t_recovery_status(void)
     return failures;
 }
 
-/* ── 11b. dump_state_json (zcl_state subsystem=block_index_integrity) ── */
+/* ── 11b. dump_state_json (`zclassic23 dumpstate block_index_integrity`) ── */
 
 static int t_dump_state_json(void)
 {

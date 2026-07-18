@@ -104,7 +104,7 @@ struct block_pruning_service {
     _Atomic int     lowest_have_data;
 };
 
-/* Global pointer for RPC/MCP access. Set by boot, NULL before init. */
+/* Global pointer for RPC/native access. Set by boot, NULL before init. */
 extern struct block_pruning_service *g_block_pruning;
 
 /* ── Lifecycle ─────────────────────────────────────────────── */
@@ -131,7 +131,7 @@ void block_pruning_get_status(const struct block_pruning_service *svc,
                               struct block_pruning_status *out);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
- * Wired into the `zcl_state subsystem=block_pruning` MCP tool. */
+ * Wired into `zclassic23 dumpstate block_pruning`. */
 struct json_value;
 bool block_pruning_dump_state_json(struct json_value *out, const char *key);
 

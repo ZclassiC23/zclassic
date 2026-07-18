@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unhealthy-only rollup over the zcl_state dumper registry.
+ * Unhealthy-only rollup over the dumpstate registry.
  *
  * Every dumper in `g_dumpers[]` (diagnostics_registry.c) already computes
  * SOME notion of "is this subsystem OK" — a blocker count, a decision
@@ -24,7 +24,7 @@
  * silently skipped (tolerant/incremental adoption — 5 subsystems seed it
  * today: reducer_frontier, blocker, legacy_mirror, chain_advance_coordinator,
  * tip_finalize). Only the unhealthy ones (_health.ok == false) are
- * collected, so `zcl_state subsystem=unhealthy` stays small and cheap to
+ * collected, so `zclassic23 dumpstate unhealthy` stays small and cheap to
  * read even as adoption grows.
  *
  * Reentrant-safe: no shared state of its own, no allocation beyond the
@@ -40,7 +40,7 @@
 #include <string.h>
 
 /* This subsystem's own name in g_dumpers — skipped during the walk so a
- * self-referential zcl_state call can never recurse. */
+ * self-referential dumpstate call can never recurse. */
 #define ZCL_HEALTH_ROLLUP_SELF_NAME "unhealthy"
 
 bool unhealthy_dump_state_json(struct json_value *out, const char *key)

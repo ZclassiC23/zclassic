@@ -187,7 +187,7 @@ typed_done:
         sqlite3_close(db);
         if (!ok) { failures++; printf("FAIL (seed)\n"); goto chain_cleanup; }
 
-        mcp_rpc_client_init(dir, 0);
+        node_rpc_client_init(dir, 0);
         int64_t best = chain_projection_best_block_height();
         int64_t hdr = chain_projection_best_header_height();
         ok = (best == 123 && hdr == 124);

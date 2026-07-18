@@ -73,7 +73,7 @@ These propagate up as `struct utxo_apply_value_overflow_repair_result` fields;
 
 **Why it is a defect:** this is a genuine fail-closed hold that can pin H\* (the
 value-overflow tear persists until the owner acks), yet it is **not a named
-typed blocker** — invisible to `zcl_blockers`, to `zcl_state
+typed blocker** — invisible to `zclassic23 core sync blockers`, to `zclassic23 dumpstate
 subsystem=blocker`, and therefore to the Lane 2 meta-detector, which keys on the
 blocker registry. It violates the doctrine's *"a stall must always be a NAMED
 blocker."* The directly analogous `coin_backfill.owner_gate` (site 4a) **does**
@@ -126,5 +126,5 @@ tracked, not lost.
   (site 5's Lane 0 cure, site 9's healthy condition wiring).
 - **Does NOT cover:** D1's untyped holds — they are not in the blocker registry.
   Fixing D1 (typing the value-overflow owner-gate) is the one change that brings
-  a currently-invisible hold class under both `zcl_blockers` and the
+  a currently-invisible hold class under both `zclassic23 core sync blockers` and the
   meta-detector. That is the highest-value follow-up from this audit.

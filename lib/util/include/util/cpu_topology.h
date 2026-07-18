@@ -116,7 +116,7 @@ const char *cpu_topology_source(void);
  * took, never to decide whether to continue running. */
 bool cpu_topology_pin_thread(pthread_t thread, int domain);
 
-/* ── Introspection (dumpstate subsystem="cpu_topology") ──────────────── */
+/* ── `zclassic23 dumpstate cpu_topology` ─────────────────────────────── */
 
 /* Dump-state-json wired into diagnostics_registry's g_dumpers[]. `out`
  * must be JSON-initialized by the caller. `key` is unused (one dump

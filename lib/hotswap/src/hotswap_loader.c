@@ -1,9 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Stateless MCP hot-swap generation v2. Dynamic loading is DEV-ONLY; pure
- * guards, manifest validation, status, and the release refusal stub compile in
- * every build. A generation may only stage MCP routes. The caller validates
- * the complete batch and publishes one immutable router snapshot after the
+ * Stateless native-leaf hot-swap generations. Dynamic loading is DEV-ONLY;
+ * pure guards, manifest validation, status, and the release refusal stub
+ * compile in every build. A generation may only stage native command leaves.
+ * The caller validates the complete batch and publishes one immutable command
+ * snapshot after the
  * generation self-test succeeds. No generation code runs before its exported
  * manifest has passed the host ABI/capability/provenance/state contract. */
 
@@ -219,33 +220,20 @@ bool hotswap_manifest_v2_validate(
     if (manifest->struct_size != sizeof(*manifest))
         MANIFEST_REJECT("manifest struct size %u != %zu",
                         manifest->struct_size, sizeof(*manifest));
-    /* Two admitted provider classes: the v2 stateless MCP route set
-     * (mcp.routes, v2 host) and the v3 native command-leaf set (native.leaves,
-     * v3 host). Branch on provider_id to select the exact ABI/size/capability
-     * contract; every other check below is identical for both. */
-    uint32_t want_host_abi;
-    uint32_t want_host_size;
-    uint64_t want_host_caps;
-    if (manifest_text_present(manifest->provider_id) &&
-        strcmp(manifest->provider_id, "mcp.routes") == 0) {
-        want_host_abi = ZCL_HOTSWAP_HOST_ABI_V2;
-        want_host_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2;
-        want_host_caps = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
-    } else if (manifest_text_present(manifest->provider_id) &&
-               strcmp(manifest->provider_id, "native.leaves") == 0) {
-        want_host_abi = ZCL_HOTSWAP_HOST_ABI_V3;
-        want_host_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3;
-        want_host_caps = ZCL_HOTSWAP_V3_HOST_CAPABILITIES;
-    } else {
+    /* Native command leaves are the sole provider class. The V4 ABI bump makes
+     * every artifact built for a retired host layout fail closed here. */
+    if (!manifest_text_present(manifest->provider_id) ||
+        strcmp(manifest->provider_id, "native.leaves") != 0) {
         MANIFEST_REJECT("provider is reload-required or unknown: %s",
                         manifest->provider_id ? manifest->provider_id : "");
     }
-    if (manifest->host_abi_version != want_host_abi ||
-        manifest->host_struct_size != want_host_size)
+    if (manifest->host_abi_version != ZCL_HOTSWAP_HOST_ABI_V4 ||
+        manifest->host_struct_size != ZCL_HOTSWAP_HOST_STRUCT_SIZE_V4)
         MANIFEST_REJECT("host ABI/size mismatch: abi=%u size=%u",
                         manifest->host_abi_version,
                         manifest->host_struct_size);
-    if (manifest->required_host_capabilities != want_host_caps)
+    if (manifest->required_host_capabilities !=
+        ZCL_HOTSWAP_V4_HOST_CAPABILITIES)
         MANIFEST_REJECT("missing/unsupported host capabilities: 0x%llx",
                         (unsigned long long)
                             manifest->required_host_capabilities);
@@ -348,7 +336,7 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
                      "successful_generations_permanently_mapped");
     json_push_kv_str(out, "artifact_inode_policy",
                      "successful_generation_fd_pinned");
-    json_push_kv_str(out, "admitted_provider_class", "stateless_mcp_routes");
+    json_push_kv_str(out, "admitted_provider_class", "native.leaves");
     json_push_kv_str(out, "input_hash_scope", "source_headers_flags");
     json_push_kv_str(out, "artifact_hash_scope", "shared_object_bytes");
 
@@ -391,8 +379,8 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     json_free(&last);
     pthread_mutex_unlock(&g_lock);
 
-    /* Merge the REAL (activatable) module-ABI subsystem's telemetry into the
-     * same `zcl_state subsystem=hotswap` document (takes its own lock). */
+    /* Merge module-ABI telemetry into the same `zclassic23 dumpstate hotswap`
+     * document (takes its own lock). */
     hotswap_activate_dump_json(out);
     return true;
 }
@@ -434,48 +422,6 @@ static bool artifact_sha256_fd(int fd, char hex_out[65])
     return true;
 }
 
-struct hotswap_load_tx {
-    struct zcl_hotswap_mcp_replacement staged[ZCL_HOTSWAP_GEN_MAX_REPLACED];
-    size_t staged_count;
-    bool stage_failed;
-    char stage_error[256];
-};
-
-/* Loads are serialized under g_lock. This context only makes the C callback
- * reach the current stack transaction; no staged route is visible to readers. */
-static struct hotswap_load_tx *g_active_tx;
-
-static bool hotswap_stage_thunk(const char *name,
-                                const struct mcp_tool_route *route)
-{
-    struct hotswap_load_tx *tx = g_active_tx;
-    if (!tx)
-        return false;
-    if (!name || !name[0] || !route) {
-        tx->stage_failed = true;
-        copy_text(tx->stage_error, sizeof(tx->stage_error),
-                  "generation staged a malformed MCP route");
-        return false;
-    }
-    if (tx->staged_count >= ZCL_HOTSWAP_GEN_MAX_REPLACED) {
-        tx->stage_failed = true;
-        copy_text(tx->stage_error, sizeof(tx->stage_error),
-                  "generation staged too many MCP routes");
-        return false;
-    }
-    for (size_t i = 0; i < tx->staged_count; i++) {
-        if (strcmp(tx->staged[i].name, name) == 0) {
-            tx->stage_failed = true;
-            snprintf(tx->stage_error, sizeof(tx->stage_error),
-                     "generation staged duplicate route '%s'", name);
-            return false;
-        }
-    }
-    tx->staged[tx->staged_count++] =
-        (struct zcl_hotswap_mcp_replacement){ .name = name, .route = route };
-    return true;
-}
-
 struct hotswap_leaf_tx {
     struct zcl_hotswap_leaf_replacement staged[ZCL_HOTSWAP_GEN_MAX_REPLACED];
     size_t staged_count;
@@ -483,8 +429,8 @@ struct hotswap_leaf_tx {
     char stage_error[256];
 };
 
-/* Mirror of g_active_tx for the native.leaves provider. Loads are serialized
- * under g_lock, so only the current stack transaction is ever reachable. */
+/* Loads are serialized under g_lock, so only the current stack transaction is
+ * ever reachable. */
 static struct hotswap_leaf_tx *g_active_leaf_tx;
 
 static bool hotswap_leaf_stage_thunk(const char *path,
@@ -769,73 +715,6 @@ static bool load_enter(const char *so_path, const char *resolved_datadir,
     return true;
 }
 
-bool hotswap_load(const char *so_path,
-                  const char *resolved_datadir,
-                  const char *required_probe,
-                  zcl_hotswap_commit_cb commit_cb,
-                  void *commit_context,
-                  struct hotswap_load_report *report)
-{
-    struct hotswap_prepared prep;
-    if (!load_enter(so_path, resolved_datadir, commit_cb != NULL,
-                    required_probe, report, &prep))
-        return false;
-
-    struct zcl_hotswap_host host = {
-        .abi_version = ZCL_HOTSWAP_HOST_ABI_V2,
-        .struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,
-        .gen = prep.gen,
-        .capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
-        .mcp_stage = hotswap_stage_thunk,
-    };
-    struct hotswap_load_tx tx = {0};
-    g_active_tx = &tx;
-    bool init_ok = prep.gen_init(&host);
-    g_active_tx = NULL;
-    if (!init_ok || tx.stage_failed || tx.staged_count == 0) {
-        const char *error = tx.stage_error[0]
-            ? tx.stage_error
-            : (tx.staged_count == 0
-                   ? "generation staged no MCP routes"
-                   : "generation init returned false");
-        bool result = generation_reject_locked(prep.slot, report, "init", error);
-        pthread_mutex_unlock(&g_lock);
-        return result;
-    }
-
-    char why[256] = {0};
-    if (!prep.manifest->self_test(&host, why, sizeof(why))) {
-        bool result = generation_reject_locked(
-            prep.slot, report, "self_test",
-            why[0] ? why : "generation self-test returned false");
-        pthread_mutex_unlock(&g_lock);
-        return result;
-    }
-
-    why[0] = '\0';
-    if (!commit_cb(commit_context, prep.gen, tx.staged, tx.staged_count,
-                   why, sizeof(why))) {
-        bool result = generation_reject_locked(
-            prep.slot, report, "commit",
-            why[0] ? why : "transactional route commit failed");
-        pthread_mutex_unlock(&g_lock);
-        return result;
-    }
-
-    prep.slot->ok = true;
-    prep.slot->mapped = true;
-    prep.slot->replaced_count = tx.staged_count;
-    g_active_gen = prep.gen;
-    report->ok = true;
-    report->replaced_count = tx.staged_count;
-    for (size_t i = 0; i < tx.staged_count; i++)
-        copy_text(report->replaced[i], sizeof(report->replaced[i]),
-                  tx.staged[i].name);
-
-    pthread_mutex_unlock(&g_lock);
-    return true;
-}
-
 bool hotswap_load_leaves(const char *so_path,
                          const char *datadir,
                          const char *probe_leaf,
@@ -849,10 +728,10 @@ bool hotswap_load_leaves(const char *so_path,
         return false;
 
     struct zcl_hotswap_host host = {
-        .abi_version = ZCL_HOTSWAP_HOST_ABI_V3,
-        .struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,
+        .abi_version = ZCL_HOTSWAP_HOST_ABI_V4,
+        .struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V4,
         .gen = prep.gen,
-        .capabilities = ZCL_HOTSWAP_V3_HOST_CAPABILITIES,
+        .capabilities = ZCL_HOTSWAP_V4_HOST_CAPABILITIES,
         .leaf_stage = hotswap_leaf_stage_thunk,
     };
     struct hotswap_leaf_tx tx = {0};
@@ -904,28 +783,6 @@ bool hotswap_load_leaves(const char *so_path,
 }
 
 #else /* !ZCL_DEV_BUILD */
-
-bool hotswap_load(const char *so_path,
-                  const char *resolved_datadir,
-                  const char *required_probe,
-                  zcl_hotswap_commit_cb commit_cb,
-                  void *commit_context,
-                  struct hotswap_load_report *report)
-{
-    (void)so_path;
-    (void)resolved_datadir;
-    (void)required_probe;
-    (void)commit_cb;
-    (void)commit_context;
-    if (!report)
-        return false;
-    memset(report, 0, sizeof(*report));
-    copy_text(report->rejection_stage, sizeof(report->rejection_stage),
-              "release");
-    copy_text(report->error, sizeof(report->error),
-              "hotswap unavailable in release build");
-    return false;
-}
 
 bool hotswap_load_leaves(const char *so_path,
                          const char *datadir,

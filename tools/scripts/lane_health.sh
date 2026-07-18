@@ -134,7 +134,7 @@ json_first_bool_field() {
 
 lane_health_selftest() {
     local sample op blocked detail ready source_id
-    sample='{"schema":"zcl.public_status.v1","source_id_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","build_commit":"display-only","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"readiness":{"chain_serving_ready":true},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
+    sample='{"schema":"zcl.public_status.v2","source_id_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","build_commit":"display-only","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"readiness":{"chain_serving_ready":true},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
     op="$(json_first_bool_field "$sample" "operator_needed")"
     blocked="$(json_first_string_field "$sample" "status")"
     detail="$(json_first_string_field "$sample" "validation_pack_detail")"

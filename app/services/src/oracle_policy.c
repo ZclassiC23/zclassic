@@ -212,7 +212,7 @@ bool oracle_policy_chain_extension_allowed(void)
      * as evidence: oracle_policy_record_disagreement() keeps driving the
      * OP_HALTED / OP_PANIC state machine, emitting EV_FORK_SUSPECTED /
      * EV_ANCHOR_PANIC / EV_CHAIN_HALTED, and the divergence stays fully
-     * visible via oracle_policy_get_state() + the zcl_state dump. The state
+     * visible via oracle_policy_get_state() and `zclassic23 dumpstate`. The state
      * is now an observable signal, not a liveness gate — so this predicate
      * unconditionally allows extension regardless of OP_HALTED/OP_PANIC. */
     return true;  // raw-return-ok:evidence-only-never-gates-extension

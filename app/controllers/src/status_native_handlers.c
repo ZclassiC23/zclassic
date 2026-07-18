@@ -2,17 +2,9 @@
  *
  * Transport-neutral operator read compositions.
  *
- * The re-homed composition bodies of the operator read tools (zcl_status,
- * zcl_kpi, zcl_syncdiag, zcl_blockers, zcl_timeline, zcl_agent_diagnose,
- * zcl_postmortem_list). Each takes the tool's argument object and returns
- * one heap-allocated JSON body (caller frees) — exactly the bytes the
- * legacy MCP handler set as res->body. On failure it returns NULL and
- * fills struct zcl_native_body_err with the legacy MCP error tier + the
- * byte-identical error_message text, having already logged the failure
- * (LOG_NULL, same tag/text as the legacy LOG_ERR). Both transports call
- * these: the MCP wrapper in ops_controller.c maps the failure onto its
- * historical MCP error code, and the native command bridge wraps the body
- * in the zcl.result.v1 envelope — the MCP router is never entered. */
+ * Native composition bodies for operator status, KPI, sync diagnostics,
+ * blockers, timeline, diagnosis, and postmortem reads. Each returns a
+ * heap-allocated JSON body or fills a contextual zcl_native_body_err. */
 
 #include "controllers/status_native_handlers.h"
 #include "controllers/native_handler_body.h"
@@ -39,18 +31,18 @@ char *zcl_native_status_body(const struct json_value *args,
                              struct zcl_native_body_err *err)
 {
     (void)args;
-    char *h  = mcp_node_rpc("getblockcount", NULL);
-    char *p  = mcp_node_rpc("getpeerinfo", NULL);
-    char *s  = mcp_node_rpc("syncstate", NULL);
-    char *v  = mcp_node_rpc("validationstatus", NULL);
-    char *hc = mcp_node_rpc("healthcheck", NULL);
-    char *ci = mcp_node_rpc("getblockchaininfo", NULL);
-    char *cac = mcp_node_rpc("dumpstate", "[\"chain_advance_coordinator\"]");
-    char *rf = mcp_node_rpc("dumpstate", "[\"reducer_frontier\"]");
-    char *tf = mcp_node_rpc("dumpstate", "[\"tip_finalize\"]");
-    char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
-    char *bl = mcp_node_rpc("dumpstate", "[\"blocker\"]");
-    char *sv = mcp_node_rpc("dumpstate", "[\"sovereignty\"]");
+    char *h  = node_rpc_call("getblockcount", NULL);
+    char *p  = node_rpc_call("getpeerinfo", NULL);
+    char *s  = node_rpc_call("syncstate", NULL);
+    char *v  = node_rpc_call("validationstatus", NULL);
+    char *hc = node_rpc_call("healthcheck", NULL);
+    char *ci = node_rpc_call("getblockchaininfo", NULL);
+    char *cac = node_rpc_call("dumpstate", "[\"chain_advance_coordinator\"]");
+    char *rf = node_rpc_call("dumpstate", "[\"reducer_frontier\"]");
+    char *tf = node_rpc_call("dumpstate", "[\"tip_finalize\"]");
+    char *ce = node_rpc_call("dumpstate", "[\"condition_engine\"]");
+    char *bl = node_rpc_call("dumpstate", "[\"blocker\"]");
+    char *sv = node_rpc_call("dumpstate", "[\"sovereignty\"]");
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
     int max_peer_height = 0;
@@ -119,11 +111,9 @@ char *zcl_native_status_body(const struct json_value *args,
     json_set_object(&root);
     json_push_kv_str(&root, "execution_locus", "composite");
     status_push_int_if_known(&root, "height", height_ok, block_height);
-    /* build_commit must describe the NODE. This MCP server is a separate
-     * long-lived process and can be running an older binary than the node
-     * it queries — stamping our own hash here can mis-report the deployed
-     * node version. Keep the proxy hash in mcp_build_commit unconditionally
-     * and leave the node field null when target evidence is unavailable. */
+    /* build_commit must describe the target node. The command client may run
+     * a different binary, so keep its hash separate and leave the node field
+     * null when target evidence is unavailable. */
     if (have_node_commit) {
         json_push_kv_str(&root, "build_commit", node_commit);
     } else {
@@ -136,7 +126,7 @@ char *zcl_native_status_body(const struct json_value *args,
     json_push_kv_str(&root, "build_commit_source",
                      have_node_commit ? "target_node.healthcheck"
                                       : "target_node.unavailable");
-    json_push_kv_str(&root, "mcp_build_commit", zcl_build_commit());
+    json_push_kv_str(&root, "client_build_commit", zcl_build_commit());
     status_push_int_if_known(&root, "header_height", header_ok,
                              header_height);
     status_push_int_if_known(&root, "max_peer_height",
@@ -259,7 +249,7 @@ char *zcl_native_status_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "status response");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "status response");
+        LOG_NULL("native.ops", "malloc failed for %s", "status response");
     }
     return out;
 }
@@ -271,15 +261,15 @@ char *zcl_native_kpi_body(const struct json_value *args,
                           struct zcl_native_body_err *err)
 {
     (void)args;
-    char *height    = mcp_node_rpc("getblockcount",     NULL);
-    char *peers     = mcp_node_rpc("getpeerinfo",       NULL);
-    char *sync      = mcp_node_rpc("syncstate",         NULL);
-    char *val       = mcp_node_rpc("validationstatus",  NULL);
-    char *health    = mcp_node_rpc("healthcheck",       NULL);
-    char *mempool   = mcp_node_rpc("getmempoolinfo",    NULL);
-    char *wallet    = mcp_node_rpc("getwalletinfo",     NULL);
-    char *chain     = mcp_node_rpc("getblockchaininfo", NULL);
-    char *network   = mcp_node_rpc("getnetworkinfo",    NULL);
+    char *height    = node_rpc_call("getblockcount",     NULL);
+    char *peers     = node_rpc_call("getpeerinfo",       NULL);
+    char *sync      = node_rpc_call("syncstate",         NULL);
+    char *val       = node_rpc_call("validationstatus",  NULL);
+    char *health    = node_rpc_call("healthcheck",       NULL);
+    char *mempool   = node_rpc_call("getmempoolinfo",    NULL);
+    char *wallet    = node_rpc_call("getwalletinfo",     NULL);
+    char *chain     = node_rpc_call("getblockchaininfo", NULL);
+    char *network   = node_rpc_call("getnetworkinfo",    NULL);
 
     struct json_value peers_j;
     bool peers_ok = status_parse_rpc_json(&peers_j, peers, JSON_ARR) &&
@@ -313,7 +303,7 @@ char *zcl_native_kpi_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "KPI response");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "KPI response");
+        LOG_NULL("native.ops", "malloc failed for %s", "KPI response");
     }
     return out;
 }
@@ -322,9 +312,9 @@ char *zcl_native_syncdiag_body(const struct json_value *args,
                                struct zcl_native_body_err *err)
 {
     (void)args;
-    char *diag = mcp_node_rpc("getsyncdiag", NULL);
-    char *dl   = mcp_node_rpc("downloadstats", NULL);
-    char *pi   = mcp_node_rpc("getpeerinfo", NULL);
+    char *diag = node_rpc_call("getsyncdiag", NULL);
+    char *dl   = node_rpc_call("downloadstats", NULL);
+    char *pi   = node_rpc_call("getpeerinfo", NULL);
 
     /* Peer-advertised height is only an availability hint. Keep it unknown
      * when the RPC/error shape is invalid; never turn an error into zero. */
@@ -386,7 +376,7 @@ char *zcl_native_syncdiag_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "syncdiag response");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "syncdiag response");
+        LOG_NULL("native.ops", "malloc failed for %s", "syncdiag response");
     }
     return out;
 }
@@ -396,7 +386,7 @@ char *zcl_native_blockers_body(const struct json_value *args,
 {
     (void)args;
 
-    char *raw = mcp_node_rpc("dumpstate", "[\"blocker\"]");
+    char *raw = node_rpc_call("dumpstate", "[\"blocker\"]");
     struct json_value summary;
     struct json_value dominant;
     struct json_value error;
@@ -414,7 +404,7 @@ char *zcl_native_blockers_body(const struct json_value *args,
         json_free(&error);
         json_free(&dominant);
         json_free(&summary);
-        LOG_NULL("mcp.ops", "%s", err->message);
+        LOG_NULL("native.ops", "%s", err->message);
     }
 
     char *out = zcl_json_value_to_body(&summary, "zcl_blockers_body");
@@ -426,7 +416,7 @@ char *zcl_native_blockers_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "blockers body");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "blockers body");
+        LOG_NULL("native.ops", "malloc failed for %s", "blockers body");
     }
     return out;
 }
@@ -465,10 +455,10 @@ char *zcl_native_timeline_body(const struct json_value *args,
     json_push_back(&arr, &obj);
 
     size_t need = json_write(&arr, NULL, 0);
-    char *params = zcl_malloc(need + 1u, "mcp timeline params");
+    char *params = zcl_malloc(need + 1u, "native timeline params");
     if (params)
         json_write(&arr, params, need + 1u);
-    char *body = params ? mcp_node_rpc("timeline", params) : NULL;
+    char *body = params ? node_rpc_call("timeline", params) : NULL;
     free(params);
     json_free(&obj);
     json_free(&arr);
@@ -476,7 +466,7 @@ char *zcl_native_timeline_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "timeline");
-        LOG_NULL("mcp.ops", "RPC %s returned null", "timeline");
+        LOG_NULL("native.ops", "RPC %s returned null", "timeline");
     }
     return body;
 }
@@ -484,17 +474,17 @@ char *zcl_native_timeline_body(const struct json_value *args,
 char *zcl_native_agent_diagnose_body(const struct json_value *args,
                                      struct zcl_native_body_err *err)
 {
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, json_get_str_or(args, "mode", "brief"));
-    char *params = mcp_params_to_json(&p);
-    char *body = params ? mcp_node_rpc("agentdiagnose", params) : NULL;
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, json_get_str_or(args, "mode", "brief"));
+    char *params = rpc_arg_builder_to_json(&p);
+    char *body = params ? node_rpc_call("agentdiagnose", params) : NULL;
     free(params);
     if (!body) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "agentdiagnose");
-        LOG_NULL("mcp.ops", "RPC %s returned null", "agentdiagnose");
+        LOG_NULL("native.ops", "RPC %s returned null", "agentdiagnose");
     }
     return body;
 }
@@ -509,7 +499,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
             err->status = ZCL_NATIVE_BODY_INTERNAL;
             snprintf(err->message, sizeof(err->message),
                      "default postmortem dir path too long");
-            LOG_NULL("mcp.ops", "default postmortem dir path too long");
+            LOG_NULL("native.ops", "default postmortem dir path too long");
         }
         dir = default_dir;
     }
@@ -520,12 +510,12 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
     size_t limit = (size_t)limit_i;
 
     struct postmortem_summary *summaries =
-        zcl_malloc(sizeof(*summaries) * limit, "mcp.postmortem.list");
+        zcl_malloc(sizeof(*summaries) * limit, "native.postmortem.list");
     if (!summaries) {
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "postmortem summary list");
-        LOG_NULL("mcp.ops", "malloc failed for %s (%zu bytes)",
+        LOG_NULL("native.ops", "malloc failed for %s (%zu bytes)",
                  "postmortem summary list", sizeof(*summaries) * limit);
     }
 
@@ -536,7 +526,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "postmortem list failed for %s (rc=%d)", dir, rc);
-        LOG_NULL("mcp.ops", "postmortem list failed dir=%s rc=%d", dir, rc);
+        LOG_NULL("native.ops", "postmortem list failed dir=%s rc=%d", dir, rc);
     }
 
     struct json_value root, arr;
@@ -564,7 +554,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
     }
     json_push_kv(&root, "capsules", &arr);
 
-    char *body = zcl_json_value_to_body(&root, "mcp.postmortem.list.body");
+    char *body = zcl_json_value_to_body(&root, "native.postmortem.list.body");
     json_free(&arr);
     json_free(&root);
     free(summaries);
@@ -572,7 +562,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "postmortem list response");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "postmortem list response");
+        LOG_NULL("native.ops", "malloc failed for %s", "postmortem list response");
     }
     return body;
 }
@@ -590,7 +580,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
  * "error" key, so the empty-args self-test dispatch succeeds. The other
  * six leaves here also tolerate empty args (all optional/defaulted
  * params: category/count, mode, dir/limit, ...) but core.status is kept
- * as the probe for parity with the legacy zcl_status pilot. See
+ * as the native hot-swap probe. See
  * config/hotswap_eligible.def. */
 #ifdef ZCL_HOTSWAP_GEN
 #define ZCL_HOTSWAP_PROBE_LEAF "core.status"

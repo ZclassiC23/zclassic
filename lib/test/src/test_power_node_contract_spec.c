@@ -2,7 +2,7 @@
  *
  * doc-contract test for the power-node architecture spec.
  * The spec is the contract; this test keeps the required surfaces
- * discoverable for RAG and future MCP/tooling work. */
+ * discoverable for RAG and future native tooling work. */
 
 #include "test/test_helpers.h"
 
@@ -41,7 +41,7 @@ static int test_doc_exists_and_names_contracts(void)
         ASSERT(strstr(body, "service_registry") != NULL);
         ASSERT(strstr(body, "onion gateway") != NULL);
         ASSERT(strstr(body, "ZClassicDNS") != NULL);
-        ASSERT(strstr(body, "MCP surface") != NULL);
+        ASSERT(strstr(body, "native command surfaces") != NULL);
         ASSERT(strstr(body, "permissions") != NULL);
         ASSERT(strstr(body, "event expectations") != NULL);
         PASS();

@@ -69,8 +69,8 @@ sha3_window_tripwire_report(int window_index, bool matched)
      * corrupt, and only an operator repair (re-fetch / rebuild) resolves it.
      * That is exactly BLOCKER_PERMANENT ("malformed block / consensus reject —
      * never auto-retry; only operator clears"). We give it NO escape action and
-     * NO deadline: it is pure evidence surfaced by zcl_blockers, never a
-     * pipeline HOLD. The fold continues; the tip is untouched. */
+     * NO deadline: it is pure evidence surfaced by native blocker diagnostics
+     * as a pipeline HOLD. The fold continues; the tip is untouched. */
     int start = window_index * SHA3_WINDOW_SIZE;
     int end   = start + SHA3_WINDOW_SIZE - 1;
     char reason[BLOCKER_REASON_MAX];

@@ -11,13 +11,13 @@
  *      storage resident means a hot-swapped dumper still sees the LIVE boot state.
  *
  *   2. The `dumpstate` hot-swap trampoline: the atomic provider slot, the public
- *      diag_rpc_dumpstate entry the RPC/MCP surface registers, and the dev-only
+ *      diag_rpc_dumpstate entry the RPC surface registers, and the dev-only
  *      replace API. A generation .so re-points the provider (via
  *      diag_dumpstate_replace, an undefined symbol in the .so that binds to this
  *      resident copy under RTLD_LOCAL) at its recompiled diag_rpc_dumpstate_builtin.
  *
- * The atomic slot follows the same release-store / acquire-load discipline as the
- * MCP router (tools/mcp/router.c). See docs/work/HOTSWAP.md. */
+ * The atomic slot uses release-store / acquire-load publication. See
+ * docs/work/HOTSWAP.md. */
 
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"

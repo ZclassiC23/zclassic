@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Small nested contracts used by zcl.public_status.v1. Keeping them here
+ * Small nested contracts used by zcl.public_status.v2. Keeping them here
  * avoids turning the first-call agent summary into a catch-all formatting file.
  */
 
@@ -48,8 +48,8 @@ void agent_push_operator_latch_contract_json(
 
     struct json_value obj = {0};
     json_set_object(&obj);
-    json_push_kv_str(&obj, "schema", "zcl.operator_latch.v1");
-    json_push_kv_int(&obj, "schema_version", 1);
+    json_push_kv_str(&obj, "schema", "zcl.operator_latch.v2");
+    json_push_kv_int(&obj, "schema_version", 2);
     json_push_kv_bool(&obj, "active", view->active);
     json_push_kv_bool(&obj, "operator_action_required",
                       view->operator_action_required);
@@ -59,8 +59,6 @@ void agent_push_operator_latch_contract_json(
                       view->suppressed_by_mirror_contract);
     json_push_kv_int(&obj, "since_unix", view->since_unix);
     json_push_kv_str(&obj, "detail", view->detail);
-    json_push_kv_str(&obj, "state_tool",
-                     "zcl_state subsystem=condition_engine");
     json_push_kv_str(&obj, "native_state_command",
                      "zclassic23 dumpstate condition_engine");
     json_push_kv_str(&obj, "semantics",
@@ -80,18 +78,16 @@ void agent_push_condition_summary_contract_json(
 
     struct json_value obj = {0};
     json_set_object(&obj);
-    json_push_kv_str(&obj, "schema", "zcl.condition_engine_summary.v1");
-    json_push_kv_int(&obj, "schema_version", 1);
+    json_push_kv_str(&obj, "schema", "zcl.condition_engine_summary.v2");
+    json_push_kv_int(&obj, "schema_version", 2);
     json_push_kv_int(&obj, "active_count", view->active_count);
     json_push_kv_int(&obj, "unresolved_count", view->unresolved_count);
     json_push_kv_int(&obj, "unresolved_critical_count",
                      view->unresolved_critical_count);
-    json_push_kv_str(&obj, "state_tool",
-                     "zcl_state subsystem=condition_engine");
     json_push_kv_str(&obj, "native_state_command",
                      "zclassic23 dumpstate condition_engine");
     json_push_kv_str(&obj, "semantics",
-                     "summary only; use state_tool for the registered "
+                     "summary only; use native_state_command for the registered "
                      "condition list, attempts, thresholds, and detail");
     json_push_kv(out, "conditions", &obj);
     json_free(&obj);

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 # Legacy resident commit harness, retained only as a typed compatibility path.
-# Phase 0 contains both MCP/native apply and resident probing before dlopen.
+# Phase 0 contains native apply and resident probing before dlopen.
 set -eu
 
 printf '%s\n' \

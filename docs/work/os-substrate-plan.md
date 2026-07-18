@@ -247,7 +247,7 @@ signal handler has already done so.
   seccomp yet, so no `execve` risk from an unmigrated shell-out site that
   Rung 0 missed).
 - **P2** — default-on for release builds running under systemd + the
-  seccomp deny-list + a `dumpstate` sandbox witness (so `zcl_status`-style
+  seccomp deny-list + a `dumpstate` sandbox witness (so `zclassic23 core status`-style
   introspection can prove the sandbox is actually active, not just
   requested).
 - **P3** — a weaker dev profile for `ZCL_DEV_BUILD` (Landlock only, no

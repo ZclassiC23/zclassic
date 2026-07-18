@@ -84,7 +84,7 @@ static int64_t wall_now_s(void)
  *
  * A JOB_FATAL from a stage step is a terminal verdict: the runner rolls
  * back, bumps error_count, and returns. Historically that bump was the
- * ONLY witness — visible in zcl_state JSON but never in node.log, and
+ * ONLY witness — visible in native dump-state JSON but never in node.log, and
  * indistinguishable from a healthy JOB_IDLE to a count-only drain driver.
  *
  * This latch fixes both: every FATAL return funnels through

@@ -7,7 +7,7 @@
  * stateful siblings are:
  *   - block_source_policy_persist.c   : node.db persist/restore
  *   - block_source_policy_decisions.c : decision predicates + event/record
- *   - block_source_policy_status.c    : status read + zcl_state JSON dumper
+ *   - block_source_policy_status.c    : status read + dump-state JSON dumper
  * This file owns runtime state; siblings own persistence, decisions, and
  * status so each file keeps one clear framework purpose. */
 

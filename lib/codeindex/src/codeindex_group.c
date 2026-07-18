@@ -104,14 +104,14 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "app") == 0) return "the application shapes (Rails-like feature slices)";
     if (strcmp(group, "core") == 0) return "sealed consensus core (params, chainparams, math, consensus)";
     if (strcmp(group, "config") == 0) return "boot configuration + argv wiring";
-    if (strcmp(group, "tools") == 0) return "dev/ops tooling and the MCP surface";
+    if (strcmp(group, "tools") == 0) return "dev/ops tooling and native command surfaces";
     if (strcmp(group, "domain") == 0) return "pure framework-free bounded contexts";
     if (strcmp(group, "adapters") == 0) return "hexagonal adapters implementing ports/";
     if (strcmp(group, "ports") == 0) return "hexagonal interface headers";
     if (strcmp(group, "root") == 0) return "top-level entry (src/main.c) and repo root files";
     if (strcmp(group, "lib/test") == 0) return "the canonical test runner, groups, fixtures, and specifications";
     if (strcmp(group, "app/conditions") == 0) return "shape: liveness/blocker conditions";
-    if (strcmp(group, "app/controllers") == 0) return "shape: REST + MCP + RPC request handlers";
+    if (strcmp(group, "app/controllers") == 0) return "shape: REST + native + RPC request handlers";
     if (strcmp(group, "app/jobs") == 0) return "shape: background jobs";
     if (strcmp(group, "app/models") == 0) return "shape: ActiveRecord models";
     if (strcmp(group, "app/services") == 0) return "shape: service objects (business logic)";
@@ -133,7 +133,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/kernel") == 0) return "service lifecycle kernel (init/start/stop/status ordering) + the native command registry";
     if (strcmp(group, "lib/json") == 0) return "minimal in-tree JSON value/parse/serialize library (no external deps)";
     if (strcmp(group, "lib/keys") == 0) return "EC key material: private/public keys, bech32/base58 address key encoding";
-    if (strcmp(group, "lib/metrics") == 0) return "Prometheus-style in-process counters/histograms for MCP + node metrics";
+    if (strcmp(group, "lib/metrics") == 0) return "Prometheus-style in-process node metrics";
     if (strcmp(group, "lib/mining") == 0) return "block template generation + the CPU miner loop";
     if (strcmp(group, "lib/net") == 0) return "P2P networking: connman, peers, addrman, messages, Tor/onion, file market, fast sync";
     if (strcmp(group, "lib/platform") == 0) return "thin OS-portability wrappers: monotonic clock, RNG, time_t/timespec conversions";

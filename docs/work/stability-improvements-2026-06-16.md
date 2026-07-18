@@ -27,10 +27,10 @@ before deploy. `owner-gated` = consensus parity or a structural/topology decisio
 
 ## SAFE-NOW queue (remaining — non-consensus, hermetic)
 
-- **S1 — `header_band` in `zcl_state`**: expose island-root / contiguous-frontier
+- **S1 — `header_band` in `zclassic23 dumpstate`**: expose island-root / contiguous-frontier
   / remaining / ETA so an operator can tell "frozen forever" from "backfilling N
   of M". `header_band_service.c` + `diagnostics_registry.c` + the two enum lists.
-- **S2 — `connman` outbound-health in `zcl_state`** + surface `healthy_outbound`
+- **S2 — `connman` outbound-health in `zclassic23 dumpstate`** + surface `healthy_outbound`
   (not `num_nodes`) in health: "N/3 healthy, dialing, K addnodes in backoff".
 - **S3 — split the overloaded `block-not-finalized-by-reducer` reason**: emit a
   benign `reducer-finalize-pending` for an in-flight block (stages advancing),
@@ -155,7 +155,7 @@ ladder-deletion sequencing must re-derive the caller graph with `config/` in sco
 
 Applied this pass (safe, contained, gate-verified): `lib/core/src/core_io.c`
 (hoisted the duplicated `script_solver` decode out of the if/else),
-`tools/mcp/controllers/ops_controller.c` (added `status_extract_json_int` +
+`app/controllers/src/ops_native_handlers.c` (added `status_extract_json_int` +
 `status_count_json_objects`, routed the ~6 inlined scrape/brace-count sites).
 
 Tracked structural dedups (each its own reviewed change — cross-file, some

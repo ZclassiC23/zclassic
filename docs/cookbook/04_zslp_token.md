@@ -91,5 +91,5 @@ literal production path: a live node's forward-sync indexer calls the same
 two functions from `index_op_return`
 (`app/models/src/explorer_index.c`, `app/models/src/explorer_index_zslp.c`)
 for every OP_RETURN in every synced block, and
-`app/controllers/src/zslp_controller.c` (plus the `zcl_tokens` MCP tool)
+`app/controllers/src/zslp_controller.c` (plus `zclassic23 app tokens list`)
 read the resulting `zslp_tokens`/`zslp_transfers` rows back for callers.

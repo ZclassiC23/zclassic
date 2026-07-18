@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for the dbquery/zcl_sql secret-material denylist
+ * Tests for the native dbquery secret-material denylist
  * (app/controllers/src/dbquery_controller.c: dbq_secret_hit()).
  *
- * Prior to this fix, `dbquery`/`zcl_sql` was SELECT-only and
+ * Prior to this fix, `dbquery` was SELECT-only and
  * DDL/DML-blocked but had no notion of *which* SELECTs were safe:
  * `SELECT privkey FROM wallet_keys` was legal SQL that dumped the
- * plaintext keystore past the (opt-in, often-unset) MCP bearer token.
+ * plaintext keystore through any read-only query surface.
  *
  * These tests exercise diag_rpc_dbquery() directly against a real
  * node.db (":memory:") opened through the normal node_db_open() /

@@ -107,7 +107,7 @@ bool progress_store_checkpoint(void);
  * to call repeatedly and from shutdown paths. */
 void progress_store_close(void);
 
-/* For zcl_state subsystem=progress (CLAUDE.md convention). `out` is
+/* For `zclassic23 dumpstate progress` (dump-state convention). `out` is
  * expected to have been json_set_object'd by the caller; this function
  * also calls json_set_object(out) defensively. `key` is unused. */
 struct json_value;

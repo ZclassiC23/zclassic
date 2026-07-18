@@ -2,9 +2,8 @@
  *
  * Tests for the kernel hot-swap leaf-handler override snapshot layer
  * (lib/kernel/src/command_registry.c). This is the KERNEL half of the
- * zero-MCP hot-swap re-target (docs/work/MCP-REMOVAL-PLAN.md §3.3): an
- * atomic, all-or-nothing {path,handler} override snapshot that mirrors the
- * proven mcp_router_replace_batch design one layer down.
+ * command-registry hot-swap target: an atomic, all-or-nothing {path,handler}
+ * override snapshot with batch replacement one layer down.
  *
  * Coverage:
  *   - install + dispatch-through-override (execute_json runs the override)

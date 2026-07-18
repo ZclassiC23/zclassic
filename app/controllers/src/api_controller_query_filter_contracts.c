@@ -57,10 +57,10 @@ k_service_operation_fields[] = {
     API_QF_ENUM("write_safety",
                 "public_read_only,operator_private,operator_private_destructive",
                 1, 40),
-    API_QF_ENUM("preferred_interface", "rest,mcp,rpc,native_or_planned", 2, 32),
+    API_QF_ENUM("preferred_interface", "rest,rpc,native_or_planned", 2, 32),
     API_QF_ALIAS("interface", "alias_for_preferred_interface", 2, 32),
     API_QF_ENUM("status", "active,in_progress", 3, 32),
-    API_QF_ENUM("surface", "rest,mcp,rpc", 4, 16),
+    API_QF_ENUM("surface", "rest,rpc", 4, 16),
 };
 
 static const struct api_query_filter_field_definition

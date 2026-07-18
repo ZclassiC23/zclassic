@@ -1,7 +1,7 @@
 /* Hierarchical source-code navigator. Local, read-only, deterministic leaves
  * backed by the in-binary lib/codeindex index (self-rebuilds on open if the
  * source tree is stale). Bounded output — a token-cheap alternative to reading
- * whole files. Never bound to RPC/REST/MCP; native transport only. */
+ * whole files. Native transport only. */
 
 ZCL_COMMAND_BRANCH("code", "", "Hierarchical source-code navigator",
                    ZCL_COMMAND_LAYER_CODE)

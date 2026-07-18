@@ -1,5 +1,5 @@
 // one-result-type-ok:json-dump-bool — E2 (one way out): the sole remaining
-// legacy export is db_maintenance_dump_state_json, the zcl_state
+// Dump-state export: db_maintenance_dump_state_json.
 // introspection dumper. The dump convention (CLAUDE.md "Adding state
 // introspection") mandates a bool return (false = couldn't populate), not
 // struct zcl_result; every other fallible surface in this file already
@@ -210,12 +210,12 @@ void db_maintenance_status_snapshot(struct db_maintenance_status *out)
     pthread_mutex_unlock(&g_dbm.lock);
 }
 
-/* zcl_state subsystem=db_maintenance — the WAL-checkpoint / ANALYZE / VACUUM
+/* `zclassic23 dumpstate db_maintenance` — WAL-checkpoint / ANALYZE / VACUUM
  * background worker's last-run timestamps, durations, run/failure totals, and
  * last error. See CLAUDE.md "Adding state introspection".
  *
  * A single VACUUM holds g_dbm.lock for its whole (minutes-long) duration, so
- * the diagnostics path must never block on it — a stuck zcl_state call would
+ * the diagnostics path must never block on it — a stuck dumpstate call would
  * hide exactly the long-running maintenance an operator is trying to observe.
  * We trylock the worker mutex (same as dbm_on_stall) and, when the worker is
  * mid-op, emit busy:true and skip the per-op snapshot fields. loop_ticks is

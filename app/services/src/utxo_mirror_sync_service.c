@@ -468,9 +468,9 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
      *
      * header_tip MUST come from the in-process chain_state_repository
      * (csr_header_height), not chain_projection_best_header_height(): that
-     * helper is MCP-CLIENT-layer — it requires mcp_rpc_client_datadir(),
+     * helper is native-CLIENT-layer — it requires node_rpc_client_datadir(),
      * which is never set inside the node process, so from here it always
-     * failed with "MCP datadir is unset" (11k-16k log lines/day) AND
+     * failed with "native datadir is unset" (11k-16k log lines/day) AND
      * silently returned -1, which defeated BOTH guards above on every tick
      * (both require header_tip > 0) and reproduced exactly the rebuild
      * storm they exist to prevent. */

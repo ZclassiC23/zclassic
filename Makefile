@@ -497,7 +497,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-replay-canary replay-canary-linger-status \
         coverage coverage-clean ci audit release \
         bench bench-crypto-verify bench-regress \
-	lint check-build-epoch-integrity check-checkout-lock check-malloc check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained \
+	lint check-build-epoch-integrity check-checkout-lock check-malloc check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained check-no-retired-agent-protocol \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -1029,8 +1029,8 @@ hotswap-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	echo "hotswap-so: linked read-only, unpublishable candidate $$so" >&2; \
 	echo "$$so"
 
-# make hotswap FILES="..." [PROBE=zcl_tool]
-# Build the generation .so, then hand it to zcl_agent_hotswap. NOTE: a
+# make hotswap FILES="..." [PROBE=core.status]
+# Build the generation .so, then hand it to the native hot-swap path. NOTE: a
 # The dev-only `dev_hotswap` RPC executes inside the already-running isolated
 # dev node, so the committed router generation persists until its next process
 # restart.  This target never starts/stops any service and can never target the
@@ -1046,7 +1046,7 @@ hotswap: $(VIEW_GEN_HEADERS)
 # single-handler module .so that exports `zcl_hotswap_module`. This is the REAL
 # (activatable) ABI's build path — deliberately NOT the whole-program LTO node
 # compile: ONE non-LTO `-fPIC -shared` translation unit, seconds not a relink.
-# Unresolved kernel symbols (mcp_node_rpc, json_*, zcl_native_bridge_run, ...)
+# Unresolved kernel symbols (node_rpc_call, json_*, zcl_native_bridge_run, ...)
 # bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
 # line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
 # docs/work/HOTSWAP.md "Real module ABI".
@@ -2953,7 +2953,7 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	candidate_agentbuild="$$(timeout 30 "$$candidate" agentbuild 2>&1)" || { \
 	    echo "deploy: frozen candidate agentbuild preflight failed" >&2; exit 1; }; \
 	printf '%s\n' "$$candidate_agentbuild" | \
-	    grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v1"' || { \
+	    grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.agent_build.v2"' || { \
 	    echo "deploy: frozen candidate has no agentbuild v1 contract" >&2; exit 1; }; \
 	candidate_source_id="$$(printf '%s\n' "$$candidate_agentbuild" | \
 	    grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | \
@@ -4359,6 +4359,9 @@ check-no-stray-untracked-source:
 	@echo "══ LINT: no stray untracked source (DX1) ══"
 	@./tools/lint/check_no_stray_untracked_source.sh
 
+check-no-retired-agent-protocol:
+	@./tools/lint/check_no_retired_agent_protocol.sh
+
 # wf/dx-scanner-immunity regression proof — plants a transient lint-gate
 # fixture mid-scan and proves: (1) a production scan ignores it, (2) a
 # selftest-style direct invocation still detects it (detection unweakened),
@@ -4369,7 +4372,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-peer-floor-single-source check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
+lint: check-no-retired-agent-protocol check-build-epoch-integrity check-checkout-lock check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-blocker-escape-registered check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-sysinit-ordering check-sandbox-wired check-no-shellouts check-peer-floor-single-source check-proc-self-shim check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-route-command-parity check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1 check-vendor-provenance check-command-contract check-privileged-transition-receipt
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

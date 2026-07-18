@@ -24,7 +24,7 @@ struct sqlite3;
 /* The condition that owns the auto-terminating remedy for the empty-table
  * variant of this gap (a nonzero adoption cursor over an anchor table with no
  * seeded initial frontier).  Named in the gap blocker's reason so
- * zcl_blockers/zcl_conditions surface the remedy owner.  MUST equal the .name
+ * Native blocker/condition diagnostics surface the remedy owner. MUST equal the .name
  * of the condition in app/conditions/src/sapling_anchor_frontier_unavailable.c. */
 #define SAPLING_ANCHOR_FRONTIER_CONDITION_NAME \
     "sapling_anchor_frontier_unavailable"

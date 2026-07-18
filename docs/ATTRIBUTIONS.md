@@ -89,19 +89,6 @@ tree. Credited here for the script-format concept.
 Embedded database for the canonical UTXO store, wallet keystore, block
 index (with CRC), and application state.
 
-## mcp-language-server (isaacphi) — MIT
-
-**Repository:** https://github.com/isaacphi/mcp-language-server
-**License:** MIT
-
-LSP-to-MCP bridge providing semantic code intelligence tools
-(`get_definition`, `find_references`, `rename`, `diagnostics`, `hover`,
-`call_hierarchy`). zclassic23 integrates this pattern directly
-(clangd subprocess + MCP-exposed LSP tools) rather than hand-rolling
-symbol lookup. Alternative LSP-MCP bridges also surveyed: `lsp-mcp`
-(jonrad), `multilspy`, `lsp-mcp-server` (ProfessioneIT) — all MIT /
-Apache-2.0.
-
 ## AGENTS.md portable-standard (community convention) — no license
 
 **Reference:** https://www.augmentcode.com/guides/how-to-build-agents-md,

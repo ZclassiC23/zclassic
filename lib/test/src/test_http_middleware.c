@@ -417,7 +417,7 @@ int test_http_middleware(void)
     failures += test_stats_snapshot_mirrors_struct();
 
     if (mw.initialized) rpc_http_middleware_destroy(&mw);
-    /* Leave the global pointer NULL so downstream tests (test_mcp_metrics)
+    /* Leave the global pointer NULL so downstream metrics tests
      * observe the "inactive" rendering path by default. */
     rpc_http_middleware_set_global(NULL);
     return failures;

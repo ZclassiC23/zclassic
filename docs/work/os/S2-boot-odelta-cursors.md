@@ -293,8 +293,8 @@ is re-read every boot. Returns `found` (`:298`); no birthday cursor.
 - **A/B loader-output equality** per item above (fingerprint + wallet-table digest byte-identical
   between full and warm boot). This is the merge bar, run in the lane worktree by the Verify-stage
   sonnet verifier.
-- **Consensus-parity confirmation:** `zcl_state subsystem=reducer_frontier` H\* identical
+- **Consensus-parity confirmation:** `zclassic23 dumpstate reducer_frontier` H\* identical
   full-vs-warm; `coins_kv` count/best-block identical; `sapling_anchors` untouched. These passes
   never read the fold or coins authority — the equality tests plus the H\* check close it.
-- Full `make test-parallel` green on integrated main; no `core/`, no `tools/mcp`, no datadir, no
+- Full `make test-parallel` green on integrated main; no `core/`, no datadir, no
   producer touched.

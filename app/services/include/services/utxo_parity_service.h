@@ -77,7 +77,7 @@ void utxo_parity_observe_finalization(void);
 void utxo_parity_tick_once(void);
 
 /* Synchronous one-shot check at the live applied `height` against the wired
- * reference (unit test + MCP escape hatch). Returns the comparator result. */
+ * reference (unit test + native escape hatch). Returns the comparator result. */
 struct zcl_result utxo_parity_check_height(int32_t height,
                                            struct utxo_audit_result *out);
 

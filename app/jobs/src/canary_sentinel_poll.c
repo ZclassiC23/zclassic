@@ -18,7 +18,7 @@
 
 static struct liveness_contract        g_contract;
 static _Atomic supervisor_child_id     g_id = SUPERVISOR_INVALID_ID;
-/* Monotonic per-tick marker so `zcl_state subsystem=supervisor` shows the
+/* Monotonic per-tick marker so `zclassic23 dumpstate supervisor` shows the
  * job ticking even on a box that never ran the canary (perpetual no-op).
  * Progress-quiet stall detection is deliberately disabled for this job
  * (progress_max_quiet_us=0 below), so the marker is introspection-only. */

@@ -91,11 +91,6 @@ static const struct convert_param convert_table[] = {
     { "prioritisetransaction", 2 },
     { "setban", 2 },
     { "setban", 3 },
-    /* Dev-only resident MCP bridge: the tool name stays a string while the
-     * optional second parameter is a JSON object. The method is absent from
-     * release RPC tables, but keeping conversion here lets the common CLI
-     * address a running dev node without a special parser. */
-    { "dev_mcp_call", 1 },
     { "getblocksubsidy", 0 },
     { "z_listaddresses", 0 },
     { "z_listreceivedbyaddress", 1 },

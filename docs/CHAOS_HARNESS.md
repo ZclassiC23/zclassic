@@ -364,7 +364,7 @@ make postmortem-to-scenario CAP=<capsule-dir> [OUT=<path>]
 
 `CAP` is an **unpacked** `.cap` directory (`tape.bin` + `manifest.json` +
 `log.txt` + ...) as written by `postmortem_capture_write()` — a live
-capsule directory listed by `zcl_postmortem_list`, or one built by hand for
+capsule directory listed by `zclassic23 ops postmortem list`, or one built by hand for
 testing. `OUT` defaults to `tools/sim/scenarios/repro_<seed_hex>.scenario`.
 The tool (also runnable directly as `build/bin/postmortem_to_scenario
 --cap=DIR [--out=PATH]`) writes a `.scenario` file that:
@@ -392,7 +392,7 @@ emitted `seed` line is the tape's informational xoshiro register snapshot,
 not the original scalar seed — it will not reproduce the capsule's exact RNG
 stream in a fresh run (see the generated file's own comment, and
 `examples/09_seed_replay.c` for the exact-replay path via
-`postmortem_capsule_load_tape()` / `zcl_postmortem_replay`).
+`postmortem_capsule_load_tape()` / `zclassic23 ops postmortem replay`).
 
 ## Reproducing a failure
 

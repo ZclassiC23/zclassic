@@ -61,10 +61,10 @@ enum oracle_policy_state oracle_policy_get_state(void);
 /* Human-readable state name ("normal"/"halted"/"panic"). Never NULL. */
 const char *oracle_policy_state_name(enum oracle_policy_state s);
 
-/* Operator: reset to NORMAL (e.g. via MCP after investigation). */
+/* Operator: reset to NORMAL (e.g. via native after investigation). */
 void oracle_policy_clear(void);
 
-/* zcl_state subsystem=oracle_policy entry. */
+/* `zclassic23 dumpstate oracle_policy` entry. */
 bool oracle_policy_dump_state_json(struct json_value *out, const char *key);
 
 /* Test hook — reset state + counters between unit tests. */

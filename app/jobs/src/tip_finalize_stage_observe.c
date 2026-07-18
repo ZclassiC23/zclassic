@@ -43,7 +43,7 @@ static _Atomic uint64_t g_successor_pending_total = 0;
  * on N+1's HEADER witness because N+1's body/scripts were not yet pipelined.
  * A SUBSET of g_finalized_total (which counts these too); the complement of
  * g_successor_pending_total (the HOLD when N+1 is NOT yet a canonical
- * successor). One zcl_state call confirms the cure is firing live. */
+ * successor). One `zclassic23 dumpstate utxo_apply` call confirms the cure. */
 static _Atomic uint64_t g_header_witness_total = 0;
 static _Atomic uint64_t g_total_work_added_high = 0;
 static _Atomic uint64_t g_total_work_added_low = 0;

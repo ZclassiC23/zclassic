@@ -30,8 +30,8 @@ static _Atomic uint64_t g_request_sequence = 1;
  * memory therefore starts EMPTY on every plain CLI call; `discover describe`
  * run immediately after one CLI command will usually show observed_samples=1
  * (that command's own dispatch), not a historical p99. The ring accumulates
- * real history only within a long-lived process: `-mcp-inprocess`, the
- * eventual REST server once OS-B3b wires it through this same execute path, or
+ * real history only within a long-lived process, such as the REST server once
+ * OS-B3b wires it through this same execute path, or
  * a test/fixture process that dispatches the same leaf repeatedly. This is
  * deliberate phase-1 scope (the acceptance bar is an in-process fixture test)
  * — a cross-process persistence layer (mmap'd or on-disk ring, keyed like
@@ -120,8 +120,7 @@ static bool latency_ring_p99(const struct zcl_command_registry *registry,
 
 /* ── Hot-swap leaf-handler override layer ─────────────────────────────
  *
- * Mirrors the proven mcp_router_replace_batch snapshot design one layer down
- * (tools/mcp/router.c:263-334): a heap-cloned, immutable snapshot of
+ * A heap-cloned, immutable snapshot of
  * {path,handler} overrides published with ONE release-store on a static
  * _Atomic pointer. Readers acquire-load; a NULL active pointer is the zero-cost
  * fast path (no override ever installed). Published snapshots are never freed —

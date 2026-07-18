@@ -7,7 +7,7 @@
  * When a block or transaction is rejected by `check_block` /
  * `check_transaction`, the emitters fire `EV_CONSENSUS_REJECT_BLOCK`
  * and `EV_CONSENSUS_REJECT_TX` events whose payloads include the
- * rejected hash. Those events feed the `zcl_consensus_report` metrics
+ * rejected hash. Those events feed `zclassic23 core consensus report` metrics
  * endpoint, but metrics alone can't answer the single most important
  * diagnostic question operators ask:
  *
@@ -24,10 +24,8 @@
  * dos score, type, and timestamp for any hash that is still
  * present.
  *
- * The service is a companion to the upcoming `zcl_explain_reject`
- * MCP tool. AGENT3 owns the tools/mcp tree, so AGENT3 will wrap
- * `consensus_reject_index_lookup()` in a router entry. The
- * service API is stable so AGENT3 can code against it today.
+ * The service backs a future native reject-explanation command, which should
+ * wrap `consensus_reject_index_lookup()` rather than duplicate this state.
  *
  * Design
  * ------
@@ -38,7 +36,7 @@
  *   the operator typically wants the *latest* rejection reason).
  * - Single mutex guards the ring. Writes happen on the event
  *   emit thread (currently the validation thread), reads on
- *   operator threads (RPC / MCP). Contention is negligible.
+ *   operator threads (RPC / native). Contention is negligible.
  * - Registered as a synchronous observer on both reject events
  *   so there's no latency window between emission and index
  *   update — `lookup()` is consistent the instant the emitter

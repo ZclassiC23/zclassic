@@ -135,13 +135,13 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "\nReturn the preferred AI development interface: ranked transports,\n"
         "JSON rules, native C ownership, and shell/Python anti-patterns.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_interface.v1\", "
+        "  { \"schema\":\"zcl.agent_interface.v2\", "
         "\"preferred_transport\":\"native_cli\", ... }\n");
 
     struct json_value transports, capabilities, machine, runtime, loop,
                       native_owned, avoid, versioning;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_interface.v1");
+    json_push_kv_str(result, "schema", "zcl.agent_interface.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "source_id_sha256",
@@ -152,19 +152,16 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(result, "canonical_implementation",
                      "app/controllers/src/agent_interface_controller.c");
     json_push_kv_str(result, "capabilities_schema",
-                     "zcl.agent_capability.v1");
+                     "zcl.agent_capability.v2");
     json_push_kv_str(result, "summary",
-                     "Use typed native zclassic23 commands for AI, scripts, and humans; MCP remains transitional during W2/W3 and REST is public read-only.");
+                     "Use typed native zclassic23 commands for AI, scripts, and humans; REST is public read-only.");
 
     json_init(&transports);
     json_set_array(&transports);
     agent_interface_push_transport(&transports, 1, "native_cli",
         "zclassic23 agent*", "zclassic23 agentinterface", "stdout JSON",
         "primary typed AI/operator commands, scripts, and zero-wrapper diagnostics");
-    agent_interface_push_transport(&transports, 2, "mcp", "zcl_agent_*",
-        "zcl_agent_interface", "typed JSON",
-        "transitional W2/W3 compatibility only; no new agent workflows");
-    agent_interface_push_transport(&transports, 3, "rest",
+    agent_interface_push_transport(&transports, 2, "rest",
         "GET /api/v1/agent", "GET /api/v1/agent", "HTTP JSON",
         "public read-only status and explorer-facing discovery");
     json_push_kv(result, "transports", &transports);
@@ -197,7 +194,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_bool(&machine, "no_python_required", true);
     json_push_kv_bool(&machine, "typed_native_commands_required", true);
     json_push_kv_str(&machine, "preferred_error_style",
-                     "zcl.result.v1 or another typed native JSON object; transitional MCP errors remain structured");
+                     "zcl.result.v1 or another typed native JSON object");
     json_push_kv_str(&machine, "compatibility_rule",
                      "Agents may rely on existing field meanings; new optional fields are additive until v3.");
     json_push_kv(result, "machine_contract", &machine);
@@ -271,9 +268,9 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     agent_interface_push_str(&avoid,
                              "do not require Python to parse agent API JSON");
     agent_interface_push_str(&avoid,
-                             "do not scrape logs when zcl_node_log can answer");
+                             "do not scrape logs when zclassic23 getnodelog can answer");
     agent_interface_push_str(&avoid,
-                             "do not scrape node.db when zcl_sql or a typed tool exists");
+                             "do not scrape node.db when zclassic23 dbquery or a typed command exists");
     agent_interface_push_str(&avoid,
                              "do not infer deploy safety from comments or unit names");
     json_push_kv(result, "avoid", &avoid);
@@ -286,7 +283,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(&versioning, "compatibility_rule",
                      "Add fields without changing meaning; use v2 for breaking shape changes.");
     json_push_kv_str(&versioning, "test_floor",
-                     "syncdiag_rpc, mcp_controllers, api, make_lint_gates");
+                     "syncdiag_rpc, command_registry_catalog, api, make_lint_gates");
     json_push_kv(result, "versioning", &versioning);
     json_free(&versioning);
     return true;

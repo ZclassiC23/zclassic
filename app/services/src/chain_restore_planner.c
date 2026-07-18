@@ -10,7 +10,8 @@
 // decision payload and a human-readable `reason[128]`. There is no fallible
 // bool/int surface to lose a reason; collapsing the plan to zcl_result would
 // drop the action fields the caller switches on. Every branch fills `reason`
-// and records via chain_restore_record_plan_result() for `zcl_state`.
+// and records via chain_restore_record_plan_result() for native dump-state
+// inspection.
 
 #include "services/chain_restore_planner.h"
 #include "services/chain_restore_boot_snapshot.h"

@@ -99,9 +99,9 @@ void peer_bandwidth_destroy(struct peer_bandwidth *pb);
  * fields accept 0 to disable that direction. */
 void peer_bandwidth_load_from_env(struct peer_bandwidth *pb);
 
-/* Handle to connman's per-process peer_bandwidth instance, or NULL if
- * connman has not yet initialized one (e.g. -mcp server with no P2P).
- * Used by `zcl_config_reload` to re-apply env knobs without restart. */
+/* Handle to connman's per-process peer_bandwidth instance, or NULL if connman
+ * has not yet initialized one. Used by runtime configuration reload to
+ * re-apply environment knobs without restart. */
 struct peer_bandwidth *peer_bandwidth_get_global(void);
 
 /* Mark a peer as trusted so it bypasses the quota.  Call this for

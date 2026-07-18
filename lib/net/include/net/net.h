@@ -147,8 +147,8 @@ bool net_send_over_budget(const struct p2p_node *node);
 
 /* reason is a short human-readable label ("threshold reached: <offence>"
  * etc, truncated) captured at ban time purely for operator diagnosis
- * (zcl_peer_incidents / node.log) — it is NEVER matched against on
- * reload, so a future rename of an offence string cannot break restore. */
+ * (`zclassic23 core network peers incidents` / node.log) — it is never matched
+ * against on reload, so renaming an offence string cannot break restore. */
 #define BAN_ENTRY_REASON_MAX 32
 struct ban_entry {
     struct net_addr addr;

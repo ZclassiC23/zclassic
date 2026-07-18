@@ -9,11 +9,8 @@ session (2026-07-15); re-verify line numbers before editing — B1 shifts most o
 ## The one-sentence problem
 
 `agent_first_call.h:11-14` (`ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS 250` /
-`_HEALTHCHECK_MS 500` / `_LIVENESS_MS 750` / `_DIAGNOSE_MS 900`) is consumed only by five legacy
-MCP agent controllers (`agent_controller.c`, `agent_diagnose_controller.c`,
-`agent_liveness_controller.c`, `event_agent_summary.c`, `event_healthcheck_controller.c` —
-verified via `grep -rln agent_first_call app/ lib/ tools/`) and dies the moment zero-MCP W3
-deletes `tools/mcp/**` and these MCP-only controllers with it. The native `zcl.result.v1`
+`_HEALTHCHECK_MS 500` / `_LIVENESS_MS 750` / `_DIAGNOSE_MS 900`) is scoped to five
+older agent-handler paths instead of the command registry. The native `zcl.result.v1`
 envelope (`serialize_reply`, `command_registry.c:1342`) has NO latency budget/measurement field
 at all today — only `elapsed_us` (unbudgeted). Every native leaf already declares
 `enum zcl_command_latency latency` (`command_registry.h:251`, 5 values: INSTANT/FAST/FOREGROUND/
@@ -42,10 +39,9 @@ below.
 untouched by B1's diff, so the anchor is stable pre- and post-B1):
 
 ```c
-/* Per-latency-bucket dispatch budget in milliseconds. Rehomes the legacy
- * agent_first_call.h budgets (250/500/750/900, MCP-only, deleted in zero-MCP
- * W3) as the kernel's own contract so every native leaf carries it, not just
- * the five MCP agent controllers that used to. */
+/* Per-latency-bucket dispatch budget in milliseconds. Moves the existing
+ * first-call budgets (250/500/750/900) into the kernel contract so every
+ * native leaf carries one. */
 #define ZCL_COMMAND_LATENCY_BUDGET_INSTANT_MS    50
 #define ZCL_COMMAND_LATENCY_BUDGET_FAST_MS       250
 #define ZCL_COMMAND_LATENCY_BUDGET_FOREGROUND_MS 750
@@ -114,8 +110,8 @@ g_request_sequence = 1;` (line 18, untouched by B1):
  * CLI call; `discover describe` run immediately after one CLI command will
  * usually show observed_samples=1 (that command's own dispatch), not a
  * historical p99. The ring accumulates real history only within a
- * long-lived process: `-mcp-inprocess`, the eventual REST server once
- * OS-B3b wires it through this same execute path, or a test/fixture process
+ * long-lived process: the REST server once OS-B3b wires it through this same
+ * execute path, or a test/fixture process
  * that dispatches the same leaf repeatedly. This is deliberate phase-1
  * scope (the acceptance bar below is an in-process fixture test) — a
  * cross-process persistence layer (mmap'd or on-disk ring, keyed like
@@ -530,11 +526,6 @@ before assuming it enforces byte-for-byte JSON — if it doesn't, update anyway 
   without persistence).
 - **`core.*` coverage for the acceptance sweep (§7c).** Extending the "every READY read leaf"
   test to the RPC-bridged `core.*` domain requires either mocking every bridged leaf's RPC call
-  (per-leaf `mcp_rpc_client_set_test_hook`, following `test_status_brief_flat_lean_envelope`'s
+  (per-leaf `node_rpc_client_set_test_hook`, following `test_status_brief_flat_lean_envelope`'s
   pattern) or running against a live fixture node. Scope, don't silently narrow: file as a
   follow-on once B2 lands, not folded in here.
-- **Legacy `agent_first_call.h` deletion.** Not touched by B2 (still consumed by 5 MCP
-  controllers pending zero-MCP W2/W3). Once those controllers are deleted in W3, delete
-  `agent_first_call.h`/`agent_first_call.c` too — the kernel envelope now carries the same
-  contract natively. Do not delete early; W3 is a separate, later, named step
-  (`docs/work/MCP-REMOVAL-WORKLIST.md`).

@@ -16,8 +16,9 @@
  *     the same height (300 s keep-alive not reached in-test),
  *   - the hole registers the DEPENDENCY blocker
  *     reducer_frontier.upstream_log_hole (escape_action names the healer,
- *     reducer_frontier_reconcile_light) so zcl_blockers is non-zero for the
- *     stall's whole duration — the 3166989 hole ran 3 h with zcl_blockers=0
+ *     reducer_frontier_reconcile_light) so `zclassic23 blockers` is non-zero
+ *     for the stall's whole duration — the 3166989 hole ran 3 h with zero
+ *     reported blockers
  *     because only the WARN/dump path existed,
  *   - healing the hole resumes the stage, zeroes consec, and clears the
  *     blocker.

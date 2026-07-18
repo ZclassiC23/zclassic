@@ -227,7 +227,7 @@ struct zcl_result chain_evidence_store_persist(
 
 /* Load misses on a fresh/restored datadir are the common, expected case,
  * and chain_evidence_controller_snapshot issues 4 loads per call from the
- * health heartbeat, event_controller, and zcl_state — unthrottled that is
+ * health heartbeat, event controller, and `zclassic23 dumpstate` — unthrottled that is
  * 4 identical WARNs per tick, forever. Throttle the WARN per key: log the
  * first miss, then at most once per 300s with the running miss count. The
  * typed ZCL_ERR(-3) result is always returned unchanged, so every caller

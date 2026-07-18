@@ -4,16 +4,11 @@
  *
  * This is the shared helper web the operator read compositions build on:
  * defaulted JSON accessors, RPC/dumpstate envelope folding, the peer
- * survey, and the target-node blocker-summary builder. It used to live
- * privately inside tools/mcp/controllers/ops_controller.c; it is re-homed
- * here so both the MCP wrapper handlers (tools/mcp/controllers/) and the
- * native command bridge can call the same body functions
- * (status_native_handlers.c) without depending on the MCP router.
+ * survey, and the target-node blocker-summary builder. Native status command
+ * bodies share these helpers instead of re-deriving the same projections.
  *
- * Every symbol keeps its original name and byte-identical behaviour; the
- * two generic-named helpers were renamed (json_value_to_body ->
- * zcl_json_value_to_body, postmortem_default_dir ->
- * zcl_postmortem_default_dir) to avoid whole-program link collisions.
+ * Generic helper names carry a zcl_ prefix to avoid whole-program link
+ * collisions.
  */
 
 #ifndef ZCL_CONTROLLERS_STATUS_NATIVE_HELPERS_H
@@ -33,11 +28,8 @@ extern "C" {
  *
  * One fold over the getpeerinfo JSON array, shared by all three
  * callers that used to each re-derive their own subset of these
- * counts with slightly different idioms: h_zcl_status (total/
- * inbound/outbound/zcl23/magicbean/max_height), h_zcl_operator_summary
- * (total/inbound/outbound/ready/max_height), and h_zcl_syncdiag (just
- * max_height, previously via a raw strstr scan of the unparsed RPC
- * text). Each caller reads only the fields it needs. */
+ * counts with slightly different idioms. Each caller reads only the fields
+ * it needs. */
 struct peer_survey {
     int total;
     int inbound;

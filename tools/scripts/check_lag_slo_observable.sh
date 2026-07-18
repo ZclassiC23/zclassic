@@ -3,7 +3,7 @@
 # that gate the severity ladder + sd_notify heartbeat. Every read of
 # those atomics that could influence severity MUST be paired with an
 # EV_LAG_SLO_BREACH emit in the same file, so downstream consumers
-# (Prometheus, node_health, MCP) can react to the state change instead
+# (Prometheus, node_health, native diagnostics) can react to the state change instead
 # of silently observing it.
 #
 # Concrete rule for this gate: legacy_mirror_sync_service.c must contain

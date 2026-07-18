@@ -39,7 +39,7 @@ static bool              g_initialized;
 static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Operator-needed latch. EV_OPERATOR_NEEDED means the auto-healing engine
- * exhausted its remedies and a human/MCP must act. We latch it (rather than
+ * exhausted its remedies and an operator must act. We latch it (rather than
  * relying on a rolling window) so the DEGRADED state stays visible in the
  * health surface until the underlying condition clears it. Touched from the
  * event-observer thread, read from the health/heartbeat thread → atomic. */

@@ -22,7 +22,7 @@
  *
  * Skips (does not fail) if build/bin/zclassic23 is missing or stale vs the
  * source files that define this behavior — matching the guard pattern in
- * test_mcp_e2e.c.
+ * the native command integration tests.
  *
  * make t ONLY=importblockindex_cli_dispatch
  */

@@ -16,12 +16,6 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 void rpc_http_stop(void);
 bool rpc_http_is_running(void);
 
-/* Return the live RPC dispatch table the HTTP server is executing against
- * (the exact pointer passed to rpc_http_start). NULL before the server
- * starts or after it stops. The in-process MCP transport calls
- * rpc_table_execute() on this same table so its results are byte-identical
- * to the out-of-process HTTP path. Read-only; do not mutate. */
-const struct rpc_table *rpc_http_active_table(void);
 bool rpc_http_tls_active(void);
 
 /* Cookie rotation — call manually for testing; background thread calls

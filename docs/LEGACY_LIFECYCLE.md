@@ -48,14 +48,14 @@ leaving `find_most_work_chain` stuck.
 
 | File | Status | Role |
 |------|--------|------|
-| `legacy_mirror_sync_service.c` + `.h` | **Active (observe-only)** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. It no longer applies blocks — it only observes lag against a sibling `zclassicd`. Powers `zcl_mirror_status`. |
+| `legacy_mirror_sync_service.c` + `.h` | **Active (observe-only)** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. It no longer applies blocks—it only observes lag against a sibling `zclassicd`. Powers `zclassic23 ops mirror`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |
 
 ### RPC clients (`lib/rpc/src/`)
 
 | File | Status | Role |
 |------|--------|------|
-| `legacy_rpc_client.c` + `.h` | **Active** | HTTP/JSON-RPC client for talking to `zclassicd:8232`. Used by mirror sync, `zcl_probe_zclassicd`, and `legacy_chain_oracle`. |
+| `legacy_rpc_client.c` + `.h` | **Active** | HTTP/JSON-RPC client for talking to `zclassicd:8232`. Used by mirror sync, `zclassic23 ops mirror`, and `legacy_chain_oracle`. |
 | `legacy_chain_oracle.c` + `.h` | **Active** | Treats `zclassicd` as an external chain oracle (hash at height, getblockcount, etc.). Used by quorum / drift checks. |
 
 ### Storage readers (`lib/storage/src/`)

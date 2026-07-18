@@ -137,7 +137,7 @@ The historical deployed path is `-load-snapshot-at-own-height`: it loads a
 digest-verified borrowed UTXO snapshot above coins-best and folds forward. It
 previously reached tip from the h=3,156,809 artifact (count 1,344,918), but
 canonical is now wedged below tip on incomplete shielded history (verify the
-live H* via `zcl_status` / `dumpstate reducer_frontier`; `docs/HANDOFF.md`
+live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md`
 holds current state). The
 snapshot's `anchor_block_hash` must
 byte-equal this node's in-binary PoW header at the seed height or boot FATALs —
@@ -261,8 +261,9 @@ continuity-checked against compiled anchors; failures discard the runtime file.
 ## Operator Runbook
 
 ### Check sync status
-MCP: `zcl_status`, `zcl_kpi`, `zcl_syncstate`, `zcl_validationstatus`. Or the
-`zcl-rpc` escape hatch: `build/bin/zcl-rpc getblockchaininfo`. Status/dumpstate
+Use `zclassic23 status`, `zclassic23 core sync status`, and
+`zclassic23 core sync validation`. The native RPC fallback is
+`zclassic23 rpc getblockchaininfo`. Status and state
 surfaces include sync phase, local/header/peer heights, immutable height,
 snapshot anchor, UTXO root, chainwork/quorum verdict, watchdog state, last
 recovery, and active acceleration source where available.

@@ -18,7 +18,7 @@
  * when pointing at a LIVE datadir you must not contend with — accepting that
  * recent WAL-only commits are invisible.
  *
- * This is the offline counterpart to the node's own zcl_state introspection:
+ * This is the offline counterpart to `zclassic23 dumpstate` introspection:
  * use it precisely in the kill-9 window when no node is running to ask.
  *
  * Usage:  build/bin/p2_invariant_check <datadir-or-progress.kv> [--immutable] [--quiet]

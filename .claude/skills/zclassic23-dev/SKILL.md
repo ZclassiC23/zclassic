@@ -7,7 +7,7 @@ description: Use when developing on the ZClassic23 codebase (this repo) — onbo
 
 ZClassic23 is one ~15 MB C23 binary that is a full ZClassic node (Equihash 200,9 PoW,
 Sapling shielded txs) plus wallet, explorer, embedded Tor, and more. Its native
-command registry is replacing the legacy MCP server. It must stay **bit-for-bit
+command registry is the sole agent interface. It must stay **bit-for-bit
 consensus-compatible with `zclassicd`**.
 
 The codebase looks big; the idea underneath is small. This skill is the compressed
@@ -42,7 +42,7 @@ The platform exists so you **drop in C and let the machine classify, build, and 
    The Make/dev-loop control plane captures one exact source record and reuses it across nested Makes. Exact single-profile goals load only their depfiles; mixed, unknown, and default goals load every profile. Use `make ff`, `make t-fast ONLY=<group>`, and `make fast-compile` for iteration, then run the strict gates below. Full-suite success is summary-only; focused runs and failures retain diagnostics, and `--verbose` requests the transcript. **Never fabricate or manually pass `BUILD_SOURCE_RECORD` / `ZCL_FAST_BUILD_SOURCE_RECORD`**—the parent Make or watcher owns capture, and every artifact session verifies it.
 
    The watcher coalesces only an exact, deterministic compiler diagnostic. Source bytes, ABA mutation token, execution/toolchain epoch, flags, and phase must all match; any change forces execution. Tests, lint, timeouts, signals, locks, infrastructure failures, and malformed receipts always execute. The current cycle verdict's `failure_id` is authoritative; `dev.diagnose.latest` is only the most recently recorded compiler failure and can be stale after an edit or green cycle. Inspect the returned ID with `zclassic23-dev dev diagnose show <failure_id>`; use `--view=full` only for the bounded capsule. `zclassic23-dev dev ff` deliberately reruns the current checkout without coalescing—it is not historical replay. Cycle and failure state are worktree-scoped and SHA3-sealed. Never edit or delete their files to influence a verdict.
-3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `dumpstate <subsystem>` (= old `zcl_state`), `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the ONLY agent interface going forward (zero-MCP; MCP is deleted in W3).
+3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `ops state --subsystem=<name>`, `ops logs`, `core storage query`, `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the only agent interface.
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
 6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
@@ -68,8 +68,9 @@ Every `.c` under `app/` is exactly one shape (lint-enforced). Open the folder, k
 cursor-stamped, advance-or-block), `supervisors/` (liveness trees), `conditions/`
 (`{detect,remedy,witness}` healers), `events/` (reserved-empty), `views/` (explorer templates).
 Pure consensus core: `domain/` (no clock/RNG/IO). Primitives: `lib/`. Hexagonal write seam:
-`ports/` + `adapters/`. Boot: `config/src/`. Tooling/MCP/lint: `tools/`. Full map + "how to add a
-model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.md`.
+`ports/` + `adapters/`. Boot: `config/src/`. Command tooling and lint: `tools/`.
+Full map + "how to add a model / healer / native command / reducer stage /
+lint gate" is in `docs/CODEBASE_MAP.md`.
 
 ## The inviolable rules (violating these causes real damage)
 
@@ -83,11 +84,11 @@ model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.
    green is a regression floor, not a liveness proof.
 3. **Every write goes through the AR lifecycle** (`AR_BEGIN_SAVE`/`AR_FINISH_SAVE` or `AR_ADHOC_SAVE`).
    Raw `sqlite3_step()` in app code is lint-rejected. **Every malloc** uses `zcl_malloc(size,"label")`.
-   **Every error return logs context** (`LOG_FAIL`/`LOG_ERR`/`LOG_NULL`). **Every MCP handler sets an
-   error body** — never a bare `return -1`. `make lint` enforces these.
+   **Every error return logs context** (`LOG_FAIL`/`LOG_ERR`/`LOG_NULL`). **Every native command
+   handler sets an error body** — never a bare `return -1`. `make lint` enforces these.
 4. **Less is more.** Prefer deleting/unifying over adding. A new abstraction is a last resort.
 5. **Profile-first for performance.** No unmeasured perf claims. Don't optimize cold paths. Use
-   `zcl_profile` / `zcl_benchmark` / the measured bottleneck docs.
+   `zclassic23 ops debug profile` / `zclassic23 core mining benchmark` / the measured bottleneck docs.
 6. **Status reporting is plain and technical** — exact height/table/function/file:line. No metaphor.
 
 ## Before you change anything
@@ -95,7 +96,8 @@ model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.
 1. Detect your worktree: `pwd` (`main` = orchestrator; `~/github/zclassic23-2` = wt2; `~/github/zclassic23-3` = wt3).
 2. Read `docs/HANDOFF.md` (live state) and skim `docs/AGENT_TRAPS.md` (don't re-chase a fixed thing or
    re-propose a shipped optimization or "fix" an intentional parity decision).
-3. Check the live node before trusting any doc: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
+3. Check the live node before trusting any doc: `zclassic23 status`, then
+   `zclassic23 dumpstate reducer_frontier`.
    A doc can be stale; the node cannot.
 
 ## Build / test / deploy
@@ -111,17 +113,14 @@ model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.
   (a stale binary was a real multi-day outage) and verifies `build_commit`.
 - Gate every change: `make` + `make lint` + `make test-parallel` (read the `N passed, M failed` line).
 
-## The agent surface — native command registry (MCP is being removed)
+## The agent surface — native command registry
 
 The interface is the native registry: `zclassic23 <path>` under `core.*` / `app.*` / `ops.*` / `dev.*` /
 `discover.*`. Start with `zclassic23 status`. Three diagnostic primitives cover most questions:
-`dumpstate <subsystem>` (generic state dump — ~56 subsystems incl. the 8 stage names + `blocker`,
-`reducer_frontier`, `condition_engine`), the node-log tail, and SELECT-only SQL. Discover everything with
+`ops state --subsystem=<name>` (generic state dump — ~56 subsystems incl. the 8 stage names + `blocker`,
+`reducer_frontier`, `condition_engine`), `ops logs`, and `core storage query` for SELECT-only SQL. Discover everything with
 `discover help` / `discover search <q>`. Add introspection by registering one `*_dump_state_json` in
-`app/controllers/src/diagnostics_registry.c` — no new command needed. The `mcp__zcl23-*` tools and
-`zclassic23 mcpcall <tool>` are the **legacy** MCP surface (`zcl_status`, `zcl_state`, `zcl_rpc`, …),
-still live until zero-MCP **W3** deletes `tools/mcp/**` — prefer native. When using MCP: `mcp__zcl23-dev__*`
-hit the DEV node, `mcp__zcl23-live__*` hit LIVE — confirm the target.
+`app/controllers/src/diagnostics_registry.c` — no new command needed.
 
 ## Hosting & recovering the clearnet block explorer
 
@@ -134,7 +133,7 @@ silently take a public explorer (e.g. `https://zclnet.net/`) down:
    `HTTPS: no cert … not on clearnet`. The certbot deploy-hook
    (`/etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh`) refreshes them **only
    on renewal**, so a datadir rebuild/re-seed between renewals drops the cert until restored.
-   Diagnose: `zcl_state subsystem=explorer` (one call: https_started, cert_present, onion);
+   Diagnose: `zclassic23 dumpstate explorer` (one call: https_started, cert_present, onion);
    or by hand `ss -ltn | grep 8443` + `grep -aE 'HTTPS|cert' <datadir>/node.log`. Public 443
    reaches 8443 via the capped linger forwarder `~/.local/bin/zcl-portfwd` (one-time
    `setcap`, managed with `systemctl --user`, never sudo). Recover (no sudo): copy a valid

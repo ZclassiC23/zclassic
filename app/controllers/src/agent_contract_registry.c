@@ -9,12 +9,11 @@
 #include <string.h>
 
 static const struct agent_contract g_agent_contracts[] = {
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest,          \
-                       api_cli_field, api_mcp_field, ops_surface, ops_rank,   \
-                       ops_name, ops_purpose, purpose)                        \
-    { method, capability, schema, native, mcp, rest,                           \
-      api_cli_field, api_mcp_field, ops_surface, ops_rank, ops_name,          \
-      ops_purpose, purpose },
+#define AGENT_CONTRACT(method, capability, schema, native, rest,              \
+                       api_cli_field, ops_surface, ops_rank, ops_name,        \
+                       ops_purpose, purpose)                                  \
+    { method, capability, schema, native, rest, api_cli_field, ops_surface,   \
+      ops_rank, ops_name, ops_purpose, purpose },
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };
@@ -28,7 +27,6 @@ struct agent_contract_command_surface {
     const char *name;
     const char *method;
     const char *native_override;
-    const char *mcp_override;
     const char *purpose_override;
 };
 
@@ -45,18 +43,17 @@ struct agent_contract_field_surface {
     const char *surface;
     int rank;
     const char *native_key;
-    const char *mcp_key;
     const char *method;
 };
 
 #define CONTRACT_COMMAND(surface, rank, name, method, purpose)               \
-    { surface, rank, name, method, "", "", purpose }
-#define DIRECT_COMMAND(surface, rank, name, native, mcp, purpose)            \
-    { surface, rank, name, "", native, mcp, purpose }
+    { surface, rank, name, method, "", purpose }
+#define DIRECT_COMMAND(surface, rank, name, native, purpose)                 \
+    { surface, rank, name, "", native, purpose }
 
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
     DIRECT_COMMAND("agentmap.commands.core", 1, "compact_status",
-      "zclassic23 status", "",
+      "zclassic23 status",
       "canonical terse zcl.core_status_brief.v1 first check"),
     CONTRACT_COMMAND("agentmap.commands.core", 2, "map", "agentmap",
       "where code, docs, and tests live"),
@@ -81,10 +78,10 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.core", 12, "deploy_guard", "agentdeployguard",
       "C-native deploy/restart allow-refuse decision"),
     DIRECT_COMMAND("agentmap.commands.core", 13, "full_compatibility_status",
-      "zclassic23 agent", "zcl_agent",
-      "full zcl.public_status.v1 compatibility view during W2/W3 migration"),
+      "zclassic23 agent",
+      "full zcl.public_status.v2 compatibility view"),
     DIRECT_COMMAND("agentmap.commands.core", 14, "background_quality",
-      "make quality-linger-status", "zcl_agent_build",
+      "make quality-linger-status",
       "latest background fuzz/coverage lane verdicts"),
 
     CONTRACT_COMMAND("agentmap.commands.drilldown", 1, "health", "healthcheck",
@@ -96,15 +93,15 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.drilldown", 4, "state", "dumpstate",
       "generic subsystem diagnostics"),
     CONTRACT_COMMAND("agentmap.commands.drilldown", 5, "state_catalog", "statecatalog",
-      "zcl_state subsystem catalog"),
+      "diagnostics subsystem catalog"),
     CONTRACT_COMMAND("agentmap.commands.drilldown", 6, "peer_incidents",
       "peerincidents", "bounded peer reconnect and duplicate-host incidents"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
-      "zclassic23 status", "",
+      "zclassic23 status",
       "stable terse first-call status, blocker, and next action"),
     DIRECT_COMMAND("agentmap.telemetry", 2, "full_status",
-      "zclassic23 healthcheck", "zcl_status",
+      "zclassic23 healthcheck",
       "wide health packet with peers, sync, chain, validation, and memory"),
     CONTRACT_COMMAND("agentmap.telemetry", 3, "subsystem_state", "dumpstate",
       "semantic subsystem internals through diagnostics registry"),
@@ -125,7 +122,7 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.telemetry", 11, "events", "eventlog",
       "recent structured node events"),
     DIRECT_COMMAND("agentmap.telemetry", 12, "quality_lanes",
-      "make quality-linger-status", "zcl_agent_build",
+      "make quality-linger-status",
       "background tests/fuzz/coverage verdicts"),
 };
 #undef DIRECT_COMMAND
@@ -134,38 +131,37 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
 static const size_t g_agent_command_surface_count =
     sizeof(g_agent_command_surfaces) / sizeof(g_agent_command_surfaces[0]);
 
-#define FIELD_BINDING(surface, rank, native_key, mcp_key, method)            \
-    { surface, rank, native_key, mcp_key, method }
+#define FIELD_BINDING(surface, rank, native_key, method)                     \
+    { surface, rank, native_key, method }
 
 static const struct agent_contract_field_surface g_agent_field_surfaces[] = {
-    FIELD_BINDING("agentops.first_call", 1, "native_command", "mcp_tool",
-                  "agentops"),
+    FIELD_BINDING("agentops.first_call", 1, "native_command", "agentops"),
     FIELD_BINDING("agentops.first_call", 2, "live_status_command",
-                  "live_status_tool", "agent"),
+                  "agent"),
     FIELD_BINDING("agentops.first_call", 3, "liveness_command",
-                  "liveness_tool", "agentliveness"),
+                  "agentliveness"),
     FIELD_BINDING("agentops.first_call", 4, "diagnose_command",
-                  "diagnose_tool", "agentdiagnose"),
+                  "agentdiagnose"),
     FIELD_BINDING("agentops.first_call", 5, "diagnostics_catalog_command",
-                  "diagnostics_catalog_tool", "statecatalog"),
+                  "statecatalog"),
     FIELD_BINDING("agentops.first_call", 6, "diagnostics_drilldown_command",
-                  "diagnostics_drilldown_tool", "dumpstate"),
+                  "dumpstate"),
     FIELD_BINDING("agentops.first_call", 7, "timeline_command",
-                  "timeline_tool", "timeline"),
-    FIELD_BINDING("agentops.first_call", 8, "anchor_status_command", "",
+                  "timeline"),
+    FIELD_BINDING("agentops.first_call", 8, "anchor_status_command",
                   "anchorstatus"),
     FIELD_BINDING("agentops.first_call", 9, "proof_bundle_command",
-                  "proof_bundle_tool", "proofbundle"),
+                  "proofbundle"),
     FIELD_BINDING("agentops.first_call", 10, "peer_incidents_command",
-                  "peer_incidents_tool", "peerincidents"),
+                  "peerincidents"),
     FIELD_BINDING("agentops.first_call", 11, "service_catalog_command",
-                  "service_catalog_tool", "servicecatalog"),
+                  "servicecatalog"),
     FIELD_BINDING("agentops.first_call", 12, "service_operations_command",
-                  "service_operations_tool", "serviceoperations"),
+                  "serviceoperations"),
     FIELD_BINDING("agentops.first_call", 13, "dev_status_command",
-                  "dev_status_tool", "agentdevstatus"),
+                  "agentdevstatus"),
     FIELD_BINDING("agentops.first_call", 14, "deploy_guard_command",
-                  "deploy_guard_tool", "agentdeployguard"),
+                  "agentdeployguard"),
 };
 
 #undef FIELD_BINDING
@@ -177,20 +173,20 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
     { "agentops.api_gaps", 1, "runtime_identity_everywhere",
       "Agents must know whether a payload came from source HEAD, dev, soak, or canonical.",
       "add build/lane identity to every first-call compact response",
-      "syncdiag_rpc + mcp_controllers + api" },
+      "syncdiag_rpc + native commands + api" },
     { "agentops.api_gaps", 2, "state_catalog_schema",
       "The first catalog now exists; next it should be kept rich enough for automated routing.",
       "extend catalog metadata as new dumpers need cost, freshness, key, and owner hints",
-      "statecatalog RPC + MCP catalog tests" },
+      "statecatalog RPC + native catalog tests" },
     { "agentops.api_gaps", 3, "timeline_query",
       "Agents still stitch together logs, SQL, events, and condition detail to answer what happened.",
-      "ship and extend zcl.timeline.v1 before adding more bespoke log readers",
-      "event + mcp_controllers + syncdiag_rpc" },
+      "ship and extend zcl.timeline.v2 before adding more bespoke log readers",
+      "event + native commands + syncdiag_rpc" },
 
     { "agentops.workflow", 1, "first_call",
       "Agents should start from the compact operator contract instead of browsing the full API catalog.",
-      "zclassic23 status; then zclassic23 agentops (MCP zcl_agent_ops is transitional)",
-      "zcl.agent_ops.v1 no_jq_required=true" },
+      "zclassic23 status; then zclassic23 agentops",
+      "zcl.agent_ops.v2 no_jq_required=true" },
     { "agentops.workflow", 2, "decide_lane_and_safety",
       "The same source tree can talk to canonical, soak, dev, and fixture lanes; restarts and deploys need lane context first.",
       "read current_runtime_lane, runtime_build, runtime_availability, dev_status_command, and deploy_guard_command",
@@ -206,7 +202,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
     { "agentops.workflow", 5, "drill_down_only_when_needed",
       "Most one-off diagnostics should use primitive state/log/SQL/timeline tools before adding bespoke API routes.",
       "zclassic23 dumpstate, getnodelog, dbquery, timeline, and statecatalog",
-      "diagnostics registry + zcl.timeline.v1" },
+      "diagnostics registry + zcl.timeline.v2" },
 
     { "agentops.top_next_work", 1,
       "finish_self_verified_utxo_anchor_rebuild",
@@ -223,8 +219,8 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
       "mvp-verify + soak-evidence + parity service" },
     { "agentops.top_next_work", 4, "extend_semantic_timeline_durability",
       "The event-ring timeline is semantic now; longer root-cause windows need durable event_log/node.log references.",
-      "extend zcl.timeline.v1 toward durable event_log/node.log references",
-      "event + mcp_controllers + syncdiag_rpc" },
+      "extend zcl.timeline.v2 toward durable event_log/node.log references",
+      "event + native commands + syncdiag_rpc" },
     { "agentops.top_next_work", 5, "shrink_boot_refold_supervised_units",
       "The largest code-health risk is still oversized boot/refold orchestration that future agents must understand before changing liveness.",
       "split one behavior-preserving boot/refold responsibility behind existing supervisor contracts",
@@ -348,10 +344,8 @@ bool agent_push_contract_json(struct json_value *arr,
     json_push_kv_str(&obj, "capability", contract->capability);
     json_push_kv_str(&obj, "schema", contract->schema);
     json_push_kv_str(&obj, "native", contract->native_command);
-    json_push_kv_str(&obj, "mcp", contract->mcp_tool);
     json_push_kv_str(&obj, "rest", contract->rest_route);
     json_push_kv_str(&obj, "api_cli_field", contract->api_cli_field);
-    json_push_kv_str(&obj, "api_mcp_field", contract->api_mcp_field);
     json_push_kv_str(&obj, "ops_surface", contract->ops_surface);
     json_push_kv_int(&obj, "ops_rank", contract->ops_rank);
     json_push_kv_str(&obj, "ops_name", contract->ops_name);
@@ -379,14 +373,11 @@ void agent_push_contract_summary_json(struct json_value *out,
         return;
 
     size_t native_count = 0;
-    size_t mcp_count = 0;
     size_t rest_count = 0;
     for (size_t i = 0; i < g_agent_contract_count; i++) {
         const struct agent_contract *c = &g_agent_contracts[i];
         if (c->native_command && c->native_command[0])
             native_count++;
-        if (c->mcp_tool && c->mcp_tool[0])
-            mcp_count++;
         if (c->rest_route && c->rest_route[0])
             rest_count++;
     }
@@ -398,7 +389,6 @@ void agent_push_contract_summary_json(struct json_value *out,
                      (int64_t)g_agent_contract_count);
     json_push_kv_int(&obj, "native_declared_count",
                      (int64_t)native_count);
-    json_push_kv_int(&obj, "mcp_declared_count", (int64_t)mcp_count);
     json_push_kv_int(&obj, "rest_declared_count", (int64_t)rest_count);
     json_push_kv_int(&obj, "command_surface_count",
                      (int64_t)g_agent_command_surface_count);
@@ -416,9 +406,6 @@ void agent_push_contract_summary_json(struct json_value *out,
                      "agent_contract_review_registry.c");
     json_push_kv_str(&obj, "schema_registry_source",
                      "agent_contract_schema_registry.c");
-    json_push_kv_str(
-        &obj, "mcp_binding_contract",
-        "every non-empty mcp contract must resolve in zcl_tools_list");
     json_push_kv(out, key, &obj);
     json_free(&obj);
 }
@@ -481,7 +468,6 @@ static bool agent_push_command_surface_entry_json(
     json_set_object(&obj);
     json_push_kv_str(&obj, "name", e->name);
     json_push_kv_str(&obj, "native", e->native_override);
-    json_push_kv_str(&obj, "mcp", e->mcp_override);
     json_push_kv_str(&obj, "purpose", e->purpose_override);
     json_push_back(arr, &obj);
     json_free(&obj);
@@ -547,12 +533,6 @@ static size_t agent_push_field_surface_entry_json(
         !json_get(obj, e->native_key) &&
         c->native_command && c->native_command[0]) {
         json_push_kv_str(obj, e->native_key, c->native_command);
-        pushed++;
-    }
-    if (e->mcp_key && e->mcp_key[0] &&
-        !json_get(obj, e->mcp_key) &&
-        c->mcp_tool && c->mcp_tool[0]) {
-        json_push_kv_str(obj, e->mcp_key, c->mcp_tool);
         pushed++;
     }
     return pushed;
@@ -669,7 +649,6 @@ bool agent_push_contract_command_json(struct json_value *arr,
     json_push_kv_str(&obj, "method", c->method);
     json_push_kv_str(&obj, "schema", c->schema);
     json_push_kv_str(&obj, "native", c->native_command);
-    json_push_kv_str(&obj, "mcp", c->mcp_tool);
     const char *command_purpose =
         purpose_override && purpose_override[0]
             ? purpose_override : c->ops_purpose;
@@ -691,16 +670,6 @@ bool agent_push_contract_native_field_json(struct json_value *obj,
     return json_push_kv_str(obj, key, c->native_command);
 }
 
-bool agent_push_contract_mcp_field_json(struct json_value *obj,
-                                        const char *key,
-                                        const char *method)
-{
-    const struct agent_contract *c = agent_contract_lookup(method);
-    if (!obj || !key || !c)
-        return false;
-    return json_push_kv_str(obj, key, c->mcp_tool);
-}
-
 size_t agent_push_contract_identity_fields_json(struct json_value *obj,
                                                 const char *method)
 {
@@ -719,9 +688,6 @@ size_t agent_push_contract_identity_fields_json(struct json_value *obj,
         c->native_command[0] &&
         json_push_kv_str(obj, "native_command", c->native_command))
         pushed++;
-    if (!json_get(obj, "mcp_tool") && c->mcp_tool && c->mcp_tool[0] &&
-        json_push_kv_str(obj, "mcp_tool", c->mcp_tool))
-        pushed++;
     if (!json_get(obj, "contract_source") &&
         json_push_kv_str(obj, "contract_source", "agent_contracts.def"))
         pushed++;
@@ -738,16 +704,6 @@ bool agent_push_contract_native_command_json(struct json_value *arr,
     return true;
 }
 
-bool agent_push_contract_mcp_tool_json(struct json_value *arr,
-                                       const char *method)
-{
-    const struct agent_contract *c = agent_contract_lookup(method);
-    if (!arr || !c || !c->mcp_tool || !c->mcp_tool[0])
-        return false;
-    agent_push_str(arr, c->mcp_tool);
-    return true;
-}
-
 void agent_push_contract_api_cli_fields_json(struct json_value *obj)
 {
     if (!obj)
@@ -757,17 +713,5 @@ void agent_push_contract_api_cli_fields_json(struct json_value *obj)
         if (!c->api_cli_field || !c->api_cli_field[0])
             continue;
         json_push_kv_str(obj, c->api_cli_field, c->native_command);
-    }
-}
-
-void agent_push_contract_api_mcp_fields_json(struct json_value *obj)
-{
-    if (!obj)
-        return;
-    for (size_t i = 0; i < g_agent_contract_count; i++) {
-        const struct agent_contract *c = &g_agent_contracts[i];
-        if (!c->api_mcp_field || !c->api_mcp_field[0])
-            continue;
-        json_push_kv_str(obj, c->api_mcp_field, c->mcp_tool);
     }
 }

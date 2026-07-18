@@ -80,7 +80,7 @@ void ap_audit_register(void);
 /* Reset all counters/streak/latched blocker — test-only fixture reset. */
 void ap_audit_reset_for_test(void);
 
-/* zcl_state subsystem=authority_projection. See CLAUDE.md "Adding state
+/* `zclassic23 dumpstate authority_projection`. See the "Adding state
  * introspection". Reentrant-safe. */
 struct json_value;
 bool ap_audit_dump_state_json(struct json_value *out, const char *key);

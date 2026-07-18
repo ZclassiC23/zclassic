@@ -379,7 +379,7 @@ int test_nullifier_backfill_service(void)
     NB_CHECK("resume setup cursor marker",
              nbf_seed_marker(db, NULLIFIER_BACKFILL_RESUME_KEY, "2"));
 
-    /* dump_state_json (zcl_state subsystem=nullifier_backfill) while the
+    /* dump_state_json (`zclassic23 dumpstate nullifier_backfill`) while the
      * two durable markers are seeded mid-run: status must read
      * "in_progress" (resume_cursor 2 < activation_cursor 3). */
     {

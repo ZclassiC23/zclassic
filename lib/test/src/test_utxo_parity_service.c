@@ -353,7 +353,7 @@ static int case_dormant(void)
     return failures;
 }
 
-/* Read one int field out of the parity service state dump (zcl_state surface).
+/* Read one int field out of the parity service's native dumpstate output.
  * Returns -1 if absent. */
 static int64_t parity_dump_int(const char *field)
 {

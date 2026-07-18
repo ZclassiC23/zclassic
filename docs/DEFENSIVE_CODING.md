@@ -137,7 +137,7 @@ and `vendor/`. Files needing raw alloc add `// raw-alloc-ok` on the line.
 macros (each logs `error` with `file`/`line`/`func` + varargs):
 
 - `LOG_FAIL(domain, fmt, ...)` — log + `return false`.
-- `LOG_ERR(domain, fmt, ...)` — log + `return -1` (for MCP handlers).
+- `LOG_ERR(domain, fmt, ...)` — log + `return -1` (for command handlers).
 - `LOG_RETURN(val, domain, fmt, ...)` — log + `return (val)`.
 
 **CI lint:** the shape-tier `check-silent-errors-*` gates grep `app/` for
@@ -168,9 +168,8 @@ preceding log (`LOG_ERR`, `LOG_FAIL`, `LOG_RETURN`, or `log_json` at error
 level) — a bare `printf`/`LOG_WARN` no longer satisfies the pairing, so a
 silent failure can never masquerade as handled by a warn-level breadcrumb.
 
-A future `mcp_fail(res, code, fmt, ...)` helper could enforce `res->body` is
-populated on every error path by return-type discipline, but that is optional
-polish — the lint already prevents the silent-fail class entirely.
+The command response helpers enforce that `res->body` is populated on every
+error path; the lint also prevents the silent-fail class entirely.
 
 ---
 
@@ -202,7 +201,7 @@ validation, unpaired stderr diagnostics, a critical model missing its
 before_save hook, a model file with no `validates_*` call and no
 `ar-validate-skip:<tag>` marker, a model save that hand-runs
 `ar_run_before_save()` / `ar_run_after_save()` instead of the AR lifecycle
-macros, or a controller/service/mcp-bridge/config-src function over 500 lines
+macros, or a controller/service/config-src function over 500 lines
 without a `long-function-ok:<tag>` override, gets a red build before any
 human sees it.
 
@@ -255,9 +254,8 @@ assert green).
 - **Gate #12: `check-long-functions`** — flags any top-level function whose
   body spans >500 lines. Two tiers, same split as Gate E1
   (`check-file-size-ceiling`): ENFORCED (HARD, fails the build) covers
-  `app/controllers/src/*.c`, `app/services/src/*.c`,
-  `tools/mcp/controllers/*.c` (legacy MCP bridge, deleted in W3), and
-  `config/src/*.c`, ratchet-baselined at
+  `app/controllers/src/*.c`, `app/services/src/*.c`, and `config/src/*.c`,
+  ratchet-baselined at
   `tools/scripts/check_long_functions_baseline.txt` for grandfathered
   offenders (e.g. `config/src/boot.c`'s `app_init`); WARN (prints, never
   fails) covers `lib/**/*.c` excl. `lib/test/`, baselined at
@@ -391,8 +389,7 @@ assert green).
 
 - **Gate #20: `check-no-raw-sqlite-in-controllers`** (RATCHET, was WARN) —
   `tools/lint/check_no_raw_sqlite_in_controllers.sh`. Bans
-  `sqlite3_prepare_v2(` / `sqlite3_exec(` in `app/controllers/` and
-  `tools/mcp/controllers/`. Baseline
+  `sqlite3_prepare_v2(` / `sqlite3_exec(` in `app/controllers/`. Baseline
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` (may only shrink). Fix:
   move reads behind projections/models, writes through the AR lifecycle.
   Override `// raw-controller-sql-ok`.
@@ -547,6 +544,7 @@ add/remove a gate.
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
+- `check-no-retired-agent-protocol`
 - `check-no-stale-pinned-facts`
 - `check-route-command-parity`
 - `check-no-orphan-placement`
@@ -602,6 +600,9 @@ add/remove a gate.
 `check-stage-advances-or-blocks` appear in the canonical block and run in `make
 lint`; they are documented in their own docs rather than expanded here.)
 
+`check-no-retired-agent-protocol` rejects the retired agent-transport token in
+tracked paths and filenames while explicitly allowing ordinary `memcpy` usage.
+
 ---
 
 ## 8. Lint-override discipline — every escape hatch is named
@@ -615,7 +616,7 @@ mechanically hold:
 | `// raw-sql-ok:<tag>` | line with `sqlite3_step(…)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
 | `// raw-return-ok:<tag>` | bare `return -1;` in service/controller code with no preceding log line | `check-silent-errors-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
-| `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/mcp-bridge/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
+| `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |

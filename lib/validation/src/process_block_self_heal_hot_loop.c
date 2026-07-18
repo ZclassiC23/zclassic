@@ -64,7 +64,7 @@ void process_block_maybe_trigger_hot_loop_exit(int height,
             "and did NOT heal the UTXO set. NOT "
             "auto-restarting (would bootloop). "
             "Operator intervention required — "
-            "inspect `zcl_events`, `node.log`, "
+            "inspect `zclassic23 ops timeline`, `zclassic23 getnodelog`, "
             "and consider rolling the tip back "
             "to before the missing-input height "
             "and resyncing from P2P.\n",

@@ -49,7 +49,7 @@
 #include <time.h>
 
 #define STAGE_NAME "proof_validate"
-/* Log helpers live in proof_validate_log_store.c; the zcl_state JSON dump
+/* Log helpers live in proof_validate_log_store.c; the dump-state JSON view
  * lives in proof_validate_stage_dump.c. The block-level proof verification
  * (built-in verifier + serial reference + pool-parallel sweep, and the shared
  * struct proof_verify_summary) lives in proof_validate_verify.c — this file

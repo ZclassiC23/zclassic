@@ -86,7 +86,7 @@ int rolling_anchor_effective_prefix_end(void);
 struct zcl_result rolling_anchor_window_hash_ending_at(int32_t end_h,
                                                         uint8_t out[32]);
 
-/* zcl_state subsystem=rolling_anchor entry. */
+/* `zclassic23 dumpstate rolling_anchor` entry. */
 bool rolling_anchor_dump_state_json(struct json_value *out,
                                      const char *key);
 

@@ -36,7 +36,7 @@ static bool status_schema_is(const struct json_value *obj,
     return schema && expected && strcmp(schema, expected) == 0;
 }
 
-/* zcl.public_status.v1 carries a numeric sentinel beside an explicit
+/* zcl.public_status.v2 carries a numeric sentinel beside an explicit
  * `<field>_known` bit.  The bit is authoritative: an unavailable height is a
  * valid status fact and projects as null, while `known=true` with a negative
  * sentinel is malformed source/runtime skew. */
@@ -95,11 +95,11 @@ static bool status_machine_token(const char *value)
 
 /* ── Named-predicate validation ────────────────────────────────────
  *
- * zcl.public_status.v1 is validated by a long ordered list of
+ * zcl.public_status.v2 is validated by a long ordered list of
  * predicates. Historically these lived in one giant `&&` chain, so
  * whichever predicate failed, the operator/AI only ever saw one
  * opaque message ("RPC agent returned an error or invalid
- * zcl.public_status.v1") with no clue which field was the problem —
+ * zcl.public_status.v2") with no clue which field was the problem —
  * including the common case of an older node binary whose `agent` RPC
  * predates a field the CLI now requires.
  *
@@ -148,7 +148,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     if (!err)
         LOG_NULL("native.status", "status brief missing error sink");
 
-    char *raw = mcp_node_rpc("agent", NULL);
+    char *raw = node_rpc_call("agent", NULL);
     struct json_value agent;
     json_init(&agent);
     bool parsed = status_parse_rpc_json(&agent, raw, JSON_OBJ);
@@ -188,7 +188,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     struct status_validate v = {0};
     bool valid = parsed &&
         SCHECK(&v, "schema", status_key_missing(&agent, "schema"),
-              status_schema_is(&agent, "zcl.public_status.v1")) &&
+              status_schema_is(&agent, "zcl.public_status.v2")) &&
         SCHECK(&v, "served_height_known",
               status_key_missing(&agent, "served_height") ||
                   status_key_missing(&agent, "served_height_known"),
@@ -238,7 +238,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         SCHECK(&v, "conditions.schema",
               status_key_missing(conditions, "schema"),
               status_schema_is(conditions,
-                               "zcl.condition_engine_summary.v1")) &&
+                               "zcl.condition_engine_summary.v2")) &&
         SCHECK(&v, "reducer", status_key_missing(&agent, "reducer"),
               reducer && reducer->type == JSON_OBJ) &&
         SCHECK(&v, "security_posture",
@@ -320,15 +320,15 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         if (!parsed) {
             (void)snprintf(err->message, sizeof(err->message),
                           "RPC agent returned an error or invalid "
-                          "zcl.public_status.v1 (unparsable JSON response)");
+                          "zcl.public_status.v2 (unparsable JSON response)");
         } else if (v.version_skew) {
             (void)snprintf(err->message, sizeof(err->message),
-                          "invalid zcl.public_status.v1: node binary "
+                          "invalid zcl.public_status.v2: node binary "
                           "predates the CLI contract (missing field %s)",
                           v.field);
         } else {
             (void)snprintf(err->message, sizeof(err->message),
-                          "invalid zcl.public_status.v1: missing/invalid "
+                          "invalid zcl.public_status.v2: missing/invalid "
                           "field %s", v.field);
         }
         LOG_NULL("native.status", "%s", err->message);
@@ -372,7 +372,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         err->status = ZCL_NATIVE_BODY_INTERNAL;
         snprintf(err->message, sizeof(err->message),
                  "malloc failed for %s", "status brief response");
-        LOG_NULL("mcp.ops", "malloc failed for %s", "status brief response");
+        LOG_NULL("native.ops", "malloc failed for %s", "status brief response");
     }
     return out;
 }

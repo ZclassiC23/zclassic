@@ -132,7 +132,7 @@ static bool save_projection_block(struct live_fixture *f, int idx)
  * live tuple can therefore be active=N, sqlite=N-k, persisted=sqlite-1.  That
  * one-row durable skew is not a fork/hash contradiction; a two-row skew is.
  * This pins the exact production tuple that made full REST health red while
- * bounded MCP health correctly recognized a current reducer frontier. */
+ * bounded native health correctly recognized a current reducer frontier. */
 static int test_durable_frontier_one_row_skew_is_not_hash_mismatch(void)
 {
     int failures = 0;

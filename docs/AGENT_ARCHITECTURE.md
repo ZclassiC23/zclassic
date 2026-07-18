@@ -80,8 +80,8 @@ Build each feature in this order.
    `zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
    `zclassic23 discover help` / `discover search <q>`, and
    `zclassic23-dev status` for the installed dev lane. The agent contract still
-   carries mcp/mcp_tool taxonomy metadata (the tool-name a command maps to),
-   but the legacy MCP stdio server and its typed one-shots have been removed.
+   carries the native command path and schema metadata used by discovery and
+   typed invocation.
    Do not add separate helper binaries. Before restarting or hot-swapping the
    dev lane, run `make agent-dev-status` or native `zclassic23 agentdevstatus`
    and use its next-action hint.

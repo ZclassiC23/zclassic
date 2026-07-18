@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * One typed, read-only chain-frontier contract shared by native RPC, MCP and
- * the compact agent surface.  Collection never invents a target from peers:
+ * One typed, read-only chain-frontier contract shared by RPC, native commands,
+ * and the compact agent surface. Collection never invents a target from peers:
  * served H*, raw indexed window, and locally validated header stay distinct. */
 
 #ifndef ZCL_SERVICES_CHAIN_FRONTIER_SNAPSHOT_SERVICE_H

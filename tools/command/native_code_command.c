@@ -6,7 +6,7 @@
  * stale), runs one query, and renders exactly one bounded JSON document within
  * ZCL_COMMAND_RESULT_BUDGET: a structured array plus compact human one-liners.
  *
- * Local, read-only, deterministic. Never bound to RPC/REST/MCP (native
+ * Local, read-only, deterministic. Never bound to RPC or REST (native
  * transport only). The source of truth is IN-TREE SOURCE SCANNING, so these
  * answer "where is X / what calls X / what's in this file" without spending
  * tokens reading whole files.

@@ -342,7 +342,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_sync_service.c", "sync_service")
 /* Wave 3 (2026-07-10): sapling anchor-frontier cure condition. */
 AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/conditions/include/conditions/sapling_anchor_frontier_unavailable.h", "sapling_anchor_frontier_condition condition_engine make_lint_gates")
 
-/* Wave 3: agent test runner (MCP-triggerable focused tests/scenarios). */
+/* Wave 3: agent test runner (native-triggerable focused tests/scenarios). */
 AGENT_IMPACT_RULE("app/controllers/src/agent_test_controller.c|app/controllers/include/controllers/agent_test_controller.h|lib/test/src/test_agent_test.c", "agent_test make_lint_gates")
 
 /* Wave 3: golden UTXO-ladder live tripwire. */
@@ -396,9 +396,8 @@ AGENT_IMPACT_RULE("lib/test/src/test_principal_authz.c", "principal_authz make_l
 AGENT_IMPACT_RULE("lib/test/src/test_auth_login.c", "auth_login make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_command_authority.c", "command_authority make_lint_gates")
 
-/* W0-A (2026-07-11): re-homed transport-neutral handler bodies — the same
- * composition serves the MCP controllers (thin wrappers, byte-identical) and
- * the native command bridge (MCP-free dispatch). */
+/* Transport-neutral handler bodies shared by native command controllers and
+ * the direct command-dispatch bridge. */
 AGENT_IMPACT_RULE("app/controllers/src/*_native_handlers.c|app/controllers/include/controllers/*_native_handlers.h|app/controllers/src/status_native_helpers.c|app/controllers/include/controllers/status_native_helpers.h|app/controllers/include/controllers/native_handler_body.h", "command_registry_catalog syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/vcs/*|lib/test/src/test_vcs_core.c", "vcs_core event_log make_lint_gates")
 
@@ -423,14 +422,14 @@ AGENT_IMPACT_RULE("app/supervisors/src/legacy_mirror_supervisor.c", "supervisor 
 AGENT_IMPACT_RULE("lib/test/src/test_golden_*.c", "golden_revert_roundtrip golden_dev_cycle vcs_core vcs_devloop dev_activation dev_platform make_lint_gates")
 
 /* Instant dev loop Wave 1/2 (2026-07-10): Tier-1 hot-swap surfaces.
- * Wave 3.1 (2026-07-11): the hot-swap-eligible MCP controller TUs — editing
+ * Wave 3.1 (2026-07-11): the hot-swap-eligible native controller TUs — editing
  * one must run the hot-swap groups (a bad edit can break its generation .so
  * build) plus the eligibility-scope/static-state lint gates. */
 AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_loader.c|lib/hotswap/include/hotswap/hotswap.h|tools/scripts/hotswap_demo.sh|tools/lint/check_hotswap_eligible_scope.sh|tools/lint/check_hotswap_static_state.sh|config/hotswap_eligible.def|lib/test/fixtures/hotswap_bad_static_fixture.c|lib/test/fixtures/hotswap_manifest_bad_scope.def|lib/test/fixtures/hotswap_manifest_bad_static.def|lib/test/fixtures/hotswap_manifest_no_macro.def|lib/test/src/test_hotswap_loader.c|lib/test/src/test_hotswap_simnet.c", "hotswap_loader hotswap_simnet make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/*.c|tools/dev/devloop.h|sdk/include/zclassic23/app.h|lib/framework/src/app_platform.c|lib/framework/include/framework/app_platform.h|lib/framework/src/app_definition.c|lib/framework/src/app_catalog.c|lib/framework/include/framework/app_definition.h|lib/sim/src/social_app_sim.c|lib/sim/include/sim/social_app_sim.h|lib/test/src/test_dev_platform.c|apps/*/*", "dev_platform native_api_contract hotswap_simnet vcs_devloop make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers/src/diagnostics_dispatch.c", "hotswap_loader make_lint_gates")
 
-/* Zero-MCP W1-B/C: the native `native.leaves` hot-swap provider driver
+/* Native-leaf hot-swap provider driver
  * (tools/command/native_dev_hotswap.{c,h}) plus its eligibility manifest and
  * the lib/hotswap generation/loader surface it re-targets. A bad edit here
  * can break either the leaf-handler override snapshot proof

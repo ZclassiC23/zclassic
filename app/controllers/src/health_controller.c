@@ -155,7 +155,7 @@ static void push_mirror_sync_fields(struct json_value *result)
                       ms.local_retries_exhausted);
     json_push_kv_int(result, "last_mirror_catchup", ms.last_catchup);
     /* Lag-SLO surfaces — present on both top-level and svc payloads so
-     * MCP callers and alerting tooling can hinge on a single key path. */
+     * native callers and alerting tooling can hinge on a single key path. */
     json_push_kv_int(result, "mirror_lag_sla_breach_blocks",
                      ms.lag_sla_breach_blocks);
     json_push_kv_int(result, "mirror_lag_sla_breach_secs",

@@ -574,9 +574,9 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "agent\n"
         "\nReturn the compact first-check node summary used by REST "
-        "/api/v1/agent and MCP zcl_agent.\n"
+        "/api/v1/agent and the native agent command.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.public_status.v1\", \"status\":\"healthy\", "
+        "  { \"schema\":\"zcl.public_status.v2\", \"status\":\"healthy\", "
         "\"build_commit\":\"...\", \"height\":N, \"gap\":0, "
         "\"primary_blocker\":\"none\" }\n");
     int64_t first_call_started_us = agent_first_call_start_us();
@@ -668,7 +668,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         agent_security_posture_allows_public_serving(&posture);
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.public_status.v1");
+    json_push_kv_str(result, "schema", "zcl.public_status.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "result_completeness", "bounded");
     json_push_kv_bool(result, "partial_result",

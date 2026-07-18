@@ -54,8 +54,8 @@ struct operator_verdict {
     const char *status;
     const char *primary;
     const char *next_action;
-    const char *next_tool;
-    const char *next_tool2;
+    const char *next_command;
+    const char *next_command2;
     bool complete;
     bool healthy;
     bool serving;

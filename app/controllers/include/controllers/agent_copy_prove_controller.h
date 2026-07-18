@@ -8,7 +8,6 @@
  *
  * Poll a run via the diagnostics registry primitive:
  *   zclassic23 dumpstate agent_copy_prove <slug>
- *   MCP zcl_state subsystem=agent_copy_prove key=<slug>
  * See CLAUDE.md "Adding state introspection". Reentrant-safe.
  */
 #ifndef ZCL_CONTROLLERS_AGENT_COPY_PROVE_H
