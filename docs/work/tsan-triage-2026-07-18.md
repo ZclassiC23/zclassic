@@ -65,6 +65,7 @@ follow-ups, not done here.
 
 **1 unique race, fired 3/4 runs** of `test_supervisor_production_tree`
 (also reproduced once under `make tsan-ci`'s halt_on_error=1).
+**FIXED 2026-07-18 — see the R1 entry below.**
 
 ### R1 — `thread_liveness_child.id` published without synchronization (REAL data race, benign-looking on x86-64)
 
@@ -107,23 +108,34 @@ SUMMARY: ThreadSanitizer: data race lib/util/src/thread_liveness.c:167 in thread
   `_Atomic supervisor_child_id`, or publish it under the thread-registry /
   supervisor lock so the store happens-before any worker read. Tracked here
   only; deliberately left failing so the race stays visible.
+- **FIXED (2026-07-18, lane/fix-tsan-r1, commit 02c991bde):** `id` is now
+  `_Atomic supervisor_child_id`. `thread_liveness_register` release-stores it
+  after `supervisor_register()` completes; every reader (beat,
+  worker_alive/_exited, stop_begin/_finish, retire, idempotent guards)
+  acquire-loads it — a worker that observes a valid id also observes the
+  completed registry insertion; one that still reads INVALID skips one beat
+  and self-heals. No locks, no other fields touched. Verified:
+  `make t-tsan ONLY=test_supervisor` 3× → 0 reports (was 3/4 flaky-red);
+  `make tsan-ci` fully green; `build-only` / `lint` / `t-fast` clean.
 
 ## Gating decision
 
 - `tsan-ci` is **opt-in and deliberately NOT wired into `make ci`**: with R1
-  unfixed it goes red by construction (verified: `make tsan-ci` →
-  `Error 1` on `test_supervisor` with the R1 SUMMARY). Posture mirrors
+  unfixed it went red by construction (verified: `make tsan-ci` →
+  `Error 1` on `test_supervisor` with the R1 SUMMARY). **Since the R1 fix
+  (02c991bde) it is green** (verified 2026-07-18 on lane/fix-tsan-r1).
+  Posture mirrors
   asan-ci — `TSAN_OPTIONS=halt_on_error=1` makes the first report a red
-  group, so once the baseline is fixed/suppressed a red run is a real new
+  group, so with the baseline fixed a red run is a real new
   finding. Override the set with `TSAN_CI_GROUPS="..."`.
 - `tools/tsan.supp` ships with **zero active suppressions** (comments only):
-  R1 is documented here and left VISIBLE; no real report is hidden. Only
+  R1 was documented here and fixed in code — no report was ever hidden. Only
   confirmed-benign entries with written justification may be added.
 
 ## Follow-ups (not this lane)
 
-1. Fix R1 (atomic publication of `thread_liveness_child.id`), then re-run
-   `make tsan-ci` to green.
+1. ~~Fix R1 (atomic publication of `thread_liveness_child.id`), then re-run
+   `make tsan-ci` to green.~~ **DONE** (02c991bde, lane/fix-tsan-r1).
 2. Full-suite TSan pass (whole `test_parallel` group list) — the subset
    above is ~23 s of threaded wall; the full suite is the real net.
 3. Boot `dev-tsan` on a scratch datadir and triage boot/sync/runtime races
