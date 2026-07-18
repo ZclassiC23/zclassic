@@ -2614,6 +2614,44 @@ static int import_complete_shielded_mode(int argc, char **argv)
         fprintf(stderr, "cannot open progress.kv in %s\n", target);
         return 1;
     }
+
+    /* Bind-height guard, surfaced on the TERMINAL (the service re-enforces the
+     * same predicate internally before its transaction): refuse to manufacture
+     * a height-mismatched datadir. A zclassicd whose on-disk chainstate lags
+     * its live tip resolves to a tip_height BELOW the target's fold-resume
+     * anchor (coins island root); binding there wedges the fold at the first
+     * Sapling-commitment block above the island — a silent consensus-time
+     * livelock this guard turns into a loud build-time refusal. Nothing is
+     * committed on this path (the import transaction never begins). */
+    int32_t bind_coins_best = -1;
+    if (!shielded_history_import_bind_guard_probe(progress_store_db(),
+                                                  tip_height,
+                                                  &bind_coins_best)) {
+        progress_store_close();
+        ldb_snapshot_destroy(snap_path);
+        if (bind_coins_best >= 0) {
+            fprintf(stderr,
+                    "IMPORT REFUSED — bind height mismatch: the source "
+                    "chainstate best block resolves to h=%lld but the target "
+                    "datadir's fold-resume anchor (coins island root) is "
+                    "h=%lld. Binding the shielded frontier there manufactures "
+                    "a datadir whose fold wedges deterministically at the "
+                    "first Sapling-commitment block above the island "
+                    "(hashFinalSaplingRoot mismatch, H* pinned). Remedy: "
+                    "re-run against a consistent source whose chainstate best "
+                    "block == the island root (h=%lld). Nothing committed; "
+                    "the wedge is intact.\n",
+                    (long long)tip_height, (long long)bind_coins_best,
+                    (long long)bind_coins_best);
+        } else {
+            fprintf(stderr,
+                    "IMPORT REFUSED — cannot derive the target datadir's "
+                    "fold-resume anchor from progress.kv (read error). See "
+                    "node.log [shielded_import]; nothing committed.\n");
+        }
+        return 1;
+    }
+
     struct shielded_import_report rep = {0};
     bool ok = shielded_history_import_from_chainstate(
         progress_store_db(), snap_path, tip_height, &tip_sapling_root, &rep);

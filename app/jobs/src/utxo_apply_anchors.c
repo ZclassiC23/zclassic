@@ -6,8 +6,11 @@
 
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"
+#include "config/runtime.h"
 #include "consensus/upgrades.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_delta.h"
+#include "models/block.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/anchor_kv.h"
@@ -261,7 +264,75 @@ bool utxo_apply_check_and_insert_anchors_full_replay(
     return check_and_insert_anchors(db, blk, height, summary, true);
 }
 
-void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)
+bool utxo_apply_anchor_bind_mismatch(sqlite3 *db, struct node_db *ndb,
+                                     int64_t *frontier_h_out,
+                                     int32_t *coins_h_out)
+{
+    if (frontier_h_out) *frontier_h_out = -1;
+    if (coins_h_out) *coins_h_out = -1;
+    if (!db || !ndb)
+        return false;  /* no evidence channel — pure detection stays off */
+
+    /* Only a COMPLETE-history claim (both cursors present and 0) can be
+     * height-mismatched; a positive cursor is the safe wedge the backfill
+     * blocker already names. */
+    for (int pool = ANCHOR_POOL_SPROUT; pool <= ANCHOR_POOL_SAPLING; pool++) {
+        int64_t cur = -1;
+        bool found = false;
+        if (!anchor_kv_activation_cursor(db, pool, &cur, &found))
+            LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
+                       "[utxo_apply] bind guard: cursor read failed pool=%d",
+                       pool);
+        if (!found || cur != 0)
+            return false;
+    }
+
+    int32_t coins_h = -1;
+    uint8_t cb_hash[32];
+    bool cb_hash_found = false, cb_found = false;
+    if (!reducer_frontier_derive_coins_best(db, &coins_h, cb_hash,
+                                            &cb_hash_found, &cb_found))
+        LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
+                   "[utxo_apply] bind guard: coins-best derive failed");
+    if (!cb_found || coins_h < 0)
+        return false;  /* no coins authority — nothing to mismatch against */
+
+    struct incremental_merkle_tree tree;
+    struct uint256 frontier_root;
+    int64_t frontier_h = -1;
+    enum anchor_kv_lookup_result lr = anchor_kv_latest_tree(
+        db, ANCHOR_POOL_SAPLING, &tree, &frontier_root, &frontier_h);
+    if (lr == ANCHOR_KV_ERROR)
+        LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
+                   "[utxo_apply] bind guard: latest Sapling frontier read "
+                   "failed");
+    if (lr != ANCHOR_KV_FOUND)
+        return false;  /* the incomplete cases are owned by positive cursors */
+    if (frontier_h >= (int64_t)coins_h)
+        return false;  /* frontier at/past the resume anchor — consistent */
+
+    /* The frontier the fold would append to predates the resume anchor. That
+     * is consistent ONLY when no Sapling-output block sits in
+     * (frontier_h, coins_h] — i.e. the header-committed root did not move
+     * (roots change only on commitment blocks). Compare against the header
+     * chain's persisted hashFinalSaplingRoot at the island root. */
+    struct db_block blk;
+    memset(&blk, 0, sizeof(blk));
+    if (!db_block_find_by_height(ndb, (int)coins_h, &blk))
+        return false;  // raw-return-ok:bind-guard detection — no header evidence at the island root; the fold's own fail-closed root check stays the backstop
+    static const uint8_t k_zero_root[32] = {0};
+    if (memcmp(blk.sapling_root, k_zero_root, 32) == 0)
+        return false;  /* pre-Sapling / old header import — no evidence */
+    if (memcmp(frontier_root.data, blk.sapling_root, 32) == 0)
+        return false;  /* commitment-free tail — the frontier is still valid */
+
+    if (frontier_h_out) *frontier_h_out = frontier_h;
+    if (coins_h_out) *coins_h_out = coins_h;
+    return true;
+}
+
+void utxo_apply_anchor_gap_blocker_refresh_with_ndb(struct sqlite3 *db,
+                                                    struct node_db *ndb)
 {
     if (!db) {
         LOG_WARN(ANCHOR_STAGE_SUBSYS,
@@ -284,6 +355,40 @@ void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)
         }
     }
     if (!incomplete) {
+        /* The cursors claim complete history. Before clearing, run the bind
+         * guard: a height-mismatched -import-complete-shielded bind (frontier
+         * keyed below the coins island root, cursors flipped to 0) must KEEP
+         * the named permanent blocker — folding into it livelocks at the
+         * first Sapling-commitment block above the island. Detection only,
+         * no auto-repair. */
+        int64_t frontier_h = -1;
+        int32_t coins_h = -1;
+        if (utxo_apply_anchor_bind_mismatch(db, ndb, &frontier_h, &coins_h)) {
+            struct blocker_record rec;
+            char reason[BLOCKER_REASON_MAX];
+            snprintf(reason, sizeof(reason),
+                     "shielded anchor frontier is HEIGHT-MISMATCHED: the "
+                     "latest Sapling frontier row (h=%lld) diverges from the "
+                     "header-committed hashFinalSaplingRoot at the coins "
+                     "island root (h=%d) while both activation cursors claim "
+                     "complete history (0) — the shape of an "
+                     "-import-complete-shielded bind BELOW the island root. "
+                     "The fold cannot append to it: the first "
+                     "Sapling-commitment block above the island mismatches "
+                     "the header root and H* holds. Remedy (owner-gated): "
+                     "re-run -import-complete-shielded against a consistent "
+                     "source whose chainstate best block == the island root; "
+                     "the current importer refuses a mismatched bind "
+                     "outright. No auto-repair is attempted.",
+                     (long long)frontier_h, coins_h);
+            if (!blocker_init(&rec, UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID,
+                              ANCHOR_STAGE_SUBSYS, BLOCKER_PERMANENT, reason))
+                return;
+            blocker_set(&rec);
+            LOG_WARN(ANCHOR_STAGE_SUBSYS,
+                     "[utxo_apply] bind guard: %s", reason);
+            return;
+        }
         blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
         return;
     }
@@ -303,4 +408,9 @@ void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)
                       ANCHOR_STAGE_SUBSYS, BLOCKER_PERMANENT, reason))
         return;
     blocker_set(&rec);
+}
+
+void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)
+{
+    utxo_apply_anchor_gap_blocker_refresh_with_ndb(db, app_runtime_node_db());
 }

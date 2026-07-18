@@ -50,4 +50,42 @@ bool utxo_apply_check_and_insert_anchors_full_replay(
 /* Register/clear the durable history-gap blocker from anchor_state. */
 void utxo_apply_anchor_gap_blocker_refresh(struct sqlite3 *db);
 
+struct node_db;
+
+/* ── bind guard (boot-time detection, no auto-repair) ──────────────────────
+ *
+ * A height-mismatched -import-complete-shielded bind (the frontier row keyed
+ * BELOW the coins island root, both activation cursors flipped to 0) used to
+ * sail past every boot gate: the cursors claim complete history, so the gap
+ * blocker cleared and the fold livelocked at the first Sapling-commitment
+ * block above the island (sapling_frontier_mismatch, utxo_apply.apply_failed,
+ * H* pinned) — a silent-consensus-cause wedge retried forever.
+ *
+ * Pure detection predicate for that shape. Returns true iff ALL hold:
+ *   - both anchor activation cursors are present and 0 (complete-history
+ *     claim — a positive cursor is the safe wedge the backfill blocker owns);
+ *   - a proven coins authority derives (coins island root `coins_h`);
+ *   - the latest Sapling frontier row sits at `frontier_h` < `coins_h`; AND
+ *   - the header-committed hashFinalSaplingRoot at `coins_h` (node.db
+ *     blocks.sapling_root) DIFFERS from that frontier row's root — proof the
+ *     tree moved over blocks the frontier never saw.
+ *
+ * The root comparison is what keeps the guard silent on healthy datadirs: a
+ * from-genesis fold's latest anchor legitimately lags the coins tip whenever
+ * recent blocks carry no Sapling outputs, but the header root cannot have
+ * moved in that case (roots only change on commitment blocks). A NULL ndb, a
+ * missing header row, or an all-zero sapling_root column (old header import)
+ * means "no evidence" and yields false — the fold's own fail-closed root
+ * check remains the backstop. Heights are reported via the out-params. */
+bool utxo_apply_anchor_bind_mismatch(struct sqlite3 *db, struct node_db *ndb,
+                                     int64_t *frontier_h_out,
+                                     int32_t *coins_h_out);
+
+/* As utxo_apply_anchor_gap_blocker_refresh, but the bind-guard probe reads
+ * the header chain through the caller's `ndb` instead of the runtime handle —
+ * the test seam (production callers use the refresh, which probes via
+ * app_runtime_node_db()). */
+void utxo_apply_anchor_gap_blocker_refresh_with_ndb(struct sqlite3 *db,
+                                                    struct node_db *ndb);
+
 #endif /* ZCL_JOBS_UTXO_APPLY_ANCHORS_H */

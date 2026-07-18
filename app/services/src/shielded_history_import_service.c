@@ -521,6 +521,15 @@ bool shielded_history_import_from_chainstate(
     report.anchor_boundary = anchor_boundary;
     report.nullifier_boundary = nullifier_boundary;
 
+    /* Bind-height guard (fail-closed, pre-transaction): refuse to key the
+     * frontier at a height that is not the target's fold-resume anchor. See
+     * the header — a height-mismatched bind converts the safe wedge into a
+     * deterministic consensus-time livelock. The predicate lives in
+     * shielded_history_import_bind_guard.c, shared with the verb. */
+    if (!shielded_history_import_bind_guard_probe(progress_db,
+                                                  expected_tip_height, NULL))
+        return false;  // raw-return-ok:refusal already logged inside the bind guard probe (height mismatch or derive error)
+
     /* Heavy work begins — arm the never-silent progress surface. Every failure
      * path below (pre-tx refusals AND in-tx rollbacks) calls shi_progress_end();
      * shi_rollback() does it for the transactional paths. */
