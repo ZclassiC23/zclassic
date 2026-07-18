@@ -1006,6 +1006,26 @@ run_rung() {
     fi
 }
 
+# Loud but NEVER fatal: compile_commands.json drifts stale silently — nothing
+# on the edit path regenerates it, and IDE/index consumers then read a DB
+# from the wrong source epoch. The probe is ~30 ms (mtime + content hash of
+# the recorded status, no Make parse); regeneration is ~15 s, so the hot loop
+# warns and names the fix instead of paying it. The DB is an index input
+# only, never a build input, so staleness is advisory.
+compdb_freshness_notice() {
+    local status freshness
+    [ -f tools/dev/generate-compdb.sh ] || return 0
+    status="$(bash tools/dev/generate-compdb.sh --status 2>/dev/null)" || {
+        log "compdb: freshness probe failed — run \`make agent-index\` to rebuild compile_commands.json"
+        return 0
+    }
+    freshness="$(printf '%s' "$status" |
+        sed -n 's/.*"freshness":"\([^"]*\)".*/\1/p' | head -1)"
+    if [ "$freshness" != "fresh" ]; then
+        log "compdb: compile_commands.json is ${freshness:-unknown} — run \`make agent-index\` (index consumers only; never a build input)"
+    fi
+}
+
 main() {
     local mode="${1:-run}"
     case "$mode" in
@@ -1072,6 +1092,9 @@ main() {
 
             # rung 3: fast lint gates.
             run_rung lint-fast make_fast lint-fast
+
+            # Non-fatal index-freshness probe (see compdb_freshness_notice).
+            compdb_freshness_notice
 
             log "PASS: ff ladder green (compile -> source-wide-tests -> lint-fast); not release CI"
             return
