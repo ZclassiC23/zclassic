@@ -12,12 +12,14 @@
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -401,6 +403,68 @@ bool rom_fetch_verify_file(const char *path,
     return true;
 }
 
+/* ── Fetch status (observability) ───────────────────────────────────── */
+
+static struct rom_fetch_status g_status;
+static pthread_mutex_t g_status_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void rf_note_begin(const char *peer_addr, uint16_t port,
+                          const struct rom_fetch_manifest *m)
+{
+    pthread_mutex_lock(&g_status_mutex);
+    g_status.ever_attempted = true;
+    g_status.in_progress = true;
+    g_status.last_ok = false;
+    snprintf(g_status.peer, sizeof(g_status.peer), "%s:%u",
+             peer_addr, (unsigned)port);
+    snprintf(g_status.filename, sizeof(g_status.filename), "%s", m->filename);
+    g_status.detail[0] = '\0';
+    g_status.size_bytes = m->size_bytes;
+    g_status.num_chunks = m->num_chunks;
+    g_status.chunks_done = 0;
+    g_status.bytes_done = 0;
+    g_status.started_unix = (int64_t)platform_time_wall_time_t();
+    g_status.finished_unix = 0;
+    g_status.attempts++;
+    pthread_mutex_unlock(&g_status_mutex);
+}
+
+static void rf_note_progress(uint32_t chunks_done, uint64_t bytes_done)
+{
+    pthread_mutex_lock(&g_status_mutex);
+    g_status.chunks_done = chunks_done;
+    g_status.bytes_done = bytes_done;
+    pthread_mutex_unlock(&g_status_mutex);
+}
+
+static void rf_note_end(bool ok, const char *detail)
+{
+    pthread_mutex_lock(&g_status_mutex);
+    g_status.in_progress = false;
+    g_status.last_ok = ok;
+    g_status.finished_unix = (int64_t)platform_time_wall_time_t();
+    snprintf(g_status.detail, sizeof(g_status.detail), "%s",
+             detail ? detail : "");
+    if (ok) {
+        g_status.successes++;
+        g_status.bytes_total += g_status.bytes_done;
+    } else {
+        g_status.failures++;
+    }
+    pthread_mutex_unlock(&g_status_mutex);
+}
+
+void rom_fetch_status_snapshot(struct rom_fetch_status *out)
+{
+    if (!out)
+        return;
+    pthread_mutex_lock(&g_status_mutex);
+    *out = g_status;
+    pthread_mutex_unlock(&g_status_mutex);
+}
+
+/* ── Download driver ────────────────────────────────────────────────── */
+
 bool rom_fetch_download(const char *peer_addr, uint16_t port,
                         const struct rom_fetch_manifest *m,
                         const char *out_dir,
@@ -437,14 +501,18 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
     if (!buf)
         LOG_FAIL(RF_SUBSYS, "download: alloc chunk buffer failed");
 
+    rf_note_begin(peer_addr, port, &mc);
+
     int fd = open(part_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
+        rf_note_end(false, "could not open staging file");
         free(buf);
         LOG_FAIL(RF_SUBSYS, "download: open '%s' failed errno=%d",
                  part_path, errno);
     }
 
     bool ok = true;
+    const char *fail_reason = "";
     uint64_t bytes_done = 0;
     for (uint32_t ci = 0; ci < mc.num_chunks; ci++) {
         uint32_t want = mc.chunk_size;
@@ -459,6 +527,7 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
                      "(leaving '%s' for resume)", ci, mc.num_chunks,
                      peer_addr, (unsigned)port, part_path);
             ok = false;
+            fail_reason = "chunk fetch failed (peer refused/unreachable)";
             break;
         }
         if (got != want) {
@@ -466,6 +535,7 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
                      "%u (peer served a wrong-sized chunk; leaving '%s' for "
                      "resume)", ci, mc.num_chunks, got, want, part_path);
             ok = false;
+            fail_reason = "peer served a wrong-sized chunk";
             break;
         }
         ssize_t w = pwrite(fd, buf, got, (off_t)((uint64_t)ci * mc.chunk_size));
@@ -473,13 +543,16 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
             LOG_WARN(RF_SUBSYS, "download: pwrite '%s' chunk %u failed "
                      "errno=%d", part_path, ci, errno);
             ok = false;
+            fail_reason = "staging write failed";
             break;
         }
         bytes_done += got;
+        rf_note_progress(ci + 1, bytes_done);
         if (cb && !cb(ci + 1, mc.num_chunks, bytes_done, cb_ctx)) {
             LOG_WARN(RF_SUBSYS, "download: aborted by caller at chunk %u/%u",
                      ci + 1, mc.num_chunks);
             ok = false;
+            fail_reason = "aborted by caller";
             break;
         }
     }
@@ -488,6 +561,7 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
 
     if (!ok) {
         close(fd);
+        rf_note_end(false, fail_reason);
         return false;
     }
     fdatasync(fd);
@@ -499,16 +573,63 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
         LOG_WARN(RF_SUBSYS, "download: '%s' failed whole-file verification; "
                  "unlinking (seeder served non-committed content)", part_path);
         unlink(part_path);
+        rf_note_end(false, "whole-file digest mismatch; download discarded");
         return false;
     }
 
-    if (rename(part_path, final_path) != 0)
+    if (rename(part_path, final_path) != 0) {
+        rf_note_end(false, "rename into place failed");
         LOG_FAIL(RF_SUBSYS, "download: rename '%s' -> '%s' failed errno=%d",
                  part_path, final_path, errno);
+    }
 
+    rf_note_end(true, final_path);
     LOG_INFO(RF_SUBSYS, "download: fetched '%s' (%llu bytes, %u chunks) "
              "from %s:%u — verified against committed digests",
              final_path, (unsigned long long)mc.size_bytes, mc.num_chunks,
              peer_addr, (unsigned)port);
+    return true;
+}
+
+/* ── Introspection ──────────────────────────────────────────────────── */
+
+bool rom_fetch_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct rom_fetch_status s;
+    rom_fetch_status_snapshot(&s);
+
+    json_push_kv_bool(out, "ever_attempted", s.ever_attempted);
+    json_push_kv_bool(out, "in_progress", s.in_progress);
+    json_push_kv_bool(out, "last_ok", s.last_ok);
+    json_push_kv_int(out, "attempts", (int64_t)s.attempts);
+    json_push_kv_int(out, "successes", (int64_t)s.successes);
+    json_push_kv_int(out, "failures", (int64_t)s.failures);
+    json_push_kv_int(out, "bytes_installed_total", (int64_t)s.bytes_total);
+
+    if (s.ever_attempted) {
+        struct json_value last = {0};
+        json_set_object(&last);
+        json_push_kv_str(&last, "peer", s.peer);
+        json_push_kv_str(&last, "filename", s.filename);
+        json_push_kv_int(&last, "size_bytes", (int64_t)s.size_bytes);
+        json_push_kv_int(&last, "num_chunks", (int64_t)s.num_chunks);
+        json_push_kv_int(&last, "chunks_done", (int64_t)s.chunks_done);
+        json_push_kv_int(&last, "bytes_done", (int64_t)s.bytes_done);
+        json_push_kv_int(&last, "started_unix", s.started_unix);
+        json_push_kv_int(&last, "finished_unix", s.finished_unix);
+        if (s.detail[0])
+            json_push_kv_str(&last, "detail", s.detail);
+        json_push_kv(out, "last", &last);
+        json_free(&last);
+    }
+
+    diag_push_health(out, true,
+                     s.in_progress ? "fetch in progress"
+                                   : "fetch engine idle");
     return true;
 }

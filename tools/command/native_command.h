@@ -355,6 +355,17 @@ void zcl_native_handle_rom_seed_artifacts(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ROM-fetch engine surface (app/controllers/src/rom_fetch_controller.c) —
+ * see config/commands/ops.def `ops.debug.rom_fetch.*` and
+ * docs/ROM_DELIVERY.md. The fetch leaf downloads + content-verifies bytes
+ * only; activation stays with the unified -install-consensus-bundle path. */
+void zcl_native_handle_rom_fetch_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_rom_fetch_bundle(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
 #ifdef ZCL_DEV_BUILD

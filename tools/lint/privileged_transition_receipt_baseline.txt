@@ -67,3 +67,4 @@ app.swap.initiate          exempt: PLANNED fail-closed, no artifact install (swa
 app.swap.participate       exempt: PLANNED fail-closed, no artifact install (swap_participate RPC owns the write)
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_seed.disable exempt: in-process policy flag flip + JSON persist, no artifact install
+ops.debug.rom_fetch.bundle exempt: downloads+content-verifies a file into the datadir only; activation is the separate receipt-gated -install-consensus-bundle path

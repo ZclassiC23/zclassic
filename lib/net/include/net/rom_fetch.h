@@ -114,10 +114,40 @@ bool rom_fetch_verify_file(const char *path,
  * rom_fetch_verify_file and rename to <out_dir>/<filename>. On a digest
  * mismatch the .part file is UNLINKED (no partial trust); on a transport
  * failure the .part is left in place for a future resume. Returns false with
- * a logged reason on any failure. The optional cb runs after each chunk. */
+ * a logged reason on any failure. The optional cb runs after each chunk.
+ * Every attempt is recorded in the fetch status below. */
 bool rom_fetch_download(const char *peer_addr, uint16_t port,
                         const struct rom_fetch_manifest *m,
                         const char *out_dir,
                         rom_fetch_progress_cb cb, void *cb_ctx);
+
+/* ── Fetch status (observability; powers dumpstate rom_fetch) ───────── */
+
+struct rom_fetch_status {
+    bool     ever_attempted;
+    bool     in_progress;
+    bool     last_ok;
+    char     peer[80];        /* "addr:port" of the last attempt          */
+    char     filename[ROM_FETCH_NAME_MAX];
+    char     detail[192];     /* installed path or a short failure reason */
+    uint64_t size_bytes;
+    uint32_t num_chunks;
+    uint32_t chunks_done;
+    uint64_t bytes_done;
+    int64_t  started_unix;
+    int64_t  finished_unix;
+    /* Cumulative counters over the process lifetime. */
+    uint64_t attempts;
+    uint64_t successes;
+    uint64_t failures;
+    uint64_t bytes_total;     /* verified-and-installed bytes             */
+};
+
+/* Copy out a consistent snapshot of the fetch status. Safe from any thread. */
+void rom_fetch_status_snapshot(struct rom_fetch_status *out);
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool rom_fetch_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_NET_ROM_FETCH_H */

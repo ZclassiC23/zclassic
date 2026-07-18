@@ -13,15 +13,19 @@
  *      any digest/size/content mismatch.
  *
  * All fixtures live under a mkdtemp() dir in /tmp — never a real datadir.
- * The network chunk-fetch path (rom_fetch_chunk / rom_fetch_download) is
- * exercised by the loopback E2E test planned in
- * docs/work/wt-rom-fetch-engine.md, not here. */
+ * The loopback E2E test runs the REAL serve path (fs_server_start on a
+ * fixture datadir) and fetches from 127.0.0.1 — proving the client's wire
+ * assumptions (zero-root handshake, frame/chunk counter alignment, MAC) and
+ * the no-partial-trust discard against the merged server code. */
 
 #include "test/test_helpers.h"
 #include "net/rom_fetch.h"
 #include "net/rom_seed.h"
+#include "net/file_service.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
+#include "json/json.h"
+#include "platform/time_compat.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -235,11 +239,141 @@ static int test_verify_file(void)
     return failures;
 }
 
+/* ── (d) Loopback E2E against the real serve path ───────────────────── */
+
+static int test_loopback_e2e(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: loopback E2E fetches + verifies from the real fs serve path") {
+        rom_seed_reset();
+        /* Raise the byte-rate caps: this test moves ~3x the artifact size
+         * inside one wall second and the default 8 MB/s peer window would
+         * otherwise make the outcome wall-clock dependent. reset() at the
+         * end restores the defaults. */
+        rom_seed_set_peer_bps_cap(1ull << 30);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_romfetch_srv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+        char croot[] = "/tmp/zcl_romfetch_cli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        /* 2 chunks: one full 4 MB chunk + a short 4 KB tail. */
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size);
+        ASSERT(write_file(sdir, "consensus-state-bundle-e2e.sqlite",
+                          content, size));
+
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-e2e.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+        struct rom_fetch_manifest m;
+        manifest_from_artifact(&art, &m);
+
+        /* Start the real serve path on the fixture datadir; retry across a
+         * few candidate ports in case one is already bound. */
+        static const uint16_t cand_ports[] = { 18099, 18107, 18113 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50); /* up to 2 s for bind+listen */
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        /* (1) One chunk over the wire matches the source bytes exactly. */
+        uint8_t *cbuf = malloc(ROM_SEED_CHUNK_SIZE);
+        ASSERT(cbuf != NULL);
+        uint32_t csz = 0;
+        ASSERT(rom_fetch_chunk("127.0.0.1", port, m.chunk_root, 1,
+                               cbuf, ROM_SEED_CHUNK_SIZE, &csz));
+        ASSERT(csz == 4096);
+        ASSERT(memcmp(cbuf, content + ROM_SEED_CHUNK_SIZE, 4096) == 0);
+        free(cbuf);
+
+        /* (2) Full download through the driver: per-chunk fetch, whole-file
+         * verification, atomic rename to the committed filename. */
+        ASSERT(rom_fetch_download("127.0.0.1", port, &m, cdir, NULL, NULL));
+        char final_path[1024];
+        snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
+        ASSERT(rom_fetch_verify_file(final_path, &m));
+
+        /* (3) A wrong committed whole-digest downloads every chunk, then
+         * fails the content proof and unlinks the .part — no partial trust. */
+        struct rom_fetch_manifest bad = m;
+        bad.whole_sha3[0] ^= 0x01;
+        snprintf(bad.filename, sizeof(bad.filename), "%s",
+                 "consensus-state-bundle-bad.sqlite");
+        ASSERT(!rom_fetch_download("127.0.0.1", port, &bad, cdir, NULL, NULL));
+        char bad_path[1024];
+        snprintf(bad_path, sizeof(bad_path), "%s/%s%s", cdir, bad.filename,
+                 ROM_FETCH_PART_SUFFIX);
+        ASSERT(access(bad_path, F_OK) != 0);
+        snprintf(bad_path, sizeof(bad_path), "%s/%s", cdir, bad.filename);
+        ASSERT(access(bad_path, F_OK) != 0);
+
+        /* (4) An unknown chunk_root is refused by the serve path — the
+         * client sees a clean chunk failure, never bogus bytes. */
+        uint8_t bogus_root[32];
+        memset(bogus_root, 0xA5, sizeof(bogus_root));
+        cbuf = malloc(ROM_SEED_CHUNK_SIZE);
+        ASSERT(cbuf != NULL);
+        csz = 0;
+        ASSERT(!rom_fetch_chunk("127.0.0.1", port, bogus_root, 0,
+                                cbuf, ROM_SEED_CHUNK_SIZE, &csz));
+        free(cbuf);
+
+        /* (5) The fetch status records both attempts (the bogus chunk_root
+         * never reached rom_fetch_download, so it is not an attempt). */
+        struct rom_fetch_status st;
+        rom_fetch_status_snapshot(&st);
+        ASSERT(st.ever_attempted && !st.in_progress);
+        ASSERT(st.attempts == 2 && st.successes == 1 && st.failures == 1);
+        ASSERT(!st.last_ok);
+        ASSERT(strstr(st.detail, "digest mismatch") != NULL);
+        ASSERT(st.bytes_total == m.size_bytes);
+
+        /* (6) dumpstate body is well-formed and reports the counters. */
+        struct json_value dj;
+        json_init(&dj);
+        ASSERT(rom_fetch_dump_state_json(&dj, NULL));
+        ASSERT(dj.type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(&dj, "successes")) == 1);
+        ASSERT(json_get_int(json_get(&dj, "failures")) == 1);
+        ASSERT(json_get(json_get(&dj, "last"), "peer") != NULL);
+        json_free(&dj);
+
+        fs_server_stop();
+
+        free(content);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-e2e.sqlite", sdir);
+        unlink(p);
+        snprintf(p, sizeof(p), "%s/%s", cdir, m.filename);
+        unlink(p);
+        rmdir(sdir);
+        rmdir(cdir);
+        rom_seed_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_rom_fetch(void)
 {
     int failures = 0;
     failures += test_manifest_sane();
     failures += test_parse_directory();
     failures += test_verify_file();
+    failures += test_loopback_e2e();
     return failures;
 }

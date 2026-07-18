@@ -384,6 +384,55 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_rom_seed_artifacts)
 
+/* ROM-fetch engine (the CLIENT half of docs/ROM_DELIVERY.md;
+ * app/controllers/src/rom_fetch_controller.c, lib/net/include/net/rom_fetch.h).
+ * Same `ops.debug` nesting as ops.debug.rom_seed (top-level ops is at its
+ * ZCL_COMMAND_BRANCH_BUDGET ceiling). The `bundle` leaf takes the expected
+ * digests as EXPLICIT operator input — the operator commits to the content
+ * before a byte is fetched; the engine downloads + content-verifies and
+ * leaves the file in the datadir. It is NOT an activation path: install
+ * funnels only through -install-consensus-bundle (the unified installer's
+ * RECEIPT / CHECKPOINT_CONTENT authority). */
+ZCL_COMMAND_BRANCH("ops.debug.rom_fetch", "ops.debug", "ROM-fetch engine",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_READY_READ(
+    "ops.debug.rom_fetch.status", "ops.debug.rom_fetch", "",
+    "ROM-fetch engine status",
+    "The fetch engine's last attempt (peer, filename, size, chunks done, "
+    "ok/fail + detail), in-progress flag, and cumulative "
+    "attempts/successes/failures/bytes-installed, read live from this "
+    "node's in-process fetch state at call time.", 0,
+    "rom,fetch,download,bundle,status",
+    "zcl.command.empty_input.v1", "zcl.rom_fetch_status.v1", "", "",
+    "zclassic23 ops debug rom_fetch status",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_rom_fetch_status)
+ZCL_COMMAND_READY_COMMAND(
+    "ops.debug.rom_fetch.bundle", "ops.debug.rom_fetch", "",
+    "Fetch + verify a ROM artifact from a peer",
+    "Downloads a ROM artifact (e.g. the consensus-state bundle) from a "
+    "seeding peer's file service and verifies it BY CONTENT against the "
+    "digests supplied here — the operator commits to (root, whole_sha3, "
+    "size) before a byte is requested; any whole-file mismatch discards "
+    "the download (no partial trust). The verified file lands at "
+    "<out_dir>/<filename> (default: the node datadir); it is NOT "
+    "activated — install funnels only through -install-consensus-bundle. "
+    "Blocks for the duration of the download.", 0,
+    "rom,fetch,download,bundle,verify",
+    "zcl.rom_fetch_bundle.input.v1", "zcl.rom_fetch_bundle.result.v1",
+    "peer,port,root,whole_sha3,size,filename,out_dir", "",
+    "zclassic23 ops debug rom_fetch bundle --input='{\"peer\":\"203.0.113.7\",\"root\":\"<64hex>\",\"whole_sha3\":\"<64hex>\",\"size\":\"538507264\"}'",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_rom_fetch_bundle)
+
 ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Postmortems",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
