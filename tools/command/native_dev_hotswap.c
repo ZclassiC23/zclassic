@@ -25,6 +25,7 @@
 
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_module.h"
+#include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "controllers/rpc_client.h"
@@ -35,6 +36,14 @@
 #include <string.h>
 
 #ifdef ZCL_DEV_BUILD
+
+/* The resident node's own datadir, captured at RPC registration (boot) time.
+ * rpc_dev_hotswap_native runs INSIDE the node process, where the one-shot
+ * RPC-client global (node_rpc_client_datadir) is never initialized — using it
+ * here made the dev-datadir self-check fail closed in exactly the process the
+ * RPC exists for. Registration already refuses any non-dev datadir, so this
+ * stash is always the exact dev datadir (or empty before boot). */
+static char g_resident_datadir[512];
 
 /* Publish ONE {handler_name, fn} override into the live command registry. */
 static bool registry_commit_cb(void *ctx, const char *handler_name,
@@ -103,7 +112,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
             "dev_hotswap_native \"/absolute/module.so\" ( activate )");
         return true;
     }
-    if (!hotswap_datadir_is_dev(node_rpc_client_datadir())) {
+    if (!hotswap_datadir_is_dev(g_resident_datadir)) {
         json_rpc_error_full(result, RPC_FORBIDDEN_BY_SAFE_MODE,
             "native hot-swap available only in the running ~/.zclassic-c23-dev node",
             "dev_hotswap_native");
@@ -131,7 +140,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     bool activate = act_v && act_v->type == JSON_BOOL && json_get_bool(act_v);
 
     struct hotswap_activate_report report;
-    hotswap_activate(so_path, node_rpc_client_datadir(), activate,
+    hotswap_activate(so_path, g_resident_datadir, activate,
                      registry_commit_cb, registry_quiesced_cb, NULL, &report);
 
     /* Return the full report either way; the CLI renders ok/verify_only/error. */
@@ -156,6 +165,9 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
 void zcl_native_handle_dev_hotswap_apply(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    /* Non-bridge handler: initialize the one-shot RPC client from the
+     * CLI-resolved -datadir/-rpcport before node_rpc_call(). */
+    zcl_native_bridge_ensure_rpc();
     const char *so_path = json_get_str(json_get(request->input, "so_path"));
     if (!so_path || so_path[0] != '/') {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -227,6 +239,9 @@ void zcl_native_handle_dev_hotswap_apply(
 void zcl_native_handle_dev_hotswap_probe(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    /* Non-bridge handler: initialize the one-shot RPC client so
+     * node_rpc_client_datadir() below returns the CLI-resolved dev datadir. */
+    zcl_native_bridge_ensure_rpc();
     const char *so_path = json_get_str(json_get(request->input, "so_path"));
     if (!so_path || so_path[0] != '/') {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -251,6 +266,14 @@ bool register_dev_native_hotswap_rpc(struct rpc_table *table,
     if (!table || rpc_port <= 0 || rpc_port > 65535 ||
         !hotswap_datadir_is_dev(datadir))
         return true;
+    (void)snprintf(g_resident_datadir, sizeof(g_resident_datadir), "%s",
+                   datadir);
+    /* The override commit (zcl_command_registry_replace_batch) requires an
+     * active registry in THIS process. The node never dispatches native
+     * leaves, so bind the catalog here: replace_batch validates the override
+     * against it (READY + EFFECT_READ + canonical) and the slot/quiesce
+     * bookkeeping becomes inspectable via dumpstate hotswap. */
+    zcl_command_registry_set_active(zcl_command_catalog());
     rpc_table_must_append(table, &cmd);
     return true;
 }

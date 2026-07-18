@@ -416,11 +416,11 @@ static void retire_handle(void *handle, int fd,
     }
 }
 
-bool hotswap_activate(const char *so_path, const char *resolved_datadir,
-                      bool request_activate,
-                      hotswap_commit_handler_cb commit_cb,
-                      hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
-                      struct hotswap_activate_report *report)
+static bool activate_run(const char *so_path, const char *resolved_datadir,
+                         bool request_activate, bool require_authorization,
+                         hotswap_commit_handler_cb commit_cb,
+                         hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
+                         struct hotswap_activate_report *report)
 {
     if (!report)
         return false;
@@ -451,7 +451,7 @@ bool hotswap_activate(const char *so_path, const char *resolved_datadir,
                    "hot-swap requires the exact dev datadir ~/.zclassic-c23-dev, got '%s'",
                    resolved_datadir ? resolved_datadir : "");
 
-    if (request_activate &&
+    if (require_authorization && request_activate &&
         !hotswap_activation_authorized(resolved_datadir, why, sizeof(why)))
         ACT_REJECT("authorize", "%s", why);
 
@@ -574,6 +574,31 @@ bool hotswap_activate(const char *so_path, const char *resolved_datadir,
 #undef ACT_REJECT
 }
 
+bool hotswap_activate(const char *so_path, const char *resolved_datadir,
+                      bool request_activate,
+                      hotswap_commit_handler_cb commit_cb,
+                      hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
+                      struct hotswap_activate_report *report)
+{
+    return activate_run(so_path, resolved_datadir, request_activate,
+                        /*require_authorization=*/true, commit_cb, quiesced_cb,
+                        cb_ctx, report);
+}
+
+bool hotswap_activate_local(const char *so_path, const char *resolved_datadir,
+                            hotswap_commit_handler_cb commit_cb,
+                            struct hotswap_activate_report *report)
+{
+    /* Process-local commit in the operator's own one-shot CLI: probe-class
+     * authority, so the resident gate (-hotswap-activate +
+     * ZCL_HOTSWAP_ACTIVATE=1) does not apply. The override dies with the
+     * process. Path confinement, the dev-datadir check, the admit gauntlet,
+     * and the registry's READY/EFFECT_READ re-check all still apply. */
+    return activate_run(so_path, resolved_datadir, /*request_activate=*/true,
+                        /*require_authorization=*/false, commit_cb,
+                        NULL, NULL, report);
+}
+
 #else /* !ZCL_DEV_BUILD — release: no dynamic activation surface */
 
 bool hotswap_activate(const char *so_path, const char *resolved_datadir,
@@ -588,6 +613,24 @@ bool hotswap_activate(const char *so_path, const char *resolved_datadir,
     (void)commit_cb;
     (void)quiesced_cb;
     (void)cb_ctx;
+    if (!report)
+        return false;
+    memset(report, 0, sizeof(*report));
+    report->verify_only = true;
+    report->rolled_back = true;
+    act_copy(report->stage, sizeof(report->stage), "release");
+    act_copy(report->error, sizeof(report->error),
+             "hot-swap activation unavailable in release build");
+    return false;
+}
+
+bool hotswap_activate_local(const char *so_path, const char *resolved_datadir,
+                            hotswap_commit_handler_cb commit_cb,
+                            struct hotswap_activate_report *report)
+{
+    (void)so_path;
+    (void)resolved_datadir;
+    (void)commit_cb;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));

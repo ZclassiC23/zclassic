@@ -2,9 +2,11 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # Controlled developer-loop latency benchmark. Safe cases run build/check
-# paths only. The hot-swap and process-reload cases are skipped unless the
-# operator supplies explicit commands; the repository's public activation
-# commands remain contained and cannot produce activation-SLO evidence.
+# paths only. The hot-swap case defaults to the REAL dev-lane activation path
+# (`make hotswap-apply HANDLER=core.status` — resident leaf re-point in the
+# armed zcl23-dev node) and runs only under ZCL_DEV_BENCH_ACTIVATE=1; the
+# process-reload case still requires an operator-supplied command because
+# process-level generation publication remains contained.
 
 set -uo pipefail
 
@@ -55,11 +57,13 @@ usage()
         'Default: benchmark no-op/controller/service/header check+link paths;' \
         'skip hot-swap and process reload. No service is activated by default.' \
         '' \
-        'Custom activation fixtures (not publication authority):' \
+        'Activation opt-in (dev lane only):' \
         '  ZCL_DEV_BENCH_ACTIVATE=1' \
-        '  ZCL_DEV_BENCH_CMD_HOTSWAP=<persistent-process swap command>' \
+        '  ZCL_DEV_BENCH_CMD_HOTSWAP=<resident swap command>' \
+        '    (default: make hotswap-apply HANDLER=core.status — the REAL' \
+        '    dev-lane activation path against the armed zcl23-dev node)' \
         '  ZCL_DEV_BENCH_CMD_RELOAD=<transactional reload fixture>' \
-        '  Repository activation commands still refuse during containment.' \
+        '    (process-level generation publication remains contained)' \
         '' \
         'Other controls: ZCL_DEV_BENCH_ITERATIONS, ZCL_DEV_BENCH_WARMUP,' \
         'ZCL_DEV_BENCH_OUTPUT, and ZCL_DEV_BENCH_CMD_<case> overrides.'
@@ -162,7 +166,7 @@ configure_cases()
         default_safe_watch_command app/services/src/block_source_policy.c)}"
     CASE_COMMAND[one_header]="${ZCL_DEV_BENCH_CMD_HEADER:-$(
         default_safe_watch_command lib/json/include/json/json.h)}"
-    CASE_COMMAND[hot_swap]="${ZCL_DEV_BENCH_CMD_HOTSWAP:-make --no-print-directory hotswap FILES=app/controllers/src/app_native_handlers.c PROBE=app.names.list}"
+    CASE_COMMAND[hot_swap]="${ZCL_DEV_BENCH_CMD_HOTSWAP:-make --no-print-directory hotswap-apply HANDLER=core.status}"
     CASE_COMMAND[process_reload]="${ZCL_DEV_BENCH_CMD_RELOAD:-$(
         default_safe_watch_command app/controllers/src/agent_controller.c |
             sed 's/ZCL_DEV_WATCH_MODE=check/ZCL_DEV_WATCH_MODE=reload/')}"
@@ -415,7 +419,7 @@ emit_artifact()
     elif [ "$ANY_FAILURE" -ne 0 ]; then
         next_action="inspect the first failed case; dependent benchmark cases were skipped instead of retrying the same broken prerequisite"
     elif ! is_true "$ACTIVATE"; then
-        next_action="verify-only baseline recorded; runtime publication is contained, so activation SLOs are intentionally not measured"
+        next_action="verify-only baseline recorded; rerun with ZCL_DEV_BENCH_ACTIVATE=1 to measure the dev-lane hot-swap SLO against the armed zcl23-dev node (process-level publication remains contained)"
     elif [ "$hot_status" = miss ] || [ "$reload_status" = miss ]; then
         next_action="inspect the per-case logs and optimize the measured miss"
     elif [ "$hot_status" = pass ] && [ "$reload_status" = pass ]; then
@@ -902,7 +906,7 @@ emit_status()
         "$HOTSWAP_TARGET_MS"
     printf '"process_reload":{"target_p95_ms":%s,"p95_ms":null,"status":"not_measured"}},' \
         "$RELOAD_TARGET_MS"
-    printf '"agent_next_action":"run make dev-loop-bench for a verify-only baseline; runtime publication is contained"}\n'
+    printf '"agent_next_action":"run make dev-loop-bench for a verify-only baseline; ZCL_DEV_BENCH_ACTIVATE=1 measures the armed dev-lane hot-swap SLO"}\n'
 }
 
 case "${1:-}" in

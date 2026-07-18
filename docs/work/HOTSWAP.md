@@ -2,9 +2,14 @@
 
 ZClassic23 has two native development mechanisms:
 
-1. The activatable single-handler module ABI. It is verify-only by default.
-   Live activation requires both `-hotswap-activate` and
-   `ZCL_HOTSWAP_ACTIVATE=1`, and the loader refuses the canonical datadir.
+1. The activatable single-handler module ABI. It is ARMED on the dev lane
+   (`zcl23-dev.service` passes `-hotswap-activate` and
+   `ZCL_HOTSWAP_ACTIVATE=1`; the loader still refuses the canonical datadir).
+   Verify-only probing (`dev.hotswap.probe`) skips the two arming gates but
+   still requires the dev datadir, path confinement, and the admit gauntlet.
+   The observable dev loop is `make hotswap-try HANDLER=<leaf> ARGS="<command>"`
+   (or `ZCL_HOTSWAP_PRELOAD=<module.so>` on any one-shot CLI call): the freshly
+   compiled body runs in the CLI process, seconds per edit.
 2. The native-leaf manifest/staging mechanism. Its build, simulation, loader
    tests, and state inspection remain available, but every public publication
    entry point is contained before loading or registry replacement.
@@ -62,6 +67,22 @@ under a reducer stage, consensus validation, the storage engine, a supervisor,
 or another state root. Reducers, consensus code, storage, and supervisors are
 never swappable.
 
+The current allowlist (all read-only `app/controllers/` leaves, each with its
+`ZCL_HOTSWAP_MODULE` emitter in the owning TU):
+
+| Leaf | Owning TU (`app/controllers/src/`) |
+|---|---|
+| `core.status` | `status_native_handlers.c` |
+| `core.network.peers.incidents` | `net_native_handlers.c` |
+| `ops.metrics` | `meta_native_handlers.c` |
+| `core.wallet.address.list` | `wallet_native_handlers.c` |
+| `core.consensus.utxo.audit` | `chain_native_handlers.c` |
+| `app.names.list` | `app_native_handlers.c` |
+
+Adding one is: `ZCL_HOTSWAP_MODULE(...)` emitter in the TU plus one allowlist
+row; the registry commit re-checks READY + EFFECT_READ, so a mutating leaf
+fails closed even if listed.
+
 ### Activation gate
 
 `dev.hotswap.probe` verifies a module without committing it. A live swap
@@ -73,17 +94,57 @@ requires all of:
 
 The canonical `~/.zclassic-c23` datadir is refused. The single authority check
 is `hotswap_activation_authorized()`. Verify-only results are always labeled
-`verify_only`.
+`verify_only`. `zcl23-dev.service` carries all three, so the dev lane is armed
+by default.
+
+The resident commit also needs a bound registry in the node process:
+`register_dev_native_hotswap_rpc()` binds the native catalog
+(`zcl_command_registry_set_active`) when the RPC is registered at boot —
+without it the commit fails closed with `no active registry bound`.
 
 Inspect activation state with:
 
 ```sh
-build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" \
-  ops state --subsystem=hotswap
+build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+  dumpstate hotswap
 ```
 
 The state object reports the flag, environment gate, containment, counters,
 active slots, and the last activation or rejection.
+
+### The observable loop: process-local preload
+
+A resident activation is recorded in the node's slot telemetry, but the node
+never dispatches native leaves in-process — only the one-shot CLI does
+(`zcl_command_registry_execute_json`). The loop that lets you SEE an edit is
+therefore process-local:
+
+```sh
+make hotswap-try HANDLER=core.status ARGS="core status"
+# or directly:
+ZCL_HOTSWAP_PRELOAD=/abs/module.so \
+  build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+  core status
+```
+
+`ZCL_HOTSWAP_PRELOAD` (dev builds only) installs the module's override in the
+CLI's own registry via `hotswap_activate_local()` and dispatches normally:
+the freshly compiled body fetches live data from the dev lane and renders it.
+Authority is probe-class (same as `dev.hotswap.probe`): the throwaway CLI is
+the operator's own process and the override dies with it, so the resident
+activation gate does not apply. Path confinement, the dev-datadir check, the
+admit gauntlet, and the registry's READY + EFFECT_READ re-check all still
+apply. The full edit→see cycle is one single-TU compile plus one CLI call.
+
+### Module link rule: `-Wl,-Bsymbolic` is mandatory
+
+Without it, the module trampoline's reference to its own freshly compiled body
+(e.g. `zcl_native_status_body`) is interposed by the host executable's older
+definition of the same symbol — the "swapped" handler silently runs the OLD
+code. `-Wl,-Bsymbolic` binds intra-module references locally while leaving
+host-only symbols (`json_*`, `node_rpc_call`, `zcl_native_bridge_run`, ...)
+to bind against the `-rdynamic` host at dlopen. Both `make hotswap-module-so`
+and `make hotswap-so` link with it.
 
 The current module self-test proves structure. An isolated behavioral
 precommit probe that dispatches the candidate against a bounded fixture and
@@ -222,15 +283,16 @@ zclassic23-dev dev hotswap probe \
   --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
 ```
 
-The manifest/staging variants remain typed containment refusals:
+The module-ABI commands (`dev.hotswap.probe` / `dev.hotswap.apply`) are live
+as documented under "Real module ABI" above. The GENERATION
+(manifest/staging) path stays contained:
 
-- `dev.hotswap.apply` returns `runtime_publication_contained` before loading,
-  forwarding, or registry replacement.
-- `dev.hotswap.probe` returns `resident_probe_contained` before forwarding or
-  loading. A discard-only in-process probe is unsafe because ELF constructors
-  run before manifest validation and destructors run during unload.
-- The resident native hot-swap endpoint returns the same refusal even on the
-  exact dev datadir.
+- `make hotswap` refuses before any load or publication; `make hotswap-so`
+  builds a read-only, unpublishable candidate only.
+- The resident generation loader (`hotswap_load_leaves`) has no production
+  caller; staging publication stops before commit.
+- `deploy-dev-lane.sh` public activation, the watcher `auto`/`apply` modes,
+  and `dev.change.apply` all refuse before generation relinking.
 
 Re-enable staging publication only with a disposable worker, pre-load
 sidecar/ELF/import policy, an immutable artifact receipt, and bounded fixtures.

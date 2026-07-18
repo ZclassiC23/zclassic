@@ -231,14 +231,18 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 
 ---
 
-## `dev.*` — native edit and proof loop (runtime publication contained)
+## `dev.*` — native edit and proof loop (runtime generation publication contained)
 
 Phase-0 deliberately refuses every runtime-generation publication authority.
-`dev.change.apply`, `dev.hotswap.apply`, `auto`/`apply` watchers, direct
+`dev.change.apply`, `auto`/`apply` watchers, direct
 activation backends, and generation-relinking revert cannot mutate a running
 generation. Build, plan, simulate, verify-only watch, and `.so` construction
-remain available. Resident probing is also contained because pre-admission
-`dlopen` can execute constructors. This containment is removed only when an
+remain available. The single-leaf module path is live on the armed dev lane:
+`dev.hotswap.probe` verifies a module `.so` in a throwaway CLI process (a
+resident probe is unsafe because pre-admission `dlopen` can execute
+constructors), and `dev.hotswap.apply` re-points one allowlisted read-only
+leaf in the running `zcl23-dev` node (gated; canonical refused). The
+whole-generation containment is removed only when an
 immutable source epoch, complete proof receipts, resident expected-epoch CAS,
 durable acceptance, and exact rollback form one transaction.
 
@@ -286,12 +290,13 @@ generation activation.
 
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
-| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"...","probe_leaf":"..."}'` | **contained — always refuses before `dlopen`** | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Registered compatibility entry point; returns `runtime_publication_contained` and never re-points command leaves |
-| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"...","probe_leaf":"..."}'` | **contained — always refuses before `dlopen`** | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Registered compatibility entry point; returns `resident_probe_contained` pending disposable-worker and ELF admission |
+| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"/abs/module.so"}'` | dev build, dev lane armed (`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` on `zcl23-dev.service`) | `so_path` (**absolute**, allowlisted read-only leaf) | `zcl.hotswap_activate.v1` | Forward to the resident `dev_hotswap_native` RPC: dlopen + admit gauntlet + live commit of one allowlisted leaf override in the running dev node; canonical datadir refused |
+| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"/abs/module.so"}'` | dev build | `so_path` (**absolute**) | `zcl.hotswap_activate.v1` | Verify-only in-process probe: dlopen + ABI-validate + module self_test, never commits (`verify_only:true`) |
 
 See [`docs/work/HOTSWAP.md`](./work/HOTSWAP.md) for the full mechanism, ABI,
-eligibility rules, and re-enable gates. Native apply and probing are both
-contained.
+eligibility rules, the armed dev-lane gates, and the observable
+`ZCL_HOTSWAP_PRELOAD` / `make hotswap-try` loop. The native-leaf generation
+(manifest/staging) mechanism remains contained.
 
 ### `dev.loop.*` (persistent save-to-verdict watcher)
 

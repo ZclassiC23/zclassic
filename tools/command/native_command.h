@@ -24,6 +24,13 @@ int zcl_native_command_main(const char *root_word,
                             const char *const *args, int nargs,
                             const char *datadir, int rpc_port);
 
+/* Ensure the one-shot JSON-RPC client (datadir cookie + port) is initialized
+ * from the CLI-resolved -datadir/-rpcport. Handlers that call node_rpc_call()
+ * or node_rpc_client_datadir() WITHOUT going through the bridge dispatch
+ * (e.g. the dev hot-swap handlers) must call this first — the bridge would
+ * otherwise leave the client global empty in a fresh CLI process. */
+void zcl_native_bridge_ensure_rpc(void);
+
 /* Generic transport binding for READ-ONLY Core/Ops leaves. Resolves the
  * leaf's canonical path to exactly one dispatch: either a transport-neutral
  * body function or, for a pure pass-through leaf, the backing JSON-RPC method

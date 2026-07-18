@@ -137,6 +137,22 @@ bool hotswap_activate(const char *so_path,
                       void *cb_ctx,
                       struct hotswap_activate_report *report);
 
+/* Process-local variant for the operator's own one-shot CLI process: always
+ * commits (never verify-only) but SKIPS the resident activation gate
+ * (-hotswap-activate + ZCL_HOTSWAP_ACTIVATE=1) — a throwaway CLI holds
+ * probe-class authority (identical to dev.hotswap.probe), and the override it
+ * installs dies with the process. The dev-datadir requirement, path
+ * confinement, and the full admit gauntlet all still apply; the registry
+ * commit itself re-checks READY + EFFECT_READ. This is the observable dev
+ * loop: ZCL_HOTSWAP_PRELOAD=<module.so> zclassic23-dev <leaf> renders from
+ * the freshly compiled body with no resident restart.
+ * DEV-ONLY: no release caller exists; the implementation lives inside the
+ * ZCL_DEV_BUILD region like hotswap_activate. */
+bool hotswap_activate_local(const char *so_path,
+                            const char *resolved_datadir,
+                            hotswap_commit_handler_cb commit_cb,
+                            struct hotswap_activate_report *report);
+
 /* Pure admission check for a resolved module: ABI version, required fields,
  * the swappable shape-leaf allowlist, and the module's own self_test — the
  * exact gauntlet hotswap_activate applies after dlsym, factored out so it is

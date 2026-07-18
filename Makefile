@@ -16,6 +16,18 @@ endif
 ZCL_STANDALONE_CLEAN := $(if $(filter clean coverage-clean,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
 ZCL_ZERO_SHA256 = 0000000000000000000000000000000000000000000000000000000000000000
 
+# The observable hot-swap loop (hotswap-try / hotswap-apply) delegates the
+# module rebuild to tools/dev/hotswap-module-fast.sh, which works from cached
+# compile metadata and falls back to a nested authoritative `make
+# hotswap-module-so` whenever that cache is stale. Its parse therefore never
+# needs the whole-tree source identity, the compiler/toolchain epochs, or the
+# object depfile graphs — skipping them takes the observable loop from ~13 s
+# to ~2 s. The set is exact: any other goal (including hotswap-module-so
+# itself, which stamps artifacts with the real identity) forces the full
+# authoritative parse.
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply
+ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_LOOP_GOALS),$(MAKECMDGOALS))),,1),)
+
 # Linked vendor archives are part of the exact source identity. On a fresh
 # clone they do not exist until the vendor builder runs, so Make must cross a
 # parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
@@ -60,8 +72,14 @@ endif
 # `git update-index -q --refresh` first: a fresh `git clone` leaves stale stat
 # info in the index, so `git diff-index` reports spurious "-dirty" on a pristine
 # tree until the index is refreshed. Refreshing compares content and clears the
-# false positive, while a genuinely modified tree still reports -dirty.
+# false positive, while a genuinely modified tree still reports -dirty. The
+# hot-swap loop never bakes a commit id into an artifact, so it skips the git
+# probes (and their index refresh) entirely.
+ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
+BUILD_COMMIT := hotswap-loop
+else
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
+endif
 # A parent Make/watcher may freeze its already-captured record on the recursive
 # command line.  GNU Make gives command-line variables precedence, but an
 # unconditional `:= $(shell ...)` still executes the discarded shell RHS and
@@ -72,6 +90,10 @@ BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$
 ifneq ($(origin BUILD_SOURCE_RECORD),command line)
 ifeq ($(ZCL_STANDALONE_CLEAN),1)
 BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
+else ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
+# The hot-swap loop recipe re-derives any identity it needs through the
+# authoritative nested make; the zero record is never stamped into an artifact.
+BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
 else
 BUILD_SOURCE_RECORD := $(shell tools/dev/source-identity.sh capture-record 2>/dev/null || echo unknown 0 unknown)
 endif
@@ -81,7 +103,9 @@ BUILD_CLEAN := $(word 2,$(BUILD_SOURCE_RECORD))
 BUILD_MUTATION := $(word 3,$(BUILD_SOURCE_RECORD))
 # Keep standalone cleanup usable on a host whose compiler/toolchain has already
 # been removed. Every target that can create an artifact remains fail-closed.
-BUILD_EPOCH_CLEAN_ONLY := $(ZCL_STANDALONE_CLEAN)
+# The hot-swap loop goals join this epoch/identity-free parse: their recipes
+# touch no compile epoch, lease, or identity stamp.
+BUILD_EPOCH_CLEAN_ONLY := $(if $(ZCL_STANDALONE_CLEAN)$(ZCL_HOTSWAP_LOOP_ONLY),1,)
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 BUILD_SOURCE_RECORD_VALID := yes
 else
@@ -271,12 +295,24 @@ DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS) $(DEV_ONLY_SRCS)
 DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_OBJ_COMPLETE = $(DEV_OBJ_DIR)/.complete
 
+# pkg-config probes feed only compile/link flag expansion. The hot-swap loop
+# compiles nothing inside this parse (the fast path replays cached flags), so
+# it skips the probes.
+ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
+GTK_CFLAGS :=
+GTK_LIBS   :=
+GTK_DEF    :=
+WEBKIT_CFLAGS :=
+WEBKIT_LIBS   :=
+WEBKIT_DEF    :=
+else
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
 GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
 WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
+endif
 
 # Binary-hardening flags, applied explicitly so the guarantees do not depend on
 # distro/toolchain defaults (a judge running `checksec` sees them every build):
@@ -428,7 +464,11 @@ $(DEV_LEASE): FORCE
 # lose header invalidation merely because this table was not updated.
 ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict
 ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
-ifeq ($(words $(MAKECMDGOALS)),1)
+ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
+# The hot-swap loop recipes build no objects through make's pattern rules; the
+# fast path tracks its own single-TU depfile. Skip every depfile graph.
+ZCL_DEPFILE_PROFILES :=
+else ifeq ($(words $(MAKECMDGOALS)),1)
 ZCL_DEPFILE_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
 ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := build-only
@@ -1013,7 +1053,7 @@ hotswap-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	  -DZCL_HOTSWAP_PROBE_LEAF=\"$$probe\" \
 	  -c -o "$$tmp_o" "$$selected" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
-	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
+	  -Wl,-z,noexecstack -Wl,-Bsymbolic -o "$$tmp_so" "$$tmp_o" >&2; \
 	artifact_digest="$$(sha256sum "$$tmp_so" | awk '{print $$1}')"; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \
@@ -1050,6 +1090,13 @@ hotswap: $(VIEW_GEN_HEADERS)
 # bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
 # line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
 # docs/work/HOTSWAP.md "Real module ABI".
+#
+# HOTSWAP_MODULE_LDFLAGS is the single source of truth for the module link,
+# shared by this recipe and the fast path's cached flags.env. -Wl,-Bsymbolic
+# is LOAD-BEARING: without it a dlopen'd handler's internal calls interpose
+# back onto the resident (old) code and the swap silently does nothing.
+HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
+	-Wl,-z,noexecstack -Wl,-Bsymbolic
 hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	@if [ -z "$(HANDLER)" ]; then \
 	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
@@ -1057,13 +1104,14 @@ hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	src="$$(sed -n 's/^[[:space:]]*HOTSWAP_SWAPPABLE("$(HANDLER)"[[:space:]]*,[[:space:]]*"\([^"]*\)").*/\1/p' config/hotswap_swappable.def | head -1)"; \
 	[ -n "$$src" ] || { echo "hotswap-module-so: handler '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
 	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
-	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
+	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)" "$(HOTSWAP_SO_DIR)/fast"; \
 	safe="$$(printf '%s' "$(HANDLER)" | tr -c 'A-Za-z0-9_.-' '_')"; \
 	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
 	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
 	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.module.XXXXXX.so")"; \
-	trap 'rm -f "$$tmp_o" "$$tmp_so"' EXIT HUP INT TERM; \
+	tmp_env="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.flags.XXXXXX")"; \
+	trap 'rm -f "$$tmp_o" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
 	publish_exact() { \
 	  src="$$1"; dst="$$2"; \
 	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
@@ -1071,17 +1119,71 @@ hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	  rm -f "$$src"; \
 	}; \
 	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -c -o "$$tmp_o" "$$src" >&2; \
-	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
-	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
+	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \
 	  echo "hotswap-module-so: REFUSING mismatched existing object $$o" >&2; exit 3; }; \
 	publish_exact "$$tmp_so" "$$so" || { \
 	  echo "hotswap-module-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; }; \
 	chmod a-w "$$o" "$$so"; \
+	{ \
+	  printf '%s\n' '# zcl.hotswap_fast_flags.v1 — cached by make hotswap-module-so for tools/dev/hotswap-module-fast.sh'; \
+	  printf 'CC=%s\n' '$(CC)'; \
+	  printf 'DEV_CFLAGS=%s\n' '$(DEV_CFLAGS)'; \
+	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
+	} > "$$tmp_env"; \
+	mv -f -- "$$tmp_env" "$(HOTSWAP_SO_DIR)/fast/flags.env"; \
 	trap - EXIT HUP INT TERM; \
 	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
 	echo "$$so"
+
+.PHONY: hotswap-apply
+# make hotswap-apply HANDLER=core.status
+# One shot from edit to live: build the single-handler module .so for HANDLER
+# (hotswap-module-so, seconds) and hand it to the RUNNING dev node's resident
+# dev_hotswap_native RPC via `dev hotswap apply`, which re-points that command
+# leaf in the resident registry with no restart. Gated inside the node by
+# hotswap_activation_authorized() (-hotswap-activate + ZCL_HOTSWAP_ACTIVATE=1 +
+# the exact dev datadir); only config/hotswap_swappable.def read-only leaves
+# can ever activate, and the canonical datadir is hard-refused. Prints the
+# zcl.hotswap_activate.v1 report. See docs/work/HOTSWAP.md "Real module ABI".
+hotswap-apply:
+	@if [ -z "$(HANDLER)" ]; then \
+	  echo "usage: make hotswap-apply HANDLER=core.status" >&2; exit 2; fi
+	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
+	[ -n "$$so" ] && [ -f "$$so" ] || { \
+	  echo "hotswap-apply: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
+	[ -x build/bin/zclassic23-dev ] || { \
+	  echo "hotswap-apply: build/bin/zclassic23-dev missing — run make fast-rebuild first" >&2; exit 2; }; \
+	echo "hotswap-apply: activating $$so" >&2; \
+	build/bin/zclassic23-dev -datadir=$(HOME)/.zclassic-c23-dev -rpcport=18252 \
+	  dev hotswap apply --input="{\"so_path\":\"$$so\"}"
+
+.PHONY: hotswap-try
+# make hotswap-try HANDLER=core.status ARGS="core status"
+# The OBSERVABLE dev loop: build the single-handler module .so for HANDLER,
+# then run ARGS in a one-shot CLI with ZCL_HOTSWAP_PRELOAD — the freshly
+# compiled body executes in the CLI process (probe-class authority; the
+# override dies with the process) and fetches live data from the dev lane.
+# No resident restart; the full edit->see loop is seconds. Only
+# config/hotswap_swappable.def read-only leaves can be built into a module.
+# The module rebuild goes through tools/dev/hotswap-module-fast.sh (cached
+# compile metadata, no second make parse on the happy path) and falls back to
+# the authoritative `hotswap-module-so` whenever the cache is stale.
+hotswap-try:
+	@if [ -z "$(HANDLER)" ]; then \
+	  echo "usage: make hotswap-try HANDLER=core.status ARGS=\"core status\"" >&2; exit 2; fi
+	@if [ -z "$(ARGS)" ]; then \
+	  echo "hotswap-try: ARGS is required, e.g. ARGS=\"core status\"" >&2; exit 2; fi
+	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
+	[ -n "$$so" ] && [ -f "$$so" ] || { \
+	  echo "hotswap-try: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
+	[ -x build/bin/zclassic23-dev ] || { \
+	  echo "hotswap-try: build/bin/zclassic23-dev missing — run make fast-rebuild first" >&2; exit 2; }; \
+	ZCL_HOTSWAP_PRELOAD="$$so" build/bin/zclassic23-dev \
+	  -datadir=$(HOME)/.zclassic-c23-dev -rpcport=18252 $(ARGS)
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(VIEW_GEN_HEADERS)
@@ -3361,7 +3463,11 @@ $(COV_BUILD_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(COV
 
 $(COV_BUILD_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
+# The coverage depfile graph is unused by the hot-swap loop goals; keep its
+# import unconditional for every other goal (it predates the profile table).
+ifneq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
 -include $(COV_OBJS:.o=.d)
+endif
 
 .PHONY: test_zcl_cov test-zcl-cov-locked
 test_zcl_cov:

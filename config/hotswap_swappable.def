@@ -29,3 +29,10 @@ HOTSWAP_SWAPPABLE("core.status", "app/controllers/src/status_native_handlers.c")
 HOTSWAP_SWAPPABLE("core.network.peers.incidents", "app/controllers/src/net_native_handlers.c")
 /* Read-only operator metrics projection (controller leaf). */
 HOTSWAP_SWAPPABLE("ops.metrics", "app/controllers/src/meta_native_handlers.c")
+/* Read-only wallet address projection (controller leaf). */
+HOTSWAP_SWAPPABLE("core.wallet.address.list", "app/controllers/src/wallet_native_handlers.c")
+/* Read-only UTXO drift-audit projection (controller leaf; an audit VIEW, not
+ * consensus validation — validation/state roots stay unswappable). */
+HOTSWAP_SWAPPABLE("core.consensus.utxo.audit", "app/controllers/src/chain_native_handlers.c")
+/* Read-only ZNAM name-index projection (controller leaf). */
+HOTSWAP_SWAPPABLE("app.names.list", "app/controllers/src/app_native_handlers.c")

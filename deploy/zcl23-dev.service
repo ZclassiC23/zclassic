@@ -47,7 +47,17 @@ ExecStart=%h/.local/lib/zclassic23-dev/current/zclassic23-dev \
     -addnode=157.90.223.151 \
     -addnode=85.239.232.93 \
     $ZCL_LANE_SNAPSHOT_LOADER_FLAG \
+    -hotswap-activate \
     -showmetrics=0
+
+# In-process hot-swap is ARMED on this lane only: -hotswap-activate +
+# ZCL_HOTSWAP_ACTIVATE=1 + the exact dev datadir are the three gates
+# hotswap_activation_authorized() requires (canonical datadir is hard-refused
+# inside lib/hotswap). Only the config/hotswap_swappable.def read-only
+# controller leaves can be re-pointed; consensus/state roots stay unswappable
+# (compiled-in allowlist + check-hotswap-swappable-shape). Release builds
+# carry no dlopen surface at all.
+Environment="ZCL_HOTSWAP_ACTIVATE=1"
 
 # Restart=always keeps the binary's self-recovery escape hatches effective, but
 # the unit-level StartLimit above bounds a dead candidate. Transactional deploy

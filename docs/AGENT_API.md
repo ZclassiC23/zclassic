@@ -969,9 +969,11 @@ validation-pack hold. `build_commit` remains display-only GitHub trace
 metadata and never grants trust or freshness.
 
 Runtime generation publication is Phase-0 contained. Native
-`dev.change.apply`, `dev.hotswap.apply`, auto/apply watcher modes, Make
-deploy/stage/hot-swap targets, and direct activation scripts all refuse before
-mutation; caller-provided source identity is not authority. `dev.vcs.revert`
+`dev.change.apply`, auto/apply watcher modes, Make
+deploy/stage targets, and direct activation scripts all refuse before
+mutation; caller-provided source identity is not authority. The one live
+runtime surface is the gated swappable-leaf hot-swap (`make hotswap-try` /
+`make hotswap-apply`) on the armed `zcl23-dev` lane. `dev.vcs.revert`
 is source-only with `relink_generation=false`; `true` refuses before the source
 revert. Existing
 `zcl.agent_dev_deploy.v1` records and generation links remain readable for
@@ -1141,9 +1143,11 @@ This is a C23 project, so the edit loop should compile only what changed.
   optional consumer; generation and freshness reporting work without it.
 - `make dev-loop-bench` writes `zcl.dev_loop_bench.v1` with configuration,
   source/host identity, per-case raw millisecond samples, failures, p50/p95,
-  and separate hot-swap/reload SLO verdicts. Activation cases remain
-  `not_measured` during containment; there is no operator opt-in. Build/check
-  timings cannot satisfy an activation SLO.
+  and separate hot-swap/reload SLO verdicts. With `ZCL_DEV_BENCH_ACTIVATE=1`
+  the hot_swap case measures the REAL dev-lane path
+  (`make hotswap-apply HANDLER=core.status`, resident leaf re-point in the
+  armed `zcl23-dev` node); process-reload still needs an operator-supplied
+  fixture command because generation publication remains contained.
 - `zcl.hotswap_manifest.v2` currently admits only stateless native leaf sets. A
   load validates schema/host ABI, capabilities, build/source identities, exact
   input hash, mapped tests/probes, stateless state schema, and quiescence before
@@ -1155,15 +1159,20 @@ This is a C23 project, so the edit loop should compile only what changed.
   Successful generations stay mapped so in-flight calls finish against their
   original code. Inspect provenance and rejection detail through
   `zclassic23 dumpstate hotswap`, schema `zcl.hotswap_generation.v2`.
-- The hot-swap loader and manifest contract can still be built and simulated,
-  but resident probing and publication are not reachable.
-  `make hotswap`, `tools/dev/hotswap-running-dev.sh`,
-  `dev.hotswap.apply`, `dev_hotswap`, and `dev.hotswap.probe` all refuse before `dlopen` or
-  registry replacement.
-  There is no exit-69 reload fallback and no asynchronous post-swap stage.
-  Use `make hotswap-sim` for the focused
-  deterministic simulated-network proof; `make sim-fast` remains the broader
-  checked-in scenario and seeded replay suite.
+- The single-handler module ABI IS live on the dev lane
+  (`zcl23-dev.service` passes `-hotswap-activate` +
+  `ZCL_HOTSWAP_ACTIVATE=1`; canonical refused). `make hotswap-module-so
+  HANDLER=<leaf>` builds one allowlisted read-only leaf into a module `.so`;
+  `make hotswap-apply HANDLER=<leaf>` activates it in the running dev node;
+  `make hotswap-try HANDLER=<leaf> ARGS="<command>"` (or
+  `ZCL_HOTSWAP_PRELOAD=<module.so>` on a one-shot CLI) runs the freshly
+  compiled body in the CLI process — the observable seconds-scale dev loop.
+  The GENERATION (manifest/staging) mechanism stays contained: `make hotswap`,
+  `tools/dev/hotswap-running-dev.sh`, `deploy-dev-lane.sh` public activation,
+  watcher `auto`/`apply` modes, and `dev.change.apply` still refuse before
+  publication. Use `make hotswap-sim` for the focused deterministic
+  simulated-network proof; `make sim-fast` remains the broader checked-in
+  scenario and seeded replay suite.
 - For no-build terminal probes, prefer native commands like `zclassic23 status`
   / `zclassic23 dumpstate <subsystem>` run directly against a binary that
   already exists: `build/bin/zclassic23 <command>` for the source-tree node, or

@@ -46,13 +46,15 @@ historical fixture passes, then deploy/restart intentionally.
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
 - **There is currently no runtime-generation publication authority.**
-  `dev.change.apply`, `dev.hotswap.apply`, publication watcher modes,
+  `dev.change.apply`, publication watcher modes,
   `make hotswap`, `deploy-dev*`, `agent-deploy-fast`, `agent-stage-dev`, and
   the direct deploy/hot-swap scripts all hard-refuse. Remote update/install/
   restart variables and `lane_recover --apply` also refuse before SSH, file,
   datadir, or service mutation. A source ID, environment switch, or direct
   script call does not bypass containment. Use build, simulation, read-only
-  plans and verify/check watch only; resident hot-swap probing is contained.
+  plans and verify/check watch; the one live runtime surface is the gated
+  swappable-leaf hot-swap (`make hotswap-try` / `make hotswap-apply`) on the
+  armed `zcl23-dev` lane.
 - **Dev recovery is plan-only during containment.** `make agent-dev-recover`
   is read-only. `ARGS=--apply`, direct `recover-dev-lane.sh --apply`, and test
   environment variables cannot relink an existing generation or restart the
@@ -65,17 +67,30 @@ historical fixture passes, then deploy/restart intentionally.
   wallet/key/crypto state, reducers, and process ownership are
   `reload_required`. Never widen the allowlist to silence that blocker.
 - **Do not interpret a contained hot-swap call as a transport failure.**
-  `make hotswap`, `tools/dev/hotswap-running-dev.sh`, native
-  `dev.hotswap.apply` and `dev.hotswap.probe` refuse before `dlopen` or
-  resident RPC mutation. There is no exit-69 reload fallback and no successful
-  committed generation to inspect during containment.
+  `make hotswap` and `tools/dev/hotswap-running-dev.sh` refuse before
+  `dlopen` or resident RPC mutation. There is no exit-69 reload fallback and
+  no successful committed generation to inspect during containment. This does
+  NOT apply to the swappable-leaf module path: `dev.hotswap.probe`
+  (verify-only, throwaway CLI process) works, and `dev.hotswap.apply`
+  live-commits one allowlisted read-only leaf in the armed `zcl23-dev` node.
 - **ZVCS revert is source-only.** `dev.vcs.revert` is available with
   `relink_generation=false`. Passing `true` refuses before the source revert;
   it never rebuilds, activates, or guesses a binary generation.
 - **Do not infer latency SLOs from a safe/default benchmark run.**
-  `make dev-loop-bench` cannot opt into hot-swap or process-reload activation
-  while containment is active. Build/check timings cannot support hot-swap or
+  `make dev-loop-bench` skips hot-swap and process-reload activation cases by
+  default; `ZCL_DEV_BENCH_ACTIVATE=1` opts into measuring the armed dev-lane
+  activate path. Build/check timings alone cannot support hot-swap or
   reload SLO claims.
+- **Module `.so`s must keep `-Wl,-Bsymbolic` — without it a "swapped" handler
+  silently runs the OLD code.** ELF interposition lets the resident binary's
+  definition win for intra-module calls; `-Bsymbolic` binds internal calls
+  inside the module. Both module link lines in the Makefile carry it — never
+  drop it from a new link path.
+- **A flagless CLI invocation targets the CANONICAL datadir.** For dev-lane
+  work pass `-datadir=$HOME/.zclassic-c23-dev -rpcport=18252`
+  (`make hotswap-try` / `make hotswap-apply` do this for you). A bare
+  `build/bin/zclassic23-dev <cmd>` falls back to the canonical default
+  datadir/ports and talks to the live node, not the dev lane.
 - **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
   It derives commands from the real `DEV_OBJS` recipes, including generated
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records

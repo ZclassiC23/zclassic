@@ -278,11 +278,14 @@ dev
     └── show <failure-id>
 ```
 
-`dev.hotswap.probe` and `dev.hotswap.apply` remain registered for compatibility
-but are deliberately contained: both return structured refusals before
-`dlopen`. A resident discard-only probe is not safe because ELF constructors
-run before manifest admission. The native development hot-swap command and
-resident mutation RPC are contained too. Full mechanism, ABI, and prerequisites
+`dev.hotswap.probe` is verify-only in the CLI's own throwaway process:
+`dlopen` + ABI-validate + self-test of a module `.so`, never a commit. A
+resident discard-only probe is not safe because ELF constructors run before
+manifest admission. `dev.hotswap.apply` forwards to the resident node's
+`dev_hotswap_native` RPC and is live on the armed `zcl23-dev` lane — gated by
+`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir
+(canonical hard-refused), re-pointing only the six read-only leaves on
+`config/hotswap_swappable.def`. Full mechanism, ABI, and prerequisites
 for disposable probing/publication: `docs/work/HOTSWAP.md`.
 
 The ordinary agent runs `loop ensure` in verify mode once, edits files, then
@@ -290,7 +293,8 @@ optionally calls `loop wait` for the next sealed cycle epoch. The persistent loo
 classification, dependency selection, compilation, proofs, and durable
 verification verdicts. `auto`/`apply` watcher modes and `dev.change.apply`
 currently refuse before publication; use `dev.change.plan`, the verify watcher,
-build targets and simulations instead; resident candidate probing is contained.
+build targets and simulations instead. The gated swappable-leaf hot-swap
+(`make hotswap-try` / `make hotswap-apply`) is the live runtime surface.
 
 `dev.vcs.revert` remains a source-only operation when
 `relink_generation=false`. A request with `relink_generation=true` refuses
@@ -711,12 +715,16 @@ without renaming the grammar.
   `zcl_command_registry_menu_json`/`_search_json`;
   `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
   release binary links no dev-mutation executors.
-- **Implemented, publication contained (2026-07-12):** Tier-1 in-process
-  hot-swap has a native `native.leaves` provider; both native apply and
-  resident probe paths are currently contained before `dlopen`.
-  `dev.hotswap.apply` and resident mutation paths refuse before loading or
-  re-pointing handlers. They remain contained until the full immutable
-  epoch/proof/CAS/rollback transaction exists. See `docs/work/HOTSWAP.md`.
+- **Live on the dev lane (swappable leaves); generation publication contained:**
+  Tier-1 in-process hot-swap has a native `native.leaves` provider, and the
+  single-leaf module path is live on the armed `zcl23-dev` lane:
+  `dev.hotswap.probe` verifies a module `.so` in a throwaway CLI process, and
+  `dev.hotswap.apply` re-points one allowlisted read-only leaf
+  (`config/hotswap_swappable.def`) in the running dev node — gated on
+  `-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir,
+  canonical refused. Whole-generation publication stays contained until the
+  full immutable epoch/proof/CAS/rollback transaction exists. See
+  `docs/work/HOTSWAP.md`.
 
 Exit: an LLM can find and run every read-only operation through native
 discovery. **Met for the registry surface** — every declared root
@@ -827,9 +835,11 @@ Known gaps before calling the interface production-ready:
 - App generation loading is not yet wired to the public App ABI;
 - `ready` versus `planned` metadata is not yet emitted by every menu node;
 - runtime generation publication is Phase-0 contained: `dev.change.apply`,
-  `dev.hotswap.apply`, publication watcher modes, generation-relinking revert,
+  publication watcher modes, generation-relinking revert,
   and direct Make/script activation entry points refuse. Proof-only watcher,
-  build, simulation, `.so` construction, and hot-swap probe paths remain.
+  build, simulation, `.so` construction, and hot-swap probe paths remain —
+  plus the live gated leaf hot-swap (`dev.hotswap.apply` /
+  `make hotswap-apply`) on the armed dev lane.
 
 ## 22. Migration inventory baseline
 

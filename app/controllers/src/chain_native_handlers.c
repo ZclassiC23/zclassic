@@ -161,3 +161,37 @@ static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
 
 ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
 #endif /* ZCL_HOTSWAP_GEN */
+
+/* REAL (activatable) single-handler module ABI export. Compiled only under a
+ * `make hotswap-module-so HANDLER=core.consensus.utxo.audit` build
+ * (-DZCL_HOTSWAP_MODULE_GEN); expands to nothing in the node/release TU. The
+ * module re-points ONLY the `core.consensus.utxo.audit` leaf to this TU's
+ * freshly-compiled body via the same zcl_native_bridge_run() seam the leaf
+ * provider uses. See hotswap_module.h and hotswap_activate() (lib/hotswap).
+ * NOTE: this leaf is a READ-ONLY audit projection — it is not consensus
+ * validation; consensus/state roots remain unswappable (the allowlist +
+ * check-hotswap-swappable-shape hard line). */
+#ifdef ZCL_HOTSWAP_MODULE_GEN
+#include "hotswap/hotswap_module.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void module_tramp_utxo_audit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_utxo_audit_body, reply);
+}
+
+/* The module's own health hook — runs before the loader publishes it. Kept
+ * node-independent (no RPC): a structural OK. */
+static bool module_selftest_utxo_audit(char *err, size_t cap)
+{
+    (void)err;
+    (void)cap;
+    return true;
+}
+
+ZCL_HOTSWAP_MODULE("core.consensus.utxo.audit",
+                   module_tramp_utxo_audit,
+                   module_selftest_utxo_audit)
+#endif /* ZCL_HOTSWAP_MODULE_GEN */

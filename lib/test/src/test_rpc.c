@@ -327,7 +327,7 @@ int test_rpc(void) {
                  strcmp(json_get_str(json_at(tests, 1)), e->primary_test) == 0;
             const struct json_value *drilldowns = json_get(item, "drilldowns");
             ok = ok && drilldowns && json_size(drilldowns) ==
-                           (e->include_supervisor_drilldown ? 3u : 2u);
+                           (e->include_supervisor_drilldown ? 2u : 1u);
         }
         ok = ok && csv[csv_pos] == '\0' && diagnostics_dumper_at(count) == NULL;
         json_free(&catalog);

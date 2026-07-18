@@ -194,7 +194,8 @@ indexing status and an executable refresh command.
 `make dev-loop-bench` runs controlled no-op, controller, service, header,
 hot-swap, and process-reload cases and writes `zcl.dev_loop_bench.v1` with raw
 samples plus p50/p95 values. Hot-swap and reload are skipped unless the operator
-explicitly opts into activation, so an SLO is never claimed from build-only
+explicitly opts in with `ZCL_DEV_BENCH_ACTIVATE=1`, which measures the armed
+dev-lane hot-swap activate path, so an SLO is never claimed from build-only
 timings. `zclassic23 agentbuild` also exposes the latest benchmark status.
 
 In-process generation v2 is deliberately narrower than process reload. Its
@@ -210,9 +211,10 @@ land, a committed hot-swap will remain process-local and disappear on restart;
 durable convergence must use the same receipt-bound activation transaction.
 No watcher currently schedules or stages a post-swap generation. Inspect any
 pre-containment provenance with
-`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`). The contained
-resident mutation method returns `runtime_publication_contained`; release,
-canonical, and soak nodes never register it. Build and verify without resident
+`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`). The resident
+mutation RPC (`dev_hotswap_native`) is dev-build only — release, canonical,
+and soak nodes never register it — and whole-generation publication entry
+points stay Phase-0 contained. Build and verify without resident
 loading:
 
 ```bash
@@ -221,9 +223,16 @@ make t ONLY=hotswap_loader
 make hotswap-sim
 ```
 
-`make hotswap`, both native hot-swap commands, and
+`make hotswap` and
 `tools/dev/hotswap-running-dev.sh` always
-refuse and never call the loader. Run
+refuse and never call the loader. The live runtime surface is the single-leaf
+module loop: `make hotswap-try HANDLER=<leaf> ARGS="<cmd>"` rebuilds one
+swappable leaf's module `.so` and runs the command in a one-shot CLI with
+`ZCL_HOTSWAP_PRELOAD` against the dev lane; `make hotswap-apply HANDLER=<leaf>`
+commits the override in the running `zcl23-dev` node, gated on
+`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir
+(canonical refused). Only the six read-only leaves on
+`config/hotswap_swappable.def` are eligible. Run
 `make hotswap-sim` for the focused deterministic simulated-network proof, and
 `make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
 Each successful mapping keeps both its code mapping and the exact artifact

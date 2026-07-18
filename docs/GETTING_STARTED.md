@@ -62,12 +62,15 @@ build/bin/zclassic23 status               # native node status
 build/bin/zclassic23-dev status           # dev-lane native status
 ```
 
-Runtime generation publication is Phase-0 contained. Native apply commands,
+Runtime generation publication is Phase-0 contained. `dev.change.apply`,
 auto/apply watcher modes, `make hotswap`, `deploy-dev*`,
 `agent-deploy-fast`, direct activation scripts, and generation-relinking revert
 all refuse. Use verify/check watch, builds, tests, simulations,
 `make hotswap-so` plus build/test verification while the unified immutable
-source/proof/CAS/rollback transaction is completed.
+source/proof/CAS/rollback transaction is completed. The live runtime loop is
+the swappable-leaf hot-swap: `make hotswap-try HANDLER=<leaf> ARGS="<cmd>"`
+(process-local, seconds) and `make hotswap-apply HANDLER=<leaf>` (resident
+commit on the armed `zcl23-dev` lane; canonical refused).
 
 Build details, dependency versions, and reproducible-release notes are in
 `docs/BUILD.md`.

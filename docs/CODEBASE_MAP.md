@@ -92,8 +92,10 @@ The unified local loop is `tools/dev/watch-dev-lane.sh` (`make dev-watch`): it
 classifies a coalesced save, runs the shared impact plan, and selects check,
 stage, transactional reload, or the narrow stateless hot-swap path. Its
 public surface is currently verify/check only. `MODE=auto`/`apply`, direct
-`dev change apply`, runtime hot-swap, stage, reload, and generation relinking
-all fail closed during Phase-0 containment.
+`dev change apply`, watcher hot-swap/stage/reload modes, and generation
+relinking all fail closed during Phase-0 containment. The live hot-swap loop
+is the swappable-leaf module path (`make hotswap-try` / `make hotswap-apply`,
+see §4), not a watcher mode.
 `tools/dev/deploy-dev-lane.sh` contains the intended immutable
 content-addressed generation transaction (activation lock,
 `current`/`last-good` links, bounded probes, rollback, and rejection
@@ -103,7 +105,10 @@ compilation-database generation and freshness; `dev-loop-bench.sh` owns the
 machine-readable latency evidence. Runtime hot-swap loading lives below the app
 layer in `lib/hotswap/`; the dev-only hot-swap RPC and generation commit are
 registered by `tools/command/native_dev_hotswap.{c,h}` on the exact isolated
-dev datadir. Mutation `dev_hotswap` is contained; the release build keeps a
+dev datadir. `dev_hotswap` mutation is live on the armed `zcl23-dev` lane,
+gated on `-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev
+datadir (canonical hard-refused); only the six read-only leaves on
+`config/hotswap_swappable.def` can ever activate. The release build keeps a
 refusal stub.
 `tools/dev/hotswap-running-dev.sh` is a contained former persistent transport;
 it always refuses. There is no auto-reload fallback during containment.
@@ -567,7 +572,7 @@ Confirm the target before acting.
 | `build/bin/zclassic23-dev dev change apply --input='{"files":[...]}'` | Contained compatibility entry point: returns `publication_contained` before runtime mutation. Use `dev change plan`, verify/check watch, and focused proofs. |
 | `build/bin/zclassic23-dev dev vcs revert --input='{"to":"<commit>","relink_generation":false}'` | Source-only revert remains available. `relink_generation=true` refuses before source mutation and cannot activate a binary. |
 | `make agent-index` | Atomically generate root `compile_commands.json` from dry-runs of the exact `DEV_OBJS` recipes, including generated headers and target-specific `-Og`/hot-bucket `-O2` flags. Writes hash/freshness metadata under `.cache/zcl-agent-index/`; clangd is optional. |
-| `make dev-loop-bench` | Run controlled developer-loop cases and write `zcl.dev_loop_bench.v1` raw samples plus p50/p95. Activation cases remain skipped/contained, so build/check timings cannot masquerade as hot-swap or reload SLO proof. |
+| `make dev-loop-bench` | Run controlled developer-loop cases and write `zcl.dev_loop_bench.v1` raw samples plus p50/p95. Activation cases stay skipped by default, so build/check timings cannot masquerade as hot-swap or reload SLO proof; `ZCL_DEV_BENCH_ACTIVATE=1` opts into measuring the armed dev-lane hot-swap activate path. |
 | `make dev-activation-selftest` | Hermetically prove the contained activation machinery in a mode-0700 `/tmp` fixture. An inherited-FD sentinel and strict path/command allowlist prevent environment variables from authorizing a real dev-lane mutation. |
 | `make agent-dev-recover` | Read-only dev recovery plan. Public `ARGS=--apply` is contained and cannot relink a generation, replace the datadir, or restart the service. |
 | `make dev-recovery-selftest` | Hermetically prove retained recovery/rollback machinery through an inherited-FD capability bound to an isolated inert fixture. |
@@ -580,7 +585,9 @@ Confirm the target before acting.
 | `make t ONLY=simnet` | Runs the deterministic simulator harness and the current action coverage matrix documented in `docs/SIMULATOR.md`. |
 | `make hotswap-sim` | Focused deterministic simulated-network proof for the dev hot-swap transaction. Use after loader/router/provider changes. |
 | `make sim-fast` | Broader deterministic network proof: chaos-harness slice, checked-in scenarios, and a bounded reproducible seed sweep. |
-| `make hotswap` | Phase-0 contained: refuses and directs the caller to `make hotswap-so` plus build/test verification. Resident probing is contained too. |
+| `make hotswap` | Phase-0 contained: refuses and directs the caller to `make hotswap-so` plus build/test verification. Whole-generation runtime publication stays contained; the live runtime path is the swappable-leaf module loop below. |
+| `make hotswap-try HANDLER=<leaf> ARGS="<cmd>"` | The observable seconds-scale dev loop: rebuild one swappable leaf's module `.so` (`hotswap-module-so`), then run ARGS in a short-lived child CLI with `ZCL_HOTSWAP_PRELOAD` against the dev lane and print the result. Read-only leaves on `config/hotswap_swappable.def` only; the override dies with the child process. |
+| `make hotswap-apply HANDLER=<leaf>` | Resident activation: commit the rebuilt leaf override in the RUNNING `zcl23-dev` service via `dev hotswap apply`. Gated inside the node on `-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir; refuses otherwise, and the canonical `zclassic23` is never eligible. |
 | `tools/dev/hotswap-running-dev.sh` | Phase-0 contained direct transport: always refuses before RPC or loader activity. |
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
