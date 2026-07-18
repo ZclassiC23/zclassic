@@ -222,6 +222,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(created_outputs_index) X(address_index) \
+    X(txindex_projection) \
     X(coins_kv) X(coins_ram) \
     X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_devloop) X(codeindex) \
     X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \

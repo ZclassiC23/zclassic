@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/transaction_controller_internal.h"
+#include "services/txindex_projection_service.h"
 
 struct rawtx_context g_rawtx_ctx = {0};
 
@@ -62,6 +63,35 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     /* 1. Check mempool */
     if (ctx->mempool && tx_mempool_lookup(ctx->mempool, &hash, &tx)) {
         found = true;
+    }
+
+    /* 1b. Check the txindex projection when present (first-class, integrity-
+     * tagged). A hit locates (height, tx_n) directly; a behind/absent/busy
+     * result never asserts "not found" here — it falls through to the paths
+     * below, so a lagging projection is never silently wrong. */
+    if (!found && ctx->main_state && ctx->datadir) {
+        int64_t pi_height = -1, pi_tx_n = -1, pi_cursor = -1;
+        uint8_t pi_block_hash[32];
+        enum txindex_read_status pst = txindex_projection_read_locate(
+            hash.data, &pi_height, pi_block_hash, &pi_tx_n, &pi_cursor);
+        if (pst == TXINDEX_READ_FOUND && pi_height >= 0 && pi_tx_n >= 0) {
+            struct block_index *bi = active_chain_at(
+                &ctx->main_state->chain_active, (int)pi_height);
+            if (bi) {
+                struct block blk;
+                block_init(&blk);
+                if (read_block_from_disk_index(&blk, bi, ctx->datadir) &&
+                    (size_t)pi_tx_n < blk.num_vtx &&
+                    uint256_cmp(&blk.vtx[pi_tx_n].hash, &hash) == 0) {
+                    transaction_free(&tx);
+                    transaction_init(&tx);
+                    transaction_copy(&tx, &blk.vtx[pi_tx_n]);
+                    block_header_get_hash(&blk.header, &hash_block);
+                    found = true;
+                }
+                block_free(&blk);
+            }
+        }
     }
 
     /* 2. Check txindex for O(1) disk lookup */
