@@ -1459,6 +1459,8 @@ int main(int argc, char **argv)
     failures += test_reducer_frontier();
     { extern int test_hstar_integrity(void);
       failures += test_hstar_integrity(); }
+    { extern int test_install_verb_warm(void);
+      failures += test_install_verb_warm(); }
     failures += test_always_sync_chaos();
     { extern int test_reindex_sparse_bodies(void);
       failures += test_reindex_sparse_bodies(); }

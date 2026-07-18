@@ -6,6 +6,7 @@
 #include "tip_finalize_stage_durable.h"
 
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_helpers.h"
 #include "tip_finalize_log_store.h"
 #include "tip_finalize_stage_observe.h"
@@ -100,6 +101,36 @@ void tip_finalize_stage_publish_resolved_or_fresh_tip(
                  "[tip_finalize] authority publish fresh h=%d reason=%s",
                  existing_tip->nHeight, reason ? reason : "");
     }
+}
+
+void tip_finalize_stage_warm_authority_caches(
+    sqlite3 *db, const struct block_index *existing_tip, const char *reason)
+{
+    /* A published provable tip means a live boot already warmed/advanced —
+     * republishing the (possibly older) durable pair over the newer runtime
+     * authority would be a regression, not a warm. The terminal verb this
+     * exists for always calls pre-services with nothing published. Mirrors
+     * tf_warm_provable_tip_once (static to the stage TU) over the same
+     * public primitives. */
+    if (!db || reducer_frontier_provable_tip_is_published())
+        return;
+    tip_finalize_stage_publish_resolved_or_fresh_tip(db, existing_tip, reason);
+    progress_store_tx_lock();
+    if (!reducer_frontier_provable_tip_is_published()) {
+        int32_t hs = 0, sf = 0;
+        if (reducer_frontier_compute_hstar(db, &hs, &sf)) {
+            reducer_frontier_provable_tip_set(hs);
+            LOG_INFO("tip_finalize",
+                     "[tip_finalize] provable-tip cache warmed h=%d reason=%s",
+                     reducer_frontier_provable_tip_cached(),
+                     reason ? reason : "");
+        } else {
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] verb warm: compute_hstar failed "
+                     "(cache holds prior H*)");
+        }
+    }
+    progress_store_tx_unlock();
 }
 
 bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,

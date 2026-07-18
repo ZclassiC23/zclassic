@@ -1517,6 +1517,24 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
+# rom_two_builder_compare: the ROM two-builder gate. Independently re-derives
+# the coins/anchors/nullifiers section digests from the raw rows of two
+# consensus-state bundles (bit-exact codec preimages) and asserts each bundle
+# is self-consistent and the two are byte-identical in chain content. Run
+# after every independent from-genesis producer fold BEFORE baking ROM
+# commitments. Standalone build: vendored sqlite + lib/crypto sha3 only;
+# opens both bundles read-only, never touches a datadir.
+.PHONY: tools/rom_two_builder_compare
+tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
+$(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
+		lib/crypto/src/sha3.c lib/support/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Wno-unused-result -Wno-stringop-overflow \
+	    -Ilib/crypto/include -Ilib/support/include -Ivendor/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
+
 # gen_utxo_snapshot: build-time tool that walks a legacy zclassicd
 # chainstate LevelDB and emits a canonical UTXO sidecar file ready
 # for runtime mmap+SHA3-verify+bulk-INSERT (Stage J of fast-sync

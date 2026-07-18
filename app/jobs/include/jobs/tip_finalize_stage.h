@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 struct json_value;
+struct block_index;
 struct main_state;
 
 #define TIP_FINALIZE_BATCH_PER_TICK 100
@@ -73,6 +74,23 @@ bool tip_finalize_stage_block_hash_at(struct sqlite3 *db, int height,
 bool tip_finalize_stage_resolve_durable_tip(struct sqlite3 *db,
                                             int *out_height,
                                             uint8_t out_hash[32]);
+
+/* Terminal-verb warm (the -install-consensus-bundle boot-order fix). A normal
+ * boot publishes the runtime authority pair + provable-tip cache in
+ * tip_finalize_stage_init, which runs AFTER the terminal install verb (the
+ * config/src/boot.c verb dispatch predates staged_sync_supervisor_register).
+ * The chain-binding evidence gate (chain_frontier_snapshot_collect) reads
+ * both caches, so without this warm EVERY install target — copy or live —
+ * refuses "selected frontier changed or is not durable" regardless of its
+ * durable truth. Warm from the DURABLE store with the exact init primitives
+ * and lock discipline; a genuinely torn target still refuses on real durable
+ * disagreement (missing log rows / authority mismatch), just for the right
+ * reason. No-op when the provable tip is already published. `existing_tip` is
+ * only consulted on a datadir with no durable tip history (fresh-seed case);
+ * pass active_chain_tip() or NULL. `db` must be the progress store handle. */
+void tip_finalize_stage_warm_authority_caches(
+    struct sqlite3 *db, const struct block_index *existing_tip,
+    const char *reason);
 
 /* Cold-start fast_sync seed: durably record the snapshot anchor at
  * `height` (hash) as an anchor tip in tip_finalize_log and advance the

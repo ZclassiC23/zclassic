@@ -15,6 +15,7 @@
 #include "chain/chain.h"                              /* block_index, active_chain_at */
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
+#include "jobs/tip_finalize_stage.h"                 /* tip_finalize_stage_warm_authority_caches */
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/consensus_state_bundle_codec.h"
@@ -292,6 +293,18 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
      * Single-threaded boot — no reducer thread observes the transient value. */
     struct main_state *prev_singleton = condition_engine_main_state();
     condition_engine_set_main_state(ms);
+
+    /* (3b) Boot-order warm: this terminal verb runs BEFORE
+     * tip_finalize_stage_init, so the runtime authority pair + provable-tip
+     * cache the chain-binding evidence consults are still unpublished and
+     * every target — copy or live — would refuse "selected frontier changed
+     * or is not durable" regardless of durable truth. Warm from the durable
+     * store with the same primitives the stage init uses; a genuinely torn
+     * target still refuses on real durable disagreement. */
+    tip_finalize_stage_warm_authority_caches(
+        progress_store_db(),
+        ms ? active_chain_tip(&ms->chain_active) : NULL,
+        "install_verb_warm");
 
     struct consensus_state_chain_binding_request chain_req = {
         .main = ms, .artifact = artifact, .target_lane = lane,
