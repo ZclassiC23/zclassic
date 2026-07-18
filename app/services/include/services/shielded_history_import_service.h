@@ -117,6 +117,30 @@ bool shielded_history_import_from_chainstate(
     const struct uint256 *expected_tip_sapling_root,
     struct shielded_import_report *out);
 
+/* ── bind-height guard (fail-closed) ──────────────────────────────────────
+ *
+ * The import keys its single frontier row at the SOURCE chainstate's persisted
+ * best block. The reducer's fold resumes at the TARGET datadir's coins
+ * authority (fold_resume = coins_applied_height, so the frontier must BE the
+ * tree state at fold_resume - 1 == the coins island root). A source whose
+ * persisted best lags/ahead of that anchor (real case: a zclassicd that had
+ * stopped flushing its block DB) would manufacture a datadir whose shielded
+ * frontier is height-mismatched — the fold then hard-wedges at the first
+ * Sapling-commitment block above the island (hashFinalSaplingRoot mismatch,
+ * utxo_apply.apply_failed, H* pinned), deterministically.
+ *
+ * This probe is the ONE shared predicate, implemented in
+ * app/services/src/shielded_history_import_bind_guard.c: the
+ * -import-complete-shielded verb (src/main.c) calls it for a terminal-visible
+ * refusal with BOTH heights + the remedy, and
+ * shielded_history_import_from_chainstate calls it again before opening its
+ * transaction (defense in depth — a caller bypassing the verb cannot
+ * manufacture the mismatch either). Returns true when the import may proceed;
+ * false on a mismatch (*coins_best_out receives the island root, or -1 when
+ * the refusal is a progress.kv read error). */
+bool shielded_history_import_bind_guard_probe(
+    struct sqlite3 *progress_db, int64_t tip_height, int32_t *coins_best_out);
+
 struct node_db;
 
 /* Register the CURED coins tip (coins_applied_height - 1) as a cold-import

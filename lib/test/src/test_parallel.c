@@ -231,6 +231,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(shielded_history_import) \
     X(shielded_history_promote) \
     X(shielded_import_cured_tip_anchor) \
+    X(shielded_bind_guard) \
     X(shielded_gap_remedy) \
     X(utxo_recovery_shielded_backfill) \
     X(reducer_drive_guard) \
