@@ -40,3 +40,11 @@ later lane flips it HARD.
 - 2026-07-15T19:23:20Z — REASON: re-bake corrupt SHA3 checkpoint constants, owner-approved plan wave2 W2-1
   old ROOT: 6d07d92fd9a468edd93e6f17c8825149b38e190f7df8569f077b9f0bd2b15abe
   by: owner unseal ritual (make core-unseal)
+
+- 2026-07-18T02:31:25Z — REASON: bake shielded ROM keystone @3056758 (two-builder-verified, lane draft)
+  old ROOT: 9a7e1d6a264827ccad27333695bd80557449ea7a6e75789b91c860e927b486cd
+  by: owner unseal ritual (make core-unseal)
+
+- 2026-07-18T03:06:01Z — REASON: record two-builder gate PASS in keystone provenance comment
+  old ROOT: 9b922e9fcad73991469b4cef4941119f3a3e0a2eb3ab7e997478e99f2356ea94
+  by: owner unseal ritual (make core-unseal)

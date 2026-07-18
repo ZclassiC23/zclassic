@@ -108,4 +108,78 @@ const struct sha3_utxo_checkpoint *get_sha3_utxo_checkpoint(void);
 void checkpoints_set_sha3_override_for_test(const struct sha3_utxo_checkpoint *cp);
 void checkpoints_reset_sha3_override_for_test(void);
 
+/* ROM state checkpoint ("shielded ROM keystone") — the COMPLETE-state
+ * extension of the transparent-only sha3_utxo_checkpoint above. ZClassic
+ * headers commit neither the UTXO set nor the shielded anchor/nullifier
+ * state, so this compiled-in commitment pins ALL of it at one height: the
+ * transparent coins set (same values as the sha3_utxo_checkpoint) PLUS the
+ * Sprout/Sapling anchor history, both commitment-tree frontier roots, and
+ * the full nullifier history. A from-genesis fold that reproduces every
+ * field byte-identically has independently re-derived the complete chain
+ * state at `height` without trusting any peer or borrowed artifact.
+ *
+ * Digest preimages are the bundle-canonical ones (mirrored byte-for-byte
+ * by tools/rom_two_builder_compare.c and by the production codec
+ * lib/storage/src/consensus_state_bundle_codec.c):
+ *   anchor_digest    — SHA3-256 over domain
+ *                      "zcl.consensus_state_bundle.v1/anchors" (NUL included),
+ *                      rows in the combined bundle-canonical order
+ *                      (pool ASC, then anchor ASC; pool 0 = Sprout from
+ *                      sprout_anchors, pool 1 = Sapling from sapling_anchors);
+ *                      row preimage = pool(1) | root(32) | height LE8 |
+ *                      tree_len LE4 | tree bytes.
+ *   nullifier_digest — SHA3-256 over domain
+ *                      "zcl.consensus_state_bundle.v1/nullifiers" (NUL
+ *                      included), rows ORDER BY pool,nf;
+ *                      row preimage = pool(1) | nf(32) | height LE8.
+ *   *_frontier_root  — per pool, the anchor (tree root) at the maximum
+ *                      recorded height; *_frontier_height is that height
+ *                      (can lag `height`: blocks with no shielded activity
+ *                      append no anchor row).
+ *   rom_state_root   — the single folded commitment: SHA3-256 over domain
+ *                      "zcl.rom_state_checkpoint.v1/root" (NUL included),
+ *                      then the fields in pinned order: height LE8 |
+ *                      block_hash | utxo_root | utxo_count LE8 |
+ *                      total_supply LE8 | anchor_digest | anchor_count LE8 |
+ *                      sprout_frontier_root | sprout_frontier_height LE8 |
+ *                      sapling_frontier_root | sapling_frontier_height LE8 |
+ *                      nullifier_digest | nullifier_count LE8.
+ *   utxo_root        — the same value as sha3_utxo_checkpoint.sha3_hash
+ *                      (bare SHA3-256 over the canonical (txid,vout) coin
+ *                      records); duplicated here so the complete state rides
+ *                      one struct.
+ *
+ * All 32-byte arrays are in internal byte order (same convention as
+ * sha3_utxo_checkpoint.block_hash: the hex comment reads in display order,
+ * the bytes are stored as hashed). */
+struct rom_state_checkpoint {
+    int32_t  height;                  /* block height of the commitment */
+    uint8_t  block_hash[32];          /* block hash at height (hex in source) */
+    uint8_t  utxo_root[32];           /* == sha3_utxo_checkpoint.sha3_hash */
+    uint64_t utxo_count;              /* == sha3_utxo_checkpoint.utxo_count */
+    int64_t  total_supply;            /* == sha3_utxo_checkpoint.total_supply */
+    uint8_t  anchor_digest[32];       /* combined anchors fold (see above) */
+    uint64_t anchor_count;            /* total anchor rows, both pools */
+    uint8_t  sprout_frontier_root[32];/* Sprout tree root at max Sprout height */
+    int64_t  sprout_frontier_height;  /* that max Sprout anchor height */
+    uint8_t  sapling_frontier_root[32];/* Sapling tree root at max Sapling h */
+    int64_t  sapling_frontier_height; /* that max Sapling anchor height */
+    uint8_t  nullifier_digest[32];    /* combined nullifiers fold (see above) */
+    uint64_t nullifier_count;         /* total nullifier rows, both pools */
+    uint8_t  rom_state_root[32];      /* folded complete-state root (above) */
+};
+
+/* Returns the compiled-in ROM state checkpoint (the shielded keystone), or
+ * the installed test override. Production always returns the compiled-in
+ * g_rom_state_checkpoint. */
+const struct rom_state_checkpoint *get_rom_state_checkpoint(void);
+
+/* Test-only seam mirroring checkpoints_set_sha3_override_for_test: install a
+ * checkpoint that get_rom_state_checkpoint() returns instead of the
+ * compiled-in one. NULL = no override = production behavior. The pointer is
+ * borrowed (not copied); the caller keeps it valid until reset. */
+void checkpoints_set_rom_state_override_for_test(
+    const struct rom_state_checkpoint *cp);
+void checkpoints_reset_rom_state_override_for_test(void);
+
 #endif

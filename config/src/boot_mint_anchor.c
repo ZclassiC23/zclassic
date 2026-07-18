@@ -699,6 +699,10 @@ bool boot_mint_anchor_run(const char *datadir)
         _exit(EXIT_FAILURE);
     }
 
+    /* (3b) HARD-ASSERT the shielded keystone: anchors/nullifiers/frontier
+     * folds == the compiled ROM state checkpoint (boot_mint_anchor_rom_keystone.c). */
+    boot_mint_anchor_rom_keystone_assert(pdb, out_path);
+
     char sha3_hex[65];
     for (int i = 0; i < 32; i++)
         snprintf(sha3_hex + 2 * i, 3, "%02x", coins_sha3[i]);
