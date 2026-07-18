@@ -288,6 +288,20 @@ void supervisor_set_restart_policy(supervisor_child_id id,
 void supervisor_worker_alive(supervisor_child_id id);
 void supervisor_worker_exited(supervisor_child_id id);
 
+/* ── Process-wide stall observer (diagnostics auto-capture) ────────── */
+
+/* Invoked on the rising edge of EVERY stall fire (any trigger site:
+ * child-reported, deadline lapse, frozen progress, restart-storm), in
+ * addition to the per-contract on_stall. Runs on the DETECTING thread —
+ * for sweep-detected stalls that is the supervisor thread, which drives
+ * every child's on_tick, so the observer MUST be cheap and non-blocking
+ * (rate-limit, then hand off to a worker; the ops.debug.bundle
+ * auto-capture in app/controllers does exactly that). Register once at
+ * boot; NULL clears. Release-store / acquire-load publication. */
+typedef void (*supervisor_stall_observer_fn)(
+    const char *child_name, enum supervisor_stall_reason reason);
+void supervisor_set_stall_observer(supervisor_stall_observer_fn fn);
+
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
 /* Spawn the dedicated supervisor thread (name: "zcl_supervisor"). Safe

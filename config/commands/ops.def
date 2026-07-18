@@ -210,6 +210,22 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_debug_backtrace)
 
+ZCL_COMMAND_READY_READ(
+    "ops.debug.bundle", "ops.debug", "", "Write one-shot debug bundle JSON",
+    "One JSON document with every registered state dumper, the build "
+    "identity, and the supervisor stall summary, written by the running "
+    "node to <datadir>/debug-bundle-<utc>.json at call time; the same "
+    "bundle is also written automatically (rate-limited) when the "
+    "supervisor detects a stall.", ZCL_COMMAND_LIST_BUDGET,
+    "debug,bundle,diagnostics,postmortem,state,capture,stall",
+    "zcl.command.empty_input.v1", "zcl.ops_debug_bundle.v1", "", "",
+    "zclassic23 ops debug bundle",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_debug_bundle)
+
 /* Operator rollup dashboards live under ops.debug (not new top-level ops.*
  * children) for the same reason ops.debug.explain/profile do: the top-level
  * ops menu is within ~70 bytes of ZCL_COMMAND_BRANCH_BUDGET (proven by

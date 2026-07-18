@@ -370,8 +370,7 @@ void debug_bundle_on_stall(const char *child_name,
     bool spawned = false;
     if (pthread_attr_init(&attr) == 0) {
         if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0) {
-            /* raw-pthread-ok: one-shot detached capture helper (rate-limited
-             * best-effort) — must not join the supervised tree it observes. */
+            /* raw-pthread-ok: one-shot detached capture helper, rate-limited best-effort — must not join the supervised tree it observes. */
             spawned = pthread_create(&tid, &attr,
                                      debug_bundle_auto_thread, NULL) == 0;
         }

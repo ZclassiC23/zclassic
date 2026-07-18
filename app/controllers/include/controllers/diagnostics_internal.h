@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "util/supervisor.h" /* enum supervisor_stall_reason (debug bundle) */
+
 struct json_value;
 struct main_state;
 
@@ -152,6 +154,46 @@ bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
  * thread_count }. Backs the ops.debug.backtrace native command. */
 bool diag_rpc_selfbacktrace(const struct json_value *params, bool help,
                             struct json_value *result);
+
+/* diagnostics_debug_bundle.c — one-shot diagnostic capture. Writes every
+ * registered dumper's state + build identity + supervisor stall summary as
+ * ONE JSON document to <datadir>/debug-bundle-<utc>.json. Backs the
+ * `debugbundle` RPC (ops.debug.bundle native command) and the
+ * supervisor-stall auto-capture. */
+bool diag_rpc_debugbundle(const struct json_value *params, bool help,
+                          struct json_value *result);
+
+/* Summary of one bundle write; `path` is "" when the write failed. */
+struct debug_bundle_result {
+    char    path[1200];
+    int64_t bytes;
+    int     subsystems_captured;
+    int     subsystems_failed;
+};
+
+/* Build and write one bundle. `trigger` labels the capture ("manual",
+ * "supervisor_stall"); trigger_child/trigger_reason identify the stalled
+ * child for supervisor-triggered captures (pass NULL/SUPERVISOR_STALL_NONE
+ * for manual). Best-effort per dumper: a failing dump degrades to an
+ * {"error": ...} entry under its name, never aborts the bundle. Logs and
+ * returns false only when the bundle as a whole cannot be produced or
+ * written (no datadir, OOM, file I/O). Reentrant-safe. */
+bool debug_bundle_write(const char *trigger, const char *trigger_child,
+                        int trigger_reason,
+                        struct debug_bundle_result *res);
+
+/* supervisor_stall_observer_fn implementation: rate-limited auto-capture.
+ * Never blocks the detecting (supervisor) thread — at most one capture per
+ * DEBUG_BUNDLE_AUTO_MIN_INTERVAL_SECS and one in flight at a time; the
+ * bundle write runs on a detached helper thread. Best-effort: every
+ * failure is logged and swallowed. */
+void debug_bundle_on_stall(const char *child_name,
+                           enum supervisor_stall_reason reason);
+
+/* Idempotently register debug_bundle_on_stall with the supervisor. Called
+ * from diagnostics_controller_set_state (the diagnostics-family boot
+ * hook). */
+void debug_bundle_register_stall_observer(void);
 
 /* profile [seconds] [top_n] — sample this node's threads over `seconds` and
  * return the busiest threads (cpu_ms/name/wchan), a one-line verdict, and the

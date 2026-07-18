@@ -1300,6 +1300,80 @@ void zcl_native_handle_ops_debug_backtrace(
     json_free(&body);
 }
 
+/* ── ops.debug.bundle native leaf ──────────────────────────────────────────
+ * Dispatches the `debugbundle` RPC method directly so the running node writes
+ * ONE JSON debug bundle (every registered state dumper + build identity +
+ * supervisor stall summary) to <datadir>/debug-bundle-<utc>.json and returns
+ * the path + capture counts. This is the typed answer to "collect complete
+ * node state for a postmortem" in a single command. */
+void zcl_native_handle_ops_debug_bundle(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    bridge_ensure_rpc_client();
+    char *result = node_rpc_call("debugbundle", "[]");
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a debug-bundle body",
+                               "ops.debug.bundle");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value body;
+    if (!json_read(&body, result, strlen(result)) || body.type != JSON_OBJ) {
+        json_free(&body);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_BUNDLE_BODY",
+                               "serialize", false, false,
+                               "debugbundle returned a non-object body",
+                               "ops.debug.bundle");
+        return;
+    }
+    free(result);
+
+    /* node_rpc_call surfaces a JSON-RPC failure as {"error":{...}}
+     * (transport), a bare {"code":..,"message":..} (RPC-level, e.g. warmup),
+     * or {"error":".."} (handler-level). All three are a failed bundle. */
+    const struct json_value *err = json_get(&body, "error");
+    const struct json_value *ecode = json_get(&body, "code");
+    const struct json_value *emsg = json_get(&body, "message");
+    if ((err && !json_is_null(err)) ||
+        (ecode && ecode->type == JSON_INT && emsg && emsg->type == JSON_STR)) {
+        const char *msg = NULL;
+        if (err && err->type == JSON_OBJ)
+            msg = json_get_str(json_get(err, "message"));
+        else if (err && err->type == JSON_STR)
+            msg = json_get_str(err);
+        else if (emsg && emsg->type == JSON_STR)
+            msg = json_get_str(emsg);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "BUNDLE_ERROR",
+                               "execute", false, false,
+                               msg && msg[0] ? msg
+                                             : "debug bundle write failed",
+                               "ops.debug.bundle");
+        json_free(&body);
+        return;
+    }
+
+    const char *path = json_get_str(json_get(&body, "path"));
+    (void)json_push_kv_str(&reply->data, "path", path ? path : "");
+    (void)json_push_kv_int(&reply->data, "bytes",
+                           json_get_int(json_get(&body, "bytes")));
+    (void)json_push_kv_int(&reply->data, "subsystems_captured",
+                           json_get_int(json_get(&body,
+                                                 "subsystems_captured")));
+    (void)json_push_kv_int(&reply->data, "subsystems_failed",
+                           json_get_int(json_get(&body, "subsystems_failed")));
+    json_free(&body);
+}
+
 /* ── ops.explain <topic> native leaf ───────────────────────────────────────
  * Composes, IN C, what an operator otherwise stitches together from four
  * surfaces (reducer frontier, blocker registry, condition engine, health/sync

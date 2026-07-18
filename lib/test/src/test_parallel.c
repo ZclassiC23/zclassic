@@ -352,7 +352,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_parse_cache) \
     X(storage_reclaim) \
     X(chain_frontier_snapshot_service) \
-    X(health_rollup) X(operator_ux) \
+    X(health_rollup) X(debug_bundle) X(operator_ux) \
     X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger)
 
 #define SPEC_LIST(X) \

@@ -56,6 +56,21 @@ static void inc_stall(struct liveness_contract *self)
     if (cc) atomic_fetch_add(&cc->stall_calls, 1);
 }
 
+/* Process-wide stall-observer probe (the supervisor_set_stall_observer
+ * seam used by the ops.debug.bundle auto-capture). */
+static _Atomic int  g_obs_calls;
+static char         g_obs_name[SUPERVISOR_NAME_MAX];
+static _Atomic int  g_obs_reason;
+
+static void obs_stall(const char *child_name,
+                      enum supervisor_stall_reason reason)
+{
+    atomic_fetch_add(&g_obs_calls, 1);
+    snprintf(g_obs_name, sizeof(g_obs_name), "%s",
+             child_name ? child_name : "");
+    atomic_store(&g_obs_reason, (int)reason);
+}
+
 /* Restart-policy probe: a fake worker whose on_respawn just records the call.
  * When `redie` is set, it re-marks the worker EXITED (simulates a worker that
  * dies again immediately) so the storm cap can be exercised deterministically
@@ -254,6 +269,40 @@ int test_supervisor(void)
         supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
         SUP_CHECK("after tick+report, callback re-fires",
             atomic_load(&cc.stall_calls) == 2);
+    }
+
+    /* ── process-wide stall observer (ops.debug.bundle seam) ─────── */
+    supervisor_reset_for_testing();
+    {
+        static struct liveness_contract c;
+        liveness_contract_init(&c, "stall.observer");
+        supervisor_child_id id = supervisor_register(&c);
+
+        atomic_store(&g_obs_calls, 0);
+        g_obs_name[0] = '\0';
+        atomic_store(&g_obs_reason, -1);
+        supervisor_set_stall_observer(obs_stall);
+
+        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+        SUP_CHECK("observer fired once",
+            atomic_load(&g_obs_calls) == 1);
+        SUP_CHECK("observer saw child name",
+            strcmp(g_obs_name, "stall.observer") == 0);
+        SUP_CHECK("observer saw reason",
+            atomic_load(&g_obs_reason) ==
+                (int)SUPERVISOR_STALL_CHILD_REPORTED);
+
+        /* Second report while stall_reason != NONE is a no-op here too. */
+        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+        SUP_CHECK("observer edge-triggered (no re-fire)",
+            atomic_load(&g_obs_calls) == 1);
+
+        /* Cleared observer: no fire (and no crash on the NULL path). */
+        supervisor_set_stall_observer(NULL);
+        supervisor_tick(id);
+        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+        SUP_CHECK("cleared observer does not fire",
+            atomic_load(&g_obs_calls) == 1);
     }
 
     /* ── supervisor loop drives on_tick when period_secs>0 ──────── */

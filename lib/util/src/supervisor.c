@@ -57,6 +57,30 @@ static _Atomic bool   g_thread_handle_set = false;
 static _Atomic uint64_t g_sweep_heartbeat = 0;
 static _Atomic int64_t  g_sweep_last_us   = 0;
 
+/* Process-wide stall observer (ops.debug.bundle auto-capture registers it
+ * at boot). NULL by default; release-store / acquire-load publication. */
+static supervisor_stall_observer_fn _Atomic g_stall_observer = NULL;
+
+void supervisor_set_stall_observer(supervisor_stall_observer_fn fn)
+{
+    atomic_store_explicit(&g_stall_observer, fn, memory_order_release);
+}
+
+/* Single stall-fire path for every trigger site: bump the fire counter,
+ * run the per-contract callback, then the process-wide observer. Runs on
+ * the DETECTING thread (the supervisor sweep thread for deadline/progress
+ * stalls, the child itself for supervisor_report_stall) — the observer
+ * contract (cheap, non-blocking) is documented in util/supervisor.h. */
+static void note_stall_fire(struct liveness_contract *c,
+                            enum supervisor_stall_reason r)
+{
+    atomic_fetch_add(&c->stall_fires, 1u);
+    if (c->on_stall) c->on_stall(c);
+    supervisor_stall_observer_fn obs =
+        atomic_load_explicit(&g_stall_observer, memory_order_acquire);
+    if (obs) obs(c->name, r);
+}
+
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
     switch (r) {
@@ -251,8 +275,7 @@ void supervisor_report_stall(supervisor_child_id id,
     /* Only fire on the rising edge. */
     int expected = SUPERVISOR_STALL_NONE;
     if (atomic_compare_exchange_strong(&c->stall_reason, &expected, (int)r)) {
-        atomic_fetch_add(&c->stall_fires, 1u);
-        if (c->on_stall) c->on_stall(c);
+        note_stall_fire(c, r);
     }
 }
 
@@ -365,8 +388,7 @@ static void maybe_restart(struct liveness_contract *c, int64_t now)
         int expected = SUPERVISOR_STALL_NONE;
         if (atomic_compare_exchange_strong(&c->stall_reason,
                 &expected, SUPERVISOR_STALL_REPEATED_RESTART)) {
-            atomic_fetch_add(&c->stall_fires, 1u);
-            if (c->on_stall) c->on_stall(c);
+            note_stall_fire(c, SUPERVISOR_STALL_REPEATED_RESTART);
         }
         return;
     }
@@ -463,8 +485,7 @@ static void sweep_once(void)
             int expected = SUPERVISOR_STALL_NONE;
             if (atomic_compare_exchange_strong(&c->stall_reason,
                     &expected, SUPERVISOR_STALL_TIME_DEADLINE)) {
-                atomic_fetch_add(&c->stall_fires, 1u);
-                if (c->on_stall) c->on_stall(c);
+                note_stall_fire(c, SUPERVISOR_STALL_TIME_DEADLINE);
             }
             continue;
         }
@@ -475,8 +496,7 @@ static void sweep_once(void)
                 int expected = SUPERVISOR_STALL_NONE;
                 if (atomic_compare_exchange_strong(&c->stall_reason,
                         &expected, SUPERVISOR_STALL_NO_PROGRESS)) {
-                    atomic_fetch_add(&c->stall_fires, 1u);
-                    if (c->on_stall) c->on_stall(c);
+                    note_stall_fire(c, SUPERVISOR_STALL_NO_PROGRESS);
                 }
             }
         }
@@ -605,6 +625,7 @@ void supervisor_reset_for_testing(void)
     g_domain_count = 0;
     pthread_mutex_unlock(&g_lock);
     atomic_store(&g_tick_ms, 1000);
+    atomic_store_explicit(&g_stall_observer, NULL, memory_order_release);
 }
 
 void supervisor_sweep_once_for_testing(void)

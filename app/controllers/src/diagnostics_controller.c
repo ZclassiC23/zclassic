@@ -33,6 +33,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "probezclassicd", diag_rpc_probezclassicd, true },
         { "control", "getmirrorstatus", diag_rpc_getmirrorstatus, true },
         { "control", "selfbacktrace",  diag_rpc_selfbacktrace,  true },
+        { "control", "debugbundle",    diag_rpc_debugbundle,    true },
         { "control", "profile",        diag_rpc_profile,        true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

@@ -39,6 +39,10 @@ void diagnostics_controller_set_state(struct main_state *ms,
     if (datadir) {
         snprintf(g_diag.datadir, sizeof(g_diag.datadir), "%s", datadir);
     }
+    /* Arm the supervisor-stall debug-bundle auto-capture (idempotent
+     * pointer store; the observer rate-limits and hands the write off to
+     * a detached thread — see diagnostics_debug_bundle.c). */
+    debug_bundle_register_stall_observer();
 }
 
 const char *diag_datadir(void)

@@ -211,6 +211,15 @@ void zcl_native_handle_ops_debug_backtrace(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.debug.bundle — write a one-shot debug bundle (every registered state
+ * dumper + build identity + supervisor stall summary) as ONE JSON document
+ * to <datadir>/debug-bundle-<utc>.json on the running node. Dispatches the
+ * `debugbundle` RPC method directly and projects { path, bytes,
+ * subsystems_captured, subsystems_failed }. Bound by config/commands/ops.def. */
+void zcl_native_handle_ops_debug_bundle(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.explain <topic> — compose one prose-like diagnostic from four surfaces
  * (reducer frontier, blocker registry, condition engine, health/sync RPCs).
  * Topics: sync, blockers, health (table-dispatched, see

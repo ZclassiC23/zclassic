@@ -87,6 +87,10 @@ int test_debug_bundle(void)
     mkdir("./test-tmp", 0755);
     mkdir(dir, 0755);
     diagnostics_controller_set_state(NULL, dir);
+    /* rpc_table_execute refuses while the process is in warmup, which is
+     * the default state in a bare test process (test_rpc.c gets past it in
+     * an earlier warmup test). */
+    set_rpc_warmup_finished();
 
     /* ── (a) debugbundle RPC end-to-end ──────────────────────────── */
     char bundle_path[1200] = {0};
