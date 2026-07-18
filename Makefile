@@ -2027,6 +2027,7 @@ $(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/util/src/
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	$(CC) $(CFLAGS) $(LDFLAGS) -o "$$tmp" $(filter-out $(BUILD_IDENTITY_STAMP),$^) -lm; \
+	strip -s "$$tmp"; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
