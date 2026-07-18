@@ -39,6 +39,14 @@
  * oriented; 120 s bounds a stalled peer without false-failing a slow one. */
 #define RF_IO_TIMEOUT_SEC 120
 
+/* Bounded per-chunk retry against the seeder's wall-clock-1s rate window
+ * (rom_seed_rate_charge): 1100 ms always crosses a second boundary, and
+ * 25 retries bound a persistently-refusing peer to ~28 s per chunk before
+ * the download fails closed. Sized so a stock 8 MB/s seeder costs at most
+ * one retry per chunk pair. */
+#define ROM_FETCH_CHUNK_RETRIES  25u
+#define ROM_FETCH_CHUNK_RETRY_MS 1100u
+
 /* ── Small helpers ──────────────────────────────────────────────────── */
 
 /* A fetchable filename is a bare basename: no separators, no traversal,
@@ -480,6 +488,19 @@ static bool rf_install_verified(const char *part_path, const char *final_path,
         *why = "whole-file digest mismatch; download discarded";
         return false;
     }
+    /* The delivered artifact is finalized by definition: it now matches the
+     * committed digests byte-for-byte and will never be rewritten by this
+     * engine. Drop every write bit so the unified installer's immutable
+     * admission (immutable_regular_file_open,
+     * config/src/consensus_state_snapshot_install.c) accepts the file
+     * exactly as delivered — the fetch→install handoff must not need a
+     * manual chmod. Fail-closed: a file we cannot finalize is not
+     * installed. */
+    if (chmod(part_path, S_IRUSR | S_IRGRP | S_IROTH) != 0) {
+        *why = "finalize (make read-only) failed";
+        LOG_FAIL(RF_SUBSYS, "download: chmod 0444 '%s' failed errno=%d",
+                 part_path, errno);
+    }
     if (rename(part_path, final_path) != 0) {
         *why = "rename into place failed";
         LOG_FAIL(RF_SUBSYS, "download: rename '%s' -> '%s' failed errno=%d",
@@ -545,9 +566,34 @@ bool rom_fetch_download(const char *peer_addr, uint16_t port,
         if (remaining < want)
             want = (uint32_t)remaining;
 
+        /* Transient-refusal tolerance. A stock seeder gates each ROM chunk
+         * on a per-peer wall-clock-1s byte window (default 8 MB/s) and a
+         * small in-flight cap (rom_seed.h); on any link faster than the
+         * window, a back-to-back chunk loop is refused (FS_DONE) every time
+         * the window fills — that is pacing pressure, not a dead peer, and
+         * it clears when the wall-second ticks over. Retry the SAME chunk a
+         * bounded number of times with a fixed backoff before declaring it
+         * failed. Fail-closed: a chunk still refused after
+         * ROM_FETCH_CHUNK_RETRIES attempts fails the download exactly as
+         * before, and wrong-size/write/digest failures never retry. */
         uint32_t got = 0;
-        if (!rom_fetch_chunk(peer_addr, port, mc.chunk_root, ci,
-                             buf, ROM_SEED_CHUNK_SIZE, &got)) {
+        bool chunk_ok = false;
+        for (uint32_t attempt = 0;; attempt++) {
+            if (rom_fetch_chunk(peer_addr, port, mc.chunk_root, ci,
+                                buf, ROM_SEED_CHUNK_SIZE, &got)) {
+                chunk_ok = true;
+                break;
+            }
+            if (attempt >= ROM_FETCH_CHUNK_RETRIES)
+                break;
+            LOG_INFO(RF_SUBSYS, "download: chunk %u/%u from %s:%u refused; "
+                     "retry %u/%u in %u ms (seeder rate window)",
+                     ci, mc.num_chunks, peer_addr, (unsigned)port,
+                     attempt + 1, ROM_FETCH_CHUNK_RETRIES,
+                     (unsigned)ROM_FETCH_CHUNK_RETRY_MS);
+            platform_sleep_ms(ROM_FETCH_CHUNK_RETRY_MS);
+        }
+        if (!chunk_ok) {
             LOG_WARN(RF_SUBSYS, "download: chunk %u/%u from %s:%u failed "
                      "(leaving '%s' for resume)", ci, mc.num_chunks,
                      peer_addr, (unsigned)port, part_path);

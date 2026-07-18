@@ -369,6 +369,89 @@ static int test_loopback_e2e(void)
     return failures;
 }
 
+/* ── (d2) Stock rate window: the sequential driver self-paces via retry ── */
+
+static int test_rate_cap_retry(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: sequential driver retries through the stock per-peer "
+         "rate window instead of dying at the second chunk") {
+        rom_seed_reset();
+        /* Pin the per-peer window to exactly ONE 4 MB chunk per wall-second
+         * (the charge-then-compare window in rom_seed_rate_charge): chunk 0
+         * fills it, chunk 1 is refused until the wall-second ticks over. The
+         * pre-retry driver failed the whole download here; the bounded
+         * backoff (ROM_FETCH_CHUNK_RETRY_MS > 1 s) must carry it through.
+         * The global window stays out of the way. */
+        rom_seed_set_peer_bps_cap(ROM_SEED_CHUNK_SIZE);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_romfetch_rsrv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+        char croot[] = "/tmp/zcl_romfetch_rcli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        /* 2 chunks: one full 4 MB chunk + a short 4 KB tail. */
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size);
+        ASSERT(write_file(sdir, "consensus-state-bundle-cap.sqlite",
+                          content, size));
+
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-cap.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+        struct rom_fetch_manifest m;
+        manifest_from_artifact(&art, &m);
+
+        static const uint16_t cand_ports[] = { 18139, 18143, 18149 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50); /* up to 2 s for bind+listen */
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        /* THE assertion: with the window at one chunk/second this download
+         * takes one refused chunk + one backoff (~1.1 s) and still completes
+         * — verified, renamed, byte-exact. */
+        ASSERT(rom_fetch_download("127.0.0.1", port, &m, cdir, NULL, NULL));
+        char final_path[1024];
+        snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
+        ASSERT(rom_fetch_verify_file(final_path, &m));
+
+        /* The delivered artifact is finalized READ-ONLY: the unified
+         * installer's immutable admission (immutable_regular_file_open)
+         * accepts it exactly as delivered — no manual chmod in the
+         * fetch→install handoff. */
+        struct stat st;
+        ASSERT(stat(final_path, &st) == 0);
+        ASSERT((st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0);
+
+        fs_server_stop();
+
+        free(content);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-cap.sqlite", sdir);
+        unlink(p);
+        unlink(final_path);
+        rmdir(sdir);
+        rmdir(cdir);
+        rom_seed_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── (e) Parallel multi-seeder scheduling ───────────────────────────── */
 
 static int test_parallel_download(void)
@@ -488,6 +571,7 @@ int test_rom_fetch(void)
     failures += test_parse_directory();
     failures += test_verify_file();
     failures += test_loopback_e2e();
+    failures += test_rate_cap_retry();
     failures += test_parallel_download();
     return failures;
 }

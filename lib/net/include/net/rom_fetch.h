@@ -113,9 +113,15 @@ bool rom_fetch_verify_file(const char *path,
  * <out_dir>/<filename>.part (pwrite at chunk offsets), then
  * rom_fetch_verify_file and rename to <out_dir>/<filename>. On a digest
  * mismatch the .part file is UNLINKED (no partial trust); on a transport
- * failure the .part is left in place for a future resume. Returns false with
- * a logged reason on any failure. The optional cb runs after each chunk.
- * Every attempt is recorded in the fetch status below. */
+ * failure the .part is left in place for a future resume. A refused chunk
+ * (seeder rate window / in-flight cap — both clear in ~1 s) is retried a
+ * bounded number of times with backoff before it counts as failed; the
+ * download therefore self-paces to a stock seeder's default 8 MB/s window
+ * instead of dying at the second chunk. The installed file is delivered
+ * read-only (mode 0444) — the unified installer's immutable admission
+ * accepts it with no manual chmod. Returns false with a logged reason
+ * on any failure. The optional cb runs after each chunk. Every attempt is
+ * recorded in the fetch status below. */
 bool rom_fetch_download(const char *peer_addr, uint16_t port,
                         const struct rom_fetch_manifest *m,
                         const char *out_dir,
