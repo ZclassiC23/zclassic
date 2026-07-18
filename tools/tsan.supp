@@ -1,0 +1,16 @@
+# ThreadSanitizer suppressions for the opt-in TSan profiles (t-tsan, tsan-ci,
+# dev-tsan). Wired via TSAN_OPTIONS=suppressions=... in the Makefile targets.
+#
+# Format (one per line, matched against report stack frames / module names):
+#   race:<function-or-source-file>   — drop race reports whose stack contains it
+#   thread:<function>                — drop reports on threads started there
+#   called_from_lib:<module>         — drop reports called from an uninstrumented lib
+#
+# HARD RULE: every active entry below must be CONFIRMED benign and carry a
+# justification comment (why the race cannot corrupt state). Never add an
+# entry to hide an untriaged report — triage first, fix forward, suppress
+# only what is provably benign. Current triage baseline:
+# docs/work/tsan-triage-2026-07-18.md
+#
+# No active suppressions yet — the first sweep's findings are documented in
+# the triage report and remain VISIBLE (failing) on purpose.

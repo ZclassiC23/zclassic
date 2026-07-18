@@ -355,6 +355,50 @@ usual `ulimit -s unlimited`: ASan + PIE with an unlimited stack
 intermittently aborts at startup with "Shadow memory range interleaves with
 an existing memory mapping" (google/sanitizers#856).
 
+## ThreadSanitizer profiles (opt-in)
+
+Two TSan profiles mirror the ASan ones above for data-race detection. Both
+compile with `-fsanitize=thread -fno-omit-frame-pointer`, `-g`, **no LTO**,
+into their own epoch-keyed object trees. LTO is deliberately off (beyond
+mirroring every instrumented profile here): race reports need precise per-TU
+PC/stack attribution, whole-program LTO inlining degrades exactly that, and
+`-fsanitize=thread` under `-flto=auto` is a far less-traveled gcc path.
+`-fsanitize=thread` is mutually exclusive with address/undefined, so these
+are sibling profiles, not an extension of the ASan flag set. Vendored static
+archives (OpenSSL/leveldb/libevent/rustzcash) are NOT rebuilt — TSan works
+fine against uninstrumented libraries, with proportionally less coverage
+inside them.
+
+- **`make t-tsan ONLY=<group>`** — one test group under the
+  thread-instrumented harness (`build/bin/test-tsan`, object tree
+  `build/test-tsan-obj/`). TSan's default report-and-continue mode collects
+  every race in one run, then exits the failing child with `exitcode=66`,
+  so a group with reports surfaces red with the full stacks in its replayed
+  log. Findings are the point — fix forward, don't suppress.
+- **`make tsan-ci`** — opt-in smoke: a small set of fast, thread-spawning
+  groups (supervisor / workpool / mailbox / parallel fold / parallel
+  validation / net bootstrap / cpu topology) with
+  `TSAN_OPTIONS=halt_on_error=1` so the first report fails the run.
+  Deliberately **not** wired into `make ci`: the codebase's first TSan sweep
+  found real, not-yet-fixed races (baseline:
+  `docs/work/tsan-triage-2026-07-18.md`), so this target is currently RED by
+  construction until the triaged findings are fixed or documentarily
+  suppressed. Override the set with `TSAN_CI_GROUPS="..."`.
+- **`make dev-tsan`** — the dev node under TSan
+  (`build/bin/zclassic23-dev-tsan`, `-Og`, non-LTO, object tree
+  `build/dev-tsan-obj/`). For local data-race debugging on a scratch
+  datadir; race reports go to stderr.
+
+`t-tsan` and `tsan-ci` both read `tools/tsan.supp` via
+`TSAN_OPTIONS=suppressions=...`. Every active entry there must be confirmed
+benign with a written justification — never suppress an untriaged report.
+
+Both runners wrap the harness in `setarch -R` (ASLR off): TSan reserves
+fixed shadow address ranges and the default-ASLR PIE/mmap placement
+intermittently collides at startup (`FATAL: ThreadSanitizer: unexpected
+memory mapping`). These are opt-in triage binaries, never release artifacts,
+so no-ASLR is an acceptable trade.
+
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
