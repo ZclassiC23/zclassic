@@ -308,6 +308,27 @@ DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) $(ZCL_DEV_OPT
 DEV_HOT_CFLAGS = $(filter-out $(ZCL_DEV_OPT),$(DEV_CFLAGS)) $(ZCL_DEV_HOT_OPT)
 DEV_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
 
+# Sanitizer flags shared by the two opt-in ASan/UBSan profiles (t-asan,
+# dev-asan). -fsanitize must appear at both compile and link time. These
+# flags are referenced ONLY by the ASan profiles below — they are never
+# appended to CFLAGS/CACHED_CFLAGS/LDFLAGS, so they cannot leak into the
+# release/dev/test default builds (each profile's epoch key also binds its
+# exact flag set, making any leak a fresh, separate object tree).
+# -fno-sanitize=alignment mirrors the fuzz harnesses' established UBSan
+# profile (FUZZ_CFLAGS below): the serialization/crypto paths perform
+# deliberate unaligned loads that the fuzz lane already found too noisy to
+# keep the UBSan signal usable. An alignment-specific audit is a follow-up.
+ASAN_COMMON_SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer \
+	-fno-sanitize=alignment
+# dev-asan: the dev node profile (-Og, -g3, -DZCL_DEV_BUILD, non-LTO, dev
+# linker) plus ASan+UBSan. Uniform optimization for every TU — no DEV_HOT
+# split — because sanitizer signal fidelity matters more here than
+# optimizer-sensitivity coverage.
+DEV_ASAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) $(ZCL_DEV_OPT) -g3 -DZCL_DEV_BUILD \
+	$(ASAN_COMMON_SAN_FLAGS) \
+	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
+DEV_ASAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER) $(ASAN_COMMON_SAN_FLAGS)
+
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
@@ -394,6 +415,31 @@ endif
 
 DEV_CANDIDATE_BIN = $(BIN_DIR)/dev/epochs/$(DEV_COMPILE_EPOCH)/zclassic23-dev
 DEV_ACTIVE_BIN = $(DEV_CANDIDATE_BIN)
+
+# dev-asan: epoch-keyed ASan/UBSan dev node (build/bin/zclassic23-dev-asan).
+# Own object root (build/dev-asan-obj) and own candidate dir, mirroring the
+# coverage profile's self-contained derivation; the shared *_EPOCHS_VALID
+# asserts above stay untouched.
+DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+DEV_ASAN_EPOCH_LINK_FLAGS := $(strip $(DEV_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+DEV_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+DEV_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-asan-v2,DEV_ASAN_EPOCH_COMPILE_FLAGS,DEV_ASAN_EPOCH_LINK_FLAGS)
+DEV_ASAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(DEV_ASAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(DEV_ASAN_COMPILE_EPOCH_VALID),yes)
+$(error dev-asan compile-epoch derivation failed)
+endif
+endif
+DEV_ASAN_OBJ_ROOT = $(BUILD_DIR)/dev-asan-obj
+DEV_ASAN_OBJ_DIR = $(DEV_ASAN_OBJ_ROOT)/epochs/$(DEV_ASAN_COMPILE_EPOCH)
+DEV_ASAN_OBJS = $(patsubst %.c,$(DEV_ASAN_OBJ_DIR)/%.o,$(DEV_SRCS))
+DEV_ASAN_LINK_RSP = $(DEV_ASAN_OBJ_DIR)/link-inputs.rsp
+DEV_ASAN_CANDIDATE_BIN = $(BIN_DIR)/dev-asan/epochs/$(DEV_ASAN_COMPILE_EPOCH)/zclassic23-dev-asan
+DEV_ASAN_BIN = $(BIN_DIR)/zclassic23-dev-asan
+DEV_ASAN_PROFILE = dev-asan-v2
+DEV_ASAN_SESSION = $(DEV_ASAN_OBJ_DIR)/.build-session
+DEV_ASAN_LEASE = $(DEV_ASAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 BUILD_INVOCATION_PID := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell printf '%s' $$PPID)))
 BUILD_INVOCATION_START := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell awk '{print $$22}' /proc/$(BUILD_INVOCATION_PID)/stat 2>/dev/null)))
 BUILD_INVOCATION_ID := $(if $(BUILD_EPOCH_CLEAN_ONLY),clean,$(strip $(shell printf '%s\0%s' '$(BUILD_INVOCATION_PID)' '$(BUILD_INVOCATION_START)' | sha256sum | awk '{print $$1}')))
@@ -421,6 +467,14 @@ $(DEV_LEASE): FORCE
 	  "$(DEV_EPOCH_COMPILE_FLAGS)" "$(DEV_EPOCH_LINK_FLAGS)" \
 	  "$(CC)" "$(CXX)" "$$PPID"
 
+$(DEV_ASAN_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(DEV_ASAN_SESSION)" "$@" \
+	  "$(DEV_ASAN_OBJ_ROOT)" "$(BIN_DIR)/dev-asan" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(DEV_ASAN_COMPILE_EPOCH)" "$(DEV_ASAN_PROFILE)" \
+	  "$(DEV_ASAN_EPOCH_COMPILE_FLAGS)" "$(DEV_ASAN_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
 # Make normally imports four large immutable depfile graphs even when one
 # profile (or no compiler at all) is requested.  Narrow only an exact,
 # explicitly-known single goal.  Empty/default, mixed, and unknown goals keep
@@ -438,6 +492,10 @@ else ifneq ($(filter t-fast test_parallel_fast test-parallel-fast-active,$(ZCL_D
 ZCL_DEPFILE_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-strict
+else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := test-asan
+else ifneq ($(filter dev-asan zclassic23-dev-asan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := dev-asan
 else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES :=
 endif
@@ -450,6 +508,9 @@ ifneq ($(filter build-only,$(ZCL_DEPFILE_PROFILES)),)
 endif
 ifneq ($(filter dev,$(ZCL_DEPFILE_PROFILES)),)
 -include $(DEV_OBJS:.o=.d)
+endif
+ifneq ($(filter dev-asan,$(ZCL_DEPFILE_PROFILES)),)
+-include $(DEV_ASAN_OBJS:.o=.d)
 endif
 
 # Vendored static archives the final link needs.  Only libsecp256k1.a is
@@ -638,6 +699,58 @@ ifneq ($(filter test-strict,$(ZCL_DEPFILE_PROFILES)),)
 -include $(TEST_PARALLEL_REL_OBJS:.o=.d)
 endif
 
+# ── ASan/UBSan test harness (opt-in; mirrors the test-fast profile) ────────
+# `make t-asan ONLY=<group>` runs one test group under AddressSanitizer +
+# UndefinedBehaviorSanitizer, extending the fuzz-only sanitizer coverage to
+# the whole suite. Own epoch-keyed object tree (build/test-asan-obj) and own
+# candidate dir so the sanitizer flags can never leak into the
+# strict/fast/release builds — the epoch key binds the exact flag set and
+# nothing else references this tree. Flags mirror TEST_FAST plus
+# ASAN_COMMON_SAN_FLAGS; the sanitizer flag combination itself follows the
+# fuzz harnesses' established profile (FUZZ_CFLAGS).
+TEST_ASAN_OBJ_ROOT = $(BUILD_DIR)/test-asan-obj
+TEST_ASAN_BIN = $(BIN_DIR)/test-asan
+TEST_ASAN_SRCS = $(TEST_PARALLEL_FAST_SRCS)
+TEST_ASAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g -DZCL_TESTING \
+	$(ASAN_COMMON_SAN_FLAGS) \
+	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
+TEST_ASAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ASAN_COMMON_SAN_FLAGS)
+TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_ASAN_EPOCH_LINK_FLAGS := $(strip $(TEST_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+TEST_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+else
+TEST_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,test-asan-v2,TEST_ASAN_EPOCH_COMPILE_FLAGS,TEST_ASAN_EPOCH_LINK_FLAGS)
+TEST_ASAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(TEST_ASAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(TEST_ASAN_COMPILE_EPOCH_VALID),yes)
+$(error test-asan compile-epoch derivation failed)
+endif
+endif
+TEST_ASAN_OBJ_DIR = $(TEST_ASAN_OBJ_ROOT)/epochs/$(TEST_ASAN_COMPILE_EPOCH)
+TEST_ASAN_OBJS = $(patsubst %.c,$(TEST_ASAN_OBJ_DIR)/%.o,$(TEST_ASAN_SRCS))
+TEST_ASAN_LINK_RSP = $(TEST_ASAN_OBJ_DIR)/link-inputs.rsp
+# The alias file (build/bin/test-asan) and the candidate DIRECTORY must have
+# different names (same convention as test_parallel_fast vs test-fast/):
+# publish-build-alias renames a file onto the alias, and mv onto an existing
+# directory would move the binary INTO the directory instead.
+TEST_ASAN_CANDIDATE = $(BIN_DIR)/test-asan-epochs/epochs/$(TEST_ASAN_COMPILE_EPOCH)/test-asan
+TEST_ASAN_ACTIVE = $(TEST_ASAN_CANDIDATE)
+TEST_ASAN_PROFILE = test-asan-v2
+TEST_ASAN_SESSION = $(TEST_ASAN_OBJ_DIR)/.build-session
+TEST_ASAN_LEASE = $(TEST_ASAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+
+$(TEST_ASAN_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(TEST_ASAN_SESSION)" "$@" \
+	  "$(TEST_ASAN_OBJ_ROOT)" "$(BIN_DIR)/test-asan-epochs" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(TEST_ASAN_COMPILE_EPOCH)" "$(TEST_ASAN_PROFILE)" \
+	  "$(TEST_ASAN_EPOCH_COMPILE_FLAGS)" "$(TEST_ASAN_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID"
+
+ifneq ($(filter test-asan,$(ZCL_DEPFILE_PROFILES)),)
+-include $(TEST_ASAN_OBJS:.o=.d)
+endif
+
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
@@ -714,7 +827,7 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel_wpo,$(TEST_SRCS_NO_MAIN) lib/test/sr
 # build/bin alias is a locked atomic copy and is FORCE-driven so A -> B -> A
 # cannot be skipped by stable-path mtimes. Internal commands execute the exact
 # candidate, never the concurrently replaceable alias.
-.PHONY: FORCE test_parallel test_parallel_fast test-parallel-active test-parallel-fast-active
+.PHONY: FORCE test_parallel test_parallel_fast test-parallel-active test-parallel-fast-active test-asan
 FORCE:
 
 test_parallel: $(TEST_PARALLEL_BIN)
@@ -772,6 +885,31 @@ $(TEST_PARALLEL_REL_LINK_RSP): $(TEST_PARALLEL_REL_OBJS)
 $(TEST_PARALLEL_FAST_LINK_RSP): $(TEST_PARALLEL_FAST_OBJS)
 	@$(file >$@,$(TEST_PARALLEL_FAST_OBJS)) test -s "$@"
 
+test-asan: $(TEST_ASAN_BIN)
+
+$(TEST_ASAN_BIN): $(TEST_ASAN_CANDIDATE) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(TEST_ASAN_CANDIDATE)" "$@" "$(TEST_ASAN_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_ASAN_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_ASAN_PROFILE)" \
+	  "$(TEST_ASAN_EPOCH_COMPILE_FLAGS)" "$(TEST_ASAN_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
+
+$(TEST_ASAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_ASAN_OBJS) $(TEST_ASAN_LINK_RSP) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(TEST_ASAN_CFLAGS) $(TEST_ASAN_LDFLAGS) -o "$$tmp" "@$(TEST_ASAN_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(TEST_ASAN_SESSION)" "$(TEST_ASAN_LEASE)" \
+	  "$(TEST_ASAN_OBJ_ROOT)" "$(BIN_DIR)/test-asan-epochs" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(TEST_ASAN_COMPILE_EPOCH)" "$(TEST_ASAN_PROFILE)" "$(TEST_ASAN_EPOCH_COMPILE_FLAGS)" \
+	  "$(TEST_ASAN_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+$(TEST_ASAN_LINK_RSP): $(TEST_ASAN_OBJS)
+	@$(file >$@,$(TEST_ASAN_OBJS)) test -s "$@"
+
 test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE)
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
@@ -798,7 +936,7 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-changed ff watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-asan asan-ci t-changed ff watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan zclassic23-dev-asan zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -822,6 +960,50 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
+
+# ASan/UBSan variant of `t-fast`: one group per invocation under the
+# instrumented harness (build/bin/test-asan, own build/test-asan-obj tree).
+# Triage posture: ASan aborts the failing child (halt_on_error=1 default) so
+# a memory error surfaces as a red group with the full report in its
+# replayed log; UBSan stays in gcc's default recover-and-continue mode so
+# one run collects every finding — export UBSAN_OPTIONS=halt_on_error=1 to
+# make reports fatal instead. Findings are the point of this target; fix
+# forward, don't suppress.
+# The stack limit is a large FINITE 1 GiB, not unlimited: ASan + PIE with an
+# unlimited stack intermittently aborts at startup with "Shadow memory range
+# interleaves with an existing memory mapping" (google/sanitizers#856 —
+# measured ~11/15 failures here at unlimited, 0/15 at 1 GiB). 1 GiB keeps
+# the deep-recursion headroom the suite needs.
+# Checkout-locked — see the `test-parallel` target above for why.
+t-asan: $(TEST_ASAN_CANDIDATE)
+	@if [ -z "$(ONLY)" ]; then \
+	  echo "usage: make t-asan ONLY=<group-substr>   (e.g. make t-asan ONLY=test_bloom)"; \
+	  exit 2; fi
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s 1048576 && exec $(TEST_ASAN_ACTIVE) --only=$(ONLY)'
+
+# Opt-in sanitizer smoke: a small set of fast, params-free groups under
+# test-asan. Deliberately NOT wired into `make ci` — instrumented runs are
+# several times slower than the plain fast harness and push times must stay
+# stable. Run locally before pushing memory-risky changes, or in a dedicated
+# CI lane. Override the set with ASAN_CI_GROUPS="...".
+# Gate posture: UBSAN_OPTIONS=halt_on_error=1 turns every UBSan report into
+# a red group (gcc's default is recover-and-continue, which would let a
+# finding print yet stay green); ASan already halts by default. Every group
+# in the default set is verified clean under this posture — a red asan-ci
+# run is a real finding to fix, never an expected failure.
+ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding
+asan-ci: $(TEST_ASAN_CANDIDATE)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'set -e; ulimit -s 1048576; \
+	  export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1; \
+	  for g in $(ASAN_CI_GROUPS); do \
+	    echo "asan-ci: --- $$g ---"; \
+	    $(TEST_ASAN_ACTIVE) --only=$$g; \
+	  done; \
+	  echo "asan-ci: OK ($(ASAN_CI_GROUPS))"'
 
 # The leanest changed-aware spelling: no ONLY= to remember. Impact mappings
 # classify the current working-tree hints, but never reduce proof scope; this
@@ -940,6 +1122,37 @@ $(DEV_LINK_RSP): $(DEV_OBJS)
 	@$(file >$@,$(DEV_OBJS)) test -s "$@"
 
 $(DEV_CANDIDATE_BIN): $(DEV_LINK_RSP)
+
+# dev-asan: ASan/UBSan dev node for local memory/UB debugging. Same source
+# set as zclassic23-dev, own epoch-keyed object tree (build/dev-asan-obj);
+# -Og, non-LTO, no hot-path split (sanitizer fidelity over optimizer
+# coverage). Never a release/deploy artifact. Boot it on a scratch datadir
+# with ASAN_OPTIONS=detect_leaks=0 until leak triage is done (follow-up).
+dev-asan zclassic23-dev-asan: $(DEV_ASAN_BIN)
+
+$(DEV_ASAN_BIN): $(DEV_ASAN_CANDIDATE_BIN) FORCE
+	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_ASAN_CANDIDATE_BIN)" "$@" "$(DEV_ASAN_SESSION)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(DEV_ASAN_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(DEV_ASAN_PROFILE)" \
+	  "$(DEV_ASAN_EPOCH_COMPILE_FLAGS)" "$(DEV_ASAN_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)"
+	@echo "dev-asan: $@ <= $(DEV_ASAN_CANDIDATE_BIN) (ASan+UBSan, -Og, non-LTO; not for release/deploy)"
+
+$(DEV_ASAN_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_ASAN_OBJS) $(DEV_ASAN_LINK_RSP) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_ASAN_CFLAGS) $(DEV_ASAN_LDFLAGS) -o "$$tmp" "@$(DEV_ASAN_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_ASAN_SESSION)" "$(DEV_ASAN_LEASE)" \
+	  "$(DEV_ASAN_OBJ_ROOT)" "$(BIN_DIR)/dev-asan" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
+	  "$(DEV_ASAN_COMPILE_EPOCH)" "$(DEV_ASAN_PROFILE)" "$(DEV_ASAN_EPOCH_COMPILE_FLAGS)" \
+	  "$(DEV_ASAN_EPOCH_LINK_FLAGS)" "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+$(DEV_ASAN_LINK_RSP): $(DEV_ASAN_OBJS)
+	@$(file >$@,$(DEV_ASAN_OBJS)) test -s "$@"
 
 # ── Tier-1 in-process hot-swap (DEV-ONLY) ──────────────────────────────
 # Compile named app-layer native-handler TUs into a "generation" .so and
@@ -2876,6 +3089,33 @@ $(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(
 
 # The strict test tree also needs the identity TU refreshed with its stamp.
 $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
+
+# ASan/UBSan test harness object tree: TEST_FAST flags plus
+# ASAN_COMMON_SAN_FLAGS (see the TEST_ASAN_* block above). -MD -MP records
+# the complete include closure inside the exact epoch — no false green.
+TEST_ASAN_OBJECT_CFLAGS = $(TEST_ASAN_CFLAGS)
+$(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: TEST_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(TEST_ASAN_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_ASAN_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(TEST_ASAN_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(TEST_ASAN_SESSION)" -- \
+	  $(CC) $(TEST_ASAN_OBJECT_CFLAGS)
+
+# The asan test tree also needs the identity TU refreshed with its stamp.
+$(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
+
+# ASan/UBSan dev node object tree: uniform DEV_ASAN_CFLAGS for every TU (no
+# hot-path split — sanitizer fidelity over optimizer-sensitivity coverage).
+DEV_ASAN_OBJECT_CFLAGS = $(DEV_ASAN_CFLAGS)
+$(DEV_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: DEV_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(DEV_ASAN_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(DEV_ASAN_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(DEV_ASAN_COMPILE_EPOCH)" "$(BUILD_COMPILER_ID)" "$(DEV_ASAN_SESSION)" -- \
+	  $(CC) $(DEV_ASAN_OBJECT_CFLAGS)
+
+# The dev-asan tree also needs the identity TU refreshed with its stamp.
+$(DEV_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
 #
