@@ -30,8 +30,19 @@
  * binaries/source epochs) and are not chain content.
  *
  * Usage: rom_two_builder_compare BUNDLE_A.sqlite BUNDLE_B.sqlite
+ *        rom_two_builder_compare --rom-root BUNDLE.sqlite
  * Exit: 0 = two-builder proof PASSES (bake sheet printed on stdout);
  *       1 = mismatch (details on stderr); 2 = usage/IO error.
+ *
+ * --rom-root prints the folded rom_state_root for ONE bundle: SHA3-256 over
+ * the domain "zcl.rom_state_checkpoint.v1/root" (NUL included) followed by
+ * the chain-content fields in pinned order (height LE8 | block_hash |
+ * utxo_root | utxo_count LE8 | total_supply LE8 | anchor_digest |
+ * anchor_count LE8 | sprout_frontier_root | sprout_frontier_height LE8 |
+ * sapling_frontier_root | sapling_frontier_height LE8 | nullifier_digest |
+ * nullifier_count LE8). This is the constant baked into
+ * core/chainparams/src/checkpoints.c; the parity test re-derives it
+ * independently as the bake's cross-check.
  *
  * Standalone build (see the Makefile target): vendored sqlite + lib/crypto
  * sha3 only. Reads both bundles read-only; never opens a datadir. */
@@ -48,6 +59,7 @@
 
 #define RTB_ANCHOR_DOMAIN "zcl.consensus_state_bundle.v1/anchors"
 #define RTB_NULLIFIER_DOMAIN "zcl.consensus_state_bundle.v1/nullifiers"
+#define RTB_ROM_ROOT_DOMAIN "zcl.rom_state_checkpoint.v1/root"
 
 struct rtb_manifest {
     int64_t height;
@@ -105,6 +117,33 @@ static void rtb_hex(const uint8_t *b, char out[65])
 {
     for (int i = 0; i < 32; i++)
         snprintf(out + 2 * i, 3, "%02x", b[i]);
+}
+
+/* Fold the complete chain-content commitment into one root. The preimage
+ * order is pinned — the baked constant in core/chainparams/src/checkpoints.c
+ * and the parity test's independent re-derivation must reproduce this exact
+ * value for the bake to be admissible. */
+static void rtb_rom_state_root(const struct rtb_derived *d, int64_t height,
+                               const uint8_t block_hash[32], uint8_t out[32])
+{
+    struct sha3_256_ctx c;
+    sha3_256_init(&c);
+    sha3_256_write(&c, (const unsigned char *)RTB_ROM_ROOT_DOMAIN,
+                   sizeof(RTB_ROM_ROOT_DOMAIN)); /* trailing NUL included */
+    rtb_u64le(&c, (uint64_t)height);
+    sha3_256_write(&c, block_hash, 32);
+    sha3_256_write(&c, d->utxo_root, 32);
+    rtb_u64le(&c, (uint64_t)d->utxo_count);
+    rtb_u64le(&c, (uint64_t)d->total_supply);
+    sha3_256_write(&c, d->anchor_digest, 32);
+    rtb_u64le(&c, (uint64_t)d->anchor_count);
+    sha3_256_write(&c, d->sprout_frontier_root, 32);
+    rtb_u64le(&c, (uint64_t)d->sprout_frontier_height);
+    sha3_256_write(&c, d->sapling_frontier_root, 32);
+    rtb_u64le(&c, (uint64_t)d->sapling_frontier_height);
+    sha3_256_write(&c, d->nullifier_digest, 32);
+    rtb_u64le(&c, (uint64_t)d->nullifier_count);
+    sha3_256_finalize(&c, out);
 }
 
 /* coins: strict (txid,vout) order is itself part of the canonical fold — a
@@ -511,12 +550,33 @@ static int rtb_derive_all(const char *label, const char *path,
 
 int main(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--rom-root") == 0) {
+        int fails = 0;
+        struct rtb_manifest m;
+        struct rtb_derived d;
+        memset(&m, 0, sizeof(m));
+        memset(&d, 0, sizeof(d));
+        if (!rtb_derive_all("bundle", argv[2], &m, &d, &fails) || fails) {
+            fprintf(stderr, "rom-root: bundle failed self-consistency\n");
+            return 1;
+        }
+        uint8_t root[32];
+        rtb_rom_state_root(&d, m.height, m.block_hash, root);
+        char h[65];
+        rtb_hex(root, h);
+        printf("rom_state_root %s\n", h);
+        printf("  (height=%" PRId64 " anchors=%" PRId64
+               " nullifiers=%" PRId64 " coins=%" PRId64 ")\n",
+               m.height, d.anchor_count, d.nullifier_count, d.utxo_count);
+        return 0;
+    }
     if (argc != 3) {
         fprintf(stderr,
                 "usage: %s BUNDLE_A.sqlite BUNDLE_B.sqlite\n"
+                "       %s --rom-root BUNDLE.sqlite\n"
                 "  exit 0 = two-builder proof PASSES; 1 = mismatch; "
                 "2 = usage/IO error\n",
-                argv[0]);
+                argv[0], argv[0]);
         return 2;
     }
     int fails = 0;
