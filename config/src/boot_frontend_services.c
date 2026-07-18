@@ -24,6 +24,7 @@
 #include "controllers/explorer_controller.h"
 #include "net/file_service.h"
 #include "net/rom_seed.h"
+#include "config/rom_bundle_admission.h"
 #include "net/https_server.h"
 #include "util/util.h"
 #include "net/onion_service.h"
@@ -69,7 +70,20 @@ static void boot_file_service_stop(void *ctx)
 /* ROM artifact seeding: register + announce the free/capped ROM/sync artifacts
  * (consensus-state bundle + header seed) present in the datadir. Enabled by
  * default alongside the file service; disabled with -noromseed. Caps overridable
- * with -romseed-peer-bps / -romseed-global-bps / -romseed-max-inflight. */
+ * with -romseed-peer-bps / -romseed-global-bps / -romseed-max-inflight.
+ *
+ * -rombundlereplicadir=PATH additionally scans a SECOND, operator-designated
+ * directory (typically fed by tools/scripts/rom-bundle-replicate.sh from a
+ * second disk or a sibling node) and admits any consensus-state bundle found
+ * there into the SAME rom_seed catalog, but ONLY through the receipt-gated
+ * path (config/rom_bundle_admission.h) — a bundle with no adjoining verified
+ * consensus_state_replay_receipt.v1 is never registered, so this node never
+ * serves it. This is how a bundle+receipt pair produced/verified on one
+ * machine turns any node holding a replicated copy into a P2P recovery
+ * source, closing the "lives on ONE disk" single point of failure without
+ * weakening rom_seed's own untrusted-delivery model (docs/ROM_DELIVERY.md) —
+ * every fetcher still re-verifies content after download regardless of what
+ * either scan path admitted. */
 static bool boot_rom_seed_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -92,12 +106,17 @@ static bool boot_rom_seed_start(void *ctx)
     if (inflight > 0) rom_seed_set_max_inflight_per_peer((uint32_t)inflight);
 
     rom_seed_start_scan(svc->datadir, (uint16_t)svc->app_ctx->fs_port);
+
+    const char *replica_dir = GetArg("-rombundlereplicadir", "");
+    if (replica_dir && replica_dir[0])
+        rom_bundle_admission_start_scan(replica_dir);
     return true;
 }
 
 static void boot_rom_seed_stop(void *ctx)
 {
     (void)ctx;
+    rom_bundle_admission_stop_scan();
     rom_seed_stop_scan();
 }
 

@@ -647,3 +647,75 @@ bool consensus_state_replay_receipt_authority_available(
     }
     return true;
 }
+
+/* ── Bundle-binding-only reader (ROM catalog admission) ─────────────────── */
+
+bool consensus_state_replay_receipt_bundle_binding_verified(
+    int datadir_fd, const uint8_t bundle_file_digest[32],
+    struct consensus_state_replay_receipt_binding *out)
+{
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!bundle_file_digest || datadir_fd < 0) {
+        LOG_WARN(RR_SUBSYS, "bundle_binding_verified: NULL digest or bad fd; "
+                            "ROM admission refuses (fail-closed)");
+        return false;
+    }
+
+    struct rr_receipt r;
+    memset(&r, 0, sizeof(r));
+    /* Reads the keyed file AND re-verifies its self-binding receipt_digest —
+     * schema mismatch or any byte tampering fails inside rr_read_file. */
+    if (!rr_read_file(datadir_fd, &r)) {
+        LOG_WARN(RR_SUBSYS, "no valid replay receipt beside this bundle; ROM "
+                            "admission refuses (fail-closed, no receipt no "
+                            "serve)");
+        return false;
+    }
+
+    if (memcmp(r.bundle_file_digest, bundle_file_digest, 32) != 0) {
+        LOG_WARN(RR_SUBSYS, "replay receipt does not bind this bundle's "
+                            "whole-file digest; ROM admission refuses");
+        return false;
+    }
+
+    if (out) {
+        out->height = (int32_t)r.height;
+        out->utxo_count = r.utxo_count;
+        out->anchor_count = r.anchor_count;
+        out->nullifier_count = r.nullifier_count;
+        memcpy(out->verifier_binary_digest, r.verifier_binary_digest, 32);
+    }
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool consensus_state_replay_receipt_write_for_test(
+    const char *datadir, const uint8_t bundle_file_digest[32],
+    int32_t height, uint64_t utxo_count, uint64_t anchor_count,
+    uint64_t nullifier_count, char *out_path, size_t out_cap)
+{
+    if (!datadir || !datadir[0] || !bundle_file_digest)
+        return false;
+
+    struct rr_receipt r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.bundle_file_digest, bundle_file_digest, 32);
+    r.height = height;
+    r.utxo_count = utxo_count;
+    r.anchor_count = anchor_count;
+    r.nullifier_count = nullifier_count;
+    /* artifact_digest / block_hash / utxo_root / anchor_digest /
+     * nullifier_digest / total_supply are left zeroed and
+     * verifier_binary_digest is a fixed test marker — none of these are
+     * compared by the bundle-binding-only reader above; only the ACTIVATE
+     * authority path (consensus_state_replay_receipt_authority_available)
+     * compares them against a live manifest. */
+    memset(r.verifier_binary_digest, 0xAB, sizeof(r.verifier_binary_digest));
+
+    rr_receipt_digest(&r, r.receipt_digest);
+    uint8_t buf[RR_PAYLOAD_BYTES];
+    rr_serialize(&r, buf);
+    return rr_write_atomic(datadir, buf, out_path, out_cap);
+}
+#endif
