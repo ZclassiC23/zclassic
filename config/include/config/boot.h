@@ -626,6 +626,20 @@ bool boot_mint_anchor_export_bundle(struct sqlite3 *pdb, const char *datadir,
  * exporter-admissible source. Returns false (logs) if either stamp fails. */
 bool boot_mint_anchor_stamp_sovereign_markers(struct sqlite3 *pdb);
 
+/* The SHIELDED keystone hard-assert (impl in
+ * config/src/boot_mint_anchor_rom_keystone.c — separate file for the E1
+ * file-size ceiling). Called by the mint finalize path right AFTER the coins
+ * SHA3/count hard-assert: recomputes anchor_digest/anchor_count, both pool
+ * frontier roots+heights, and nullifier_digest/nullifier_count from the
+ * just-folded progress.kv tables using the SAME codec primitives and SQL
+ * orderings the full-history bundle export uses, and requires them ==
+ * get_rom_state_checkpoint(). On a mismatch (or a recompute failure) it
+ * pages EV_BOOT_VALIDATION_FAILED, unlinks `out_path`, and _exit()s — the
+ * same fail posture as the coins assert; it returns only on a match (or
+ * when no ROM state checkpoint is compiled in). */
+void boot_mint_anchor_rom_keystone_assert(struct sqlite3 *pdb,
+                                          const char *out_path);
+
 /* Read-only producer-marker/lane refusal before node.db, wallet, or progress.kv
  * is opened for writing. */
 bool boot_mint_anchor_normal_boot_preflight(const char *datadir);

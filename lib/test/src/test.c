@@ -971,6 +971,7 @@ int main(int argc, char **argv)
     failures += test_activerecord();
     failures += test_validation();
     { extern int test_consensus_parity(void); failures += test_consensus_parity(); }
+    { extern int test_rom_state_checkpoint(void); failures += test_rom_state_checkpoint(); }
     { extern int test_sapling_lazy_init(void);
       failures += test_sapling_lazy_init(); }
     failures += test_sapling();
