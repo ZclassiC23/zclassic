@@ -23,9 +23,11 @@
 
 #include "test/test_helpers.h"
 
+#include "config/boot.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
+#include "models/database.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -400,11 +402,122 @@ static int case_warm_never_clobbers_published(void)
     return failures;
 }
 
+/* (5) Post-install derived-state invalidation: clears the persisted Sapling
+ * tree pair (node.db), resets the in-process provable-tip cache, and verifies
+ * MAX(coins.height) == bundle height, refusing on a mismatch. */
+static bool piv_build_coins(sqlite3 *db, int32_t max_height)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db,
+            "CREATE TABLE coins(txid BLOB, vout INTEGER, value INTEGER,"
+            " height INTEGER, is_coinbase INTEGER, script BLOB);",
+            NULL, NULL, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return false;
+    }
+    char sql[256];
+    /* Two rows below + one AT max_height so MAX(height) == max_height. */
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO coins(txid,vout,value,height,is_coinbase,script)"
+             " VALUES(x'01',0,1,%d,0,x'02'),(x'03',0,1,%d,0,x'04');",
+             max_height - 1, max_height);
+    return sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK
+           || (sqlite3_free(err), false);
+}
+
+static int case_post_install_invalidation(void)
+{
+    int failures = 0;
+    const int32_t bundle_h = A; /* 3056758 */
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "install_verb_invalidate", "ok");
+    char ndb_path[320];
+    snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", dir);
+
+    struct node_db ndb;
+    IVW_CHECK("invalidate: node_db open", node_db_open(&ndb, ndb_path));
+
+    /* Seed a STALE sapling tree pair at an OLD tip (the 2026-07-19 residue). */
+    uint8_t stale_blob[64];
+    memset(stale_blob, 0xAB, sizeof(stale_blob));
+    IVW_CHECK("invalidate: seed stale sapling_tree",
+              node_db_state_set(&ndb, "sapling_tree", stale_blob,
+                                sizeof(stale_blob)) &&
+              node_db_state_set_int(&ndb, "sapling_tree_rebuild_height",
+                                    3155872));
+    uint8_t rb[64];
+    size_t rlen = 0;
+    IVW_CHECK("invalidate: stale pair present pre-call",
+              node_db_state_get(&ndb, "sapling_tree", rb, sizeof(rb), &rlen));
+
+    /* Progress store with a coin set AT the bundle height. */
+    sqlite3 *pdb = NULL;
+    if (sqlite3_open(":memory:", &pdb) != SQLITE_OK) {
+        node_db_close(&ndb);
+        return failures + 1;
+    }
+    IVW_CHECK("invalidate: coins at bundle height", piv_build_coins(pdb, bundle_h));
+
+    /* Poison the in-process provable-tip cache with the OLD tip. */
+    reducer_frontier_provable_tip_set(3155872);
+
+    IVW_CHECK("invalidate: succeeds on matching coin tip",
+              boot_install_consensus_bundle_invalidate_derived_for_test(
+                  &ndb, pdb, bundle_h));
+    IVW_CHECK("invalidate: sapling_tree key cleared",
+              !node_db_state_get(&ndb, "sapling_tree", rb, sizeof(rb), &rlen));
+    int64_t rh = 0;
+    IVW_CHECK("invalidate: sapling_tree_rebuild_height cleared",
+              !node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &rh));
+    IVW_CHECK("invalidate: provable-tip cache reset (served 0)",
+              reducer_frontier_provable_tip_cached() == 0 &&
+              !reducer_frontier_provable_tip_is_published());
+
+    sqlite3_close(pdb);
+
+    /* Mismatch: coin tip below the bundle height must REFUSE. */
+    sqlite3 *pdb2 = NULL;
+    if (sqlite3_open(":memory:", &pdb2) == SQLITE_OK) {
+        IVW_CHECK("invalidate: coins below bundle height",
+                  piv_build_coins(pdb2, bundle_h - 10));
+        IVW_CHECK("invalidate: refuses on coin-tip mismatch",
+                  !boot_install_consensus_bundle_invalidate_derived_for_test(
+                      &ndb, pdb2, bundle_h));
+        sqlite3_close(pdb2);
+    } else {
+        failures++;
+    }
+
+    /* Empty coins table (MAX==NULL) must also refuse. */
+    sqlite3 *pdb3 = NULL;
+    if (sqlite3_open(":memory:", &pdb3) == SQLITE_OK) {
+        char *err = NULL;
+        (void)sqlite3_exec(pdb3,
+            "CREATE TABLE coins(txid BLOB, vout INTEGER, value INTEGER,"
+            " height INTEGER, is_coinbase INTEGER, script BLOB);",
+            NULL, NULL, &err);
+        sqlite3_free(err);
+        IVW_CHECK("invalidate: refuses on empty coin set",
+                  !boot_install_consensus_bundle_invalidate_derived_for_test(
+                      &ndb, pdb3, bundle_h));
+        sqlite3_close(pdb3);
+    } else {
+        failures++;
+    }
+
+    node_db_close(&ndb);
+    reducer_frontier_provable_tip_reset();
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 int test_install_verb_warm(void)
 {
     int failures = 0;
     failures += case_warm_publishes_durable();
     failures += case_warm_empty_datadir();
     failures += case_warm_never_clobbers_published();
+    failures += case_post_install_invalidation();
     return failures;
 }

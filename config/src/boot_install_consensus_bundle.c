@@ -10,12 +10,15 @@
 
 #include "config/boot.h"
 
+#include "config/boot_consensus_bundle_marker.h"       /* installed-bundle marker */
 #include "config/consensus_state_snapshot_install.h"
 #include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
 #include "chain/chain.h"                              /* block_index, active_chain_at */
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
+#include "jobs/reducer_frontier.h"                    /* reducer_frontier_provable_tip_reset */
 #include "jobs/tip_finalize_stage.h"                 /* tip_finalize_stage_warm_authority_caches */
+#include "models/database.h"                          /* node_db_state_delete */
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/consensus_state_bundle_codec.h"
@@ -228,10 +231,94 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
     return ok;
 }
 
+/* MAX(coins.height) on the installed progress store. found=false on an empty
+ * coins table (MAX over 0 rows is SQL NULL). */
+static bool icb_coins_max_height(sqlite3 *progress_db, int64_t *out, bool *found)
+{
+    *out = -1;
+    *found = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(progress_db, "SELECT MAX(height) FROM coins", -1,
+                           &st, NULL) != SQLITE_OK)
+        return false;
+    bool ok = true;
+    if (sqlite3_step(st) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        if (sqlite3_column_type(st, 0) != SQLITE_NULL) {
+            *out = sqlite3_column_int64(st, 0);
+            *found = true;
+        }
+    } else {
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Post-install derived-state invalidation. The atomic activate step resets the
+ * progress.kv reducer/tip_finalize authority to the installed anchor, but two
+ * derived surfaces live OUTSIDE that store and would otherwise fight the new
+ * kernel on the next boot (the 2026-07-19 seam). Returns true iff every derived
+ * store is now consistent with the freshly installed bundle at bundle_height. */
+static bool icb_invalidate_derived_state(struct node_db *ndb,
+                                         sqlite3 *progress_db,
+                                         int32_t bundle_height)
+{
+    if (!ndb || !progress_db)
+        LOG_FAIL(ICB_SUBSYS, "post-install invalidation: null ndb/progress_db");
+
+    /* (1) Sapling commitment tree pair (node.db node_state) — NOT touched by
+     * activate. A leftover blob at the OLD tip makes the boot loader FATAL on
+     * "Sapling tree root MISMATCH". Drop both keys so the boot loader rebuilds
+     * from the installed anchors (rebuild retry-robustness is owned by another
+     * lane; here we only invalidate). */
+    bool st_ok = node_db_state_delete(ndb, "sapling_tree");
+    bool sh_ok = node_db_state_delete(ndb, "sapling_tree_rebuild_height");
+    if (!st_ok || !sh_ok)
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install invalidation: could not clear persisted "
+                 "sapling_tree pair (sapling_tree=%d rebuild_height=%d)",
+                 st_ok, sh_ok);
+
+    /* (2) tip_finalize provable-tip cache. Its DURABLE source (tip_finalize_log
+     * + the 8 stage cursors) was already reset to the installed anchor AND
+     * post-install-verified inside consensus_state_snapshot_install_activate.
+     * This verb pre-warmed the process-local reducer_frontier provable-tip
+     * cache from the PRE-install store (step 3b above), so drop that stale
+     * in-memory value: nothing may republish the old tip if this terminal path
+     * ever stops _exit()ing. */
+    reducer_frontier_provable_tip_reset();
+
+    /* (3) The installed coin set must sit exactly at the bundle height. */
+    int64_t coins_max = -1;
+    bool have_coins = false;
+    if (!icb_coins_max_height(progress_db, &coins_max, &have_coins))
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install invalidation: reading MAX(coins.height) failed");
+    if (!have_coins || coins_max != (int64_t)bundle_height) {
+        LOG_ERROR(ICB_SUBSYS,
+                  "post-install invalidation: MAX(coins.height)=%lld != bundle "
+                  "height=%d (installed coin tip is not at the bundle tip)",
+                  (long long)coins_max, bundle_height);
+        return false;
+    }
+    LOG_INFO(ICB_SUBSYS,
+             "post-install derived-state invalidation OK: sapling_tree pair "
+             "cleared, provable-tip cache reset, coins tip=%lld == bundle "
+             "height=%d", (long long)coins_max, bundle_height);
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool boot_install_consensus_bundle_invalidate_derived_for_test(
+    struct node_db *ndb, sqlite3 *progress_db, int32_t bundle_height)
+{
+    return icb_invalidate_derived_state(ndb, progress_db, bundle_height);
+}
+#endif
+
 void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
                                    const char *bundle_path, const char *datadir)
 {
-    (void)ndb;
     if (!bundle_path || !bundle_path[0] || !datadir || !datadir[0])
         icb_refuse("empty bundle path or datadir");
 
@@ -447,6 +534,29 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     if (!consensus_state_snapshot_install_activate(progress_store_db(), &areq,
                                                    &ares))
         icb_refuse("activation install failed after ADMIT: %s", ares.reason);
+
+    /* (6) Post-install: invalidate the derived stores that live OUTSIDE the
+     * activated progress.kv (the persisted Sapling tree pair + the in-process
+     * provable-tip cache) and verify the installed coin tip matches the bundle
+     * height. A mismatch means the install did not land where the ADMIT record
+     * says — refuse loudly rather than reboot onto an inconsistent kernel. */
+    if (!icb_invalidate_derived_state(ndb, progress_store_db(), manifest.height))
+        icb_refuse("post-install derived-state invalidation failed (installed "
+                   "coin tip != bundle height, or sapling_tree pair could not "
+                   "be cleared) — see ERROR log above");
+
+    /* (7) Durable marker: record that a sovereign bundle is now installed here
+     * so a future boot never auto-loads a leftover borrowed starter-pack seed
+     * back over the installed state. Best-effort — the install is already
+     * durable; a marker write failure is loud but not fatal. */
+    if (!boot_consensus_bundle_marker_write(datadir, manifest.height,
+                                            manifest.artifact_digest))
+        LOG_ERROR(ICB_SUBSYS,
+                  "consensus-bundle-installed marker could not be written in %s "
+                  "— install is durable, but a future boot may re-autodetect a "
+                  "leftover borrowed seed; remove any utxo-seed-*.snapshot from "
+                  "the datadir root manually", datadir);
+
     (void)close(dir_fd);
 
     fprintf(stderr,

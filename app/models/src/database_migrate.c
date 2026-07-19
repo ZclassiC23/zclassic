@@ -172,6 +172,31 @@ bool node_db_state_get_int(struct node_db *ndb,
     return len == sizeof(*val);
 }
 
+bool node_db_state_delete(struct node_db *ndb, const char *key)
+{
+    if (!ndb || !ndb->open || !key)
+        return false;
+
+    /* Per-call prepare, NOT a cached statement: same non-thread-safe-stmt
+     * rationale as node_db_state_set (writers run from several threads). */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "DELETE FROM node_state WHERE key=?",
+            -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_WARN("node_db", "state_delete prepare failed key=%s: %s",
+                 key, sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
+    sqlite3_finalize(s);
+    node_db_note_activity(ndb, "state_delete", rc);
+    if (rc != SQLITE_DONE)
+        LOG_WARN("node_db", "state_delete step failed key=%s rc=%d: %s",
+                 key, rc, sqlite3_errmsg(ndb->db));
+    return rc == SQLITE_DONE;
+}
+
 int node_db_schema_version(struct node_db *ndb)
 {
     int32_t ver = 0;

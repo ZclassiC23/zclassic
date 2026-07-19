@@ -150,6 +150,9 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len);
 bool node_db_state_set_int(struct node_db *ndb, const char *key, int64_t val);
 bool node_db_state_get_int(struct node_db *ndb, const char *key, int64_t *val);
+/* Delete a node_state key. Returns true when the key is gone afterwards
+ * (including when it was already absent — deleting a missing key is success). */
+bool node_db_state_delete(struct node_db *ndb, const char *key);
 
 /* ── UTXO Lifecycle ─────────────────────────────────────────────── */
 

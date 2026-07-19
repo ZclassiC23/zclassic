@@ -2,13 +2,18 @@
 #include "config/boot_snapshot_failure_memory.h"
 
 #include "config/boot.h"
+#include "config/boot_consensus_bundle_marker.h"
 #include "util/log_macros.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#define QUARANTINE_BORROWED_SEED_DIR "quarantine-borrowed-seed"
 
 static bool marker_path_for_snapshot(char *out, size_t cap,
                                      const char *snapshot_path)
@@ -83,6 +88,65 @@ static void forget_explicit_seed(struct app_context *ctx, char *fail_marker)
         fail_marker[0] = '\0';
 }
 
+/* A sovereign consensus bundle is installed in this datadir (marker present),
+ * yet a borrowed starter-pack seed file is still lying in the datadir root.
+ * Auto-loading it would flip the installed state back to the borrowed seed —
+ * the 2026-07-19 seam. Move it out of the auto-load search path into
+ * <datadir>/quarantine-borrowed-seed/ so it is never reselected, and let boot
+ * continue on the installed state. Benign auto-remedy: never a blocker, and a
+ * failed move only falls through to leaving the seed untouched (the marker
+ * still prevents auto-load in maybe_autodetect_seed's caller path). */
+static void quarantine_borrowed_seed(const char *datadir, const char *seed_path)
+{
+    if (!datadir || !datadir[0] || !seed_path || !seed_path[0])
+        return;
+
+    const char *base = strrchr(seed_path, '/');
+    base = base ? base + 1 : seed_path;
+
+    char qdir[1200];
+    int dn = snprintf(qdir, sizeof(qdir), "%s/%s", datadir,
+                      QUARANTINE_BORROWED_SEED_DIR);
+    if (dn <= 0 || (size_t)dn >= sizeof(qdir)) {
+        LOG_WARN("boot",
+                 "[boot] borrowed-seed quarantine dir path too long for %s - "
+                 "leaving seed in place (marker still blocks auto-load)",
+                 datadir);
+        return;
+    }
+    if (mkdir(qdir, 0700) != 0 && errno != EEXIST) {
+        LOG_WARN("boot",
+                 "[boot] could not create borrowed-seed quarantine dir %s (%s) "
+                 "- leaving seed in place (marker still blocks auto-load)",
+                 qdir, strerror(errno));
+        return;
+    }
+
+    char dst[1400];
+    int on = snprintf(dst, sizeof(dst), "%s/%s", qdir, base);
+    if (on <= 0 || (size_t)on >= sizeof(dst)) {
+        LOG_WARN("boot",
+                 "[boot] borrowed-seed quarantine target path too long for %s - "
+                 "leaving seed in place (marker still blocks auto-load)", base);
+        return;
+    }
+    if (rename(seed_path, dst) != 0) {
+        LOG_WARN("boot",
+                 "[boot] could not move borrowed seed %s -> %s (%s) - leaving "
+                 "it in place (marker still blocks auto-load)",
+                 seed_path, dst, strerror(errno));
+        return;
+    }
+    LOG_WARN("boot",
+             "[boot] sovereign consensus bundle installed here "
+             "(consensus-bundle-installed marker present) — REFUSING to "
+             "auto-load leftover borrowed starter-pack seed %s; quarantined it "
+             "to %s. Cure doctrine: the installed state is authoritative, a "
+             "borrowed zclassicd-minted seed must never overwrite it. Delete "
+             "%s manually to reclaim disk once the install is confirmed.",
+             base, dst, dst);
+}
+
 static void maybe_autodetect_seed(struct app_context *ctx,
                                   bool coins_kv_proven_authority,
                                   int32_t coins_kv_applied_height,
@@ -96,6 +160,16 @@ static void maybe_autodetect_seed(struct app_context *ctx,
     char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
     if (!auto_snap)
         return;
+
+    /* A sovereign consensus bundle has been installed in this datadir. Never
+     * auto-load a leftover borrowed seed over it — quarantine the seed file and
+     * continue on the installed state. Only applies to autodetect; an explicit
+     * -load-snapshot-at-own-height flag never reaches this path. */
+    if (boot_consensus_bundle_marker_exists(ctx->datadir)) {
+        quarantine_borrowed_seed(ctx->datadir, auto_snap);
+        free(auto_snap);
+        return;
+    }
 
     if (coins_kv_proven_authority) {
         int32_t seed_h = -1;

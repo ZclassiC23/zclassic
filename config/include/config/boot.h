@@ -557,6 +557,12 @@ bool boot_ratify_mint_anchor_check_and_stamp(
  * accepted only when it is exactly "1". */
 bool boot_install_consensus_bundle_gate_allows_for_test(
     const char *datadir, const char *authorization, bool *out_canonical);
+/* Unit surface for the post-install derived-state invalidation: clears the
+ * persisted Sapling tree pair on `ndb`, resets the in-process provable-tip
+ * cache, and verifies MAX(coins.height) on `progress_db` == bundle_height. */
+struct sqlite3;
+bool boot_install_consensus_bundle_invalidate_derived_for_test(
+    struct node_db *ndb, struct sqlite3 *progress_db, int32_t bundle_height);
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
     struct main_state *ms, const char *datadir, int seed_h,
     bool trust_existing_block_files);
