@@ -69,7 +69,7 @@ does not mean.
   `-assumevalid` (removed as a direct flag; controlled via
   `-deferproofvalidationbelow=<blockhash|0>`, default the highest in-binary
   PoW checkpoint, height 3,100,000; `lib/chain/src/chainparams.c`). That path
-  is driven by `-reindex` (`reindex_chainstate()` in
+  is driven by `-reindex-chainstate` (`reindex_chainstate()` in
   `config/src/boot_index.c`), by the offline harness/simnet code, and by the
   background revalidation walker (`app/services/src/bg_validation_service.c`,
   `-nobgvalidation` to disable) — which itself re-verifies every proof it
@@ -101,7 +101,7 @@ window on the live, state-advancing path. The `assumevalid`-equivalent
 deferred-height gate is real but confined to the legacy `connect_block()`
 reindex/import/simnet path, where it carries the same practical exposure as
 any `assumevalid`-style node until the background walker (or a later
-`-reindex`) passes that height. Independent (non-`assumevalid`)
+`-reindex-chainstate`) passes that height. Independent (non-`assumevalid`)
 anchor-membership verification on that legacy path is tracked as a hardening
 item, not a claimed property.
 

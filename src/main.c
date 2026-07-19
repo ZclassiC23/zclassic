@@ -2926,6 +2926,38 @@ static void apply_argv_loglevel(void)
     }
 }
 
+/* Flags read via GetArg()/GetBoolArg() (lib/util/src/util.c mapArgs) rather
+ * than the node-mode strncmp chain below — kept as an explicit list so the
+ * unrecognized-flag WARNING added there does not false-positive on them.
+ * Includes each flag's "-no<flag>" negation form where ParseParameters'
+ * auto-negation (-noX -> -X=0) is meaningful for that specific flag (i.e.
+ * the positive form is looked up via GetBoolArg somewhere). Regenerate by
+ * grepping `Get(Bool)?Arg\("-[a-zA-Z0-9_-]+"` across the tree and excluding
+ * test-only fixture keys (test_encoding.c's "-foo"/"-noexist"/"-debug"). */
+static const char *const k_extra_getarg_flags[] = {
+    "-pin-reducer", "-nopin-reducer",
+    "-rombundlereplicadir",
+    "-romseed", "-noromseed",
+    "-netcrawl", "-nonetcrawl",
+    "-addressindex", "-noaddressindex",
+    "-loglevel",
+    "-debug", "-nodebug",
+    "-txindex", "-notxindex", /* also GetBoolArg'd in txindex_projection.c */
+};
+
+static bool main_flag_is_known_extra(const char *arg)
+{
+    char key[64];
+    const char *eq = strchr(arg, '=');
+    size_t klen = eq ? (size_t)(eq - arg) : strlen(arg);
+    if (klen >= sizeof(key)) return false;
+    memcpy(key, arg, klen);
+    key[klen] = '\0';
+    for (size_t i = 0; i < sizeof(k_extra_getarg_flags) / sizeof(k_extra_getarg_flags[0]); i++)
+        if (strcmp(key, k_extra_getarg_flags[i]) == 0) return true;
+    return false;
+}
+
 int main(int argc, char **argv)
 {
     ParseParameters(argc, (const char *const *)argv);
@@ -3833,6 +3865,24 @@ int main(int argc, char **argv)
                    CLIENT_VERSION_REVISION,
                    zcl_build_source_id_sha256());
             return 0;
+        }
+        else if (argv[i][0] == '-' && !main_flag_is_known_extra(argv[i])) {
+            /* Loud unknown-flag WARNING (docs consolidation sweep,
+             * 2026-07-19): this loop previously accepted ANY unrecognized
+             * "-flag" silently (a documented footgun — see docs/SYNC.md and
+             * CLAUDE.md "Skipping step 1 is a footgun"). A typo'd or
+             * removed flag (e.g. the old -cold-import/-fastimport) must not
+             * silently no-op; it must say so, every boot, at WARN. This is
+             * advisory only — it does not FATAL, since some recognized
+             * flags are intentionally consumed by an earlier or later pass
+             * in this loop (e.g. -gui/--self-test above,
+             * -addnode=/-connect=/-filesync= below) or read independently
+             * via GetArg()/GetBoolArg() (main_flag_is_known_extra() above)
+             * rather than this loop's own strncmp branches. */
+            fprintf(stderr,
+                    "Warning: unrecognized flag '%s' (ignored) — check "
+                    "spelling or docs/RUNBOOK.md; this is not a supported "
+                    "zclassic23 flag.\n", argv[i]);
         }
     }
 
