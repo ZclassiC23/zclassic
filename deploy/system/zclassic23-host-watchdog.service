@@ -1,0 +1,15 @@
+[Unit]
+Description=ZClassic23 Host Watchdog — probes user@<uid>.service liveness + canonical node RPC port from OUTSIDE the systemd --user failure domain
+After=network.target
+
+[Service]
+# SYSTEM unit, runs as root (default) — loginctl enable-linger and the
+# revive step need root; the script itself drops to the operator user
+# (runuser -u) for the localhost ssh login, per deploy/zclassic23-host-watchdog.sh.
+Type=oneshot
+ExecStart=/usr/local/sbin/zclassic23-host-watchdog.sh
+TimeoutStartSec=30
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
