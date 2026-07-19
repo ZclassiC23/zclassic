@@ -12,8 +12,12 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
 - **[`FORWARD_PLAN.md`](./FORWARD_PLAN.md)** — THE plan. MVP-anchored,
   autonomous / owner-gated / operational critical path. Start here.
 - **[`self-verified-tip-plan.md`](./self-verified-tip-plan.md)** — the
-  sovereign-cure spine (the self-verified UTXO/anchor rebuild that deletes
-  the borrowed zclassicd-minted seed path).
+  G-SOV sovereignty-gate design record; its own header marks the wedge PROVEN
+  cured (`../HANDOFF.md` §0-LATEST) via a different concrete mechanism than
+  this plan's Act 3 (checkpoint-content bundle install, not a self-derived
+  anchor + borrowed-seed deletion — Act 3's literal steps remain undone).
+  Kept live for the G-SOV predicate (still the active sovereignty gate in
+  `sovereignty_controller.c`) and the still-open Act 2/4 hardening.
 - **[`never-stuck-plan.md`](./never-stuck-plan.md)** — the wedge-class cure
   design (silent-halt-unreachable-by-construction machinery); its own header
   marks the 2026-07-12 wedge diagnosis historical and defers gate authority

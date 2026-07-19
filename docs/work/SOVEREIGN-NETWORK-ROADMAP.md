@@ -42,24 +42,34 @@ higher one.
 7. **Owner authority:** canonical deployment, stable publication, capability
    increases, and irreversible migrations stay explicitly owner-gated.
 
-## Current red baseline
+## Current baseline
 
-- Canonical is wedged below tip on missing historical shielded
-  anchors/nullifiers (verify the live H\* via `zclassic23 status` / `zclassic23 dumpstate
-  reducer_frontier`; `docs/HANDOFF.md` holds current state). Downstream peer,
-  download, script, mirror, or operator-latch symptoms must not outrank that
-  causal gap.
-- The previous borrowed snapshot path repaired a transparent-loader failure and
-  once reached tip. Its payload digest and matching local header do not make its
-  state contents PoW- or consensus-bound.
+> Re-derived 2026-07-19: the shielded-state wedge this section used to lead
+> with is CURED (`docs/HANDOFF.md` §0-LATEST — serve node AT NETWORK TIP on
+> self-verified state, via the checkpoint-content consensus-bundle install
+> path, `docs/work/sovereign-cutover-runbook.md`). Verify the live H\* via
+> `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before trusting
+> either this note or `docs/HANDOFF.md` — both are snapshots, not live reads.
+
+- The state-truth invariant (layer 2 above) is now met on the serve node: a
+  matching ZClassic header alone never authenticated the previous borrowed
+  snapshot's UTXO/shielded contents, so the cure independently validated
+  complete transparent + shielded state before activation
+  (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`).
 - Legacy USS v3 can carry current shielded frontiers and supplied nullifiers,
   but it omits historical anchor rows and cannot prove complete nullifier
-  history. The current v1-oriented `-refold-from-anchor` reset can additionally
-  reject or discard those sections. USS v3 is not the sovereign cure.
-- Canonical has no clean soak window. The formal C6 judge is `NOT_MET` after
-  intervention; one-block lookahead or uptime without exact same-height parity
-  and complete security posture is not evidence.
-- MVP is 4/8. Exact parity, cold-sync, market, and 168-hour claims remain open.
+  history. The v1-oriented `-refold-from-anchor` reset can additionally
+  reject or discard those sections — this caution still applies to any future
+  cure attempt, even though the current one used a different path. USS v3 is
+  not the sovereign cure.
+- The soak window is now running on the at-tip serve node (`docs/HANDOFF.md`
+  §0-LATEST). Judge with `make soak-evidence-report`; re-read live accrual
+  with `tools/mvp_gate.sh` — do not trust a pinned verdict here. One-block
+  lookahead or uptime without exact same-height parity and complete security
+  posture is still not evidence.
+- MVP is 4/8 as of the last read (`docs/HANDOFF.md` §4, "do not bump without
+  proof"); re-run `tools/mvp_gate.sh` for the current number. Exact parity,
+  fresh-machine cold-sync, market, and the 168-hour soak claim remain open.
 - Background quality evidence is not yet immutable/exact-commit complete; fuzz
   and coverage lanes are red or stale.
 - Native hot-swap primitives exist, but source epochs, complete proof receipts,
@@ -120,7 +130,11 @@ explicitly open until its generation-driven tests pass.
 Goal: cure canonical first, then make fast readiness and eventual sovereignty
 honest, repeatable states.
 
-### Immediate cure
+### Immediate cure — **LANDED** (`docs/HANDOFF.md` §0-LATEST, 2026-07-19)
+
+The design below is what shipped as the checkpoint-content consensus-bundle
+install path (`docs/work/sovereign-cutover-runbook.md`); kept as the
+as-designed record, not an open task list.
 
 - Build one `consensus_state_snapshot_install()` service for both loader and
   refold paths.

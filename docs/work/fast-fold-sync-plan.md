@@ -7,9 +7,13 @@
 > failed datadir preserved. Treat all `[running]`, `EXPORT-READY`, rate, and ETA claims below as
 > historical. Preserve the failed datadir, diagnose on a copy, and start a new
 > v2 receipt-owning producer only after the parity defect is understood. Live
-> node truth and current next actions are in `docs/HANDOFF.md`. Production
-> bundle activation is also contained until an independently replay-bound
-> receipt outside the self-describing artifact is implemented.
+> node truth and current next actions are in `docs/HANDOFF.md`. **2026-07-19
+> update: this plan is superseded, not resumed** — the sovereign cure that
+> actually landed used a different mechanism (the checkpoint-content
+> consensus-bundle install, receipt-free by design; see
+> `docs/work/sovereign-cutover-runbook.md`), not the "independently
+> replay-bound receipt" gate this v2-producer plan was blocked on. Kept as
+> historical input, not an open task.
 
 **Owner directive (2026-07-14 night):** "keep going until the node is fully synced,
 don't wait on me... use workflows of subagents, get it done the right way, long term,
