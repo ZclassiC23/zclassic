@@ -794,11 +794,13 @@ bool consensus_db_write_schema_marker(sqlite3 *cdb, char *errbuf, size_t errcap)
     return true;
 }
 
-/* True when consensus.db already carries the current flip marker — i.e. a prior
- * boot completed the flip. Reads only the durable BLOB marker (fail-closed on a
- * missing/short/coerced value), no progress.kv touch. */
-static bool consensus_db_schema_already_flipped(sqlite3 *cdb)
+/* Read the durable schema-marker version, if any. Returns false (out=0) on a
+ * missing/short/coerced value or a NULL handle — the same fail-closed read
+ * both consensus_db_schema_already_flipped and
+ * consensus_db_schema_is_downgrade build on. */
+static bool cdb_read_schema_marker(sqlite3 *cdb, uint32_t *out)
 {
+    if (out) *out = 0;
     if (!cdb)
         return false;
     uint8_t le[4];
@@ -809,14 +811,49 @@ static bool consensus_db_schema_already_flipped(sqlite3 *cdb)
         return false;
     if (!found || got != sizeof(le))
         return false;
-    uint32_t v = (uint32_t)le[0] | ((uint32_t)le[1] << 8) |
-                 ((uint32_t)le[2] << 16) | ((uint32_t)le[3] << 24);
-    return v == (uint32_t)CONSENSUS_DB_SCHEMA_VERSION;
+    if (out)
+        *out = (uint32_t)le[0] | ((uint32_t)le[1] << 8) |
+               ((uint32_t)le[2] << 16) | ((uint32_t)le[3] << 24);
+    return true;
+}
+
+/* True when consensus.db already carries the current flip marker — i.e. a prior
+ * boot completed the flip. Reads only the durable BLOB marker (fail-closed on a
+ * missing/short/coerced value), no progress.kv touch. */
+static bool consensus_db_schema_already_flipped(sqlite3 *cdb)
+{
+    uint32_t v = 0;
+    return cdb_read_schema_marker(cdb, &v) &&
+           v == (uint32_t)CONSENSUS_DB_SCHEMA_VERSION;
+}
+
+bool consensus_db_schema_is_downgrade(sqlite3 *cdb, uint32_t *out_marker_version,
+                                      char *errbuf, size_t errcap)
+{
+    if (out_marker_version) *out_marker_version = 0;
+    uint32_t v = 0;
+    if (!cdb_read_schema_marker(cdb, &v))
+        return false;  /* no marker yet, or unreadable — not a downgrade */
+    if (out_marker_version) *out_marker_version = v;
+    if (v <= (uint32_t)CONSENSUS_DB_SCHEMA_VERSION)
+        return false;
+    cdb_set_err(errbuf, errcap,
+                "consensus.db schema marker is v%u but this binary is v%u "
+                "(binary downgrade against a newer datadir) — refusing to "
+                "re-flip or overwrite the marker; run the newer binary "
+                "against this datadir", v, (unsigned)CONSENSUS_DB_SCHEMA_VERSION);
+    return true;
 }
 
 bool consensus_db_finalize_flip(const char *datadir, sqlite3 *cdb, char *errbuf,
                                 size_t errcap)
 {
+    /* A FUTURE marker means this binary is older than the one that last wrote
+     * consensus.db. Treating that as "not yet flipped" would silently re-run
+     * drop_migrated_from_progress and overwrite the newer marker with this
+     * binary's OLDER version — a loud refusal here, not a silent re-flip. */
+    if (consensus_db_schema_is_downgrade(cdb, NULL, errbuf, errcap))
+        return false;
     /* Steady-state short-circuit: once the durable marker records the flip, the
      * migrated progress.kv tables are already gone. Skip the progress.kv
      * open+ATTACH+lock cycle every subsequent boot would otherwise pay. */

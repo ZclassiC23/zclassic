@@ -33,4 +33,9 @@
 # cover them. Both stay WARN-only per-file (lib/net/, feature growth, not
 # baselined at their new LOC — the ratchet grandfathers the count, not the
 # individual entries).
-14
+#
+# Raised 14 -> 15 (task J2, boot-time integrity failsafes): consensus_db.c
+# grew 846 -> 883 for the binary-downgrade schema-marker refusal
+# (consensus_db_schema_is_downgrade / consensus_db_finalize_flip). Reviewed
+# and accepted; re-baselined in file_size_ceiling_lib_baseline.txt.
+15

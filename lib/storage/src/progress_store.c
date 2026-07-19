@@ -14,6 +14,7 @@
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
 
+#include "sqlite_integrity_gate.h"
 #include "storage/consensus_db.h"
 #include "event/event.h"
 #include "json/json.h"
@@ -161,83 +162,19 @@ static bool apply_pragmas(sqlite3 *db)
  * treated as NOT ok so the caller quarantines. */
 static bool progress_store_quick_check_ok(sqlite3 *db)
 {
-    sqlite3_stmt *stmt = NULL;
-    bool ok = false;
-    int rc = sqlite3_prepare_v2(db, "PRAGMA quick_check(1)", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:progress-store-open-failure
-                "[progress_store] quick_check prepare failed: %s\n",
-                sqlite3_errmsg(db));
-        return false;
-    }
-    rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
-    if (rc == SQLITE_ROW) {
-        const unsigned char *txt = sqlite3_column_text(stmt, 0);
-        ok = txt && strcmp((const char *)txt, "ok") == 0;
-        if (!ok && txt)
-            fprintf(stderr,  // obs-ok:progress-store-open-failure
-                    "[progress_store] quick_check failed: %s\n", txt);
-    } else {
-        fprintf(stderr,  // obs-ok:progress-store-open-failure
-                "[progress_store] quick_check step failed: %s\n",
-                sqlite3_errmsg(db));
-    }
-    sqlite3_finalize(stmt);
-    return ok;
+    return sqlite_integrity_quick_check_ok(db, "progress_store");
 }
 
-/* Rename one progress.kv-family file (base / -wal / -shm) out of the way with a
- * timestamped, pid+seq-unique suffix. ENOENT is success (the file may not
- * exist). Mirrors db_quarantine_one in app/models/src/database.c. */
-static void progress_store_quarantine_one(const char *path, const char *suffix)
-{
-    if (access(path, F_OK) != 0)
-        return;  /* nothing to move (e.g. -wal/-shm absent) */
-    char dst[PROGRESS_STORE_PATH_MAX + 96];
-    int n = snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
-    if (n <= 0 || (size_t)n >= sizeof(dst)) {
-        fprintf(stderr,  // obs-ok:progress-store-open-failure
-                "[progress_store] quarantine dest too long for %s\n", path);
-        return;
-    }
-    if (rename(path, dst) == 0)
-        fprintf(stderr,  // obs-ok:progress-store-lifecycle
-                "[progress_store] quarantined %s -> %s\n", path, dst);
-    else
-        fprintf(stderr,  // obs-ok:progress-store-open-failure
-                "[progress_store] failed to quarantine %s: %s\n",
-                path, strerror(errno));
-}
-
-/* Move the corrupt progress.kv (+ -wal/-shm) aside so the reopen creates a
- * FRESH, empty store. progress.kv is a DERIVED projection: the coins_kv UTXO
- * set it holds is re-seeded at boot from consensus_snapshot.db (or the anchor),
- * and the stage cursors re-fold from there. An empty store therefore triggers
- * the normal re-derivation rather than serving torn state. The suffix is
- * timestamped + pid + a process-local sequence so repeated quarantines never
- * collide. Emits a NAMED recovery event (not a silent stop). */
+/* Move the corrupt consensus.db (+ -wal/-shm) aside so the reopen creates a
+ * FRESH, empty store. progress.kv/consensus.db is a DERIVED store: the
+ * coins_kv UTXO set it holds is re-seeded at boot from consensus_snapshot.db
+ * (or the anchor), and the stage cursors re-fold from there. An empty store
+ * therefore triggers the normal re-derivation rather than serving torn state.
+ * Emits a NAMED recovery event (not a silent stop). */
 static void progress_store_quarantine_corrupt(const char *path)
 {
-    static _Atomic(unsigned) s_seq;
-    unsigned seq = atomic_fetch_add_explicit(&s_seq, 1u,
-                                             memory_order_relaxed) + 1u;
-    char suffix[80];
-    time_t now = (time_t)wall_now_s();
-    snprintf(suffix, sizeof(suffix), "corrupt.%lld.%ld.%u",
-             (long long)now, (long)getpid(), seq);
-
-    char wal[PROGRESS_STORE_PATH_MAX + 8];
-    char shm[PROGRESS_STORE_PATH_MAX + 8];
-    snprintf(wal, sizeof(wal), "%s-wal", path);
-    snprintf(shm, sizeof(shm), "%s-shm", path);
-
-    progress_store_quarantine_one(path, suffix);
-    progress_store_quarantine_one(wal, suffix);
-    progress_store_quarantine_one(shm, suffix);
-
-    event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=progress_store_quarantine reason=quick_check_failed "
-                "path=%s suffix=%s", path, suffix);
+    sqlite_integrity_quarantine_corrupt(path, "progress_store",
+                                        "progress_store_quarantine");
 }
 
 bool progress_store_open(const char *datadir)
@@ -396,6 +333,32 @@ bool progress_store_open(const char *datadir)
         (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         return false;
+    }
+
+    /* A FUTURE consensus.db schema marker means this binary is OLDER than the
+     * one that last wrote this datadir (a binary downgrade). Silently
+     * proceeding would let consensus_db_finalize_flip() treat it as
+     * "not yet flipped" and overwrite the newer marker with this binary's
+     * OLDER version. Refuse the open outright — the caller (boot) already
+     * FATALs+exits on progress_store_open() returning false
+     * (boot_snapshot_install_gate_boot), so this is a loud, fail-fast boot
+     * refusal naming both versions, never a silent re-flip. */
+    {
+        uint32_t marker_v = 0;
+        char derr[256] = "";
+        if (consensus_db_schema_is_downgrade(db, &marker_v, derr, sizeof(derr))) {
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] FATAL: %s\n", derr);
+            sqlite3_close(db);
+            (void)close(opened_dir_fd);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=progress_store_downgrade_refused "
+                        "reason=schema_marker_future marker_version=%u "
+                        "binary_version=%u path=%s", marker_v,
+                        (unsigned)CONSENSUS_DB_SCHEMA_VERSION, path);
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
     }
 
     snprintf(g_path, sizeof(g_path), "%s", path);
