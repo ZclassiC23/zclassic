@@ -14,6 +14,7 @@
 #include "config/boot_memory_guard.h"
 #include "config/boot_postmortem.h"
 #include "config/boot_shutdown_marker.h"
+#include "util/shutdown_stagewatch.h"
 #include "config/boot_fast_restart.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
@@ -4056,17 +4057,17 @@ sapling_tree_boot_check_done:
     return svc_ok;
 }
 
-/* AS-safe SIGALRM backstop: app_shutdown_svc arms alarm(90), but shutdown
- * paths that never ran main.c's signal_handler() (chain-tip watchdog,
- * `stop` RPC, self-heal hot-loop) would otherwise die via SIGALRM's
- * DEFAULT disposition mid-teardown — silent, and unlogged. */
+/* AS-safe SIGALRM backstop. app_shutdown_svc drives a per-stage stagewatch
+ * (util/shutdown_stagewatch.h); a fired per-stage deadline lands here and the
+ * stagewatch decides truthfully: re-arm a bounded grace for a durability-
+ * critical stall, or force a truthful exit (code 0 once durability is secured,
+ * code 1 only if it was never reached) after writing a terminal receipt. If
+ * the stagewatch was never begun (a shutdown path that armed a raw alarm), it
+ * falls back to the legacy loud forced exit. Async-signal-safe throughout. */
 static void shutdown_alarm_abort(int sig)
 {
     (void)sig;
-    static const char msg[] =
-        "[shutdown] alarm fired: graceful shutdown hung - forcing exit\n";
-    (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
-    _exit(1);
+    shutdown_stagewatch_on_alarm();
 }
 
 /* app_shutdown delegates to boot_services.c */
