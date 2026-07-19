@@ -383,6 +383,89 @@ int test_process_headers_adversarial(void)
         main_state_free(&ms2);
     }
 
+    /* ── 7. sibling silent-drop sites in the same file, same defect class:
+     *       inbound `headers` dropped receive-side, push_getheaders() and
+     *       push_getheaders_span() dropped send-side while a snapshot
+     *       exchange owns the wire, and the getheaders-serving defer while
+     *       a peer snapshot transfer is in progress — all must count and
+     *       (rising-edge) log instead of silently returning. */
+    {
+        struct main_state ms3;
+        main_state_init(&ms3);
+        struct msg_processor mp3;
+        msg_processor_init(&mp3, &ms3, NULL, NULL, cp, dir, &g_ph_nm, NULL);
+
+        /* (a) process_headers: inbound headers dropped while a snapshot
+         *     exchange is active — counted, never a silent stop. */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            msg_processor_set_snapshot_active(&mp3, ph_snapshot_active_true,
+                                              NULL);
+            struct byte_stream s;
+            stream_init(&s, 8);
+            bool ret = process_headers(&mp3, &node, &s);
+            msg_processor_set_snapshot_active(&mp3, NULL, NULL);
+            stream_free(&s);
+            msg_headers_get_stats(&b);
+            PH_CHECK("process_headers: snapshot-active drop counted",
+                     ret == true &&
+                     b.headers_recv_suppressed_snapshot ==
+                         a.headers_recv_suppressed_snapshot + 1);
+        }
+
+        /* (b) push_getheaders: send-side request suppressed while a
+         *     snapshot exchange is active — counted. */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            msg_processor_set_snapshot_active(&mp3, ph_snapshot_active_true,
+                                              NULL);
+            push_getheaders(&mp3, &node);
+            msg_processor_set_snapshot_active(&mp3, NULL, NULL);
+            msg_headers_get_stats(&b);
+            PH_CHECK("push_getheaders: snapshot-active drop counted",
+                     b.push_getheaders_suppressed_snapshot ==
+                         a.push_getheaders_suppressed_snapshot + 1);
+        }
+
+        /* (c) push_getheaders_span: span request suppressed while a
+         *     snapshot exchange is active — counted. */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            msg_processor_set_snapshot_active(&mp3, ph_snapshot_active_true,
+                                              NULL);
+            push_getheaders_span(&mp3, &node, &gh, NULL);
+            msg_processor_set_snapshot_active(&mp3, NULL, NULL);
+            msg_headers_get_stats(&b);
+            PH_CHECK("push_getheaders_span: snapshot-active drop counted",
+                     b.push_getheaders_span_suppressed_snapshot ==
+                         a.push_getheaders_span_suppressed_snapshot + 1);
+        }
+
+        /* (d) process_getheaders: request deferred while we are serving a
+         *     snapshot to this peer — counted (was a bare printf). */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            bool saved = node.swarm_manifest_sent;
+            node.swarm_manifest_sent = true;
+            struct byte_stream s;
+            stream_init(&s, 8);
+            bool ret = process_getheaders(&mp3, &node, &s);
+            stream_free(&s);
+            node.swarm_manifest_sent = saved;
+            msg_headers_get_stats(&b);
+            PH_CHECK("process_getheaders: snapshot-serving defer counted",
+                     ret == true &&
+                     b.getheaders_deferred_snapshot_serving ==
+                         a.getheaders_deferred_snapshot_serving + 1);
+        }
+
+        main_state_free(&ms3);
+    }
+
     sync_set_state(sync0, "process_headers_adversarial restore");
     main_state_free(&ms);
     SetDataDir("");
