@@ -11,6 +11,7 @@
 #include "crypto/chacha20poly1305.h"
 #include "crypto/pbkdf2_sha256.h"
 #include "support/cleanse.h"
+#include "util/file_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -126,41 +127,6 @@ static bool wbs_aead_decrypt(const uint8_t *ciphertext, size_t plain_len,
     return true;
 }
 
-/* Read the whole file at `path` into a freshly malloc'd buffer.
- * On success `*out_buf` / `*out_len` are set and the caller owns
- * the buffer. On failure both are zeroed and false is returned. */
-static bool wbs_read_whole_file(const char *path,
-                                 uint8_t **out_buf, size_t *out_len)
-{
-    if (out_buf) *out_buf = NULL;
-    if (out_len) *out_len = 0;
-    if (!path || !out_buf || !out_len)
-        LOG_FAIL("wallet_backup", "read_whole_file: NULL argument");
-
-    FILE *f = fopen(path, "rb");
-    if (!f) LOG_FAIL("wallet_backup", "read_whole_file: fopen failed for %s", path);
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: fseek failed for %s", path); }
-    long ls = ftell(f);
-    if (ls < 0) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: ftell failed for %s", path); }
-    rewind(f);
-
-    size_t n = (size_t)ls;
-    uint8_t *buf = NULL;
-    if (n > 0) {
-        buf = zcl_malloc(n, "wallet_backup read_file");
-        if (!buf) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: malloc failed (%zu bytes) for %s", n, path); }
-        if (fread(buf, 1, n, f) != n) {
-            free(buf);
-            fclose(f);
-            LOG_FAIL("wallet_backup", "read_whole_file: short fread for %s (%zu bytes)", path, n);
-        }
-    }
-    fclose(f);
-    *out_buf = buf;
-    *out_len = n;
-    return true;
-}
-
 /* Write `buf/len` to `path` atomically: write to a sibling
  * `.tmp` file, fsync, then rename over the final path. Returns
  * true on success. */
@@ -198,7 +164,7 @@ struct zcl_result wallet_backup_encrypt_file(const char *src_path,
 
     uint8_t *plain = NULL;
     size_t   plen  = 0;
-    if (!wbs_read_whole_file(src_path, &plain, &plen))
+    if (!zcl_read_whole_file(src_path, 0, &plain, &plen, "wallet_backup"))
         return ZCL_ERR(-2, "encrypt_file: failed to read %s", src_path);
 
     /* Fresh salt + nonce from the system CSPRNG. */
@@ -274,7 +240,7 @@ struct zcl_result wallet_backup_decrypt_file(const char *src_path,
 
     uint8_t *enc = NULL;
     size_t   elen = 0;
-    if (!wbs_read_whole_file(src_path, &enc, &elen))
+    if (!zcl_read_whole_file(src_path, 0, &enc, &elen, "wallet_backup"))
         return ZCL_ERR(-2, "decrypt_file: failed to read %s", src_path);
 
     if (elen < (size_t)(WALLET_BACKUP_ENC_HEADER_LEN +

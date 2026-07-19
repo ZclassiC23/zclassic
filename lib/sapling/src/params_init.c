@@ -11,12 +11,12 @@
 #include "chain/chainparams.h"
 #include "crypto/sha512.h"
 #include "encoding/utilstrencodings.h"
+#include "util/file_io.h"
 #include "util/log_macros.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "util/safe_alloc.h"
 
 /* Expected SHA-512 digests of the full Zcash parameter files, as produced
  * by Zcash's canonical fetch-params.sh distribution (MPC-ceremony output,
@@ -99,37 +99,13 @@ static size_t output_pk_len = 0;
 
 static uint8_t *read_file(const char *path, size_t *len)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        LOG_NULL("sapling_params", "read_file: fopen failed: path=%s", path);
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) {
-        fclose(f);
-        LOG_NULL("sapling_params",
-                 "read_file: ftell reported non-positive size: path=%s sz=%ld",
-                 path, sz);
-    }
-    fseek(f, 0, SEEK_SET);
-
-    uint8_t *buf = zcl_malloc((size_t)sz, "params_file_buf");
-    if (!buf) {
-        fclose(f);
-        LOG_NULL("sapling_params",
-                 "read_file: zcl_malloc failed: path=%s size=%ld", path, sz);
-    }
-
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-
-    if (rd != (size_t)sz) {
-        free(buf);
-        LOG_NULL("sapling_params",
-                 "read_file: short read: path=%s expected=%ld got=%zu",
-                 path, sz, rd);
-    }
-    *len = (size_t)sz;
+    uint8_t *buf = NULL;
+    size_t n = 0;
+    if (!zcl_read_whole_file(path, 0, &buf, &n, "sapling_params"))
+        return NULL;
+    if (n == 0)
+        LOG_NULL("sapling_params", "read_file: %s is empty", path);
+    *len = n;
     return buf;
 }
 
