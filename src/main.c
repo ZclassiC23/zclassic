@@ -2104,6 +2104,20 @@ static void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -confine            After boot reaches activation-ready, apply strict\n");
+    printf("                      kernel confinement: Landlock (read+write under the\n");
+    printf("                      datadir, read-only for the few extra paths the node\n");
+    printf("                      opens) + a seccomp-BPF ALLOW-list whose default\n");
+    printf("                      action is KILL_PROCESS, so a network-facing parser\n");
+    printf("                      compromise cannot touch keys/files outside the\n");
+    printf("                      datadir and any unexpected syscall kills the\n");
+    printf("                      process loudly. Default OFF; flipping the default\n");
+    printf("                      is a later soak decision. Degrades (logs + skips)\n");
+    printf("                      on kernels without Landlock/seccomp; an apply\n");
+    printf("                      failure runs UNCONFINED and raises the named\n");
+    printf("                      blocker 'confine.apply_failed' rather than\n");
+    printf("                      half-applying. Mutually exclusive with\n");
+    printf("                      -sandbox=steady.\n");
     printf("  -hotswap-activate   Arm Tier-1 live hot-swap ACTIVATION (dev only;\n");
     printf("                      also needs ZCL_HOTSWAP_ACTIVATE=1 and the exact\n");
     printf("                      ~/.zclassic-c23-dev datadir; canonical refused).\n");
@@ -3772,6 +3786,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-sandbox=steady") == 0) ctx.sandbox_steady = true;
         else if (strcmp(argv[i], "-sandbox=off") == 0) ctx.sandbox_steady = false;
+        else if (strcmp(argv[i], "-confine") == 0) ctx.confine = true;
         else if (strcmp(argv[i], "-hotswap-activate") == 0) {
             /* Arm Tier-1 live hot-swap ACTIVATION for this resident node. This
              * is only ONE of the two required gates: a live swap also needs
@@ -3930,6 +3945,17 @@ int main(int argc, char **argv)
             "FATAL: -sandbox=steady requires a systemd NOTIFY_SOCKET "
             "(the sandbox forbids execve, which the off-systemd self-respawn "
             "needs). Run under systemd, or drop -sandbox=steady.\n");
+        return 1;
+    }
+
+    /* -confine and -sandbox=steady are two distinct confinement mechanisms (a
+     * strict seccomp ALLOW-list vs the steady-state deny-list) applied at the
+     * same boundary. Refuse both at once rather than silently letting one win. */
+    if (ctx.confine && ctx.sandbox_steady) {
+        fprintf(stderr,
+            "FATAL: -confine and -sandbox=steady are mutually exclusive "
+            "(distinct seccomp confinements applied at the same boundary). "
+            "Pick one.\n");
         return 1;
     }
 

@@ -129,6 +129,16 @@ struct os_sandbox_profile {
     const int *denied_syscalls;                 /* array of __NR_* values    */
     size_t n_denied;
     bool seccomp_deny_exec_mmap;                /* also W^X: PROT_EXEC mmap/mprotect */
+
+    /* seccomp ALLOW-list mode (the -confine profile). When true, the seccomp
+     * step installs an ALLOW-list instead of a deny-list: default action is
+     * SECCOMP_RET_KILL_PROCESS and only `allowed_syscalls` are permitted. This
+     * is the strictest confinement — an unexpected syscall kills the process
+     * loudly (fail-fast). Mutually exclusive with the deny-list fields above:
+     * os_sandbox_enter() uses the allow-list when seccomp && seccomp_allowlist. */
+    bool seccomp_allowlist;
+    const int *allowed_syscalls;                /* array of __NR_* values    */
+    size_t n_allowed;
 };
 
 /* Runtime capability report. Lets a caller pick the full-namespace profile or
@@ -207,6 +217,32 @@ const int *os_sandbox_node_steady_denied_syscalls(size_t *count_out);
  * alone. os_sandbox_seccomp_install_method() reports which path ran. */
 struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
                                           bool deny_exec_mmap);
+
+/* The RESIDENT NODE's -confine ALLOW-list: the empirically-derived steady-state
+ * syscall set a booted node needs for status RPC, SELECT-only storage queries,
+ * SQLite (WAL) file I/O, malloc, timers, and RNG. Everything NOT in this set is
+ * SECCOMP_RET_KILL_PROCESS. Derived by running the representative confined ops
+ * under a candidate filter and adding each syscall that killed the process
+ * (see lib/test/src/test_confine.c, the reproducible derivation harness).
+ * Deliberately OMITS the socket family, execve/clone, ptrace, mount/namespace,
+ * and kernel-surface syscalls — so a network-facing parser compromise that
+ * reaches for any of them is killed. Returns a static const array; *count_out
+ * receives its length. Named the NODE CONFINE allow-set constant. */
+const int *os_sandbox_node_confine_allowed_syscalls(size_t *count_out);
+
+/* Install a hand-rolled seccomp-bpf ALLOW-list (no libseccomp): every syscall
+ * NOT in `allowed` returns SECCOMP_RET_KILL_PROCESS; the listed ones default to
+ * SECCOMP_RET_ALLOW. This is the strict inverse of os_sandbox_seccomp_deny — an
+ * unexpected syscall kills the whole process loudly rather than being tolerated.
+ * ONE-WAY. Apply AFTER no_new_privs and AFTER every other one-time setup
+ * (Landlock, fd opening), since those need syscalls the allow-list would
+ * otherwise have to include. The filter prologue checks AUDIT_ARCH_X86_64 and
+ * KILLs any 32-bit/compat caller. Installed via seccomp(2)+SECCOMP_FILTER_FLAG_
+ * TSYNC so it binds EVERY thread atomically (fail-closed if a running thread
+ * carries an incompatible filter); on a kernel without seccomp(2) (ENOSYS) it
+ * falls back to prctl(PR_SET_SECCOMP) (caller + descendants only). Returns
+ * non-ok (never aborts) on failure or if built without the seccomp headers. */
+struct zcl_result os_sandbox_seccomp_allow(const int *allowed, size_t n_allowed);
 
 /* Which mechanism installed the seccomp filter in this process: "tsync" (all
  * threads, via seccomp(2)+TSYNC), "prctl" (caller + descendants only, the
@@ -325,6 +361,16 @@ struct os_sandbox_profile os_sandbox_session_child_profile(
  * nproc=1 (the node legitimately runs many threads). Currently a scaffold —
  * not yet wired into boot; here so the façade serves the node too. */
 struct os_sandbox_profile os_sandbox_node_steady_state_profile(
+    const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules);
+
+/* The strict -confine node profile: no_new_privs + Landlock (rw datadir grant +
+ * caller-supplied read-only extra-path grants) + a seccomp ALLOW-list (default
+ * KILL_PROCESS, only os_sandbox_node_confine_allowed_syscalls permitted). No
+ * rlimit clamp (the node runs many threads and a large address space). Unlike
+ * os_sandbox_node_steady_state_profile (a deny-list), this is fail-fast: any
+ * syscall outside the allow-set kills the process. Apply at the late
+ * activation-ready boundary once all listen sockets/files/threads are up. */
+struct os_sandbox_profile os_sandbox_node_confine_profile(
     const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules);
 
 /* Apply a profile's enabled builders in the ONE correct order:

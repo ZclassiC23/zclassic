@@ -258,6 +258,13 @@ struct zcl_result os_sandbox_landlock_restrict(
                            "open(O_PATH) %s failed errno=%d (%s)",
                            r->path, errno, strerror(errno));
         }
+        /* Directory-only access bits (READ_DIR) are rejected with EINVAL when
+         * the path is a regular FILE (e.g. /proc/self/status, /etc/resolv.conf).
+         * Probe the fd and mask the dir-only bits off for a non-directory so a
+         * caller can grant either a dir tree or a single file uniformly. */
+        struct stat pst;
+        if (fstat(path_fd, &pst) == 0 && !S_ISDIR(pst.st_mode))
+            allow &= ~(uint64_t)LANDLOCK_ACCESS_FS_READ_DIR;
         struct landlock_path_beneath_attr pb = {
             .allowed_access = allow,
             .parent_fd = path_fd,
@@ -528,6 +535,190 @@ struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
 #endif
 }
 
+/* ── seccomp-bpf ALLOW-list (the -confine profile) ─────────────────────── */
+
+/* The resident node's -confine allow-set: the empirically-derived steady-state
+ * syscalls a booted node needs for status RPC, SELECT-only storage queries,
+ * SQLite (WAL) file I/O, malloc, timers, and RNG (derived via the reproducible
+ * harness in lib/test/src/test_confine.c — each syscall was added only after a
+ * candidate filter KILLed the representative confined ops without it). One line
+ * per entry, grouped and commented. Guarded __NR_* so a syscall absent on this
+ * arch is simply omitted, never a build break. Everything NOT here is
+ * SECCOMP_RET_KILL_PROCESS — notably the socket family, execve/clone, ptrace,
+ * mount/namespace, and kernel-surface syscalls are absent by design so a
+ * network-facing parser compromise that reaches for them dies loudly.
+ *
+ * SCOPE CAVEAT: this set is the steady-state baseline for status RPC + storage
+ * queries + local file/db work. It intentionally does NOT yet include the
+ * socket/connect/accept family, so a node that is actively doing P2P/HTTPS I/O
+ * would be SIGSYS-killed under -confine. Widening the set to cover a networking
+ * node is a deliberate soak-gated step (strace a live node under load, add the
+ * observed socket/epoll/sendmsg set) before -confine's default can flip — see
+ * the -confine help text and lib/test/src/test_confine.c. */
+static const int g_node_confine_allowed[] = {
+    /* ── file I/O ────────────────────────────────────────────────────── */
+    __NR_read, __NR_write, __NR_close, __NR_openat, __NR_lseek,
+    __NR_pread64, __NR_pwrite64, __NR_readv, __NR_writev,
+#ifdef __NR_open
+    __NR_open,           /* some glibc paths still use open() not openat() */
+#endif
+    /* ── stat family ─────────────────────────────────────────────────── */
+    __NR_fstat, __NR_newfstatat, __NR_statx,
+#ifdef __NR_stat
+    __NR_stat,
+#endif
+#ifdef __NR_lstat
+    __NR_lstat,
+#endif
+    __NR_fstatfs, __NR_statfs,
+    /* ── memory (malloc arenas + SQLite mmap) ────────────────────────── */
+    __NR_mmap, __NR_munmap, __NR_mprotect, __NR_mremap, __NR_madvise, __NR_brk,
+    /* ── sync / concurrency ──────────────────────────────────────────── */
+    __NR_futex,
+    /* ── time / random ───────────────────────────────────────────────── */
+    __NR_clock_gettime, __NR_gettimeofday, __NR_clock_nanosleep, __NR_nanosleep,
+    __NR_getrandom,
+    /* ── signals (handler install + clean unwind on shutdown) ────────── */
+    __NR_rt_sigaction, __NR_rt_sigprocmask, __NR_rt_sigreturn, __NR_sigaltstack,
+    /* ── identity ────────────────────────────────────────────────────── */
+    __NR_getpid, __NR_gettid, __NR_getuid, __NR_geteuid, __NR_getgid,
+    __NR_getegid,
+    /* ── fd control / durability ─────────────────────────────────────── */
+    __NR_fcntl, __NR_fsync, __NR_fdatasync, __NR_ftruncate,
+    __NR_dup, __NR_dup3,
+#ifdef __NR_dup2
+    __NR_dup2,
+#endif
+    /* ── directory / path ops (SQLite journal/WAL rename+unlink) ──────── */
+    __NR_getdents64, __NR_readlinkat, __NR_getcwd,
+    __NR_unlinkat, __NR_renameat2,
+#ifdef __NR_readlink
+    __NR_readlink,
+#endif
+#ifdef __NR_unlink
+    __NR_unlink,
+#endif
+#ifdef __NR_rename
+    __NR_rename,
+#endif
+#ifdef __NR_renameat
+    __NR_renameat,
+#endif
+#ifdef __NR_mkdir
+    __NR_mkdir,
+#endif
+#ifdef __NR_rmdir
+    __NR_rmdir,
+#endif
+#ifdef __NR_access
+    __NR_access,
+#endif
+    __NR_faccessat,
+#ifdef __NR_faccessat2
+    __NR_faccessat2,
+#endif
+    __NR_umask, __NR_fchmod, __NR_chmod, __NR_chdir,
+    /* ── scheduling / sysinfo (RSS sampling, thread affinity) ────────── */
+    __NR_sched_getaffinity, __NR_sched_yield, __NR_sysinfo,
+    __NR_prlimit64, __NR_getrusage, __NR_uname,
+    /* ── poll / event loop (HTTPS/RPC reactor, pipe self-wake) ───────── */
+    __NR_poll, __NR_ppoll, __NR_epoll_create1, __NR_epoll_ctl,
+    __NR_epoll_wait, __NR_epoll_pwait, __NR_pipe2, __NR_eventfd2,
+    __NR_restart_syscall,
+    /* ── exit ────────────────────────────────────────────────────────── */
+    __NR_exit, __NR_exit_group,
+};
+
+const int *os_sandbox_node_confine_allowed_syscalls(size_t *count_out)
+{
+    if (count_out)
+        *count_out = sizeof(g_node_confine_allowed) /
+                     sizeof(g_node_confine_allowed[0]);
+    return g_node_confine_allowed;
+}
+
+struct zcl_result os_sandbox_seccomp_allow(const int *allowed, size_t n_allowed)
+{
+#ifndef ZCL_HAVE_SECCOMP
+    (void)allowed;
+    (void)n_allowed;
+    return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP_UNAVAILABLE,
+                   "seccomp headers absent at build time");
+#else
+    if (n_allowed > 0 && allowed == NULL)
+        return ZCL_ERR(OS_SANDBOX_ERR_INVALID_ARG,
+                       "n_allowed>0 but allowed==NULL");
+
+    /* Bound: 4 (arch preamble + nr load) + 2 per allowed syscall + 1 tail
+     * (default KILL). Refuse rather than overflow the fixed filter buffer. */
+    enum { MAX_FILTER = 512 };
+    if (n_allowed > (MAX_FILTER - 5) / 2)
+        return ZCL_ERR(OS_SANDBOX_ERR_TOO_MANY_RULES,
+                       "allowed set too large (%zu) for the BPF filter bound",
+                       n_allowed);
+
+    struct sock_filter filt[MAX_FILTER];
+    size_t k = 0;
+
+    /* Arch check: KILL any non-x86_64 (compat) caller — a 32-bit syscall would
+     * otherwise slip a different numbering past the nr comparisons. */
+    filt[k++] = (struct sock_filter)BPF_STMT(
+        BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
+    filt[k++] = (struct sock_filter)BPF_JUMP(
+        BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
+    filt[k++] = (struct sock_filter)BPF_STMT(
+        BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+
+    /* Load the syscall number. */
+    filt[k++] = (struct sock_filter)BPF_STMT(
+        BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+
+    /* For each allowed nr: if it matches, RET ALLOW; else fall through. Each
+     * pair is length-independent (2 instructions), so no distant labels. */
+    for (size_t i = 0; i < n_allowed; i++) {
+        filt[k++] = (struct sock_filter)BPF_JUMP(
+            BPF_JMP | BPF_JEQ | BPF_K, (uint32_t)allowed[i], 0, 1);
+        filt[k++] = (struct sock_filter)BPF_STMT(
+            BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    }
+
+    /* Default: KILL the whole process (fail-fast doctrine). */
+    filt[k++] = (struct sock_filter)BPF_STMT(
+        BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+
+    struct sock_fprog prog = {
+        .len = (unsigned short)k,
+        .filter = filt,
+    };
+
+    /* Install on ALL threads atomically via seccomp(2)+TSYNC (same return-value
+     * contract as os_sandbox_seccomp_deny — see that function's comment). */
+    errno = 0;
+    long tsync = syscall(__NR_seccomp, (long)SECCOMP_SET_MODE_FILTER,
+                         (long)SECCOMP_FILTER_FLAG_TSYNC, &prog);
+    if (tsync == 0) {
+        atomic_store(&g_seccomp_install_method, SECCOMP_INSTALL_TSYNC);
+        return ZCL_OK;
+    }
+    if (tsync > 0)
+        return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
+                       "seccomp(TSYNC) could not synchronise thread tid=%ld "
+                       "(incompatible pre-existing filter) — refusing partial "
+                       "coverage", tsync);
+    if (errno != ENOSYS)
+        return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
+                       "seccomp(SET_MODE_FILTER, TSYNC) failed errno=%d (%s) "
+                       "(no_new_privs run first?)", errno, strerror(errno));
+
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0) != 0)
+        return ZCL_ERR(OS_SANDBOX_ERR_SECCOMP,
+                       "prctl(PR_SET_SECCOMP) failed errno=%d (%s) "
+                       "(no_new_privs run first?)", errno, strerror(errno));
+    atomic_store(&g_seccomp_install_method, SECCOMP_INSTALL_PRCTL);
+    return ZCL_OK;
+#endif
+}
+
 /* ── rlimits ───────────────────────────────────────────────────────────── */
 
 struct os_sandbox_rlimits os_sandbox_session_rlimits(void)
@@ -707,6 +898,34 @@ struct os_sandbox_profile os_sandbox_node_steady_state_profile(
     };
 }
 
+struct os_sandbox_profile os_sandbox_node_confine_profile(
+    const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules)
+{
+    /* The strict -confine node profile: Landlock (caller supplies the rw datadir
+     * grant + read-only extra-path grants) + a seccomp ALLOW-list (default
+     * KILL_PROCESS). No rlimit clamp — the node runs many threads with a large
+     * address space. Wired at the late SERVICES_RUNNING boundary via
+     * config/src/boot.c (sr_sandbox_enter, -confine branch). */
+    size_t n_allowed = 0;
+    const int *allowed = os_sandbox_node_confine_allowed_syscalls(&n_allowed);
+    return (struct os_sandbox_profile){
+        .name = "node_confine",
+        .no_new_privs = true,
+        .apply_rlimits = false,
+        .rlimits = {0},
+        .landlock = true,
+        .fs_rules = fs_rules,
+        .n_fs_rules = n_fs_rules,
+        .seccomp = true,
+        .denied_syscalls = NULL,
+        .n_denied = 0,
+        .seccomp_deny_exec_mmap = false,
+        .seccomp_allowlist = true,
+        .allowed_syscalls = allowed,
+        .n_allowed = n_allowed,
+    };
+}
+
 /* ── enter (the one-correct-order composer) ────────────────────────────── */
 
 struct zcl_result os_sandbox_enter(const struct os_sandbox_profile *p)
@@ -727,11 +946,18 @@ struct zcl_result os_sandbox_enter(const struct os_sandbox_profile *p)
     if (p->landlock)
         ZCL_CHECK(os_sandbox_landlock_restrict(p->fs_rules, p->n_fs_rules));
 
-    /* 4. seccomp LAST — the setup above needs syscalls a deny-list would
-     *    otherwise have to special-case (openat for Landlock O_PATH, etc.). */
-    if (p->seccomp)
-        ZCL_CHECK(os_sandbox_seccomp_deny(p->denied_syscalls, p->n_denied,
-                                          p->seccomp_deny_exec_mmap));
+    /* 4. seccomp LAST — the setup above needs syscalls a deny-list/allow-list
+     *    would otherwise have to special-case (openat for Landlock O_PATH,
+     *    etc.). An allow-list profile (the -confine mode) installs the strict
+     *    default-KILL filter; otherwise the deny-list. */
+    if (p->seccomp) {
+        if (p->seccomp_allowlist)
+            ZCL_CHECK(os_sandbox_seccomp_allow(p->allowed_syscalls,
+                                               p->n_allowed));
+        else
+            ZCL_CHECK(os_sandbox_seccomp_deny(p->denied_syscalls, p->n_denied,
+                                              p->seccomp_deny_exec_mmap));
+    }
 
     g_sandbox_active = true;
     g_active_profile_name = p->name;  /* profile literals are static-lifetime */
