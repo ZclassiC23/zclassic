@@ -4,8 +4,8 @@
 > acceptance criteria in **[`docs/MVP.md`](../MVP.md)** (v1 = MRS 8/8).
 > Everything below is sequenced to move MRS toward 8/8.
 >
-> The framework/architecture refactor ([`docs/REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
-> [`docs/FRAMEWORK.md`](../FRAMEWORK.md), boot decomposition) is **~90% done and
+> The framework/architecture refactor ([`docs/FRAMEWORK.md`](../FRAMEWORK.md)
+> §9 is the open-item debt board; boot decomposition) is **~90% done and
 > OFF the v1 path. Do NOT jump the queue into it.** It is reference, not the
 > mission.
 
@@ -230,8 +230,8 @@ measurement; the boot refactor gates nothing v1.
 
 ## Off the v1 path (reference — do NOT start until v1 buckets clear)
 
-Architecture axis (~90% done): [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
-[`../FRAMEWORK.md`](../FRAMEWORK.md). The only remaining size debt is the three
+Architecture axis (~90% done): [`../FRAMEWORK.md`](../FRAMEWORK.md) §9 (the
+open-item debt board). The only remaining size debt is the three
 `config/` boot files (`boot.c`, `boot_services.c`, `boot_index.c`), frozen
 shrink-only by the size gate; seam plan was in `boot-decomposition-seams.md`,
 removed from the tree — recover with

@@ -13,5 +13,4 @@ A supervisor file should make a running child visible through the root
 liveness tree or it should not exist.
 
 See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the destination shape
-and [`docs/REFACTOR_STATUS.md`](../../docs/REFACTOR_STATUS.md) for remaining
-supervisor cleanup.
+and its §9 debt board for remaining supervisor cleanup.

@@ -14,12 +14,14 @@
 #   baseline in tools/scripts/file_size_ceiling_baseline.txt can only
 #   shrink, never grow, and growing it costs an ADR.
 #
-#   WARN (prints, never fails) — lib/**/*.c (excluding lib/test/, which is
-#   fixtures/registrations and legitimately huge) AND domain/**/*.c. lib/
-#   and domain/ are primitives and pure-domain code, not the eight
-#   app-shape surfaces E1 was written to police, so a violation here is a
-#   heads-up, not a build break. Baseline:
-#   tools/scripts/file_size_ceiling_lib_baseline.txt.
+#   WARN (prints, never fails on an individual file) — lib/**/*.c
+#   (excluding lib/test/, which is fixtures/registrations and legitimately
+#   huge), domain/**/*.c, AND src/*.c (the binary's composition entrypoint,
+#   e.g. main.c). None of these are the eight app-shape surfaces E1 was
+#   written to police, so a single violation here is a heads-up, not a
+#   build break. Baseline: tools/scripts/file_size_ceiling_lib_baseline.txt.
+#   The tier's total (new + grown) violation COUNT is separately ratcheted
+#   (see "Drift-count ratchet" below) so silent accumulation still fails.
 #
 # Baseline format (both tiers): '<relative path> <max-loc>' per line,
 # lines starting with # are comments. The gate flags a tier when:
@@ -158,7 +160,10 @@ if [ "${#enforced_shrink[@]}" -gt 0 ]; then
     done
 fi
 
-# ── WARN tier: lib/ (excluding lib/test/) + domain/ ──────────────────────
+# ── WARN tier: lib/ (excluding lib/test/) + domain/ + src/ ───────────────
+# src/ (main.c, cli.c — the binary's composition entrypoint) shares this
+# tier and baseline file: it's not one of the eight app/ shapes the
+# ENFORCED tier polices, same rationale as lib/+domain/.
 
 LIB_BASELINE="${ZCL_FILE_SIZE_CEILING_LIB_BASELINE:-tools/scripts/file_size_ceiling_lib_baseline.txt}"
 [ -f "$LIB_BASELINE" ] || touch "$LIB_BASELINE"
@@ -167,9 +172,10 @@ load_baseline lib_baseline "$LIB_BASELINE"
 lib_baseline_count="${#lib_baseline[@]}"
 
 mapfile -t lib_files_all < <( { find lib -type f -name '*.c' -not -path 'lib/test/*' "${LINT_FIND_PRUNE_ARGS[@]}"; \
-    find domain -type f -name '*.c' -not -path '*/test/*' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null; } | sort )
+    find domain -type f -name '*.c' -not -path '*/test/*' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null; \
+    find src -maxdepth 1 -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null; } | sort )
 gate_require_scanned "${#lib_files_all[@]}" 1 check_file_size_ceiling \
-    "no *.c under lib/ (excl. lib/test/) or domain/ — was a dir renamed/moved?"
+    "no *.c under lib/ (excl. lib/test/), domain/, or src/ — was a dir renamed/moved?"
 
 lib_files=()
 for f in "${lib_files_all[@]}"; do
@@ -179,9 +185,31 @@ done
 
 check_tier lib_files lib_baseline lib_new lib_grown lib_shrink "$CEILING"
 
-if [ "${#lib_new[@]}" -gt 0 ] || [ "${#lib_grown[@]}" -gt 0 ]; then
+# Drift-count ratchet: no single WARN-tier file failing the build let this
+# tier accumulate 5 new unbaselined files + 13 baselined files silently
+# growing past their recorded LOC with nothing ever failing `make lint`.
+# tools/scripts/file_size_ceiling_lib_drift_count.txt records the highest
+# (new + grown) violation COUNT ever reviewed and accepted for this tier.
+# Existing drift at or below that count is grandfathered (still WARN-only,
+# per-file); the count itself is what ratchets — growing PAST the recorded
+# value fails `make lint`, same enforcement shape as the ENFORCED tier's
+# per-file LOC baseline, just applied to the violation count instead of
+# individual LOC.
+lib_drift_count=$(( ${#lib_new[@]} + ${#lib_grown[@]} ))
+DRIFT_RATCHET="${ZCL_FILE_SIZE_CEILING_LIB_DRIFT_RATCHET:-tools/scripts/file_size_ceiling_lib_drift_count.txt}"
+[ -f "$DRIFT_RATCHET" ] || echo 0 > "$DRIFT_RATCHET"
+lib_drift_recorded=$(grep -vE '^[[:space:]]*(#|$)' "$DRIFT_RATCHET" | head -1 | tr -d '[:space:]')
+[ -n "$lib_drift_recorded" ] || lib_drift_recorded=0
+
+if [ "$lib_drift_count" -gt 0 ]; then
     echo ""
-    echo "check_file_size_ceiling: WARN — file-size ceiling watch (E1, lib/+domain/, non-blocking)"
+    if [ "$lib_drift_count" -gt "$lib_drift_recorded" ]; then
+        overall_fail=1
+        echo "check_file_size_ceiling: FAIL — WARN-tier drift count grew (E1 drift ratchet, lib/+domain/+src/)"
+        echo "  drift count = $lib_drift_count (new+grown), recorded ceiling = $lib_drift_recorded in $DRIFT_RATCHET"
+    else
+        echo "check_file_size_ceiling: WARN — file-size ceiling watch (E1, lib/+domain/+src/, non-blocking; drift $lib_drift_count/$lib_drift_recorded grandfathered)"
+    fi
     echo ""
     for v in "${lib_new[@]}"; do
         echo "  NEW oversized file (not in $LIB_BASELINE): $v"
@@ -190,12 +218,25 @@ if [ "${#lib_new[@]}" -gt 0 ] || [ "${#lib_grown[@]}" -gt 0 ]; then
         echo "  grew past its baselined LOC in $LIB_BASELINE: $v"
     done
     echo ""
-    echo "  This tier is WARN-only — it does not fail the build. Consider"
-    echo "  splitting the file, or if it's baselined intentionally, add/adjust"
-    echo "  its line in $LIB_BASELINE. Straight-line generated/tabular code"
-    echo "  belongs in LIB_ALLOWLIST in this script instead."
+    if [ "$lib_drift_count" -gt "$lib_drift_recorded" ]; then
+        echo "  Fix: baseline the new file(s) in $LIB_BASELINE at their current LOC (or"
+        echo "  shrink the grown file(s) back to their recorded baseline). If this drift is"
+        echo "  reviewed and deliberately accepted, raise the count in $DRIFT_RATCHET to"
+        echo "  $lib_drift_count instead."
+    else
+        echo "  This tier is WARN-only — it does not fail the build unless the drift COUNT"
+        echo "  exceeds $DRIFT_RATCHET's recorded value ($lib_drift_recorded). Consider"
+        echo "  splitting the file, or if it's baselined intentionally, add/adjust its line"
+        echo "  in $LIB_BASELINE. Straight-line generated/tabular code belongs in"
+        echo "  LIB_ALLOWLIST in this script instead."
+    fi
 else
-    echo "check_file_size_ceiling: clean — ${lib_baseline_count} baselined, no new/grown oversized files (ceiling $CEILING, lib/+domain/, WARN tier)"
+    echo "check_file_size_ceiling: clean — ${lib_baseline_count} baselined, no new/grown oversized files (ceiling $CEILING, lib/+domain/+src/, WARN tier)"
+fi
+if [ "$lib_drift_count" -lt "$lib_drift_recorded" ]; then
+    echo ""
+    echo "  Drift ratchet can tighten: $DRIFT_RATCHET records $lib_drift_recorded but current"
+    echo "  drift is only $lib_drift_count — lower it to close the ratchet."
 fi
 if [ "${#lib_shrink[@]}" -gt 0 ]; then
     echo ""

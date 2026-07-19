@@ -33,7 +33,7 @@ Grounded in and building ON (never duplicating):
 - `docs/FRAMEWORK.md` — the Prime Directive, the Ten Laws of Beauty, the eight
   shapes and their WARN→RATCHET→HARD gate ladder (`FRAMEWORK.md` §5).
 - `docs/CODEBASE_MAP.md` — where-things-live + how-to-do-each-thing.
-- `docs/REFACTOR_STATUS.md` — the architecture debt board (~90% done, off the
+- `docs/FRAMEWORK.md` §9 — the architecture debt board (~90% done, off the
   v1 path). The palace adds *legibility*, not architecture debt.
 - Phase-1 in flight (assumed landed): `code map` (grouped floor plan with file
   counts), `code tests <path>` (file → focused test groups via the impact
@@ -244,9 +244,9 @@ a real legibility hole, and Law 8 says DRY the knowledge, not add indirection.)*
 layer*, not a file-move. Reasons, honestly:
 
 - The location structure is **already ~90% done and enforced** — 8 shapes,
-  filename-suffix gate, the whole `app/` tree conformant
-  (`REFACTOR_STATUS.md`, "the `app/` layer is already conformant"). The
-  remaining structural debt is tracked there and is **off the v1 path**.
+  filename-suffix gate, the whole `app/` tree conformant (`FRAMEWORK.md`
+  §9, "the `app/` layer is already conformant"). The remaining structural
+  debt is tracked there and is **off the v1 path**.
 - A tree-wide move is **high-risk**: it churns includes/depfiles, risks the
   consensus boot path, and demands copy-prove for anything it touches — against
   the copy-prove and consensus-parity doctrine for near-zero legibility gain that
@@ -256,8 +256,9 @@ layer*, not a file-move. Reasons, honestly:
   no longer has to carry the whole meaning.
 
 **Surgical candidates considered and declined:** the large boot monoliths
-(`config/src/boot.c` at 3949 lines, `boot_refold_staged.c` at 2107 —
-`REFACTOR_STATUS.md` addendum) are legibility warts, but splitting them touches
+(`config/src/boot.c`, `boot_refold_staged.c` — see
+`tools/scripts/file_size_ceiling_baseline.txt` for current LOC, and
+`FRAMEWORK.md` §9) are legibility warts, but splitting them touches
 the consensus boot/refold path and is exactly the copy-prove, owner-gated,
 off-queue work the palace is designed to *avoid*. They are already visible via
 the file-size ceiling gate and its shrink-only baseline; the palace does not

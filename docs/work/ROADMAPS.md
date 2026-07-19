@@ -35,7 +35,7 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
 
 | Removed doc | Superseded by |
 |---|---|
-| `architecture-deletion-plan.md` | `docs/REFACTOR_STATUS.md` (deletion targets mostly landed) |
+| `architecture-deletion-plan.md` | `docs/FRAMEWORK.md` §9 (deletion targets mostly landed) |
 | `next-wave-plan.md` | `FORWARD_PLAN.md` |
 | `never-stuck-roadmap-2026-06-28.md` | `never-stuck-plan.md` |
 | `sovereign-service-roadmap.md` | `FORWARD_PLAN.md` (sovereign-contracts follow-on tracks there now) |
@@ -44,7 +44,12 @@ Recover any removed roadmap with `git log --follow -- docs/work/archive/<old-nam
 and `git show <commit-before-removal>^:docs/work/archive/<old-name>.md`. Dated
 one-shot audits, postmortems, and superseded session handoffs were removed the
 same way and are not individually indexed here — they were point-in-time
-records, not roadmaps.
+records, not roadmaps. Example (2026-07-19 fold): `ed25519-ubsan-analysis-
+2026-07-18.md` and `tsan-triage-2026-07-18.md` folded into `docs/BUILD.md`'s
+sanitizer sections as known-good-as-of notes; `install-e2e-proof-2026-07-18.md`
+folded into `sovereign-cutover-runbook.md`'s "Known-good:
+-install-consensus-bundle end-to-end proof" section — recover the originals
+the same way if the forensic file:line detail is ever needed again.
 
 ## SUPERSEDED but RETAINED — still cited by name from production/test code
 

@@ -43,6 +43,22 @@ struct diagnostics_dump_entry {
     bool include_supervisor_drilldown;
 };
 
+/* Independent second derivation of diagnostics_dumpers.def's row count,
+ * defined in diagnostics_registry.c right next to g_dumpers[] by
+ * re-including the SAME .def file with a dummy 1-byte-struct element type
+ * (unrelated to struct diagnostics_dump_entry above). It cannot be the
+ * CONDITION_REGISTRY_COUNT-style bare arithmetic enum (conditions/
+ * condition_registry.h) because — unlike condition_registry.def's bare
+ * macro-call-per-line format — diagnostics_dumpers.def rows are
+ * comma-separated array-initializer elements (g_dumpers[] itself is built
+ * by including this file inside `= { ... }`), so a top-level `+1` per row
+ * would leave stray commas outside any parens. Building a second array with
+ * the file's own commas, exactly as g_dumpers[] does, sidesteps that. Test
+ * code compares diagnostics_dumper_count() (g_dumpers[]'s real size) against
+ * this — a real cross-check between two separately-compiled counts of one
+ * source of truth, not count==count. */
+size_t diagnostics_dumpers_def_row_count(void);
+
 /* Wired controller-level state, owned by diagnostics_registry.c.
  * `diag_datadir()` returns "" until set_state() runs. */
 const char *diag_datadir(void);

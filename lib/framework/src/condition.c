@@ -334,7 +334,7 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
         int attempts = atomic_fetch_add(&s->attempts, 1) + 1;
         atomic_store(&s->last_remedy_unix, now);
 
-        /* DOCTRINE (REFACTOR_STATUS): a remedy may only be reported as `ok`
+        /* DOCTRINE (FRAMEWORK.md §9): a remedy may only be reported as `ok`
          * if the symptom actually cleared. We re-check the witness right
          * after the remedy ran. A remedy that returned COND_REMEDY_OK but did
          * NOT clear the symptom is reported as `unwitnessed` — NOT ok — so a

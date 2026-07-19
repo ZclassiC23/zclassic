@@ -591,6 +591,39 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
 #undef DIAG_TEST_DEFAULT
 #undef DIAG_OWNER_LOCAL
 
+/* See diagnostics_internal.h: independent second derivation of this same
+ * .def file's row count, via a dummy element type unrelated to struct
+ * diagnostics_dump_entry. Re-including diagnostics_dumpers.def here builds a
+ * second array using the file's own inter-row commas — exactly how
+ * g_dumpers[] above is built — so this cannot silently agree with
+ * g_dumpers[] by construction; it independently re-counts the same rows. */
+size_t diagnostics_dumpers_def_row_count(void)
+{
+    struct diag_row_probe { char unused; };
+#define DIAG_ENTRY(...) { 0 }
+#define DIAG_SERVICE(...) { 0 }
+#define DIAG_LOCAL(...) { 0 }
+#define DIAG_CHAIN(...) { 0 }
+#define DIAG_CONDITION(...) { 0 }
+#define DIAG_RUNTIME(...) { 0 }
+#define DIAG_JOB(...) { 0 }
+#define DIAG_STAGE(...) { 0 }
+#define DIAG_PROJECTION(...) { 0 }
+    static const struct diag_row_probe rows[] = {
+#include "controllers/diagnostics_dumpers.def"
+    };
+#undef DIAG_PROJECTION
+#undef DIAG_STAGE
+#undef DIAG_JOB
+#undef DIAG_RUNTIME
+#undef DIAG_CONDITION
+#undef DIAG_CHAIN
+#undef DIAG_LOCAL
+#undef DIAG_SERVICE
+#undef DIAG_ENTRY
+    return sizeof(rows) / sizeof(rows[0]);
+}
+
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
 {
     if (!out || out_sz == 0) return 0;

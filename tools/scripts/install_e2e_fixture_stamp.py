@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """install_e2e_fixture_stamp.py — stamp the MINIMAL durable progress.kv image
 the -install-consensus-bundle gate evaluates, onto a header-imported fixture
-datadir. See docs/work/install-e2e-proof-2026-07-18.md for the full predicate
-derivation. This writes exactly the rows a validated sync to the anchor would
-have produced, no more:
+datadir. See docs/work/sovereign-cutover-runbook.md ("Known-good:
+-install-consensus-bundle end-to-end proof") for the predicate summary this
+recipe satisfies. This writes exactly the rows a validated sync to the anchor
+would have produced, no more:
 
   1. coins_kv proven authority (3 rungs of coins_kv_is_proven_authority):
        - progress_meta coins_applied_height   = anchor+1 (8-byte LE)

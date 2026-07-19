@@ -292,5 +292,5 @@ exit). Replay any consensus-predicate tightening against REAL history first
 
 A map, not the territory. Re-read the cited file:line before building on any
 claim — trust the code you read THIS minute over this file. Architecture
-reference (off the v1 path): [`docs/FRAMEWORK.md`](FRAMEWORK.md) +
-[`docs/REFACTOR_STATUS.md`](REFACTOR_STATUS.md).
+reference (off the v1 path): [`docs/FRAMEWORK.md`](FRAMEWORK.md) (§9 is the
+open-item debt board).
