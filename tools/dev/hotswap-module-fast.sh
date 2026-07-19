@@ -46,6 +46,20 @@ cd "$ROOT" || exit 2
 
 fallback() {
     echo "hotswap-module-fast: $* — falling back to make hotswap-module-so" >&2
+    # Capture the source identity exactly once here and hand it to the nested
+    # make on the command line (the escape hatch at Makefile:~90 gives
+    # command-line-origin BUILD_SOURCE_RECORD absolute precedence). Without
+    # this, make's own parse-time `$(shell tools/dev/source-identity.sh
+    # capture-record)` would redo the identical ~2s scan from scratch — a
+    # second full capture paid back-to-back with this one for no reason, on
+    # top of the recipe's own post-compile verify-record. If the capture
+    # itself fails here, fall through to letting make capture it instead of
+    # masking the failure.
+    local record
+    if record="$(tools/dev/source-identity.sh capture-record 2>/dev/null)"; then
+        exec make --no-print-directory hotswap-module-so \
+            "HANDLER=$HANDLER" "BUILD_SOURCE_RECORD=$record"
+    fi
     exec make --no-print-directory hotswap-module-so "HANDLER=$HANDLER"
 }
 

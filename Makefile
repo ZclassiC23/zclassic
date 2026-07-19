@@ -28,6 +28,16 @@ ZCL_ZERO_SHA256 = 00000000000000000000000000000000000000000000000000000000000000
 ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply
 ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_LOOP_GOALS),$(MAKECMDGOALS))),,1),)
 
+# hotswap-module-so compiles exactly one TU via a direct $(CC) shell command in
+# its recipe body, never through make's %.o pattern rules, so it needs none of
+# the four object depfile graphs either — unlike hotswap-try/hotswap-apply it
+# DOES stamp its artifact names with the real captured source identity (see
+# BUILD_SOURCE_RECORD below), so it deliberately stays out of
+# ZCL_HOTSWAP_LOOP_GOALS above (that set fakes a zero identity). This wider
+# set only gates the depfile-graph import skip.
+ZCL_HOTSWAP_DEPFILE_LEAN_GOALS := $(ZCL_HOTSWAP_LOOP_GOALS) hotswap-module-so
+ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_DEPFILE_LEAN_GOALS),$(MAKECMDGOALS))),,1),)
+
 # Linked vendor archives are part of the exact source identity. On a fresh
 # clone they do not exist until the vendor builder runs, so Make must cross a
 # parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
@@ -583,9 +593,11 @@ $(DEV_TSAN_LEASE): FORCE
 # lose header invalidation merely because this table was not updated.
 ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict
 ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
-ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
-# The hot-swap loop recipes build no objects through make's pattern rules; the
-# fast path tracks its own single-TU depfile. Skip every depfile graph.
+ifeq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
+# The hot-swap loop recipes (plus hotswap-module-so's own single-TU shell
+# compile) build no objects through make's %.o pattern rules; the fast path
+# tracks its own single-TU depfile. Skip every depfile graph — an unmatched
+# single goal below would otherwise fall through to importing all four.
 ZCL_DEPFILE_PROFILES :=
 else ifeq ($(words $(MAKECMDGOALS)),1)
 ZCL_DEPFILE_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
@@ -1540,7 +1552,17 @@ hotswap: $(VIEW_GEN_HEADERS)
 # back onto the resident (old) code and the swap silently does nothing.
 HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 	-Wl,-z,noexecstack -Wl,-Bsymbolic
-hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
+# Intentionally NOT ordered on $(BUILD_IDENTITY_STAMP): that stamp exists to
+# gate $(BUILD_IDENTITY_CPPFLAGS) into clientversion.o for whole-program
+# binaries, and DEV_CFLAGS (used below) never carries those flags (see
+# CACHED_CFLAGS's explicit filter-out). Chaining through the stamp's own
+# recipe here bought nothing but a second, fully redundant, source-identity
+# capture+verify pass on top of the verify-record already performed inline
+# below (which is the one that actually matters: it re-checks identity AFTER
+# the compile, catching an edit-during-build TOCTOU right before publish).
+# BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
+# and remain available regardless.
+hotswap-module-so: $(VIEW_GEN_HEADERS)
 	@if [ -z "$(HANDLER)" ]; then \
 	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
 	@set -eu; \
@@ -1552,16 +1574,17 @@ hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
 	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
+	tmp_d="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.module.XXXXXX.d")"; \
 	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.module.XXXXXX.so")"; \
 	tmp_env="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.flags.XXXXXX")"; \
-	trap 'rm -f "$$tmp_o" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
+	trap 'rm -f "$$tmp_o" "$$tmp_d" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
 	publish_exact() { \
 	  src="$$1"; dst="$$2"; \
 	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
 	  [ -f "$$dst" ] && [ ! -L "$$dst" ] && cmp -s "$$src" "$$dst" || return 1; \
 	  rm -f "$$src"; \
 	}; \
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -c -o "$$tmp_o" "$$src" >&2; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
 	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \
@@ -1576,6 +1599,16 @@ hotswap-module-so: $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP)
 	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
 	} > "$$tmp_env"; \
 	mv -f -- "$$tmp_env" "$(HOTSWAP_SO_DIR)/fast/flags.env"; \
+	cache_o="$(HOTSWAP_SO_DIR)/fast/$$safe.o"; \
+	cache_d="$(HOTSWAP_SO_DIR)/fast/$$safe.d"; \
+	cache_cmd="$(HOTSWAP_SO_DIR)/fast/$$safe.cmd"; \
+	cache_ptr="$(HOTSWAP_SO_DIR)/fast/$$safe.so-path"; \
+	rm -f "$$cache_o"; \
+	cp -- "$$o" "$$cache_o"; \
+	chmod u+w "$$cache_o"; \
+	mv -f -- "$$tmp_d" "$$cache_d"; \
+	printf '%s\n' '$(CC) $(DEV_CFLAGS)' > "$$cache_cmd"; \
+	printf '%s\n' "$$so" > "$$cache_ptr"; \
 	trap - EXIT HUP INT TERM; \
 	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
 	echo "$$so"
@@ -4139,9 +4172,11 @@ $(COV_BUILD_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(COV
 
 $(COV_BUILD_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
-# The coverage depfile graph is unused by the hot-swap loop goals; keep its
-# import unconditional for every other goal (it predates the profile table).
-ifneq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
+# The coverage depfile graph is unused by the hot-swap loop goals (or
+# hotswap-module-so, which compiles its one TU via a direct shell $(CC) call);
+# keep its import unconditional for every other goal (it predates the profile
+# table).
+ifneq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
 -include $(COV_OBJS:.o=.d)
 endif
 
