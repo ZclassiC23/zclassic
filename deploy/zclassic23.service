@@ -48,7 +48,14 @@ NotifyAccess=main
 # deploy/zclassic23.env.example for the expected variable shape.
 EnvironmentFile=-%h/.config/zclassic23/env
 
-ExecStart=%h/zclassic23/build/bin/zclassic23 \
+# Binary A/B launcher (deploy/zclassic23-launch.sh): first arg is the current
+# binary, the rest are node args. It exec's the node (so MAINPID / Type=notify /
+# WatchdogSec / ExecStop=$MAINPID are unaffected) unless a boot-failure streak
+# has hit the threshold, in which case it exec's the last-known-good slot and
+# marks the child ZCL_BINARY_FALLBACK_ACTIVE=1. Slots live under the datadir
+# (already in ReadWritePaths) so ProtectSystem=strict needs no new write path.
+Environment="ZCL_BINARY_SLOTS_DIR=%h/.zclassic-c23/binary-slots"
+ExecStart=%h/zclassic23/deploy/zclassic23-launch.sh %h/zclassic23/build/bin/zclassic23 \
     -datadir=%h/.zclassic-c23 \
     -operator-lane=canonical \
     -port=8033 \

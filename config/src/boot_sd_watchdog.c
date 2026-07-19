@@ -38,6 +38,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "services/node_health_service.h"
+#include "services/binary_ab_fallback.h"
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
 #include "util/boot_progress.h"
@@ -131,6 +132,17 @@ bool boot_sd_watchdog_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
+
+    /* Activation-ready reached. This is the LAST runtime service to start
+     * (boot_services.c spec order), so arriving here IS the node's own
+     * definition of "booted successfully". Tell the binary-A/B launcher:
+     * reset its boot-failure streak to 0 and, unless we are the fallback
+     * slot, promote the current binary to last-good. Runs before the
+     * sd_notify_init() early-return below so it fires whether or not the
+     * node is under systemd notify supervision — the signal is the launcher
+     * env, not systemd. No-op when launched directly (env unset). */
+    binary_ab_promote_on_ready_env();
+
     if (!sd_notify_init()) {
         /* Not running under systemd notify supervision (e.g. invoked
          * from a CLI). Silent success — the unit is functionally

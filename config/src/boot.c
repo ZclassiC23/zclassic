@@ -49,6 +49,7 @@
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/binary_staleness_service.h"
+#include "services/binary_ab_fallback.h"
 #include "services/ibd_throttle.h"
 #include "services/db_maintenance.h"
 #include "config/boot_network_monitor.h"
@@ -398,6 +399,14 @@ static bool boot_step_init_observability(void)
      * during restore. Idempotent — the boot_services call remains as a
      * backstop. */
     blocker_module_init();
+
+    /* If the launcher (deploy/zclassic23-launch.sh) fell back to the
+     * last-known-good binary after a boot-failure streak, surface the
+     * degraded-but-alive state as a typed blocker as early as the registry
+     * is live — so `zclassic23 status` shows it throughout this boot, not
+     * only once we reach ready. Sibling of the stale-binary blocker above.
+     * No-op when launched directly (env unset). */
+    binary_ab_raise_fallback_blocker_env();
 
     event_emitf(EV_NODE_STARTING, 0, "zclassic23 1.0.0");
     return true;
