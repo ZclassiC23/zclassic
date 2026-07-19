@@ -188,6 +188,119 @@ static int icd_test_flaglike_target_refused(const char *src_dir)
     return failures;
 }
 
+/* Determinism fix #1: --importblockindex used to dispatch ONLY as the
+ * literal argv[1] (a raw strcmp(argv[1], "--importblockindex")). Any other
+ * position fell through every check in main()'s argv chain and silently
+ * ran a normal node boot — the historical footgun this whole test group
+ * guards against (see the file header). This proves the anywhere-in-argv
+ * scan (src/main.c main()) dispatches the real importer when a node flag
+ * (-datadir=) precedes the verb, matching the documented usage. */
+static int icd_test_nonfirst_position_dispatches(const char *src_dir,
+                                                  const char *target_db)
+{
+    int failures = 0;
+    TEST("importblockindex CLI: --importblockindex in a NON-first argv "
+         "position (after -datadir=) still dispatches the real importer, "
+         "never silently falling through to a normal boot") {
+        char *argv[] = {
+            (char *)ICD_BIN,
+            (char *)"-datadir=/tmp/zcl_icd_unused_datadir_should_not_boot",
+            (char *)"--importblockindex", (char *)src_dir,
+            (char *)target_db, NULL,
+        };
+        char out[16384] = {0};
+        int rc = icd_run(argv, out, sizeof(out));
+        ASSERT(rc == 0);
+        ASSERT(icd_contains(out, "ZClassic Block-Index (header) Import"));
+        /* argv_pos=2: --importblockindex is argv[2] here, not argv[1] —
+         * proves the scan found it away from the canonical position. */
+        ASSERT(icd_contains(out, "argv_pos=2"));
+        struct stat st;
+        ASSERT(stat(target_db, &st) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Determinism fix #2: a missing/invalid source path used to either fall
+ * through to a normal boot (missing source arg entirely — argc<3 made the
+ * old literal-argv[1] check simply not match) or fail deep inside the
+ * importer with a generic, easy-to-miss "Block-index import failed". Both
+ * shapes now REFUSE loudly and immediately, named and non-zero-exit. */
+static int icd_test_bad_path_refuses(void)
+{
+    int failures = 0;
+    char missing_src[300];
+    snprintf(missing_src, sizeof(missing_src),
+             "/tmp/zcl_icd_totally_missing_src_%d", (int)getpid());
+
+    TEST("importblockindex CLI: a nonexistent source datadir REFUSES "
+         "loudly (named error, exit 1) instead of silently proceeding") {
+        char *argv[] = {
+            (char *)ICD_BIN, (char *)"--importblockindex",
+            (char *)missing_src, NULL,
+        };
+        char out[16384] = {0};
+        int rc = icd_run(argv, out, sizeof(out));
+        ASSERT(rc == 1);
+        ASSERT(icd_contains(out, "REFUSING"));
+        ASSERT(icd_contains(out, missing_src));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int icd_test_missing_source_arg_refuses(void)
+{
+    int failures = 0;
+    TEST("importblockindex CLI: the verb present with NO source argument "
+         "at all REFUSES loudly instead of falling through to a normal "
+         "boot") {
+        char *argv[] = {
+            (char *)ICD_BIN, (char *)"--importblockindex", NULL,
+        };
+        char out[16384] = {0};
+        int rc = icd_run(argv, out, sizeof(out));
+        ASSERT(rc == 1);
+        ASSERT(icd_contains(out, "missing <source-datadir>"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Determinism fix #3 (boot.c bulk-vs-P2P dispatch, config/src/boot.c +
+ * config/src/boot_legacy_import.c boot_need_blocks_table_hydrate): the CLI
+ * importer itself has exactly one code path (there is no incremental
+ * alternative inside snapshot_import_block_index), so a fresh target
+ * node.db always takes it — proven here via the LOG_INFO `mode=bulk`
+ * marker every dispatch emits. The companion NORMAL-BOOT determinism fix
+ * (an earlier loader rung's stale small map no longer blocks the
+ * `blocks`-table bulk hydrate rung) is unit-tested directly against
+ * boot_need_blocks_table_hydrate in test_boot_phase.c — a full boot fork
+ * here would need real P2P networking to observe, which this CLI-only
+ * harness deliberately does not spin up. */
+static int icd_test_fresh_datadir_chooses_bulk(const char *src_dir,
+                                               const char *target_db)
+{
+    int failures = 0;
+    TEST("importblockindex CLI: a fresh (never-before-seen) target node.db "
+         "deterministically selects the bulk import path (INFO marker "
+         "mode=bulk)") {
+        char *argv[] = {
+            (char *)ICD_BIN, (char *)"--importblockindex",
+            (char *)src_dir, (char *)target_db, NULL,
+        };
+        char out[16384] = {0};
+        int rc = icd_run(argv, out, sizeof(out));
+        ASSERT(rc == 0);
+        ASSERT(icd_contains(out, "mode=bulk"));
+        ASSERT(icd_contains(out, "bulk import complete"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_importblockindex_cli_dispatch(void);
 
 int test_importblockindex_cli_dispatch(void)
@@ -209,22 +322,31 @@ int test_importblockindex_cli_dispatch(void)
 
     char base[256];
     snprintf(base, sizeof(base), "/tmp/zcl_icd_cli_%d", (int)getpid());
-    char src_dir[300], target_db[340];
+    char src_dir[300], target_db[340], target_db2[340], target_db3[340];
     snprintf(src_dir, sizeof(src_dir), "%s/legacy_src", base);
     snprintf(target_db, sizeof(target_db), "%s/node1.db", base);
+    snprintf(target_db2, sizeof(target_db2), "%s/node2.db", base);
+    snprintf(target_db3, sizeof(target_db3), "%s/node3.db", base);
     icd_mkdir_p(base);
     icd_mkdir_p(src_dir);
 
     failures += icd_test_dispatch_reaches_importer(src_dir, target_db);
     failures += icd_test_flaglike_target_refused(src_dir);
+    failures += icd_test_nonfirst_position_dispatches(src_dir, target_db2);
+    failures += icd_test_bad_path_refuses();
+    failures += icd_test_missing_source_arg_refuses();
+    failures += icd_test_fresh_datadir_chooses_bulk(src_dir, target_db3);
 
     /* Best-effort cleanup; failure here doesn't fail the test. */
+    const char *targets[] = { target_db, target_db2, target_db3 };
     char cleanup_target[360];
-    snprintf(cleanup_target, sizeof(cleanup_target), "%s-wal", target_db);
-    unlink(cleanup_target);
-    snprintf(cleanup_target, sizeof(cleanup_target), "%s-shm", target_db);
-    unlink(cleanup_target);
-    unlink(target_db);
+    for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        snprintf(cleanup_target, sizeof(cleanup_target), "%s-wal", targets[i]);
+        unlink(cleanup_target);
+        snprintf(cleanup_target, sizeof(cleanup_target), "%s-shm", targets[i]);
+        unlink(cleanup_target);
+        unlink(targets[i]);
+    }
     rmdir(src_dir);
     rmdir(base);
 

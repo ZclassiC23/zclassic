@@ -6,6 +6,11 @@
 
 #include "config/boot.h"
 
+#include "models/block.h"              /* db_block_max_height */
+#include "services/block_index_loader.h" /* load_block_index_from_blocks_table */
+#include "validation/main_state.h"     /* struct main_state, map_block_index */
+#include "util/log_macros.h"
+
 #include <stdint.h>
 
 /* Decide whether boot should auto-pull zclassicd's LevelDB block index.
@@ -29,4 +34,47 @@ bool boot_need_legacy_header_pull(int64_t local_index_size, int64_t chain_h,
     if (local_index_size <= 0)
         return true;
     return local_index_size < chain_h * 9 / 10;
+}
+
+/* Decide whether boot should bulk-hydrate the in-memory block index from
+ * the node.db `blocks` table (the --importblockindex CLI's sink). Same
+ * ratio+empty shape as boot_need_legacy_header_pull above, but keyed off
+ * the blocks table's row count instead of a legacy-source stat(): a small
+ * (possibly stale) map must never permanently block this rung just because
+ * an earlier loader rung happened to report "loaded" — see the header
+ * comment in config/boot.h for the exact defect this closes. */
+bool boot_need_blocks_table_hydrate(int64_t map_size, int64_t blocks_table_rows)
+{
+    if (blocks_table_rows <= 0)
+        return false;
+    if (map_size <= 1)
+        return true;
+    return map_size < blocks_table_rows * 9 / 10;
+}
+
+/* Dispatch wrapper for the boot.c blocks-table-hydrate rung (kept out of
+ * boot.c for the E1 file-size ceiling): evaluates
+ * boot_need_blocks_table_hydrate against the LIVE node.db + in-memory map,
+ * logs the row counts + chosen path at INFO — no silent path choice — and
+ * runs the hydrate when
+ * it fires. Returns true iff the hydrate ran AND succeeded, so the caller
+ * can fold the result straight into its own `loaded` flag. no-ops (false)
+ * on a closed/NULL db or NULL main_state. */
+bool boot_dispatch_blocks_table_hydrate(struct node_db *ndb, struct main_state *ms)
+{
+    if (!ndb || !ndb->open || !ms)
+        return false;
+
+    int64_t blocks_rows = db_block_max_height(ndb);
+    bool want = boot_need_blocks_table_hydrate(
+        (int64_t)ms->map_block_index.size, blocks_rows);
+    LOG_INFO("block_index",
+             "blocks-table hydrate dispatch: map_size=%zu "
+             "blocks_table_rows=%lld -> %s",
+             ms->map_block_index.size, (long long)blocks_rows,
+             want ? "bulk hydrate (deterministic)"
+                  : "skip (map already covers blocks table)");
+    if (!want)
+        return false;
+    return load_block_index_from_blocks_table(ndb, ms).ok;
 }

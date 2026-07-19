@@ -987,9 +987,15 @@ int test_syncdiag_rpc(void)
             json_get_bool(json_get(snapshot_eta, "available"));
         const struct json_value *prep =
             json_get(&snapshot_result, "producer_import_preflight");
+        /* --importblockindex is now scanned anywhere in argv (src/main.c),
+         * so this field is correctly `false` — see
+         * agent_cure_status_helpers.c and
+         * test_importblockindex_cli_dispatch.c's nonfirst-position case for
+         * the live proof. */
         ok = ok && prep &&
-            json_get_bool(json_get(prep,
-                                   "importblockindex_must_be_argv1"));
+            json_get(prep, "importblockindex_must_be_argv1") != NULL &&
+            !json_get_bool(json_get(prep,
+                                    "importblockindex_must_be_argv1"));
         ok = ok && strstr(json_get_str(json_get(prep, "exact_template")),
                           "BIN --importblockindex") != NULL;
         const struct json_value *body_position =
