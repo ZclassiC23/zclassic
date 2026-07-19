@@ -476,8 +476,8 @@ int test_condition_engine(void)
 #include "conditions/condition_registry.def"
 #undef ZCL_CONDITION
         };
-        _Static_assert(CONDITION_REGISTRY_COUNT == 46,
-                       "condition registry must contain exactly 46 entries");
+        _Static_assert(CONDITION_REGISTRY_COUNT == 47,
+                       "condition registry must contain exactly 47 entries");
         _Static_assert(sizeof(expected) / sizeof(expected[0]) ==
                            CONDITION_REGISTRY_COUNT,
                        "condition registry name/count drift");

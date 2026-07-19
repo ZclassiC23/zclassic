@@ -27,6 +27,8 @@
 #include "chain/pow.h"
 #include "chain/checkpoints.h"
 #include "core/arith_uint256.h"
+#include "net/netaddr.h"
+#include "net/header_corroboration.h"
 #include "services/header_range_scheduler.h"  // lib-layer-ok:net3-range-parallel-header-planner
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
@@ -523,6 +525,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     struct block_index *sequence_prev =
         active_chain_tip(&mp->main_state->chain_active);
 
+    /* Address-group key of the peer offering these headers — the unit of
+     * distinct-source counting for the eclipse-resistant switch corroboration
+     * policy (net/header_corroboration.h). Onion and clearnet peers carry
+     * distinct keys; a whole /16 (clearnet) or one onion group counts once. */
+    unsigned char peer_group[NET_ADDR_GROUP_MAX];
+    size_t peer_group_len = net_addr_get_group(&node->addr.svc.addr,
+                                               peer_group, sizeof(peer_group));
+
     for (uint64_t i = 0; i < count; i++) {
         struct block_header hdr;
         block_header_init(&hdr);
@@ -558,6 +568,13 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             accepted++;
             if (!was_known)
                 newly_added++;
+            /* Record that THIS peer's address group served this header, so a
+             * later best-header SWITCH to this branch can be corroborated
+             * against a second distinct group before we adopt it. Records the
+             * header hash regardless of whether it was new — a second peer
+             * re-serving a known header is exactly the corroboration signal. */
+            if (peer_group_len > 0)
+                header_corroboration_note(&hdr_hash, peer_group, peer_group_len);
             if (pindex && sequence_prev && sequence_prev->phashBlock &&
                 uint256_eq(&hdr.hashPrevBlock, sequence_prev->phashBlock)) {
                 if (pindex->pprev != sequence_prev ||
@@ -713,9 +730,30 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
 
         /* The CSR owns both ranking and publication. Always submit the batch
-         * candidate; a valid non-winning header is an idempotent no-op. */
+         * candidate; a valid non-winning header is an idempotent no-op.
+         *
+         * Eclipse resistance (net/header_corroboration.h): before submitting a
+         * candidate that would SWITCH us onto a different branch (a reorg of
+         * the header tree deeper than MIN_SWITCH_DEPTH, above the compiled
+         * checkpoint), require a second distinct address group to have served
+         * that branch. An un-corroborated deep switch is HELD — we simply do
+         * not submit it (the peer is NOT banned, the candidate stays in the
+         * header tree, and plain extension of the current chain is unaffected).
+         * The chain_reorg_uncorroborated condition surfaces the transient
+         * blocker; the hold auto-clears when a second group corroborates or the
+         * branch is abandoned. */
         if (pindex_last) {
-            if (!msg_processor_commit_header_tip(mp, pindex_last)) {
+            int ckpt_last =
+                checkpoints_last_height(&mp->params->checkpointData);
+            enum header_corroboration_gate g =
+                header_corroboration_gate_switch(
+                    mp->main_state->pindex_best_header, pindex_last,
+                    ckpt_last, peer_group, peer_group_len, node->addr_name);
+            if (g == HEADER_CORROBORATION_HOLD) {
+                event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                            "held un-corroborated header switch to h=%d from %s",
+                            pindex_last->nHeight, node->addr_name);
+            } else if (!msg_processor_commit_header_tip(mp, pindex_last)) {
                 LOG_WARN("sync",
                          "best-header promotion rejected h=%d",
                          pindex_last->nHeight);

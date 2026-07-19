@@ -109,6 +109,13 @@ bool os_proc_exe_path(char *buf, size_t n);
  * /proc). */
 FILE *os_proc_open_self_exe(void);
 
+/* True iff this process's command line (/proc/self/cmdline, NUL-separated
+ * argv) contains `token` as a WHOLE argument (exact match, never a substring
+ * of a longer flag or value). Returns false on any read failure or non-Linux
+ * environment. Lets a subsystem honor its own boolean CLI flag without
+ * threading argv through the boot/argv loop. */
+bool os_proc_cmdline_has_token(const char *token);
+
 /* Resolve this process's cgroup v2 directory (e.g.
  * "/sys/fs/cgroup/user.slice/...") into `out`. Returns false if cgroup v2
  * is unavailable — callers should treat that as "no cgroup limits to

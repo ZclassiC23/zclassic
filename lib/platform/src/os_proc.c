@@ -253,3 +253,31 @@ FILE *os_proc_open_self_exe(void)
 {
     return fopen("/proc/self/exe", "rb");
 }
+
+bool os_proc_cmdline_has_token(const char *token)
+{
+    if (!token || !*token)
+        return false; // raw-return-ok:null-arg
+
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    if (!f)
+        return false; // raw-return-ok:optional-cmdline-unavailable
+
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+
+    /* /proc/self/cmdline is NUL-separated argv; match `token` exactly against
+     * one whole argument (not a substring of a longer flag/value). */
+    size_t tlen = strlen(token);
+    size_t start = 0;
+    for (size_t i = 0; i <= n; i++) {
+        if (i == n || buf[i] == '\0') {
+            size_t len = i - start;
+            if (len == tlen && memcmp(&buf[start], token, tlen) == 0)
+                return true;
+            start = i + 1;
+        }
+    }
+    return false;
+}
