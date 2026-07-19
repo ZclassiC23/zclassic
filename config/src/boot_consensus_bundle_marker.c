@@ -57,7 +57,8 @@ bool boot_consensus_bundle_marker_write(const char *datadir, int32_t height,
                      "height=%d\n"
                      "artifact_digest=%s\n"
                      "installed_unix=%lld\n",
-                     height, digest_hex, (long long)time(NULL));
+                     height, digest_hex,
+                     (long long)time(NULL)); // platform-ok: human-facing install timestamp, not consensus timing
     bool wrote = rc > 0 && fflush(f) == 0;
     if (wrote) {
         int fd = fileno(f);

@@ -1,4 +1,7 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Durable consensus-bundle-installed marker: written atomically on
+ * successful -install-consensus-bundle activation; its presence makes boot
+ * refuse borrowed starter-pack seed auto-loads over sovereign state. */
 #ifndef ZCL_BOOT_CONSENSUS_BUNDLE_MARKER_H
 #define ZCL_BOOT_CONSENSUS_BUNDLE_MARKER_H
 
