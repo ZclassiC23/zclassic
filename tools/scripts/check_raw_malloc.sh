@@ -25,19 +25,13 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 ALLOWLIST="$SCRIPT_DIR/raw_malloc_allowlist.txt"
 
 declare -A ALLOWED=()
-if [[ -f "$ALLOWLIST" ]]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        ALLOWED["$line"]=1
-    done < "$ALLOWLIST"
-fi
+gate_load_list_file "$ALLOWLIST" ALLOWED
 
 raw_hits=$(grep -rnE '\b(malloc|calloc|realloc)[[:space:]]*\(' \
     app/ lib/ tools/ config/ --include='*.c' --include='*.h' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \

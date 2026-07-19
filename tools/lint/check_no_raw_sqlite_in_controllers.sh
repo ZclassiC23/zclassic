@@ -16,18 +16,12 @@ BASELINE="$SCRIPT_DIR/no_raw_sqlite_in_controllers_baseline.txt"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 # Load baseline (set of relative file paths allowed to carry raw sqlite).
 declare -A BASELINED=()
-if [[ -f "$BASELINE" ]]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        BASELINED["$line"]=1
-    done < "$BASELINE"
-fi
+gate_load_list_file "$BASELINE" BASELINED
 
 roots=()
 for root in app/controllers; do

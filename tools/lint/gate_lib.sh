@@ -23,6 +23,22 @@
 #       Exit 0 (match) and 1 (no match) pass through unchanged. Captures
 #       and re-emits grep's stdout so callers can `gate_grep ... < <(...)`.
 #
+#   gate_load_list_file <path> <array-name> [<count-var-name>]
+#       Load a baseline/allowlist file into the nameref'd associative array
+#       as a set: one entry per non-blank, non-`#`-comment line, trimmed,
+#       ARRAY["<line>"]=1. A missing <path> leaves the array empty (no
+#       error) — callers that need the file to exist for a later append
+#       should `touch` it themselves before calling. If <count-var-name> is
+#       given, that nameref'd variable is set to the number of entries
+#       loaded. This is the ~9-line `declare -A ...; while IFS= read -r
+#       line; do ...; done < "$FILE"` block that used to be hand-rolled in
+#       most gates.
+#
+#   gate_load_kv_file <path> <array-name>
+#       Same file format and comment/blank handling as gate_load_list_file,
+#       but for baselines of the form "<key> <value>" per line (e.g. a
+#       recorded legacy-count): ARRAY["<first token>"]="<last token>".
+#
 # Sourcing contract: a gate sources this AFTER `set -euo pipefail` and its
 # own `cd` to the repo root. These helpers do not change cwd.
 
@@ -59,4 +75,58 @@ gate_grep() {
     fi
     [ -n "$out" ] && printf '%s\n' "$out"
     return "$rc"
+}
+
+# Load a baseline/allowlist file into the nameref'd associative array as a
+# set: one entry per non-blank, non-`#`-comment line, trimmed, ARRAY["<line
+# >"]=1. Missing FILE leaves the array empty — no error, no side effect.
+gate_load_list_file() {
+    local file="$1" _array_name="$2" _count_name="${3:-}"
+    local -n _gllf_arr="$_array_name"
+    local line _gllf_count=0
+    # bash nameref quirk (reproduced on 5.2): a `local -n` array ref that is
+    # never actually written through before the function returns leaves the
+    # CALLER's array unbound under `set -u` — even though it was already
+    # `declare -A`'d. Force one real write+delete so the nameref always
+    # resolves, whether or not FILE exists or has any real (non-comment,
+    # non-blank) lines.
+    _gllf_arr["__gate_lib_probe__"]=1
+    unset '_gllf_arr[__gate_lib_probe__]'
+    if [[ -f "$file" ]]; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "$line" ]] && continue
+            _gllf_arr["$line"]=1
+            _gllf_count=$((_gllf_count + 1))
+        done < "$file"
+    fi
+    if [[ -n "$_count_name" ]]; then
+        local -n _gllf_cnt="$_count_name"
+        _gllf_cnt="$_gllf_count"
+    fi
+}
+
+# Same file format/comment/blank handling as gate_load_list_file, but for
+# "<key> <value>" baselines (e.g. a recorded legacy count): the nameref'd
+# associative array gets ARRAY["<first token>"]="<last token>" per line.
+gate_load_kv_file() {
+    local file="$1" _array_name="$2"
+    local -n _glkf_arr="$_array_name"
+    local line key val
+    # See the nameref-probe comment in gate_load_list_file above — same fix.
+    _glkf_arr["__gate_lib_probe__"]=1
+    unset '_glkf_arr[__gate_lib_probe__]'
+    if [[ -f "$file" ]]; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "$line" ]] && continue
+            key="${line%% *}"
+            val="${line##* }"
+            _glkf_arr["$key"]="$val"
+        done < "$file"
+    fi
 }

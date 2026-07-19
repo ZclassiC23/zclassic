@@ -16,17 +16,11 @@ ALLOWLIST="$SCRIPT_DIR/framework_shape_allowlist.txt"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source "$SCRIPT_DIR/scan_exclusions.sh"
+# shellcheck source=tools/lint/gate_lib.sh
+source "$SCRIPT_DIR/gate_lib.sh"
 
 declare -A ALLOWED=()
-if [[ -f "$ALLOWLIST" ]]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        ALLOWED["$line"]=1
-    done < "$ALLOWLIST"
-fi
+gate_load_list_file "$ALLOWLIST" ALLOWED
 
 is_known_shape_path() {
     local path="$1"

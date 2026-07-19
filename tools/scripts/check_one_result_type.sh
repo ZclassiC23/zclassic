@@ -23,20 +23,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 BASELINE=tools/scripts/one_result_type_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
 baseline_count=0
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    baseline["$line"]=1
-    baseline_count=$((baseline_count + 1))
-done < "$BASELINE"
+gate_load_list_file "$BASELINE" baseline baseline_count
 
 fail=0
 new_violations=()
