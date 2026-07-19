@@ -353,6 +353,12 @@ struct p2p_node {
     uint8_t *blk_bitmap;          /* peer's piece availability bitmap (heap) */
     uint32_t blk_bitmap_len;      /* bytes in bitmap */
     int32_t blk_peer_height;      /* peer's manifest end_height */
+
+    /* v2 Noise-encrypted transport. NULL = plaintext v1 path (every zclassicd
+     * peer, and every zcl23 peer until -v2transport negotiates). Owned by this
+     * node; freed in p2p_node_free. Opaque here — only lib/net/src/v2_transport.c
+     * and the two seams (net.c write, connman.c recv) touch its fields. */
+    struct v2_transport *transport;
 };
 
 struct node_signals {
@@ -434,9 +440,22 @@ struct net_manager {
 
     unsigned char message_start[MESSAGE_START_SIZE];
     uint16_t default_port;
+
+    /* v2 Noise transport (default OFF). Armed only when -v2transport is passed;
+     * identity_{priv,pub} is the persistent 32-byte X25519 static loaded/
+     * generated at connman_init. When disabled, transport is never allocated on
+     * any node and the wire is bit-for-bit v1. */
+    uint8_t identity_priv[32], identity_pub[32];
+    bool    v2_enabled;
 };
 
 void net_manager_init(struct net_manager *nm);
+
+/* Queue raw (already-sealed or handshake) bytes onto a node's send stream,
+ * verbatim, under cs_send. Used by the v2 transport read seam to emit handshake
+ * replies and the initiator's first message. */
+struct v2_transport;
+void p2p_node_queue_raw(struct p2p_node *node, const uint8_t *bytes, size_t len);
 void net_manager_free(struct net_manager *nm);
 
 struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
