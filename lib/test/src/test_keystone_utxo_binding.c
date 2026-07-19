@@ -52,10 +52,11 @@ static void kb_make_leaf(struct mmb_leaf *leaf, uint32_t height,
 
 /* The boundary-root persist path the tip_finalize reducer step uses runs
  * INSIDE the stage's already-open transaction (batch BEGIN IMMEDIATE +
- * per-step SAVEPOINT). The own-BEGIN coins_kv_boundary_root_set fails there
- * ("cannot start a transaction within a transaction") and never persists —
- * the pre-flip 100%-WARN-storm root cause. coins_kv_boundary_root_set_in_tx
- * MUST succeed in that context and commit atomically with the outer txn. */
+ * per-step SAVEPOINT). Historically the own-BEGIN coins_kv_boundary_root_set
+ * failed there ("cannot start a transaction within a transaction") — the
+ * pre-flip 100%-WARN-storm root cause. progress_meta_set is now batch-aware
+ * (SAVEPOINT nesting), so BOTH variants must succeed in that context and
+ * commit atomically with the outer txn. */
 static int test_boundary_root_in_tx(void)
 {
     int failures = 0;
@@ -74,10 +75,10 @@ static int test_boundary_root_in_tx(void)
         /* Open an explicit transaction, exactly like the stage batch does. */
         ASSERT(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK);
 
-        /* The own-BEGIN variant FAILS inside the open txn (this is the bug). */
-        ASSERT(!coins_kv_boundary_root_set(db, 200, root));
-
-        /* The in-tx variant SUCCEEDS: it joins the caller's open txn. */
+        /* Both variants succeed inside an open txn: progress_meta_set is
+         * batch-aware (nests as a SAVEPOINT when a transaction is already
+         * open), and the explicit in-tx variant joins the caller's txn. */
+        ASSERT(coins_kv_boundary_root_set(db, 200, root));
         ASSERT(coins_kv_boundary_root_set_in_tx(db, 200, root));
 
         /* Commit and read it back — the root persisted atomically. */
