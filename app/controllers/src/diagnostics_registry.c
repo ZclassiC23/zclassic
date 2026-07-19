@@ -88,6 +88,7 @@
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
 #include "conditions/reducer_drive_watchdog.h"
+#include "conditions/sync_rate_below_floor.h"
 #include "storage/block_index_projection.h"
 #include "storage/body_coverage.h"
 #include "storage/mempool_projection.h"
