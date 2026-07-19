@@ -315,6 +315,9 @@ AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/
 /* Durable shielded anchors (anchor_kv + utxo_apply_anchors). */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all make_lint_gates")
 AGENT_IMPACT_RULE("lib/storage/src/anchor_kv.c|lib/storage/include/storage/anchor_kv.h", "coins_anchor_reconcile_all boot_coins_anchor_dual_store_recovery make_lint_gates")
+/* consensus.db — dedicated consensus-kernel store + one-time integrity-verified
+ * migration out of progress.kv (the reducer's private-WAL split). */
+AGENT_IMPACT_RULE("lib/storage/src/consensus_db.c|lib/storage/include/storage/consensus_db.h|lib/test/src/test_consensus_db_migrate.c", "consensus_db_migrate coins_kv nullifier_kv make_lint_gates")
 AGENT_IMPACT_RULE("lib/storage/src/catalog_completeness.c|lib/storage/include/storage/catalog_completeness.h|lib/test/src/test_catalog_completeness.c|app/models/src/explorer_index.c|app/models/include/models/explorer_index.h", "catalog_completeness explorer_index anchor_kv nullifier_kv op_return_index address_index make_lint_gates")
 
 /* Coins view core + KV/SQLite backends. */
