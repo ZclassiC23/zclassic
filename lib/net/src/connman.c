@@ -2439,8 +2439,13 @@ void connman_join(struct connman *cm)
             thread_liveness_retire(&g_open_liveness);
         }
         if (cm->message_thread_started) {
-            if (!timed_join(g_thread_message, 5))
-                LOG_WARN("connman", "message thread join timed out");
+            if (!timed_join(g_thread_message, 5)) {
+                /* Detached, still running: it will keep touching addrman/nodes.
+                 * Flag it so connman_free() defers (leaks) net_manager teardown
+                 * instead of freeing state out from under the live thread. */
+                LOG_WARN("connman", "message thread join timed out; detached and still running — deferring net_manager teardown");
+                cm->message_thread_detached = true;
+            }
             cm->message_thread_started = false;
             thread_liveness_retire(&g_msg_liveness);
         }
@@ -2604,7 +2609,23 @@ void connman_free(struct connman *cm)
 {
     if (cm->started)
         connman_stop(cm);
+    /* Serialize peers.dat under addrman.cs — safe even if a detached message
+     * thread is still mutating addrman (cs mutually excludes it). */
     connman_save_addrman(cm);
+
+    /* ORDERING GUARD: if the message-cycle thread was detached during
+     * connman_join() (bounded join timed out) it is STILL RUNNING and keeps
+     * dereferencing cm->manager (addrman entries, node array, cs mutexes) on
+     * the addr/inv path. Freeing that state now is a use-after-free — the exact
+     * 2026-07-19 crash (addrman_add SIGSEGV after "[shutdown] connman stopped").
+     * The process is terminating, so deliberately leak the network state rather
+     * than free it under the live thread. addrman_add()'s fail-closed guard is
+     * the second line of defense should this branch ever be bypassed. */
+    if (cm->message_thread_detached) {
+        LOG_WARN("connman", "message thread detached and still running — leaking net_manager/addrman/nodes to avoid use-after-free (process terminating)");
+        return;
+    }
+
     net_manager_free(&cm->manager);
 
     /* free any deferred entries still pending. After
