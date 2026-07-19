@@ -44,6 +44,16 @@
 
 #define STAGE_NAME       "validate_headers"
 #define VH_WINDOW_MISS_BLOCKER_ID "validate_headers.window_resolve_miss"
+/* Raised when the UNCHANGED PoW+Equihash validator PASSES a header but the
+ * block_index entry is BLOCK_FAILED-masked and the stale mask cannot be
+ * cleared here (no repairable evidence). Live root cause: the getheaders serve
+ * path (lib/net/src/msg_headers.c) sets BLOCK_FAILED_VALID when its local index
+ * copy of a header has a missing/corrupt Equihash solution ("invalid-solution",
+ * classified permanent); that mask persists across boots via block_index_cache
+ * and mark_valid_header refuses any FAILED-masked entry forever — which turned
+ * into an 18,440-WARN/5min JOB_FATAL hot loop at h=3,179,245. A streak-throttled
+ * blocker + JOB_IDLE backoff replaces that storm. */
+#define VH_MARK_FAIL_BLOCKER_ID "validate_headers.mark_failed"
 
 /* The default header validator (PoW target + Equihash-from-nSolution)
  * lives in validate_headers_validator.c — see validate_headers_internal.h. */
@@ -56,6 +66,11 @@ struct vh_job {
     struct block_index        snapshot; /* in: optional repaired-header copy */
     unsigned char             solution[MAX_SOLUTION_SIZE];
     int                       height;   /* in: convenience for logging */
+    bool                      had_repair_row; /* in: a hash-bound header_solution_repair
+                                               * row backs this height — the
+                                               * solutionless-backfill fingerprint that
+                                               * proves a stale FAILED mask is the
+                                               * serve-refusal (clearable) class */
     bool                      ok;       /* out */
     char                      reason[VH_MAX_REASON];
 };
@@ -75,6 +90,15 @@ static _Atomic int64_t  g_failure_recheck_cursor = 0;
 static _Atomic int64_t  g_last_recheck_frontier = -1;
 static _Atomic int64_t  g_last_recheck_start = -1;
 static _Atomic int64_t  g_last_recheck_selected = 0;
+
+/* Mark-failure streak throttle (deliverable a). g_mark_fail_streak counts the
+ * consecutive mark refusals of a streak; only the FIRST emits a WARN + raises
+ * the typed blocker, and the next clean mark logs one recovery line. Both mark
+ * sites hold progress_store_tx_lock (the serial reducer drive), so the plain
+ * static is race-free — mirrors tip_finalize_post_step's s_boundary_fail_streak.
+ * g_mark_fail_warn_total is the atomic rising-edge WARN counter (test hook). */
+static int              g_mark_fail_streak = 0;
+static _Atomic int64_t  g_mark_fail_warn_total = 0;
 
 /* Infra-db fault ladder (R5). A momentary sqlite glitch (busy/locked/transient
  * IO) must NOT be a dead JOB_FATAL: a transient fault holds the cursor and
@@ -173,6 +197,11 @@ static void vh_run_job(void *jobp, void *user)
  * vh_job → primitive binding at the call sites. */
 
 static bool mark_valid_header(struct block_index *bi);
+/* Mark a passing header valid, healing a stale serve-path FAILED mask when the
+ * failure is the repairable serve-refusal class (`clearable`). Defined below
+ * mark_valid_header; forward-declared here for recheck_failed_rows. */
+static bool vh_authoritative_mark(struct vh_job *job, bool clearable);
+static void vh_mark_fail_note(int height, const struct block_index *bi);
 
 /* Resolve the block_index at height `h`, including the live frontier ONE
  * (or more) above the finalized active-chain window.
@@ -214,6 +243,11 @@ static void vh_job_bind_block(sqlite3 *db, struct vh_job *job,
                                            &repaired))
         return;
 
+    /* A hash-bound repair row exists: the header went through the solutionless
+     * header-solution backfill path (header_probe / stale-validate Condition),
+     * the exact fingerprint of the serve-refusal FAILED-mask class. Recorded so
+     * the forward mark path may clear a stale mask only with this proof. */
+    job->had_repair_row = true;
     job->snapshot = *bi;
     job->snapshot.nVersion = repaired.nVersion;
     job->snapshot.hashMerkleRoot = repaired.hashMerkleRoot;
@@ -400,12 +434,21 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         return vh_db_fault(frc, (int)start, "recheck begin/savepoint");
     }
     for (int i = 0; i < n; i++) {
+        /* Recheck rows are pre-filtered to the repairable reasons (solutionless /
+         * source-hash-mismatch), so a stale BLOCK_FAILED mask on a now-passing
+         * header IS the serve-refusal class: pass clearable=true. This is the
+         * reachable repair (deliverable b) — clear the mask and flip the row to
+         * ok=1 once the backfilled solution makes the unchanged validator pass. */
         if (jobs[i].ok &&
-            !mark_valid_header(jobs[i].mark_bi)) {
-            LOG_WARN("validate_headers", "[validate_headers] recheck mark failed height=%d", jobs[i].height);
+            !vh_authoritative_mark(&jobs[i], true)) {
+            /* Still un-markable after the scoped clear (e.g. a NULL entry). Name
+             * ONE typed blocker (streak-throttled) and back off JOB_IDLE — never
+             * the JOB_FATAL hot loop. */
+            vh_mark_fail_note(jobs[i].height, jobs[i].mark_bi);
             vh_recheck_rollback(db, vh_batched);
             progress_store_tx_unlock();
-            return JOB_FATAL;
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+            return JOB_IDLE;
         }
         if (!validate_headers_log_insert(db, jobs[i].height,
                                          jobs[i].bi->phashBlock, jobs[i].ok,
@@ -466,6 +509,91 @@ static bool mark_valid_header(struct block_index *bi)
     return true;
 }
 
+/* Rising-edge recovery for the mark-failure streak: the stale FAILED mask
+ * cleared and the header marked valid, so emit ONE recovery line and clear the
+ * blocker — only if a streak was actually open. */
+static void vh_mark_fail_recover(void)
+{
+    if (g_mark_fail_streak > 0) {
+        LOG_INFO("validate_headers",
+                 "[validate_headers] header mark recovered after %d suppressed "
+                 "refusal(s); stale BLOCK_FAILED mask cleared by a clean "
+                 "PoW+Equihash re-validation", g_mark_fail_streak);
+        g_mark_fail_streak = 0;
+        blocker_clear(VH_MARK_FAIL_BLOCKER_ID);
+    }
+}
+
+/* Streak-throttled typed blocker for a header that re-validates clean but whose
+ * block_index entry is FAILED-masked and could not be cleared here (no
+ * repairable evidence). Log the FIRST refusal of a streak (loud + named:
+ * height+hash+nStatus) and raise ONE typed blocker; suppress the rest. Runs on
+ * the serial reducer drive under progress_store_tx_lock, so the statics are
+ * race-free (mirrors tip_finalize_post_step's boundary streak). */
+static void vh_mark_fail_note(int height, const struct block_index *bi)
+{
+    if (g_mark_fail_streak++ != 0)
+        return;
+    char hex[65] = {0};
+    if (bi && bi->phashBlock)
+        uint256_get_hex(bi->phashBlock, hex);
+    unsigned long nstatus = bi ? (unsigned long)bi->nStatus : 0UL;
+    atomic_fetch_add(&g_mark_fail_warn_total, 1);
+    LOG_WARN("validate_headers",
+             "[validate_headers] header mark refused height=%d hash=%s "
+             "nStatus=0x%lx: header re-validates clean (PoW+Equihash) but the "
+             "block_index entry carries a stale BLOCK_FAILED mask with no "
+             "clearable repair row; holding (JOB_IDLE, no hot loop), suppressing "
+             "repeats until it clears", height, hex[0] ? hex : "(unknown)",
+             nstatus);
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d hash=%s nStatus=0x%lx: header re-validates clean but the "
+             "block_index entry is BLOCK_FAILED-masked and no header_solution_"
+             "repair row clears it; validate_headers holds here (no JOB_FATAL "
+             "storm). Cleared by block_failed_mask_at_tip / process_block_"
+             "revalidate or a fresh solution re-receive.",
+             height, hex[0] ? hex : "(unknown)", nstatus);
+    struct blocker_record rec;
+    if (blocker_init(&rec, VH_MARK_FAIL_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_TRANSIENT, reason))
+        blocker_set(&rec);
+}
+
+/* Mark a passing header valid, healing a stale serve-path FAILED mask.
+ *
+ * The caller guarantees the UNCHANGED PoW+Equihash validator PASSED (job->ok).
+ * mark_valid_header refuses any BLOCK_FAILED-masked entry, so a stale mask —
+ * set by the getheaders serve path (msg_headers.c) when the local Equihash
+ * solution was missing/corrupt and then persisted across boots by
+ * block_index_cache — otherwise pins the header forever and re-fires JOB_FATAL
+ * hot (the live 18,440-WARN storm at h=3,179,245).
+ *
+ * When `clearable`, clear ONLY the header-scope bits (BLOCK_FAILED_MASK) and
+ * re-mark. `clearable` is the proof the mask is the repairable serve-refusal
+ * class: true on the recheck path (rows are pre-filtered to repairable reasons)
+ * and, on the forward path, only when a hash-bound header_solution_repair row
+ * exists at this height (job->had_repair_row) — the solutionless-backfill
+ * fingerprint. An operator invalidateblock / genuine consensus reject has no
+ * such row and is never cleared here (find_most_work_chain still skips it).
+ * Verdict-preserving (E13): a header leaves FAILED ONLY because the unchanged
+ * validator passed. Returns true when the entry is (now) markable; false when
+ * the caller must name a blocker and back off. */
+static bool vh_authoritative_mark(struct vh_job *job, bool clearable)
+{
+    struct block_index *bi = job ? job->mark_bi : NULL;
+    if (mark_valid_header(bi))
+        return true;                        /* not FAILED-masked: fast path */
+    if (bi && clearable && (bi->nStatus & BLOCK_FAILED_MASK)) {
+        bi->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
+        if (mark_valid_header(bi)) {
+            vh_mark_fail_recover();
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ── Step body ────────────────────────────────────────────────────── */
 
 static job_result_t step_validate(struct stage_step_ctx *c)
@@ -523,9 +651,19 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
     for (int i = 0; i < batch_n; i++) {
         if (jobs[i].ok &&
-            !mark_valid_header(jobs[i].mark_bi)) {
-            LOG_WARN("validate_headers", "[validate_headers] authoritative mark failed height=%d", jobs[i].height);
-            return JOB_FATAL;
+            !vh_authoritative_mark(&jobs[i], jobs[i].had_repair_row)) {
+            /* Validator PASSED but the block_index entry is FAILED-masked and no
+             * clearable repair row proves it is the serve-refusal class. Name
+             * ONE typed blocker (streak-throttled) and BACK OFF (JOB_IDLE) —
+             * never the hot JOB_FATAL loop that stormed 18,440 WARN lines at
+             * h=3,179,245. Backing off also un-starves the condition runner so
+             * block_failed_mask_at_tip / process_block_revalidate can clear the
+             * mask consensus-safely; the cursor holds until it does. The step's
+             * partial writes roll back (stage_run_once), so a mid-batch hold is
+             * clean and the whole batch re-marks idempotently next tick. */
+            vh_mark_fail_note(jobs[i].height, jobs[i].mark_bi);
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+            return JOB_IDLE;
         }
         if (!validate_headers_log_insert(db, jobs[i].height,
                                          jobs[i].bi->phashBlock, jobs[i].ok,
@@ -684,6 +822,7 @@ void validate_headers_stage_shutdown(void)
 {
     /* Registry hygiene: re-derived on next fire, so clearing loses nothing. */
     blocker_clear(VH_WINDOW_MISS_BLOCKER_ID);
+    blocker_clear(VH_MARK_FAIL_BLOCKER_ID);
     pthread_mutex_lock(&g_lock);
     /* Pool must stop before stage_destroy so the workers' read of
      * g_validator stays valid. */
@@ -703,8 +842,15 @@ void validate_headers_stage_shutdown(void)
     atomic_store(&g_last_recheck_frontier, (int64_t)-1);
     atomic_store(&g_last_recheck_start, (int64_t)-1);
     atomic_store(&g_last_recheck_selected, (int64_t)0);
+    g_mark_fail_streak = 0;
+    atomic_store(&g_mark_fail_warn_total, (int64_t)0);
     stage_db_fault_clear(&g_vh_db_fault);
     pthread_mutex_unlock(&g_lock);
+}
+
+int64_t validate_headers_stage_mark_fail_warn_count(void)
+{
+    return atomic_load(&g_mark_fail_warn_total);
 }
 
 uint64_t validate_headers_stage_cursor(void)
@@ -787,6 +933,8 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_recheck_start));
     json_push_kv_int (out, "last_recheck_selected",
                       atomic_load(&g_last_recheck_selected));
+    json_push_kv_int (out, "mark_fail_warn_total",
+                      atomic_load(&g_mark_fail_warn_total));
     struct validate_headers_failure_summary failures;
     validate_headers_failure_summary_load(&failures);
     json_push_kv_int(out, "failure_log_count", failures.count);

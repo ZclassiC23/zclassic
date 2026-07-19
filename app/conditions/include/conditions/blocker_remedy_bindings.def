@@ -129,6 +129,14 @@ ZCL_BLOCKER_REMEDY(header_admit,                               OWNER)
 ZCL_BLOCKER_REMEDY(reducer_frontier.script_undetermined,       OWNER)
 ZCL_BLOCKER_REMEDY(body_fetch.header_solution_missing,         OWNER)
 ZCL_BLOCKER_REMEDY(validate_headers.window_resolve_miss,       OWNER)
+/* A header re-validates clean (unchanged PoW+Equihash) but its block_index
+ * entry carries a stale BLOCK_FAILED mask (set by the getheaders serve path for
+ * a locally missing/corrupt solution) that mark_valid_header refuses. The stage
+ * backs off JOB_IDLE (no storm) and self-clears the blocker when a repairable
+ * clear succeeds; the standing auto-remedy is block_failed_mask_at_tip, whose
+ * remedy runs process_block_revalidate to clear the FAILED mask consensus-safely
+ * once the reducer drive is un-starved. */
+ZCL_BLOCKER_REMEDY(validate_headers.mark_failed,               block_failed_mask_at_tip)
 ZCL_BLOCKER_REMEDY(header_band_hole,                           OWNER)
 ZCL_BLOCKER_REMEDY(utxo_recovery.rewind_overshoot,              OWNER)
 ZCL_BLOCKER_REMEDY(ops.binary_stale,                            OWNER)

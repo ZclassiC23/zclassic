@@ -113,6 +113,11 @@ int64_t  validate_headers_stage_step_us_ewma(void);
 uint64_t validate_headers_stage_passed_total(void);
 uint64_t validate_headers_stage_failed_total(void);
 
+/* Rising-edge count of "header mark refused" WARNs emitted — one per mark-
+ * failure streak (the storm→typed-blocker throttle). Test hook + diagnostics;
+ * a value that stays 1 while many JOB_IDLE steps run proves the storm is gone. */
+int64_t validate_headers_stage_mark_fail_warn_count(void);
+
 bool validate_headers_stage_has_pass_record(int32_t height,
                                             const struct uint256 *hash);
 
