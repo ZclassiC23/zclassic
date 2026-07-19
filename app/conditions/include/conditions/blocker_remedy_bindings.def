@@ -87,6 +87,7 @@ ZCL_BLOCKER_REMEDY(header_repair_no_source,                  stale_validate_head
 ZCL_BLOCKER_REMEDY(net_partition_suspected,                  net_partition_suspected)
 ZCL_BLOCKER_REMEDY(reducer_drive_stuck,                      reducer_drive_watchdog)
 ZCL_BLOCKER_REMEDY(net_eclipse_suspected,                    net_eclipse_suspected)
+ZCL_BLOCKER_REMEDY(chain.reorg_uncorroborated,               chain_reorg_uncorroborated)
 ZCL_BLOCKER_REMEDY(net_tip_regression,                       net_tip_regression)
 ZCL_BLOCKER_REMEDY(stage_step_budget_exceeded,                stage_step_budget_exceeded)
 ZCL_BLOCKER_REMEDY(net_fork_detected,                         net_fork_detected)

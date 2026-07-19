@@ -174,6 +174,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(header_sync) X(header_sync_stall) X(header_range_sched) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(addrman_eclipse) \
+    X(chain_reorg_uncorroborated) \
     X(addrman_shutdown_race) \
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
     X(coins_view_atomicity) X(coins_anchor_reconcile_all) \
