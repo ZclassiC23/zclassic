@@ -44,6 +44,8 @@
 #include "sync/sync_state.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
+#include "core/random.h"
+#include "crypto/sha3.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,6 +87,192 @@ static int64_t g_swarm_last_progress_time = 0;
 #define BLOCK_PAYLOAD_SUBMIT_RETRIES 3
 #define BLOCK_PIECE_TIMEOUT_SECS 8
 #define BLOCK_PIECE_CONTIGUOUS_WINDOW 4u
+
+/* ── Client-puzzle PoW guard for zchunkreq / zblkreq (PoW-DDoS posture) ──
+ *
+ * Cost of the two ops this guards (see the lane note for full numbers):
+ *   - zchunkreq: one fast_sync_serve_chunk() DB read of up to
+ *     SYNC_CHUNK_SIZE (500) UTXO rows (script up to 520 bytes each,
+ *     ~571 B/row decoded) plus serialization — a single 4-byte request can
+ *     pull ~285 KB out of storage.
+ *   - zblkreq: up to BLOCKS_PER_PIECE (512) full block bodies read from
+ *     disk and serialized, capped at MAX_PROTOCOL_MESSAGE_LENGTH (2 MiB)
+ *     per response — a single 4-byte request can force up to 2 MiB of
+ *     disk reads. This is the "large range" expensive op in this file.
+ *   - zsnapreq (legacy full-snapshot serve) already goes through
+ *     snapsync_validate_serve_request()'s existing PoW gate — untouched,
+ *     reused as-is.
+ *
+ * Design: a STATELESS puzzle, per the lane note. No per-peer server state,
+ * no stored rotating seed table (unlike fast_sync_pow_gate, which this
+ * deliberately does NOT reuse because that primitive keeps a mutex-guarded
+ * seed + single-use ring; this guard only needs the pure, already-tested
+ * digest/verify primitives it exposes):
+ *
+ *   challenge   = SHA3-256(secret[32] || peer_ip[16] || time_bucket[8 LE])
+ *   solve       = nonce such that SHA3-256(challenge || 0^32 || 0 || nonce)
+ *                 has D leading zero bits (reuses the hardened
+ *                 fast_sync_verify_pow_ex/solve_pow_ex digest from
+ *                 fast_sync.c, passing a zero peer_token/ts since peer
+ *                 binding and freshness are already carried by `challenge`
+ *                 itself via peer_ip + time_bucket).
+ *
+ * `secret` is one random value generated at first use and held only in
+ * this process's memory (never persisted, never a consensus predicate).
+ * time_bucket rotates automatically off wall-clock, so verification is a
+ * pure recompute — no seed distribution round trip, no server-side
+ * table to evict or flood.
+ *
+ * Difficulty is 0 (mechanism present, gate open) until armed via
+ * msg_snapshot_pow_set_armed(true) — see lane note point 3. When
+ * disarmed, zchunkreq/zblkreq behave exactly as before (existing
+ * msg_snapshot_serving_allowed / range / fast_sync_rate_check gates only).
+ * When armed, a peer that omits or fails the puzzle simply doesn't get
+ * this particular response — same as today's rate-limited path: no ban,
+ * no peer_scoring penalty, so old peers that never learned to attach a
+ * solution degrade to (existing-rate-limit-only) throttled service rather
+ * than being dropped or scored.
+ *
+ * SNAP_POW_* difficulty/window constants live in net/msgprocessor.h (not
+ * here) so the test suite can assert scaling bounds without duplicating
+ * magic numbers. */
+
+static uint8_t g_snap_pow_secret[32];
+static _Atomic bool g_snap_pow_secret_ready = false;
+static pthread_mutex_t g_snap_pow_secret_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static _Atomic bool g_snap_pow_armed = false;
+
+static pthread_mutex_t g_snap_pow_load_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_snap_pow_window_start = 0;
+static uint32_t g_snap_pow_reqs_in_window = 0;
+
+static void snap_pow_ensure_secret(void)
+{
+    if (atomic_load(&g_snap_pow_secret_ready))
+        return;
+    pthread_mutex_lock(&g_snap_pow_secret_mutex);
+    if (!atomic_load(&g_snap_pow_secret_ready)) {
+        GetRandBytes(g_snap_pow_secret, sizeof(g_snap_pow_secret));
+        atomic_store(&g_snap_pow_secret_ready, true);
+    }
+    pthread_mutex_unlock(&g_snap_pow_secret_mutex);
+}
+
+static void snap_pow_challenge(const uint8_t peer_ip[16], int64_t time_bucket,
+                               uint8_t out[32])
+{
+    snap_pow_ensure_secret();
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, g_snap_pow_secret, sizeof(g_snap_pow_secret));
+    sha3_256_write(&ctx, peer_ip, 16);
+    sha3_256_write(&ctx, (const unsigned char *)&time_bucket,
+                   sizeof(time_bucket));
+    sha3_256_finalize(&ctx, out);
+}
+
+/* Recent-request-count load proxy → adaptive difficulty (caller-supplied
+ * clock so tests are deterministic). Bumps the counter as a side effect,
+ * matching the "note this request happened" contract every call site
+ * needs (one call per admission decision). */
+static int snap_pow_note_request_and_get_bits(int64_t now)
+{
+    pthread_mutex_lock(&g_snap_pow_load_mutex);
+    if (now - g_snap_pow_window_start > SNAP_POW_WINDOW_SECS) {
+        g_snap_pow_window_start = now;
+        g_snap_pow_reqs_in_window = 0;
+    }
+    int bits = SNAP_POW_MIN_BITS;
+    if (g_snap_pow_reqs_in_window > SNAP_POW_SOFT_RATE) {
+        bits += (int)((g_snap_pow_reqs_in_window - SNAP_POW_SOFT_RATE) /
+                      SNAP_POW_RATE_STEP);
+    }
+    if (bits > SNAP_POW_MAX_BITS) bits = SNAP_POW_MAX_BITS;
+    if (g_snap_pow_reqs_in_window < UINT32_MAX)
+        g_snap_pow_reqs_in_window++;
+    pthread_mutex_unlock(&g_snap_pow_load_mutex);
+    return bits;
+}
+
+static bool snap_pow_solve_at(const uint8_t peer_ip[16], int64_t at_time,
+                              int difficulty_bits, uint64_t *nonce_out)
+{
+    int64_t bucket = at_time / SNAP_POW_BUCKET_SECS;
+    uint8_t challenge[32];
+    static const uint8_t zero32[32] = {0};
+    snap_pow_challenge(peer_ip, bucket, challenge);
+    return fast_sync_solve_pow_ex(challenge, zero32, 0, difficulty_bits,
+                                  nonce_out);
+}
+
+/* Admit a zchunkreq/zblkreq at clock `now`. `nonce` is the peer-supplied
+ * solution (NULL if the request carried none). Checks the current and
+ * prior time bucket so a solve that started just before a rotation still
+ * verifies (matches the +1 grace epoch fast_sync_pow_gate uses). */
+static bool snap_pow_admit_at(const uint8_t peer_ip[16], int64_t now,
+                              const uint64_t *nonce)
+{
+    int bits = snap_pow_note_request_and_get_bits(now);
+    if (!atomic_load(&g_snap_pow_armed))
+        return true;   /* difficulty-0 posture: mechanism wired, gate open */
+    if (!nonce)
+        return false;  /* no solution attached — no ban, just no serve */
+
+    int64_t bucket = now / SNAP_POW_BUCKET_SECS;
+    uint8_t challenge[32];
+    static const uint8_t zero32[32] = {0};
+
+    snap_pow_challenge(peer_ip, bucket, challenge);
+    if (fast_sync_verify_pow_ex(challenge, zero32, 0, *nonce, bits))
+        return true;
+    snap_pow_challenge(peer_ip, bucket - 1, challenge);
+    return fast_sync_verify_pow_ex(challenge, zero32, 0, *nonce, bits);
+}
+
+static bool snap_pow_admit(const uint8_t peer_ip[16], const uint64_t *nonce)
+{
+    return snap_pow_admit_at(peer_ip, (int64_t)platform_time_wall_time_t(),
+                             nonce);
+}
+
+void msg_snapshot_pow_set_armed(bool armed)
+{
+    atomic_store(&g_snap_pow_armed, armed);
+}
+
+bool msg_snapshot_pow_is_armed(void)
+{
+    return atomic_load(&g_snap_pow_armed);
+}
+
+bool msgprocessor_test_snap_pow_solve(const uint8_t peer_ip[16],
+                                      int64_t at_time, int difficulty_bits,
+                                      uint64_t *nonce_out)
+{
+    return snap_pow_solve_at(peer_ip, at_time, difficulty_bits, nonce_out);
+}
+
+bool msgprocessor_test_snap_pow_admit_at(const uint8_t peer_ip[16],
+                                         int64_t at_time,
+                                         const uint64_t *nonce)
+{
+    return snap_pow_admit_at(peer_ip, at_time, nonce);
+}
+
+int msgprocessor_test_snap_pow_bits_at(int64_t at_time)
+{
+    return snap_pow_note_request_and_get_bits(at_time);
+}
+
+void msgprocessor_test_snap_pow_reset(void)
+{
+    pthread_mutex_lock(&g_snap_pow_load_mutex);
+    g_snap_pow_window_start = 0;
+    g_snap_pow_reqs_in_window = 0;
+    pthread_mutex_unlock(&g_snap_pow_load_mutex);
+    atomic_store(&g_snap_pow_armed, false);
+}
 
 struct block_piece_payload_ref {
     const unsigned char *data;
@@ -1656,11 +1844,19 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             }
 
         } else if (strcmp(cmd, MSG_CHUNK_REQ) == 0) {
-            /* Peer requests a specific chunk by index — serve it. */
+            /* Peer requests a specific chunk by index — serve it. An
+             * optional 8-byte PoW nonce may follow the index (see the
+             * client-puzzle guard note above); legacy peers that never
+             * append one are unaffected while the guard is disarmed
+             * (default), and degrade to the existing rate limiter (no
+             * ban) once armed. */
             uint32_t chunk_index = 0;
             if (!stream_read_u32_le(s, &chunk_index)) {
                 printf("Peer %s: bad zchunkreq\n", node->addr_name);
             } else {
+                uint64_t pow_nonce = 0;
+                bool have_pow_nonce = stream_remaining(s) >= 8 &&
+                                      stream_read_u64_le(s, &pow_nonce);
                 printf("Peer %s: zchunkreq raw %u\n",
                        node->addr_name, chunk_index);
                 uint32_t num_chunks = atomic_load(&g_cached_manifest_num_chunks);
@@ -1679,6 +1875,10 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                                   node->addr.svc.addr.ip)) {
                     printf("Peer %s: rate limited on chunk request\n",
                            node->addr_name);
+                } else if (!snap_pow_admit(node->addr.svc.addr.ip,
+                                           have_pow_nonce ? &pow_nonce : NULL)) {
+                    printf("Peer %s: zchunkreq missing/invalid client puzzle "
+                           "(armed)\n", node->addr_name);
                 } else {
                     printf("Peer %s: zchunkreq %u\n",
                            node->addr_name, chunk_index);
@@ -1960,12 +2160,19 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
         } else if (strcmp(cmd, MSG_BLOCK_REQ) == 0) {
             /* Peer requests a specific block piece by index.
              * SAFETY: only serve if we have a valid manifest and the
-             * piece index is in range. Rate-limited like chunk requests. */
+             * piece index is in range. Rate-limited like chunk requests.
+             * An optional 8-byte PoW nonce may follow the index (see the
+             * client-puzzle guard note above); same graceful-degrade
+             * contract as zchunkreq. */
             uint32_t piece_index = 0;
             struct block_piece_manifest bm;
             if (!stream_read_u32_le(s, &piece_index)) {
                 printf("Peer %s: bad zblkreq\n", node->addr_name);
-            } else if (!msg_processor_get_block_manifest_header(&bm, NULL)) {
+            } else {
+            uint64_t pow_nonce = 0;
+            bool have_pow_nonce = stream_remaining(s) >= 8 &&
+                                  stream_read_u64_le(s, &pow_nonce);
+            if (!msg_processor_get_block_manifest_header(&bm, NULL)) {
                 printf("Peer %s: zblkreq but no block manifest\n",
                        node->addr_name);
             } else if (piece_index >= bm.num_pieces) {
@@ -1978,6 +2185,10 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                               node->addr.svc.addr.ip)) {
                 printf("Peer %s: rate limited on block piece\n",
                        node->addr_name);
+            } else if (!snap_pow_admit(node->addr.svc.addr.ip,
+                                       have_pow_nonce ? &pow_nonce : NULL)) {
+                printf("Peer %s: zblkreq missing/invalid client puzzle "
+                       "(armed)\n", node->addr_name);
             } else {
                 /* Serve the piece: send block hashes for this piece range.
                  * The requester can then verify against their manifest. */
@@ -2025,6 +2236,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     if (have_payloads)
                         stream_free(&payloads);
                 }
+            }
             }
 
         } else if (strcmp(cmd, MSG_BLOCK_DATA) == 0) {
