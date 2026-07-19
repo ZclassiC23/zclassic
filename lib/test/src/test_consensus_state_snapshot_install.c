@@ -6,6 +6,9 @@
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
 #include "config/boot.h"
+#include "config/consensus_state_bundle_validate.h"
+#include "config/consensus_state_install_verify_receipt.h"
+#include "config/consensus_state_producer_receipt.h"
 #include "config/consensus_state_replay_receipt.h"
 #include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
@@ -1471,6 +1474,191 @@ static bool stale_generation_metadata_absent(sqlite3 *db)
     return true;
 }
 
+/* Deterministic 64-hex source identities so the receipt's verifier-epoch key
+ * does not depend on this build's baked worktree identity. */
+#define IVR_EPOCH_A_SOURCE_ID \
+    "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"
+#define IVR_EPOCH_B_SOURCE_ID \
+    "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"
+
+/* install-verify receipt: after a successful content verify, a
+ * byte-identical bundle admitted again under the exact same verifying-binary
+ * build epoch must skip the O(bundle-size) deep scan (asserted via the
+ * deep-scan-call counter, not timing); a different epoch, a different
+ * bundle, a corrupt receipt store, or no datadir capability must all fall
+ * back to a full verify (fail-soft), and admission must succeed in every
+ * case. */
+static int install_verify_receipt_tests(const char *root)
+{
+    int failures = 0;
+    char dir[300], datadir[320];
+    snprintf(dir, sizeof(dir), "%s/ivr", root);
+    snprintf(datadir, sizeof(datadir), "%s/datadir", dir);
+    CSI_CHECK("ivr: bundle dir", mkdir(dir, 0700) == 0);
+    CSI_CHECK("ivr: datadir", mkdir(datadir, 0700) == 0);
+
+    struct csi_fixture f, other;
+    memset(&f, 0, sizeof(f));
+    memset(&other, 0, sizeof(other));
+    CSI_CHECK("ivr: fixtures build",
+              fixture_init(&f, dir, "ivr", 0x21, 44, true) &&
+              fixture_init(&other, dir, "ivr-other", 0x55, 46, true));
+    CSI_CHECK("ivr: bundles write",
+              write_bundle(&f, CSI_VALID) && write_bundle(&other, CSI_VALID));
+
+    int dfd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CSI_CHECK("ivr: datadir opens", dfd >= 0);
+
+    consensus_state_producer_receipt_test_set_identity(IVR_EPOCH_A_SOURCE_ID,
+                                                        true);
+    consensus_state_bundle_validate_deep_scan_calls_reset_for_test();
+    uint64_t calls;
+
+    /* (1) No receipt yet: full deep scan runs, and a receipt is stored. */
+    struct consensus_state_artifact_evidence *ev1 = NULL;
+    struct zcl_result r1 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev1);
+    CSI_CHECK("ivr: first open admits", r1.ok && ev1 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: first open ran the deep scan", calls == 1);
+    struct consensus_state_bundle_manifest m1, m2;
+    memset(&m1, 0, sizeof(m1));
+    CSI_CHECK("ivr: first open manifest matches the fixture",
+              ev1 != NULL &&
+              consensus_state_artifact_evidence_manifest_copy(ev1, &m1) &&
+              m1.height == f.height &&
+              memcmp(m1.block_hash, f.block_hash, 32) == 0);
+    if (ev1)
+        consensus_state_artifact_evidence_free(ev1);
+
+    /* (2) Exact same bundle bytes + exact same verifier epoch: the receipt
+     * is honored and the deep scan is NOT re-entered, but the returned
+     * manifest is still byte-identical to the fully-verified one. */
+    struct consensus_state_artifact_evidence *ev2 = NULL;
+    struct zcl_result r2 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev2);
+    CSI_CHECK("ivr: second open admits", r2.ok && ev2 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: second open honored the receipt (deep scan NOT "
+              "re-entered)", calls == 1);
+    memset(&m2, 0, sizeof(m2));
+    CSI_CHECK("ivr: receipt-honored open returns the identical manifest",
+              ev2 != NULL &&
+              consensus_state_artifact_evidence_manifest_copy(ev2, &m2) &&
+              memcmp(&m2, &m1, sizeof(m1)) == 0);
+    if (ev2)
+        consensus_state_artifact_evidence_free(ev2);
+
+    /* (3) A different verifying-binary build epoch is a different receipt
+     * key: NOT honored, deep scan runs again. */
+    consensus_state_producer_receipt_test_set_identity(IVR_EPOCH_B_SOURCE_ID,
+                                                        true);
+    struct consensus_state_artifact_evidence *ev3 = NULL;
+    struct zcl_result r3 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev3);
+    CSI_CHECK("ivr: different verifier epoch admits", r3.ok && ev3 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: different verifier epoch re-ran the deep scan",
+              calls == 2);
+    if (ev3)
+        consensus_state_artifact_evidence_free(ev3);
+
+    /* (4) Back to epoch A, but a DIFFERENT bundle file: the on-disk receipt
+     * (still keyed to `f`'s content from step 1/2) is NOT honored for
+     * `other`, and the deep scan runs again; `other`'s own receipt then
+     * overwrites the single-slot store. */
+    consensus_state_producer_receipt_test_set_identity(IVR_EPOCH_A_SOURCE_ID,
+                                                        true);
+    struct consensus_state_artifact_evidence *ev4 = NULL;
+    struct zcl_result r4 =
+        consensus_state_artifact_evidence_open(other.path, dfd, &ev4);
+    CSI_CHECK("ivr: different bundle admits", r4.ok && ev4 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: different bundle content re-ran the deep scan",
+              calls == 3);
+    if (ev4)
+        consensus_state_artifact_evidence_free(ev4);
+
+    /* (5) Re-opening the ORIGINAL bundle now finds `other`'s receipt in the
+     * single slot instead: a different bundle hash is NOT a match, so the
+     * deep scan correctly runs once more (never a false-positive honor). */
+    struct consensus_state_artifact_evidence *ev5 = NULL;
+    struct zcl_result r5 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev5);
+    CSI_CHECK("ivr: reopening original bundle after slot reuse admits",
+              r5.ok && ev5 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: reused-slot receipt was not mistakenly honored",
+              calls == 4);
+    if (ev5)
+        consensus_state_artifact_evidence_free(ev5);
+
+    /* (6) The receipt now belongs to `f` again; confirm it re-honors. */
+    struct consensus_state_artifact_evidence *ev6 = NULL;
+    struct zcl_result r6 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev6);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: receipt re-honored once the slot returns to f",
+              r6.ok && ev6 != NULL && calls == 4);
+    if (ev6)
+        consensus_state_artifact_evidence_free(ev6);
+
+    /* (7) A corrupt receipt store fails soft to a full verify, and a fresh
+     * valid receipt is written over it. */
+    if (dfd >= 0) {
+        int cfd = openat(dfd, CONSENSUS_STATE_INSTALL_VERIFY_RECEIPT_NAME,
+                         O_WRONLY | O_TRUNC | O_CLOEXEC);
+        CSI_CHECK("ivr: receipt corruption fixture opens", cfd >= 0);
+        if (cfd >= 0) {
+            uint8_t garbage[16];
+            memset(garbage, 0xAB, sizeof(garbage));
+            CSI_CHECK("ivr: receipt corruption fixture writes",
+                      write(cfd, garbage, sizeof(garbage)) ==
+                          (ssize_t)sizeof(garbage));
+            (void)close(cfd);
+        }
+    }
+    struct consensus_state_artifact_evidence *ev7 = NULL;
+    struct zcl_result r7 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev7);
+    CSI_CHECK("ivr: corrupt receipt store admits (fail-soft)",
+              r7.ok && ev7 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: corrupt receipt store fell back to a full verify",
+              calls == 5);
+    if (ev7)
+        consensus_state_artifact_evidence_free(ev7);
+
+    /* (8) The just-repaired receipt IS honored on the very next open. */
+    struct consensus_state_artifact_evidence *ev8 = NULL;
+    struct zcl_result r8 =
+        consensus_state_artifact_evidence_open(f.path, dfd, &ev8);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: repaired receipt is honored", r8.ok && ev8 != NULL &&
+                                                       calls == 5);
+    if (ev8)
+        consensus_state_artifact_evidence_free(ev8);
+
+    /* (9) No datadir capability (-1): always the full verify, receipt or
+     * not — admission must still succeed. */
+    struct consensus_state_artifact_evidence *ev9 = NULL;
+    struct zcl_result r9 =
+        consensus_state_artifact_evidence_open(f.path, -1, &ev9);
+    CSI_CHECK("ivr: no datadir capability admits", r9.ok && ev9 != NULL);
+    calls = consensus_state_bundle_validate_deep_scan_calls_for_test();
+    CSI_CHECK("ivr: no datadir capability never honors a receipt",
+              calls == 6);
+    if (ev9)
+        consensus_state_artifact_evidence_free(ev9);
+
+    consensus_state_producer_receipt_test_set_identity(NULL, false);
+    if (dfd >= 0)
+        (void)close(dfd);
+    fixture_free(&f);
+    fixture_free(&other);
+    return failures;
+}
+
 int test_consensus_state_snapshot_install(void)
 {
     printf("\n=== consensus_state_snapshot_install ===\n");
@@ -1546,7 +1734,7 @@ int test_consensus_state_snapshot_install(void)
     CSI_CHECK("generation B final bundle writes",write_bundle(&b,CSI_VALID));
     struct consensus_state_artifact_evidence *artifact = NULL;
     struct zcl_result artifact_opened =
-        consensus_state_artifact_evidence_open(b.path, &artifact);
+        consensus_state_artifact_evidence_open(b.path, -1, &artifact);
     CSI_CHECK("valid artifact creates opaque evidence",
               artifact_opened.ok && artifact != NULL);
     struct consensus_state_bundle_manifest admitted_manifest;
@@ -1586,14 +1774,13 @@ int test_consensus_state_snapshot_install(void)
     unlink(symlink_path);
     CSI_CHECK("bundle symlink fixture writes",
               symlink(b.path, symlink_path) == 0);
-    artifact_opened = consensus_state_artifact_evidence_open(
-        symlink_path, &artifact);
+    artifact_opened = consensus_state_artifact_evidence_open(symlink_path, -1, &artifact);
     CSI_CHECK("symlink artifact admission refuses",
               !artifact_opened.ok && artifact == NULL);
     unlink(symlink_path);
     CSI_CHECK("writable artifact fixture enables owner write",
               chmod(b.path, 0600) == 0);
-    artifact_opened = consensus_state_artifact_evidence_open(b.path, &artifact);
+    artifact_opened = consensus_state_artifact_evidence_open(b.path, -1, &artifact);
     CSI_CHECK("writable artifact admission refuses",
               !artifact_opened.ok && artifact == NULL);
     CSI_CHECK("artifact fixture returns immutable",
@@ -1609,7 +1796,7 @@ int test_consensus_state_snapshot_install(void)
     if (retained_fd < 0 || chmod(b.path, 0400) != 0)
         retained_ready = false;
     artifact_opened = retained_ready
-        ? consensus_state_artifact_evidence_open(b.path, &artifact)
+        ? consensus_state_artifact_evidence_open(b.path, -1, &artifact)
         : ZCL_ERR(-1, "retained writer fixture setup failed");
     CSI_CHECK("retained-writer fixture admits stable original",
               artifact_opened.ok && artifact != NULL);
@@ -1640,7 +1827,7 @@ int test_consensus_state_snapshot_install(void)
     CSI_CHECK("valid artifact restores after retained-writer test",
               write_bundle(&b, CSI_VALID));
 
-    artifact_opened = consensus_state_artifact_evidence_open(b.path, &artifact);
+    artifact_opened = consensus_state_artifact_evidence_open(b.path, -1, &artifact);
     CSI_CHECK("mutation fixture admits original artifact",
               artifact_opened.ok && artifact != NULL);
     uint8_t receipt_digest[32];
@@ -1679,7 +1866,7 @@ int test_consensus_state_snapshot_install(void)
 
     int candidate_dirfd=open(dir,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
     CSI_CHECK("candidate output directory capability opens",candidate_dirfd>=0);
-    artifact_opened=consensus_state_artifact_evidence_open(b.path,&artifact);
+    artifact_opened=consensus_state_artifact_evidence_open(b.path, -1, &artifact);
     CSI_CHECK("candidate source admits immutable complete artifact",
               artifact_opened.ok&&artifact!=NULL);
     uint8_t candidate_admission[32];
@@ -1882,7 +2069,7 @@ int test_consensus_state_snapshot_install(void)
                       CONSENSUS_INSTALL_VERIFIED_CONTAINED));
     CSI_CHECK("contained incomplete bundle preserves generation A",active_is(db,&a));
     int incomplete_dirfd=open(dir,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
-    artifact_opened=consensus_state_artifact_evidence_open(inc.path,&artifact);
+    artifact_opened=consensus_state_artifact_evidence_open(inc.path, -1, &artifact);
     CSI_CHECK("incomplete artifact can be admitted for contained inspection",
               artifact_opened.ok&&artifact!=NULL&&incomplete_dirfd>=0);
     struct consensus_state_candidate_result incomplete_candidate;
@@ -2023,7 +2210,7 @@ int test_consensus_state_snapshot_install(void)
                   coins_kv_count(pdb) == 1);
         struct consensus_state_artifact_evidence *ev = NULL;
         struct zcl_result evr =
-            consensus_state_artifact_evidence_open(b.path, &ev);
+            consensus_state_artifact_evidence_open(b.path, -1, &ev);
         struct consensus_state_publication_cas_inputs cin;
         memset(&cin, 0, sizeof(cin));
         bool cin_ok = evr.ok && ev &&
@@ -2096,7 +2283,7 @@ int test_consensus_state_snapshot_install(void)
         CSI_CHECK("activate: retained writer fixture opens before admission",
                   writer_ready);
         ev = NULL;
-        evr = consensus_state_artifact_evidence_open(b.path, &ev);
+        evr = consensus_state_artifact_evidence_open(b.path, -1, &ev);
         bool replacement_cin_ok = evr.ok && ev &&
             consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
             consensus_state_artifact_evidence_digest(
@@ -2149,7 +2336,7 @@ int test_consensus_state_snapshot_install(void)
         CSI_CHECK("activate: transient writer fixture opens before admission",
                   transient_writer_ready);
         ev = NULL;
-        evr = consensus_state_artifact_evidence_open(b.path, &ev);
+        evr = consensus_state_artifact_evidence_open(b.path, -1, &ev);
         bool transient_cin_ok = evr.ok && ev &&
             consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
             consensus_state_artifact_evidence_digest(
@@ -2199,7 +2386,7 @@ int test_consensus_state_snapshot_install(void)
         /* Restored bytes remain semantically valid, but the exact CAS receipt
          * is metadata-bound, so positive activation requires re-admission. */
         ev = NULL;
-        evr = consensus_state_artifact_evidence_open(b.path, &ev);
+        evr = consensus_state_artifact_evidence_open(b.path, -1, &ev);
         bool final_cin_ok = evr.ok && ev &&
             consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
             consensus_state_artifact_evidence_digest(
@@ -2425,7 +2612,7 @@ int test_consensus_state_snapshot_install(void)
             struct consensus_state_bundle_manifest rman;
             uint8_t rfile[32];
             struct zcl_result ro =
-                consensus_state_artifact_evidence_open(b.path, &rev);
+                consensus_state_artifact_evidence_open(b.path, -1, &rev);
             bool rgot = ro.ok && rev &&
                 consensus_state_artifact_evidence_manifest_copy(rev, &rman) &&
                 consensus_state_artifact_evidence_file_digest(rev, rfile);
@@ -2563,7 +2750,7 @@ int test_consensus_state_snapshot_install(void)
          * (iii-b) rewrite replaced the bundle inode, so the CAS descriptor
          * binding correctly demands a fresh exact ADMIT first. */
         ev = NULL;
-        evr = consensus_state_artifact_evidence_open(b.path, &ev);
+        evr = consensus_state_artifact_evidence_open(b.path, -1, &ev);
         bool auth_cin_ok = evr.ok && ev &&
             consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
             consensus_state_artifact_evidence_digest(
@@ -2664,7 +2851,7 @@ int test_consensus_state_snapshot_install(void)
 
         struct consensus_state_artifact_evidence *ccev = NULL;
         struct zcl_result ccevr =
-            consensus_state_artifact_evidence_open(b.path, &ccev);
+            consensus_state_artifact_evidence_open(b.path, -1, &ccev);
         struct consensus_state_publication_cas_inputs ccin;
         memset(&ccin, 0, sizeof(ccin));
         bool ccin_ok = ccevr.ok && ccev &&
@@ -2800,6 +2987,8 @@ int test_consensus_state_snapshot_install(void)
         progress_store_close();
         test_cleanup_tmpdir(cc_dir);
     }
+
+    failures += install_verify_receipt_tests(dir);
 
     fixture_free(&a); fixture_free(&b); fixture_free(&inc);
     if (db)

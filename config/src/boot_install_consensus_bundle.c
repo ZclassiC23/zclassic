@@ -258,7 +258,7 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     /* (2) Admit + strictly validate the immutable bundle. */
     struct consensus_state_artifact_evidence *artifact = NULL;
     struct zcl_result admitted =
-        consensus_state_artifact_evidence_open(bundle_path, &artifact);
+        consensus_state_artifact_evidence_open(bundle_path, dir_fd, &artifact);
     if (!admitted.ok)
         icb_refuse("bundle admission/validation failed: %s", admitted.message);
 

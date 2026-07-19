@@ -530,10 +530,17 @@ bool consensus_state_replay_verify_and_write_receipt(
         !datadir[0])
         return rr_fail(out, "NULL progress_db/bundle_path/datadir");
 
-    /* (1) Admit + strictly validate the immutable bundle read-only. */
+    /* (1) Admit + strictly validate the immutable bundle read-only. Best-
+     * effort directory capability for the install-verify receipt only; a
+     * failed open here just means every replay verify runs the full content
+     * scan (fail-soft, same as passing -1). */
+    int datadir_fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     struct consensus_state_artifact_evidence *evidence = NULL;
     struct zcl_result admitted =
-        consensus_state_artifact_evidence_open(bundle_path, &evidence);
+        consensus_state_artifact_evidence_open(bundle_path, datadir_fd,
+                                               &evidence);
+    if (datadir_fd >= 0)
+        (void)close(datadir_fd);
     if (!admitted.ok)
         return rr_fail(out, "bundle admission/validation failed: %s",
                        admitted.message);

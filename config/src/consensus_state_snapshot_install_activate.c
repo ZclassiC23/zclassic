@@ -845,7 +845,8 @@ bool consensus_state_snapshot_install_activate(
      *    supply, verifies every anchor tree->root, and the nullifier digest). */
     struct consensus_state_artifact_evidence *evidence = NULL;
     struct zcl_result admitted =
-        consensus_state_artifact_evidence_open(request->bundle_path, &evidence);
+        consensus_state_artifact_evidence_open(
+            request->bundle_path, request->datadir_fd, &evidence);
     if (!admitted.ok)
         return activate_fail(result, CONSENSUS_INSTALL_REFUSED,
                              "bundle admission failed: %s", admitted.message);

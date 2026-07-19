@@ -8,6 +8,7 @@
 #include "core/amount.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
+#include "core/utiltime.h"
 #include "crypto/sha3.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "script/script.h"
@@ -17,10 +18,65 @@
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
 #define VALIDATE_SUBSYS "consensus_bundle_validate"
+
+/* Content-verify progress heartbeat: at least one log line every 60s per
+ * stage, so a long deep scan is never silent. */
+#define VALIDATE_HEARTBEAT_INTERVAL_US (60 * 1000000LL)
+
+struct validate_heartbeat {
+    const char *stage;
+    int64_t started_us;
+    int64_t last_log_us;
+    uint64_t total;
+};
+
+static void heartbeat_begin(struct validate_heartbeat *hb, const char *stage,
+                            uint64_t total)
+{
+    hb->stage = stage;
+    hb->started_us = GetTimeMicros();
+    hb->last_log_us = hb->started_us;
+    hb->total = total;
+}
+
+static void heartbeat_tick(struct validate_heartbeat *hb, uint64_t processed)
+{
+    int64_t now = GetTimeMicros();
+    if (now - hb->last_log_us < VALIDATE_HEARTBEAT_INTERVAL_US)
+        return;
+    hb->last_log_us = now;
+    double elapsed_s = (double)(now - hb->started_us) / 1000000.0;
+    if (hb->total > 0)
+        LOG_INFO(VALIDATE_SUBSYS,
+                 "content verify progress: stage=%s rows=%llu/%llu "
+                 "(%.1f%%) elapsed=%.0fs",
+                 hb->stage, (unsigned long long)processed,
+                 (unsigned long long)hb->total,
+                 100.0 * (double)processed / (double)hb->total, elapsed_s);
+    else
+        LOG_INFO(VALIDATE_SUBSYS,
+                 "content verify progress: stage=%s rows=%llu elapsed=%.0fs",
+                 hb->stage, (unsigned long long)processed, elapsed_s);
+}
+
+#ifdef ZCL_TESTING
+static _Atomic uint64_t g_deep_scan_calls;
+
+uint64_t consensus_state_bundle_validate_deep_scan_calls_for_test(void)
+{
+    return atomic_load_explicit(&g_deep_scan_calls, memory_order_relaxed);
+}
+
+void consensus_state_bundle_validate_deep_scan_calls_reset_for_test(void)
+{
+    atomic_store_explicit(&g_deep_scan_calls, 0, memory_order_relaxed);
+}
+#endif
 
 static bool validation_fail(struct consensus_state_install_result *result,
                             enum consensus_state_install_status status,
@@ -583,8 +639,11 @@ static bool validate_coins(sqlite3 *db,
     uint8_t prior_txid[32] = {0};
     uint32_t prior_vout = 0;
     bool have_prior = false;
+    struct validate_heartbeat hb;
+    heartbeat_begin(&hb, "validate_coins", m->utxo_count);
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        heartbeat_tick(&hb, count);
         int txid_type = sqlite3_column_type(st, 0);
         int script_type = sqlite3_column_type(st, 3);
         const uint8_t *txid = txid_type == SQLITE_BLOB
@@ -652,8 +711,11 @@ static bool validate_anchors(sqlite3 *db,
     int prior_pool = -1;
     uint64_t count = 0;
     bool ok = true;
+    struct validate_heartbeat hb;
+    heartbeat_begin(&hb, "validate_anchors", m->anchor_count);
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        heartbeat_tick(&hb, count);
         int root_type = sqlite3_column_type(st, 1);
         int tree_type = sqlite3_column_type(st, 3);
         const uint8_t *root = root_type == SQLITE_BLOB
@@ -739,8 +801,11 @@ static bool validate_nullifiers(
     bool ok = true;
     uint8_t prior_nf[32] = {0};
     int prior_pool = -1;
+    struct validate_heartbeat hb;
+    heartbeat_begin(&hb, "validate_nullifiers", m->nullifier_count);
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        heartbeat_tick(&hb, count);
         int nf_type = sqlite3_column_type(st, 1);
         const uint8_t *nf = nf_type == SQLITE_BLOB
             ? sqlite3_column_blob(st, 1) : NULL;
@@ -773,15 +838,15 @@ static bool validate_nullifiers(
     return true;
 }
 
-bool consensus_state_bundle_validate(
+bool consensus_state_bundle_validate_ex(
     sqlite3 *db, struct consensus_state_bundle_manifest *manifest,
-    struct consensus_state_install_result *result)
+    struct consensus_state_install_result *result, bool skip_deep_scan)
 {
     if (!db || !manifest)
         return validation_fail(result, CONSENSUS_INSTALL_REFUSED,
                                "NULL db/manifest");
-    if (!integrity_check(db) || !canonical_schema(db, result) ||
-        !read_manifest(db, manifest, result))
+    if ((!skip_deep_scan && !integrity_check(db)) ||
+        !canonical_schema(db, result) || !read_manifest(db, manifest, result))
         return false; // raw-return-ok:logged-by-callee
     uint8_t computed[32];
     consensus_state_bundle_artifact_digest(manifest, computed);
@@ -789,9 +854,27 @@ bool consensus_state_bundle_validate(
         return validation_fail(result, CONSENSUS_INSTALL_REFUSED,
                                "artifact digest mismatch");
     struct consensus_state_source_receipt receipt;
-    return validate_source_receipt(db, manifest, &receipt, result) &&
-           validate_bundle_proof(db, manifest, &receipt, result) &&
-           validate_coins(db, manifest, result) &&
+    if (!validate_source_receipt(db, manifest, &receipt, result) ||
+        !validate_bundle_proof(db, manifest, &receipt, result))
+        return false; // raw-return-ok:logged-by-callee
+    if (skip_deep_scan) {
+        LOG_INFO(VALIDATE_SUBSYS,
+                 "deep content scan (coins/anchors/nullifiers, whole-file "
+                 "integrity_check) skipped: install-verify receipt honored "
+                 "for this exact bundle bytes + verifying binary");
+        return true;
+    }
+#ifdef ZCL_TESTING
+    atomic_fetch_add_explicit(&g_deep_scan_calls, 1, memory_order_relaxed);
+#endif
+    return validate_coins(db, manifest, result) &&
            validate_anchors(db, manifest, result) &&
            validate_nullifiers(db, manifest, result);
+}
+
+bool consensus_state_bundle_validate(
+    sqlite3 *db, struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_install_result *result)
+{
+    return consensus_state_bundle_validate_ex(db, manifest, result, false);
 }
