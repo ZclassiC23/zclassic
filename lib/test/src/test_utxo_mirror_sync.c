@@ -17,11 +17,13 @@
 
 #include "test/test_helpers.h"
 
+#include "coins/utxo_commitment.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "script/standard.h"
+#include "services/utxo_mirror_delta.h"
 #include "services/utxo_mirror_sync_service.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -356,6 +358,105 @@ int test_utxo_mirror_sync(void)
         UMS_CHECK("fallback: full rebuild returns full count (2)", w == 2);
         UMS_CHECK("fallback: mirror count == 2", db_utxo_count(&ndb) == 2);
         UMS_CHECK("fallback: spent 0x55 gone", !db_utxo_exists(&ndb, txid55, 0));
+    }
+
+    /* ── XOR CHECKPOINT — height-tracked live maintenance ────────────────
+     * The lane's actual root-cause fix: utxo_mirror_delta_apply and the
+     * wholesale rebuild above now stamp UTXO_COMMITMENT_HEIGHT_KEY at the
+     * SAME commit boundary that mutates the mirror, so the checkpoint
+     * tracks the live mirror instead of going stale between boots. Prove
+     * it against ground truth (utxo_commitment_compute_db over the actual
+     * `utxos` table) at every step, including the two failure classes a
+     * naive incremental XOR would get wrong: a coin created-and-spent
+     * inside the SAME still-open delta window, and a retried pass (mirror
+     * cursor persist failed after a prior commitment update landed). */
+    {
+        /* The wholesale rebuild (the fallback pass just above) always
+         * recomputes + stamps from scratch — the fast path must confirm
+         * it with ZERO further scan. */
+        struct utxo_commitment ground_truth;
+        utxo_commitment_compute_db(ndb.db, &ground_truth);
+        struct utxo_commitment computed;
+        bool refreshed = true;
+        UMS_CHECK("xor: boot_check fast path after wholesale rebuild",
+                  utxo_commitment_boot_check_and_refresh(ndb.db, 108,
+                      &computed, &refreshed) && !refreshed &&
+                  utxo_commitment_equal(&computed, &ground_truth));
+
+        /* ── Created-and-spent within the SAME delta window: 0x66 created
+         * AND spent at h=109. It must never touch the mirror table (already
+         * proven elsewhere) and must NOT be folded into the checkpoint
+         * either — folding an add that was never counted (or a remove for
+         * it) would corrupt the XOR accumulator. */
+        UMS_CHECK("xor: add+spend-in-window coin 0x66@109",
+                  ums_add_coin(pdb, 0x66, 9999, 109));
+        {
+            uint8_t txid66[32]; ums_txid(txid66, 0x66);
+            UMS_CHECK("xor: spend 0x66 same block", coins_kv_spend(pdb, txid66, 0));
+        }
+        UMS_CHECK("xor: write utxo_apply_delta[109] (spends 0x66@109)",
+                  ums_write_delta_row(pdb, 109, 0x66, 9999, 109));
+        UMS_CHECK("xor: advance frontier 109", ums_set_frontier(pdb, 109));
+        int64_t w109 = utxo_mirror_sync_run_once(&svc);
+        /* rows_changed counts the spent_blob entry PROCESSED (a harmless
+         * no-op DELETE — 0x66 was never live in the mirror), not net table
+         * mutations: 0 adds (0x66 wasn't live at the ADD-select's read time)
+         * + 1 delete-attempt = 1. */
+        UMS_CHECK("xor: h109 pass processes only the no-op delete (1 row)",
+                  w109 == 1);
+        UMS_CHECK("xor: mirror count unchanged by in-window create+spend",
+                  db_utxo_count(&ndb) == 2);
+
+        utxo_commitment_compute_db(ndb.db, &ground_truth);
+        UMS_CHECK("xor: checkpoint still matches ground truth after in-window "
+                  "create+spend",
+                  utxo_commitment_boot_check_and_refresh(ndb.db, 109,
+                      &computed, &refreshed) && !refreshed &&
+                  utxo_commitment_equal(&computed, &ground_truth));
+
+        /* ── Retry safety: call utxo_mirror_delta_apply directly (bypassing
+         * the service's cursor persist) TWICE over the SAME range — the
+         * exact shape of "commitment update committed, then the SEPARATE
+         * mirror-cursor persist failed, so the next pass re-runs the same
+         * range". A naive (cursor-gated, not checkpoint-height-gated)
+         * incremental fold would double-XOR the h=110 spend of 0x11 and
+         * corrupt the accumulator; the height-gated fold must not. */
+        UMS_CHECK("xor: add coin 0x77@110", ums_add_coin(pdb, 0x77, 4242, 110));
+        {
+            uint8_t txid11[32]; ums_txid(txid11, 0x11);
+            UMS_CHECK("xor: spend long-lived 0x11 at h=110",
+                      coins_kv_spend(pdb, txid11, 0));
+        }
+        UMS_CHECK("xor: write utxo_apply_delta[110] (spends 0x11, created h=100)",
+                  ums_write_delta_row(pdb, 110, 0x11, 1000, 100));
+        UMS_CHECK("xor: advance frontier 110", ums_set_frontier(pdb, 110));
+
+        int32_t applied1 = -1; int64_t rows1 = 0;
+        int rc1 = utxo_mirror_delta_apply(&ndb, 109, 110, 0, &applied1, &rows1);
+        UMS_CHECK("xor: retry pass 1 OK", rc1 == UTXO_MIRROR_DELTA_OK &&
+                  applied1 == 110);
+        /* Deliberately DO NOT persist the mirror cursor — simulate the
+         * cursor-persist failure and re-run the SAME (109,110] range. */
+        int32_t applied2 = -1; int64_t rows2 = 0;
+        int rc2 = utxo_mirror_delta_apply(&ndb, 109, 110, 0, &applied2, &rows2);
+        UMS_CHECK("xor: retry pass 2 (same range) OK", rc2 == UTXO_MIRROR_DELTA_OK &&
+                  applied2 == 110);
+
+        utxo_commitment_compute_db(ndb.db, &ground_truth);
+        UMS_CHECK("xor: checkpoint correct after a retried (double-applied) pass",
+                  utxo_commitment_boot_check_and_refresh(ndb.db, 110,
+                      &computed, &refreshed) && !refreshed &&
+                  utxo_commitment_equal(&computed, &ground_truth));
+        UMS_CHECK("xor: mirror count == 2 (0x22, 0x77) after retried pass",
+                  db_utxo_count(&ndb) == 2);
+        UMS_CHECK("xor: retried-pass long-lived spend (0x11) gone from mirror",
+                  !db_utxo_exists(&ndb,
+                      (const uint8_t[32]){[0]=0x11,[31]=0x9c}, 0));
+
+        /* Bring the durable mirror cursor back in sync so any later group
+         * sharing this datadir sees a consistent state. */
+        int64_t v110 = 110;
+        node_db_state_set(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &v110, sizeof(v110));
     }
 
     app_runtime_set_current(NULL);

@@ -6,6 +6,7 @@
 
 #include "platform/time_compat.h"
 #include "config/boot_blocktree_cleanup.h"
+#include "config/boot_flight_recorder.h"
 #include "config/bundle_exporter.h"
 #include "config/boot_cursor_state.h"
 #include "config/boot_datadir_lock.h"
@@ -335,12 +336,22 @@ static int64_t boot_clock_ms(void)
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* Emit an indented [boot] sub-phase marker (timing only) and return a fresh
- * clock reading so the caller can chain: t = boot_submark("x", t). */
+/* Emit an indented [boot] sub-phase marker + feed boot_flight_recorder;
+ * return a fresh clock reading so the caller can chain: t = boot_submark("x", t). */
 static int64_t boot_submark(const char *name, int64_t since)
 {
-    printf("[boot]   %-28s %lldms\n", name, (long long)(boot_clock_ms() - since));
+    int64_t ms = boot_clock_ms() - since;
+    printf("[boot]   %-28s %lldms\n", name, (long long)ms);
+    boot_flight_recorder_mark(name, ms);
     return boot_clock_ms();
+}
+
+/* Top-level [boot] phase marker + boot_flight_recorder feed (boot_submark, one indent level up). */
+static void boot_topmark(const char *name, int64_t since)
+{
+    int64_t ms = boot_clock_ms() - since;
+    printf("[boot] %-30s %lldms\n", name, (long long)ms);
+    boot_flight_recorder_mark(name, ms);
 }
 
 /* ── boot.c decomposition ──────────────────────────────────────────
@@ -1463,12 +1474,10 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_init_crypto_and_state(ctx, params))
         return false;
 
-    /* Timing only (no behavior change): emit the boot prologue
-     * (observability, chain/datadir select, postmortem, unclean-shutdown
-     * detect, disk/IBD guards, crypto+state init) as a named phase
-     * matching the existing [boot] <phase> Nms idiom. */
-    printf("[boot] %-30s %lldms\n", "prologue",
-           (long long)(boot_clock_ms() - t_boot_start));
+    /* Timing only: the boot prologue (observability, chain/datadir select,
+     * postmortem, unclean-shutdown detect, disk/IBD guards, crypto+state
+     * init) as a named phase. */
+    boot_topmark("prologue", t_boot_start);
 
     boot_stale_locks_preflight(ctx->datadir);
 
@@ -1509,8 +1518,7 @@ bool app_init(struct app_context *ctx)
         event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
                     ctx->datadir);
     }
-    printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
-           (long long)(boot_clock_ms() - t_phase));
+    boot_topmark("sqlite_open_migrate", t_phase);
 
     /* Initialize wallet. MUST run AFTER node.db is opened above
      * (node_db_sync_init → create_schema → g_node_db.open=true) and
@@ -1796,8 +1804,7 @@ bool app_init(struct app_context *ctx)
         printf("New wallet created.\n");
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
-    printf("[boot] %-30s %lldms\n", "wallet_load",
-           (long long)(boot_clock_ms() - t_phase));
+    boot_topmark("wallet_load", t_phase);
 
     /* WALLET_LOADED boundary: wallet_keys read + canary passed (STATE C) or a
      * keypool was generated (STATE A/B). See BOOT_INVARIANTS.md. */
@@ -2680,8 +2687,7 @@ bool app_init(struct app_context *ctx)
         boot_cursor_propagate_nchaintx(&g_state, &g_node_db);
     }
 
-    printf("[boot] %-30s %lldms\n", "block_index_load",
-           (long long)(boot_clock_ms() - t_phase));
+    boot_topmark("block_index_load", t_phase);
 
     /* Log block index memory usage */
     boot_block_index_memory_log_loaded(g_state.map_block_index.size,
@@ -2827,8 +2833,7 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    printf("[boot] %-30s %lldms\n", "utxo_import",
-           (long long)(boot_clock_ms() - t_phase));
+    boot_topmark("utxo_import", t_phase);
 
     /* Timing only (no behavior change): mark the start of the
      * block-index reconcile span — single-pass block-index scan,
@@ -3520,8 +3525,7 @@ bool app_init(struct app_context *ctx)
     }
 
     (void)boot_submark("blkidx.validate_recover", t_reconcile_sub);
-    printf("[boot] %-30s %lldms\n", "block_index_reconcile",
-           (long long)(boot_clock_ms() - t_reconcile_blockindex));
+    boot_topmark("block_index_reconcile", t_reconcile_blockindex);
 
     t_phase = boot_clock_ms();
     /* Wire the flat-file sapling checkpoint. Tells
@@ -3754,8 +3758,7 @@ sapling_tree_boot_check_done:
         ;
     }
 
-    printf("[boot] %-30s %lldms\n", "sapling_tree_load",
-           (long long)(boot_clock_ms() - t_phase));
+    boot_topmark("sapling_tree_load", t_phase);
 
     /* Timing only (no behavior change): mark the start of the
      * UTXO/chain reconcile span — clear-failed-above-tip, the
@@ -3807,8 +3810,7 @@ sapling_tree_boot_check_done:
             activation_clear_anchor(&g_activation_ctl, "tip_past_anchor");
         }
     }
-    printf("[boot] %-30s %lldms\n", "utxo_chain_reconcile",
-           (long long)(boot_clock_ms() - t_reconcile_utxochain));
+    boot_topmark("utxo_chain_reconcile", t_reconcile_utxochain);
 
     /* Reducer cursor/coins desync reconcile — runs AFTER coins_best is durable
      * (utxo_chain_reconcile above) and BEFORE the staged reducer Jobs init in
@@ -4335,8 +4337,8 @@ sapling_tree_boot_check_done:
         }
         printf("[boot] -mint-anchor: offline reducer stages initialized; "
                "skipping frontend/P2P/runtime services\n");
-        printf("[boot] %-30s %lldms\n", "total",
-               (long long)(boot_clock_ms() - t_boot_start));
+        boot_topmark("total", t_boot_start);
+        boot_flight_recorder_finish(&g_node_db);
         boot_stage_advance_to(BOOT_STAGE_READY);
         return true;
     }
@@ -4362,15 +4364,13 @@ sapling_tree_boot_check_done:
             "chain_height=%d", chain_h);
     }
 
-    printf("[boot] %-30s %lldms\n", "finalize_and_build",
-           (long long)(boot_clock_ms() - t_finalize_build));
+    boot_topmark("finalize_and_build", t_finalize_build);
 
     t_phase = boot_clock_ms();
     bool svc_ok = app_init_services(ctx, params, &g_svc);
-    printf("[boot] %-30s %lldms\n", "p2p_services_start",
-           (long long)(boot_clock_ms() - t_phase));
-    printf("[boot] %-30s %lldms\n", "total",
-           (long long)(boot_clock_ms() - t_boot_start));
+    boot_topmark("p2p_services_start", t_phase);
+    boot_topmark("total", t_boot_start);
+    boot_flight_recorder_finish(&g_node_db);
     /* Per-scanner O(delta) row counts, next to the timing (see util/boot_scan.h). */
     boot_scan_log_summary("boot-complete");
     if (svc_ok) {

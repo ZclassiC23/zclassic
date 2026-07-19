@@ -44,6 +44,15 @@
                  "last boot's integrity check + nbits-backfill counters",
                  "app/services/src/chain_restore_boot_snapshot.c",
                  DIAG_TEST_DEFAULT),
+    DIAG_PROJECTION("boot_timings", boot_flight_recorder_dump_state_json,
+                    "boot-phase flight recorder: most recently persisted "
+                    "boot's per-stage ms next to each stage's recorded "
+                    "median across the last "
+                    "BOOT_FLIGHT_RECORDER_MAX_BOOTS boots; a stage over "
+                    "max(5s,4x median) raises the named blocker "
+                    "boot.stage_regression (fail-loud, never fail-stop)",
+                    "config/src/boot_flight_recorder.c",
+                    "lib/test/src/test_boot_flight_recorder.c"),
     DIAG_RUNTIME("service_state", service_state_dump_state_json,
                  "canonical runtime operational mode "
                  "(boot/restore/reconcile/degraded_serving/syncing/"

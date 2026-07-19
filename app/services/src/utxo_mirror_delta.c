@@ -12,6 +12,7 @@
 // service surface of its own.
 #include "services/utxo_mirror_delta.h"
 
+#include "coins/utxo_commitment.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "script/script.h"    /* MAX_SCRIPT_SIZE */
@@ -131,9 +132,48 @@ static uint32_t rd_u32(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+static int64_t rd_i64(const uint8_t *p)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= (uint64_t)p[i] << (8 * i);
+    return (int64_t)v;
+}
+
+/* Fold one spent entry's ORIGINAL (txid, vout, value, creation_height) out of
+ * *uc — the SAME per-UTXO hash inputs utxo_commitment_add used when the coin
+ * entered the set (see coins/utxo_commitment.h). This is the retry-safe
+ * (idempotent-under-re-apply) gate; XOR is its own inverse, so folding an
+ * unmatched value in — either an add that was never counted, or a remove
+ * already folded by an earlier attempt — corrupts the accumulator instead of
+ * being a harmless no-op the way INSERT-OR-REPLACE/no-op-DELETE are for the
+ * mirror table. TWO independent conditions must BOTH hold, checked against
+ * `ch` (the checkpoint's OWN covering height, not the delta pass's `cursor` —
+ * see utxo_mirror_delta_apply for why they can differ on a retried pass):
+ *   1. creation_height <= ch — the coin actually EXISTED in the checkpointed
+ *      set (a coin created inside the still-open window (ch, upper] was never
+ *      added to *uc in the first place — created-and-spent-within-the-window
+ *      is a real case the mirror table also treats as a no-op delete).
+ *   2. spend_height > ch — THIS spend event has not already been folded into
+ *      *uc by an earlier attempt over an overlapping range (a retry replays
+ *      utxo_apply_delta rows already <= ch verbatim; without this check a
+ *      long-lived coin spent inside an already-committed sub-range would be
+ *      XOR-canceled a second time). */
+static void maybe_commitment_remove(struct utxo_commitment *uc, int32_t ch,
+                                    const uint8_t txid[32], uint32_t vout,
+                                    int64_t value, int32_t creation_height,
+                                    int32_t spend_height)
+{
+    if (!uc || creation_height > ch || spend_height <= ch)
+        return;
+    utxo_commitment_remove(uc, txid, vout, value, creation_height);
+}
+
 static bool mirror_apply_spent_blob(struct node_db *ndb, struct addr_set *touched,
                                     const uint8_t *blob, size_t len,
-                                    int64_t *rows_changed)
+                                    int64_t *rows_changed,
+                                    struct utxo_commitment *uc, int32_t ch,
+                                    int32_t spend_height)
 {
     size_t off = 0;
     while (off < len) {
@@ -141,6 +181,8 @@ static bool mirror_apply_spent_blob(struct node_db *ndb, struct addr_set *touche
             LOG_FAIL("utxo_mirror", "delta: spent_blob truncated header");
         const uint8_t *txid = blob + off;
         uint32_t vout = rd_u32(blob + off + 32);
+        int64_t value = rd_i64(blob + off + 32 + 4);
+        uint32_t coin_h = rd_u32(blob + off + 32 + 4 + 8);
         uint32_t slen = rd_u32(blob + off + 32 + 4 + 8 + 4 + 1);
         size_t entry = 32 + 4 + 8 + 4 + 1 + 4 + (size_t)slen;
         if (slen > MAX_SCRIPT_SIZE || len - off < entry)
@@ -158,6 +200,8 @@ static bool mirror_apply_spent_blob(struct node_db *ndb, struct addr_set *touche
             LOG_FAIL("utxo_mirror", "delta: touched-address set OOM (spent)");
         if (!db_utxo_delete(ndb, txid, vout))
             LOG_FAIL("utxo_mirror", "delta: spent delete failed vout=%u", vout);
+        maybe_commitment_remove(uc, ch, txid, vout, value, (int32_t)coin_h,
+                                spend_height);
         (*rows_changed)++;
         off += entry;
     }
@@ -221,6 +265,26 @@ int utxo_mirror_delta_apply(struct node_db *ndb,
         LOG_RETURN(UTXO_MIRROR_DELTA_ERROR, "utxo_mirror", "delta: node.db BEGIN failed");
     }
 
+    /* Height-tracked XOR checkpoint maintenance, atomic with this same
+     * transaction (see UTXO_COMMITMENT_HEIGHT_KEY / utxo_commitment_load_
+     * checkpoint_at_height). Trust it ONLY when its stamped `ch` is within
+     * [cursor, upper]: `ch == cursor` is the steady state; `ch > cursor` is a
+     * retry (a prior attempt's commitment update landed but the SEPARATE
+     * mirror-cursor persist afterward failed — see mirror_persist_cursor's
+     * caller, which intentionally leaves cursor unadvanced and re-runs the
+     * same range); `ch < cursor` means an untracked gap exists (an upgrade
+     * from a build that didn't maintain this stamp, or a resync via the
+     * plain, unstamped utxo_commitment_save_checkpoint) — do NOT attempt
+     * incremental math over an unknown gap, leave the checkpoint alone and
+     * let the boot-time O(n) safety net (utxo_commitment_boot_check_and_
+     * refresh) re-establish the stamp once. */
+    struct utxo_commitment uc;
+    utxo_commitment_init(&uc);
+    int32_t ch = -1;
+    bool track_commitment =
+        utxo_commitment_load_checkpoint_at_height(ndb->db, &uc, &ch) &&
+        ch >= cursor && ch <= upper;
+
     struct addr_set touched;
     memset(&touched, 0, sizeof(touched));
     int64_t rows_changed = 0;
@@ -252,14 +316,25 @@ int utxo_mirror_delta_apply(struct node_db *ndb,
                 LOG_WARN("utxo_mirror", "delta: oversize coin script — skipping");
                 continue;
             }
+            int64_t add_value = sqlite3_column_int64(sel, 2);
+            int add_h_raw = sqlite3_column_int(sel, 3);
             ok = mirror_upsert_coin(ndb, &touched,
                                     (const uint8_t *)txid,
                                     (uint32_t)sqlite3_column_int(sel, 1),
-                                    sqlite3_column_int64(sel, 2),
-                                    sqlite3_column_int(sel, 3),
+                                    add_value, add_h_raw,
                                     sqlite3_column_int(sel, 4) != 0,
                                     (const uint8_t *)sc, (size_t)slen);
-            if (ok) rows_changed++;
+            if (ok) {
+                rows_changed++;
+                /* creation_height > ch: skip a coin a prior (retried) attempt
+                 * already folded in — see the maybe_commitment_remove doc
+                 * comment for the matching REMOVE-side rationale. */
+                int32_t add_h = add_h_raw < 0 ? 0 : add_h_raw;
+                if (track_commitment && add_h > ch)
+                    utxo_commitment_add(&uc, (const uint8_t *)txid,
+                                        (uint32_t)sqlite3_column_int(sel, 1),
+                                        add_value, add_h);
+            }
         }
     }
     sqlite3_finalize(sel);
@@ -267,7 +342,7 @@ int utxo_mirror_delta_apply(struct node_db *ndb,
     /* 2. DELETE spends: outpoints in spent_blob for the range. */
     sqlite3_stmt *sp = NULL;
     if (ok && sqlite3_prepare_v2(rdb,
-            "SELECT spent_blob FROM utxo_apply_delta "
+            "SELECT height, spent_blob FROM utxo_apply_delta "
             "WHERE height > ? AND height <= ? ORDER BY height",
             -1, &sp, NULL) != SQLITE_OK) {
         ok = false;
@@ -278,11 +353,14 @@ int utxo_mirror_delta_apply(struct node_db *ndb,
             int rc = sqlite3_step(sp);  // raw-sql-ok:progress-kv-kernel-store
             if (rc == SQLITE_DONE) break;
             if (rc != SQLITE_ROW) { ok = false; break; }
-            const uint8_t *blob = sqlite3_column_blob(sp, 0);
-            int blen = sqlite3_column_bytes(sp, 0);
+            int32_t spend_h = (int32_t)sqlite3_column_int64(sp, 0);
+            const uint8_t *blob = sqlite3_column_blob(sp, 1);
+            int blen = sqlite3_column_bytes(sp, 1);
             if (blen > 0 && blob)
                 ok = mirror_apply_spent_blob(ndb, &touched, blob, (size_t)blen,
-                                             &rows_changed);
+                                             &rows_changed,
+                                             track_commitment ? &uc : NULL, ch,
+                                             spend_h);
         }
     }
     sqlite3_finalize(sp);
@@ -304,6 +382,20 @@ int utxo_mirror_delta_apply(struct node_db *ndb,
                    "delta: aborted (%d,%d] after %lld ops",
                    cursor, upper, (long long)rows_changed);
     }
+
+    /* Persist the advanced checkpoint in the SAME transaction as the mirror
+     * mutations above — "the same commit boundary that mutates coins" — so a
+     * clean shutdown right after this pass leaves the checkpoint accurate
+     * through `upper` with no boot-time O(n) refresh needed. Best-effort: a
+     * save failure is logged and non-fatal (this derived diagnostic aid is
+     * never a consensus input); it simply leaves the height stamp behind
+     * `upper`, which the boot-time / next successful pass's staleness check
+     * self-heals. */
+    if (track_commitment &&
+        !utxo_commitment_save_checkpoint_at_height(ndb->db, &uc, upper))
+        LOG_WARN("utxo_mirror",
+                 "delta: commitment checkpoint save failed at h=%d "
+                 "(mirror data correct; boot refresh self-heals)", upper);
 
     if (!node_db_commit(ndb)) {
         if (!node_db_rollback(ndb))

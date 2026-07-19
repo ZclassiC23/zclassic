@@ -33,6 +33,7 @@
 #include "storage/progress_store.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
+#include "services/utxo_mirror_sync_service.h"
 #include "chain/checkpoints.h"
 #include "chain/chain.h"
 #include "chain/pow.h"
@@ -468,32 +469,33 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
         sqlite3_finalize(cnt_stmt);
     }
 
-    /* C: XOR commitment verification */
+    /* C: XOR commitment verification — height-tracking aware. See
+     * utxo_commitment_boot_check_and_refresh: a no-op (no O(n) `utxos` scan)
+     * whenever the checkpoint's UTXO_COMMITMENT_HEIGHT_KEY stamp matches the
+     * mirror's own cursor, which is the case on a cleanly-shut-down node now
+     * that utxo_mirror_delta_apply maintains the stamp live at every mirror
+     * commit. The O(n) recompute-and-refresh below is the fallback for a
+     * genuinely-stale checkpoint (never tracked, or a torn shutdown). */
     if (ctx->ndb->open) {
-        struct utxo_commitment saved_uc, computed_uc;
-        memset(&saved_uc, 0, sizeof(saved_uc));
+        int64_t mirror_h64 = -1;
+        int32_t mirror_h = (node_db_state_get_int(ctx->ndb,
+                UTXO_MIRROR_SYNC_CURSOR_KEY, &mirror_h64) &&
+                mirror_h64 >= 0 && mirror_h64 <= INT32_MAX)
+            ? (int32_t)mirror_h64 : -1;
+        struct utxo_commitment computed_uc;
         memset(&computed_uc, 0, sizeof(computed_uc));
-        if (utxo_commitment_load_checkpoint(ctx->ndb->db, &saved_uc)) {
-            utxo_commitment_compute_db(ctx->ndb->db, &computed_uc);
-            if (!utxo_commitment_equal(&saved_uc, &computed_uc)) {
-                /* A mismatch here is a stale checkpoint, not corruption —
-                 * refresh it. */
-                printf("INFO: skipping XOR commitment corruption warning: "
-                       "stored commitment checkpoint is stale "
-                       "(saved_count=%llu computed_count=%llu)\n",
-                       (unsigned long long)saved_uc.count,
-                       (unsigned long long)computed_uc.count);
+        bool refreshed = false;
+        if (utxo_commitment_boot_check_and_refresh(ctx->ndb->db, mirror_h,
+                                                    &computed_uc, &refreshed)) {
+            if (refreshed) {
                 if (ctx->coins_tip)
                     ctx->coins_tip->commitment = computed_uc;
-                if (utxo_commitment_save_checkpoint(ctx->ndb->db,
-                                                    &computed_uc)) {
-                    printf("INFO: refreshed stale XOR commitment "
-                           "checkpoint (count=%llu)\n",
-                           (unsigned long long)computed_uc.count);
-                } else {
-                    LOG_WARN("chain", "failed to refresh stale " "XOR commitment checkpoint");
-                }
+                printf("INFO: refreshed stale XOR commitment "
+                       "checkpoint (count=%llu)\n",
+                       (unsigned long long)computed_uc.count);
             }
+        } else {
+            LOG_WARN("chain", "failed to refresh stale XOR commitment checkpoint");
         }
     }
 

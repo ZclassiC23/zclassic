@@ -104,16 +104,83 @@ bool utxo_commitment_save_checkpoint(struct sqlite3 *db,
 bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
                                       struct utxo_commitment *uc);
 
+/* node_state key holding the height through which the 'utxo_commitment'
+ * checkpoint above is ASSERTED accurate (every coin change up to and
+ * including this height has been folded in). Only utxo_commitment_save_
+ * checkpoint_at_height() sets it; the plain utxo_commitment_save_checkpoint()
+ * (used whenever the caller does NOT know an exact covering height) deletes
+ * it, so a stale/absent height key can never be paired with a blob it
+ * doesn't actually describe. A reader that needs to trust this height for
+ * incremental maintenance MUST go through
+ * utxo_commitment_load_checkpoint_at_height(), never read the key alone. */
+#define UTXO_COMMITMENT_HEIGHT_KEY "utxo_commitment_height"
+
+/* Save *uc and stamp UTXO_COMMITMENT_HEIGHT_KEY = height in node_state
+ * (two INSERT-OR-REPLACE statements, no implicit BEGIN/COMMIT — atomic only
+ * if the caller's own transaction wraps this call, matching the "same commit
+ * boundary that mutates coins" contract an incremental maintainer relies on).
+ * Use ONLY when `height` is an exact covering height: a full recompute over
+ * state known consistent through `height`, or an incremental fold that
+ * started from a trusted _at_height baseline and only advanced it to
+ * `height`. Returns false (nothing persisted) on NULL args; a mid-way SQLite
+ * failure is logged and non-fatal (matches utxo_commitment_save_checkpoint's
+ * existing best-effort contract — this is a derived diagnostic aid, never a
+ * consensus input). */
+bool utxo_commitment_save_checkpoint_at_height(struct sqlite3 *db,
+                                               const struct utxo_commitment *uc,
+                                               int32_t height);
+
+/* Load *uc AND *out_height together. Returns true only when BOTH the blob and
+ * a valid height stamp are present — a checkpoint saved via the plain
+ * utxo_commitment_save_checkpoint() (no height claim) reports false here even
+ * though the blob itself loads fine, because there is no trustworthy covering
+ * height to incrementally build on top of. *uc / *out_height are left
+ * untouched on false. */
+bool utxo_commitment_load_checkpoint_at_height(struct sqlite3 *db,
+                                               struct utxo_commitment *uc,
+                                               int32_t *out_height);
+
+/* Boot-time / recovery integrity check for the checkpoint against the live
+ * `utxos` mirror table, height-tracking aware. `mirror_height` is the height
+ * the caller's `utxos` table (on `db`) is currently persisted through
+ * (typically UTXO_MIRROR_SYNC_CURSOR_KEY read from the SAME db); pass a
+ * negative value if unknown.
+ *
+ * FAST PATH: if the stored checkpoint carries a covering-height stamp
+ * (utxo_commitment_load_checkpoint_at_height) equal to `mirror_height`, it is
+ * trusted BY CONSTRUCTION — utxo_mirror_delta_apply (and a wholesale mirror
+ * rebuild) maintain that stamp at the SAME commit boundary that mutates the
+ * mirror, so a matching stamp means every coin change through that height is
+ * already folded in. Returns true immediately, *out_computed (if non-NULL)
+ * gets the trusted checkpoint, *out_refreshed stays false — NO O(n) `utxos`
+ * scan runs. This is the common case on a cleanly-shut-down node.
+ *
+ * SLOW PATH (stamp missing or mismatched — never tracked, or a torn shutdown
+ * left it behind): the genuinely-stale safety net. Recomputes over `utxos`
+ * (utxo_commitment_compute_db, O(n)) and compares; a mismatch refreshes the
+ * stored checkpoint (height-stamped when `mirror_height` is known, else the
+ * plain unstamped form) and sets *out_refreshed. *out_computed gets the
+ * recomputed digest either way.
+ *
+ * Returns false only for a NULL `db`; a match, a refresh, and "nothing
+ * stored yet" are all reported true (nothing for the caller to escalate —
+ * corruption classification, if any, is the caller's job). */
+bool utxo_commitment_boot_check_and_refresh(struct sqlite3 *db,
+                                            int32_t mirror_height,
+                                            struct utxo_commitment *out_computed,
+                                            bool *out_refreshed);
+
 /* Re-derive the XOR checkpoint from the live `utxos` table (utxo_commitment_compute_db)
  * and OVERWRITE the stored node_state('utxo_commitment') checkpoint with it.
- *
- * The `utxos` table is a deterministic rebuild of the coins_kv authority and the
- * checkpoint is a derived cache written only out-of-band (boot/recovery) — never
- * co-committed by the live reducer mirror writer — so it runs frozen-stale during
- * forward sync. Adopting the recomputed digest is the same refresh the boot path
- * performs (reindex_epilogue / utxo_recovery). Logs the count on success / a
- * warning on save failure. Copies the recomputed digest to *out_optional when
- * non-NULL. Returns the save result. */
+ * Since the covering height is unknown to this call, it saves via the PLAIN
+ * (unstamped) form — which clears any UTXO_COMMITMENT_HEIGHT_KEY stamp a
+ * prior _at_height save left behind, so a later incremental-maintenance
+ * reader never trusts a height that doesn't describe this fresh blob. Prefer
+ * utxo_commitment_boot_check_and_refresh() at a known mirror height so the
+ * checkpoint stays live-trackable; this is for callers (reindex, corruption-
+ * audit resync) with no cheap height to assert. Logs the count on success /
+ * a warning on save failure. Copies the recomputed digest to *out_optional
+ * when non-NULL. Returns the save result. */
 bool utxo_commitment_resync_from_db(struct sqlite3 *db,
                                     struct utxo_commitment *out_optional);
 
