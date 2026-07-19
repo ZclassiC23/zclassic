@@ -475,6 +475,40 @@ static bool validate_anchors(sqlite3 *db,
                              const struct consensus_state_bundle_manifest *m,
                              struct consensus_state_install_result *r)
 {
+    /* Tip-frontier-only Pedersen: identify the per-pool MAX(height) anchor
+     * up front. Only those tip rows carry consensus-load-bearing tree contents
+     * (their frontier root is Pedersen-bound to the header-committed root);
+     * every other row gets the byte-integrity floor. Collapses the O(anchors x
+     * Pedersen-hash) full recompute to O(pools). See
+     * chainstate_legacy_reader.c:376-378 for the same trust boundary the bulk
+     * import path proved. */
+    int64_t tip_height[2] = {-1, -1};
+    {
+        sqlite3_stmt *tq = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT pool,MAX(height) FROM anchors GROUP BY pool",
+                -1, &tq, NULL) != SQLITE_OK)
+            return validation_fail(r, CONSENSUS_INSTALL_REFUSED,
+                                   "bundle anchors tip pre-query failed");
+        bool tq_ok = true;
+        int trc;
+        while ((trc = sqlite3_step(tq)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+            int64_t pool = -1, h = -1;
+            if (!copy_int64_exact(tq, 0, &pool) ||
+                !copy_int64_exact(tq, 1, &h) || (pool != 0 && pool != 1)) {
+                tq_ok = false;
+                break;
+            }
+            tip_height[pool] = h;
+        }
+        if (trc != SQLITE_DONE)
+            tq_ok = false;
+        sqlite3_finalize(tq);
+        if (!tq_ok)
+            return validation_fail(r, CONSENSUS_INSTALL_REFUSED,
+                                   "bundle anchors tip pre-query malformed");
+    }
+
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT pool,anchor,height,tree "
@@ -513,6 +547,7 @@ static bool validate_anchors(sqlite3 *db,
             ok = false;
             break;
         }
+        int pool_index = (int)pool;
         struct incremental_merkle_tree tree;
         if (pool == ANCHOR_POOL_SPROUT)
             sprout_tree_init(&tree);
@@ -520,19 +555,28 @@ static bool validate_anchors(sqlite3 *db,
             sapling_tree_init(&tree);
         struct byte_stream stream;
         stream_init_from_data(&stream, tree_blob, (size_t)tree_len);
-        struct uint256 computed;
-        bool parsed = incremental_tree_deserialize(&tree, &stream) &&
-                      stream_remaining(&stream) == 0;
-        if (parsed)
-            incremental_tree_root(&tree, &computed);
-        if (!parsed || memcmp(computed.data, root, 32) != 0) {
+        /* Byte-integrity floor for EVERY row: a torn/truncated/garbled tree or
+         * trailing bytes are refused regardless of the row's position. */
+        if (!incremental_tree_deserialize(&tree, &stream) ||
+            stream_remaining(&stream) != 0) {
             ok = false;
             break;
+        }
+        /* Tip-frontier Pedersen: recompute the root and bind it to the stored
+         * key ONLY for the per-pool MAX(height) anchor — the one row whose tree
+         * contents are consensus-load-bearing. Historical rows delegate
+         * root/key agreement to the whole-file digest + this tip bind. */
+        if (height == tip_height[pool_index]) {
+            struct uint256 computed;
+            incremental_tree_root(&tree, &computed);
+            if (memcmp(computed.data, root, 32) != 0) {
+                ok = false;
+                break;
+            }
         }
         consensus_state_bundle_anchor_digest_row(
             &ctx, (uint8_t)pool, root, (uint64_t)height, tree_blob,
             (uint32_t)tree_len);
-        int pool_index = (int)pool;
         have_pool[pool_index] = true;
         if (height == frontier_height[pool_index]) {
             ok = false;

@@ -412,6 +412,43 @@ static bool candidate_coins(
 bool consensus_state_snapshot_destination_anchors_valid(
     sqlite3 *db, const struct consensus_state_bundle_manifest *m)
 {
+    /* Tip-frontier-only Pedersen: pre-identify the per-pool MAX(height) anchor
+     * so the full O(anchors x Pedersen-hash) recompute collapses to O(pools).
+     * Only the tip rows carry consensus-load-bearing tree contents; historical
+     * rows get the byte-integrity floor. Same boundary as the bulk import path
+     * (chainstate_legacy_reader.c:376-378) and the source-bundle validator. */
+    int64_t tip_height[2] = {-1, -1};
+    {
+        sqlite3_stmt *tq = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT pool,MAX(height) FROM ("
+                "SELECT 0 AS pool,height FROM sprout_anchors UNION ALL "
+                "SELECT 1 AS pool,height FROM sapling_anchors) GROUP BY pool",
+                -1, &tq, NULL) != SQLITE_OK)
+            return false;
+        bool tq_ok = true;
+        int trc;
+        while ((trc = sqlite3_step(tq)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+            if (sqlite3_column_type(tq, 0) != SQLITE_INTEGER ||
+                sqlite3_column_type(tq, 1) != SQLITE_INTEGER) {
+                tq_ok = false;
+                break;
+            }
+            int pool = sqlite3_column_int(tq, 0);
+            int64_t h = sqlite3_column_int64(tq, 1);
+            if (pool != 0 && pool != 1) {
+                tq_ok = false;
+                break;
+            }
+            tip_height[pool] = h;
+        }
+        if (trc != SQLITE_DONE)
+            tq_ok = false;
+        sqlite3_finalize(tq);
+        if (!tq_ok)
+            return false;
+    }
+
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT pool,anchor,height,tree FROM ("
@@ -455,14 +492,23 @@ bool consensus_state_snapshot_destination_anchors_valid(
             sapling_tree_init(&tree);
         struct byte_stream stream;
         stream_init_from_data(&stream, tree_blob, (size_t)tree_size);
-        struct uint256 computed;
-        bool parsed = incremental_tree_deserialize(&tree, &stream) &&
-                      stream_remaining(&stream) == 0;
-        if (parsed)
-            incremental_tree_root(&tree, &computed);
-        if (!parsed || memcmp(computed.data, root, 32) != 0) {
+        /* Byte-integrity floor for EVERY row (torn/truncated/garbled/trailing
+         * bytes are refused regardless of position). */
+        if (!incremental_tree_deserialize(&tree, &stream) ||
+            stream_remaining(&stream) != 0) {
             ok = false;
             break;
+        }
+        /* Tip-frontier Pedersen: recompute + bind the stored key ONLY for the
+         * per-pool MAX(height) anchor. Historical rows delegate root/key
+         * agreement to the whole-file digest + this tip bind. */
+        if (height == tip_height[pool]) {
+            struct uint256 computed;
+            incremental_tree_root(&tree, &computed);
+            if (memcmp(computed.data, root, 32) != 0) {
+                ok = false;
+                break;
+            }
         }
         consensus_state_bundle_anchor_digest_row(
             &context, (uint8_t)pool, root, (uint64_t)height, tree_blob,

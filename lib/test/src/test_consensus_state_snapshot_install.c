@@ -171,6 +171,12 @@ enum csi_fault {
     CSI_REAL_ANCHOR_HEIGHT, CSI_REAL_NF_HEIGHT,
     CSI_EXTRA_SCHEMA_OBJECT, CSI_EXTRA_SCHEMA_COLUMN, CSI_EMPTY_UTXO,
     CSI_DUPLICATE_NONFRONTIER_ANCHOR_HEIGHT,
+    /* D1 tip-frontier-only anchor verification: a multi-height sprout pool with
+     * a genuine non-tip row, then corruptions that exercise each layer of the
+     * floor. */
+    CSI_MULTIHEIGHT_VALID,
+    CSI_CORRUPT_NONTIP_ANCHOR_TREE,
+    CSI_CORRUPT_TIP_ANCHOR_TREE,
 };
 
 static bool bundle_codec_kat(void)
@@ -524,6 +530,17 @@ static void fixture_duplicate_nonfrontier_anchor_height(struct csi_fixture *f)
     f->anchors[sprout[2]].height = f->height - 1;
 }
 
+/* Give the sprout pool two DISTINCT heights so pool 0 owns a genuine non-tip
+ * row (anchors[0] at h-1) and a tip row (anchors[2] at h); sapling stays a
+ * single tip row (anchors[1] at h). anchors[3] stays dormant. Both sprout
+ * trees are already valid, serialized, and root-distinct from fixture_init. */
+static void fixture_multiheight_sprout(struct csi_fixture *f)
+{
+    f->anchor_count = 3;
+    f->anchors[0].height = f->height - 1;   /* non-tip sprout */
+    f->anchors[2].height = f->height;       /* tip sprout      */
+}
+
 static bool exec_ok(sqlite3 *db, const char *sql)
 {
     char *err = NULL;
@@ -539,6 +556,10 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         f->coin_count = 0;
     if (fault == CSI_DUPLICATE_NONFRONTIER_ANCHOR_HEIGHT)
         fixture_duplicate_nonfrontier_anchor_height(f);
+    if (fault == CSI_MULTIHEIGHT_VALID ||
+        fault == CSI_CORRUPT_NONTIP_ANCHOR_TREE ||
+        fault == CSI_CORRUPT_TIP_ANCHOR_TREE)
+        fixture_multiheight_sprout(f);
     fixture_component_digests(f);
     if (fault == CSI_WRONG_UTXO_ROOT) f->utxo_root[0] ^= 0xff;
     if (fault == CSI_WRONG_SUPPLY) f->supply++;
@@ -547,6 +568,30 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
     if (fault == CSI_BAD_TREE_ROOT) {
         f->anchors[0].root[0] ^= 1;
         fixture_component_digests(f); /* digest matches the bad declared root */
+    }
+    if (fault == CSI_CORRUPT_NONTIP_ANCHOR_TREE) {
+        /* Trailing garbage on the NON-tip sprout row (anchors[0], height h-1):
+         * a well-formed tree followed by a stray byte, so deserialize succeeds
+         * but stream_remaining() != 0. The byte-integrity floor must refuse it
+         * even though the tip-frontier-only restructure skips the Pedersen
+         * recompute for non-tip rows. Recompute digests so anchor_digest
+         * matches the corrupted bytes — isolating the byte floor as the SOLE
+         * check that fires (not the whole-file/anchor digest). */
+        stream_write_u8(&f->anchors[0].blob, 0xAB);
+        fixture_component_digests(f);
+    }
+    if (fault == CSI_CORRUPT_TIP_ANCHOR_TREE) {
+        /* Point the TIP sprout row (anchors[2], height h) at a DIFFERENT valid
+         * tree (anchors[0]'s serialized bytes) while leaving its stored key
+         * (anchors[2].root) intact. The bytes deserialize cleanly and leave no
+         * remainder, so the byte floor passes; they Pedersen-hash to
+         * anchors[0].root != the stored key, so ONLY the tip Pedersen recompute
+         * can catch it. Recompute digests so anchor_digest matches, isolating
+         * the tip binding as the sole check that fires. */
+        memcpy(f->anchors[2].blob.data, f->anchors[0].blob.data,
+               f->anchors[0].blob.size);
+        f->anchors[2].blob.size = f->anchors[0].blob.size;
+        fixture_component_digests(f);
     }
     if (fault == CSI_BAD_COMPLETE_CURSOR) f->sprout_cursor = 1;
     if (fault == CSI_ZERO_PROOF) memset(f->proof, 0, 32);
@@ -1717,7 +1762,8 @@ int test_consensus_state_snapshot_install(void)
         CSI_REAL_ANCHOR_HEIGHT,CSI_REAL_NF_HEIGHT,
         CSI_EXTRA_SCHEMA_OBJECT,
         CSI_EXTRA_SCHEMA_COLUMN,CSI_EMPTY_UTXO,
-        CSI_DUPLICATE_NONFRONTIER_ANCHOR_HEIGHT};
+        CSI_DUPLICATE_NONFRONTIER_ANCHOR_HEIGHT,
+        CSI_CORRUPT_NONTIP_ANCHOR_TREE,CSI_CORRUPT_TIP_ANCHOR_TREE};
     for(size_t i=0;i<sizeof(faults)/sizeof(faults[0]);i++) {
         CSI_CHECK("malformed bundle writes",write_bundle(&b,faults[i]));
         CSI_CHECK("malformed bundle refused",install(db,&b,CONSENSUS_INSTALL_FAIL_NONE,
@@ -1727,6 +1773,35 @@ int test_consensus_state_snapshot_install(void)
         fixture_free(&b);
         CSI_CHECK("candidate fixture reinitialized",fixture_init(&b,dir,"b",0x80,60,true));
     }
+
+    /* D1 tip-frontier-only anchor verification — explicit, self-documenting
+     * coverage of exactly what each layer catches:
+     *   - byte-integrity floor (every row): truncation / garbage / trailing
+     *     bytes. Proven by CSI_CORRUPT_NONTIP_ANCHOR_TREE (a well-formed tree +
+     *     stray byte on a genuine NON-tip row is refused even though non-tip
+     *     rows skip the Pedersen recompute).
+     *   - tip Pedersen bind (per-pool MAX(height) row only): stored-key vs
+     *     recomputed-root agreement. Proven by CSI_CORRUPT_TIP_ANCHOR_TREE (a
+     *     valid tree whose root != the stored key is caught only because the
+     *     row is the pool tip). A wrong-key WELL-FORMED tree on a NON-tip row
+     *     is by design NOT recomputed here — it is delegated to the whole-file
+     *     digest + this tip bind (the anchor_digest, checkpoint-bound, still
+     *     commits every row's exact key+tree bytes).
+     * A valid multi-height bundle (genuine non-tip row present) must still be
+     * ADMITTED, proving the restructure did not start rejecting historical
+     * rows — so the refusals above fire on the corruption, not the shape. */
+    CSI_CHECK("D1: valid multiheight-anchor bundle writes",
+              write_bundle(&b, CSI_MULTIHEIGHT_VALID));
+    struct consensus_state_artifact_evidence *d1_ev = NULL;
+    struct zcl_result d1_open =
+        consensus_state_artifact_evidence_open(b.path, -1, &d1_ev);
+    CSI_CHECK("D1: valid multiheight bundle admitted (non-tip rows accepted, "
+              "tip Pedersen verified)", d1_open.ok && d1_ev != NULL);
+    if (d1_ev)
+        consensus_state_artifact_evidence_free(d1_ev);
+    fixture_free(&b);
+    CSI_CHECK("D1: fixture reinit after positive control",
+              fixture_init(&b,dir,"b",0x80,60,true));
 
     /* Empty scripts are consensus-valid.  Keep one as a true zero-length
      * SQLite BLOB through admission, candidate copy, and activation. */

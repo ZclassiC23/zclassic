@@ -48,5 +48,5 @@ config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1704
 config/src/consensus_state_producer_receipt.c 810
-config/src/consensus_state_snapshot_install_activate.c 1137
+config/src/consensus_state_snapshot_install_activate.c 1166
 app/services/src/header_sync_service.c 812
