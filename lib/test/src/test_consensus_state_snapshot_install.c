@@ -1783,6 +1783,186 @@ static int install_verify_receipt_tests(const char *root)
     return failures;
 }
 
+/* Build a rom_state_checkpoint that reproduces fixture f's complete state at
+ * f->height (transparent coins + Sprout/Sapling anchor history + both frontier
+ * roots + nullifier history). rom_state_root is set nonzero so the placeholder
+ * guard treats it as a baked keystone (validate_rom_keystone_binding never
+ * re-derives rom_state_root — the manifest carries no such field). */
+static void rom_keystone_from_fixture(const struct csi_fixture *f,
+                                      struct rom_state_checkpoint *rom)
+{
+    memset(rom, 0, sizeof(*rom));
+    rom->height = f->height;
+    memcpy(rom->block_hash, f->block_hash, 32);
+    memcpy(rom->utxo_root, f->utxo_root, 32);
+    rom->utxo_count = f->coin_count;
+    rom->total_supply = f->supply;
+    memcpy(rom->anchor_digest, f->anchor_digest, 32);
+    rom->anchor_count = f->anchor_count;
+    memcpy(rom->sprout_frontier_root, f->frontier_root[ANCHOR_POOL_SPROUT], 32);
+    rom->sprout_frontier_height = f->frontier_height[ANCHOR_POOL_SPROUT];
+    memcpy(rom->sapling_frontier_root, f->frontier_root[ANCHOR_POOL_SAPLING], 32);
+    rom->sapling_frontier_height = f->frontier_height[ANCHOR_POOL_SAPLING];
+    memcpy(rom->nullifier_digest, f->nf_digest, 32);
+    rom->nullifier_count = 2;
+    memset(rom->rom_state_root, 0x5a, 32); /* nonzero: a baked (non-placeholder) keystone */
+}
+
+/* Validate the on-disk bundle file directly (its own SQLite descriptor). Returns
+ * the validation verdict; on refusal, out_status carries the named status. */
+static bool validate_bundle_file(const char *path,
+                                 enum consensus_state_install_status *out_status)
+{
+    sqlite3 *bdb = NULL;
+    if (sqlite3_open_v2(path, &bdb, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (bdb) sqlite3_close(bdb);
+        if (out_status) *out_status = CONSENSUS_INSTALL_REFUSED;
+        return false;
+    }
+    struct consensus_state_bundle_manifest m;
+    memset(&m, 0, sizeof(m));
+    struct consensus_state_install_result res;
+    memset(&res, 0, sizeof(res));
+    bool ok = consensus_state_bundle_validate(bdb, &m, &res);
+    if (out_status) *out_status = res.status;
+    sqlite3_close(bdb);
+    return ok;
+}
+
+/* Shielded-ROM keystone binding (validate_rom_keystone_binding in
+ * consensus_state_bundle_validate.c): a bundle AT the compiled checkpoint height
+ * must reproduce the compiled keystone's transparent AND shielded digests, else
+ * it is refused loudly. This exercises the binding against a scaled-down fixture
+ * checkpoint installed via the override seam — a MATCHING keystone admits the
+ * bundle through validation; every single-field mismatch refuses; an unbaked
+ * (placeholder) keystone refuses; and a keystone at any OTHER height leaves the
+ * bundle untouched (no false refusal off the checkpoint height). */
+static int rom_keystone_binding_tests(const char *dir)
+{
+    int failures = 0;
+    /* Seed must keep coins[0].txid < coins[1].txid (txid byte0 = seed vs
+     * seed+0x40) so the fixture's array-order utxo_root matches validate_coins'
+     * ORDER BY txid,vout recompute — i.e. seed <= 0xBF (0x30 is well clear). */
+    struct csi_fixture k;
+    if (!fixture_init(&k, dir, "keystone", 0x30, 120, true)) {
+        CSI_CHECK("keystone: fixture builds", false);
+        return failures;
+    }
+    CSI_CHECK("keystone: valid bundle writes", write_bundle(&k, CSI_VALID));
+
+    enum consensus_state_install_status status;
+
+    /* Baseline: with NO override, get_rom_state_checkpoint() is the compiled
+     * production keystone (height 3056758). The fixture bundle is at height 120,
+     * so the keystone binding does not apply and validation admits. Proves the
+     * new binding is inert off the checkpoint height. */
+    CSI_CHECK("keystone: bundle off the checkpoint height validates (binding inert)",
+              validate_bundle_file(k.path, &status));
+
+    struct rom_state_checkpoint rom;
+    rom_keystone_from_fixture(&k, &rom);
+
+    /* POSITIVE: an override whose complete state matches the bundle admits. */
+    checkpoints_set_rom_state_override_for_test(&rom);
+    CSI_CHECK("keystone: matching complete-state keystone admits the bundle",
+              validate_bundle_file(k.path, &status));
+
+    /* NEGATIVE (shielded): each single-field mismatch refuses loudly. */
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.anchor_digest[0] ^= 0xff;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong anchor_digest refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.nullifier_digest[0] ^= 0xff;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong nullifier_digest refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.sprout_frontier_root[0] ^= 0xff;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong sprout_frontier_root refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.sapling_frontier_root[0] ^= 0xff;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong sapling_frontier_root refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.sapling_frontier_height ^= 0x1;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong sapling_frontier_height refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.anchor_count += 1;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong anchor_count refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.nullifier_count += 1;
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong nullifier_count refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+
+    /* NEGATIVE (transparent): the keystone also re-binds the transparent block
+     * anchor at the checkpoint height. */
+    {
+        struct rom_state_checkpoint bad = rom;
+        bad.utxo_root[0] ^= 0xff;
+        bad.rom_state_root[0] = 0x11; /* keep nonzero: still a baked keystone */
+        checkpoints_set_rom_state_override_for_test(&bad);
+        CSI_CHECK("keystone: wrong utxo_root refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+
+    /* NEGATIVE (placeholder): an unbaked keystone (zero shielded fold) at the
+     * checkpoint height refuses rather than admit unbound state. */
+    {
+        struct rom_state_checkpoint ph = rom;
+        memset(ph.anchor_digest, 0, 32);
+        checkpoints_set_rom_state_override_for_test(&ph);
+        CSI_CHECK("keystone: placeholder (unbaked) keystone refuses (REFUSED)",
+                  !validate_bundle_file(k.path, &status) &&
+                  status == CONSENSUS_INSTALL_REFUSED);
+    }
+
+    /* HEIGHT GUARD: a keystone at a DIFFERENT height leaves the bundle untouched
+     * — proves the binding never false-refuses a bundle off the checkpoint. */
+    {
+        struct rom_state_checkpoint other = rom;
+        other.height = k.height + 1;
+        checkpoints_set_rom_state_override_for_test(&other);
+        CSI_CHECK("keystone: keystone at a different height does not bind (admits)",
+                  validate_bundle_file(k.path, &status));
+    }
+
+    checkpoints_reset_rom_state_override_for_test();
+    fixture_free(&k);
+    return failures;
+}
+
 int test_consensus_state_snapshot_install(void)
 {
     printf("\n=== consensus_state_snapshot_install ===\n");
@@ -3144,6 +3324,7 @@ int test_consensus_state_snapshot_install(void)
     }
 
     failures += install_verify_receipt_tests(dir);
+    failures += rom_keystone_binding_tests(dir);
 
     fixture_free(&a); fixture_free(&b); fixture_free(&inc);
     if (db)

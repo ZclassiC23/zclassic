@@ -5,6 +5,7 @@
 #include "consensus_state_bundle_validate_schema.h"
 #include "consensus_state_sqlite_text.h"
 
+#include "chain/checkpoints.h"   /* get_rom_state_checkpoint — the shielded keystone */
 #include "coins/utxo_commitment.h"
 #include "core/amount.h"
 #include "core/serialize.h"
@@ -661,6 +662,92 @@ static bool validate_nullifiers(
     return true;
 }
 
+/* A compiled ROM keystone with any all-zero shielded field is unbaked (a
+ * placeholder) and is not a trust root — a dev build that has not yet baked the
+ * shielded fold must REFUSE at the checkpoint height, never admit unbound state. */
+static bool rom_keystone_is_placeholder(const struct rom_state_checkpoint *rom)
+{
+    return !digest_nonzero(rom->anchor_digest) ||
+           !digest_nonzero(rom->nullifier_digest) ||
+           !digest_nonzero(rom->sprout_frontier_root) ||
+           !digest_nonzero(rom->sapling_frontier_root) ||
+           !digest_nonzero(rom->utxo_root) ||
+           !digest_nonzero(rom->rom_state_root);
+}
+
+/* Shielded-ROM keystone binding — the complete-state extension of the
+ * transparent SHA3 UTXO checkpoint. ZClassic headers commit neither the UTXO set
+ * nor the Sapling/Sprout anchor+nullifier state, so a bundle installed AT the
+ * compiled checkpoint height must reproduce the compiled keystone's transparent
+ * AND shielded digests byte-for-byte. The manifest digests are validated against
+ * the bundle's own rows by validate_anchors/validate_nullifiers (or honored via
+ * an install-verify receipt for these exact bytes), so binding them to the
+ * compiled constant transitively binds the installed shielded state to the
+ * sovereign keystone. LOCAL trust anchoring only: this tightens what THIS binary
+ * accepts as an install source — no block/tx/header validity rule changes, and a
+ * bundle at any OTHER height is untouched. Fires only at the exact checkpoint
+ * height; same refusal shape as the other validators (loud CONSENSUS_INSTALL_REFUSED). */
+static bool validate_rom_keystone_binding(
+    const struct consensus_state_bundle_manifest *m,
+    struct consensus_state_install_result *r)
+{
+    const struct rom_state_checkpoint *rom = get_rom_state_checkpoint();
+    if (!rom || m->height != rom->height)
+        return true; /* not the checkpoint-height bundle: nothing to bind */
+
+    if (rom_keystone_is_placeholder(rom))
+        return validation_fail(
+            r, CONSENSUS_INSTALL_REFUSED,
+            "REFUSED: bundle sits at the compiled checkpoint height %d but the "
+            "compiled ROM shielded keystone is a placeholder (unbaked shielded "
+            "fold) — refusing to admit checkpoint-height state that cannot be "
+            "bound to a sovereign shielded commitment",
+            rom->height);
+
+    /* Transparent block anchor (same bytes the SHA3 checkpoint carries). */
+    if (memcmp(m->block_hash, rom->block_hash, 32) != 0 ||
+        memcmp(m->utxo_root, rom->utxo_root, 32) != 0 ||
+        m->utxo_count != rom->utxo_count ||
+        m->total_supply != rom->total_supply)
+        return validation_fail(
+            r, CONSENSUS_INSTALL_REFUSED,
+            "REFUSED: bundle at checkpoint height %d does not reproduce the "
+            "compiled transparent keystone (block_hash/utxo_root/count/supply)",
+            rom->height);
+
+    /* Sprout+Sapling anchor history + both commitment-tree frontier roots. */
+    if (memcmp(m->anchor_digest, rom->anchor_digest, 32) != 0 ||
+        m->anchor_count != rom->anchor_count ||
+        memcmp(m->sprout_frontier_root, rom->sprout_frontier_root, 32) != 0 ||
+        m->sprout_frontier_height != rom->sprout_frontier_height ||
+        memcmp(m->sapling_frontier_root, rom->sapling_frontier_root, 32) != 0 ||
+        m->sapling_frontier_height != rom->sapling_frontier_height)
+        return validation_fail(
+            r, CONSENSUS_INSTALL_REFUSED,
+            "REFUSED: bundle at checkpoint height %d does not reproduce the "
+            "compiled shielded anchor keystone (anchor_digest/count or "
+            "Sprout/Sapling frontier root/height mismatch)",
+            rom->height);
+
+    /* Combined nullifier history. */
+    if (memcmp(m->nullifier_digest, rom->nullifier_digest, 32) != 0 ||
+        m->nullifier_count != rom->nullifier_count)
+        return validation_fail(
+            r, CONSENSUS_INSTALL_REFUSED,
+            "REFUSED: bundle at checkpoint height %d does not reproduce the "
+            "compiled shielded nullifier keystone (nullifier_digest/count "
+            "mismatch)",
+            rom->height);
+
+    LOG_INFO(VALIDATE_SUBSYS,
+             "shielded-ROM keystone bound: bundle at checkpoint height %d "
+             "reproduces the compiled transparent + shielded keystone "
+             "byte-for-byte (anchors=%llu, nullifiers=%llu)",
+             rom->height, (unsigned long long)rom->anchor_count,
+             (unsigned long long)rom->nullifier_count);
+    return true;
+}
+
 bool consensus_state_bundle_validate_ex(
     sqlite3 *db, struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_install_result *result, bool skip_deep_scan)
@@ -680,6 +767,10 @@ bool consensus_state_bundle_validate_ex(
     struct consensus_state_source_receipt receipt;
     if (!validate_source_receipt(db, manifest, &receipt, result) ||
         !validate_bundle_proof(db, manifest, &receipt, result))
+        return false; // raw-return-ok:logged-by-callee
+    /* Shielded-ROM keystone binding — fires at the compiled checkpoint height on
+     * BOTH the deep-scan and receipt-honored paths. See below. */
+    if (!validate_rom_keystone_binding(manifest, result))
         return false; // raw-return-ok:logged-by-callee
     if (skip_deep_scan) {
         LOG_INFO(VALIDATE_SUBSYS,
