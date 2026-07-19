@@ -27,8 +27,10 @@
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "platform/time_compat.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/safe_alloc.h"
 
 #include <errno.h>
@@ -538,15 +540,24 @@ struct zcl_result nullifier_backfill_service_run(
         block_init(&blk);
         if (!reader(&blk, h, cfg->datadir, reader_user, &found)) {
             block_free(&blk);
-            LOG_WARN(NBF_SUBSYS, "run: block reader failed at h=%lld",
-                     (long long)h);
+            /* De-stormed: a stuck resume marker re-hits this same height on
+             * every backfill tick until the reader fault clears. */
+            static struct log_throttle thr = LOG_THROTTLE_INIT;
+            if (log_throttle_should_emit(&thr, (uint64_t)h,
+                                         platform_time_wall_unix(), 300, NULL))
+                LOG_WARN(NBF_SUBSYS, "run: block reader failed at h=%lld",
+                         (long long)h);
             return ZCL_ERR(-47, "block reader failed at height %lld",
                            (long long)h);
         }
         if (!found) {
             block_free(&blk);
-            LOG_WARN(NBF_SUBSYS, "run: missing validated block body at h=%lld",
-                     (long long)h);
+            static struct log_throttle thr = LOG_THROTTLE_INIT;
+            if (log_throttle_should_emit(&thr, (uint64_t)h,
+                                         platform_time_wall_unix(), 300, NULL))
+                LOG_WARN(NBF_SUBSYS,
+                         "run: missing validated block body at h=%lld",
+                         (long long)h);
             return ZCL_ERR(-48, "missing validated block body at height %lld; "
                                 "nullifier gap marker left in place",
                            (long long)h);

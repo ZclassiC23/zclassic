@@ -4,12 +4,11 @@
 #ifndef ZCLASSIC23_CONTROLLERS_NODE_BINARY_IDENTITY_JSON_H
 #define ZCLASSIC23_CONTROLLERS_NODE_BINARY_IDENTITY_JSON_H
 
-/* Single serializer for the version/build identity fields that used to be
- * built three different ways: rpc_getinfo (version/protocolversion only),
- * rpc_getnetworkinfo (version/subversion/advertised_subver/protocolversion),
- * and rpc_bootstrapstatus (a nested "binary" object with
- * version/client_name/advertised_subver/source_id_sha256/build_commit). Only
- * bootstrapstatus carried build_commit before this consolidation. */
+/* Single serializer for the version/build identity fields shared by
+ * rpc_getinfo (version/protocolversion), rpc_getnetworkinfo
+ * (version/subversion/advertised_subver/protocolversion), and
+ * rpc_bootstrapstatus (a nested "binary" object with
+ * version/client_name/advertised_subver/source_id_sha256/build_commit). */
 
 #include <stdbool.h>
 

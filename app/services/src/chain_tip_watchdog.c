@@ -254,7 +254,7 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
         "chain_tip_watchdog request_shutdown h=%lld age=%llds restart=%d/%d",
         (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
 
-    /* #8 — S7: the restart remedy historically relied on systemd
+    /* The restart remedy relies on systemd
      * Restart=always to bring the process back. A directly-launched binary
      * (no NOTIFY_SOCKET) would just exit and stay DOWN, so genuine-liveness
      * recovery would never happen off systemd. When no notify socket is

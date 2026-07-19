@@ -28,7 +28,9 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/stage.h"
+#include "platform/time_compat.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -78,10 +80,18 @@ static bool authority_coin_frontier_allows(sqlite3 *db, int height,
     int32_t applied = -1;
     bool found = false;
     if (!coins_kv_get_applied_height(db, &applied, &found)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] authority anchor coin-frontier read failed "
-                 "h=%d reason=%s",
-                 height, reason ? reason : "");
+        /* De-stormed: a persistent read fault re-fires every reducer pass
+         * until it clears. */
+        static struct log_throttle coin_frontier_read_throttle =
+            LOG_THROTTLE_INIT;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&coin_frontier_read_throttle, 1, now,
+                                      300, &reps))
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] authority anchor coin-frontier read "
+                     "failed h=%d reason=%s repeated=%llu",
+                     height, reason ? reason : "", (unsigned long long)reps);
         return false;
     }
     if (!found)
@@ -92,10 +102,23 @@ static bool authority_coin_frontier_allows(sqlite3 *db, int height,
     if (applied > height)
         return true;
 
-    LOG_WARN("tip_finalize",
-             "[tip_finalize] authority anchor skipped h=%d "
-             "coins_applied_height=%d reason=%s (finalized>coins)",
-             height, applied, reason ? reason : "");
+    {
+        /* De-stormed: coins lagging finalize can persist across many
+         * reducer passes during catchup, re-hitting the same (height,
+         * applied) pair every tick until coins catch up. */
+        static struct log_throttle anchor_skipped_throttle = LOG_THROTTLE_INIT;
+        uint64_t key = ((uint64_t)(uint32_t)height << 32) | (uint32_t)applied;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&anchor_skipped_throttle, key, now, 300,
+                                      &reps))
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] authority anchor skipped h=%d "
+                     "coins_applied_height=%d reason=%s (finalized>coins) "
+                     "repeated=%llu",
+                     height, applied, reason ? reason : "",
+                     (unsigned long long)reps);
+    }
     *allowed = false;
     return true;
 }
