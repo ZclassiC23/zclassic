@@ -307,9 +307,16 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(&tree, &ts);
-        /* Save to BOTH the normal key AND a rescan-specific key.
-         * The rescan key can't be overwritten by connect_block. */
-        node_db_state_set(ctx->node_db, "sapling_tree", ts.data, ts.size);
+        /* Save to the normal key + "sapling_tree_rebuild_height" as ONE
+         * atomic pair (sapling_tree_persist_pair, lane/sapling-tree-persist)
+         * — this is the SAME height key config/src/boot.c's loader and
+         * sapling_tree_rebuild() trust to resume/fold-forward from, and the
+         * consensus check just above (rescan_result_consensus_valid) already
+         * proved final_tree_root == the real header root at safe_tip, so
+         * safe_tip is a legitimate saved-height binding. Also save to the
+         * rescan-specific key (can't be overwritten by connect_block). */
+        sapling_tree_persist_pair(ctx->node_db, ts.data, ts.size,
+                                  (int64_t)safe_tip);
         node_db_state_set(ctx->node_db, "sapling_tree_rescan", ts.data, ts.size);
 
         printf("rescanwitnesses: tree saved (%zu bytes, %zu cms)\n",

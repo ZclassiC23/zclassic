@@ -1332,6 +1332,105 @@ static bool boot_park_until_shutdown(const char *gate_name)
     return false;
 }
 
+/* lane/sapling-tree-persist: decide whether a persisted Sapling tree that
+ * mismatches the CURRENT tip may still be trusted as an older-but-consistent
+ * frontier, rather than treated as corrupt.
+ *
+ * A node_state["sapling_tree"] / flat-checkpoint blob mismatching the
+ * current tip's hashFinalSaplingRoot is EXPECTED whenever any block was
+ * applied after the tree was last persisted — that alone does not mean the
+ * tree is wrong. Reuses the same pure verify-then-trust predicate the
+ * flat-file checkpoint load path already trusts (sapling_ckpt_verify_binding,
+ * lib/sapling/src/incremental_merkle_tree.c) against the tree's OWN claimed
+ * height instead of the tip: if the tree's root matches hashFinalSaplingRoot
+ * at `saved_height`, the caller may fold forward from saved_height+1 to tip
+ * via sapling_tree_rebuild()'s existing checkpoint-resume path (bounded work
+ * proportional to tip - saved_height) instead of a full from-activation
+ * replay.
+ *
+ * Returns 1 when verified (safe to fold forward), 0 when there is no
+ * `saved_height` to check (legacy datadir predating this key, or the tree
+ * is already at/above tip — not an error, caller's existing fallback runs
+ * unchanged), or -1 (via LOG_ERR, every relevant number logged) when
+ * `saved_height` itself fails to verify — the "genuine corruption" case the
+ * full-rebuild fallback must still catch. */
+static int sapling_tree_verify_at_saved_height(
+    const struct active_chain *chain,
+    const struct uint256 *tree_root, size_t tree_size,
+    int64_t saved_height, int tip_height)
+{
+    if (saved_height <= 476969 || saved_height >= tip_height)
+        return 0;
+
+    const struct block_index *saved_bi =
+        active_chain_at(chain, (int)saved_height);
+    static const uint8_t zeros32[32] = {0};
+    bool hash_known = saved_bi && saved_bi->phashBlock;
+    bool root_known = saved_bi && memcmp(saved_bi->hashFinalSaplingRoot.data,
+                                         zeros32, 32) != 0;
+
+    enum sapling_ckpt_verdict v = sapling_ckpt_verify_binding(
+        saved_height, tree_root, NULL, tip_height,
+        hash_known ? saved_bi->phashBlock->data : NULL, hash_known,
+        root_known ? &saved_bi->hashFinalSaplingRoot : NULL, root_known);
+    if (v == SAPLING_CKPT_OK)
+        return 1;
+
+    char expected_hex[65] = "unknown";
+    char got_hex[65];
+    uint256_get_hex(tree_root, got_hex);
+    if (root_known)
+        uint256_get_hex(&saved_bi->hashFinalSaplingRoot, expected_hex);
+    LOG_ERR("sapling_tree",
+            "verify_at_saved_height: verdict=%s expected_root=%s "
+            "got_root=%s tree_size=%zu saved_h=%lld tip_h=%d",
+            sapling_ckpt_verdict_str(v), expected_hex, got_hex, tree_size,
+            (long long)saved_height, tip_height);
+}
+
+/* lane/sapling-tree-persist: given a verified older-but-consistent tree
+ * (sapling_tree_verify_at_saved_height already returned 1 for this
+ * saved_height), fold forward to tip via sapling_tree_rebuild()'s existing
+ * checkpoint-resume path instead of a full from-activation rebuild. Reloads
+ * g_state.sapling_tree from the rebuilt node_state on success. Returns true
+ * only when the fold-forward fully completed and reloaded; false leaves
+ * g_state.sapling_tree untouched so the caller's existing full-rebuild
+ * fallback still runs. */
+static bool sapling_tree_attempt_fold_forward(struct app_context *ctx,
+                                              int tip_height, size_t old_size,
+                                              int64_t saved_height)
+{
+    printf("Sapling tree verified at saved_h=%lld (size=%zu) — folding "
+          "forward to tip_h=%d\n", (long long)saved_height, old_size,
+          tip_height);
+    fflush(stdout);
+    atomic_store(&g_sapling_tree_rebuilding, true);
+
+    bool folded = false;
+    int fn = sapling_tree_rebuild(&g_node_db, &g_state.chain_active,
+                                  g_datadir);
+    if (fn >= 0) {
+        uint8_t fbuf[8192];
+        size_t flen = 0;
+        if (node_db_state_get(&g_node_db, "sapling_tree", fbuf, sizeof(fbuf),
+                              &flen) && flen > 0) {
+            struct byte_stream fts;
+            stream_init_from_data(&fts, fbuf, flen);
+            sapling_tree_init(&g_state.sapling_tree);
+            incremental_tree_deserialize(&g_state.sapling_tree, &fts);
+            set_sapling_tree_for_flush(&g_state.sapling_tree);
+            printf("Sapling tree folded forward: %d commitments (was %zu, "
+                  "resumed from saved_h=%lld)\n", fn, old_size,
+                  (long long)saved_height);
+            folded = true;
+        }
+    }
+    atomic_store(&g_sapling_tree_rebuilding, false);
+    node_db_wal_checkpoint(&g_node_db);
+    save_block_index_flat(ctx->datadir, &g_state);
+    return folded;
+}
+
 bool app_init(struct app_context *ctx)
 {
     int64_t t_boot_start = boot_clock_ms();
@@ -3442,6 +3541,12 @@ bool app_init(struct app_context *ctx)
      *
      * This tree is maintained by connect_block and verified against
      * hashFinalSaplingRoot in each block header. */
+    /* The height this tree was verified/persisted at — -1 = unknown (a
+     * legacy datadir predating "sapling_tree_rebuild_height", or no tree
+     * loaded yet). Threaded into the mismatch-check pass below so a stale
+     * (but internally-consistent) tree can fold forward instead of being
+     * treated as corrupt. See sapling_tree_verify_at_saved_height(). */
+    int64_t sapling_tree_saved_height = -1;
     if (g_node_db.open && !g_state.sapling_tree_loaded && g_datadir) {
         char ckpt_path[512];
         snprintf(ckpt_path, sizeof(ckpt_path),
@@ -3477,6 +3582,7 @@ bool app_init(struct app_context *ctx)
             if (v == SAPLING_CKPT_OK) {
                 g_state.sapling_tree_loaded = true;
                 set_sapling_tree_for_flush(&g_state.sapling_tree);
+                sapling_tree_saved_height = ckpt_height;
                 sapling_ckpt_record_load(SAPLING_CKPT_LOAD_VERIFIED,
                                          ckpt_height, "ok");
                 printf("Sapling tree loaded from checkpoint: "
@@ -3513,8 +3619,24 @@ bool app_init(struct app_context *ctx)
             if (incremental_tree_deserialize(&g_state.sapling_tree, &ts)) {
                 g_state.sapling_tree_loaded = true;
                 set_sapling_tree_for_flush(&g_state.sapling_tree);
-                printf("Sapling tree loaded: %zu commitments\n",
-                       incremental_tree_size(&g_state.sapling_tree));
+                /* The height this blob was persisted at — co-written
+                 * alongside "sapling_tree" by every production writer
+                 * (sync_controller_sapling_tree.c, boot_refold_staged.c,
+                 * sync_controller_blocks.c). Absent (-1) only on a legacy
+                 * datadir written before this key existed. */
+                if (!node_db_state_get_int(&g_node_db,
+                        "sapling_tree_rebuild_height",
+                        &sapling_tree_saved_height))
+                    sapling_tree_saved_height = -1;
+                if (sapling_tree_saved_height >= 0) {
+                    printf("Sapling tree loaded: %zu commitments "
+                           "(saved_h=%lld)\n",
+                           incremental_tree_size(&g_state.sapling_tree),
+                           (long long)sapling_tree_saved_height);
+                } else {
+                    printf("Sapling tree loaded: %zu commitments\n",
+                           incremental_tree_size(&g_state.sapling_tree));
+                }
             } else {
                 fprintf(stderr, "WARNING: Sapling tree deserialization "
                         "failed — tree will rebuild during sync\n");
@@ -3565,6 +3687,28 @@ bool app_init(struct app_context *ctx)
             if (memcmp(tree_root.data,
                        tip->hashFinalSaplingRoot.data, 32) != 0) {
                 size_t old_size = incremental_tree_size(&g_state.sapling_tree);
+
+                /* lane/sapling-tree-persist: a mismatch against the CURRENT
+                 * tip does not by itself mean the tree is corrupt — it is
+                 * the expected state whenever blocks were applied after the
+                 * tree was last persisted. If the tree carries the height it
+                 * was saved/verified at, check it against THAT height's own
+                 * expected root first; a match proves an older-but-consistent
+                 * frontier, so fold forward via sapling_tree_rebuild()'s
+                 * existing checkpoint-resume path (bounded work proportional
+                 * to tip - saved_height) instead of a full from-activation
+                 * rebuild. Only a saved_height that itself fails to verify
+                 * (or is absent) falls through to the unchanged full-rebuild
+                 * fallback below — that path remains for genuine corruption. */
+                bool folded_forward = false;
+                if (sapling_tree_verify_at_saved_height(
+                        &g_state.chain_active, &tree_root, old_size,
+                        sapling_tree_saved_height, tip->nHeight) == 1) {
+                    folded_forward = sapling_tree_attempt_fold_forward(ctx,
+                        tip->nHeight, old_size, sapling_tree_saved_height);
+                }
+
+                if (!folded_forward) {
                 if (tip->nHeight > 1000000) {
                     printf("Sapling tree root MISMATCH (size=%zu) - "
                            "deferring live rebuild until after boot "
@@ -3603,6 +3747,7 @@ bool app_init(struct app_context *ctx)
                  * on future boots AND ensures coins_best_block will
                  * be resolvable after a crash. */
                 save_block_index_flat(ctx->datadir, &g_state);
+                }
             }
         }
 sapling_tree_boot_check_done:

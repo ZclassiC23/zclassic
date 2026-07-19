@@ -40,7 +40,10 @@ app/views/src/explorer_pages_view.c 823
 # and -export-consensus-bundle terminal-verb dispatches raise the boot
 # recovery-selection owner's baseline; boot_index.c gains the
 # genesis-readability verb-check probe.
-config/src/boot.c 4318
+# lane/confine (-confine sandbox entry) + lane/sapling-tree-persist
+# (height-aware Sapling tree verify-and-fold-forward helper) both grow
+# boot.c; baseline is the merged wc -l.
+config/src/boot.c 4463
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1694

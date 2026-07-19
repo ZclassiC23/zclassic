@@ -1476,10 +1476,10 @@ retry_authority_store:
             if (memcmp(froot.data, seed_bi->hashFinalSaplingRoot.data, 32) == 0) {
                 struct byte_stream ts;
                 stream_init(&ts, 4096);
-                if (incremental_tree_serialize(&ftree, &ts) &&
-                    node_db_state_set(ndb, "sapling_tree", ts.data, ts.size) &&
-                    node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                                          (int64_t)seed_h)) {
+                bool serialized = incremental_tree_serialize(&ftree, &ts);
+                if (serialized &&
+                    sapling_tree_persist_pair(ndb, ts.data, ts.size,
+                                              (int64_t)seed_h)) {
                     sapling_installed_from_frontier = true;
                     fprintf(stderr,
                             "[boot] -load-snapshot-at-own-height: installed the "

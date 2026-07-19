@@ -210,15 +210,15 @@ bool advance_wallet_witnesses(struct node_db *ndb,
         }
     }
 
-    /* Save tree to node_state */
+    /* Save tree to node_state — blob + height as one atomic pair (see
+     * sapling_tree_persist_pair, lane/sapling-tree-persist). */
     {
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(tree, &ts);
-        if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size))
+        if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
+                                       (int64_t)height))
             ok = false;
-        node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                              (int64_t)height);
         stream_free(&ts);
     }
 
