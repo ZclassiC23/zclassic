@@ -179,3 +179,11 @@ ZCL_BLOCKER_REMEDY(refold.body_gap,                             OWNER)
  * UNCONFINED rather than half-applied, and only an operator can widen the
  * allow-list / enable the kernel features and restart. ─────────────────────── */
 ZCL_BLOCKER_REMEDY(confine.apply_failed,                        OWNER)
+
+/* ── OWNER — boot-phase flight recorder (config/src/boot_flight_recorder.c):
+ * a boot stage took > max(5s, 4x its own recorded median across prior
+ * boots). BLOCKER_TRANSIENT, fail-LOUD not fail-stop — boot always
+ * proceeds regardless; this is a named signal for the operator to
+ * investigate (disk contention, a cold page cache, a regressed code
+ * path), not an auto-curable condition. ─────────────────────────────── */
+ZCL_BLOCKER_REMEDY(boot.stage_regression,                       OWNER)

@@ -209,6 +209,163 @@ static int test_integrity_xor_load_missing(void)
     return failures;
 }
 
+/* ── Height-tracked checkpoint (UTXO_COMMITMENT_HEIGHT_KEY) ─────────
+ * Backs the boot-flight-recorder lane's incremental XOR checkpoint fix:
+ * utxo_mirror_delta_apply / mirror_rebuild_from_coins_kv stamp a covering
+ * height alongside the checkpoint so utxo_commitment_boot_check_and_refresh
+ * can skip its O(n) `utxos` scan when the stamp is already trustworthy. */
+
+static int test_integrity_xor_at_height_roundtrip(void)
+{
+    int failures = 0;
+
+    TEST("integrity: XOR checkpoint save/load AT a covering height") {
+        sqlite3 *db = open_test_db();
+
+        struct utxo_commitment uc;
+        utxo_commitment_init(&uc);
+        uint8_t txid[32];
+        memset(txid, 0x55, 32);
+        utxo_commitment_add(&uc, txid, 1, 7000000, 500);
+
+        ASSERT(utxo_commitment_save_checkpoint_at_height(db, &uc, 500));
+
+        struct utxo_commitment loaded;
+        int32_t h = -1;
+        ASSERT(utxo_commitment_load_checkpoint_at_height(db, &loaded, &h));
+        ASSERT(utxo_commitment_equal(&uc, &loaded));
+        ASSERT(h == 500);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_integrity_xor_plain_save_clears_height(void)
+{
+    int failures = 0;
+
+    TEST("integrity: plain save_checkpoint clears a prior height stamp") {
+        sqlite3 *db = open_test_db();
+
+        struct utxo_commitment uc;
+        utxo_commitment_init(&uc);
+        uint8_t txid[32];
+        memset(txid, 0x66, 32);
+        utxo_commitment_add(&uc, txid, 0, 1000, 10);
+
+        /* Stamp a height, then overwrite via the PLAIN (no covering-height
+         * claim) save — the load_checkpoint_at_height reader must now
+         * refuse to trust ANY height (even the stale one), because a
+         * downstream incremental maintainer folding deltas on top of a
+         * height that doesn't actually describe this blob would silently
+         * corrupt the accumulator (see utxo_mirror_delta_apply). */
+        ASSERT(utxo_commitment_save_checkpoint_at_height(db, &uc, 500));
+        ASSERT(utxo_commitment_save_checkpoint(db, &uc));
+
+        struct utxo_commitment loaded;
+        int32_t h = -1;
+        ASSERT(!utxo_commitment_load_checkpoint_at_height(db, &loaded, &h));
+        /* The blob itself is still intact via the plain loader. */
+        ASSERT(utxo_commitment_load_checkpoint(db, &loaded));
+        ASSERT(utxo_commitment_equal(&uc, &loaded));
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_integrity_xor_boot_check_fast_path_no_scan(void)
+{
+    int failures = 0;
+
+    TEST("integrity: boot_check_and_refresh fast path skips the O(n) scan "
+         "when the height stamp matches") {
+        sqlite3 *db = open_test_db();
+
+        /* A checkpoint claiming h=200, but the `utxos` TABLE itself is
+         * empty/wrong — if the fast path actually recomputed, it would
+         * disagree and refresh. It must NOT recompute at all when the
+         * stamp matches mirror_height, so the (deliberately wrong-vs-table)
+         * saved digest survives untouched. */
+        struct utxo_commitment uc;
+        utxo_commitment_init(&uc);
+        uint8_t txid[32];
+        memset(txid, 0x77, 32);
+        utxo_commitment_add(&uc, txid, 2, 42, 199);
+        ASSERT(utxo_commitment_save_checkpoint_at_height(db, &uc, 200));
+
+        struct utxo_commitment computed;
+        bool refreshed = true;
+        ASSERT(utxo_commitment_boot_check_and_refresh(db, 200, &computed, &refreshed));
+        ASSERT(!refreshed);
+        ASSERT(utxo_commitment_equal(&computed, &uc));
+
+        /* The on-disk checkpoint must be BYTE-IDENTICAL to before — a fast
+         * path that touched it would defeat the whole point. */
+        struct utxo_commitment still_saved;
+        ASSERT(utxo_commitment_load_checkpoint(db, &still_saved));
+        ASSERT(utxo_commitment_equal(&still_saved, &uc));
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_integrity_xor_boot_check_slow_path_refreshes(void)
+{
+    int failures = 0;
+
+    TEST("integrity: boot_check_and_refresh slow path recomputes + "
+         "re-stamps on a genuine mismatch") {
+        sqlite3 *db = open_test_db();
+
+        /* Stale checkpoint: no height stamp at all (plain save), and it
+         * disagrees with the live `utxos` table below. */
+        struct utxo_commitment stale;
+        utxo_commitment_init(&stale);
+        uint8_t stale_txid[32];
+        memset(stale_txid, 0x88, 32);
+        utxo_commitment_add(&stale, stale_txid, 0, 1, 1);
+        ASSERT(utxo_commitment_save_checkpoint(db, &stale));
+
+        sqlite3_exec(db,
+            "INSERT INTO utxos (txid, vout, value, script, script_type,"
+            " address_hash, height, is_coinbase)"
+            " VALUES (X'9900000000000000000000000000000000000000000000000000000000000000',"
+            " 0, 500000, X'76A914', 1, X'00', 300, 0)",
+            NULL, NULL, NULL);
+
+        struct utxo_commitment computed;
+        bool refreshed = false;
+        ASSERT(utxo_commitment_boot_check_and_refresh(db, 300, &computed, &refreshed));
+        ASSERT(refreshed);
+
+        struct utxo_commitment ground_truth;
+        utxo_commitment_compute_db(db, &ground_truth);
+        ASSERT(utxo_commitment_equal(&computed, &ground_truth));
+
+        /* Re-stamped at the asserted mirror_height (300) — a subsequent
+         * incremental maintainer can now trust it as a baseline. */
+        struct utxo_commitment restamped;
+        int32_t h = -1;
+        ASSERT(utxo_commitment_load_checkpoint_at_height(db, &restamped, &h));
+        ASSERT(h == 300);
+        ASSERT(utxo_commitment_equal(&restamped, &ground_truth));
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_integrity_xor_verify_db_match(void)
 {
     int failures = 0;
@@ -730,6 +887,10 @@ int test_integrity(void)
     /* XOR commitment persistence */
     failures += test_integrity_xor_save_load_roundtrip();
     failures += test_integrity_xor_load_missing();
+    failures += test_integrity_xor_at_height_roundtrip();
+    failures += test_integrity_xor_plain_save_clears_height();
+    failures += test_integrity_xor_boot_check_fast_path_no_scan();
+    failures += test_integrity_xor_boot_check_slow_path_refreshes();
     failures += test_integrity_xor_verify_db_match();
 
     /* UTXO count sanity check */

@@ -197,6 +197,15 @@ bool utxo_commitment_save_checkpoint(sqlite3 *db,
     if (rc != SQLITE_DONE)
         LOG_FAIL("utxo_cmt", "step utxo_commitment save rc=%d: %s",
                  rc, sqlite3_errmsg(db));
+
+    /* This call makes no covering-height claim — clear any stamp left by a
+     * prior _at_height save so a later incremental-maintenance reader
+     * (utxo_mirror_delta_apply) never trusts a height that doesn't describe
+     * *this* blob. Best-effort: a failure here just leaves behind a height
+     * key an _at_height reader will independently invalidate the moment the
+     * blob it's paired with stops matching what that height implies. */
+    (void)ar_exec_write_sql(db,
+        "DELETE FROM node_state WHERE key='" UTXO_COMMITMENT_HEIGHT_KEY "'");
     return true;
 }
 
@@ -220,6 +229,127 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
     }
     sqlite3_finalize(s);
     return ok;
+}
+
+bool utxo_commitment_save_checkpoint_at_height(sqlite3 *db,
+                                               const struct utxo_commitment *uc,
+                                               int32_t height)
+{
+    if (!db || !uc || height < 0) return false;
+    uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
+    utxo_commitment_serialize(uc, buf);
+
+    sqlite3_stmt *s = NULL;
+    const char *sql_save =
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('utxo_commitment',?)";
+    if (sqlite3_prepare_v2(db, sql_save, -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_save, sqlite3_errmsg(db));
+    sqlite3_bind_blob(s, 1, buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
+    int rc = AR_STEP_WRITE(s);
+    sqlite3_finalize(s);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("utxo_cmt", "step utxo_commitment save rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+
+    sqlite3_stmt *hs = NULL;
+    const char *sql_height =
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('" UTXO_COMMITMENT_HEIGHT_KEY "',?)";
+    if (sqlite3_prepare_v2(db, sql_height, -1, &hs, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_height, sqlite3_errmsg(db));
+    int64_t h64 = (int64_t)height;
+    sqlite3_bind_blob(hs, 1, &h64, sizeof(h64), SQLITE_STATIC);
+    int hrc = AR_STEP_WRITE(hs);
+    sqlite3_finalize(hs);
+    if (hrc != SQLITE_DONE)
+        LOG_FAIL("utxo_cmt", "step %s save rc=%d: %s",
+                 UTXO_COMMITMENT_HEIGHT_KEY, hrc, sqlite3_errmsg(db));
+    return true;
+}
+
+bool utxo_commitment_load_checkpoint_at_height(sqlite3 *db,
+                                               struct utxo_commitment *uc,
+                                               int32_t *out_height)
+{
+    if (!db || !uc || !out_height) return false;
+    struct utxo_commitment tmp;
+    if (!utxo_commitment_load_checkpoint(db, &tmp))
+        return false;
+
+    sqlite3_stmt *s = NULL;
+    const char *sql_load =
+        "SELECT value FROM node_state WHERE key='" UTXO_COMMITMENT_HEIGHT_KEY "'";
+    if (sqlite3_prepare_v2(db, sql_load, -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_load, sqlite3_errmsg(db));
+
+    bool ok = false;
+    int64_t h64 = -1;
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len >= (int)sizeof(h64)) {
+            memcpy(&h64, blob, sizeof(h64));
+            ok = h64 >= 0 && h64 <= INT32_MAX;
+        }
+    }
+    sqlite3_finalize(s);
+    if (!ok) return false;
+
+    *uc = tmp;
+    *out_height = (int32_t)h64;
+    return true;
+}
+
+bool utxo_commitment_boot_check_and_refresh(sqlite3 *db, int32_t mirror_height,
+                                            struct utxo_commitment *out_computed,
+                                            bool *out_refreshed)
+{
+    if (out_refreshed) *out_refreshed = false;
+    if (!db) return false;
+
+    /* Fast path: a live-tracked checkpoint (utxo_mirror_delta_apply /
+     * mirror_rebuild_from_coins_kv stamp it at every commit that mutates the
+     * mirror) whose covering height equals the mirror's OWN persisted cursor
+     * is accurate by construction — skip the O(n) `utxos` scan entirely. This
+     * is the common case on a cleanly-shut-down node: no refresh, no scan. */
+    struct utxo_commitment saved;
+    int32_t saved_h = -1;
+    if (mirror_height >= 0 &&
+        utxo_commitment_load_checkpoint_at_height(db, &saved, &saved_h) &&
+        saved_h == mirror_height) {
+        if (out_computed) *out_computed = saved;
+        return true;
+    }
+
+    /* Slow path: no trustworthy height stamp (never tracked, or a torn
+     * shutdown left the stamp behind) — recompute and compare/refresh, the
+     * pre-existing O(n) safety net for genuinely-stale state. */
+    memset(&saved, 0, sizeof(saved));
+    if (!utxo_commitment_load_checkpoint(db, &saved))
+        return true; /* nothing stored yet — nothing to check */
+
+    struct utxo_commitment computed;
+    utxo_commitment_init(&computed);
+    utxo_commitment_compute_db(db, &computed);
+    if (out_computed) *out_computed = computed;
+    if (utxo_commitment_equal(&saved, &computed))
+        return true; /* accurate; just never got a height stamp — leave it */
+
+    bool saved_ok = mirror_height >= 0
+        ? utxo_commitment_save_checkpoint_at_height(db, &computed, mirror_height)
+        : utxo_commitment_save_checkpoint(db, &computed);
+    if (saved_ok && out_refreshed) *out_refreshed = true;
+    LOG_INFO("utxo_cmt",
+             "[utxo_cmt] XOR checkpoint stale (saved_count=%llu computed_count=%llu) "
+             "— %s%s",
+             (unsigned long long)saved.count, (unsigned long long)computed.count,
+             saved_ok ? "refreshed" : "refresh FAILED",
+             (saved_ok && mirror_height >= 0) ? " (height-stamped)" : "");
+    return saved_ok;
 }
 
 bool utxo_commitment_resync_from_db(sqlite3 *db,

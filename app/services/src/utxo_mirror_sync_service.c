@@ -21,6 +21,7 @@
 #include "services/utxo_mirror_sync_service.h"
 #include "services/utxo_mirror_delta.h"
 
+#include "coins/utxo_commitment.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "models/database.h"
@@ -226,8 +227,13 @@ static bool mirror_read_node_state_lane(struct node_db *ndb, void *ctx)
 
 /* Copy every live coins_kv row into the mirror under ONE node.db txn.
  * Returns the number of rows written, or -1 on a (logged) error. The whole
- * write is atomic: on failure node.db rolls back and the cursor stays put. */
-static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
+ * write is atomic: on failure node.db rolls back and the cursor stays put.
+ * `frontier` is the coins_kv applied height this scan is asserted consistent
+ * through (the caller sets its own applied_through to the same value on
+ * success) — used to height-stamp the XOR checkpoint this rebuild also
+ * recomputes from scratch, so utxo_mirror_delta_apply can incrementally
+ * maintain it from here on instead of the boot-time O(n) refresh doing it. */
+static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontier)
 {
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "utxo_mirror", "rebuild: node.db unavailable");
@@ -277,6 +283,8 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
 
     bool ok = node_db_exec(ndb, "DELETE FROM utxos");
     int64_t written = 0;
+    struct utxo_commitment uc;
+    utxo_commitment_init(&uc);
 
     while (ok) {
         int rc = sqlite3_step(sel);  // raw-sql-ok:progress-kv-kernel-store
@@ -332,6 +340,11 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
             ok = false;
             break;
         }
+        /* u.height is already the CHECK(height >= 0)-clamped value actually
+         * persisted — feed the identical bytes utxo_commitment_compute_db
+         * would read back from this same row, so a future O(n) verification
+         * against this stamp matches exactly. */
+        utxo_commitment_add(&uc, u.txid, u.vout, u.value, (int32_t)u.height);
         written++;
     }
 
@@ -344,6 +357,16 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
         LOG_RETURN(-1, "utxo_mirror", "rebuild: aborted after %lld rows",
                    (long long)written);
     }
+
+    /* Height-stamp the freshly rebuilt checkpoint in the SAME transaction —
+     * this scan just recomputed it from scratch, so `frontier` (the coins_kv
+     * height the caller asserts this pass reflects) is an exact covering
+     * height, letting utxo_mirror_delta_apply take over incrementally from
+     * here instead of the boot-time refresh redoing this O(n) work. */
+    if (!utxo_commitment_save_checkpoint_at_height(ndb->db, &uc, frontier))
+        LOG_WARN("utxo_mirror",
+                 "rebuild: commitment checkpoint save failed at h=%d "
+                 "(mirror data correct; boot refresh self-heals)", frontier);
 
     if (!node_db_commit(ndb)) {
         if (!node_db_rollback(ndb))
@@ -417,7 +440,7 @@ static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
         /* UTXO_MIRROR_DELTA_FALLBACK → wholesale rebuild below. */
     }
 
-    r->written = mirror_rebuild_from_coins_kv(ndb);
+    r->written = mirror_rebuild_from_coins_kv(ndb, r->frontier);
     if (r->written < 0)
         return false;
     r->applied_through = r->frontier;
