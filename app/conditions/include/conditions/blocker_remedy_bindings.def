@@ -76,6 +76,7 @@
  * also detects/witnesses its own clear (poll_secs cadence, cleared on
  * real state movement, not on blocker-registry state alone). ────────── */
 ZCL_BLOCKER_REMEDY(sync_rate_below_floor,                    sync_rate_below_floor)
+ZCL_BLOCKER_REMEDY(consensus.parity_slo_breach,              parity_slo_breach)
 ZCL_BLOCKER_REMEDY(header_repair_no_source,                  stale_validate_headers_repair)
 ZCL_BLOCKER_REMEDY(net_partition_suspected,                  net_partition_suspected)
 ZCL_BLOCKER_REMEDY(reducer_drive_stuck,                      reducer_drive_watchdog)
