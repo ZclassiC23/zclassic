@@ -40,7 +40,11 @@ app/views/src/explorer_pages_view.c 823
 # and -export-consensus-bundle terminal-verb dispatches raise the boot
 # recovery-selection owner's baseline; boot_index.c gains the
 # genesis-readability verb-check probe.
-config/src/boot.c 4202
+# lane/sapling-tree-persist: boot-time Sapling tree load/verify grows a
+# static height-aware verify-and-fold-forward helper
+# (sapling_tree_verify_at_saved_height) plus the saved_height threading
+# through the tier-2 load + mismatch-check blocks.
+config/src/boot.c 4345
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1691

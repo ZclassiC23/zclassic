@@ -32,6 +32,38 @@ static bool sapling_header_root_known(const struct block_index *bi)
     return bi && memcmp(bi->hashFinalSaplingRoot.data, zeros32, 32) != 0;
 }
 
+/* lane/sapling-tree-persist: persist node_state["sapling_tree"] and
+ * node_state["sapling_tree_rebuild_height"] as ONE atomic write. The two
+ * were previously two independent autocommit statements — a crash between
+ * them could leave a tree blob paired with a stale (or absent) height,
+ * which is exactly the "saved at height A, but the height record says
+ * something else" defect the boot-time loader (config/src/boot.c,
+ * sapling_tree_verify_at_saved_height) must be able to trust. When the
+ * caller already holds an open transaction (ndb->sync_in_batch) the pair
+ * commits with that outer transaction instead of nesting a BEGIN. */
+bool sapling_tree_persist_pair(struct node_db *ndb,
+                               const void *blob, size_t blob_len,
+                               int64_t height)
+{
+    bool own_tx = ndb && !ndb->sync_in_batch;
+    if (own_tx && !node_db_begin(ndb))
+        LOG_FAIL("sapling_tree_rebuild",
+                 "persist_pair: BEGIN failed height=%lld", (long long)height);
+
+    bool ok = node_db_state_set(ndb, "sapling_tree", blob, blob_len) &&
+              node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                    height);
+
+    if (own_tx) {
+        if (ok) {
+            ok = node_db_commit(ndb);
+        } else {
+            node_db_rollback(ndb);
+        }
+    }
+    return ok;
+}
+
 int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir)
@@ -255,16 +287,10 @@ int sapling_tree_rebuild(struct node_db *ndb,
                 fail_height = h;
                 goto fail;
             }
-            if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size)) {
+            if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
+                                          (int64_t)h)) {
                 stream_free(&ts);
-                fail_reason = "persist_checkpoint_tree_failed";
-                fail_height = h;
-                goto fail;
-            }
-            if (!node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                                       (int64_t)h)) {
-                stream_free(&ts);
-                fail_reason = "persist_checkpoint_height_failed";
+                fail_reason = "persist_checkpoint_pair_failed";
                 fail_height = h;
                 goto fail;
             }
@@ -318,16 +344,10 @@ int sapling_tree_rebuild(struct node_db *ndb,
             fail_height = chain_tip;
             goto fail;
         }
-        if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size)) {
+        if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
+                                      (int64_t)chain_tip)) {
             stream_free(&ts);
-            fail_reason = "persist_final_tree_failed";
-            fail_height = chain_tip;
-            goto fail;
-        }
-        if (!node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                                   (int64_t)chain_tip)) {
-            stream_free(&ts);
-            fail_reason = "persist_final_height_failed";
+            fail_reason = "persist_final_pair_failed";
             fail_height = chain_tip;
             goto fail;
         }

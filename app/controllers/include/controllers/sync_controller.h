@@ -105,6 +105,19 @@ int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir);
 
+/* Persist node_state["sapling_tree"] and its co-located
+ * "sapling_tree_rebuild_height" as ONE atomic write (single SQLite
+ * transaction, or folded into an already-open caller transaction when
+ * ndb->sync_in_batch). Every production writer of the tree blob should go
+ * through this instead of two independent node_db_state_set() calls, so a
+ * crash between the two can never leave the persisted height out of sync
+ * with the persisted tree — the boot-time load-and-verify-at-saved-height
+ * check (config/src/boot.c) depends on that pairing being trustworthy.
+ * Returns false (with context logged by the caller) on any write failure. */
+bool sapling_tree_persist_pair(struct node_db *ndb,
+                               const void *blob, size_t blob_len,
+                               int64_t height);
+
 /* Called after a block is successfully connected to the active chain.
  * Indexes the block header, all transactions, and updates the UTXO set.
  * Runs inside a SQLite transaction for atomicity. */

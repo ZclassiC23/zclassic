@@ -1,12 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "bloom/merkle.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
 #include "core/serialize.h"
 #include "event/event.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "storage/disk_block_io.h"
+#include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 
@@ -210,6 +215,231 @@ static int test_sapling_rebuild_rejects_mismatched_checkpoint(void)
     return failures;
 }
 
+/* lane/sapling-tree-persist coverage below: the atomic blob+height write
+ * (sapling_tree_persist_pair) and the height-aware fold-forward that
+ * config/src/boot.c's loader now relies on (sapling_tree_rebuild resuming
+ * from a VERIFIED saved_height instead of a full from-activation replay).
+ * "corrupted tree still forces the full-rebuild fallback" is already
+ * covered above by test_sapling_rebuild_rejects_unverified_checkpoint and
+ * test_sapling_rebuild_rejects_mismatched_checkpoint (a node_state pair
+ * whose root does not verify at its own claimed height is discarded, not
+ * trusted for a partial resume). */
+
+static int test_sapling_persist_pair_round_trip(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_persist_pair round-trips blob+height as one pair... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_persist_pair", "roundtrip");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x51);
+    struct uint256 want_root;
+    incremental_tree_root(&tree, &want_root);
+
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+
+    const int64_t saved_h = 900123;
+    ok = ok && sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    stream_free(&ts);
+
+    uint8_t buf[8192];
+    size_t len = 0;
+    ok = ok && node_db_state_get(&ndb, "sapling_tree", buf, sizeof(buf), &len)
+             && len > 0;
+    int64_t got_h = -1;
+    ok = ok && node_db_state_get_int(&ndb, "sapling_tree_rebuild_height",
+                                     &got_h);
+
+    struct incremental_merkle_tree readback;
+    sapling_tree_init(&readback);
+    struct byte_stream rs;
+    stream_init_from_data(&rs, buf, len);
+    ok = ok && incremental_tree_deserialize(&readback, &rs);
+    struct uint256 got_root;
+    incremental_tree_root(&readback, &got_root);
+
+    bool height_ok = ok && got_h == saved_h;
+    bool root_ok = ok && memcmp(got_root.data, want_root.data, 32) == 0;
+    ok = ok && height_ok && root_ok;
+
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (got_h=%lld want_h=%lld height_ok=%d root_ok=%d)\n",
+               (long long)got_h, (long long)saved_h, height_ok, root_ok);
+        failures++;
+    }
+    return failures;
+}
+
+static bool make_output_only_tx(struct transaction *tx,
+                                const struct uint256 *cm)
+{
+    transaction_init(tx);
+    tx->overwintered = true;
+    tx->version = SAPLING_TX_VERSION;
+    tx->version_group_id = SAPLING_VERSION_GROUP_ID;
+    tx->v_shielded_output = zcl_calloc(1, sizeof(struct output_description),
+                                       "test_sapling_fold_output");
+    if (!tx->v_shielded_output)
+        return false;
+    tx->num_shielded_output = 1;
+    tx->v_shielded_output[0].cm = *cm;
+    transaction_compute_hash(tx);
+    return true;
+}
+
+/* Reproduces the exact boot-time scenario this lane fixes: a tree persisted
+ * at height A (verified against A's own hashFinalSaplingRoot) with the real
+ * tip sitting at B > A. sapling_tree_rebuild() must resume from A (not
+ * replay from Sapling activation) and fold forward the ONE real commitment
+ * that landed in a real on-disk block at B, and the persisted result must
+ * be bit-identical to an independently-built from-scratch tree over all
+ * three commitments — the correctness bar the fold-forward path must meet. */
+static int test_sapling_rebuild_folds_forward_from_saved_height(void)
+{
+    int failures = 0;
+    const int sapling_height = 476969;
+    const int saved_h = sapling_height + 50;
+    const int tip_h = saved_h + 3;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling rebuild folds forward from saved_h=A to tip_h=B "
+          "(matches from-scratch root)... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_rebuild", "fold_forward");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    /* The tree persisted at saved_h — this is what boot.c loads. */
+    struct incremental_merkle_tree tree_a;
+    sapling_tree_init(&tree_a);
+    struct uint256 cm1, cm2, cm3;
+    memset(cm1.data, 0x61, 32);
+    memset(cm2.data, 0x62, 32);
+    memset(cm3.data, 0x63, 32);
+    incremental_tree_append(&tree_a, &cm1);
+    incremental_tree_append(&tree_a, &cm2);
+    struct uint256 root_a;
+    incremental_tree_root(&tree_a, &root_a);
+
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree_a, &ts);
+    ok = ok && sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    stream_free(&ts);
+
+    /* The full tree after the one new commitment lands at tip_h. */
+    struct incremental_merkle_tree tree_full = tree_a; /* POD copy */
+    incremental_tree_append(&tree_full, &cm3);
+    struct uint256 root_b;
+    incremental_tree_root(&tree_full, &root_b);
+
+    /* A REAL on-disk block at tip_h carrying that one commitment — this is
+     * the "fold forward from local block data" sapling_tree_rebuild already
+     * does; the test proves boot.c may now rely on it instead of deferring
+     * or replaying from activation. */
+    struct block blk;
+    block_init(&blk);
+    blk.vtx = zcl_calloc(1, sizeof(struct transaction), "test_sapling_fold_vtx");
+    ok = ok && blk.vtx != NULL;
+    if (blk.vtx) {
+        blk.num_vtx = 1;
+        ok = ok && make_output_only_tx(&blk.vtx[0], &cm3);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000000u;
+        blk.header.nBits = 0x2000ffffu;
+        struct uint256 txid = blk.vtx[0].hash;
+        blk.header.hashMerkleRoot = compute_merkle_root(&txid, 1);
+    }
+
+    static const unsigned char msg[4] = {0x24, 0xe9, 0x27, 0x64};
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    ok = ok && write_block_to_disk(&blk, &pos, dir, msg);
+
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct block_index bi_sapling, bi_saved, bi_tip;
+    init_sapling_rebuild_index(&bi_sapling, sapling_height, 0xa8);
+    init_sapling_rebuild_index(&bi_saved, saved_h, 0xa9);
+    bi_saved.hashFinalSaplingRoot = root_a;
+    init_sapling_rebuild_index(&bi_tip, tip_h, 0xaa);
+    bi_tip.hashFinalSaplingRoot = root_b;
+    bi_tip.nStatus |= BLOCK_HAVE_DATA;
+    bi_tip.nFile = pos.nFile;
+    bi_tip.nDataPos = pos.nPos;
+
+    ok = ok && active_chain_install_tip_slot(&chain, &bi_sapling);
+    ok = ok && active_chain_install_tip_slot(&chain, &bi_saved);
+    ok = ok && active_chain_install_tip_slot(&chain, &bi_tip);
+
+    int appended = ok ? sapling_tree_rebuild(&ndb, &chain, dir) : -1;
+
+    uint8_t rbuf[8192];
+    size_t rlen = 0;
+    bool loaded = ok && node_db_state_get(&ndb, "sapling_tree", rbuf,
+                                          sizeof(rbuf), &rlen) && rlen > 0;
+    int64_t persisted_h = -1;
+    bool got_h = loaded && node_db_state_get_int(&ndb,
+                                "sapling_tree_rebuild_height", &persisted_h);
+    struct incremental_merkle_tree persisted;
+    sapling_tree_init(&persisted);
+    struct byte_stream rs;
+    stream_init_from_data(&rs, rbuf, rlen);
+    bool deser = got_h && incremental_tree_deserialize(&persisted, &rs);
+    struct uint256 persisted_root;
+    incremental_tree_root(&persisted, &persisted_root);
+
+    /* Independent from-scratch build — never touches sapling_tree_rebuild. */
+    struct incremental_merkle_tree scratch;
+    sapling_tree_init(&scratch);
+    incremental_tree_append(&scratch, &cm1);
+    incremental_tree_append(&scratch, &cm2);
+    incremental_tree_append(&scratch, &cm3);
+    struct uint256 scratch_root;
+    incremental_tree_root(&scratch, &scratch_root);
+
+    bool matches_scratch = deser &&
+        memcmp(persisted_root.data, scratch_root.data, 32) == 0;
+    bool matches_tip = deser &&
+        memcmp(persisted_root.data, root_b.data, 32) == 0;
+    bool pass = ok && appended == 3 && loaded && got_h &&
+               persisted_h == tip_h && matches_scratch && matches_tip;
+
+    active_chain_free(&chain);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (pass) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (appended=%d persisted_h=%lld matches_scratch=%d "
+              "matches_tip=%d)\n", appended, (long long)persisted_h,
+              matches_scratch, matches_tip);
+        failures++;
+    }
+    return failures;
+}
+
 int test_unclean_shutdown_advance(void)
 {
     int failures = 0;
@@ -277,6 +507,8 @@ int test_unclean_shutdown_advance(void)
     failures += test_sapling_rebuild_rejects_unverified_checkpoint();
     failures += test_sapling_rebuild_accepts_verified_checkpoint();
     failures += test_sapling_rebuild_rejects_mismatched_checkpoint();
+    failures += test_sapling_persist_pair_round_trip();
+    failures += test_sapling_rebuild_folds_forward_from_saved_height();
 
     return failures;
 }
