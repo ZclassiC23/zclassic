@@ -138,8 +138,9 @@ predicate touched, no code change made.
   `validate_headers` pass records the gate reads) — everything the gate
   reads that a bare imported datadir does not already provide, and nothing
   more (no UTXO set, no anchor/nullifier tables, no reducer log rows above
-  the anchor). Recipe: `tools/scripts/install_e2e_fixture_stamp.py`; proof
-  reads after install: `tools/scripts/install_e2e_verify.sh`.
+  the anchor). Fixture-stamp and post-install proof-read recipe: one-shot
+  mission tooling used for this run, since removed (git history has it if a
+  future proof needs to reconstruct the exact stamp).
 - Firing `-install-consensus-bundle=<bundle>` printed `INSTALLED:` (exit 0)
   and activated via `authority=checkpoint_content` (no replay receipt on the
   fixture — expected; CHECKPOINT_CONTENT is the designed fallback lattice
