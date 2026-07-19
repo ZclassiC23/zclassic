@@ -59,4 +59,12 @@
 # already tracked here; this is one reviewed +6-line flag registration, not a
 # new oversized file. Ratchet raised 14 -> 15 to cover it (stays WARN-only
 # per-file; the baseline entry is NOT raised).
-15
+#
+# Paydown 2026-07-19 (lane Q4, ratchet re-tighten): src/main.c dropped out of
+# the WARN tier entirely via the p1-main-decompose split (4617 -> 515 lines,
+# pure code-motion into config/src/args.c + src/main_cli_modes.c), removing
+# its grown-past-baseline entry from the live count with nothing to
+# re-baseline (515 is well under the 800 ceiling). Live drift measured at
+# 13 (all pre-existing grown-file WARNs, no new unbaselined files). Ratchet
+# lowered 15 -> 13.
+13
