@@ -141,7 +141,7 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 ## 3. Step 0 — immediate live recovery (no new code, copy-prove first)
 
 The 2026-06-23 node briefly reached tip after `ab512d577` repaired the
-transparent loader, but canonical is now wedged below tip on incomplete
+transparent loader, but the wedge class this section addressed is CURED (2026-07-19, see HANDOFF §0-LATEST); historically canonical sat wedged below tip on incomplete
 shielded history (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate
 reducer_frontier`; `docs/HANDOFF.md` holds current state). This Step-0 recipe remains only a fallback. On a COPY first
 (`cp -a`, `--importblockindex` then normal boot), verify tip==network + healthy + hash-match
@@ -268,7 +268,7 @@ real-history replay, D2's fork-HOLD stub edits.
 ## 8. First concrete step
 
 (a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and reproduce the
-shielded wedge/cure on the copy; canonical is not healthy. (b) ~~`rebuild_recent 3056758` to time
+shielded wedge/cure on the copy (historical guidance from the wedge era — the serve node is AT TIP as of 2026-07-19; consult HANDOFF §0-LATEST before treating any step here as live). (b) ~~`rebuild_recent 3056758` to time
 the fold~~ — **invalid; deleted** (verified 2026-06-18). There is no offline from-checkpoint
 fold verb, so the fold can't be timed yet (see Residual #1). The real first build step is
 therefore **B2**: wire a snapshot-seed-then-fold trigger that rewinds the reducer to the
