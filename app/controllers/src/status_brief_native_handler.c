@@ -284,7 +284,14 @@ char *zcl_native_status_brief_body(const struct json_value *args,
               status_key_missing(first_call, "budget_exceeded"),
               status_read_bool(first_call, "budget_exceeded",
                                &budget_exceeded)) &&
-        SCHECK(&v, "first_call.budget_exceeded", false, !budget_exceeded) &&
+        /* A budget-exceeded first call is a valid, truthful degraded
+         * result, NOT a malformed document -- the operator needs this
+         * envelope most exactly when the node is busiest and overran its
+         * own budget. Reject only self-contradiction: overrunning the
+         * budget without admitting partial_result would mean the node
+         * silently dropped optional detail without saying so. */
+        SCHECK(&v, "first_call.budget_exceeded", false,
+              !budget_exceeded || partial_result) &&
         SCHECK(&v, "first_call.partial_result", false,
               first_call_partial == partial_result) &&
         SCHECK(&v, "resources", status_key_missing(&agent, "resources"),
