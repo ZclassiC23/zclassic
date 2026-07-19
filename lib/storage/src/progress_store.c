@@ -16,6 +16,7 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "util/hw_profile.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 
@@ -90,28 +91,41 @@ static bool progress_store_candidate_state(sqlite3 *db, bool *contained)
     return ok;
 }
 
+/* progress.kv's page cache + mmap window scale with measured RAM (via
+ * hw_profile), capped at this file's historical ceilings (1 GiB cache, 2
+ * GiB mmap — a pure read-path/memory-residency control, unrelated to WAL
+ * journaling or on-disk format). Same fixed values on any >=32 GiB-RAM box;
+ * scales DOWN on constrained ones instead of unconditionally requesting a 1
+ * GiB cache + 2 GiB mmap window for one connection regardless of RAM. */
+#define PROGRESS_STORE_CACHE_FLOOR_KIB   (64 * 1024)                /* 64 MiB */
+#define PROGRESS_STORE_CACHE_CEIL_KIB    (1024 * 1024)              /* 1 GiB */
+#define PROGRESS_STORE_MMAP_FLOOR_BYTES  (256LL * 1024 * 1024)      /* 256 MiB */
+#define PROGRESS_STORE_MMAP_CEIL_BYTES   (2LL * 1024 * 1024 * 1024) /* 2 GiB */
+
 /* Apply WAL + reasonable durability/recovery pragmas. Errors here are
  * fatal for the open (caller will close & fail). */
 static bool apply_pragmas(sqlite3 *db)
 {
-    static const char *const pragmas[] = {
+    hw_profile_init(NULL);
+    int64_t ram = hw_profile_ram_bytes();
+    int64_t cache_kib = hw_profile_sqlite_cache_kib(
+        ram, PROGRESS_STORE_CACHE_FLOOR_KIB, PROGRESS_STORE_CACHE_CEIL_KIB);
+    int64_t mmap_bytes = hw_profile_sqlite_mmap_bytes(
+        ram, PROGRESS_STORE_MMAP_FLOOR_BYTES, PROGRESS_STORE_MMAP_CEIL_BYTES);
+
+    char cache_pragma[64], mmap_pragma[64];
+    snprintf(cache_pragma, sizeof(cache_pragma), "PRAGMA cache_size=-%lld",
+             (long long)cache_kib);
+    snprintf(mmap_pragma, sizeof(mmap_pragma), "PRAGMA mmap_size=%lld",
+             (long long)mmap_bytes);
+
+    const char *const pragmas[] = {
         "PRAGMA journal_mode=WAL",
         "PRAGMA synchronous=NORMAL",
         "PRAGMA foreign_keys=ON",
         "PRAGMA busy_timeout=5000",
-        /* Page cache + mmap sizing for the fold/progress DB. Both are pure
-         * read-path / memory-residency controls — they change ONLY how much of
-         * the DB SQLite keeps resident, NOT the WAL journaling, the fsync
-         * timing (synchronous=NORMAL above), or the on-disk format, so they do
-         * not weaken crash-replay durability. cache_size is in KiB when
-         * negative: -1048576 == a 1 GiB page cache (vs the ~2 MB default), which
-         * keeps the hot stage_cursor / coins_kv pages resident across the
-         * serial stages instead of re-faulting them from the OS cache each
-         * step. mmap_size=2 GiB lets reads come straight from the mmap'd file
-         * region, avoiding a read() syscall + buffer copy per page on the
-         * read-heavy fold. */
-        "PRAGMA cache_size=-1048576",
-        "PRAGMA mmap_size=2147483648",
+        cache_pragma,
+        mmap_pragma,
         NULL,
     };
     for (size_t i = 0; pragmas[i]; i++) {

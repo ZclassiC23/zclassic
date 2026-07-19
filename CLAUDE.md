@@ -219,6 +219,9 @@ systemctl --user start zclassic23
 -nobgvalidation       Skip background proof verification (saves RAM)
 -txindex              Enable full transaction index
 -addnode=IP:PORT      Connect to specific peer
+-pin-reducer          Pin the P2P block-ingest ("reducer") thread to the
+                      large-L3 CCD when hw_profile detects an asymmetric
+                      multi-CCD host (e.g. a 7950X3D); default OFF, advisory
 ```
 
 ---

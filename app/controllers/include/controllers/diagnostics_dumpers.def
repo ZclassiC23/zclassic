@@ -527,6 +527,13 @@
                "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "
                "largest_l3_domain (the V-Cache CCD on multi-CCD AMD parts), source "
                "(sysfs/fallback)"),
+    DIAG_LOCAL("hw_profile", hw_profile_dump_state_json,
+               "hardware profile organ: online/physical cores, ram_bytes + ram_class "
+               "(low/medium/high), x86 isa {avx2, avx512f/vl/bw/dq, vpclmulqdq, vaes, "
+               "gfni, sha_ni}, storage {rotational, rotational_known}, l3 "
+               "{domain_count, asymmetric, large_domain_id}, derived {verify_workers, "
+               "script_batch_cap, sqlite_*_cache_kib, sqlite_*_mmap_bytes}, and "
+               "pin_reducer_available (whether -pin-reducer would take effect)"),
     DIAG_SERVICE("recovery", recovery_coordinator_dump_state_json,
                  "unified recovery coordinator (chain domain): last rung fired "
                  "(cursor_warm_restart/rederive_range/segment_refetch/blocker) "

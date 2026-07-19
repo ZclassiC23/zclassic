@@ -1391,6 +1391,7 @@ int main(int argc, char **argv)
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_cpu_topology();
+    failures += test_hw_profile();
     failures += test_log_level();
     failures += test_operator_ux();
     failures += test_service_state();
