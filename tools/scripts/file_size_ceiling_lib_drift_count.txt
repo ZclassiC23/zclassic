@@ -1,0 +1,23 @@
+# Lint gate E1 WARN-tier drift-count ratchet.
+#
+# tools/scripts/check_file_size_ceiling.sh's WARN tier (lib/+domain/+src/)
+# never fails on any ONE oversized/grown file — but with nothing ratcheting
+# the total violation count, drift accumulated silently: 5 new unbaselined
+# files + 13 files grown past their recorded baseline LOC, none of it ever
+# failing `make lint`.
+#
+# This file records the highest (new + grown) violation COUNT reviewed and
+# accepted so far. The gate reads the first non-comment, non-blank line as
+# an integer and FAILS when the live count exceeds it — existing drift (at
+# or below this count) stays grandfathered and WARN-only, but growing PAST
+# this count fails the build until either a file gets re-baselined/shrunk
+# (lowering the live count back at or below this line) or this count is
+# deliberately raised after review.
+#
+# Seeded 2026-07-19 at the count measured after baselining the 5 new files
+# (rom_fetch.c, rom_seed.c, census_read.c, peers_projection.c, stage.c) and
+# src/main.c: the remaining 13 already-baselined files that had grown past
+# their recorded LOC (command_registry.c, addrman.c, connman.c, download.c,
+# file_service.c, msg_headers.c, net.c, onion_service.c, peer_lifecycle.c,
+# simnet_chaos_faults.c, coins_kv.c, supervisor.c, chainstate.c).
+13

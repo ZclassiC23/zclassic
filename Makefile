@@ -1200,8 +1200,9 @@ asan-ci: $(TEST_ASAN_CANDIDATE)
 # every race in one run, then exits the failing child with exitcode=66 so a
 # group WITH reports surfaces red — findings are the point of this target.
 # Suppressions come from tools/tsan.supp (documented-benign entries only —
-# never seed it to hide an untriaged report; see
-# docs/work/tsan-triage-2026-07-18.md). Same finite 1 GiB stack as t-asan.
+# never seed it to hide an untriaged report; see docs/BUILD.md
+# "ThreadSanitizer profiles" for the current known-good triage state). Same
+# finite 1 GiB stack as t-asan.
 # setarch -R (disable ASLR) is REQUIRED: TSan reserves fixed shadow address
 # ranges and the default-ASLR PIE/mmap placement intermittently collides at
 # startup ("FATAL: ThreadSanitizer: unexpected memory mapping" — reproduced
@@ -1220,16 +1221,16 @@ t-tsan: $(TEST_TSAN_CANDIDATE)
 	  exec setarch -R $(TEST_TSAN_ACTIVE) --only=$(ONLY)'
 
 # Opt-in sanitizer smoke: a small set of fast, thread-spawning groups under
-# test-tsan. Deliberately NOT wired into `make ci` — the codebase has never
-# been TSan-scanned, the first sweep (docs/work/tsan-triage-2026-07-18.md)
-# found real races that are NOT yet fixed, and instrumented runs are several
-# times slower than the plain fast harness. This target goes red until the
-# triaged races are fixed or documentarily suppressed in tools/tsan.supp;
-# run it locally before touching threaded code, or in a dedicated CI lane
-# once the baseline is clean. Override the set with TSAN_CI_GROUPS="...".
-# Gate posture: halt_on_error=1 turns the first race report into a red group
-# (mirrors asan-ci's UBSan posture); without a clean baseline a red tsan-ci
-# is expected, not noise. setarch -R: see the t-tsan note above.
+# test-tsan. Deliberately NOT wired into `make ci` — instrumented runs are
+# several times slower than the plain fast harness and push times must stay
+# stable. Green as of the first TSan sweep's one finding (R1, atomic
+# publication of thread_liveness_child.id) getting fixed in code — see
+# docs/BUILD.md "ThreadSanitizer profiles" for the known-good writeup. Run it
+# locally before touching threaded code. Override the set with
+# TSAN_CI_GROUPS="...". Gate posture: halt_on_error=1 turns the first race
+# report into a red group (mirrors asan-ci's UBSan posture) — a red tsan-ci
+# is a real NEW finding, not expected noise. setarch -R: see the t-tsan note
+# above.
 TSAN_CI_GROUPS ?= test_supervisor test_workpool test_mailbox test_parallel_range_fold test_validate_parallel_determinism test_net_bootstrap test_cpu_topology
 tsan-ci: $(TEST_TSAN_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
@@ -1395,8 +1396,8 @@ $(DEV_ASAN_LINK_RSP): $(DEV_ASAN_OBJS)
 # zclassic23-dev, own epoch-keyed object tree (build/dev-tsan-obj); -Og,
 # non-LTO, no hot-path split (sanitizer fidelity over optimizer coverage).
 # Never a release/deploy artifact. Boot it on a scratch datadir; race
-# reports go to stderr — triage before suppressing anything
-# (docs/work/tsan-triage-2026-07-18.md).
+# reports go to stderr — triage before suppressing anything (see
+# docs/BUILD.md "ThreadSanitizer profiles").
 dev-tsan zclassic23-dev-tsan: $(DEV_TSAN_BIN)
 
 $(DEV_TSAN_BIN): $(DEV_TSAN_CANDIDATE_BIN) FORCE

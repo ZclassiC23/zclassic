@@ -11,11 +11,10 @@
 > the implementation.
 
 This is the canonical architecture doc. If you are a contributor (human or
-AI), **read this before writing or moving any code.** The build checklist
-(what is built, what remains) is [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md).
-This doc describes the **destination and the laws**; the checklist tracks the
-**work**. Where the two disagree, the checklist is the honest present and this
-doc is where we are going.
+AI), **read this before writing or moving any code.** The open-item debt
+board (what remains) is §9, below — this doc describes both the
+**destination and the laws** (§0–§8) and the current **open work** (§9) in
+one place.
 
 For the concrete future-agent feature slice — REST resource first, database
 schema, ActiveRecord model, validations, relationships, service workflow,
@@ -285,7 +284,7 @@ lib/
 adapters/ ports/  hexagonal seam (outbound-only by design: 12 port interfaces + 13 sqlite/file write impls for writes; reads owned by Models per Law 5)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
-docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
+docs/             FRAMEWORK.md (this — §9 is the debt board) · work/ (assignments)
 ```
 
 **Rule:** every new `.c` under `app/` lives in exactly one shape folder. The
@@ -397,19 +396,47 @@ The framework holds; the implementation moves.
 
 ## 8. Where to start
 
-- **New here:** read this, then [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md)
-  (the build checklist — what's done, what's next) and
-  [`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the five acceptance numbers
-  + the operator-paging clause everything is judged against).
+- **New here:** read this (§9 is the open-item debt board — what's done,
+  what's next) and [`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the
+  five acceptance numbers + the operator-paging clause everything is judged
+  against).
 - **Driving the north star:** keep the lint baselines empty, finish deleting
   old cutover/shadow language, and keep reducer/log authority as the only
   architecture described in production docs.
 - **Worker assignment:** [`docs/work/agent-protocol.md`](./work/agent-protocol.md),
   then your spec under `docs/work/`.
 - **Reviewing a PR:** every changed file matches its folder's shape; lint
-  passes; the checklist is updated.
+  passes; §9 is updated if it changed the open-item list.
 - **Confused:** open the file's folder. The folder name is the shape. The shape
   is the contract. There is no gray area.
+
+---
+
+## 9. Architecture debt board (open items)
+
+The eight-shape refactor (§3) is far along but not finished; this is the
+open-item list — the "what's next," not the "how we got here" (that's git
+history). Any ratchet-gate count belongs to its baseline file, never to
+prose here: baselines drift release-to-release, so re-count from the file
+(`tools/scripts/file_size_ceiling_baseline.txt`,
+`tools/scripts/file_size_ceiling_lib_baseline.txt`, etc. — §5) before citing
+a number.
+
+| Item | Status |
+|------|--------|
+| `config/` boot monolith (`boot.c`, `boot_services.c`, `boot_refold_staged.c`) | GATED under the file-size-ceiling ratchet; grandfathered in the ENFORCED baseline, must not grow. Continue only behavior-preserving extractions; larger moves need an explicit seam design. |
+| `domain/` fronted by thin `lib/` wrappers | base58 + bech32 collapsed into `domain/` (landed: callers moved to `domain_encoding_*`, the `lib/` wrappers deleted). `upgrades.c` is intentionally kept as two files — `lib/consensus/upgrades.c` owns the `NetworkUpgradeInfo`/`SPROUT_BRANCH_ID`/`EquihashUpgradeInfo` tables, `domain/consensus/upgrades.c` holds the pure activation-height arithmetic that reads them (correct layering, not duplication). `lib/keys/*` + `lib/consensus/params.c` remain a future scoping item. |
+| Supervisor shape partial | only `net`/`chain`/`staged_sync` are declared under `app/supervisors/`; the rest of service lifecycle is still hand-wired in `config/src/boot_services.c`. |
+| Controller/Service legacy compat | the file-level E1/E2/typed-blocker baselines carry no NEW violations, but import/sync controllers still carry legacy orchestration and services keep bare-`bool` compatibility APIs alongside `zcl_result`. Subtraction work, not new structure. |
+
+Resolved and closed (kept for context, no longer tracked as debt): the
+storage-adapter seam is outbound-only **by design**, not a migration in
+progress (§6); `app/events/` was deleted 2026-07-17 — Event stays a concept
+owned by `lib/event/` + `lib/storage/event_log.c` + projections, never a
+physical `app/` folder (§3 row 7); the sealed `core/` consensus tree has
+landed — see [`docs/adr/0002-sealed-consensus-core.md`](./adr/0002-sealed-consensus-core.md).
+
+Gate mode/status is tracked in §5, not duplicated here.
 
 ---
 

@@ -49,10 +49,9 @@ points in order; dated evidence and backlog material are intentionally omitted.
 
 ## Architecture (reference, off the v1 path)
 
-- [`FRAMEWORK.md`](./FRAMEWORK.md) — canonical architecture: Prime Directive, Ten Laws of Beauty, the eight shapes.
+- [`FRAMEWORK.md`](./FRAMEWORK.md) — canonical architecture: Prime Directive, Ten Laws of Beauty, the eight shapes, and (§9) the architecture debt board (live debt only; NOT the v1 path).
 - [`ARCHITECTURE_DIAGRAMS.md`](./ARCHITECTURE_DIAGRAMS.md) — Mermaid diagrams of the current boot sequence and subsystem topology.
 - [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) — ADR for the 2026-05-22 Personal Sovereignty Stack pivot.
-- [`REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) — architecture debt board (live debt only; NOT the v1 path).
 
 ## Operations
 

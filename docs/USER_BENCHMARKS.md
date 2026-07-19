@@ -76,5 +76,5 @@ restart or kill a node remain explicit subcommands.
 
 The architecture levers and wave sequencing that move each benchmark live in
 [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) and
-[`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md). Deferred waves (M, Z, T,
-R-release) wait until the five are green.
+[`docs/FRAMEWORK.md`](./FRAMEWORK.md) §9 (the open-item debt board). Deferred
+waves (M, Z, T, R-release) wait until the five are green.

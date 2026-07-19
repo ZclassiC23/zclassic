@@ -9,8 +9,8 @@
 # HARD RULE: every active entry below must be CONFIRMED benign and carry a
 # justification comment (why the race cannot corrupt state). Never add an
 # entry to hide an untriaged report — triage first, fix forward, suppress
-# only what is provably benign. Current triage baseline:
-# docs/work/tsan-triage-2026-07-18.md
+# only what is provably benign. Current triage state: docs/BUILD.md
+# "ThreadSanitizer profiles" (known-good-as-of note).
 #
-# No active suppressions yet — the first sweep's findings are documented in
-# the triage report and remain VISIBLE (failing) on purpose.
+# No active suppressions — the first sweep's one finding was fixed in code
+# (atomic publication of thread_liveness_child.id), not suppressed.

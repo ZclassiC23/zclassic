@@ -97,7 +97,7 @@ the native `code` command branch.
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: complete and copy-prove the sovereign shielded-state cure; only then start a fresh exact-candidate soak.**
 
-**The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes); [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) is the architecture debt board. Both are reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
+**The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 
 **Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
 
@@ -106,7 +106,7 @@ the native `code` command branch.
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
 2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only `progress.kv` log → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and native command surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
-3. `cat docs/HANDOFF.md` FIRST (the current entry point / live state), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan; the sovereign-cure spine is `docs/work/self-verified-tip-plan.md`). `docs/FRAMEWORK.md` + `docs/REFACTOR_STATUS.md` are architecture reference, off the v1 path.
+3. `cat docs/HANDOFF.md` FIRST (the current entry point / live state), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan; the sovereign-cure spine is `docs/work/self-verified-tip-plan.md`). `docs/FRAMEWORK.md` (§9 is the debt board) is architecture reference, off the v1 path.
 4. Check the live node before trusting any doc: `zclassic23 status`, then
    `zclassic23 dumpstate reducer_frontier`. A doc can be stale; the node cannot.
 5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments.

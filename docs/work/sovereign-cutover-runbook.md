@@ -125,6 +125,51 @@ acting — heights, commits, and producer state rot fast in this repo.
    `tools/repro_on_copy.sh --help 2>&1 | grep install-consensus-bundle` or by
    reading the script header).
 
+## Known-good: `-install-consensus-bundle` end-to-end proof (as of 2026-07-18)
+
+**PASS.** The verb, the chain-binding gate, the publication CAS, the
+CHECKPOINT_CONTENT authority path, and the atomic cutover all behaved exactly
+as written on a copy-proof fixture — no installer defect found, no gate
+predicate touched, no code change made.
+
+- Fixture: `--importblockindex` header pull (3,170,490 headers) + hand-stamped
+  minimal durable state (coins-proven authority, the 8 production stage
+  cursors at the anchor layout, a `tip_finalize` anchor row, and the two
+  `validate_headers` pass records the gate reads) — everything the gate
+  reads that a bare imported datadir does not already provide, and nothing
+  more (no UTXO set, no anchor/nullifier tables, no reducer log rows above
+  the anchor). Recipe: `tools/scripts/install_e2e_fixture_stamp.py`; proof
+  reads after install: `tools/scripts/install_e2e_verify.sh`.
+- Firing `-install-consensus-bundle=<bundle>` printed `INSTALLED:` (exit 0)
+  and activated via `authority=checkpoint_content` (no replay receipt on the
+  fixture — expected; CHECKPOINT_CONTENT is the designed fallback lattice
+  member for exactly that case).
+- Post-install boot served `hstar=served_floor=3056758 served_gap=0`, all 8
+  cursors at the anchor layout, no `anchor_backfill_gap` wedge (the bundle's
+  shielded history is complete). The node's own `core consensus utxo
+  commitment` recompute AND an independent recompute outside this repo's code
+  both matched the compiled checkpoint root
+  (`5817f0ec6673…`, 1,354,769 coins, supply 10,364,137.94674881 ZCL) — the
+  UTXO integrity claim is doubly verified, not self-reported.
+- Cost: admission (root/count/supply + every anchor tree + nullifier digest
+  recompute over the artifact) dominates wall time, ~40 min/pass on the
+  proving host, and the install path admits twice (verb + activate
+  re-admission) plus a destination re-verification — budget the maintenance
+  window accordingly for the live cutover. The admission loop does not
+  respond to SIGTERM mid-compute (SIGKILL only, fixture processes only —
+  never a live node).
+- Fixture-recipe lessons (not installer defects): the `blocks` table left by
+  `--importblockindex` is a projection only — no boot loader reads it into
+  the in-memory chain, so the fixture (like the canonical two-step recipe)
+  still needs the legacy header pull to populate `chain_active`; and
+  `reducer_frontier_compute_hstar` LOG_FAILs on a missing log table, so a
+  hand-built store must create the six empty success-checked log tables, not
+  just stamp rows into them.
+- Remaining blocker for the CANONICAL cutover is not this installer but
+  building the canonical datadir's own evidence (validated chain state at/
+  above the anchor with pass records + proven coins authority) — see
+  `self-verified-tip-plan.md`.
+
 ## Copy-prove step (mandatory — never live surgery)
 
 Gate on **H\* CLIMB**, never "the install call printed INSTALLED" — that call

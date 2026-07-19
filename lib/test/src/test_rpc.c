@@ -239,13 +239,20 @@ int test_rpc(void) {
 
     printf("diagnostics registry is the complete catalog manifest... ");
     {
-        enum { EXPECTED_DIAGNOSTICS_DUMPERS = 111 };
+        /* diagnostics_dumpers_def_row_count() (diagnostics_internal.h) is a
+         * SECOND array built by re-including diagnostics_dumpers.def with a
+         * dummy element type; g_dumpers[] (behind diagnostics_dumper_count())
+         * is a separately-compiled array over the SAME .def file. Comparing
+         * the two is a real cross-check between independent derivations of
+         * one source of truth, not count==count. The >0 floor guards against
+         * both collapsing to zero together (e.g. a busted include). */
         const size_t count = diagnostics_dumper_count();
+        const size_t def_count = diagnostics_dumpers_def_row_count();
         char csv[4096];
         int csv_len = diagnostics_subsystems_csv(csv, sizeof(csv));
         size_t csv_pos = 0;
-        bool ok = count == EXPECTED_DIAGNOSTICS_DUMPERS && csv_len > 0 &&
-                  (size_t)csv_len < sizeof(csv);
+        bool ok = count > 0 && count == def_count &&
+                  csv_len > 0 && (size_t)csv_len < sizeof(csv);
 
         struct json_value params, catalog;
         json_init(&params);

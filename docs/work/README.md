@@ -35,8 +35,8 @@ any of these three ever disagree, HANDOFF wins.
   ownership authority), and [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)
   (install runbook).
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,
-  off the v1 path — see `../REFACTOR_STATUS.md` for the debt board, which
-  self-labels NOT the v1 path).
+  off the v1 path — §9 is the open-item debt board, which self-labels NOT
+  the v1 path).
 - **Future LLM/App platform execution companion:**
   [`LLM-C23-APP-PLATFORM-CHECKLIST.md`](./LLM-C23-APP-PLATFORM-CHECKLIST.md)
   expands Phases 3–5 of `SOVEREIGN-NETWORK-ROADMAP.md`; it is not the current
@@ -59,7 +59,7 @@ Each assignment lives at `docs/work/wt<N>-<slug>.md` and contains:
 ## Conflict avoidance
 
 - **Disjoint file scope**: each assignment lists exact files it owns; no other assignment may touch those files until it merges.
-- **No concurrent edits to** `REFACTOR_STATUS.md`: only orchestrator writes it. Workers append to their own assignment doc.
+- **No concurrent edits to** `../FRAMEWORK.md` §9 (the debt board): only orchestrator writes it. Workers append to their own assignment doc.
 - **Integrate deliberately**: follow the current operator skill and assignment
   instructions; do not assume every dirty checkout can safely rebase or push.
 

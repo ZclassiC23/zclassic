@@ -13,5 +13,5 @@ them.
 
 Do not add macro-only scaffold here. The canonical form is a plain struct plus
 registration function that can be grepped, stepped through, and linted. See
-[`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the architecture and
-[`docs/REFACTOR_STATUS.md`](../../docs/REFACTOR_STATUS.md) for active debt.
+[`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the architecture and its
+§9 debt board for active debt.

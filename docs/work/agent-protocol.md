@@ -132,7 +132,7 @@ When all tasks pass:
 2. **Update the assignment doc:** set Status to
    `✅ DONE — ready for merge (branch <lane>, head <sha>)`, and append a
    `## Completion (wt<N>, YYYY-MM-DD)` section covering: summary, which TOP
-   10 BENCHMARK (REFACTOR_STATUS.md) it moved and by how much (or what it
+   10 BENCHMARK (`docs/USER_BENCHMARKS.md`) it moved and by how much (or what it
    unblocks), commits, files added/modified, acceptance verification (incl.
    the live check), and any surprises/follow-ups. Commit that on the lane
    branch.
@@ -141,7 +141,8 @@ When all tasks pass:
    `<sha>`, gates green, ready for orchestrator merge.
 
 4. **The orchestrator merges.** It reviews the lane, merges into `main`,
-   pushes, and updates REFACTOR_STATUS.md. A lane is not landed until the
+   pushes, and updates `docs/FRAMEWORK.md` §9 (the open-item debt board) if
+   the merge changed the open-item list. A lane is not landed until the
    merge commit is on `main`.
 
 5. **Self-clean after the merge.** Once your branch is merged, your worktree
@@ -167,7 +168,7 @@ In this priority order:
 
 1. Re-read `docs/FRAMEWORK.md` for the architectural shape.
 2. Re-read your assignment doc — it has a Tasks section in order.
-3. Re-read `docs/HANDOFF.md` and `docs/REFACTOR_STATUS.md` to see where you fit in the bigger picture.
+3. Re-read `docs/HANDOFF.md` and `docs/FRAMEWORK.md` §9 (the open-item debt board) to see where you fit in the bigger picture.
 4. Check the existing codebase for examples (e.g., for Job shape, look at `app/jobs/src/header_admit_stage.c` — the canonical stage adopter).
 5. If still stuck > 30 min: append `BLOCKED: <reason>` to your assignment, commit it on your lane branch, report to user. Do NOT guess and ship questionable code.
 
@@ -179,7 +180,7 @@ In this priority order:
 - ❌ Committing on a non-`main` branch in the MAIN checkout — the symmetric trap: the main checkout stays on `main`, so the orchestrator's merges never surf onto lane refs. Lane work goes in a worktree: `git worktree add .claude/worktrees/wf_<name> -b lane/<name> main`. The tracked pre-commit hook refuses this; a truly deliberate main-checkout lane commit overrides once with `ZCL_LANE_COMMIT_OK=1`.
 - ❌ **Pushing ANY branch to `origin`** — workers never push; the orchestrator pushes `main` only. **NEVER `git push --all` or `git push --mirror`** — those push every local branch (hundreds of stale lanes live locally).
 - ❌ Merging your own lane into `main` — the orchestrator reviews and merges.
-- ❌ Editing `docs/REFACTOR_STATUS.md` directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).
+- ❌ Editing `docs/FRAMEWORK.md` §9 (the open-item debt board) directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).
 - ❌ Touching files outside your assignment's scope.
 - ❌ `git push --force` / `--force-with-lease` to ANY branch.
 - ❌ Deleting another worker's commits via rebase-and-overwrite.

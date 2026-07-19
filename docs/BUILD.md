@@ -355,6 +355,25 @@ usual `ulimit -s unlimited`: ASan + PIE with an unlimited stack
 intermittently aborts at startup with "Shadow memory range interleaves with
 an existing memory mapping" (google/sanitizers#856).
 
+**Known-good as of 2026-07-18 — UBSan "left shift" in `lib/crypto/src/ed25519.c`
+and `curve25519.c`:** a `make t-asan` pass flags UBSan shift-base reports at
+`ed25519.c:81`/`:304` and `curve25519.c:50` — the TweetNaCl `int64_t`
+carry-propagation idiom (`o[i] -= c << 16;`), never the ref10
+sign-bit-into-`<<24` pattern. The left operand is legitimately negative (gf
+limbs are signed by design), so a pre-C23 compiler calls this UB; the project
+builds `-std=c23`, which redefines signed left shift as modular (the C++20
+rule), so it is no longer UB at the language level even though gcc's UBSan
+instrumentation still flags it under the old rule. Not a live miscompilation:
+both expressions lower to a plain `shlq`, identical to the C23-defined
+result, and the reachable magnitudes (`|c| <= 2^47`, `|carry| << 2^24`) never
+approach overflow. Fix (not yet applied — Ed25519 is consensus-adjacent per
+`docs/CONSENSUS_PARITY_DOCTRINE.md`, so it needs the full replay-canary bar,
+not just green ASan): cast through `uint64_t` before the shift,
+`(int64_t)((uint64_t)c << 16)` — bit-exact for all inputs (defined
+conversions + a defined unsigned shift either side), same `shlq` codegen
+(objdump-diff verifiable), silencing the sanitizer noise without touching
+consensus-relevant math.
+
 ## ThreadSanitizer profiles (opt-in)
 
 Two TSan profiles mirror the ASan ones above for data-race detection. Both
@@ -379,11 +398,9 @@ inside them.
   groups (supervisor / workpool / mailbox / parallel fold / parallel
   validation / net bootstrap / cpu topology) with
   `TSAN_OPTIONS=halt_on_error=1` so the first report fails the run.
-  Deliberately **not** wired into `make ci`: the codebase's first TSan sweep
-  found real, not-yet-fixed races (baseline:
-  `docs/work/tsan-triage-2026-07-18.md`), so this target is currently RED by
-  construction until the triaged findings are fixed or documentarily
-  suppressed. Override the set with `TSAN_CI_GROUPS="..."`.
+  Deliberately **not** wired into `make ci` (instrumented runs are several
+  times slower and push times must stay stable). Green as of the R1 fix
+  below. Override the set with `TSAN_CI_GROUPS="..."`.
 - **`make dev-tsan`** — the dev node under TSan
   (`build/bin/zclassic23-dev-tsan`, `-Og`, non-LTO, object tree
   `build/dev-tsan-obj/`). For local data-race debugging on a scratch
@@ -391,7 +408,35 @@ inside them.
 
 `t-tsan` and `tsan-ci` both read `tools/tsan.supp` via
 `TSAN_OPTIONS=suppressions=...`. Every active entry there must be confirmed
-benign with a written justification — never suppress an untriaged report.
+benign with a written justification — never suppress an untriaged report;
+it ships with zero active suppressions (comments only) — the one race found
+so far (below) was fixed in code, not hidden.
+
+**Known-good as of 2026-07-18 — first TSan sweep, R1 fixed:** a ~23 s
+thread-relevant subset of `test_parallel` (supervisor incl. its production
+tree / workpool / mailbox / parallel range-fold / parallel validation
+determinism / net bootstrap / cpu topology / net + peer-lifecycle / header
+sync / chain-advance atomicity / connman locking / service-state-driver /
+reducer-drive watchdog / sync-watchdog conditions, the 7 `tsan-ci` groups run
+3x for timing sensitivity) found **one unique real race**: R1 —
+`struct thread_liveness_child.id` (`lib/util/src/thread_liveness.c`)
+published via a plain (non-atomic) store in `thread_liveness_register()`
+while an already-spawned worker thread plain-reads it in
+`thread_liveness_worker_alive()` — the documented
+spawn-then-register contract, and exactly what production callers do
+(`rpc_timeout_start_watchdog`, `heartbeat.c`, `metrics.c`). Formally a C11
+data race; benign-looking on x86-64 (aligned 4-byte load/store can't tear,
+so the worst pre-fix outcome was one skipped, self-healing liveness beat) but
+real UB and a genuine missing-synchronization risk on weaker memory orders.
+**Fixed** (`lane/fix-tsan-r1`, merged): `id` is now `_Atomic
+supervisor_child_id`, release-stored after `supervisor_register()` completes
+and acquire-loaded by every reader (beat, worker_alive/_exited,
+stop_begin/_finish, retire, idempotent guards) — a worker observing a valid
+id also observes the completed registry insertion. Verified:
+`make t-tsan ONLY=test_supervisor` x3 -> 0 reports (was 3/4 flaky-red);
+`make tsan-ci` green. This was a THIN baseline (short unit-style runs, small
+race windows) — a full-suite TSan pass and a `dev-tsan` boot on a scratch
+datadir are still open follow-ups, not yet run.
 
 Both runners wrap the harness in `setarch -R` (ASLR off): TSan reserves
 fixed shadow address ranges and the default-ASLR PIE/mmap placement
