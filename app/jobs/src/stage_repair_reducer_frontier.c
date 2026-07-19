@@ -725,7 +725,23 @@ static bool reducer_frontier_reconcile_light_impl(
                      local.have_data_cleared > 0 ||
                      local.failed_mask_cleared > 0;
 
-    if (apply && local.repaired) {
+    /* De-storm: on a wedged node this reconcile "repairs" the same frontier
+     * every reducer pass (~5s) — an unthrottled WARN is a co-mechanism of the
+     * live 18k-line log storm. Key on the repair fingerprint (hstar,
+     * coins_applied_height, and the set/cleared counts) so a genuinely-advancing
+     * repair re-emits but a stuck repeat collapses to first-fire + 60 s
+     * keepalive. Mirrors l1_refuse_throttle ~60 lines above. */
+    static struct log_throttle l1_repaired_throttle = LOG_THROTTLE_INIT;
+    uint64_t l1_repaired_key =
+        ((uint64_t)(uint32_t)local.hstar << 32) |
+        (uint32_t)(((uint32_t)local.coins_applied_height << 12) ^
+                   (uint32_t)(local.have_data_cleared + local.failed_mask_cleared +
+                              local.have_data_set + local.scripts_set));
+    uint64_t l1_repaired_reps = 0;
+    if (apply && local.repaired &&
+        log_throttle_should_emit(&l1_repaired_throttle, l1_repaired_key,
+                                 platform_time_wall_unix(), 60,
+                                 &l1_repaired_reps)) {
         LOG_WARN("stage_repair",
                  "[stage_repair] reducer_frontier L1 repaired hstar=%d "
                  "served_floor=%d coins_applied=%d sweep_top=%d "
@@ -738,7 +754,7 @@ static bool reducer_frontier_reconcile_light_impl(
                  "script_validate=%d->%d proof_validate=%d->%d "
                  "script_refill_hole=%d proof_refill_hole=%d "
                  "unapplied_clamp=%d tipfin_backfill_h=%d "
-                 "tipfin_backfill_n=%d",
+                 "tipfin_backfill_n=%d repeats=%llu",
                  local.hstar, local.served_floor, local.coins_applied_height,
                  local.sweep_top, local.validate_headers_cursor_before,
                  local.validate_headers_cursor_after,
@@ -763,7 +779,8 @@ static bool reducer_frontier_reconcile_light_impl(
                  local.lowest_proof_validate_refill_hole,
                  (int)local.pre_refusal_unapplied_clamp,
                  local.tipfin_backfill_height,
-                 local.tipfin_backfill_count);
+                 local.tipfin_backfill_count,
+                 (unsigned long long)l1_repaired_reps);
     }
 
     /* Only this terminal exit caches: every early return above is an

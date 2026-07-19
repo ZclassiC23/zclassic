@@ -43,6 +43,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Mirror of validate_headers_stage.c's private VH_MARK_FAIL_BLOCKER_ID (the
+ * mark-failure typed blocker id) for the storm/repair assertions below. */
+#define VH_MARK_FAIL_BLOCKER_ID_T "validate_headers.mark_failed"
+
 #define VH_CHECK(name, expr) do { \
     printf("validate_headers: %s... ", (name)); \
     if ((expr)) printf("OK\n"); \
@@ -1444,6 +1448,101 @@ int test_validate_headers_stage(void)
                      BLOCK_VALID_HEADER);
         VH_CHECK("auth: pass record lookup succeeds",
                  validate_headers_stage_has_pass_record(0, &sc.hashes[0]));
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── mark-failure → typed blocker, no storm (deliverable a) ──────────
+     * The live 18,440-WARN/5min storm: the validator PASSES a header but the
+     * block_index entry is BLOCK_FAILED-masked (set by the getheaders serve
+     * path), so mark_valid_header refuses it forever and the old code returned
+     * JOB_FATAL hot. With no repairable evidence (no header_solution_repair row)
+     * the mask must NOT be cleared; instead the stage raises ONE typed blocker,
+     * emits exactly ONE WARN per streak, and backs off JOB_IDLE — the cursor
+     * holds, never a hot loop. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("mark-storm: setup",
+                 vh_setup("mark_storm", 2, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        VH_CHECK("mark-storm: header_admit drains 2",
+                 header_admit_stage_drain(100) == 2);
+
+        /* Stale serve-path poison: BLOCK_FAILED_VALID on the frontier block,
+         * with NO header_solution_repair row (so it is not the clearable
+         * repairable class). The validator (stub_pass) still passes. */
+        sc.blocks[0].nStatus |= BLOCK_FAILED_VALID;
+
+        blocker_clear(VH_MARK_FAIL_BLOCKER_ID_T);
+        int64_t warn0 = validate_headers_stage_mark_fail_warn_count();
+
+        /* Drive several steps: every one must be JOB_IDLE (backoff), never
+         * JOB_FATAL/JOB_ADVANCED, and the cursor must not move. */
+        bool all_idle = true;
+        for (int s = 0; s < 6; s++) {
+            job_result_t r = validate_headers_stage_step_once();
+            if (r != JOB_IDLE) all_idle = false;
+        }
+        VH_CHECK("mark-storm: every step backs off JOB_IDLE (no hot loop)",
+                 all_idle);
+        VH_CHECK("mark-storm: cursor held at 0 (never advanced past poison)",
+                 validate_headers_stage_cursor() == 0);
+        VH_CHECK("mark-storm: exactly ONE WARN per streak (no storm)",
+                 validate_headers_stage_mark_fail_warn_count() - warn0 == 1);
+        VH_CHECK("mark-storm: typed blocker raised",
+                 blocker_exists(VH_MARK_FAIL_BLOCKER_ID_T));
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── repairable stale FAILED mask clears on recheck (deliverable b) ──
+     * A header fails solutionless (ok=0, the repairable class), THEN its
+     * block_index entry gets a stale BLOCK_FAILED mask (serve-path poison) AND
+     * its solution is repaired (validator now passes). The recheck path must:
+     * re-run the UNCHANGED validator (now passing), clear the stale FAILED bits,
+     * mark the header valid, and flip the log row to ok=1 — cursor/floor
+     * advances. The mask leaves FAILED ONLY because the unchanged validator
+     * passed (E13-neutral). */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 1;
+        ctx.reason = "no-header-solution-backfill-required";
+        VH_CHECK("mark-repair: setup with solutionless failing validator",
+                 vh_setup("mark_repair", 3, stub_fail_at, &ctx,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        VH_CHECK("mark-repair: initial validate advances",
+                 validate_headers_stage_drain(10) >= 1);
+
+        sqlite3 *db = progress_store_db();
+        int ok = -1; char reason[64] = {0};
+        VH_CHECK("mark-repair: h=1 row failed solutionless",
+                 log_row_at(db, 1, &ok, reason, sizeof(reason)) && ok == 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") == 0);
+
+        /* Serve-path poison: stale BLOCK_FAILED mask on the failed frontier
+         * block; and the solution is now repaired (validator passes). */
+        sc.blocks[1].nStatus |= BLOCK_FAILED_VALID;
+        VH_CHECK("mark-repair: precondition — block is FAILED-masked",
+                 (sc.blocks[1].nStatus & BLOCK_FAILED_MASK) != 0);
+        validate_headers_stage_set_validator(stub_pass, NULL);
+
+        VH_CHECK("mark-repair: recheck re-validates + advances",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+        VH_CHECK("mark-repair: stale FAILED mask cleared (unchanged validator "
+                 "passed)",
+                 (sc.blocks[1].nStatus & BLOCK_FAILED_MASK) == 0);
+        VH_CHECK("mark-repair: block marked BLOCK_VALID_HEADER",
+                 (sc.blocks[1].nStatus & BLOCK_VALID_MASK) >=
+                     BLOCK_VALID_HEADER);
+        ok = -1;
+        VH_CHECK("mark-repair: h=1 row flipped to ok=1",
+                 log_row_at(db, 1, &ok, NULL, 0) && ok == 1);
+        VH_CHECK("mark-repair: no mark-failure blocker raised (repair path)",
+                 !blocker_exists(VH_MARK_FAIL_BLOCKER_ID_T));
 
         vh_teardown(dir, &ms, &sc);
     }

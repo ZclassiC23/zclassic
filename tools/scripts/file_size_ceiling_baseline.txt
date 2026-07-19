@@ -24,8 +24,10 @@ app/controllers/src/api_controller_status.c 896
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 807
+app/jobs/src/stage_repair_reducer_frontier.c 815
 app/jobs/src/tip_finalize_stage.c 807
-app/jobs/src/utxo_apply_stage.c 973
+app/jobs/src/utxo_apply_stage.c 911
+app/jobs/src/validate_headers_stage.c 948
 app/services/src/block_index_loader.c 1184
 app/services/src/consensus_state_publication_cas.c 801
 app/services/src/node_db_catchup_service.c 886
