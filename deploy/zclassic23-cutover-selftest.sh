@@ -186,7 +186,33 @@ EOF
         && ok "case8 rolls back and restores datadirs when the promoted unit won't start"
 }
 
-c1; c2; c3; c4; c5; c6; c7; c8
+# ── case 9: a failing promote-mv itself triggers rollback (not a bare exit) ──
+c9() {
+    local r="$SANDBOX/c9"; setup_fixtures "$r"
+    local shim="$SANDBOX/c9-shim"; mkdir -p "$shim"
+    cat > "$shim/mv" <<'EOF'
+#!/bin/sh
+if [ -n "${MV_FAIL_SRC:-}" ] && [ "$1" = "$MV_FAIL_SRC" ]; then
+    echo "mv shim: injected failure moving $1" >&2
+    exit 1
+fi
+exec /bin/mv "$@"
+EOF
+    chmod +x "$shim/mv"
+    local out rc
+    out="$(PATH="$shim:$PATH" MV_FAIL_SRC="$r/candidate" \
+           MOCK_H_CANONICAL_PRE=100 MOCK_H_CANDIDATE_PRE=105 \
+           MOCK_H_CANDIDATE_POSTSTOP=-1 MOCK_H_CANONICAL_POST=105 \
+           run_cutover "$r" --yes --timeout=5 2>&1)"; rc=$?
+    [ "$rc" = 1 ] || fail "c9: expected exit 1 (promote-mv rollback), got $rc"
+    printf '%s' "$out" | grep -q "CUTOVER: ROLLED-BACK" || fail "c9: no ROLLED-BACK verdict on promote-mv failure"
+    [ "$(marker_of "$r/canonical")" = CANON ] || fail "c9: old canonical NOT restored after promote-mv failure"
+    [ "$(marker_of "$r/candidate")" = CAND ] || fail "c9: candidate datadir lost after promote-mv failure"
+    [ "$rc" = 1 ] && [ "$(marker_of "$r/canonical")" = CANON ] \
+        && ok "case9 rolls back when the promote rename itself fails"
+}
+
+c1; c2; c3; c4; c5; c6; c7; c8; c9
 
 if [ "$fails" -eq 0 ]; then
     echo "cutover-selftest: PASS"

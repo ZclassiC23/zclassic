@@ -215,19 +215,22 @@ done
 _live="$(hstar candidate-poststop "$CANDIDATE_RPCPORT" "$CANDIDATE_DATADIR")"
 if [ "$_live" -ge 0 ] 2>/dev/null; then
     log "REFUSED (pre-swap): candidate still answering rpc $CANDIDATE_RPCPORT after stop+${STOP_GRACE}s — it is not stopped; refusing to rename a live datadir. Both units left stopped? Restarting canonical."
-    unit_start "$CANONICAL_UNIT"
+    unit_start "$CANONICAL_UNIT" || log "FATAL: canonical did NOT restart after refusal — data untouched at $CANONICAL_DATADIR but no canonical is running; start it manually NOW"
     exit 2
 fi
 
 # demote: preserve the old canonical (only if it exists — a failover from a
 # canonical that never had a datadir is valid).
 if [ -e "$CANONICAL_DATADIR" ]; then
-    mv "$CANONICAL_DATADIR" "$DEMOTED_DIR"
+    # Guarded: an unguarded mv under `set -e` would exit WITHOUT rollback,
+    # leaving the canonical unit stopped (or the datadir missing) — the
+    # stranding class this script exists to prevent.
+    mv "$CANONICAL_DATADIR" "$DEMOTED_DIR" || rollback "demote rename failed ($CANONICAL_DATADIR -> $DEMOTED_DIR)"
     DEMOTED_DONE=1
     log "demoted old canonical -> $DEMOTED_DIR"
 fi
 # promote: candidate becomes the canonical datadir.
-mv "$CANDIDATE_DATADIR" "$CANONICAL_DATADIR"
+mv "$CANDIDATE_DATADIR" "$CANONICAL_DATADIR" || rollback "promote rename failed ($CANDIDATE_DATADIR -> $CANONICAL_DATADIR)"
 PROMOTED_DONE=1
 log "promoted candidate -> $CANONICAL_DATADIR"
 
