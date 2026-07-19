@@ -14,6 +14,16 @@ static int g_condition_count;
 static pthread_mutex_t g_condition_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_main_state;
 
+/* Fine-grained liveness hook (see condition.h). Set once by the condition
+ * runner; read on the engine-tick thread. Atomic so the store/load are safe
+ * across the runner-register / engine-tick threads without the registry lock. */
+static void (*_Atomic g_progress_hook)(void);
+
+void condition_engine_set_progress_hook(void (*fn)(void))
+{
+    atomic_store(&g_progress_hook, fn);
+}
+
 static int64_t now_unix(void)
 {
     return platform_time_wall_unix();
@@ -440,8 +450,15 @@ void condition_engine_tick(void)
     pthread_mutex_unlock(&g_condition_mu);
 
     int64_t now = now_unix();
-    for (int i = 0; i < count; i++)
+    void (*hook)(void) = atomic_load(&g_progress_hook);
+    for (int i = 0; i < count; i++) {
         condition_tick_one(snapshot[i], now);
+        /* Refresh the runner's heartbeat between conditions so a long pass
+         * over many heavy detect()/remedy() probes never lapses the runner's
+         * stall deadline — only a single remedy that never returns can. */
+        if (hook)
+            hook();
+    }
 }
 
 int condition_engine_get_active_count(void)
@@ -663,6 +680,7 @@ void condition_engine_reset_for_testing(void)
     memset(g_page_ladders, 0, sizeof(g_page_ladders));
     g_condition_count = 0;
     g_main_state = NULL;
+    atomic_store(&g_progress_hook, NULL);
     pthread_mutex_unlock(&g_condition_mu);
 }
 #endif

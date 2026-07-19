@@ -133,6 +133,17 @@ bool condition_engine_has_registered(const char *name);
 bool condition_engine_get_registered_snapshot(
     const char *name, struct condition_runtime_snapshot *out);
 void condition_engine_tick(void);
+
+/* Per-condition progress hook. Invoked by condition_engine_tick() once after
+ * each condition's tick, on the SAME thread that drives the engine. Its sole
+ * purpose is fine-grained liveness: the dedicated condition-runner thread
+ * (app/supervisors/src/self_heal.c) registers a hook that refreshes its
+ * supervisor heartbeat, so a long multi-condition pass keeps beating between
+ * conditions and only a single remedy that never returns can lapse the
+ * runner's stall deadline. Must be cheap and non-blocking (an atomic store).
+ * NULL clears it. Cleared by condition_engine_reset_for_testing(). */
+void condition_engine_set_progress_hook(void (*fn)(void));
+
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 
 struct condition_engine_summary {
