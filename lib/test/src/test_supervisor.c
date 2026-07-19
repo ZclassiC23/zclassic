@@ -57,6 +57,17 @@ static void inc_stall(struct liveness_contract *self)
     if (cc) atomic_fetch_add(&cc->stall_calls, 1);
 }
 
+/* Deliberately slow on_tick: blocks 150 ms (simulating a child whose tick
+ * commits a SQLite transaction under IO pressure). It runs on the tick-runner
+ * thread, so it must NOT freeze the sweep heartbeat. */
+static void slow_tick(struct liveness_contract *self)
+{
+    struct cb_counts *cc = (struct cb_counts *)self->ctx;
+    struct timespec ts = { 0, 150 * 1000000L };
+    nanosleep(&ts, NULL);
+    if (cc) atomic_fetch_add(&cc->tick_calls, 1);
+}
+
 /* Process-wide stall-observer probe (the supervisor_set_stall_observer
  * seam used by the ops.debug.bundle auto-capture). */
 static _Atomic int  g_obs_calls;
@@ -70,16 +81,6 @@ static void obs_stall(const char *child_name,
     snprintf(g_obs_name, sizeof(g_obs_name), "%s",
              child_name ? child_name : "");
     atomic_store(&g_obs_reason, (int)reason);
-
-/* Deliberately slow on_tick: blocks 150 ms (simulating a child whose tick
- * commits a SQLite transaction under IO pressure). It runs on the tick-runner
- * thread, so it must NOT freeze the sweep heartbeat. */
-static void slow_tick(struct liveness_contract *self)
-{
-    struct cb_counts *cc = (struct cb_counts *)self->ctx;
-    struct timespec ts = { 0, 150 * 1000000L };
-    nanosleep(&ts, NULL);
-    if (cc) atomic_fetch_add(&cc->tick_calls, 1);
 }
 
 /* Restart-policy probe: a fake worker whose on_respawn just records the call.
