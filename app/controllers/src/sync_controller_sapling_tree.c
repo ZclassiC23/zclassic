@@ -36,17 +36,21 @@
 #include <sys/mman.h>
 #include <time.h>
 
-/* Live incident (2026-07): the deferred/live rebuild runs on a thread
- * OTHER than the reducer drive but shares the reducer's node_db connection,
- * so a checkpoint write's BEGIN can lose a lock race against the reducer
- * mid-batch. A single immediate BEGIN failure used to LOG_FAIL (one line,
- * but re-fired on every checkpoint boundary of every retry of the whole
- * rebuild — effectively unbounded over a multi-hour deferred run) and the
- * rebuild never actually completed. Bound the retry, back off, and name a
- * TRANSIENT blocker once retries are exhausted instead of looping the
- * caller into more log spam. */
+/* Live incident (2026-07): the deferred/live rebuild shares the reducer's
+ * node_db connection from another thread, so a persist's BEGIN nested into
+ * the reducer's open batch tx (SQLITE_ERROR, un-retryable) and spammed on
+ * every checkpoint while the rebuild never completed. The primary cure is the
+ * autocommit guard in sapling_tree_persist_pair_status; this bounded retry is
+ * the residual defense for a genuine cross-connection BUSY/LOCKED. */
 #define SAPLING_TREE_BEGIN_MAX_ATTEMPTS 5
 #define SAPLING_TREE_BEGIN_BACKOFF_MS   60
+
+/* The FINAL persist bounded-retries a DEFERRED result, yielding between
+ * attempts so the reducer can commit its batch and return to autocommit. The
+ * per-100k checkpoint persists never wait — a deferred checkpoint is skipped
+ * and re-attempted at the next checkpoint / the final persist. */
+#define SAPLING_TREE_FINAL_PERSIST_ATTEMPTS  8
+#define SAPLING_TREE_FINAL_PERSIST_BACKOFF_MS 125
 
 /* Heartbeat cadence for the supervised rebuild (task spec: every 60s). */
 #define SAPLING_TREE_REBUILD_HEARTBEAT_MS 60000
@@ -68,13 +72,27 @@ void sapling_tree_rebuild_test_force_begin_busy(int attempts)
 {
     atomic_store(&g_sapling_begin_force_busy, attempts);
 }
+
+/* Counts persists DEFERRED because the shared node_db connection already held
+ * a foreign open tx (the real production failure). Lets a test assert the
+ * deferral path actually FIRED, not just "no crash". */
+static _Atomic int g_sapling_persist_deferrals = 0;
+
+int sapling_tree_rebuild_test_persist_deferrals(void)
+{
+    return atomic_load(&g_sapling_persist_deferrals);
+}
+
+void sapling_tree_rebuild_test_reset_persist_deferrals(void)
+{
+    atomic_store(&g_sapling_persist_deferrals, 0);
+}
 #endif
 
-/* Single BEGIN attempt. Returns true + rc=SQLITE_OK on success, false +
- * the sqlite result code on failure. Under ZCL_TESTING the fault-injection
- * counter above can substitute a simulated SQLITE_BUSY without touching
- * the real connection, so the retry/backoff/blocker logic in
- * sapling_tree_begin_with_retry is deterministically testable. */
+/* Single BEGIN attempt. Returns true + rc=SQLITE_OK on success, false + the
+ * sqlite result code on failure. Under ZCL_TESTING the fault-injection counter
+ * above can substitute a simulated SQLITE_BUSY without touching the real
+ * connection, so the retry/backoff/blocker logic is deterministically tested. */
 static bool sapling_tree_do_begin(struct node_db *ndb, int *rc_out)
 {
 #ifdef ZCL_TESTING
@@ -96,12 +114,17 @@ static bool sapling_tree_do_begin(struct node_db *ndb, int *rc_out)
     return false;
 }
 
-/* Bounded retry + linear backoff around node_db_begin(), following the
- * observer convention already used by chain_state_service.c's
- * csr_persist_coins_best_locked (bounded attempts, SQLITE_BUSY/LOCKED-only
- * retry, name-a-blocker on exhaustion instead of unbounded log spam). Never
- * touches the reducer's own state — it only waits on the CALLING thread, so
- * it cannot block the reducer drive (LOCK-ORDER LAW). */
+/* Bounded retry + linear backoff around node_db_begin() for a GENUINE
+ * SQLITE_BUSY/LOCKED — a lock lost to another CONNECTION (e.g. the periodic
+ * WAL-checkpoint thread), the one contention class that clears on its own.
+ * The nested-BEGIN case (a foreign tx open on THIS connection → SQLITE_ERROR
+ * "cannot start a transaction within a transaction", which can NEVER clear by
+ * retrying) is filtered out upstream by the sqlite3_get_autocommit() guard in
+ * sapling_tree_persist_pair_status, so this loop only ever sees the retryable
+ * class. Correct classification depends on node_db_begin now preserving the
+ * real rc (app/models/src/database.c). Bounded attempts + name-a-blocker on
+ * exhaustion (no log spam); waits only on the CALLING thread, so it cannot
+ * block the reducer drive (LOCK-ORDER LAW). */
 static bool sapling_tree_begin_with_retry(struct node_db *ndb, int64_t height)
 {
     for (int attempt = 1; attempt <= SAPLING_TREE_BEGIN_MAX_ATTEMPTS;
@@ -139,22 +162,55 @@ static bool sapling_tree_begin_with_retry(struct node_db *ndb, int64_t height)
     return false;
 }
 
+/* Tri-state outcome of a persist attempt. DEFERRED is distinct from FAILED:
+ * it means "wrote nothing on purpose, retry later" (a foreign open tx owned
+ * the connection), NOT a derived-state error — the rebuild loop must not
+ * fail-close on it. */
+enum sapling_persist_status {
+    SAPLING_PERSIST_OK = 0,
+    SAPLING_PERSIST_DEFERRED,
+    SAPLING_PERSIST_FAILED,
+};
+
 /* lane/sapling-tree-persist: persist node_state["sapling_tree"] and
- * node_state["sapling_tree_rebuild_height"] as ONE atomic write. The two
- * were previously two independent autocommit statements — a crash between
- * them could leave a tree blob paired with a stale (or absent) height,
- * which is exactly the "saved at height A, but the height record says
- * something else" defect the boot-time loader (config/src/boot.c,
- * sapling_tree_verify_at_saved_height) must be able to trust. When the
- * caller already holds an open transaction (ndb->sync_in_batch) the pair
- * commits with that outer transaction instead of nesting a BEGIN. */
-bool sapling_tree_persist_pair(struct node_db *ndb,
-                               const void *blob, size_t blob_len,
-                               int64_t height)
+ * node_state["sapling_tree_rebuild_height"] as ONE atomic write so a crash
+ * can never pair the tree blob with a stale/absent height (the boot-time
+ * loader, config/src/boot.c sapling_tree_verify_at_saved_height, trusts that
+ * pairing). When the reducer already holds the batch (ndb->sync_in_batch) the
+ * pair folds into that outer tx instead of nesting a BEGIN.
+ *
+ * lane/e3-sapling-rebuild-robust: NEVER nest a BEGIN on a connection that
+ * already holds an open tx. The deferred/live rebuild runs on a thread OTHER
+ * than the reducer while SHARING the reducer's FULLMUTEX node_db handle; the
+ * reducer's batch (sync_controller_blocks.c) keeps a tx open across many
+ * blocks. A BEGIN into that live tx returns SQLITE_ERROR "cannot start a
+ * transaction within a transaction" — un-retryable while the outer tx lives,
+ * the real production failure the old BUSY/LOCKED retry could never clear.
+ * ndb->sync_in_batch only tracks the reducer's OWN bookkeeping (and lags a
+ * live tx in the begin→flag-set window), so gate the own-BEGIN decision on the
+ * ACTUAL connection state via sqlite3_get_autocommit(): a foreign open tx is a
+ * transient timing condition, not a state error — DEFER (write nothing) and
+ * let the caller retry once the connection returns to autocommit. */
+static enum sapling_persist_status
+sapling_tree_persist_pair_status(struct node_db *ndb,
+                                 const void *blob, size_t blob_len,
+                                 int64_t height)
 {
     bool own_tx = ndb && !ndb->sync_in_batch;
-    if (own_tx && !sapling_tree_begin_with_retry(ndb, height))
-        return false;
+    if (own_tx) {
+        if (ndb->db && sqlite3_get_autocommit(ndb->db) == 0) {
+#ifdef ZCL_TESTING
+            atomic_fetch_add(&g_sapling_persist_deferrals, 1);
+#endif
+            LOG_INFO("sapling_tree_rebuild",
+                    "persist_pair: deferring height=%lld — connection holds a "
+                    "foreign open transaction (reducer batch); will retry when "
+                    "it returns to autocommit", (long long)height);
+            return SAPLING_PERSIST_DEFERRED;
+        }
+        if (!sapling_tree_begin_with_retry(ndb, height))
+            return SAPLING_PERSIST_FAILED;
+    }
 
     bool ok = node_db_state_set(ndb, "sapling_tree", blob, blob_len) &&
               node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
@@ -167,7 +223,19 @@ bool sapling_tree_persist_pair(struct node_db *ndb,
             node_db_rollback(ndb);
         }
     }
-    return ok;
+    return ok ? SAPLING_PERSIST_OK : SAPLING_PERSIST_FAILED;
+}
+
+/* Public bool wrapper (unchanged signature — external callers in
+ * sync_controller_blocks.c, wallet_rescan_controller_witness.c, and
+ * boot_refold_staged.c always persist under their OWN tx / sync_in_batch, so
+ * they never hit the DEFERRED branch and OK-vs-not-OK is all they need). */
+bool sapling_tree_persist_pair(struct node_db *ndb,
+                               const void *blob, size_t blob_len,
+                               int64_t height)
+{
+    return sapling_tree_persist_pair_status(ndb, blob, blob_len, height)
+           == SAPLING_PERSIST_OK;
 }
 
 /* ── Supervision (lib/util/include/util/supervisor.h contract) ───────────
@@ -492,14 +560,22 @@ int sapling_tree_rebuild(struct node_db *ndb,
                 fail_height = h;
                 goto fail;
             }
-            if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
-                                          (int64_t)h)) {
-                stream_free(&ts);
+            enum sapling_persist_status ps =
+                sapling_tree_persist_pair_status(ndb, ts.data, ts.size,
+                                                 (int64_t)h);
+            stream_free(&ts);
+            if (ps == SAPLING_PERSIST_FAILED) {
                 fail_reason = "persist_checkpoint_pair_failed";
                 fail_height = h;
                 goto fail;
             }
-            stream_free(&ts);
+            /* DEFERRED: a foreign tx transiently owned the connection. Skip
+             * persisting THIS checkpoint — the tree stays in memory and the
+             * next checkpoint (or the final persist) records it. Not a
+             * failure; the fold keeps making progress. */
+            if (ps == SAPLING_PERSIST_DEFERRED)
+                LOG_INFO("sapling_tree_rebuild",
+                        "checkpoint persist deferred at h=%d (busy)", h);
         }
     }
 
@@ -549,14 +625,57 @@ int sapling_tree_rebuild(struct node_db *ndb,
             fail_height = chain_tip;
             goto fail;
         }
-        if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
-                                      (int64_t)chain_tip)) {
-            stream_free(&ts);
+        /* The final persist MUST durably land the rebuilt tree. A DEFERRED
+         * result means the reducer's batch tx transiently owns the connection;
+         * the reducer commits on a seconds timescale, so a bounded wait-then-
+         * retry (yielding this background thread) lets the persist land without
+         * ever nesting a BEGIN. Exhaustion is handled below. */
+        enum sapling_persist_status ps = SAPLING_PERSIST_DEFERRED;
+        for (int a = 1; a <= SAPLING_TREE_FINAL_PERSIST_ATTEMPTS &&
+                        ps == SAPLING_PERSIST_DEFERRED; a++) {
+            ps = sapling_tree_persist_pair_status(ndb, ts.data, ts.size,
+                                                  (int64_t)chain_tip);
+            if (ps == SAPLING_PERSIST_DEFERRED &&
+                a < SAPLING_TREE_FINAL_PERSIST_ATTEMPTS) {
+                int64_t backoff_ms =
+                    (int64_t)SAPLING_TREE_FINAL_PERSIST_BACKOFF_MS * a;
+                struct timespec bt = {
+                    .tv_sec = backoff_ms / 1000,
+                    .tv_nsec = (backoff_ms % 1000) * 1000000L,
+                };
+                nanosleep(&bt, NULL);
+            }
+        }
+        stream_free(&ts);
+        if (ps == SAPLING_PERSIST_DEFERRED) {
+            /* Stayed busy past the budget — a transient lock/timing condition,
+             * NOT a derived-state disagreement: name the persist_busy TRANSIENT
+             * blocker (self-clears on the next successful rebuild) and return
+             * the soft-failure code (rc<0) the deferred worker reads as "leave
+             * the tree stale, retry next pass" — deliberately NOT the
+             * fail_closed path (reserved for real root/state mismatches).
+             * Complete the child first so a clean give-up is not a hung stall. */
+            char reason[BLOCKER_REASON_MAX];
+            snprintf(reason, sizeof(reason),
+                    "final persist deferred height=%lld: connection stayed in "
+                    "a foreign open transaction past %d attempts",
+                    (long long)chain_tip,
+                    SAPLING_TREE_FINAL_PERSIST_ATTEMPTS);
+            struct blocker_record rec;
+            if (blocker_init(&rec, "sapling_tree_rebuild.persist_busy",
+                             "sync.sapling_tree_rebuild",
+                             BLOCKER_TRANSIENT, reason))
+                blocker_set(&rec);
+            LOG_ERROR("sapling_tree_rebuild", "%s", reason);
+            if (sup_id != SUPERVISOR_INVALID_ID)
+                supervisor_child_complete(sup_id);
+            return -1; // raw-return-ok:logged_above_and_persist_busy_blocker_set
+        }
+        if (ps == SAPLING_PERSIST_FAILED) {
             fail_reason = "persist_final_pair_failed";
             fail_height = chain_tip;
             goto fail;
         }
-        stream_free(&ts);
     }
 
     (void)tree;

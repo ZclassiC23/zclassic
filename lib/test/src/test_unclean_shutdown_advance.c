@@ -558,6 +558,108 @@ static int test_sapling_persist_pair_busy_exhausted_names_blocker(void)
     return failures;
 }
 
+/* The REAL production failure the adversarial verifier isolated: the rebuild
+ * shares the reducer's node_db connection, so a persist attempted while that
+ * connection already has an OPEN transaction issues a nested BEGIN, which
+ * sqlite refuses with SQLITE_ERROR "cannot start a transaction within a
+ * transaction" — NEVER SQLITE_BUSY/LOCKED, so the old bounded BUSY-retry was
+ * dead code against it and re-fired forever. The fix detects the foreign open
+ * tx via sqlite3_get_autocommit() and DEFERS (writes nothing, names no
+ * blocker, does not spin) — then the persist completes once the tx closes.
+ * This drives that exact sequence on one connection, deterministically. */
+static int test_sapling_persist_pair_defers_while_tx_open(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_persist_pair defers while the connection has an open "
+          "tx, then completes when it closes... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_persist_pair", "defer_open_tx");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x74);
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+    sapling_tree_rebuild_test_reset_persist_deferrals();
+
+    const int64_t saved_h = 900791;
+
+    /* Simulate the reducer holding an open batch tx on the SHARED connection:
+     * a plain BEGIN with sync_in_batch left false (exactly the begin→flag-set
+     * window, and any non-batch writer). This is the state that made the old
+     * nested-BEGIN retry dead code. */
+    bool tx_opened = ok && node_db_begin(&ndb);
+
+    /* persist must DEFER (not write, not name a blocker, not spin) — and the
+     * deferral path must actually FIRE (counter increments), proving we took
+     * the detect-open-tx branch rather than silently no-oping. */
+    int deferrals_before = sapling_tree_rebuild_test_persist_deferrals();
+    bool persisted_while_open =
+        tx_opened &&
+        sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    int deferrals_after = sapling_tree_rebuild_test_persist_deferrals();
+
+    bool deferred = !persisted_while_open &&
+                    (deferrals_after == deferrals_before + 1);
+    bool no_spam_blocker =
+        !blocker_exists("sapling_tree_rebuild.persist_busy");
+
+    /* Nothing was written while deferred: the height key must still be absent. */
+    int64_t peek_h = -1;
+    bool absent_while_deferred =
+        !node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &peek_h);
+
+    /* Close the reducer's tx — the connection returns to autocommit. */
+    bool tx_closed = node_db_commit(&ndb);
+
+    /* Now the SAME persist completes (own BEGIN/COMMIT, no nesting) and does
+     * NOT defer again — proving the deferral is transient, not a dead end. */
+    int deferrals_pre_retry = sapling_tree_rebuild_test_persist_deferrals();
+    bool persisted_after_close =
+        tx_closed &&
+        sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    bool no_extra_deferral =
+        sapling_tree_rebuild_test_persist_deferrals() == deferrals_pre_retry;
+
+    int64_t got_h = -1;
+    bool got = persisted_after_close &&
+               node_db_state_get_int(&ndb, "sapling_tree_rebuild_height",
+                                     &got_h);
+
+    stream_free(&ts);
+    sapling_tree_rebuild_test_reset_persist_deferrals();
+
+    ok = ok && tx_opened && deferred && no_spam_blocker &&
+         absent_while_deferred && tx_closed && persisted_after_close &&
+         no_extra_deferral && got && got_h == saved_h;
+
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (tx_opened=%d deferred=%d(%d->%d) no_spam=%d absent=%d "
+               "tx_closed=%d persisted_after=%d no_extra_defer=%d got_h=%lld)\n",
+               tx_opened, deferred, deferrals_before, deferrals_after,
+               no_spam_blocker, absent_while_deferred, tx_closed,
+               persisted_after_close, no_extra_deferral, (long long)got_h);
+        failures++;
+    }
+    return failures;
+}
+
 static int test_sapling_tree_rebuild_supervised_child(void)
 {
     int failures = 0;
@@ -699,6 +801,7 @@ int test_unclean_shutdown_advance(void)
     failures += test_sapling_rebuild_folds_forward_from_saved_height();
     failures += test_sapling_persist_pair_busy_retry_succeeds();
     failures += test_sapling_persist_pair_busy_exhausted_names_blocker();
+    failures += test_sapling_persist_pair_defers_while_tx_open();
     failures += test_sapling_tree_rebuild_supervised_child();
 
     return failures;

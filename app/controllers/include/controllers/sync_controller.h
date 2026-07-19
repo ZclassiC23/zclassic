@@ -142,6 +142,15 @@ void sapling_tree_rebuild_start_deferred(struct node_db *ndb,
  * default) and lets calls reach the real node_db_begin(). Callers MUST
  * reset to 0 after use so the fault does not leak into later tests. */
 void sapling_tree_rebuild_test_force_begin_busy(int attempts);
+
+/* Count of persists DEFERRED because the shared node_db connection already
+ * held a foreign open transaction (the real production failure — a nested
+ * BEGIN that returns SQLITE_ERROR, un-retryable while the outer tx lives).
+ * Lets a test assert the detect-open-tx-and-defer path actually FIRED,
+ * rather than only observing the absence of a crash. Reset helper zeroes it
+ * so counts do not leak across tests. */
+int sapling_tree_rebuild_test_persist_deferrals(void);
+void sapling_tree_rebuild_test_reset_persist_deferrals(void);
 #endif
 
 /* Called after a block is successfully connected to the active chain.
