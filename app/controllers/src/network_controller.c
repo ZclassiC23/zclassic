@@ -246,6 +246,13 @@ static void push_addnode_status(struct json_value *result,
                              cm->addnode_tcp_failures[i]);
             json_push_kv_int(&entry, "protocol_failures",
                              cm->addnode_protocol_failures[i]);
+            /* Self-healing (RETIRE/HARVEST, net/connman.h): a retired
+             * addnode stays in the ledger (never removed) but is excluded
+             * from dial rotation; revivable by one manual dial success or
+             * an operator `addnode add` re-add. */
+            json_push_kv_bool(&entry, "retired", cm->addnode_retired[i]);
+            json_push_kv_int(&entry, "retired_at",
+                             cm->addnode_retired_at[i]);
             json_push_back(&arr, &entry);
             json_free(&entry);
         }

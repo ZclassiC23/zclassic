@@ -24,6 +24,7 @@
 #include "net/netbase.h"
 #include "net/version.h"
 #include "bloom/bloom.h"
+#include "storage/census_read.h"
 #include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -929,6 +930,8 @@ static bool connman_ready_addnode_from_other_group(struct connman *cm,
         return false;
 
     for (int ai = 0; ai < cm->num_addnodes; ai++) {
+        if (cm->addnode_retired[ai])
+            continue;
         const int cooldown = cm->addnode_backoff_sec[ai] > 0
                            ? cm->addnode_backoff_sec[ai] : 30;
         if (now - cm->addnode_last_attempt[ai] < cooldown)
@@ -968,6 +971,8 @@ bool connman_pick_next_outbound_target(
 
         for (size_t offset = 0; offset < (size_t)cm->num_addnodes; offset++) {
             const size_t ai = (start + offset) % (size_t)cm->num_addnodes;
+            if (cm->addnode_retired[ai])
+                continue;
             const int cooldown = cm->addnode_backoff_sec[ai] > 0
                                ? cm->addnode_backoff_sec[ai] : 30;
 
@@ -1023,6 +1028,18 @@ void connman_record_addnode_attempt(struct connman *cm,
          * addnode from the zero-peer emergency backoff reset. */
         cm->addnode_tcp_failures[addnode_index] = 0;
         cm->addnode_protocol_failures[addnode_index] = 0;
+        cm->addnode_first_failure_ts[addnode_index] = 0;
+        /* REVIVE: one successful dial is the cheapest possible escape hatch
+         * out of retirement — the addnode has just proven it is NOT
+         * permanently dead, whatever the historical failure streak said. */
+        if (cm->addnode_retired[addnode_index]) {
+            cm->addnode_retired[addnode_index] = false;
+            char addr[64];
+            net_service_to_string(&cm->addnodes[addnode_index].svc, addr,
+                                  sizeof(addr));
+            LOG_INFO("connman",
+                     "addnode revived by successful dial: addr=%s", addr);
+        }
         return;
     }
 
@@ -1042,10 +1059,19 @@ void connman_record_addnode_failure(struct connman *cm,
     /* Count this failure first so the ramp below can read the running
      * total for this kind. */
     int64_t n;
-    if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL)
+    if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL) {
         n = ++cm->addnode_protocol_failures[addnode_index];
-    else
+    } else {
         n = ++cm->addnode_tcp_failures[addnode_index];
+        /* First TCP failure of a new streak (n==1 means the counter was
+         * just reset by a success, or the addnode was just added): stamp
+         * the streak start so connman_retire_dead_addnodes can measure the
+         * wall-clock window independently of how many attempts happened
+         * to land in it. */
+        if (n == 1)
+            cm->addnode_first_failure_ts[addnode_index] =
+                cm->addnode_last_attempt[addnode_index];
+    }
 
     /* Gentle early ramp, then exponential to the 1800s ceiling, driven by
      * the per-kind failure count (not by doubling the previous value).
@@ -1070,6 +1096,136 @@ void connman_record_addnode_failure(struct connman *cm,
     if (step < 0) step = 0;
     if (step >= ramp_len) step = ramp_len - 1;
     cm->addnode_backoff_sec[addnode_index] = ramp[step];
+}
+
+/* ── addnode self-healing: RETIRE the permanently dead, HARVEST from the
+ * census ─────────────────────────────────────────────────────────────
+ *
+ * See the doc block in net/connman.h for the thresholds and rationale. */
+
+void connman_retire_dead_addnodes(struct connman *cm, size_t outbound_healthy)
+{
+    if (!cm)
+        return;
+    /* Floor guard: never retire a dial-of-last-resort while the node is
+     * already starved for healthy outbound peers. ZCL_PEER_FLOOR_HEALTHY
+     * (net/net.h) is the single source of truth for the floor value. */
+    if (outbound_healthy < (size_t)ZCL_PEER_FLOOR_HEALTHY)
+        return;
+
+    const int64_t now = (int64_t)platform_time_wall_time_t();
+    for (int i = 0; i < cm->num_addnodes; i++) {
+        if (cm->addnode_retired[i])
+            continue;
+        if (cm->addnode_tcp_failures[i] < ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES)
+            continue;
+        const int64_t streak_start = cm->addnode_first_failure_ts[i];
+        if (streak_start <= 0)
+            continue;   /* no failure streak in progress (defensive) */
+        if (now - streak_start < ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS)
+            continue;
+
+        cm->addnode_retired[i] = true;
+        cm->addnode_retired_at[i] = now;
+        cm->addnode_retirements_total++;
+
+        char addr[64];
+        net_service_to_string(&cm->addnodes[i].svc, addr, sizeof(addr));
+        LOG_WARN("connman",
+                 "addnode retired: addr=%s tcp_failures=%lld "
+                 "failing_secs=%lld (revivable by one manual dial success "
+                 "or an operator addnode re-add)",
+                 addr, (long long)cm->addnode_tcp_failures[i],
+                 (long long)(now - streak_start));
+    }
+}
+
+/* Best-effort IPv4 dotted-quad parse. census_node.ip is rendered by
+ * net_addr_to_string (census_read.c render_ip16), which for IPv6/onion rows
+ * yields a colon-separated or non-numeric form; a harvested row that is not
+ * a plain "a.b.c.d" is skipped rather than mis-parsed. */
+static bool connman_parse_census_ipv4(const char *ip, unsigned char out[4])
+{
+    if (!ip || !ip[0])
+        return false;
+    unsigned a, b, c, d;
+    char extra;
+    if (sscanf(ip, "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4)
+        return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255)
+        return false;
+    out[0] = (unsigned char)a;
+    out[1] = (unsigned char)b;
+    out[2] = (unsigned char)c;
+    out[3] = (unsigned char)d;
+    return true;
+}
+
+size_t connman_harvest_census_candidates(struct connman *cm,
+                                         int64_t min_height)
+{
+    if (!cm)
+        return 0;
+
+    census_reader *r = NULL;
+    if (census_read_open(cm->datadir, &r) != CENSUS_READ_OK || !r)
+        return 0;   /* absent/unpopulated census: silent no-op, not an error */
+
+    const int64_t now = (int64_t)platform_time_wall_time_t();
+    struct census_filter filt = {
+        .ua_contains = NULL,
+        .min_height = min_height,
+        /* Coarse recency pre-filter on last_seen; the exact
+         * ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS check below is on
+         * last_success, a different column census_filter cannot express. */
+        .seen_within_secs = ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS,
+        .now_unix = now,
+    };
+    struct census_node rows[CENSUS_LIST_HARD_CAP];
+    int64_t matched = 0;
+    int n = census_read_list(r, &filt, 0, CENSUS_LIST_HARD_CAP, rows,
+                             CENSUS_LIST_HARD_CAP, &matched);
+    census_read_close(r);
+
+    struct net_addr src;
+    net_addr_init(&src);
+    size_t harvested = 0;
+    for (int i = 0; i < n && harvested < ZCL_ADDNODE_HARVEST_MAX_CANDIDATES;
+         i++) {
+        const struct census_node *node = &rows[i];
+        /* dial_success_count>0 AND a recent last_success: only feed the
+         * dialer already-proven-reachable candidates, not every host the
+         * crawler has merely heard advertised. */
+        if (node->dial_success_count <= 0)
+            continue;
+        if (node->last_success <= 0 ||
+            now - node->last_success > ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS)
+            continue;
+
+        unsigned char ip4[4];
+        if (!connman_parse_census_ipv4(node->ip, ip4))
+            continue;   /* IPv6/onion census rows: no parser here yet */
+
+        struct net_address addr;
+        net_address_init(&addr);
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = (uint16_t)node->port;
+        addr.nServices = (uint64_t)node->services;
+        addr.nTime = (uint32_t)now;
+
+        /* addrman_add() is the NEW-table discovery path — never a pinned
+         * addnode — and applies addrman's own bucket/group diversity caps
+         * exactly as it does for DNS/fixed/onion-seed candidates. */
+        if (addrman_add(&cm->manager.addrman, &addr, &src, 0))
+            harvested++;
+    }
+
+    if (harvested > 0)
+        LOG_INFO("connman",
+                 "census harvest: added %zu discovery candidate(s) to "
+                 "addrman (census_matched=%lld scanned=%d)",
+                 harvested, (long long)matched, n);
+    return harvested;
 }
 
 /* ── Parallel dialer: anchors-first candidate gathering + batch completion ──
@@ -1527,6 +1683,10 @@ static void *thread_open_connections(void *arg)
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
 
+        /* RETIRE: cheap (O(MAX_ADDNODES), no I/O) — safe every iteration.
+         * Floor-guarded internally against outbound_healthy. */
+        connman_retire_dead_addnodes(cm, outbound_healthy);
+
         size_t outbound = outbound_slot;
 
         if (outbound >= MAX_OUTBOUND_CONNECTIONS ||
@@ -1610,6 +1770,25 @@ static void *thread_open_connections(void *arg)
         bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
         bool rate_ok = below_floor ||
                        (now_oc - s_last_addrman_attempt >= 10);
+
+        /* HARVEST: below the healthy floor AND addrman itself is running
+         * dry — pull proven-reachable candidates from the durable network
+         * census into addrman (NEVER as pinned addnodes). Cadence-gated so
+         * a persistently-hungry loop doesn't hammer the census DB every
+         * ~1s tail iteration; the outcome feeds the NEXT gather call, not
+         * necessarily this one. connman doesn't track chain height, so no
+         * min_height filter here (-1). */
+        if (below_floor &&
+            now_oc - cm->last_census_harvest_ts >=
+                ZCL_ADDNODE_HARVEST_INTERVAL_SECS) {
+            zcl_mutex_lock(&cm->manager.addrman.cs);
+            size_t am_size = addrman_size(&cm->manager.addrman);
+            zcl_mutex_unlock(&cm->manager.addrman.cs);
+            if (am_size < ZCL_ADDNODE_HARVEST_WEAK_ADDRMAN_THRESHOLD) {
+                cm->last_census_harvest_ts = now_oc;
+                connman_harvest_census_candidates(cm, -1);
+            }
+        }
 
         size_t free_slots = MAX_OUTBOUND_CONNECTIONS - outbound; /* > 0 here */
         size_t want = 0;
@@ -2721,6 +2900,26 @@ void connman_open_connection(struct connman *cm,
             if (net_addr_eq(&cm->addnodes[i].svc.addr, &addr->svc.addr) &&
                 cm->addnodes[i].svc.port == addr->svc.port) {
                 dup = true;
+                /* REVIVE: an operator `addnode add` on an already-listed
+                 * (possibly retired) entry is an explicit signal to try
+                 * again — the other manual escape hatch out of retirement
+                 * besides a successful dial (see the RETIRE/HARVEST doc
+                 * block in net/connman.h). Also drop the backoff and
+                 * failure history so the next dial isn't still paying for
+                 * the streak that got it retired. */
+                if (cm->addnode_retired[i]) {
+                    cm->addnode_retired[i] = false;
+                    cm->addnode_backoff_sec[i] = 0;
+                    cm->addnode_tcp_failures[i] = 0;
+                    cm->addnode_protocol_failures[i] = 0;
+                    cm->addnode_first_failure_ts[i] = 0;
+                    char revived_addr[64];
+                    net_service_to_string(&cm->addnodes[i].svc, revived_addr,
+                                          sizeof(revived_addr));
+                    LOG_INFO("connman",
+                             "addnode revived by operator re-add: addr=%s",
+                             revived_addr);
+                }
                 break;
             }
         }
@@ -2766,6 +2965,10 @@ bool connman_remove_addnode(struct connman *cm,
             cm->addnode_tcp_failures[j] = cm->addnode_tcp_failures[j + 1];
             cm->addnode_protocol_failures[j] =
                 cm->addnode_protocol_failures[j + 1];
+            cm->addnode_first_failure_ts[j] =
+                cm->addnode_first_failure_ts[j + 1];
+            cm->addnode_retired[j] = cm->addnode_retired[j + 1];
+            cm->addnode_retired_at[j] = cm->addnode_retired_at[j + 1];
         }
 
         memset(&cm->addnodes[last], 0, sizeof(cm->addnodes[last]));
@@ -2773,6 +2976,9 @@ bool connman_remove_addnode(struct connman *cm,
         cm->addnode_backoff_sec[last] = 0;
         cm->addnode_tcp_failures[last] = 0;
         cm->addnode_protocol_failures[last] = 0;
+        cm->addnode_first_failure_ts[last] = 0;
+        cm->addnode_retired[last] = false;
+        cm->addnode_retired_at[last] = 0;
         cm->num_addnodes = last;
 
         if (cm->num_addnodes <= 0) {
@@ -2888,6 +3094,8 @@ void connman_get_outbound_health(struct connman *cm,
             if (cm->addnode_backoff_sec[i] > out->addnode_backoff_max_sec)
                 out->addnode_backoff_max_sec = cm->addnode_backoff_sec[i];
         }
+        if (cm->addnode_retired[i])
+            out->addnode_retired_count++;
     }
 
     uint16_t groups[DEFAULT_MAX_PEER_CONNECTIONS];
