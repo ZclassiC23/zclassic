@@ -98,6 +98,43 @@ acting — heights, commits, and producer state rot fast in this repo.
      rows beside a still-borrowed set) is structurally impossible, not just
      discouraged.
 
+## Independent replay-receipt authority (`-verify-consensus-bundle=PATH`)
+
+A bundle can also `ADMIT`/`ACTIVATE` via an independent replay receipt
+instead of (or in addition to) the `CHECKPOINT_CONTENT` authority the
+"Known-good" section above exercised. `-verify-consensus-bundle=PATH`
+(`config/src/boot_verify_consensus_bundle.c`) replays the bundle against a
+datadir whose own folded tables (`coins`, `sprout_anchors`,
+`sapling_anchors`, `nullifiers`) independently re-derive the bundle's
+digests, and on success writes `consensus_state_replay_receipt.v1` into that
+datadir. Two binding rules make this receipt easy to misuse if skimmed:
+
+- **The receipt must physically live inside the exact datadir that
+  `-install-consensus-bundle=PATH` is about to run against** —
+  `activate_receipt_authority_available()`
+  (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`) reads it via the
+  install target's own `datadir_fd`, not a path argument. Copying the bundle
+  without also copying the receipt file leaves the install target on the
+  `CHECKPOINT_CONTENT` fallback (or `VERIFIED_CONTAINED`/refused, if that
+  fallback doesn't apply).
+- **The receipt is bound to the exact binary that wrote it.**
+  `rr_verifier_binary_digest()` hashes `/proc/self/exe` at verify time and
+  the authority check `memcmp`s it against the digest baked into the
+  receipt; a receipt produced by a different build silently fails to
+  authorize (no loud refusal — the install just falls through to whatever
+  other authority applies). Use **one** candidate binary for every
+  `-verify-consensus-bundle` and `-install-consensus-bundle` call in a given
+  cutover attempt; rebuilding between them invalidates the receipt and
+  requires a fresh verify pass.
+
+Because `-verify-consensus-bundle` must run against a datadir that itself
+folded genesis→anchor, and this repo never runs commands directly against a
+protected producer datadir, the practical pattern is: `cp -a` the finished
+producer datadir once (the receipt-verify step writes into it, which is a
+write), verify against that copy, then carry the copy's bundle + receipt
+pair together as the portable artifact for every subsequent install call
+(copy-prove and, later, live).
+
 ## Preconditions (do not start the cutover before all of these hold)
 
 1. **The bundle artifact exists and is admissible.** This precondition is
@@ -250,7 +287,7 @@ above has passed.** The live node stays wedged and readable throughout most
 of this sequence; the only unavailable window is between step 2 and step 5.
 
 1. **Stop the live service** (the install call needs exclusive write access
-   to the live progress store; a running node holds it open):
+   to the live kernel store, `consensus.db`; a running node holds it open):
    ```bash
    systemctl --user stop zclassic23
    ```
@@ -313,14 +350,16 @@ of this sequence; the only unavailable window is between step 2 and step 5.
 
 ## Rollback
 
-The install captured a physically restorable prior generation of the progress
-store **under the process transaction lock immediately before the cutover
-transaction**, named in the `INSTALLED:` banner and
-recorded in the decision record:
-`<datadir>/progress.kv.preinstall.<epoch>.<pid>.<sequence>`
+The install captured a physically restorable prior generation of the kernel
+store (`consensus.db` — the reducer's own singleton SQLite file; see
+`docs/DEFENSIVE_CODING.md` "The one principled exception") **under the
+process transaction lock immediately before the cutover transaction**, named
+in the `INSTALLED:` banner and recorded in the decision record:
+`<datadir>/consensus.db.preinstall.<epoch>.<pid>.<sequence>`
 (a standalone `VACUUM INTO` image whose data-version/change fence matches the
-cutover transaction). To roll back after a committed install that
-turns out to be bad (e.g. the post-install forward fold surfaces a new
+cutover transaction — `consensus_state_snapshot_install_activate.c`
+`activate_backup_prior_generation`). To roll back after a committed install
+that turns out to be bad (e.g. the post-install forward fold surfaces a new
 consensus-parity divergence, not caught by copy-prove):
 
 1. **Stop the live service:**
@@ -330,17 +369,17 @@ consensus-parity divergence, not caught by copy-prove):
 2. **Preserve the failed post-install state for diagnosis** before
    overwriting anything:
    ```bash
-   cp -a $HOME/.zclassic-c23/progress.kv \
-     $HOME/.zclassic-c23/progress.kv.failed-install-$(date +%Y%m%d-%H%M%S)
+   cp -a $HOME/.zclassic-c23/consensus.db \
+     $HOME/.zclassic-c23/consensus.db.failed-install-$(date +%Y%m%d-%H%M%S)
    ```
 3. **Swap the prior logical generation back** (the exact file the install
    printed as `prior_generation_path`, not a guess at the naming pattern —
-   confirm it with `ls $HOME/.zclassic-c23/progress.kv.preinstall.*` if the
+   confirm it with `ls $HOME/.zclassic-c23/consensus.db.preinstall.*` if the
    banner output was not preserved):
    ```bash
-   cp -a $HOME/.zclassic-c23/progress.kv.preinstall.<epoch>.<pid>.<sequence> \
-     $HOME/.zclassic-c23/progress.kv
-   rm -f $HOME/.zclassic-c23/progress.kv-wal $HOME/.zclassic-c23/progress.kv-shm
+   cp -a $HOME/.zclassic-c23/consensus.db.preinstall.<epoch>.<pid>.<sequence> \
+     $HOME/.zclassic-c23/consensus.db
+   rm -f $HOME/.zclassic-c23/consensus.db-wal $HOME/.zclassic-c23/consensus.db-shm
    ```
 4. **Boot normally and re-confirm the pre-install state** (the old wedge, at
    `H*=3,176,325` on `utxo_apply.anchor_backfill_gap`, or wherever it was)
@@ -348,11 +387,16 @@ consensus-parity divergence, not caught by copy-prove):
    ```bash
    systemctl --user start zclassic23
    ```
-5. This is a genuine rollback of the progress store only — it does not touch
-   `coins`/anchor/nullifier data living in other files, and preinstall
-   generations are not deleted automatically. Clean up old
-   `progress.kv.preinstall.*` files by hand once an install is confirmed
-   good and stable at tip; they are not tracked or pruned by any code path.
+5. `consensus.db` is the reducer kernel singleton — the coins/anchor/nullifier
+   tables (`coins_kv.c`) share this same file, keyed off the same handle as
+   the stage cursors and `*_log` tables, so this `VACUUM INTO` swap restores
+   the coin/anchor/nullifier state together with the reducer cursors, not
+   just cursor bookkeeping. It does not touch `node.db` (blocks, wallet keys,
+   peers, mempool) or `progress.kv` (the `address_index`/`txindex`
+   projections). Preinstall generations are not deleted automatically; clean
+   up old `consensus.db.preinstall.*` files by hand once an install is
+   confirmed good and stable at tip — they are not tracked or pruned by any
+   code path.
 
 ## Standing rule
 

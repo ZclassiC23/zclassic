@@ -112,12 +112,9 @@ hermetic/local-only). It is an operator/dispatch convenience: a one-shot
 gate, use `tools/mvp_gate.sh --strict` so only a genuine live regression
 (C3/C4/C8 FAIL) is non-zero — never a `BLOCKED`.
 
-## Live snapshot at authoring (2026-06-22, read-only)
+## Live numbers
 
-`height=3,153,660`, peer-tip `3,155,889` ⇒ **gap=2229, NOT at tip.**
-This **corrects** a stale claim (the MAP/HANDOFF computed gap as
-`headers-blocks` = 1): the node is actually ~2229 blocks behind the best
-peer's `startingheight`, so forward sync is behind and **C3 FAILs / C6
-soak does not accrue** right now. `MRS = 2/8` live (C1, C4). zclassicd
-oracle at RPC 8232 was reindexing/unreachable to the c23 client ⇒ C8
-BLOCKED honestly.
+Run `tools/mvp_gate.sh` for the current MRS, gap, and soak-accrual state —
+do not trust a pinned snapshot in this file; heights, gaps, and MRS rot
+every session. `docs/HANDOFF.md` §0-LATEST carries the current live-node
+narrative; this file only documents the script's contract.

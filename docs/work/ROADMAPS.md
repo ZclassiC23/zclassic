@@ -39,6 +39,8 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
 | `next-wave-plan.md` | `FORWARD_PLAN.md` |
 | `never-stuck-roadmap-2026-06-28.md` | `never-stuck-plan.md` |
 | `sovereign-service-roadmap.md` | `FORWARD_PLAN.md` (sovereign-contracts follow-on tracks there now) |
+| `cure-runbook-2026-07-16.md` (2026-07-19 fold) | `sovereign-cutover-runbook.md`'s "Independent replay-receipt authority (`-verify-consensus-bundle=PATH`)" section (the receipt binary-binding gotcha) |
+| `canonicalization-backlog.md` (2026-07-19 purge) | none — all 6 backlog rename items shipped (`_ex` symbols no longer exist in-tree) |
 
 Recover any removed roadmap with `git log --follow -- docs/work/archive/<old-name>.md`
 and `git show <commit-before-removal>^:docs/work/archive/<old-name>.md`. Dated
