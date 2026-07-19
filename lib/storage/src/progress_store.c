@@ -653,23 +653,56 @@ bool progress_meta_delete_in_tx(sqlite3 *db, const char *key)
 }
 
 /* Single-source the transaction discipline shared by progress_meta_set and
- * progress_meta_delete: lock, BEGIN IMMEDIATE, run op, COMMIT on success /
- * ROLLBACK on failure, unlock. op binds and steps its own statement. */
+ * progress_meta_delete: lock, open a transaction, run op, commit on success /
+ * roll back on failure, unlock. op binds and steps its own statement.
+ *
+ * Batch-aware (same proven pattern as stage.c cursor_txn_*): when a
+ * transaction is already open on this connection (an outer drain batch or a
+ * caller BEGIN — sqlite3_get_autocommit(db)==0), a bare BEGIN IMMEDIATE would
+ * fail with "cannot start a transaction within a transaction". Nest as a named
+ * SAVEPOINT instead so the op enrolls in the outer transaction and commits /
+ * rolls back atomically with it. The savepoint name is distinct from
+ * STAGE_CURSOR_SP so it never collides. progress_store_tx_lock is recursive, so
+ * re-acquiring inside a batch is safe. This removes the latent nested-BEGIN
+ * class for bare call sites (e.g. stage_repair_coin_backfill*) that were safe
+ * before only by call ordering. */
+#define PROGRESS_META_SP "progress_meta_write"
+static void progress_meta_txn_rollback(sqlite3 *db, bool nested)
+{
+    if (nested) {
+        sqlite3_exec(db, "ROLLBACK TO SAVEPOINT " PROGRESS_META_SP,
+                     NULL, NULL, NULL);
+        sqlite3_exec(db, "RELEASE SAVEPOINT " PROGRESS_META_SP, NULL, NULL, NULL);
+    } else {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+}
 static bool progress_meta_run_in_tx(sqlite3 *db,
                                     bool (*op)(sqlite3 *, void *), void *arg)
 {
     if (!db) return false;
     progress_store_tx_lock();
+    bool nested = sqlite3_get_autocommit(db) == 0;
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, nested ? "SAVEPOINT " PROGRESS_META_SP
+                                : "BEGIN IMMEDIATE",
+                     NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
         return false;
     }
     bool ok = op(db, arg);
-    const char *fini = ok ? "COMMIT" : "ROLLBACK";
+    if (!ok) {
+        progress_meta_txn_rollback(db, nested);
+        progress_store_tx_unlock();
+        return false;
+    }
+    const char *fini = nested ? "RELEASE SAVEPOINT " PROGRESS_META_SP : "COMMIT";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        /* Commit/release failed: roll the op back so we never leave a
+         * half-applied write inside the outer transaction, then report it. */
+        progress_meta_txn_rollback(db, nested);
         progress_store_tx_unlock();
         return false;
     }

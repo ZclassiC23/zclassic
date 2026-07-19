@@ -1908,6 +1908,30 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     cm->params = params;
     cm->manager.signals = *signals;
 
+    /* Config-validation clamp (reactor-overflow prevention). The reactor's
+     * poll() fd arrays are bounded by REACTOR_MAX_FDS (listen sockets +
+     * connected peers). Clamp the config-derived max_connections up front,
+     * reserving REACTOR_LISTEN_RESERVE fds for listen sockets, so the
+     * configured ceiling can never drive num_listen_sockets + max_connections
+     * past REACTOR_MAX_FDS for any listen count within the reserve. This makes
+     * the connman_start() near-overflow clamp and the connman_reactor_overflow
+     * blocker unreachable in the clamped range; the start-time blocker remains
+     * only as the backstop for the genuinely impossible case (listen sockets
+     * ALONE meeting/exceeding the reactor). Loud: name the clamp. */
+    {
+        const int reactor_ceiling = REACTOR_MAX_FDS - REACTOR_LISTEN_RESERVE;
+        if (cm->manager.max_connections > reactor_ceiling) {
+            LOG_WARN("net",
+                     "connman config: max_connections=%d exceeds reactor "
+                     "ceiling %d (REACTOR_MAX_FDS=%d - REACTOR_LISTEN_RESERVE="
+                     "%d) — clamping to %d so the reactor fd arrays cannot "
+                     "overflow",
+                     cm->manager.max_connections, reactor_ceiling,
+                     REACTOR_MAX_FDS, REACTOR_LISTEN_RESERVE, reactor_ceiling);
+            cm->manager.max_connections = reactor_ceiling;
+        }
+    }
+
     /* dynamic deferred_free buffer. */
     cm->deferred_free_cap = CONNMAN_DEFERRED_FREE_INIT_CAP;
     cm->deferred_free = zcl_malloc(
