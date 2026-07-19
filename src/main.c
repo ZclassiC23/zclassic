@@ -89,7 +89,10 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <dirent.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -1209,6 +1212,17 @@ static bool cli_service_exec_arg(const char *key, char *out, size_t out_size)
         return false;
     out[0] = '\0';
 
+    /* Test-only escape hatch: this queries the REAL `--user` systemd
+     * session tied to the calling UID (not scoped by the child's HOME
+     * env), so a hermetic test that wants to prove "no default instance"
+     * cannot simply point HOME at a fixture — on a host with a real
+     * zclassic23.service running (e.g. this project's own dev boxes) it
+     * would otherwise silently resolve to and read the LIVE production
+     * datadir/cookie, violating "never touch a live datadir" from a
+     * test. Sets nothing on a real invocation. */
+    if (getenv("ZCL_CLI_TEST_NO_SERVICE_LOOKUP"))
+        return false;
+
     /* `systemctl --user show zclassic23 -p ExecStart --value` — capture its
      * stdout via the no-shell spawn primitive. stderr is discarded by
      * zcl_spawn_capture (matches the old `2>/dev/null`); the exit code is not
@@ -1266,6 +1280,248 @@ static bool cli_read_cookie(const char *datadir)
     return n > 0;
 }
 
+/* ════════════════════════════════════════════════════════════════
+ *  AUTH AUTO-DISCOVERY (E4) — `-rpcport=<N>` without `-datadir=<DIR>`
+ *  used to always fall back to the DEFAULT datadir's cookie, which
+ *  either misses entirely ("Cannot connect", if nothing listens on the
+ *  default port too) or sends the WRONG cookie to whatever really owns
+ *  <N> (an indistinguishable "Unauthorized") — an orchestrator watching
+ *  a non-default lane (a mint/soak/copy-prove fixture) cannot tell
+ *  those apart from a real outage. Every datadir a node has actually
+ *  bound RPC in records `<datadir>/.rpcport` (see rpc_http_start in
+ *  lib/rpc/src/httpserver.c) alongside its `.cookie`; scanning sibling
+ *  `<HOME>/.zclassic-c23*` datadirs for the one whose recorded port
+ *  matches recovers the right cookie without ever touching the network
+ *  protocol. Explicit `-datadir=` always wins — this only runs when the
+ *  operator did NOT name one. ════════════════════════════════════════ */
+
+#define CLI_DATADIR_GLOB_PREFIX ".zclassic-c23"
+#define CLI_DATADIR_GLOB_MAX 256
+
+/* Read the decimal port recorded by rpc_http_start() at
+ * `<datadir>/.rpcport`. Returns false if absent/unreadable/malformed —
+ * callers treat that datadir as not-a-live-RPC-instance, never as a
+ * match-everything wildcard. */
+static bool cli_read_stored_rpcport(const char *datadir, int *port_out)
+{
+    char path[560];
+    int n = snprintf(path, sizeof(path), "%s/.rpcport", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    char buf[32] = {0};
+    size_t r = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (r == 0)
+        return false;
+    char *end = NULL;
+    long v = strtol(buf, &end, 10);
+    if (end == buf || v <= 0 || v > 65535)
+        return false;
+    if (port_out)
+        *port_out = (int)v;
+    return true;
+}
+
+static int cli_datadir_name_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Collect every entry directly under `home` whose name starts with
+ * ".zclassic-c23" AND is itself a directory (several sibling artifacts
+ * — e.g. `.zclassic-c23-COPY-<ts>-fixture.kv` — are large flat FILES,
+ * not datadirs, and must never be opened as one). Sorted for
+ * deterministic scan order when more than one candidate exists.
+ * Returns the count (capped at CLI_DATADIR_GLOB_MAX); each returned
+ * name is a heap string the caller must free(), as must the array
+ * itself. */
+static size_t cli_list_datadir_candidates(const char *home, char **out)
+{
+    size_t count = 0;
+    DIR *d = opendir(home);
+    if (!d)
+        return 0;
+    struct dirent *de;
+    while (count < CLI_DATADIR_GLOB_MAX && (de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, CLI_DATADIR_GLOB_PREFIX,
+                    strlen(CLI_DATADIR_GLOB_PREFIX)) != 0)
+            continue;
+        char full[560];
+        int n = snprintf(full, sizeof(full), "%s/%s", home, de->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(full))
+            continue;
+        struct stat st;
+        if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+        char *dup = strdup(full);
+        if (!dup)
+            continue;
+        out[count++] = dup;
+    }
+    closedir(d);
+    qsort(out, count, sizeof(out[0]), cli_datadir_name_cmp);
+    return count;
+}
+
+/* Scan `<HOME>/.zclassic-c23*` for a directory recording the given RPC
+ * port (see cli_read_stored_rpcport) AND holding a readable `.cookie`.
+ * First match in sorted-name order wins (ports normally identify a
+ * single live instance, so ambiguity should not arise in practice; a
+ * deterministic tie-break keeps behavior reproducible if it ever
+ * does). Returns false (out untouched) with no candidates or no match —
+ * callers keep whatever datadir they already had. */
+static bool cli_autodiscover_datadir_for_port(int port, char *out,
+                                              size_t outlen)
+{
+    const char *home = getenv("HOME");
+    if (!home || !home[0])
+        return false;
+
+    char *candidates[CLI_DATADIR_GLOB_MAX];
+    size_t n = cli_list_datadir_candidates(home, candidates);
+    bool found = false;
+    for (size_t i = 0; i < n; i++) {
+        if (!found) {
+            int stored_port = 0;
+            char cookie_path[600];
+            snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie",
+                     candidates[i]);
+            if (cli_read_stored_rpcport(candidates[i], &stored_port) &&
+                stored_port == port &&
+                access(cookie_path, R_OK) == 0) {
+                snprintf(out, outlen, "%s", candidates[i]);
+                found = true;
+            }
+        }
+        free(candidates[i]);
+    }
+    return found;
+}
+
+/* Best-effort loopback liveness probe: non-blocking connect with a short
+ * bounded wait. Used only for `status`'s sibling-instance listing
+ * (never on the hot RPC-call path), so a stuck peer cannot hang the
+ * CLI — worst case this costs `timeout_ms` per candidate datadir. */
+static bool cli_probe_port_alive(int port, int timeout_ms)
+{
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+        return false;
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags >= 0)
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    bool alive = false;
+    int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc == 0) {
+        alive = true;
+    } else if (errno == EINPROGRESS) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(sock, &wfds);
+        struct timeval tv = {
+            .tv_sec = timeout_ms / 1000,
+            .tv_usec = (timeout_ms % 1000) * 1000,
+        };
+        if (select(sock + 1, NULL, &wfds, NULL, &tv) > 0) {
+            int soerr = 0;
+            socklen_t elen = sizeof(soerr);
+            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &elen) == 0 &&
+                soerr == 0)
+                alive = true;
+        }
+    }
+    close(sock);
+    return alive;
+}
+
+/* `status` with no live node in the caller's DEFAULT datadir (no
+ * `-datadir=` given, and the resolved default has no `.cookie`) used
+ * to just fail — leaving "what's actually running on this host?" to a
+ * manual `ps`/`ss` hunt. Instead, answer it: scan
+ * `<HOME>/.zclassic-c23*` for every recorded RPC port and report each
+ * one's datadir + port + a live liveness probe. Prints one
+ * `zcl.cli_local_instances.v1` JSON document to stdout (so a script can
+ * still parse it) and returns ZCL_COMMAND_EXIT_TRANSIENT — the default
+ * target genuinely has nothing running right now, but the answer is
+ * never a bare, undifferentiated failure. */
+static int cli_print_local_instances_status_fallback(const char *default_datadir)
+{
+    const char *home = getenv("HOME");
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    json_push_kv_str(&doc, "schema", "zcl.cli_local_instances.v1");
+    json_push_kv_int(&doc, "schema_version", 1);
+    json_push_kv_str(&doc, "status", "no_default_instance");
+    json_push_kv_str(&doc, "default_datadir",
+                     default_datadir ? default_datadir : "");
+    json_push_kv_str(&doc, "summary",
+                     "no live node in the default datadir; listing every "
+                     "sibling ~/.zclassic-c23* instance this scan found");
+
+    struct json_value instances;
+    json_init(&instances);
+    json_set_array(&instances);
+
+    size_t alive_count = 0;
+    if (home && home[0]) {
+        char *candidates[CLI_DATADIR_GLOB_MAX];
+        size_t n = cli_list_datadir_candidates(home, candidates);
+        for (size_t i = 0; i < n; i++) {
+            int stored_port = 0;
+            if (cli_read_stored_rpcport(candidates[i], &stored_port)) {
+                bool alive = cli_probe_port_alive(stored_port, 200);
+                if (alive)
+                    alive_count++;
+                struct json_value inst;
+                json_init(&inst);
+                json_set_object(&inst);
+                json_push_kv_str(&inst, "datadir", candidates[i]);
+                json_push_kv_int(&inst, "rpcport", stored_port);
+                json_push_kv_str(&inst, "state", alive ? "alive" : "dead");
+                json_push_back(&instances, &inst);
+                json_free(&inst);
+            }
+            free(candidates[i]);
+        }
+    }
+    json_push_kv(&doc, "instances", &instances);
+    json_free(&instances);
+    json_push_kv_int(&doc, "alive_count", (int64_t)alive_count);
+    json_push_kv_str(&doc, "remedy",
+                     alive_count > 0
+                         ? "pass -rpcport=<PORT> (auth auto-discovers the "
+                           "matching -datadir) or -datadir=<DIR> to target "
+                           "one of the instances above"
+                         : "no local instance is reachable; start one "
+                           "(systemctl --user start zclassic23) or pass "
+                           "-datadir=<DIR> for a lane this scan missed");
+
+    char out[65536];
+    size_t need = json_write(&doc, out, sizeof(out));
+    json_free(&doc);
+    if (need >= sizeof(out)) {
+        fprintf(stderr, "Error: local-instances listing exceeded output "
+                        "buffer\n");
+        return ZCL_COMMAND_EXIT_INTERNAL;
+    }
+    fprintf(stderr, "zclassic23: no node running at the default datadir "
+                    "(%s) — listing every local instance this host has "
+                    "recorded\n", default_datadir ? default_datadir : "");
+    printf("%s\n", out);
+    return ZCL_COMMAND_EXIT_TRANSIENT;
+}
+
 static const char b64[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -1295,11 +1551,55 @@ static void b64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-static char *cli_rpc_call_internal(const char *body, size_t body_len,
-                                   bool quiet)
+/* E4 error taxonomy: the raw-RPC CLI path used to conflate "nothing is
+ * listening at PORT" and "something is listening but rejected our
+ * cookie" into the same generic "RPC failed" / "Error: Unauthorized" —
+ * an orchestrator polling a monitor cannot branch on that. Each outcome
+ * below gets its own message AND its own process exit code (see the
+ * dispatch below cli_rpc_call's caller), reusing the same taxonomy the
+ * native command registry already documents in
+ * docs/NATIVE_COMMAND_INTERFACE.md (0/1/2/3/4/5/6). */
+enum cli_rpc_outcome {
+    CLI_RPC_OK = 0,
+    CLI_RPC_CONNECT_REFUSED,  /* nothing listening at 127.0.0.1:PORT */
+    CLI_RPC_TIMEOUT,          /* connected, but no reply in time — "busy" */
+    CLI_RPC_AUTH_REJECTED,    /* connected, HTTP 401 — wrong cookie */
+    CLI_RPC_OTHER_ERROR,      /* any other socket/allocation failure */
+};
+
+/* Client-side wall-clock budget for a single RPC round trip once the TCP
+ * connection is up. A node that accepted the connection but never
+ * answers (a livelocked reducer, a wedged mutex) must not hang a
+ * monitor script forever — past this, cli_rpc_call_internal reports
+ * CLI_RPC_TIMEOUT ("node busy") instead of blocking indefinitely. */
+#define CLI_RPC_TIMEOUT_SEC 10
+
+/* Test-only override so the RESPONSE_TIMEOUT path can be proven in well
+ * under a second instead of hard-coding a multi-second test sleep
+ * ("tests fast always"). Unset/invalid keeps the real 10s budget — no
+ * production behavior change. */
+static int cli_rpc_timeout_sec(void)
 {
+    const char *env = getenv("ZCL_CLI_RPC_TIMEOUT_SEC");
+    if (env && env[0]) {
+        int v = atoi(env);
+        if (v > 0)
+            return v;
+    }
+    return CLI_RPC_TIMEOUT_SEC;
+}
+
+static char *cli_rpc_call_internal_ex(const char *body, size_t body_len,
+                                      bool quiet,
+                                      enum cli_rpc_outcome *outcome)
+{
+    if (outcome) *outcome = CLI_RPC_OK;
+
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return NULL;
+    if (sock < 0) {
+        if (outcome) *outcome = CLI_RPC_OTHER_ERROR;
+        return NULL;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -1308,12 +1608,42 @@ static char *cli_rpc_call_internal(const char *body, size_t body_len,
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        if (!quiet)
-            fprintf(stderr, "Cannot connect to node at 127.0.0.1:%d\n",
-                    cli_port);
+        int connect_errno = errno;
+        enum cli_rpc_outcome oc = (connect_errno == ECONNREFUSED)
+            ? CLI_RPC_CONNECT_REFUSED
+            : (connect_errno == ETIMEDOUT ? CLI_RPC_TIMEOUT
+                                          : CLI_RPC_OTHER_ERROR);
+        if (outcome) *outcome = oc;
+        if (!quiet) {
+            if (oc == CLI_RPC_CONNECT_REFUSED)
+                fprintf(stderr,
+                       "error=CONNECT_REFUSED detail=node not running at "
+                       "127.0.0.1:%d try=start the node (systemctl --user "
+                       "start zclassic23) or pass -rpcport=<PORT> for the "
+                       "instance you meant\n", cli_port);
+            else if (oc == CLI_RPC_TIMEOUT)
+                fprintf(stderr,
+                       "error=CONNECT_TIMEOUT detail=127.0.0.1:%d did not "
+                       "accept a connection in time try=retry, or check "
+                       "for a firewalled/hung listener\n", cli_port);
+            else
+                fprintf(stderr,
+                       "error=CONNECT_FAILED detail=cannot connect to node "
+                       "at 127.0.0.1:%d (%s) try=check -rpcport and that "
+                       "the node is reachable\n", cli_port,
+                       strerror(connect_errno));
+        }
         close(sock);
         return NULL;
     }
+
+    /* Past this point the peer accepted the TCP connection, so a hang now
+     * means "accepted but not answering" (busy/wedged), not "not running"
+     * — SO_RCVTIMEO turns that into a bounded CLI_RPC_TIMEOUT instead of
+     * blocking a monitor script forever. */
+    int timeout_sec = cli_rpc_timeout_sec();
+    struct timeval rcvtimeo = { .tv_sec = timeout_sec, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &rcvtimeo, sizeof(rcvtimeo));
 
     char auth[512];
     b64_encode(cli_cookie, strlen(cli_cookie), auth);
@@ -1331,7 +1661,12 @@ static char *cli_rpc_call_internal(const char *body, size_t body_len,
 
     size_t cap = 65536, len = 0;
     char *buf = malloc(cap);
-    if (!buf) { close(sock); return NULL; }
+    if (!buf) {
+        if (outcome) *outcome = CLI_RPC_OTHER_ERROR;
+        close(sock);
+        return NULL;
+    }
+    bool timed_out = false;
     for (;;) {
         if (len + 4096 > cap) {
             size_t next_cap = cap * 2;
@@ -1339,21 +1674,62 @@ static char *cli_rpc_call_internal(const char *body, size_t body_len,
             if (!next) {
                 free(buf);
                 close(sock);
+                if (outcome) *outcome = CLI_RPC_OTHER_ERROR;
                 return NULL;
             }
             buf = next;
             cap = next_cap;
         }
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
-        if (n <= 0) break;
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                timed_out = true;
+            break;
+        }
+        if (n == 0) break;
         len += (size_t)n;
     }
     close(sock);
+
+    if (timed_out && len == 0) {
+        free(buf);
+        if (outcome) *outcome = CLI_RPC_TIMEOUT;
+        if (!quiet)
+            fprintf(stderr,
+                   "error=RESPONSE_TIMEOUT detail=127.0.0.1:%d accepted "
+                   "the connection but did not answer within %ds try=node "
+                   "is busy — retry, or inspect `ops state "
+                   "--subsystem=supervisor` for a stalled child\n",
+                   cli_port, timeout_sec);
+        return NULL;
+    }
     buf[len] = 0;
+
+    /* Classify auth rejection off the status line BEFORE stripping it —
+     * httpserver.c always sends "HTTP/1.1 <code> <reason>\r\n...". A
+     * wrong/stale cookie (the other datadir's, if auto-discovery guessed
+     * wrong, or a stale explicit -datadir=) reads back as 401 here. */
+    if (outcome) {
+        char *sp = strchr(buf, ' ');
+        if (sp && strncmp(sp + 1, "401", 3) == 0)
+            *outcome = CLI_RPC_AUTH_REJECTED;
+    }
 
     char *start = strstr(buf, "\r\n\r\n");
     if (start) { start += 4; memmove(buf, start, strlen(start) + 1); }
     return buf;
+}
+
+static char *cli_rpc_call_internal(const char *body, size_t body_len,
+                                   bool quiet)
+{
+    return cli_rpc_call_internal_ex(body, body_len, quiet, NULL);
+}
+
+static char *cli_rpc_call_ex(const char *body, size_t body_len,
+                             enum cli_rpc_outcome *outcome)
+{
+    return cli_rpc_call_internal_ex(body, body_len, false, outcome);
 }
 
 static char *cli_rpc_call(const char *body, size_t body_len)
@@ -1809,6 +2185,29 @@ static int cli_main(int argc, char **argv)
         return 1;
     }
 
+    /* E4 auth auto-discovery: `-rpcport=<N>` with no `-datadir=` names a
+     * specific target instance, not "whatever the default systemd unit
+     * runs" — scan sibling datadirs for the one recording port <N> BEFORE
+     * the systemctl-default-service fallback below, so an explicit
+     * -rpcport always resolves to ITS OWN cookie rather than silently
+     * borrowing the default lane's (which is either absent — "Cannot
+     * connect" even though a node genuinely IS listening on <N> — or
+     * wrong — an indistinguishable 401). Explicit -datadir= always wins:
+     * this only runs when the operator did not name one. */
+    if (rpcport_set && !datadir_set) {
+        char discovered[512];
+        if (cli_autodiscover_datadir_for_port(cli_port, discovered,
+                                              sizeof(discovered))) {
+            snprintf(datadir, sizeof(datadir), "%s", discovered);
+            datadir_set = true;
+            fprintf(stderr,
+                   "zclassic23: -rpcport=%d given without -datadir — "
+                   "auto-discovered datadir %s (pass -datadir=DIR to "
+                   "target a different instance)\n",
+                   cli_port, datadir);
+        }
+    }
+
     if (!datadir_set && !cli_cookie_exists(datadir)) {
         char service_datadir[512];
         if (cli_service_exec_arg("datadir", service_datadir,
@@ -1863,6 +2262,20 @@ static int cli_main(int argc, char **argv)
              strcmp(method, "-summary") == 0)
         method = "summary";
 
+    /* E4: the bare `status` command with no live node in the (still
+     * default — no -datadir= given, and it never resolved a cookie above)
+     * datadir used to just fail deep inside the RPC layer with no
+     * indication anything else on this host might be reachable. Answer
+     * "what nodes exist on this host" instead of a bare failure — list
+     * every sibling ~/.zclassic-c23* instance this scan finds, each with
+     * its port + a live/dead probe. Only fires for the literal `status`
+     * leaf (not core.status etc.) and only when nothing narrowed the
+     * target already (an explicit -datadir= or a resolved cookie there
+     * both skip this — the operator asked for something specific). */
+    if (strcmp(method, "status") == 0 && !datadir_set &&
+        !cli_cookie_exists(datadir))
+        return cli_print_local_instances_status_fallback(datadir);
+
     /* Canonical registry roots (status/core/app/dev/ops/discover plus aliases)
      * resolve through the native command registry BEFORE the
      * arbitrary RPC-method fallback further down. A typo under a canonical
@@ -1884,8 +2297,12 @@ static int cli_main(int argc, char **argv)
     }
 
     if (!cli_read_cookie(datadir)) {
-        fprintf(stderr, "Node not running (no cookie at %s/.cookie)\n", datadir);
-        return 1;
+        fprintf(stderr,
+               "error=CONNECT_REFUSED detail=no RPC cookie at %s/.cookie — "
+               "node not running at this datadir try=start the node "
+               "(systemctl --user start zclassic23) or pass -datadir=DIR / "
+               "-rpcport=PORT for the instance you meant\n", datadir);
+        return ZCL_COMMAND_EXIT_BLOCKED;
     }
 
     /* CLI UX contract: `zclassic23 dumpstate <subsystem> field=a,b` (and, in
@@ -1935,8 +2352,32 @@ static int cli_main(int argc, char **argv)
         "{\"jsonrpc\":\"1.0\",\"id\":\"z\",\"method\":\"%s\",\"params\":%s}",
         method, pbuf);
 
-    char *resp = cli_rpc_call(body, (size_t)blen);
-    if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
+    enum cli_rpc_outcome rpc_outcome = CLI_RPC_OK;
+    char *resp = cli_rpc_call_ex(body, (size_t)blen, &rpc_outcome);
+    if (!resp) {
+        /* cli_rpc_call_internal_ex already printed the specific
+         * error=<TAXONOMY> line; just map it to the matching documented
+         * exit code (docs/NATIVE_COMMAND_INTERFACE.md's stable table) so
+         * a monitor can branch without scraping stderr text. */
+        switch (rpc_outcome) {
+        case CLI_RPC_CONNECT_REFUSED:
+            return ZCL_COMMAND_EXIT_BLOCKED;
+        case CLI_RPC_TIMEOUT:
+            return ZCL_COMMAND_EXIT_TRANSIENT;
+        default:
+            return ZCL_COMMAND_EXIT_FAILED;
+        }
+    }
+    if (rpc_outcome == CLI_RPC_AUTH_REJECTED) {
+        fprintf(stderr,
+               "error=AUTH_REJECTED detail=127.0.0.1:%d rejected the "
+               "cookie read from %s/.cookie try=pass -datadir=DIR for the "
+               "node actually listening on this port (auth cookies are "
+               "per-datadir and do not follow -rpcport alone)\n",
+               cli_port, datadir);
+        free(resp);
+        return ZCL_COMMAND_EXIT_DENIED;
+    }
     char rpc_error_message[192];
     if (cli_rpc_error_is_method_not_found(resp, rpc_error_message,
                                           sizeof(rpc_error_message))) {

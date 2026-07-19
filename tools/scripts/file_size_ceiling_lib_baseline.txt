@@ -44,7 +44,7 @@ lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 892
 lib/net/src/rom_seed.c 856
 lib/platform/src/os_sandbox_linux.c 1162
-lib/rpc/src/httpserver.c 1301
+lib/rpc/src/httpserver.c 1320
 lib/sapling/src/circuit_gadgets.c 1574
 lib/sapling/src/groth16_prover.c 1036
 lib/sapling/src/incremental_merkle_tree.c 984
@@ -66,4 +66,4 @@ lib/wallet/src/wallet_sqlite.c 1371
 lib/sim/src/simnet_chaos_faults.c 1014
 lib/util/src/supervisor.c 801
 lib/util/src/stage.c 819
-src/main.c 4171
+src/main.c 4612
