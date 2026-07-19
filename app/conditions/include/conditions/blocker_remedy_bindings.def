@@ -193,3 +193,17 @@ ZCL_BLOCKER_REMEDY(confine.apply_failed,                        OWNER)
  * investigate (disk contention, a cold page cache, a regressed code
  * path), not an auto-curable condition. ─────────────────────────────── */
 ZCL_BLOCKER_REMEDY(boot.stage_regression,                       OWNER)
+
+/* ── OWNER — Sapling commitment tree rebuild (app/controllers/src/
+ * sync_controller_sapling_tree.c). `persist_busy` fires when the bounded
+ * BEGIN-retry against node_db is exhausted (the reducer held the store
+ * past the retry budget) — self-clears the next time the same rebuild
+ * call succeeds, but there is no in-tree condition that actively drives
+ * that retry, so it is an honest OWNER (watch it, or just let the next
+ * rebuild attempt clear it). `fail_closed` fires on any fail-closed exit
+ * from sapling_tree_rebuild() (root mismatch against the tip anchor, or a
+ * serialize/persist plumbing failure) — a real derived-state disagreement
+ * that needs an operator to run `rebuildsaplingtree` or investigate,
+ * never an auto-cure. ───────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.persist_busy,           OWNER)
+ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.fail_closed,            OWNER)

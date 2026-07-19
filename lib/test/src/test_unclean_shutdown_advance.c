@@ -11,7 +11,9 @@
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/disk_block_io.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 
@@ -440,6 +442,192 @@ static int test_sapling_rebuild_folds_forward_from_saved_height(void)
     return failures;
 }
 
+/* lane/e3-sapling-rebuild-robust coverage below: the live incident was
+ * "ERROR [sapling_tree_rebuild] ... persist_pair: BEGIN failed" spam while
+ * the reducer held the store, and the deferred rebuild never completing.
+ * These drive the fix via the ZCL_TESTING fault-injection seam
+ * (sapling_tree_rebuild_test_force_begin_busy) instead of racing real
+ * SQLite lock contention, so they stay fast and deterministic. */
+
+static int test_sapling_persist_pair_busy_retry_succeeds(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_persist_pair retries through transient BUSY and "
+          "succeeds... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_persist_pair", "busy_retry");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x71);
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    /* First two BEGIN attempts simulate SQLITE_BUSY; the third (real)
+     * attempt succeeds — proves the bounded retry actually retries
+     * instead of failing (and logging) on the first contention. */
+    sapling_tree_rebuild_test_force_begin_busy(2);
+    int64_t saved_h = 900789;
+    bool persisted = ok &&
+        sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    sapling_tree_rebuild_test_force_begin_busy(0);
+    stream_free(&ts);
+
+    bool no_blocker = !blocker_exists("sapling_tree_rebuild.persist_busy");
+
+    int64_t got_h = -1;
+    bool got = persisted && node_db_state_get_int(&ndb,
+                                "sapling_tree_rebuild_height", &got_h);
+    ok = ok && persisted && no_blocker && got && got_h == saved_h;
+
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (persisted=%d no_blocker=%d got_h=%lld)\n",
+               persisted, no_blocker, (long long)got_h);
+        failures++;
+    }
+    return failures;
+}
+
+static int test_sapling_persist_pair_busy_exhausted_names_blocker(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_persist_pair names a TRANSIENT blocker once "
+          "BEGIN retries are exhausted... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_persist_pair",
+                     "busy_exhaust");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x72);
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    /* Every attempt simulates BUSY — retries are bounded, so persist_pair
+     * must give up (one WARN line, not unbounded spam) and name a
+     * TRANSIENT blocker instead of hanging. */
+    sapling_tree_rebuild_test_force_begin_busy(-1);
+    bool persisted = ok &&
+        sapling_tree_persist_pair(&ndb, ts.data, ts.size, 900790);
+    sapling_tree_rebuild_test_force_begin_busy(0);
+    stream_free(&ts);
+
+    bool blocker_named = blocker_exists("sapling_tree_rebuild.persist_busy");
+    int bclass = blocker_class_for("sapling_tree_rebuild.persist_busy");
+
+    ok = ok && !persisted && blocker_named && bclass == BLOCKER_TRANSIENT;
+
+    blocker_clear("sapling_tree_rebuild.persist_busy");
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (persisted=%d blocker_named=%d class=%d)\n",
+               persisted, blocker_named, bclass);
+        failures++;
+    }
+    return failures;
+}
+
+static int test_sapling_tree_rebuild_supervised_child(void)
+{
+    int failures = 0;
+    const int sapling_height = 476969;
+    const int tip_height = sapling_height + 100000;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_rebuild appears as a supervised child... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_rebuild", "supervised");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x73);
+    struct uint256 root;
+    incremental_tree_root(&tree, &root);
+
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+    ok = ok && node_db_state_set(&ndb, "sapling_tree", ts.data, ts.size);
+    ok = ok && node_db_state_set_int(&ndb, "sapling_tree_rebuild_height",
+                                     tip_height);
+
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct block_index sapling;
+    struct block_index tip;
+    init_sapling_rebuild_index(&sapling, sapling_height, 0xb1);
+    init_sapling_rebuild_index(&tip, tip_height, 0xb2);
+    tip.hashFinalSaplingRoot = root;
+    ok = ok && active_chain_install_tip_slot(&chain, &sapling);
+    ok = ok && active_chain_install_tip_slot(&chain, &tip);
+
+    int appended = ok ? sapling_tree_rebuild(&ndb, &chain, dir) : -1;
+    ok = ok && appended == (int)incremental_tree_size(&tree);
+
+    struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+    int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+    bool found = false;
+    bool completed = false;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].name, "sync.sapling_tree_rebuild") == 0) {
+            found = true;
+            completed = snaps[i].completed;
+            break;
+        }
+    }
+    ok = ok && found && completed;
+
+    active_chain_free(&chain);
+    stream_free(&ts);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (appended=%d found=%d completed=%d)\n",
+               appended, found, completed);
+        failures++;
+    }
+    return failures;
+}
+
 int test_unclean_shutdown_advance(void)
 {
     int failures = 0;
@@ -509,6 +697,9 @@ int test_unclean_shutdown_advance(void)
     failures += test_sapling_rebuild_rejects_mismatched_checkpoint();
     failures += test_sapling_persist_pair_round_trip();
     failures += test_sapling_rebuild_folds_forward_from_saved_height();
+    failures += test_sapling_persist_pair_busy_retry_succeeds();
+    failures += test_sapling_persist_pair_busy_exhausted_names_blocker();
+    failures += test_sapling_tree_rebuild_supervised_child();
 
     return failures;
 }

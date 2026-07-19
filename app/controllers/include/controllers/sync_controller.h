@@ -118,6 +118,32 @@ bool sapling_tree_persist_pair(struct node_db *ndb,
                                const void *blob, size_t blob_len,
                                int64_t height);
 
+/* Kick off the deferred/live Sapling tree rebuild as a background,
+ * supervised thread (sapling_tree_rebuild() registers "sync.
+ * sapling_tree_rebuild" on the supervisor tree on entry). Called from
+ * config/src/boot.c's "Sapling tree root MISMATCH ... deferring live
+ * rebuild until after boot" branch when the synchronous inline rebuild
+ * would be too slow to run before P2P/RPC starts — a multi-million-block
+ * replay never blocks node startup this way. On spawn failure the tree
+ * simply stays stale (as it already was) until an operator runs
+ * `rebuildsaplingtree`. */
+void sapling_tree_rebuild_start_deferred(struct node_db *ndb,
+                                         struct active_chain *chain,
+                                         const char *datadir,
+                                         struct main_state *ms);
+
+#ifdef ZCL_TESTING
+/* Force the next `attempts` internal BEGIN calls inside
+ * sapling_tree_persist_pair's retry loop to simulate SQLITE_BUSY without
+ * touching the real database — lets tests drive the "retries then
+ * succeeds" and "persistent BUSY names a blocker" paths deterministically
+ * and fast, without racing real SQLite lock contention. `attempts < 0`
+ * forces every subsequent attempt busy (persistent); `0` disables (the
+ * default) and lets calls reach the real node_db_begin(). Callers MUST
+ * reset to 0 after use so the fault does not leak into later tests. */
+void sapling_tree_rebuild_test_force_begin_busy(int attempts);
+#endif
+
 /* Called after a block is successfully connected to the active chain.
  * Indexes the block header, all transactions, and updates the UTXO set.
  * Runs inside a SQLite transaction for atomicity. */
