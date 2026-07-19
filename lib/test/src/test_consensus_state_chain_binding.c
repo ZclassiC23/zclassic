@@ -90,6 +90,60 @@ static bool rejected(
     return !consensus_state_chain_binding_decide(manifest, observation).ok;
 }
 
+/* Compiled-checkpoint content authority matching the given manifest exactly:
+ * same height, block_hash, and Sapling frontier (root + height). This is what
+ * the boot install verb fills from get_sha3_utxo_checkpoint()/
+ * get_rom_state_checkpoint() when the bundle IS the compiled checkpoint. */
+static struct consensus_state_checkpoint_authority matching_authority(
+    const struct consensus_state_bundle_manifest *manifest)
+{
+    struct consensus_state_checkpoint_authority cp;
+    memset(&cp, 0, sizeof(cp));
+    cp.available = true;
+    cp.height = manifest->height;
+    memcpy(cp.block_hash, manifest->block_hash, 32);
+    cp.sapling_frontier_height = (int32_t)manifest->sapling_frontier_height;
+    memcpy(cp.sapling_frontier_root, manifest->sapling_frontier_root, 32);
+    return cp;
+}
+
+/* A snapshot-seeded target: its block index / header-pass / script-validate
+ * logs floor ABOVE the checkpoint height, so the checkpoint block and its
+ * Sapling source are NEVER materialized (unknown / absent ancestry). The
+ * target's OWN frontier is durable and its materialized header tip is real and
+ * valid ABOVE the bundle height — exactly the shape capture_binding_predicates
+ * produces on such a target. Every below-checkpoint materialized predicate is
+ * left false; the checkpoint authority is the only thing that can bind them. */
+static struct consensus_state_chain_binding_observation seeded_target_observation(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_checkpoint_authority *authority)
+{
+    struct consensus_state_chain_binding_observation observation;
+    memset(&observation, 0, sizeof(observation));
+    /* Target-derived predicates that stay in force under authority. */
+    observation.before_frontier_consistent = true;
+    observation.after_frontier_consistent = true;
+    observation.frontier_unchanged = true;
+    observation.durable_served_height = manifest->height + 20;
+    observation.selected_header_known = true;
+    observation.selected_header_height = manifest->height + 20;
+    observation.selected_header_valid_tree = true;
+    observation.selected_header_failure_free = true;
+    for (size_t i = 0; i < 32; i++) {
+        observation.selected_header_hash[i] = (uint8_t)(49u + i);
+        observation.selected_header_chainwork[i] = (uint8_t)(81u + i);
+    }
+    /* Below-checkpoint materialized-index evidence is ABSENT on a seeded
+     * target: bundle unknown, sapling source unknown, ancestry unprovable. */
+    observation.selected_bundle_known = false;
+    observation.selected_sapling_source_known = false;
+    observation.header_descends_from_bundle = false;
+    observation.bundle_descends_from_sapling_source = false;
+    if (authority)
+        observation.checkpoint_authority = *authority;
+    return observation;
+}
+
 int test_consensus_state_chain_binding(void)
 {
     int failures = 0;
@@ -184,6 +238,128 @@ int test_consensus_state_chain_binding(void)
               !consensus_state_chain_evidence_matches_artifact(
                   NULL, NULL,
                   CONSENSUS_STATE_TARGET_LANE_COPY_PROOF));
+    CSB_CHECK("checkpoint-authority accessor rejects null",
+              !consensus_state_chain_evidence_used_checkpoint_authority(NULL));
+
+    /* ── Compiled-checkpoint content authority (FIX-A) ─────────────────────
+     * On a snapshot-seeded target the checkpoint block is never materialized,
+     * so the below-checkpoint predicates would refuse on absent index evidence.
+     * When the bundle IS the compiled checkpoint (height + block_hash + Sapling
+     * frontier match byte-for-byte), the compiled checkpoint authorizes them. */
+    struct consensus_state_checkpoint_authority authority =
+        matching_authority(&manifest);
+
+    /* (a) Seeded target (index floors above checkpoint) + bundle at checkpoint
+     * height with matching compiled content → ADMIT via checkpoint authority. */
+    struct consensus_state_chain_binding_observation seeded =
+        seeded_target_observation(&manifest, &authority);
+    CSB_CHECK("checkpoint-height bundle on seeded target ADMITs via authority",
+              consensus_state_chain_binding_decide(&manifest, &seeded).ok);
+    CSB_CHECK("authority predicate reports the substitution was used",
+              consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded));
+
+    /* Same seeded target WITHOUT the authority (available=false) → the pure
+     * target-derived gate refuses at -5 exactly as before (bundle absent). */
+    struct consensus_state_chain_binding_observation seeded_no_auth =
+        seeded_target_observation(&manifest, NULL);
+    struct zcl_result no_auth = consensus_state_chain_binding_decide(
+        &manifest, &seeded_no_auth);
+    CSB_CHECK("seeded target with no authority refuses at -5",
+              !no_auth.ok && no_auth.code == -5 &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded_no_auth));
+
+    /* (b) Bundle content (block_hash) mismatches the compiled checkpoint →
+     * authority does NOT apply → refuse exactly as today (bundle absent → -5). */
+    struct consensus_state_checkpoint_authority bad_hash_auth = authority;
+    bad_hash_auth.block_hash[0] ^= 1u;
+    struct consensus_state_chain_binding_observation seeded_bad_hash =
+        seeded_target_observation(&manifest, &bad_hash_auth);
+    struct zcl_result bad_hash = consensus_state_chain_binding_decide(
+        &manifest, &seeded_bad_hash);
+    CSB_CHECK("checkpoint block_hash mismatch refuses (no authority) at -5",
+              !bad_hash.ok && bad_hash.code == -5 &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded_bad_hash));
+
+    /* Sapling frontier root mismatch is likewise not authorized. */
+    struct consensus_state_checkpoint_authority bad_root_auth = authority;
+    bad_root_auth.sapling_frontier_root[0] ^= 1u;
+    struct consensus_state_chain_binding_observation seeded_bad_root =
+        seeded_target_observation(&manifest, &bad_root_auth);
+    CSB_CHECK("checkpoint Sapling-root mismatch refuses (no authority)",
+              rejected(&manifest, &seeded_bad_root) &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded_bad_root));
+
+    /* Sapling frontier HEIGHT mismatch is not authorized either. */
+    struct consensus_state_checkpoint_authority bad_sh_auth = authority;
+    bad_sh_auth.sapling_frontier_height ^= 1;
+    struct consensus_state_chain_binding_observation seeded_bad_sh =
+        seeded_target_observation(&manifest, &bad_sh_auth);
+    CSB_CHECK("checkpoint Sapling-height mismatch refuses (no authority)",
+              rejected(&manifest, &seeded_bad_sh) &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded_bad_sh));
+
+    /* (c) Bundle at a NON-checkpoint height on the same seeded target → the
+     * authority (pinned to the checkpoint height) does not apply → -5 exactly
+     * as before. Model this by an authority whose height differs from the
+     * manifest, which is what get_*_checkpoint() yields for a non-checkpoint
+     * bundle. */
+    struct consensus_state_checkpoint_authority off_height_auth = authority;
+    off_height_auth.height = manifest.height + 1;
+    struct consensus_state_chain_binding_observation seeded_off_height =
+        seeded_target_observation(&manifest, &off_height_auth);
+    struct zcl_result off_height = consensus_state_chain_binding_decide(
+        &manifest, &seeded_off_height);
+    CSB_CHECK("non-checkpoint-height bundle refuses at -5 (authority inert)",
+              !off_height.ok && off_height.code == -5 &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &seeded_off_height));
+
+    /* Authority available=false is inert even at the checkpoint height. */
+    struct consensus_state_checkpoint_authority unavailable_auth = authority;
+    unavailable_auth.available = false;
+    CSB_CHECK("unavailable authority does not substitute",
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest,
+                  &(struct consensus_state_chain_binding_observation){
+                      .checkpoint_authority = unavailable_auth}));
+
+    /* Target-derived guards stay in force UNDER authority: -3 (frontier
+     * durability), -4 (durable served H*), and the header-tip validity part of
+     * -11 must still refuse even when checkpoint content is authorized. */
+    struct consensus_state_chain_binding_observation auth_bad_frontier = seeded;
+    auth_bad_frontier.frontier_unchanged = false;
+    CSB_CHECK("authority does not relax -3 frontier durability",
+              rejected(&manifest, &auth_bad_frontier));
+    struct consensus_state_chain_binding_observation auth_bad_hstar = seeded;
+    auth_bad_hstar.durable_served_height = manifest.height - 1;
+    CSB_CHECK("authority does not relax -4 durable served H*",
+              rejected(&manifest, &auth_bad_hstar));
+    struct consensus_state_chain_binding_observation auth_bad_header = seeded;
+    auth_bad_header.selected_header_valid_tree = false;
+    CSB_CHECK("authority does not relax -11 header-tip validity",
+              rejected(&manifest, &auth_bad_header));
+    struct consensus_state_chain_binding_observation auth_no_header = seeded;
+    auth_no_header.selected_header_known = false;
+    CSB_CHECK("authority still requires a materialized header tip",
+              rejected(&manifest, &auth_no_header));
+
+    /* A fully-materialized (from-genesis) target binds through the NORMAL
+     * predicates. With an authority present but pinned to a different height
+     * (so the substitution is inert), the real index evidence must still pass
+     * every below-checkpoint predicate on its own. */
+    struct consensus_state_chain_binding_observation materialized_inert_auth =
+        observation;
+    materialized_inert_auth.checkpoint_authority = off_height_auth;
+    CSB_CHECK("materialized target binds via normal path (authority inert)",
+              consensus_state_chain_binding_decide(
+                  &manifest, &materialized_inert_auth).ok &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &materialized_inert_auth));
 
     printf("consensus_state_chain_binding: %s\n",
            failures ? "FAILED" : "ALL PASSED");
