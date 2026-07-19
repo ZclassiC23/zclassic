@@ -131,6 +131,74 @@ int test_hw_bench(void)
                   hw_bench_verify_workers(0) >= 1);
     }
 
+    /* ── regression test: hw_bench_batch_size() must NEVER trigger the
+     * probe (the hot-path-fsync-under-a-held-mutex defect this file's
+     * boot-time-init split fixes — see reducer_drain.c's
+     * reducer_drain_to_convergence). With NO cache on disk and NO prior
+     * hw_bench_init() call, hw_bench_batch_size/verify_workers must return
+     * the topology fallback immediately, without running a single probe
+     * pass; only an EXPLICIT hw_bench_init() call may run the probe, and
+     * exactly once. ─────────────────────────────────────────────────── */
+    {
+        hw_bench_reset_for_testing();
+        int probes0 = hw_bench_probe_run_count_for_testing();
+
+        HWB_CHECK("no init yet: batch_size returns fallback",
+                  hw_bench_batch_size(100) == 100);
+        HWB_CHECK("no init yet: verify_workers returns fallback",
+                  hw_bench_verify_workers(4) == 4);
+        HWB_CHECK("no init yet: hw_bench_measured() is false",
+                  !hw_bench_measured());
+        HWB_CHECK("no init yet: hw_bench_fsync_us() is -1",
+                  hw_bench_fsync_us() == -1);
+        HWB_CHECK("no init yet: hw_bench_pread_us() is -1",
+                  hw_bench_pread_us() == -1);
+        HWB_CHECK("querying batch_size/verify_workers/fsync/pread/measured "
+                  "with no init did NOT run the probe",
+                  hw_bench_probe_run_count_for_testing() == probes0);
+
+        char tmpl3[] = "/tmp/zcl_hwb_noprobeXXXXXX";
+        char *root3 = mkdtemp(tmpl3);
+        HWB_CHECK("probe-count fixture mkdtemp succeeds", root3 != NULL);
+        if (root3) {
+            HWB_CHECK("sample file planted (probe-count fixture)",
+                      hwb_plant_sample_file(root3));
+
+            /* Explicit init — like boot.c's boot-time call or
+             * bg_validation_init's own-service call — is the ONLY thing
+             * allowed to run the probe, and runs it exactly once. */
+            HWB_CHECK("explicit hw_bench_init runs the probe",
+                      hw_bench_init(root3));
+            HWB_CHECK("hw_bench_init ran the probe exactly once",
+                      hw_bench_probe_run_count_for_testing() == probes0 + 1);
+
+            int probes1 = hw_bench_probe_run_count_for_testing();
+            (void)hw_bench_batch_size(100);
+            (void)hw_bench_verify_workers(4);
+            (void)hw_bench_fsync_us();
+            (void)hw_bench_measured();
+            HWB_CHECK("post-init queries serve the cached measurement "
+                      "without re-probing",
+                      hw_bench_probe_run_count_for_testing() == probes1);
+
+            /* A second explicit hw_bench_init() call after reset, on the
+             * SAME fixture (same fingerprint), loads the on-disk cache
+             * instead of re-probing — but only if the first probe actually
+             * measured something to cache (a real filesystem, not a mock;
+             * total measurement failure is a rare environment-dependent
+             * skip, same guard the round-trip test below uses). */
+            bool measured3 = hw_bench_measured();
+            hw_bench_reset_for_testing();
+            HWB_CHECK("second explicit init on same fixture returns true",
+                      hw_bench_init(root3));
+            if (measured3) {
+                HWB_CHECK("second init loaded from cache, not another probe",
+                          hw_bench_probe_run_count_for_testing() == probes1);
+            }
+        }
+        hw_bench_reset_for_testing();
+    }
+
     /* ── end-to-end probe + cache round trip on a /tmp fixture ─────────
      * NEVER a real host datadir — a fresh mkdtemp() fixture every time. */
     {

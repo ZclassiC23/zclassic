@@ -70,6 +70,20 @@ static pthread_mutex_t       g_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic bool          g_inited = false;
 static struct hw_bench_state g_state;
 
+#ifdef ZCL_TESTING
+/* Counts real bench_fsync/bench_pread probe PASSES (not cache loads, not
+ * query calls). Exists so a test can prove hw_bench_batch_size() et al.
+ * never trigger a probe — see test_hw_bench.c's
+ * "batch_size never triggers the probe" case, which is the regression test
+ * for the hot-path-fsync defect this file's boot-time-init split fixed. */
+static _Atomic int g_probe_run_count = 0;
+
+int hw_bench_probe_run_count_for_testing(void)
+{
+    return atomic_load(&g_probe_run_count);
+}
+#endif
+
 /* ── Fingerprint ───────────────────────────────────────────────────── */
 
 /* FNV-1a over the hw_profile signature this measurement was taken under.
@@ -350,6 +364,9 @@ bool hw_bench_init(const char *datadir)
         st.valid = true;
     } else {
         snprintf(st.fingerprint, sizeof(st.fingerprint), "%s", fp_now);
+#ifdef ZCL_TESTING
+        atomic_fetch_add(&g_probe_run_count, 1);
+#endif
         int64_t total_start = platform_time_monotonic_us();
         st.fsync_us = bench_fsync(resolved, HW_BENCH_PHASE_BUDGET_US);
         int64_t elapsed = platform_time_monotonic_us() - total_start;
@@ -404,29 +421,40 @@ void hw_bench_set_measured_for_testing(int64_t fsync_us, int64_t pread_us)
 }
 #endif
 
-/* ── Queries ───────────────────────────────────────────────────────── */
+/* ── Queries ───────────────────────────────────────────────────────────
+ *
+ * NONE of these call hw_bench_init() — that would risk running the
+ * synchronous fsync/pread probe on whatever thread/lock context first
+ * calls a query, which is exactly the hot-path defect this file's
+ * boot-time-init split exists to close (see reducer_drain.c's
+ * per_stage_batch comment and CLAUDE.md's tenacity notes on unbudgeted
+ * disk IO on a hot path). Before hw_bench_init() has been called by
+ * SOMEONE (boot.c calls it once, at boot, before the reducer can run;
+ * bg_validation_init calls it once at its own startup) every query below
+ * just serves its documented "unmeasured" default — a plain atomic load,
+ * no lock, no syscall, no allocation. */
 
 int64_t hw_bench_fsync_us(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return -1;
     return g_state.fsync_us;
 }
 
 int64_t hw_bench_pread_us(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return -1;
     return g_state.pread_us;
 }
 
 bool hw_bench_measured(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return false;
     return g_state.fsync_us >= 0 || g_state.pread_us >= 0;
 }
 
 int64_t hw_bench_age_seconds(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return -1;
     if (g_state.measured_at_unix <= 0) return -1;
     int64_t now = platform_time_realtime_us() / 1000000;
     int64_t age = now - g_state.measured_at_unix;
@@ -435,22 +463,27 @@ int64_t hw_bench_age_seconds(void)
 
 bool hw_bench_from_cache(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return false;
     return g_state.from_cache;
 }
 
 const char *hw_bench_fingerprint_hex(void)
 {
-    hw_bench_init(NULL);
+    if (!atomic_load(&g_inited)) return "";
     return g_state.fingerprint;
 }
 
-/* ── Derived tunables ──────────────────────────────────────────────── */
+/* ── Derived tunables ──────────────────────────────────────────────────
+ *
+ * The hot-path contract: provably allocation-free and syscall-free.
+ * `g_inited` false (hw_bench_init() never ran, or hasn't finished) just
+ * means "serve the topology fallback unchanged" — never a reason to probe
+ * from here. */
 
 int hw_bench_batch_size(int normal_batch)
 {
-    hw_bench_init(NULL);
     if (normal_batch <= 0) normal_batch = 1;
+    if (!atomic_load(&g_inited)) return normal_batch;
 
     int64_t fsync_us = g_state.fsync_us;
     if (fsync_us < 0 || fsync_us <= HW_BENCH_FSYNC_BASELINE_US)
@@ -465,8 +498,8 @@ int hw_bench_batch_size(int normal_batch)
 
 int hw_bench_verify_workers(int normal_workers)
 {
-    hw_bench_init(NULL);
     if (normal_workers < 1) normal_workers = 1;
+    if (!atomic_load(&g_inited)) return normal_workers;
 
     int64_t pread_us = g_state.pread_us;
     if (pread_us < 0 || pread_us <= HW_BENCH_PREAD_BASELINE_US)
@@ -485,6 +518,10 @@ bool hw_bench_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
+    /* Deliberate explicit call (like bg_validation_init's), not an
+     * implicit one buried in a query — `ops state hw_bench` is an
+     * operator-triggered diagnostic call, never the block-ingest hot
+     * path, so it is allowed to pay for a first-time measurement here. */
     hw_bench_init(NULL);
     json_set_object(out);
 

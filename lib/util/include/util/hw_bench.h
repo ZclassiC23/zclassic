@@ -26,7 +26,18 @@
  * `normal_*` argument and returns it UNCHANGED whenever a measurement is not
  * yet available (never fatal, never blocks boot on a probe failure) — the
  * measured path only ever refines the topology fallback, never replaces the
- * safety of having one. */
+ * safety of having one.
+ *
+ * CALLER CONTRACT — hw_bench_init() is the ONLY function in this file that
+ * may run the probe, and it must be called EXPLICITLY, at a one-time
+ * initialization point that is NOT a hot path (boot.c calls it once, at
+ * boot, before the block-ingest reducer can ever run; bg_validation_init
+ * calls it once at its own service startup). Every query and derived-tunable
+ * function below is a plain atomic-load-and-arithmetic read of the
+ * already-published result: if hw_bench_init() has not yet completed
+ * (anywhere, by anyone) they serve the documented "unmeasured" default —
+ * they NEVER call hw_bench_init() themselves, and so can never inject a
+ * synchronous fsync/pread probe into a caller's hot path or a held lock. */
 
 #ifndef ZCL_HW_BENCH_H
 #define ZCL_HW_BENCH_H
@@ -38,12 +49,19 @@ struct json_value; /* fwd; see json/json.h */
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
-/* Idempotent, thread-safe: the first caller does the probe-or-load, everyone
- * else observes the cached result. `datadir` may be NULL, in which case the
+/* Idempotent, thread-safe: the first caller does the probe-or-load (up to
+ * the combined 300ms budget above), everyone else observes the cached
+ * result via a lock-free fast path. `datadir` may be NULL, in which case the
  * real node datadir (util/util.h's GetDataDir) is resolved. NEVER fatal — a
  * failed sub-probe or an unwritable cache file just leaves that field
  * unmeasured; callers fall back to their topology-derived default. Always
- * returns true. */
+ * returns true.
+ *
+ * MUST be called explicitly by an owner at a one-time, non-hot-path
+ * initialization point — see the CALLER CONTRACT above. Do not add a new
+ * call to this function from inside a per-block / per-batch / lock-held
+ * loop; add a one-time call at that subsystem's own init instead (follow
+ * bg_validation_init's example in bg_validation_service.c). */
 bool hw_bench_init(const char *datadir);
 
 #ifdef ZCL_TESTING
@@ -57,26 +75,36 @@ void hw_bench_reset_for_testing(void);
  * for either argument to simulate "unmeasured". Production never calls
  * this. */
 void hw_bench_set_measured_for_testing(int64_t fsync_us, int64_t pread_us);
+
+/* Test hook: count of real bench_fsync/bench_pread probe PASSES since
+ * process start (cache loads and query calls never increment this). Used to
+ * prove the query/derived-tunable functions below never trigger a probe.
+ * Production never calls this. */
+int hw_bench_probe_run_count_for_testing(void);
 #endif
 
-/* ── Queries (call hw_bench_init(NULL) internally if not yet probed) ─── */
+/* ── Queries — atomic-load-only; NEVER call hw_bench_init() (see the
+ * CALLER CONTRACT above). Each serves its "unmeasured" default until some
+ * owner has explicitly called hw_bench_init() at least once. ───────────── */
 
 /* Median fsync() latency in microseconds over the probe file, or -1 if
- * unmeasured (probe never ran, or the datadir was not writable). */
+ * unmeasured (hw_bench_init() has not completed yet, the probe never ran,
+ * or the datadir was not writable). */
 int64_t hw_bench_fsync_us(void);
 
 /* Median 4KB random pread() latency in microseconds over an existing
- * datadir file, or -1 if unmeasured (no suitable file found, or the probe
- * never ran). */
+ * datadir file, or -1 if unmeasured (hw_bench_init() has not completed yet,
+ * no suitable file was found, or the probe never ran). */
 int64_t hw_bench_pread_us(void);
 
 /* True iff EITHER latency above is measured (loaded from cache or freshly
  * probed this boot) — i.e. at least one derived tunable below can move off
- * its topology fallback. */
+ * its topology fallback. False if hw_bench_init() has not completed yet. */
 bool hw_bench_measured(void);
 
 /* Seconds since the current measurement was taken (cache write time, or
- * "now" for a fresh probe), or -1 if never measured. */
+ * "now" for a fresh probe), or -1 if never measured (including when
+ * hw_bench_init() has not completed yet). */
 int64_t hw_bench_age_seconds(void);
 
 /* True iff the current measurement came from the on-disk cache (not a
@@ -84,12 +112,14 @@ int64_t hw_bench_age_seconds(void);
 bool hw_bench_from_cache(void);
 
 /* 16 lowercase hex chars identifying the (cores, ram, isa, rotational)
- * signature the current measurement was taken under. Static buffer, valid
- * until the next hw_bench_init() call on another thread (call after
- * ensuring init has happened, e.g. via any query above). */
+ * signature the current measurement was taken under, or "" if
+ * hw_bench_init() has not completed yet. Static buffer, valid until the
+ * next hw_bench_init() call on another thread. */
 const char *hw_bench_fingerprint_hex(void);
 
-/* ── Derived tunables — pure passthrough of `normal_*` when unmeasured ── */
+/* ── Derived tunables — pure passthrough of `normal_*` when unmeasured;
+ * a plain atomic-load-and-arithmetic read, provably allocation-free and
+ * syscall-free (safe to call from a hot path / under a held lock). ─────── */
 
 /* Per-stage-per-drain batch-commit size (see reducer_drain.c). Slower
  * measured fsync => bigger batch (fewer, larger commits amortize the fsync

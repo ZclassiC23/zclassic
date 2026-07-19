@@ -408,7 +408,13 @@ int reducer_drain_to_convergence(void)
     /* legacy cadence (100) is the topology/no-measurement fallback;
      * hw_bench_batch_size scales it UP when boot-time measurement found a
      * slower-than-baseline fsync, so the per-batch fsync/journal-commit
-     * count drops on slow storage — never below 100, see hw_bench.h. */
+     * count drops on slow storage — never below 100, see hw_bench.h. This
+     * call is safe under the caller's mutex (reducer_kick) and on the live
+     * block-ingest path: hw_bench_batch_size() is a plain atomic-load read,
+     * never a probe — the measurement itself runs once at boot
+     * (boot_datadir_lock_acquire calls hw_bench_init() right after the
+     * datadir lock is acquired, before the reducer can ever run), never
+     * lazily from here. */
     const int     per_stage_batch = hw_bench_batch_size(100);
     return reducer_drain_core(drain_budget_us, drain_hard_cap, per_stage_batch,
                               /*converge_on_frontier_stall=*/false);
