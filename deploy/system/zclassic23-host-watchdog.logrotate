@@ -1,0 +1,8 @@
+/var/log/zclassic23-host-watchdog.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
