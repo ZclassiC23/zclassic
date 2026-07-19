@@ -8,9 +8,46 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate canonical cure below.
 
-# HANDOFF — current state (2026-07-17 night)
+# HANDOFF — current state (2026-07-19)
 
-## 0. Current state (2026-07-17 night) — Bundle EXPORTED + VERIFIED; both copy-install routes REFUSED at chain-binding; mint3 is the reliable path; big merge wave on main
+## 0-LATEST. Current state (2026-07-19) — cure INSTALLED on the serve node; kernel flipped to consensus.db LIVE; climb in progress toward the wedge-pass proof
+
+**The serve node (`zcl-serve1` unit, datadir `~/.zclassic-c23-serve1`, ports
+39072-39074/39473) runs the installed sovereign bundle and is CLIMBING.**
+Binary: candidate `kernelflip-79c33de32` (= main tip). Live H\* via
+`zclassic23 -datadir=$HOME/.zclassic-c23-serve1 -rpcport=39072 dumpstate reducer_frontier`.
+The proof gate is unchanged: **H\* climb past the old wedge 3,176,325** = cure
+proven; then a fresh soak window starts and canonical deploy is the owner's
+lever. A persistent monitor announces +5k milestones and the wedge-pass.
+
+What is true now (each copy-proven before live):
+- **Consensus-bundle install: TERMINAL ADMITTED-AND-ACTIVATED** on this datadir
+  (checkpoint-content authority). The 2026-07-17 chain-binding refusals are
+  historical; recover via git if needed.
+- **Kernel store = `consensus.db`** (A3+A4 flip, merged + deployed): the
+  reducer kernel owns its own SQLite file; `progress.kv` holds only the
+  address_index/txindex projections via `projection_store`. Migration is
+  idempotent/crash-safe at boot; fold verified climbing on consensus.db live.
+  Pre-flip cold backup: `~/.zclassic-c23-serve1-BACKUP-preflip` (delete after
+  soak). Revert = old candidate binary + that backup.
+- **Headers**: full 3.19M-header chain imported (`--importblockindex
+  ~/.zclassic <datadir>/node.db` — 2nd arg is the node.db PATH). The P2P
+  continuation wedge that starved headers is fixed (loud counted suppression in
+  `push_getheaders_from`, `health.headers` counters) — see
+  memory `header-continuation-wedge-2026-07-19`.
+- **Crash loop CURED**: supervisor tick-runner (no child tick on the sweep
+  thread) + E3 sapling-persist deferral (no nested BEGIN abort-loop) both
+  live; backstop restarts stopped. Remaining transient wedge blockers
+  (`supervisor.tick_runner_wedged`, `worker.stall.op.projection_backfill`)
+  are contained signals, largely retired by the consensus.db flip.
+- Known follow-ups (next wave): `fast_restart` silent best-header cap +
+  `scan_best_header` height fallback (pre-existing, exposed during the flip
+  copy-prove), `tools/p2_invariant_check.c` still opens progress.kv by path,
+  spurious per-boot txn in `consensus_db_finalize_flip`.
+
+---
+
+## 0. Prior state (2026-07-17 night) — Bundle EXPORTED + VERIFIED; both copy-install routes REFUSED at chain-binding; mint3 is the reliable path; big merge wave on main
 
 **STATE AT SHUTDOWN: the live node is still wedged; the cure is NOT yet
 installed.** The complete bundle is exported + independently replay-verified
