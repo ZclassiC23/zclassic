@@ -204,7 +204,7 @@ Detail, file inventories, and the ordered checklist are in
   return code unreliable until it is the *last* site migrated — sequencing
   matters, not just coverage.
 - Rung 2's deny-list is honest about three breaks that need owner sign-off:
-  the self-respawn `execv()` at `src/main.c:3104` (already conditioned on
+  the self-respawn `execv()` at `src/main.c:565` (already conditioned on
   `!sd_notify_is_active()` — under systemd it never fires; off-systemd it
   needs a scoped Landlock EXECUTE grant, not a bare deny), dev/agent
   runners that are incompatible with the strict profile, and an audit of

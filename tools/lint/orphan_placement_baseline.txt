@@ -23,3 +23,5 @@ examples/11_collectible_market.c
 sdk/include/zclassic23/app.h
 src/cli.c
 src/main.c
+src/main_cli_modes.c
+src/main_cli_modes.h

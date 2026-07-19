@@ -68,4 +68,4 @@ lib/wallet/src/wallet_sqlite.c 1371
 lib/sim/src/simnet_chaos_faults.c 1014
 lib/util/src/supervisor.c 801
 lib/util/src/stage.c 819
-src/main.c 4612
+src/main_cli_modes.c 3802
