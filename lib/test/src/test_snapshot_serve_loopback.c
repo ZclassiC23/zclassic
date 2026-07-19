@@ -62,17 +62,17 @@
  *      two-block fixture chain risks exercising unrelated machinery this
  *      test has no fixture for.
  *
- * FINDING (asserted below, not silently tolerated): a fully valid,
- * SHA3-verified snapshot transfer over this wire loop still causes the
- * receiving node to record PEER_OFFENCE_INVALID_PROOF ("snapshot SHA3
- * verification failed") against the honest serving peer. Root cause:
+ * HONEST-SERVER CONTAINMENT (asserted below): a fully valid, SHA3-verified
+ * snapshot transfer over this wire loop still fails to activate, because
  * runtime activation is deliberately CONTAINED (snapshot_apply.c —
  * SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE, "unified installer required"),
  * so snapsync_finalize()/.handle_end() return !ok even when SHA3 verified
- * true; msgprocessor_snapshot.c's zsnapend handler treats any !ok as
- * "verification failed" and never distinguishes the two. See file:line
- * anchors in the test body below. This is the first coverage of that
- * consequence — no other test exercises the wire-level zsnapend handler. */
+ * true. msgprocessor_snapshot.c's zsnapend handler distinguishes that
+ * specific containment code from a genuine proof/SHA3 failure: containment
+ * records no offence and never bans the honest serving peer, while a
+ * genuine corruption (see the second test below) still does. See file:line
+ * anchors in the test body below. This is the first coverage of the
+ * wire-level zsnapend handler's ban-vs-no-ban branch. */
 
 #include "test/test_helpers.h"
 
@@ -230,17 +230,29 @@ static int64_t lb_count_rows(sqlite3 *db, const char *table)
     return count;
 }
 
-/* ── The golden-path test ─────────────────────────────────────────────
+/* ── The golden-path (and tampered-chunk) test ───────────────────────
  *
  * offer (zsnapshot) -> [FlyClient bypass glue] -> request (zsnapreq) ->
- * two zsnapdata chunks -> zsnapend -> staging matches the fixture
- * byte-for-byte, AND the documented containment/mis-scoring finding is
- * observed exactly as it happens on the real wire. */
-static int test_snapshot_serve_loopback_impl(void)
+ * two zsnapdata chunks -> zsnapend.
+ *
+ * corrupt_chunk == false: staging matches the fixture byte-for-byte, AND
+ * the honest-server containment path is observed exactly as it happens on
+ * the real wire (activation contained, but NOT scored/banned).
+ *
+ * corrupt_chunk == true: the served bytes are tampered AFTER the offered
+ * SHA3 root is derived from the pristine reference, so B's staged set
+ * genuinely fails to hash to the offered root — a real proof failure, not
+ * containment. That case must still record the offence and ban the peer,
+ * proving the fix distinguishes the two rather than just disabling the
+ * ban outright. */
+static int test_snapshot_serve_loopback_impl(bool corrupt_chunk)
 {
     int failures = 0;
 
-    TEST("snapshot serve loopback: offer->request->chunk->end, two real "
+    TEST(corrupt_chunk ?
+        "snapshot serve loopback: tampered chunk -> genuine SHA3 failure "
+        "-> peer still banned" :
+        "snapshot serve loopback: offer->request->chunk->end, two real "
         "message processors over a real wire, staging matches served "
         "bytes exactly") {
         const struct chain_params *params = chain_params_get();
@@ -380,6 +392,16 @@ static int test_snapshot_serve_loopback_impl(void)
             uint8_t *cache_copy = zcl_malloc(snap_buf.size, "test_snap_cache");
             ASSERT(cache_copy != NULL);
             memcpy(cache_copy, snap_buf.data, snap_buf.size);
+            if (corrupt_chunk) {
+                /* Flip the last byte of the served buffer (inside chunk2's
+                 * script) AFTER sha3_root was derived from the pristine
+                 * reference bytes above. A registers/serves THIS tampered
+                 * buffer while still offering the pristine root, exactly
+                 * modeling a corrupted-in-transit or malicious serve: the
+                 * bytes B receives and stages will genuinely NOT hash to
+                 * the offered root. */
+                cache_copy[snap_buf.size - 1] ^= 0xFF;
+            }
             ASSERT(fast_sync_publish_snapshot_cache(
                 cache_copy, (int64_t)snap_buf.size, sha3_root, utxo_count));
         }
@@ -435,6 +457,7 @@ static int test_snapshot_serve_loopback_impl(void)
         ASSERT(lb_pump(node_a_side, sentinel_a, &mp_b, node_b_side,
                       params->pchMessageStart));
 
+        if (!corrupt_chunk) {
         /* ── Assertion 1: the served bytes landed in staging byte-for-byte,
          * proving the full serve->transfer->receive loop moved the exact
          * fixture, not a corrupted or partial one. Active-state promotion
@@ -483,31 +506,55 @@ static int test_snapshot_serve_loopback_impl(void)
             ASSERT(memcmp(local_root, svc_b.offered_utxo_root, 32) == 0);
         }
 
-        /* ── FINDING, locked in as a real, observed, wire-level
-         * consequence (see file header) — snapshot_apply.c:52-75
+        /* ── Honest-server containment path, real wire-level behavior
+         * (see file header) — snapshot_apply.c:52-75
          * snapsync_stage_promote_active_internal() always returns
-         * SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE, so
-         * msgprocessor_snapshot.c's zsnapend handler (~line 1372:
-         * "bool verified = snapsync_handle_end(svc, node->id).ok;")
-         * sees verified=false on a cryptographically PASSING transfer
-         * and falls into its else-branch (~line 1418:
-         * peer_scoring_record(..., PEER_OFFENCE_INVALID_PROOF,
-         * "snapshot SHA3 verification failed")) — scoring the honest
-         * server as if the proof failed, when it did not. */
+         * SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE (-12) even on a
+         * cryptographically PASSING transfer, because runtime activation
+         * is deliberately fail-closed until the unified installer exists.
+         * msgprocessor_snapshot.c's zsnapend handler (~line 1376) branches
+         * on that specific code: activation-contained is NOT a peer fault,
+         * so no offence is recorded and the peer is never banned. The
+         * snapshot-sync service itself still lands in FAILED with the
+         * containment blocker set (snapshot sync unavailable this cycle),
+         * and the receiver falls back to ordinary P2P header/block sync —
+         * the honest server is left free to serve (or be reused) again. */
         ASSERT(svc_b.state == SNAPSYNC_FAILED);
         ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
+        ASSERT(node_b_side->misbehavior == 0);
+        ASSERT(!node_b_side->disconnect);
+        } else {
+        /* ── Genuine corruption: B's staged set does NOT hash to the
+         * offered root (byte flipped in cache_copy above). This is a real
+         * proof failure, not activation containment (snapsync_handle_end's
+         * result code here is the generic finalize failure, never
+         * SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE), so
+         * msgprocessor_snapshot.c's zsnapend handler must still record the
+         * offence and ban the peer — the fix narrows the exemption to
+         * containment only, it does not disable scoring altogether. */
+        ASSERT(svc_b.state == SNAPSYNC_FAILED);
+        ASSERT(!blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
         ASSERT(node_b_side->misbehavior ==
               peer_offence_weight(PEER_OFFENCE_INVALID_PROOF));
         ASSERT(node_b_side->disconnect);  /* auto-banned at the default
-                                            * 100-point threshold — a
-                                            * single honest transfer is
-                                            * enough. */
+                                            * 100-point threshold — genuine
+                                            * corruption still bans. */
+        }
 
         blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         boot_snapshot_offer_test_set_publication_override(-1);
         boot_snapshot_offer_test_set_trust_override(-1);
         msg_processor_invalidate_offer();
         fast_sync_reset_snapshot_cache();
+        /* Reset the process-global snapsync FSM (separate from svc_a/
+         * svc_b's own .state field) so a second impl() invocation in the
+         * same process (corrupt_chunk sub-case) starts from IDLE instead
+         * of leaving it wedged at FAILED, which would otherwise reject
+         * every subsequent transition as illegal (harmless to this test's
+         * assertions, which read svc_b.state directly, but pollutes
+         * stderr with spurious "BUG: snapsync illegal ..." lines and
+         * would mask a real bug in svc/global sync elsewhere). */
+        (void)snapsync_set_state(SNAPSYNC_IDLE, "test reset");
 
         stream_free(&chunk1);
         stream_free(&chunk2);
@@ -538,5 +585,9 @@ static int test_snapshot_serve_loopback_impl(void)
 
 int test_snapshot_serve_loopback(void)
 {
-    return test_snapshot_serve_loopback_impl();
+    int failures = 0;
+
+    failures += test_snapshot_serve_loopback_impl(false);
+    failures += test_snapshot_serve_loopback_impl(true);
+    return failures;
 }
