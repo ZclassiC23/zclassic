@@ -252,11 +252,14 @@ memory `project_live_wedge_anchor_frontier_rootcause_2026-07-12`. The
 **sovereign cure** is the self-verified UTXO/anchor rebuild that folds real
 block bodies forward from the in-binary SHA3/PoW checkpoint and deletes the
 borrowed `zclassicd`-minted seed path (see `CLAUDE.md` "Tenacity &
-recovery"). An alternate, faster **operational** cure (the
-complete-shielded-history import, `release_assisted` trust, not sovereign)
-was proven to clear this exact wedge on a datadir copy — not folded to tip or
-cut over; its owner-gated procedure is
-[`docs/work/canonical-cutover-runbook-2026-07-16.md`](work/canonical-cutover-runbook-2026-07-16.md).
+recovery") — this is the path that actually passed the wedge, per §0-LATEST.
+An alternate, faster **operational** cure (the complete-shielded-history
+import, `release_assisted` trust, not sovereign,
+[`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md))
+was proven to clear this exact wedge on a datadir copy but was never cut over
+live; its owner-gated runbook was removed in the 2026-07-19 doc-rot sweep
+(recover with `git log --follow -- docs/work/canonical-cutover-runbook-2026-07-16.md`
+if the import path is ever revived as the active cure track).
 
 ## 2. Historical detail
 
@@ -350,9 +353,8 @@ exit). Replay any consensus-predicate tightening against REAL history first
 
 - [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md) — THE plan.
 - [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) — the sovereign-cure spine.
-- [`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md) — the operational import-path cure design (the alternate cure in §1).
-- [`docs/work/canonical-cutover-runbook-2026-07-16.md`](work/canonical-cutover-runbook-2026-07-16.md) — owner-gated live cutover + revert for the import-path cure.
-- [`docs/work/sovereign-cutover-runbook.md`](work/sovereign-cutover-runbook.md) — owner-gated live cutover + revert for the sovereign bundle cure.
+- [`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md) — the operational import-path cure design (the alternate cure in §1; not the path that passed the wedge).
+- [`docs/work/sovereign-cutover-runbook.md`](work/sovereign-cutover-runbook.md) — owner-gated live cutover + revert for the sovereign bundle cure (the path that passed the wedge).
 - [`docs/work/ROADMAPS.md`](work/ROADMAPS.md) — live vs superseded roadmaps.
 - [`docs/AGENT_TRAPS.md`](AGENT_TRAPS.md) — looks-broken-but-isn't; read before "fixing" anything.
 - [`docs/MVP.md`](MVP.md) — the v1 acceptance bar (8 criteria).

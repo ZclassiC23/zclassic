@@ -172,12 +172,10 @@ for high-performance C, not Rails cosplay.
        operator_needed ⟺ a blocker outlived its SLO (and the alert reaches a human).
 ```
 
-The pipeline is the staged Job chain, and it is the reducer:
-
-```
-header_admit → validate_headers → body_fetch → body_persist
-            → script_validate → proof_validate → utxo_apply → tip_finalize
-```
+The pipeline is the staged Job chain, and it is the reducer — eight stages in
+a fixed line, each proving one thing and either advancing its cursor or
+naming a blocker; see [`docs/HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md)
+§2 for the full per-stage table (what each proves, what "stuck" looks like).
 
 Each stage is a Job (§3.4): it advances a durable cursor or names a typed
 blocker. `tip_finalize`'s cursor *is* the tip. Reorg is a fork-aware append:
@@ -208,12 +206,12 @@ know the shape.
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
 | 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
-| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (19 models, E3+E4+model-validation HARD) | `block.c` |
+| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (E3+E4+model-validation HARD; file count in `docs/CODEBASE_MAP.md` §1's app-shapes table) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (30 conditions live) | `block_failed_mask_at_tip.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (`condition_registrations` count is machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | *(no `app/` folder — concept, not a physical shape)* | typed append-only emit + subscribers | the reserved-empty `app/events/` folder was deleted 2026-07-17 (0 files ever lived there); the concept stays owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c` | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 12 port interfaces + 13 sqlite/file write impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6); port/adapter counts are machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
 the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
@@ -281,7 +279,7 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (outbound-only by design: 12 port interfaces + 13 sqlite/file write impls for writes; reads owned by Models per Law 5)
+adapters/ ports/  hexagonal seam (outbound-only by design — port/adapter counts in CODEBASE_MAP.md's DOC-COUNTS block; reads owned by Models per Law 5)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this — §9 is the debt board) · work/ (assignments)
@@ -359,8 +357,9 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is **outbound-only by design**: 12 port interfaces + 13 sqlite/file
-write impls carry writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
+test. The adapter tree is **outbound-only by design**: `docs/CODEBASE_MAP.md`'s
+machine-checked `port_interfaces` / `persistence_adapters` counts carry writes
+out through swappable ports (Law 2); reads are owned by the Models (Law 5),
 so no inbound "repository" port fronts them — the same kind of by-design absence
 as the deleted `app/events/` folder (§3 row 7): the concept has a real home
 elsewhere and does not need an empty placeholder. App sites that call

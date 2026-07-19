@@ -23,13 +23,18 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
   durable Phase 0–6 hierarchy and promotion gates (cited at the top of
   `../HANDOFF.md`); ordering authority when other plans differ.
 - **[`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md)**
-  — the operational (`release_assisted`) import-path cure design, proven on a
-  datadir copy per `../HANDOFF.md` §0-NEWEST; complements, does not replace,
-  the sovereign cure above.
-- **[`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)** and
-  **[`canonical-cutover-runbook-2026-07-16.md`](./canonical-cutover-runbook-2026-07-16.md)**
-  — owner-gated live cutover + revert procedures for the sovereign-bundle and
-  import-path cures respectively. Nothing in either auto-executes.
+  — the operational (`release_assisted`) import-path cure design
+  (`-import-complete-shielded`, `shielded_history_import_service.c`,
+  `sovereignty_controller.c`'s self_folded gating). Proven to clear the wedge
+  on a datadir copy, but **not** the path that actually cured the live node —
+  the sovereign bundle install (below) passed the wedge live on 2026-07-19
+  (`../HANDOFF.md` §0-LATEST). Kept live because it documents currently-shipped
+  code (the importer + the operational-vs-sovereign trust-mode split), not
+  because it is still the active cure track.
+- **[`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)** —
+  owner-gated live cutover + revert procedure for the sovereign-bundle cure;
+  this is the path that actually passed the wedge (`../HANDOFF.md`
+  §0-LATEST, 2026-07-19).
 
 ## SUPERSEDED — removed from the tree, history only
 
@@ -41,6 +46,11 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
 | `sovereign-service-roadmap.md` | `FORWARD_PLAN.md` (sovereign-contracts follow-on tracks there now) |
 | `cure-runbook-2026-07-16.md` (2026-07-19 fold) | `sovereign-cutover-runbook.md`'s "Independent replay-receipt authority (`-verify-consensus-bundle=PATH`)" section (the receipt binary-binding gotcha) |
 | `canonicalization-backlog.md` (2026-07-19 purge) | none — all 6 backlog rename items shipped (`_ex` symbols no longer exist in-tree) |
+| `canonical-cutover-runbook-2026-07-16.md` (2026-07-19 doc-rot fold, N4) | `sovereign-cutover-runbook.md` — its own owner-gated live-cutover procedure was never executed; the sovereign bundle install passed the wedge instead (`../HANDOFF.md` §0-LATEST) |
+| `contextual-check-wiring-spec-2026-06-08.md` (2026-07-19 doc-rot fold, N4) | `docs/CONSENSUS_PARITY_DOCTRINE.md` "Landed parity fixes" section (the rule→zclassicd map); the gating rationale itself was already duplicated in `docs/AGENT_TRAPS.md` |
+| `security-audit-response-2026-06-09.md` (2026-07-19 doc-rot fold, N4) | `docs/SECURITY_AND_INTEGRITY.md` "Concrete safeguards" section |
+| `stability-improvements-2026-06-16.md` (2026-07-19 doc-rot fold, N4) | `tenacity-roadmap.md`'s "Stability hardening backlog" section |
+| `hold-class-audit-2026-07-10.md` (2026-07-19 doc-rot fold, N4) | `tenacity-roadmap.md`'s "Hold-class doctrine" section |
 
 Recover any removed roadmap with `git log --follow -- docs/work/archive/<old-name>.md`
 and `git show <commit-before-removal>^:docs/work/archive/<old-name>.md`. Dated
@@ -65,11 +75,14 @@ citations unresolvable. They stay at `docs/work/<name>.md` (not archived):
 `session-substrate-probes.md` (`lib/platform/` sandbox code), `lint-gate-hollowness-audit.md`
 (`tools/lint/gate_lib.sh` + its lint-gate self-test), `parity-audit-round2-findings.md`
 (consensus-parity lock-in tests, items L1/L2/L3), `consensus-parity-supplemental-audit-2026-06-08.md`
-(`docs/AGENT_TRAPS.md` §2 items 3/5 — JoinSplit Ed25519 sig + `fCoinbaseMustBeProtected` gating),
-`contextual-check-wiring-spec-2026-06-08.md` and `security-audit-response-2026-06-09.md`
-(script-validate wiring + third-party security-audit disposition),
-`stability-improvements-2026-06-16.md` (near-term hardening sequencing cited
-from `tenacity-roadmap.md`), and `hold-class-audit-2026-07-10.md` /
-`tip-durability-collapse.md` (the blocker-meta-detector and coins_kv
-durability rationale — the only two the 2026-07-14 purge already flagged as
-"deferred deliberately").
+(`docs/AGENT_TRAPS.md` §2 items 3/5 — JoinSplit Ed25519 sig + `fCoinbaseMustBeProtected`
+gating; `docs/AGENT_TRAPS.md` is not editable in the normal doc-rot sweep, so this
+file stays even though its own condensed summary now also lives in
+`docs/CONSENSUS_PARITY_DOCTRINE.md`'s "Landed parity fixes" section), and
+`tip-durability-collapse.md` (the coins_kv durability rationale, flagged
+"deferred deliberately" in the 2026-07-14 purge). `contextual-check-wiring-spec-2026-06-08.md`,
+`security-audit-response-2026-06-09.md`, `stability-improvements-2026-06-16.md`,
+and `hold-class-audit-2026-07-10.md` were in this category until the 2026-07-19
+doc-rot sweep (N4) re-pointed their few code citations at permanent homes
+(`docs/CONSENSUS_PARITY_DOCTRINE.md`, `docs/SECURITY_AND_INTEGRITY.md`,
+`tenacity-roadmap.md`) and removed them — see the SUPERSEDED table above.

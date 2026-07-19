@@ -4,7 +4,7 @@
 
 **Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
 
-> This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Near-term hardening sequencing lives in [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md); the merged rock-solid recovery-program L1/L2 items are in this doc (see "Rock-solid recovery program" below).
+> This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Near-term hardening sequencing is in this doc's "Hold-class doctrine" and "Stability hardening backlog" sections (below); the merged rock-solid recovery-program L1/L2 items are in this doc (see "Rock-solid recovery program" below).
 
 ## The lens
 
@@ -221,6 +221,90 @@ these harden the bridge.
   per-window SHA3 UTXO commitment, persisted, would let a node detect AND repair a coin
   tear from its own recent history instead of a full re-import. Consensus-adjacent; must
   be designed against the parity doctrine first. Overlaps item 4 (the seal) above.
+
+## Hold-class doctrine (merged from hold-class-audit-2026-07-10)
+
+The stickiness invariant applied to reducer holds: **a stall must always be a
+NAMED typed blocker (`lib/util/blocker.h`) with either an auto-remedy
+condition or an honest, documented owner-gate rationale** — never a bare
+fail-closed refusal invisible to `zclassic23 core sync blockers` /
+`zclassic23 dumpstate subsystem=blocker`. An audit of every fail-closed hold
+in `app/jobs/src/` (`utxo_apply`, `script_validate`, `proof_validate`,
+`coin_backfill`) found 12 typed hold sites; the generic backstop
+(`app/conditions/src/blocker_stall_meta_detector.c`) now arms the sticky
+escalator + pages by blocker id for any hold whose H\*-freeze exceeds the
+window, covering every *typed* hold even with an empty `escape_action` — it
+is a backstop, not a substitute for an instance cure.
+
+**Still-open defect:** `app/jobs/src/utxo_apply_delta_repair.c`'s
+value-overflow repair owner-gate refuses via four bare local flags
+(`author_refused`/`owner_refused`/`cursor_stale_refused`/`walk_torn_refused`)
+with **no `blocker_set` call anywhere in the file** — invisible to the
+blocker registry and therefore to the meta-detector, unlike the directly
+analogous `coin_backfill.owner_gate` typed blocker for the equivalent
+env-ack gate. Fix: give it a typed `DEPENDENCY` blocker
+(`utxo_apply.value_overflow_owner_gate`) mirroring `coin_backfill_page_refusal`.
+(The 2026-07-10 audit's other two flagged defects are resolved: the
+nullifier-backfill no-auto-remedy gap now has an owner-gated populate-only
+walker, `app/services/src/nullifier_backfill_service.c`; the
+`proof_validate.internal_error` transient-held-permanent class is backstopped
+by the meta-detector above.)
+
+## Stability hardening backlog (merged from stability-improvements-2026-06-16)
+
+Landed since (verified against HEAD, dropped from this list): deploy
+force-rebuild on every push (`Makefile` `deploy` target), loud DNS-seed
+resolution failure (`lib/net/src/connman.c`), IBD-class `getheaders` interval
+while a header-band hole is open (`syncsvc_header_band_hole_open()` /
+`syncsvc_getheaders_interval()`), unconditional cold-import seed-failure
+logging, and `healthy_outbound` peer accounting in the chain-advance
+coordinator dumps.
+
+Still-open, non-consensus, hermetically testable (grep-verified absent from
+HEAD at fold time — re-check before starting):
+
+- **`header_band` / `connman` health surfaced richer in `zclassic23 dumpstate`** —
+  island-root / contiguous-frontier / remaining / ETA, and "N/3 healthy,
+  dialing, K addnodes in backoff" instead of a bare node count.
+- **Split the overloaded `block-not-finalized-by-reducer` reason** into a
+  benign in-flight `reducer-finalize-pending` vs a genuine-tear hard reason.
+- **Band-aware stall condition** keyed on the contiguous frontier, not
+  `best_header` (which sits at the high island root and hides a pinned
+  frontier).
+- **Seed-reachability CI canary** — probe `vSeeds`/`vFixedSeeds` and fail
+  under a floor; lint the deploy env IPs against the same list.
+- **Local band-fill from already-hardlinked zclassicd bodies** — scan local
+  `blk*.dat` instead of crawling the ~12k-block band over P2P at
+  ~160 headers/round-trip when the bodies are already on local disk.
+- **`system("cp …")` block-file copy** (`config/src/boot.c`) should be a
+  checked in-process copy that refuses-to-bless + pages on a failed/truncated
+  copy instead of proceeding silently.
+- **Chain-aware peer-floor "healthy" definition** — count a peer toward the
+  anti-eclipse floor only if it recently served a header/block at/above our
+  tip; never lower the floor.
+- **DRY backlog** (~900 duplicated lines, each its own reviewed change):
+  the 8 `lib/storage/src/*_projection.c` lifecycle preambles (~340 lines);
+  the `adapters/outbound/persistence/*` scalar-read idiom (~160 lines); the
+  8 `app/jobs/src/*_stage.c` reducer-stage prologue + the `*_log_store.c`
+  cross-table readers (~200 lines, consensus-adjacent — gate + review); the
+  24-controller rpc-table register tail + related controller boilerplate.
+
+**Consensus-adjacent, REPLAY-GATED, not yet fixed (report only — do not land
+without a full-history replay + a `test_consensus_parity` golden, per the
+h=478544 doctrine):** a within-block cross-transaction double-spend is
+silently accepted on the live reducer path —
+`app/jobs/src/utxo_apply_delta.c`'s per-input spend loop records each spent
+outpoint into `spent[]` with no check against outpoints **already recorded
+earlier in the same block**, so a second input spending the same outpoint a
+prior tx in the block already spent is not rejected (the canonical catch,
+`update_coins_with_undo` in `lib/validation/src/update_coins.c`, has no
+production caller on this path — `connect_block.c`'s boot-reindex path is
+the only caller). History-safe (no such block exists on the immutable
+chain — zclassicd's `ConnectBlock` already rejects it), but a crafted
+forward block would fork. Fix restores parity: scan the recorded `spent[]`
+for a matching outpoint before recording a new one; fail with a
+non-repairable status (not `value_overflow`, which the repair ladder treats
+as repairable).
 
 ---
 

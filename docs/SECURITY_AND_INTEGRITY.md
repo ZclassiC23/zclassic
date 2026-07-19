@@ -18,8 +18,8 @@ properties auditable.
   live forward-progress blocker, off-chain ZMSG plaintext transport, and
   incomplete marketplace/swap settlement paths.
 - The June 2026 third-party security-audit disposition (fixed findings,
-  refuted findings with citations, deferred items, and deployment gates) is
-  [`work/security-audit-response-2026-06-09.md`](./work/security-audit-response-2026-06-09.md).
+  refuted findings with citations, and deferred items) is folded into
+  "Concrete safeguards" below.
 
 ## Operator-owned scope
 
@@ -118,8 +118,39 @@ item, not a claimed property.
   `pr-security-comment.yml`) that run an automated, fork-safe security
   review/comment on pull requests; there is no hosted build/test CI workflow
   (CI runs locally via `make ci`).
-- **Operator-private HTTP routes:** wallet, message, and swap API routes are
-  blocked on the clearnet listener as recorded in the June 2026 audit response.
+- **Operator-private HTTP routes:** `/api/wallet`, `/api/messages`, and
+  `/api/swaps` are classified operator-private (`api_route_is_operator_private`,
+  `lib/net/src/https_server.c`) and 403'd before dispatch on the 0.0.0.0 TLS
+  clearnet listener (no CORS header); public chain-data routes are unaffected,
+  the onion listener exposes no `/api`, and the in-process `wallet_gui`
+  consumer bypasses the listener entirely.
+- **Landed fixes (2026-06-09 audit response, re-verified against HEAD):**
+  destination-capacity guard in `script_get_op` before the opcode-data memcpy
+  (was an up-to-~9994-byte copy into 520-byte caller buffers — remote
+  DoS/corruption on the validation path), paired with a `script_get_sig_op_count`
+  fix so sigops after an oversized push are never undercounted; a coinbase
+  subsidy ceiling on the live reducer path (`app/jobs/src/utxo_apply_delta.c`,
+  status `bad_cb_amount` — deliberately distinct from `value_overflow` so
+  repair machinery never treats inflation as repairable); a consensus
+  nullifier set (`nullifier_kv`, Sprout/Sapling separate namespaces, checked
+  + inserted atomically with the coins commit inside the `utxo_apply` stage
+  txn); wallet-backup encryption (`WALLET_BACKUP_PASSWORD` → ChaCha20-Poly1305
+  via `wallet_backup_encrypt_file`; no password means plaintext continues with
+  a loud boot warning, since refusing would silently kill the fleet-wide
+  key-loss safety net); the operator-private HTTP routes above.
+  **Known limit:** nullifier enforcement is activation-forward on
+  snapshot-seeded datadirs (a from-genesis replay/reindex gets the complete
+  set automatically); the pre-activation backfill gap is a permanent typed
+  blocker (`utxo_apply.nullifier_backfill_gap`), remediated by the owner-gated
+  `app/services/src/nullifier_backfill_service.c` populate-only walker.
+- **Refuted findings (pinned so they are not "fixed" again):** the retarget
+  half of "difficulty retarget not enforced on live ingest" is false — every
+  P2P header runs `accept_block_header → contextual_check_block_header →
+  GetNextWorkRequired` (`bad-diffbits`); and "SIGHASH_SINGLE should return the
+  Bitcoin `uint256(1)` sentinel" is a false positive — zclassicd itself throws
+  and catches a `logic_error` there and returns false (bug-for-bug parity,
+  pinned by `lib/test/src/test_sighash_malleability.c`); implementing the
+  sentinel would be the actual fork.
 - **Data-integrity discipline:** application writes go through the ActiveRecord
   lifecycle or explicit storage-layer APIs; chain progress is represented as
   durable stage cursors; recovery and self-heal paths must be observable.
@@ -160,7 +191,6 @@ Evidence files worth reading first:
 - [`../README.md`](../README.md) - public status and feature scope.
 - [`../.github/SECURITY.md`](../.github/SECURITY.md) - vulnerability reporting.
 - [`MVP.md`](./MVP.md) - v1 acceptance criteria and readiness score.
-- [`work/security-audit-response-2026-06-09.md`](./work/security-audit-response-2026-06-09.md) - audit disposition.
 - [`RUNBOOK.md`](./RUNBOOK.md) - operational safety rails.
 - [`../tools/scripts/isolated_node_env.sh`](../tools/scripts/isolated_node_env.sh) - isolated process/datadir guardrails.
 - [`../tools/release.sh`](../tools/release.sh) - reproducible release and signing logic.

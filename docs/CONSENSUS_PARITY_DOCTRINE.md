@@ -133,6 +133,55 @@ This is **not** a consensus change ahead of zclassicd — it *restores* parity
 with what every running zclassicd node actually does, and is exactly the static,
 non-signaled, non-dynamic mechanism class gate E13 permits.
 
+## Landed parity fixes (2026-06-08 audit — historical record)
+
+An 8-surface adversarial audit (2026-06-08) found `contextual_check_block()`
+had **zero production callers** — the connect path ran only context-free
+structural checks + the staged proof gate — as the root cause behind 4 of 5
+confirmed divergences. All 5 are landed:
+
+| # | Divergence | Landed at |
+|---|---|---|
+| 1 | CHECKDATASIG/CHECKDATASIGVERIFY undercounted as 0 sigops in the context-free structural count | `core/consensus/src/check_block.c:57` `DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS = SCRIPT_VERIFY_CHECKDATASIG_SIGOPS`, unconditional |
+| 2 | Per-tx contextual rules (Overwinter expiry, NU version gating, per-tx finality, BIP34 `bad-cb-height`) unwired on connect | `contextual_check_block()` (`lib/validation/src/check_block.c:436`) called from `app/jobs/src/script_validate_contextual.c:107`, IBD- and tip-window-gated (see `docs/AGENT_TRAPS.md` for the gating rationale) |
+| 3 | JoinSplit Ed25519 signature not verified on the block-connect path | `app/jobs/src/proof_validate_stage.c` verifies it before the per-joinsplit zk-SNARK loop; failure tags `first_failure_proof_type="joinsplit_sig"` |
+| 4 | Height-gated Sapling/Overwinter structural tx rules (version-group-id, version floors) unwired on connect | same wiring as #2 |
+| 5 | Missing `bad-txns-coinbase-spend-has-transparent-outputs` rule | `app/jobs/src/utxo_apply_delta.c:536` and `app/jobs/src/utxo_apply_stage.c:498` |
+
+**Nuance on #1 — two separate sites, two separate postures.** zclassicd sets
+`SCRIPT_VERIFY_CHECKDATASIG_SIGOPS` in *both* `CheckBlock`
+(`STANDARD_SCRIPT_VERIFY_FLAGS`) and `ConnectBlock`. c23's context-free
+structural count (#1 above) matches unconditionally. The **`ConnectBlock`-analogue
+reindex path** (`lib/validation/src/connect_block.c`) is a *separate*,
+**DEFAULT-OFF** parity flag (`g_enforce_checkdatasig_sigops`,
+`-enforce-checkdatasig-sigops`) — a tightening (reject) predicate gated on a
+full-history replay confirming zero false-rejects first, per the
+h=478544 doctrine above. **Do not flip its default without that replay.** (The
+live reducer fold does its own sigop accounting and is unaffected by this
+flag; only the boot-reindex path reads it.)
+
+**Refuted candidates (do not re-investigate):** pow-diffadj operator-precedence
+in the BUTTERCUP-window scale flag (mainnet-unobservable); BIP34 height
+encoding for heights 1–16 (unreachable — no future block can have height
+≤16); the missing Sprout ZIP209 turnstile checkpoint seed (dormant
+defense-in-depth, the verified joinsplit zk-SNARKs already prevent a negative
+pool); BIP30 same-height self-write tolerance (recovery-path only,
+decision-identical on the normal path).
+
+### Rule → zclassicd map for the connect-path contextual gate
+
+The per-tx contextual rules wired at `app/jobs/src/script_validate_contextual.c`
+(`CTX_TIP_WINDOW=16`, IBD-gated per-tx call, finality + BIP34 unconditional —
+see `docs/AGENT_TRAPS.md` for why):
+
+| c23 rule | zclassicd reference | Reject reason | IBD-gated |
+|---|---|---|---|
+| Overwinter expiry | `ContextualCheckTransaction` | `tx-overwinter-expired` | yes |
+| NU version gating (sapling_structural) | `ContextualCheckBlock` | `tx-overwinter-not-active` / `tx-overwintered-flag-not-set` / `bad-{sapling,overwinter}-tx-version-group-id` / `bad-tx-*-version-too-{low,high}` / `tx-overwinter-active` | yes |
+| pre-Sapling oversize | `ContextualCheckTransaction` | `bad-txns-oversize` | yes |
+| per-tx finality | `ContextualCheckBlock` (header time, our FR-2) | `bad-txns-nonfinal` | **no** |
+| BIP34 coinbase height | `ContextualCheckBlock` | `bad-cb-height` | **no** |
+
 ## Handling outside contributions (PR protocol)
 
 Outside PRs land on the public mirror `ZclassiC23/zclassic`. Treat each as
