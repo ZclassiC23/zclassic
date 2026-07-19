@@ -398,7 +398,9 @@ The framework holds; the implementation moves.
 - **New here:** read this (§9 is the open-item debt board — what's done,
   what's next) and [`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the
   five acceptance numbers + the operator-paging clause everything is judged
-  against).
+  against). [`docs/ARCHITECTURE_DIAGRAMS.md`](./ARCHITECTURE_DIAGRAMS.md) has
+  Mermaid diagrams of the current boot sequence and subsystem topology as a
+  visual companion to §2-§4 below.
 - **Driving the north star:** keep the lint baselines empty, finish deleting
   old cutover/shadow language, and keep reducer/log authority as the only
   architecture described in production docs.

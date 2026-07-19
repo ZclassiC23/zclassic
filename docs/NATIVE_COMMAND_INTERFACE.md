@@ -4,6 +4,13 @@ Status: frozen v1 contract; implementation in progress
 Audience: LLM coding agents, application developers, node operators, and UI
 adapters
 
+This document is the grammar/tree/envelope contract. For every leaf the
+registry currently declares, see [`docs/API_REFERENCE.md`](./API_REFERENCE.md)
+(transcribed from `config/commands/`). For the practical field-by-field
+reference of the implemented agent surface (`agentops`, `agentdiagnose`,
+`healthcheck`, `agentlanes`, the service/operation catalog, and more), see
+[`docs/AGENT_API.md`](./AGENT_API.md).
+
 ## 1. North star
 
 The primary interface to ZClassic23 is one shallow, searchable command tree

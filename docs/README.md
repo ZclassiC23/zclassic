@@ -12,7 +12,9 @@ points in order; dated evidence and backlog material are intentionally omitted.
 ## Develop here — the fast loop (read before making changes)
 
 - [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher, `dev change apply`), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Auto-loads as the `zclassic23-dev` skill; start here for any change.
-- [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward.
+- [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
+- [`API_REFERENCE.md`](./API_REFERENCE.md) — every leaf the registry currently declares, transcribed from `config/commands/`.
+- [`AGENT_API.md`](./AGENT_API.md) — the practical field-by-field reference for the implemented agent surface (`agentops`, `agentdiagnose`, `healthcheck`, `agentlanes`, service catalog, and more); referenced directly from `app/controllers/src/agent_controller.c` response bodies.
 - [`work/HOTSWAP.md`](./work/HOTSWAP.md) — Tier-1 hot-swap (`config/hotswap_eligible.def`) + the dev loop + ZVCS auto-anchor.
 - [`ZVCS.md`](./ZVCS.md) — in-binary VCS; `dev vcs revert` is a one-command
   source-tree revert. Relinking the *running binary* to the reverted
