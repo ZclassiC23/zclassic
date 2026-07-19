@@ -443,6 +443,42 @@ bool anchor_kv_add_tree(sqlite3 *db, int pool,
     return true;
 }
 
+bool anchor_kv_max_height(sqlite3 *db, int pool, int64_t *out_height)
+{
+    if (out_height) *out_height = -1;
+    if (!db || !anchor_pool_valid(pool) || !out_height) {
+        LOG_WARN(ANCHOR_SUBSYS, "max_height: invalid args pool=%d", pool);
+        return false;
+    }
+    char sql[96];
+    int n = snprintf(sql, sizeof(sql), "SELECT MAX(height) FROM %s",
+                     anchor_table(pool));
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN(ANCHOR_SUBSYS, "max_height prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = true;
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        /* MAX() over an empty table yields SQL NULL — column_type == NULL,
+         * which we map to -1 (no rows). A real max is a non-negative height. */
+        if (sqlite3_column_type(s, 0) == SQLITE_NULL)
+            *out_height = -1;
+        else
+            *out_height = sqlite3_column_int64(s, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN(ANCHOR_SUBSYS, "max_height step rc=%d: %s", rc,
+                 sqlite3_errmsg(db));
+        ok = false;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
 bool anchor_kv_delete_range(sqlite3 *db, int64_t first_height,
                             int64_t last_height)
 {

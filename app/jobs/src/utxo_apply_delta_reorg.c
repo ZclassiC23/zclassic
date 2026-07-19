@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_delta.h"
 #include "utxo_apply_delta_internal.h"
+#include "jobs/reducer_commit_invariants.h"
 #include "jobs/stage_helpers.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -516,6 +517,13 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * otherwise ROLLBACK the completed unwind and oscillate (regression from
      * 429706f87; this restores the pre-batch own-txn COMMIT durability). */
     if (ua_batched) stage_batch_mark_dirty();
+
+    /* This unwind mutated coins/anchors/nullifiers (inverse deltas + range
+     * deletes) inside the open drain batch. Its inverse-delta arithmetic
+     * invalidates the pure-forward conservation baseline, so rebaseline the
+     * batch-commit invariants: verify() passes loudly instead of false-refusing
+     * (no-op unless a batch is open). */
+    reducer_commit_invariants_note_reorg();
 
     atomic_fetch_add(unwound_counter, 1);
     atomic_store(last_blocked_unix, wall_now_s());

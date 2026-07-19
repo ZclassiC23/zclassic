@@ -10,6 +10,7 @@
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_anchors.h"
+#include "jobs/reducer_commit_invariants.h"
 #include "jobs/stage_helpers.h"
 
 #include "primitives/block.h"
@@ -432,6 +433,12 @@ bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
             nf_acc_free(acc, &seen);
             return false;  /* store error already logged; txn rolls back */
         }
+        /* Feed the batch-commit uniqueness invariant (c): a duplicate reveal
+         * within the batch is refused at commit instead of being silently
+         * swallowed by nullifier_kv_add's INSERT OR REPLACE (no-op unless a
+         * drain batch is open). */
+        reducer_commit_invariants_note_nullifier(height, acc[i].nf,
+                                                 acc[i].pool);
     }
     nf_acc_free(acc, &seen);
     return true;

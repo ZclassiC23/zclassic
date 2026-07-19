@@ -13,6 +13,7 @@
 #include "jobs/replay_count_only.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_anchors.h"
+#include "jobs/reducer_commit_invariants.h"
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
@@ -456,6 +457,10 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             block_free(&blk);
             return JOB_FATAL;
         }
+        /* Feed the batch-commit conservation invariant (a): this authored
+         * block's created/spent counts (no-op unless a drain batch is open). */
+        reducer_commit_invariants_note_coins(next_h, summary.added_count,
+                                             summary.spent_count);
     }
 
     /* Persist the per-block inverse-delta (the later-disconnect source — no
@@ -817,6 +822,17 @@ int utxo_apply_stage_drain(int max_steps)
         if (!batched) progress_store_tx_unlock();
     }
 
+    /* Open the batch-commit conservation window (invariants a/b/c). No-op
+     * unless a batch is actually open, so the unbatched path stays untouched.
+     * Invariant (a) requires the production coins_kv-backed lookup (found ⇔ a
+     * deletable coins_kv row); a synthetic test lookup breaks that premise, so
+     * disable (a) — (b)/(c) still run — when it is not installed. */
+    if (batched) {
+        reducer_commit_invariants_batch_begin(batch_db);
+        if (!utxo_apply_stage_lookup_is_live())
+            reducer_commit_invariants_disable_coins_check();
+    }
+
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
         job_result_t r = utxo_apply_stage_step_once();
@@ -827,6 +843,17 @@ int utxo_apply_stage_drain(int max_steps)
     bool committed = false;
     if (batched) {
         committed = advanced > 0 || stage_batch_dirty();
+        /* Verify the conservation invariants BEFORE the outer COMMIT. A
+         * violation REFUSES the commit (force ROLLBACK) after raising the
+         * typed blocker naming the height + failed invariant — corruption
+         * surfaces here, not at the next hour-long install verify. On the
+         * no-commit path, drop the window without checking. */
+        if (committed) {
+            if (!reducer_commit_invariants_verify(batch_db))
+                committed = false;
+        } else {
+            reducer_commit_invariants_reset();
+        }
         if (!stage_batch_end(batch_db, committed)) {
             (void)stage_record_fatal(STAGE_NAME, "batch COMMIT/ROLLBACK failed");
             committed = false;
@@ -918,6 +945,21 @@ void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user)
     g_lookup = fn;
     g_lookup_user = user;
     pthread_mutex_unlock(&g_lock);
+}
+
+/* True iff the production coins_kv-backed resolver is installed. Only then does
+ * a delta's spent_count equal the number of coins_kv rows actually deleted
+ * (found ⇔ a live coins_kv row) — the premise of the (a) coins-conservation
+ * invariant. A test that installs a synthetic lookup (utxo_apply_stage_set_
+ * lookup) resolves prevouts that are NOT coins_kv rows, so a spend deletes
+ * nothing; (a) must be gated off there. No production path installs a non-live
+ * lookup (grep: set_lookup has test-only callers), so (a) always runs live. */
+bool utxo_apply_stage_lookup_is_live(void)
+{
+    pthread_mutex_lock(&g_lock);
+    bool live = (g_lookup == utxo_apply_stage_lookup_live);
+    pthread_mutex_unlock(&g_lock);
+    return live;
 }
 
 uint64_t utxo_apply_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
