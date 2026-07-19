@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "storage/census_read.h"
 #include "util/blocker.h"
 #include <unistd.h>
 
@@ -870,6 +871,327 @@ int test_connman_addnode_fallback(void)
 
         connman_free(&cm);
         blocker_reset_for_testing();
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── addnode self-healing: RETIRE + HARVEST (net/connman.h) ─────────── */
+
+    printf("connman_addnode_fallback: addnode retirement fires past BOTH "
+           "thresholds and excludes it from dial rotation... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        if (ok) {
+            struct net_address addr;
+            test_set_ipv4(&addr, 198, 51, 100, 200, 8033);
+            cm.addnodes[cm.num_addnodes++] = addr;
+        }
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            cm.addnode_tcp_failures[0] = ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES;
+            cm.addnode_first_failure_ts[0] =
+                now - ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS - 10;
+        }
+
+        /* Healthy outbound AT the floor: retirement is allowed to fire. */
+        if (ok)
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+
+        ok = ok && cm.addnode_retired[0];
+        ok = ok && cm.addnode_retired_at[0] > 0;
+        ok = ok && cm.addnode_retirements_total == 1;
+
+        /* Idempotent: a second pass over an already-retired entry does not
+         * double-count the lifetime counter. */
+        if (ok)
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+        ok = ok && cm.addnode_retirements_total == 1;
+
+        /* Excluded from dial rotation: the only addnode present is retired,
+         * addrman is empty, so no target is pickable. */
+        if (ok) {
+            struct addr_info pick;
+            enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+            memset(&pick, 0, sizeof(pick));
+            bool got = connman_pick_next_outbound_target(
+                &cm, &cm.next_addnode_cursor, &pick, &source, NULL);
+            ok = ok && !got;
+        }
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: addnode retirement needs BOTH the "
+           "failure-count AND window thresholds, neither alone... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        if (ok) {
+            struct net_address addr;
+            test_set_ipv4(&addr, 198, 51, 100, 201, 8033);
+            cm.addnodes[cm.num_addnodes++] = addr;
+            test_set_ipv4(&addr, 198, 51, 100, 202, 8033);
+            cm.addnodes[cm.num_addnodes++] = addr;
+        }
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            /* addnode[0]: window satisfied, count one short of the floor. */
+            cm.addnode_tcp_failures[0] =
+                ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES - 1;
+            cm.addnode_first_failure_ts[0] =
+                now - ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS - 10;
+            /* addnode[1]: count satisfied, streak just started (window not
+             * yet satisfied). */
+            cm.addnode_tcp_failures[1] = ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES;
+            cm.addnode_first_failure_ts[1] = now;
+        }
+
+        if (ok)
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+
+        ok = ok && !cm.addnode_retired[0];
+        ok = ok && !cm.addnode_retired[1];
+        ok = ok && cm.addnode_retirements_total == 0;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: addnode retirement is suppressed "
+           "below the healthy-outbound floor... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        if (ok) {
+            struct net_address addr;
+            test_set_ipv4(&addr, 198, 51, 100, 203, 8033);
+            cm.addnodes[cm.num_addnodes++] = addr;
+        }
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            cm.addnode_tcp_failures[0] = ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES;
+            cm.addnode_first_failure_ts[0] =
+                now - ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS - 10;
+        }
+
+        /* Below the floor (ZCL_PEER_FLOOR_HEALTHY - 1 healthy outbound):
+         * this addnode is a dial-of-last-resort and must NOT be retired
+         * no matter how dead it looks. */
+        if (ok)
+            connman_retire_dead_addnodes(
+                &cm, (size_t)ZCL_PEER_FLOOR_HEALTHY - 1);
+        ok = ok && !cm.addnode_retired[0];
+        ok = ok && cm.addnode_retirements_total == 0;
+
+        /* Once the floor is met, the SAME state now retires — proves the
+         * suppression above was the floor guard, not some other bug. */
+        if (ok)
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+        ok = ok && cm.addnode_retired[0];
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: retired addnode revives on one "
+           "successful dial... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        if (ok) {
+            struct net_address addr;
+            test_set_ipv4(&addr, 198, 51, 100, 204, 8033);
+            cm.addnodes[cm.num_addnodes++] = addr;
+        }
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            cm.addnode_tcp_failures[0] = ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES;
+            cm.addnode_first_failure_ts[0] =
+                now - ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS - 10;
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+        }
+        ok = ok && cm.addnode_retired[0];
+
+        if (ok)
+            connman_record_addnode_attempt(&cm, 0, true);
+
+        ok = ok && !cm.addnode_retired[0];
+        ok = ok && cm.addnode_tcp_failures[0] == 0;
+        ok = ok && cm.addnode_first_failure_ts[0] == 0;
+        ok = ok && cm.addnode_backoff_sec[0] == 0;
+        /* The lifetime counter is NOT decremented by a revival — it counts
+         * retirement events, not "currently retired". */
+        ok = ok && cm.addnode_retirements_total == 1;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: retired addnode revives on operator "
+           "addnode re-add... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct net_address addr;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        /* Loopback, unused high port: connect_node's real connect() fails
+         * (refused) near-instantly instead of hanging — the revival logic
+         * under test runs before that connect attempt either way. */
+        test_set_ipv4(&addr, 127, 0, 0, 1, 18921);
+        if (ok)
+            cm.addnodes[cm.num_addnodes++] = addr;
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            cm.addnode_tcp_failures[0] = ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES;
+            cm.addnode_first_failure_ts[0] =
+                now - ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS - 10;
+            cm.addnode_backoff_sec[0] = 1800;
+            connman_retire_dead_addnodes(&cm, (size_t)ZCL_PEER_FLOOR_HEALTHY);
+        }
+        ok = ok && cm.addnode_retired[0];
+
+        if (ok)
+            connman_open_connection(&cm, &addr);
+
+        ok = ok && !cm.addnode_retired[0];
+        ok = ok && cm.addnode_backoff_sec[0] == 0;
+        ok = ok && cm.addnode_tcp_failures[0] == 0;
+        /* Re-adding an address already on the list must never duplicate
+         * the entry. */
+        ok = ok && cm.num_addnodes == 1;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: census harvest adds proven-reachable "
+           "candidates to addrman as discovery entries, not pinned "
+           "addnodes... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        char tmpdir[] = "/tmp/zcl_connman_harvest_XXXXXX";
+        ok = ok && mkdtemp(tmpdir) != NULL;
+        if (ok)
+            cm.datadir = tmpdir;
+
+        ok = ok && census_read_test_create_schema(tmpdir);
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (ok) {
+            /* Two good candidates: reachable (dial_success_count>0) and a
+             * recent last_success — exactly what census_read.c's
+             * ev_node_census_observed fold produces for a peer we've
+             * actually dialed successfully (peers_projection.c:463+). */
+            struct census_node good1;
+            memset(&good1, 0, sizeof(good1));
+            snprintf(good1.ip, sizeof(good1.ip), "45.33.10.1");
+            good1.port = 8033;
+            good1.services = 1;
+            good1.reported_height = 3200000;
+            good1.first_seen = now - 100000;
+            good1.last_seen = now - 30;
+            good1.last_success = now - 30;
+            good1.dial_success_count = 4;
+            good1.dial_fail_count = 1;
+            ok = ok && census_read_test_insert_node(tmpdir, &good1);
+
+            struct census_node good2 = good1;
+            snprintf(good2.ip, sizeof(good2.ip), "45.33.10.2");
+            ok = ok && census_read_test_insert_node(tmpdir, &good2);
+
+            /* Never-dialed: seen only via gossip, dial_success_count==0 —
+             * must NOT be harvested (no proof it's actually reachable). */
+            struct census_node never_dialed = good1;
+            snprintf(never_dialed.ip, sizeof(never_dialed.ip), "45.33.10.3");
+            never_dialed.dial_success_count = 0;
+            never_dialed.last_success = 0;
+            ok = ok && census_read_test_insert_node(tmpdir, &never_dialed);
+
+            /* Stale: was reachable once, but its last success is far older
+             * than ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS — must NOT be
+             * harvested (no longer proven-live). */
+            struct census_node stale = good1;
+            snprintf(stale.ip, sizeof(stale.ip), "45.33.10.4");
+            stale.last_seen = now - 30;   /* passes the coarse list filter */
+            stale.last_success =
+                now - ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS - 3600;
+            ok = ok && census_read_test_insert_node(tmpdir, &stale);
+        }
+
+        size_t harvested = 0;
+        if (ok)
+            harvested = connman_harvest_census_candidates(&cm, -1);
+        ok = ok && harvested == 2;
+
+        /* Discovery candidates land in addrman, NEVER in the pinned addnode
+         * list — that is the whole point of HARVEST vs a raw addnode add. */
+        ok = ok && cm.num_addnodes == 0;
+
+        bool found_good1 = false, found_good2 = false, found_bad = false;
+        if (ok) {
+            zcl_mutex_lock(&cm.manager.addrman.cs);
+            for (int i = 0; i < cm.manager.addrman.id_count; i++) {
+                struct addr_info *info = &cm.manager.addrman.entries[i];
+                if (!info->used || !net_addr_is_ipv4(&info->addr.svc.addr))
+                    continue;
+                const uint8_t *ip = info->addr.svc.addr.ip;
+                if (ip[12] == 45 && ip[13] == 33 && ip[14] == 10) {
+                    if (ip[15] == 1) found_good1 = true;
+                    else if (ip[15] == 2) found_good2 = true;
+                    else if (ip[15] == 3 || ip[15] == 4) found_bad = true;
+                }
+            }
+            zcl_mutex_unlock(&cm.manager.addrman.cs);
+        }
+        ok = ok && found_good1 && found_good2 && !found_bad;
+
+        connman_free(&cm);
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+        (void)system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

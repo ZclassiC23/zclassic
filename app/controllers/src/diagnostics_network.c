@@ -82,6 +82,34 @@ static void push_connman_json(struct json_value *out, struct connman *cm,
     json_free(&obj);
 }
 
+/* addnode self-healing (RETIRE + HARVEST — net/connman.h). Every number here
+ * comes from connman's own connman_get_outbound_health() accessor plus the
+ * lifetime counter field connman already maintains; no re-walk of the
+ * addnode ledger happens in this file. */
+static void push_addnode_json(struct json_value *out, struct connman *cm)
+{
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    if (cm) {
+        struct connman_outbound_health health;
+        connman_get_outbound_health(cm, &health);
+        json_push_kv_int(&obj, "count", (int64_t)health.addnode_count);
+        json_push_kv_int(&obj, "backoff_active",
+                         (int64_t)health.addnode_backoff_active);
+        json_push_kv_int(&obj, "retired_count",
+                         (int64_t)health.addnode_retired_count);
+        json_push_kv_int(&obj, "retirements_total",
+                         cm->addnode_retirements_total);
+    } else {
+        json_push_kv_int(&obj, "count", -1);
+        json_push_kv_int(&obj, "backoff_active", -1);
+        json_push_kv_int(&obj, "retired_count", -1);
+        json_push_kv_int(&obj, "retirements_total", -1);
+    }
+    json_push_kv(out, "addnode", &obj);
+    json_free(&obj);
+}
+
 static void push_peer_floor_json(struct json_value *out,
                                  int64_t connman_outbound_healthy_fallback)
 {
@@ -196,6 +224,7 @@ bool network_dump_state_json(struct json_value *out, const char *key)
     struct connman *cm = rpc_net_get_connman();
     int64_t connman_outbound_healthy = -1;
     push_connman_json(out, cm, &connman_outbound_healthy);
+    push_addnode_json(out, cm);
     push_peer_floor_json(out, connman_outbound_healthy);
 
     int64_t our_height = -1, peer_modal = -1, peer_delta = 0;

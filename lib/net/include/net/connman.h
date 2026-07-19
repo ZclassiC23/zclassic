@@ -65,6 +65,41 @@ enum connman_addnode_failure_kind {
     CONNMAN_ADDNODE_FAILURE_PROTOCOL,
 };
 
+/* ── addnode self-healing (RETIRE + HARVEST) ─────────────────────────────
+ *
+ * Evidence (live node, 2026-07): an addnode with 5,431 consecutive TCP
+ * failures (host dead for weeks, TCP-closed on every attempt) kept
+ * consuming a dial slot + backoff cycle forever, while the census store
+ * knew of two healthy, un-dialed peers sitting idle in node_census. RETIRE
+ * stops paying rent on a permanently-dead host; HARVEST spends the freed
+ * capacity on the census's already-proven-reachable candidates.
+ *
+ * Both knobs below are deliberately conservative: a retirement has a cheap
+ * escape hatch (one successful dial, or an operator `addnode add` re-add —
+ * see connman_record_addnode_attempt / connman_open_connection), so a
+ * false-positive retirement costs nothing but a delayed rediscovery, while
+ * never retiring costs a dial slot forever.
+ *
+ * RETIRE thresholds — a connection with zero successes over this many
+ * consecutive TCP failures AND this long since the failure streak began
+ * (first failure after the last success, or since the addnode was added)
+ * is almost certainly a permanently dead host, not a transient outage.
+ * "Zero successes" falls out for free: connman_record_addnode_attempt
+ * (success=true) resets addnode_tcp_failures to 0, so the threshold below
+ * is only reachable on an unbroken failure streak since the last success. */
+#define ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES 500
+#define ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS  (48 * 3600)  /* 48 hours */
+
+/* HARVEST tuning: how many census rows one pull can add to addrman, how
+ * fresh a harvested peer's last successful dial must be to count as a live
+ * discovery candidate, the minimum gap between pulls (so a hungry outbound
+ * loop doesn't hammer the census DB every iteration), and how small addrman
+ * must be (while below the healthy-outbound floor) before a pull fires. */
+#define ZCL_ADDNODE_HARVEST_MAX_CANDIDATES         16
+#define ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS    (24 * 3600) /* 24 hours */
+#define ZCL_ADDNODE_HARVEST_INTERVAL_SECS          60
+#define ZCL_ADDNODE_HARVEST_WEAK_ADDRMAN_THRESHOLD 8
+
 struct connman_known_peer {
     uint8_t ip[16];
     uint16_t port;
@@ -93,6 +128,12 @@ struct connman_outbound_health {
     int addnode_backoff_max_sec;
     int64_t addnode_tcp_failures;
     int64_t addnode_protocol_failures;
+    /* Count of addnodes currently in the retired state (excluded from dial
+     * rotation — see connman_retire_dead_addnodes). Revivable, so this is a
+     * live snapshot, not the lifetime total (that is
+     * addnode_retirements_total on struct connman, surfaced separately by
+     * the network dumpstate rollup). */
+    size_t addnode_retired_count;
 };
 
 struct connman_message_cycle_stats {
@@ -124,6 +165,24 @@ struct connman {
     int addnode_backoff_sec[MAX_ADDNODES];
     int64_t addnode_tcp_failures[MAX_ADDNODES];
     int64_t addnode_protocol_failures[MAX_ADDNODES];
+    /* Self-healing ledger (see the RETIRE/HARVEST doc block above).
+     * addnode_first_failure_ts[i] is the wall-clock time the current
+     * unbroken TCP-failure streak began (0 = no streak in progress; reset
+     * to 0 on any success). addnode_retired[i]/addnode_retired_at[i] mark
+     * an addnode excluded from dial rotation because the streak crossed
+     * both RETIRE thresholds; a retired entry stays in the ledger (never
+     * removed) and is revived by one manual dial success or an operator
+     * `addnode add` re-add. addnode_retirements_total is a monotonic
+     * lifetime counter (never decremented by revival or removal) for
+     * operator visibility. */
+    int64_t addnode_first_failure_ts[MAX_ADDNODES];
+    bool addnode_retired[MAX_ADDNODES];
+    int64_t addnode_retired_at[MAX_ADDNODES];
+    int64_t addnode_retirements_total;
+    /* HARVEST cadence: wall-clock seconds of the last census pull (0 =
+     * none yet). Gates connman_harvest_census_candidates() calls from the
+     * open-connections loop to ZCL_ADDNODE_HARVEST_INTERVAL_SECS apart. */
+    int64_t last_census_harvest_ts;
     /* Anchor peers (net/anchor_peers.h): the healthy outbound set persisted to
      * anchors.dat on shutdown + every addrman flush, reloaded at boot and
      * dialed FIRST (before the addrman random walk). `anchors_tried[i]` gives
@@ -307,5 +366,37 @@ void connman_note_addnode_prehandshake_disconnect(
     struct connman *cm,
     const struct p2p_node *node,
     const char *reason);
+
+/* RETIRE: scan every addnode and retire (exclude from dial rotation) any
+ * whose failure streak has crossed BOTH ZCL_ADDNODE_RETIRE_MIN_TCP_FAILURES
+ * and ZCL_ADDNODE_RETIRE_MIN_WINDOW_SECS. `outbound_healthy` is the
+ * caller's current healthy-outbound count (connman_outbound_healthy_count());
+ * when it is below ZCL_PEER_FLOOR_HEALTHY (net/net.h, the single source of
+ * truth) this is a no-op — never burn one of the last few dial-of-last-resort
+ * targets while the node is already starved for peers. Idempotent (already-
+ * retired entries are skipped) and cheap (O(MAX_ADDNODES), no I/O), so it is
+ * safe to call every open-connections loop iteration. Exposed for the
+ * retirement/floor-guard/revival unit tests. */
+void connman_retire_dead_addnodes(struct connman *cm, size_t outbound_healthy);
+
+/* HARVEST: pull up to ZCL_ADDNODE_HARVEST_MAX_CANDIDATES rows from the
+ * durable network census (<datadir>/peers_projection.db node_census, via the
+ * read-only lib/storage/src/census_read.c reader) that have a positive
+ * dial_success_count AND a last_success within
+ * ZCL_ADDNODE_HARVEST_RECENT_SUCCESS_SECS, and feed each one into addrman via
+ * addrman_add() — the NEW-table discovery path, NOT the pinned addnode list.
+ * addrman's own bucket/group diversity caps apply exactly as they do to any
+ * other addrman_add() call. `min_height` is an optional "height near tip"
+ * filter (node_census.last_reported_height >= min_height); pass -1 for no
+ * height filter (connman itself does not track chain height — a caller that
+ * does, e.g. a sync service, may pass its own tip-relative floor). Best-
+ * effort and fail-open: an absent/unpopulated census store is a silent no-op,
+ * never an error (the crawler may simply not have run yet). Returns the
+ * number of rows actually added to addrman. Exposed for the harvest unit
+ * test (fixture census DB) and for a caller that wants to force a pull
+ * outside the ZCL_ADDNODE_HARVEST_INTERVAL_SECS cadence the open-connections
+ * loop applies to its own automatic calls. */
+size_t connman_harvest_census_candidates(struct connman *cm,
+                                         int64_t min_height);
 
 #endif

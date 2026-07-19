@@ -8597,6 +8597,11 @@ syncdiag_net_split_done:
         ok = ok && json_get(connman_j, "addrman_size") &&
             json_get_int(json_get(connman_j, "addrman_size")) == -1;
 
+        const struct json_value *addnode_j0 = json_get(&result, "addnode");
+        ok = ok && addnode_j0 && addnode_j0->type == JSON_OBJ;
+        ok = ok && json_get(addnode_j0, "count") &&
+            json_get_int(json_get(addnode_j0, "count")) == -1;
+
         const struct json_value *peer_floor_j = json_get(&result, "peer_floor");
         ok = ok && peer_floor_j && peer_floor_j->type == JSON_OBJ;
         ok = ok && json_get(peer_floor_j, "registered") != NULL;
@@ -8643,6 +8648,19 @@ syncdiag_net_split_done:
             json_get_int(json_get(cm2, "outbound_healthy")) == 0;
         ok = ok && json_get(cm2, "addrman_size") &&
             json_get_int(json_get(cm2, "addrman_size")) == 0;
+
+        /* addnode self-healing (RETIRE + HARVEST — net/connman.h) rollup:
+         * a fresh connman has no addnodes, so count/retired_count/
+         * retirements_total all read back 0. */
+        const struct json_value *addnode_j = json_get(&result2, "addnode");
+        ok = ok && addnode_j && addnode_j->type == JSON_OBJ;
+        ok = ok && json_get(addnode_j, "count") &&
+            json_get_int(json_get(addnode_j, "count")) == 0;
+        ok = ok && json_get(addnode_j, "retired_count") &&
+            json_get_int(json_get(addnode_j, "retired_count")) == 0;
+        ok = ok && json_get(addnode_j, "retirements_total") &&
+            json_get_int(json_get(addnode_j, "retirements_total")) == 0;
+
         json_free(&result2);
 
         if (ok) printf("OK\n");
