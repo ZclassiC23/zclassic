@@ -132,9 +132,14 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
     /* blocker-id: *.below_snapshot_seed */
     mk_blocker_id(id, sizeof(id), index_id, "below_snapshot_seed");
 
+    /* A4: the snapshot-seed floor (REDUCER_TRUSTED_BASE_HEIGHT_KEY) is a KERNEL
+     * fact written by the reducer to consensus.db. Read it from the kernel
+     * authority, NOT the projection fold handle `db` the caller passes
+     * (progress.kv holds only address_index/txindex and has no progress_meta). */
+    (void)db;
     int64_t seed_floor = -1;
     bool have_seed = false;
-    if (!read_seed_floor(db, &seed_floor, &have_seed))
+    if (!read_seed_floor(progress_store_db(), &seed_floor, &have_seed))
         return;                              /* DB read error — leave as-is */
 
     if (!have_seed || absent_height > seed_floor) {

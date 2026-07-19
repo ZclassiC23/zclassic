@@ -276,8 +276,8 @@ bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
 }
 
 /* uss_iter callback: insert one snapshot record into coins_kv. The caller holds
- * the progress.kv handle in an open BEGIN IMMEDIATE so every coins_kv_add
- * commits atomically with the rest. Stops the iteration (returns false) on a
+ * the kernel-store (consensus.db) handle in an open BEGIN IMMEDIATE so every
+ * coins_kv_add commits atomically with the rest. Stops the iteration (returns false) on a
  * coins_kv_add failure so the caller can ROLLBACK. */
 struct mint_load_ctx {
     sqlite3 *pdb;
@@ -840,7 +840,7 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
     if (!datadir || !datadir[0]) {
         fprintf(stderr,
                 "FATAL: -load-snapshot-at-own-height: no datadir available "
-                "to rebuild progress.kv after %s\n", reason);
+                "to rebuild the kernel store after %s\n", reason);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "load_snapshot_at_own_height no_datadir reason=%s", reason);
         return false;
@@ -886,7 +886,7 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
         return false;
     }
     fprintf(stderr,
-            "[boot] -load-snapshot-at-own-height: progress.kv reopened after "
+            "[boot] -load-snapshot-at-own-height: kernel store reopened after "
             "quarantine (reason=%s); snapshot was already SHA3-verified and "
             "passed the loader proof gate before the old authority store was "
             "moved\n",

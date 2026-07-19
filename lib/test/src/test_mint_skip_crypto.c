@@ -276,11 +276,12 @@ static bool msc_identity_same(const struct stat *a, const struct stat *b)
 
 /* Leave a committed row only in a kill-9-surviving WAL.  The child keeps the
  * SQLite connection open until the parent kills it, so no graceful close can
- * checkpoint the row into progress.kv. */
+ * checkpoint the row into the kernel store.  A4: the kernel store the preflight
+ * inspects is consensus.db after the flip. */
 static bool msc_make_killed_wal(const char *dir, bool producer)
 {
     char path[512];
-    int n = snprintf(path, sizeof(path), "%s/progress.kv", dir);
+    int n = snprintf(path, sizeof(path), "%s/consensus.db", dir);
     if (n <= 0 || (size_t)n >= sizeof(path))
         return false;
 
@@ -795,7 +796,7 @@ static int test_mint_anchor_lane_containment(void)
         progress_store_close();
 
     char progress_path[512],node_path[512],wallet_path[512];
-    snprintf(progress_path,sizeof(progress_path),"%s/progress.kv",dir);
+    snprintf(progress_path,sizeof(progress_path),"%s/consensus.db",dir);
     snprintf(node_path,sizeof(node_path),"%s/node.db",dir);
     snprintf(wallet_path,sizeof(wallet_path),"%s/wallet.dat",dir);
     struct stat before,after;
@@ -832,9 +833,9 @@ static int test_normal_boot_preflight_killed_wal(void)
                   made);
 
         char main_path[512], wal_path[512], shm_path[512];
-        int n1 = snprintf(main_path, sizeof(main_path), "%s/progress.kv", dir);
-        int n2 = snprintf(wal_path, sizeof(wal_path), "%s/progress.kv-wal", dir);
-        int n3 = snprintf(shm_path, sizeof(shm_path), "%s/progress.kv-shm", dir);
+        int n1 = snprintf(main_path, sizeof(main_path), "%s/consensus.db", dir);
+        int n2 = snprintf(wal_path, sizeof(wal_path), "%s/consensus.db-wal", dir);
+        int n3 = snprintf(shm_path, sizeof(shm_path), "%s/consensus.db-shm", dir);
         bool paths_ok = n1 > 0 && (size_t)n1 < sizeof(main_path) &&
             n2 > 0 && (size_t)n2 < sizeof(wal_path) &&
             n3 > 0 && (size_t)n3 < sizeof(shm_path);

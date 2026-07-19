@@ -1036,7 +1036,8 @@ static int candidate_staging_count(const char *dir)
 
 static int prior_generation_count(const char *dir)
 {
-    static const char prefix[] = "progress.kv.preinstall.";
+    /* A4: the prior-generation backup is a VACUUM of the consensus.db kernel. */
+    static const char prefix[] = "consensus.db.preinstall.";
     DIR *stream = opendir(dir);
     if (!stream)
         return -1;
@@ -2584,7 +2585,9 @@ int test_consensus_state_snapshot_install(void)
          * data_version fence must catch it before any cutover write, while the
          * prior-generation image remains the state from before that commit. */
         char progress_path[384];
-        snprintf(progress_path, sizeof(progress_path), "%s/progress.kv",
+        /* A4: the live kernel singleton is consensus.db; the boundary writer
+         * must commit to the SAME file so its data_version bump is fenced. */
+        snprintf(progress_path, sizeof(progress_path), "%s/consensus.db",
                  active_dir);
         sqlite3 *boundary_writer = NULL;
         struct activate_boundary_commit_hook boundary_hook = {

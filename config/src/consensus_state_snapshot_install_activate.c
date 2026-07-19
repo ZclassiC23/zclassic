@@ -352,9 +352,9 @@ static bool activate_backup_prior_generation(sqlite3 *progress_db,
     int64_t stamp = (int64_t)platform_time_wall_time_t();
     uint64_t seq = atomic_fetch_add_explicit(&s_backup_seq, 1,
                                              memory_order_relaxed) + 1;
-    char name[128];
+    char name[128]; /* A4: VACUUM backs up the consensus.db kernel singleton */
     int n = snprintf(name, sizeof(name),
-                     "progress.kv.preinstall.%lld.%ld.%llu",
+                     "consensus.db.preinstall.%lld.%ld.%llu",
                      (long long)stamp, (long)getpid(),
                      (unsigned long long)seq);
     if (n <= 0 || (size_t)n >= sizeof(name))

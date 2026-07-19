@@ -7,6 +7,7 @@
 
 #include "config/consensus_state_bundle_validate.h"
 #include "consensus_state_snapshot_export_internal.h"
+#include "storage/consensus_db.h"    /* CONSENSUS_DB_FILENAME + legacy name */
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -41,24 +42,33 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
     return false;
 }
 
+/* Case-insensitive prefix test used to reject an export output name that would
+ * collide with a live store family. */
+static bool export_name_has_prefix_ci(const char *name, const char *prefix)
+{
+    for (size_t i = 0; prefix[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '\0')
+            return false;
+        if (c >= 'A' && c <= 'Z')
+            c = (unsigned char)(c - 'A' + 'a');
+        if (c != (unsigned char)prefix[i])
+            return false;
+    }
+    return true;
+}
+
 static bool output_name_valid(const char *name)
 {
-    static const char active[] = "progress.kv";
     if (!name || !name[0] || strchr(name, '/') || strchr(name, '?') ||
         strchr(name, '#') || strchr(name, '%') || strcmp(name, ".") == 0 ||
         strcmp(name, "..") == 0)
         return false;
-    for (size_t i = 0; i < sizeof(active) - 1; i++) {
-        unsigned char c = (unsigned char)name[i];
-        if (c == '\0')
-            break;
-        if (c >= 'A' && c <= 'Z')
-            c = (unsigned char)(c - 'A' + 'a');
-        if (c != (unsigned char)active[i])
-            break;
-        if (i == sizeof(active) - 2)
-            return false;
-    }
+    /* A4: refuse a name that would clobber EITHER live store — the consensus.db
+     * kernel authority (post-flip) or the progress.kv projection store. */
+    if (export_name_has_prefix_ci(name, CONSENSUS_DB_FILENAME) ||
+        export_name_has_prefix_ci(name, CONSENSUS_DB_LEGACY_KERNEL_FILENAME))
+        return false;
     return strlen(name) < CONSENSUS_EXPORT_NAME_MAX - 48;
 }
 

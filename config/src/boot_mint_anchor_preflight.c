@@ -11,12 +11,14 @@
 #include "event/event.h"
 #include "json/json.h"
 #include "services/disk_monitor.h"
+#include "storage/consensus_db.h"    /* consensus_db_kernel_store_path + names */
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -177,6 +179,22 @@ static bool inspect_snapshot(const char *path, char *reason,
     return ok;
 }
 
+/* A4: the mint producer writes its kernel state (coins/anchors/stage cursors)
+ * to consensus.db after the flip; a pre-flip producer datadir still uses the
+ * legacy progress.kv. Resolve the family basename ("consensus.db" or
+ * "progress.kv") once so every preflight file op targets the right store. */
+static void preflight_kernel_basename(const char *datadir, char *out, size_t cap)
+{
+    char kpath[PATH_MAX];
+    if (consensus_db_kernel_store_path(datadir, kpath, sizeof(kpath))) {
+        const char *slash = strrchr(kpath, '/');
+        const char *base = slash ? slash + 1 : kpath;
+        if (base[0] && (size_t)snprintf(out, cap, "%s", base) < cap)
+            return;
+    }
+    (void)snprintf(out, cap, "%s", CONSENSUS_DB_LEGACY_KERNEL_FILENAME);
+}
+
 bool boot_mint_anchor_normal_boot_preflight(const char *datadir)
 {
     if (!datadir || !datadir[0])
@@ -185,10 +203,16 @@ bool boot_mint_anchor_normal_boot_preflight(const char *datadir)
     if (dirfd < 0)
         LOG_FAIL(PREFLIGHT_SUBSYS, "normal boot preflight cannot open datadir");
 
+    char kbase[64];
+    char kmain[80], kwal[80], kshm[80];
+    preflight_kernel_basename(datadir, kbase, sizeof(kbase));
+    (void)snprintf(kmain, sizeof(kmain), "%s", kbase);
+    (void)snprintf(kwal, sizeof(kwal), "%s-wal", kbase);
+    (void)snprintf(kshm, sizeof(kshm), "%s-shm", kbase);
     struct preflight_source_file files[] = {
-        {.name = "progress.kv", .fd = -1},
-        {.name = "progress.kv-wal", .fd = -1},
-        {.name = "progress.kv-shm", .fd = -1},
+        {.name = kmain, .fd = -1},
+        {.name = kwal, .fd = -1},
+        {.name = kshm, .fd = -1},
     };
     bool ok = true;
     for (size_t i = 0; ok && i < sizeof(files) / sizeof(files[0]); i++)
@@ -203,7 +227,7 @@ bool boot_mint_anchor_normal_boot_preflight(const char *datadir)
             return true;
         fprintf(stderr,
                 "FATAL: normal node boot refused before datadir mutation: "
-                "orphan progress.kv WAL/SHM without a main database\n");
+                "orphan %s WAL/SHM without a main database\n", kbase);
         return false;
     }
 
@@ -223,8 +247,10 @@ bool boot_mint_anchor_normal_boot_preflight(const char *datadir)
         ok = false;
     char main_copy[2304];
     char wal_copy[2304];
-    int n1 = snprintf(main_copy, sizeof(main_copy), "%s/progress.kv", temp_dir);
-    int n2 = snprintf(wal_copy, sizeof(wal_copy), "%s/progress.kv-wal", temp_dir);
+    /* Keep the temp copy a consistent SQLite family: main + "<main>-wal" so the
+     * inspect open below associates the WAL with the copied main db. */
+    int n1 = snprintf(main_copy, sizeof(main_copy), "%s/%s", temp_dir, kbase);
+    int n2 = snprintf(wal_copy, sizeof(wal_copy), "%s/%s-wal", temp_dir, kbase);
     if (ok && (n1 <= 0 || (size_t)n1 >= sizeof(main_copy) ||
                n2 <= 0 || (size_t)n2 >= sizeof(wal_copy)))
         ok = false;
@@ -501,33 +527,38 @@ static bool preflight_check_disk_headroom(const char *datadir, char *why,
 
 /* Reuses the SAME orphan-detection shape as
  * boot_mint_anchor_normal_boot_preflight above (main db absent but a WAL/SHM
- * sibling present means a prior run was interrupted before progress.kv
- * itself was created) as a cheap stat-only table entry — no temp-copy, no
+ * sibling present means a prior run was interrupted before the kernel-store
+ * main db itself was created) as a cheap stat-only table entry — no temp-copy, no
  * inspect_snapshot: this runs BEFORE the fold starts, not as the normal-boot
  * containment gate. */
 static bool preflight_check_leftover_wal(const char *datadir, char *why,
                                          size_t why_cap)
 {
-    char main_path[1100], wal_path[1100], shm_path[1100];
-    snprintf(main_path, sizeof(main_path), "%s/progress.kv",
-             datadir ? datadir : ".");
-    snprintf(wal_path, sizeof(wal_path), "%s/progress.kv-wal",
-             datadir ? datadir : ".");
-    snprintf(shm_path, sizeof(shm_path), "%s/progress.kv-shm",
-             datadir ? datadir : ".");
-    bool main_exists = access(main_path, F_OK) == 0;
-    bool wal_exists = access(wal_path, F_OK) == 0;
-    bool shm_exists = access(shm_path, F_OK) == 0;
-    if (!main_exists && (wal_exists || shm_exists)) {
-        snprintf(why, why_cap,
-                 "orphaned %s%s%s without progress.kv — a prior run was "
-                 "interrupted before the main database was created",
-                 wal_exists ? "progress.kv-wal" : "",
-                 (wal_exists && shm_exists) ? " and " : "",
-                 shm_exists ? "progress.kv-shm" : "");
-        return false;
+    const char *dir = datadir && datadir[0] ? datadir : ".";
+    /* A4: a mint run writes its kernel to consensus.db post-flip; a legacy run
+     * used progress.kv. An interrupted prior run of EITHER generation leaves an
+     * orphaned WAL/SHM sibling without its main database — refuse before we
+     * mutate the datadir. */
+    static const char *const bases[] = { CONSENSUS_DB_FILENAME,
+                                         CONSENSUS_DB_LEGACY_KERNEL_FILENAME };
+    for (size_t b = 0; b < sizeof(bases) / sizeof(bases[0]); b++) {
+        char main_path[1100], wal_path[1100], shm_path[1100];
+        snprintf(main_path, sizeof(main_path), "%s/%s", dir, bases[b]);
+        snprintf(wal_path, sizeof(wal_path), "%s/%s-wal", dir, bases[b]);
+        snprintf(shm_path, sizeof(shm_path), "%s/%s-shm", dir, bases[b]);
+        bool main_exists = access(main_path, F_OK) == 0;
+        bool wal_exists = access(wal_path, F_OK) == 0;
+        bool shm_exists = access(shm_path, F_OK) == 0;
+        if (!main_exists && (wal_exists || shm_exists)) {
+            snprintf(why, why_cap,
+                     "orphaned %s WAL/SHM (wal=%d shm=%d) without its main "
+                     "database — a prior run was interrupted before the main "
+                     "database was created",
+                     bases[b], wal_exists, shm_exists);
+            return false;
+        }
     }
-    snprintf(why, why_cap, "no orphaned progress.kv WAL/SHM family");
+    snprintf(why, why_cap, "no orphaned kernel-store WAL/SHM family");
     return true;
 }
 
@@ -594,8 +625,9 @@ static const struct preflight_check g_preflight_checks[] = {
       "free at least 50 GB on the datadir's filesystem before minting a "
       "full historical fold" },
     { "no_leftover_interrupted_run_artifacts", preflight_check_leftover_wal,
-      "remove the orphaned progress.kv-wal/progress.kv-shm files (or "
-      "restore progress.kv) before starting -mint-anchor" },
+      "remove the orphaned kernel-store -wal/-shm files (consensus.db-* or "
+      "legacy progress.kv-*), or restore the matching main database, before "
+      "starting -mint-anchor" },
     { "fold_inram_memory_estimate", preflight_check_fold_inram_ram,
       "free memory, or pass ZCL_FOLD_INRAM=0 to fold through SQLite coins_kv "
       "instead of the in-RAM hot store" },
