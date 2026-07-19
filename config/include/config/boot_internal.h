@@ -260,6 +260,7 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc);
  * _join/_reap) — it takes the job + inputs directly, not boot_svc_ctx. */
 bool boot_start_catchup_service(struct boot_svc_ctx *svc, const char *datadir);
 bool boot_reap_catchup_service(struct boot_svc_ctx *svc);
+void boot_join_catchup_service(struct boot_svc_ctx *svc);
 
 /* The single boot service context, owned by boot.c's g_svc. The public
  * app_add_node / app_start_metrics / app_stop_metrics entry points (declared
