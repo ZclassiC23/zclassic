@@ -8,14 +8,15 @@ live state* read `docs/HANDOFF.md`; for *coding rules* read
 `docs/DEFENSIVE_CODING.md`. For the one-page mental model read
 `docs/HOW_THE_NODE_WORKS.md`.
 
-File counts below are from `find <dir> -type f | wc -l` (verified
-2026-06-24). They drift; re-run if exactness matters.
+File counts below are `.c` implementation files, from
+`find app/<dir> -name '*.c' | wc -l` (verified 2026-07-19). They drift;
+re-run if exactness matters.
 
 ---
 
 ## 1. Where things live
 
-### The app shapes — `app/` (636 files, seven physical folders)
+### The app shapes — `app/` (572 `.c` files, seven physical folders)
 
 Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 (`framework_shape_check.sh`). Filename suffix must match the shape
@@ -26,22 +27,22 @@ has no `app/` folder — the reserved-empty `app/events/` placeholder was delete
 
 | Shape | Path | Files | Role | Exemplar |
 |-------|------|-------|------|----------|
-| Controllers | `app/controllers/` | 142 | parse → authorize → call ONE service → return; no business logic, no raw storage | `app/controllers/src/diagnostics_registry.c` |
-| Services | `app/services/` | 171 | orchestrate a workflow; return `zcl_result` (typed code + message) | `app/services/src/` |
-| Models | `app/models/` | 71 | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
-| Jobs | `app/jobs/` | 94 | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
-| Supervisors | `app/supervisors/` | 13 | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
-| Conditions | `app/conditions/` | 53 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
-| Views | `app/views/` | 98 | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
+| Controllers | `app/controllers/` | 185 | parse → authorize → call ONE service → return; no business logic, no raw storage | `app/controllers/src/diagnostics_registry.c` |
+| Services | `app/services/` | 150 | orchestrate a workflow; return `zcl_result` (typed code + message) | `app/services/src/` |
+| Models | `app/models/` | 46 | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
+| Jobs | `app/jobs/` | 101 | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
+| Supervisors | `app/supervisors/` | 6 | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
+| Conditions | `app/conditions/` | 49 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
+| Views | `app/views/` | 35 | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
 
-### Core consensus — `domain/` (44 files)
+### Core consensus — `domain/` (8 files)
 
 Pure modules under `domain/{consensus,encoding,wallet}`. **No clock, no RNG,
 no IO** (lint: `check_no_raw_clock_outside_platform.sh`). Replayable from a
 64-bit seed. Fronted by thin `lib/` wrappers; sealed by `test_domain_*`.
 Never put IO here.
 
-### Primitives — `lib/` (999 files, 33 subdirs)
+### Primitives — `lib/` (1429 files, 38 subdirs)
 
 Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `random.h`), `storage/` (`event_log.c` + `*_projection.c`), `net`, `crypto`,
@@ -76,7 +77,7 @@ persistence_adapters: 13
 condition_registrations: 47
 <!-- DOC-COUNTS-END -->
 
-### Composition root — `config/src/` (26 files)
+### Composition root — `config/src/` (96 files)
 
 Boot orchestration. `boot.c` (main orchestrator) + fragments
 (`boot_services.c` legacy lifecycle, `boot_refold_staged.c` staged consensus

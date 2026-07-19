@@ -648,7 +648,7 @@ set was actually incomplete."
    it). This ends the wedge *today* without waiting on the ~9 h fold.
 2. **In parallel / after:** let the producer finish its from-genesis fold, export
    `zcl.consensus_state_bundle.v1`, verify → receipt → install (the existing
-   `cure-runbook-2026-07-16.md` flow). The install **atomically supersedes** the
+   `sovereign-cutover-runbook.md` flow). The install **atomically supersedes** the
    borrowed shielded history with self-derived state and flips `self_folded=true`
    → `trust_mode: sovereign` → mining/spend/re-serve/publish unlock. The PSC
    makes this fold progressively faster (shrinks `T_sovereign`).

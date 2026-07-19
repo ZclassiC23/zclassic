@@ -18,9 +18,9 @@ both activation cursors to 0, clearing `utxo_apply.anchor_backfill_gap` /
 `utxo_apply.nullifier_backfill_gap` **without** a from-genesis fold.
 
 This is **not** the sovereign producer/bundle cure documented in
-[`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md) and
-[`cure-runbook-2026-07-16.md`](./cure-runbook-2026-07-16.md) (`-install-consensus-bundle`,
-`trust_mode=sovereign`, `coins_kv_self_folded=true`) — that path is a
+[`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)
+(`-install-consensus-bundle`, `trust_mode=sovereign`,
+`coins_kv_self_folded=true`) — that path is a
 separate, still-in-flight track (producer folding from genesis toward the
 compiled checkpoint). The two are complementary, not competing: import gives
 an operationally-verified tip fast; the producer/bundle path later upgrades
@@ -164,9 +164,8 @@ either live path by construction, see §2):
 4. **Revert path is ready before you start — see §3.** Confirm free disk
    space for two full copies of the live datadir sitting side-by-side
    (`df -h $HOME` — the live datadir is single-digit GB at this height, so
-   this is not a binding constraint on this host, but check anyway; do not
-   assume the free-space figures from earlier `docs/work/cure-runbook-2026-07-16.md`
-   preconditions still hold — they rot).
+   this is not a binding constraint on this host, but check anyway; re-derive
+   the figure fresh — free-space numbers rot fast in this repo).
 5. **`zclassicd` stays running throughout.** Nothing in this runbook stops
    or writes to it; it is read only via RPC (`getblockcount`,
    `getblockhash`) and via the point-in-time chainstate snapshot the
@@ -177,9 +176,9 @@ either live path by construction, see §2):
 ## 3. Why the revert path is a datadir swap, not a transaction rollback
 
 The bundle-install path (`sovereign-cutover-runbook.md`) captures a
-`VACUUM INTO` prior-generation snapshot of `progress.kv` **inside** the
-install transaction itself, so its revert is "restore the named preinstall
-file." **This importer has no equivalent auto-capture** — it is a one-shot
+`VACUUM INTO` prior-generation snapshot of the kernel store (`consensus.db`)
+**inside** the install transaction itself, so its revert is "restore the
+named preinstall file." **This importer has no equivalent auto-capture** — it is a one-shot
 boot mode with a single all-or-nothing SQLite transaction, and (per §1) it
 structurally refuses to even run against the live datadir. The revert
 mechanism for this runbook is therefore operator-driven and coarser, but
