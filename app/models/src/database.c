@@ -15,6 +15,7 @@
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/db_txn_trace.h"
+#include "util/hw_profile.h"
 #include "models/database.h"
 #include "models/database_internal.h"
 #include "models/database_validators.h"
@@ -132,7 +133,6 @@ void node_db_note_turbo_mode(struct node_db *ndb, bool turbo_mode,
     node_db_stamp_activity(ndb, ndb ? &ndb->turbo_mode : NULL, turbo_mode,
                            op, rc);
 }
-
 
 static bool prepare_statements(struct node_db *ndb)
 {
@@ -310,18 +310,13 @@ static bool prepare_statements(struct node_db *ndb)
     return true;
 }
 
-/* the cache_size and mmap_size values below are *the* tuning
- * knobs for node.db in normal (non-IBD-turbo) mode.  Pinned by a
- * regression test (test_db_pragma_tuning in test_sqlite.c).  Do not
- * bump mmap_size beyond 256 MB without
- * rereading the landmine comment at config/src/boot_index.c:306 —
- * secondary RW connections to the same file concurrent with the
- * main connection's WAL writes can dereference invalidated mmap
- * pages and SIGSEGV.  256 MB is safe for the *single* main handle
- * because all access goes through the serializing node_db mutex;
- * secondary opens elsewhere must stay at mmap_size=0. */
-#define ZCL_NODE_DB_CACHE_SIZE_KIB  65536   /* -65536 → ~64 MiB page cache */
-#define ZCL_NODE_DB_MMAP_BYTES      (256LL * 1024 * 1024)  /* 256 MiB */
+/* node.db cache_size/mmap_size derive from measured RAM (util/hw_profile.h),
+ * clamped to this file's historical ceilings (64 MiB / 256 MiB) — same fixed
+ * values on any >=2 GiB-RAM box, scaling DOWN on constrained ones per
+ * test_db_pragma_tuning. Do NOT raise the mmap ceiling without rereading the
+ * boot_index.c:306 landmine (stale mmap pages can SIGSEGV above 256 MB). */
+#define ZCL_NODE_DB_CACHE_CEIL_KIB     (64 * 1024)            /* 64 MiB */
+#define ZCL_NODE_DB_MMAP_CEILING_BYTES (256LL * 1024 * 1024)  /* 256 MiB */
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
 #define ZCL_DB_LONG_OP_PROGRESS_OPS 50000
 #define ZCL_DB_LONG_OP_LOG_MS       15000
@@ -329,6 +324,11 @@ static bool prepare_statements(struct node_db *ndb)
 
 static void db_set_pragmas(sqlite3 *db)
 {
+    hw_profile_init(NULL);
+    int64_t ram = hw_profile_ram_bytes();
+    int64_t cache_kib = hw_profile_sqlite_cache_kib(ram, 0, ZCL_NODE_DB_CACHE_CEIL_KIB);
+    int64_t mmap_bytes = hw_profile_sqlite_mmap_bytes(ram, 0, ZCL_NODE_DB_MMAP_CEILING_BYTES);
+
     /* One exec call to keep the PRAGMA batch atomic with respect to
      * other threads that might latch onto the connection immediately
      * after open_raw returns. */
@@ -336,12 +336,12 @@ static void db_set_pragmas(sqlite3 *db)
     snprintf(sql, sizeof(sql),
         "PRAGMA journal_mode=WAL;"
         "PRAGMA synchronous=NORMAL;"
-        "PRAGMA cache_size=-%d;"        /* negative → KiB units */
+        "PRAGMA cache_size=-%lld;"      /* negative → KiB units */
         "PRAGMA mmap_size=%lld;"
         "PRAGMA temp_store=MEMORY;"
         "PRAGMA foreign_keys=ON",
-        ZCL_NODE_DB_CACHE_SIZE_KIB,
-        (long long)ZCL_NODE_DB_MMAP_BYTES);
+        (long long)cache_kib,
+        (long long)mmap_bytes);
     sqlite3_exec(db, sql, NULL, NULL, NULL);
     sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
 }

@@ -14,6 +14,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
+#include "util/hw_profile.h"
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -1805,8 +1806,16 @@ int test_sqlite(void) {
      * Locking the chainstate cache_size and mmap_size with a test so
      * that future edits to db_set_pragmas that accidentally revert to
      * SQLite defaults (~2 MB cache, no mmap) get caught at CI time.
-     * The 64 MiB / 256 MiB pair is chosen with the boot_index.c:306
-     * mmap landmine in mind — see the comment there. */
+     * database.c derives both from hw_profile_sqlite_cache_kib/
+     * hw_profile_sqlite_mmap_bytes (measured RAM), clamped to the same
+     * 64 MiB / 256 MiB ceilings this test has always locked — compute the
+     * expected value via the SAME hw_profile call the production code
+     * makes (matching this test HOST's measured RAM) rather than a bare
+     * literal, so the test stays a real regression guard (catches a
+     * revert to SQLite defaults OR a broken derivation) without pinning a
+     * value that silently goes stale on a low-RAM CI box. See the
+     * boot_index.c:306 mmap landmine comment for why 256 MiB is a hard
+     * ceiling, not just a starting point. */
     {
         printf("SQLite PRAGMA tuning: cache_size and mmap_size locked... ");
         struct node_db ndb;
@@ -1832,12 +1841,13 @@ int test_sqlite(void) {
             ok = false;
         }
 
-        /* Negative cache_size in SQLite = "abs(N) KiB".  We expect the
-         * 64 MiB setting from ZCL_NODE_DB_CACHE_SIZE_KIB in database.c. */
-        ok = ok && (cache_pages == -65536);
+        /* Negative cache_size in SQLite = "abs(N) KiB". */
+        int64_t expected_cache_kib = hw_profile_sqlite_cache_kib(
+            hw_profile_ram_bytes(), 16 * 1024, 64 * 1024);
+        ok = ok && (cache_pages == -expected_cache_kib);
         /* mmap may be silently clamped to 0 on a :memory: database
-         * depending on the SQLite build, so accept either 256 MiB
-         * (on a real file) or any value ≥ 0 (on :memory:). */
+         * depending on the SQLite build, so accept either the derived
+         * value (on a real file) or any value ≥ 0 (on :memory:). */
         ok = ok && (mmap_bytes >= 0);
 
         node_db_close(&ndb);

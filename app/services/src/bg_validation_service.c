@@ -66,6 +66,7 @@
 #include "event/event.h"
 #include "platform/rng.h"
 #include "util/blocker.h"
+#include "util/hw_profile.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -520,28 +521,18 @@ void bg_validation_init(struct bg_validation_service *svc,
      * subsystem; the cursor key/semantics are unchanged. */
     bg_validation_store_sqlite_bind(ndb, &svc->progress_store);
 
-    /* Use nproc/2 workers for parallel script verification, capped at 4.
+    /* Worker count + per-block script batch cap both come from the
+     * hw_profile organ (lib/util/src/hw_profile.c) — measured physical
+     * core count and measured RAM instead of ad hoc sysconf() calls
+     * duplicated in this file. Same clamps as before ([2,4] workers;
+     * batch capped at 10000 below 8 GiB, unlimited at/above it) — this is
+     * a re-source, not a behavior change, on any machine with >=8 physical
+     * cores (the clamp already dominated the old nproc/2 formula there).
      * pread()-based disk I/O is fully thread-safe, so multiple workers
      * can read blocks concurrently without the old FILE* cache races. */
-    {
-        long nproc = sysconf(_SC_NPROCESSORS_ONLN);
-        int workers = (nproc > 0) ? (int)(nproc / 2) : 1;
-        if (workers < 2) workers = 2;
-        if (workers > 4) workers = 4;
-        svc->num_workers = workers;
-    }
-
-    /* Auto-detect memory constraints.  On machines with <8GB, cap
-     * the per-block script batch to reduce peak RSS. Each item is
-     * ~200 bytes; 10K items ≈ 2MB — safe for any machine. */
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_sz = sysconf(_SC_PAGE_SIZE);
-    int64_t ram_mb = (pages > 0 && page_sz > 0)
-        ? (int64_t)pages * page_sz / (1024 * 1024) : 0;
-    if (ram_mb > 0 && ram_mb < 8192)
-        svc->max_script_batch = 10000;
-    else
-        svc->max_script_batch = 0;  /* unlimited on >=8GB machines */
+    hw_profile_init(svc->datadir);
+    svc->num_workers = hw_profile_verify_workers(hw_profile_physical_cores());
+    svc->max_script_batch = hw_profile_script_batch_cap(hw_profile_ram_bytes());
 
     atomic_store(&svc->progress.state, BG_VALIDATION_IDLE);
     atomic_store(&svc->progress.verified_height, -1);

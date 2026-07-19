@@ -41,6 +41,7 @@
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
  * the remaining controller dependency is the cache ownership boundary. */
 #include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
+#include "util/hw_profile.h"
 #include "util/util.h"  /* GetDataDir — net-specific block-body serve dir */
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
@@ -466,6 +467,16 @@ static struct msg_block_intake *msg_block_intake_start(struct msg_processor *mp)
     }
     in->thread_started = true;
     thread_liveness_register(&g_p2p_ingest_liveness, "zcl_p2p_ingest", 0, 0);
+
+    /* -pin-reducer (default OFF): "zcl_p2p_ingest" is the thread that
+     * synchronously runs reducer_ingest_block for every P2P-delivered
+     * block (see msg_block_intake_process_one below) — the cache-
+     * sensitive hot loop this flag exists to pin onto the large-L3 CCD on
+     * asymmetric multi-CCD hosts (e.g. the 7950X3D's 96 MB V-Cache CCD).
+     * Advisory only: hw_profile_pin_reducer_thread logs its own outcome
+     * and never fails this spawn. */
+    if (GetBoolArg("-pin-reducer", false))
+        hw_profile_pin_reducer_thread(in->thread);
     pthread_mutex_unlock(&g_block_intake_create_lock);
     return in;
 }

@@ -122,6 +122,7 @@
 #include "util/blocker.h"
 #include "util/self_backtrace.h"
 #include "util/cpu_topology.h"
+#include "util/hw_profile.h"
 #include "util/mem_pressure.h"
 #include "util/thread_profile.h"
 

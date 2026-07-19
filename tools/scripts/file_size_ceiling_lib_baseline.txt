@@ -35,7 +35,7 @@ lib/net/src/file_service.c 1877
 lib/net/src/https_server.c 920
 lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1148
-lib/net/src/msgprocessor.c 2291
+lib/net/src/msgprocessor.c 2344
 lib/net/src/msgprocessor_snapshot.c 2452
 lib/net/src/net.c 1666
 lib/net/src/onion_service.c 963
@@ -49,6 +49,7 @@ lib/sim/src/postmortem.c 1444
 lib/sim/src/simnet_cluster.c 881
 lib/sim/src/simnet_wire.c 1496
 lib/storage/src/coins_kv.c 1028
+lib/storage/src/progress_store.c 812
 lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
 lib/storage/src/utxo_projection.c 978
