@@ -76,6 +76,13 @@ bool anchor_kv_add_tree(struct sqlite3 *db, int pool,
                         const struct incremental_merkle_tree *tree,
                         int64_t height);
 
+/* Cheap MAX(height) over the pool's anchor table (indexed — no tree
+ * deserialization, unlike anchor_kv_latest_tree). Fills *out_height with the
+ * highest stored creation height, or -1 when the table is empty. Returns false
+ * only on a store error / bad args. Used by the commit-invariant append-only
+ * check to seed the per-batch monotonic baseline without a full-table scan. */
+bool anchor_kv_max_height(struct sqlite3 *db, int pool, int64_t *out_height);
+
 /* Remove roots first created in the abandoned height range. */
 bool anchor_kv_delete_range(struct sqlite3 *db, int64_t first_height,
                             int64_t last_height);

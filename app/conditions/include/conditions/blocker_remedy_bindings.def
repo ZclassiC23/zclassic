@@ -108,6 +108,7 @@ ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_
 ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* D3 */
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.upstream_evidence_mode,          OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.stale_upstream_hash,             OWNER)

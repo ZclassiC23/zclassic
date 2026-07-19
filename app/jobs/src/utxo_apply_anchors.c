@@ -9,6 +9,7 @@
 #include "config/runtime.h"
 #include "consensus/upgrades.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/reducer_commit_invariants.h"
 #include "jobs/utxo_apply_delta.h"
 #include "models/block.h"
 #include "primitives/block.h"
@@ -144,6 +145,8 @@ static bool fold_sprout(sqlite3 *db, const struct block *blk, int height,
         LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
                    "[utxo_apply] Sprout frontier persist failed h=%d",
                    height);
+    /* Feed the batch-commit append-only invariant (b) (no-op unless batched). */
+    reducer_commit_invariants_note_anchor(height, ANCHOR_POOL_SPROUT);
     return !full_replay ||
         shielded_history_full_replay_mark_pool_started_in_tx(
             db, ANCHOR_POOL_SPROUT, height);
@@ -192,6 +195,8 @@ static bool fold_sapling(sqlite3 *db, const struct block *blk, int height,
         LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
                    "[utxo_apply] Sapling frontier persist failed h=%d",
                    height);
+    /* Feed the batch-commit append-only invariant (b) (no-op unless batched). */
+    reducer_commit_invariants_note_anchor(height, ANCHOR_POOL_SAPLING);
     return !full_replay ||
         shielded_history_full_replay_mark_pool_started_in_tx(
             db, ANCHOR_POOL_SAPLING, height);

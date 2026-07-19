@@ -109,6 +109,11 @@ uint64_t utxo_apply_stage_outputs_spent_total(void);
 void utxo_apply_stage_set_reader(utxo_apply_reader_fn fn, void *user);
 void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user);
 
+/* True iff the production coins_kv-backed prevout resolver is installed (see
+ * the commit-invariant (a) gate — a synthetic test lookup makes spends delete
+ * no coins_kv row, so (a) must be skipped there). */
+bool utxo_apply_stage_lookup_is_live(void);
+
 bool utxo_apply_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_SERVICES_UTXO_APPLY_STAGE_H */

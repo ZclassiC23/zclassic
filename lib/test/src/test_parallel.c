@@ -245,7 +245,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(pv_lookahead) \
     X(bn254_accel) \
     X(mint_skip_crypto) X(mint_anchor_preflight) \
-    X(utxo_apply_stage) X(utxo_apply_crash_replay) \
+    X(utxo_apply_stage) X(utxo_apply_crash_replay) X(commit_invariants) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(reducer_frontier_self_anchor) X(hstar_integrity) \
     X(install_verb_warm) \
