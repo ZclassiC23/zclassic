@@ -50,7 +50,6 @@
 #include <sqlite3.h>
 
 #include "util/ar_step_readonly.h"
-#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -681,105 +680,4 @@ struct recovery_exec_result utxo_recovery_execute(
     }
 
     return res;
-}
-
-/* ── UTXO cleanup ───────────────────────────────────────────── */
-
-/* Read-only re-query of the exact predicate coins_rewind_above_tip's guard
- * evaluates internally (lib/storage/src/coins_view_sqlite.c), used ONLY to
- * populate the typed blocker's structured fields after a refusal — never to
- * decide anything (the guard already ran and refused before this is called).
- * Leaves out_rows and out_max_height at -1 (unknown) on any read failure so
- * the blocker reason can say so rather than claim a fabricated 0. */
-static void utxo_recovery_query_rewind_overshoot(sqlite3 *db,
-                                                  int64_t tip_height,
-                                                  int64_t *out_rows,
-                                                  int64_t *out_max_height)
-{
-    *out_rows = -1;
-    *out_max_height = -1;
-    if (!db)
-        return;
-
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COUNT(*), COALESCE(MAX(height),0) "
-            "FROM utxos WHERE height > ?",
-            -1, &stmt, NULL) != SQLITE_OK) {
-        LOG_WARN("utxo_recovery",
-            "rewind_overshoot: count prepare failed: %s",
-            sqlite3_errmsg(db));
-        return;
-    }
-    sqlite3_bind_int64(stmt, 1, tip_height);
-    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
-        *out_rows = sqlite3_column_int64(stmt, 0);
-        *out_max_height = sqlite3_column_int64(stmt, 1);
-    }
-    sqlite3_finalize(stmt);
-}
-
-int utxo_recovery_clean_above_tip(struct node_db *ndb,
-                                   struct main_state *state)
-{
-    if (!ndb || !state || !ndb->open)
-        return 0;
-
-    struct block_index *tip = active_chain_tip(&state->chain_active);
-    int tip_h = tip ? tip->nHeight : 0;
-    if (tip_h <= 0) return 0;
-
-    int deleted_total = coins_rewind_above_tip(
-        ndb->db, tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
-    if (deleted_total == 0) {
-        /* Nothing above tip: whatever tripped the guard on a prior pass (if
-         * any) is gone — resolve the typed blocker. No-op if it was never
-         * set. */
-        blocker_clear(UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID);
-        return 0;
-    }
-    if (deleted_total < 0) {
-        LOG_WARN("chain", "ABORT: refusing or failing boot UTXO rewind above tip h=%d " "(guard=%d). Only a single-block overshoot with a bounded row " "count is auto-healable; investigate block_index/coins drift.", tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
-        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-            "wipe_blocked tip=%d guard=%d",
-            tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
-
-        /* Advance-or-named-blocker law: this refusal is a no-op an operator
-         * must investigate, not just a log line that scrolls away. Register
-         * a typed, dumpstate-visible blocker (dumpstate blocker / zcl_state
-         * subsystem=blocker) carrying the guard's own numbers. Semantics are
-         * unchanged — the refusal above still refuses and still returns 0;
-         * this only makes it observable. */
-        int64_t overshoot_rows = -1, overshoot_max_h = -1;
-        utxo_recovery_query_rewind_overshoot(ndb->db, tip_h,
-            &overshoot_rows, &overshoot_max_h);
-
-        char reason[BLOCKER_REASON_MAX];
-        snprintf(reason, sizeof(reason),
-            "boot UTXO rewind above tip refused: tip_height=%d "
-            "max_height=%lld row_count=%lld guard=%d — only a single-block "
-            "overshoot within the guard is auto-healable; investigate "
-            "block_index/coins drift (see condition orphan_utxo_above_tip).",
-            tip_h, (long long)overshoot_max_h, (long long)overshoot_rows,
-            UTXO_BOOT_REWIND_MAX_ROWS);
-
-        struct blocker_record rec;
-        if (blocker_init(&rec, UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID,
-                         "utxo_recovery", BLOCKER_PERMANENT, reason)) {
-            blocker_set(&rec);
-        }
-        return 0;
-    }
-
-    /* Bounded overshoot auto-healed: resolve the typed blocker too, in case
-     * a prior larger overshoot at this same boot/condition-poll cadence had
-     * raised it. */
-    blocker_clear(UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID);
-
-    event_emitf(EV_RECOVERY_ACTION, 0,
-        "action=utxo_prune_above_tip height=%d count=%d",
-        tip_h, deleted_total);
-    printf("Boot: removed %d UTXOs above tip h=%d\n",
-           deleted_total, tip_h);
-    return deleted_total;
 }

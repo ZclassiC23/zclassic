@@ -15,8 +15,10 @@
 #include "chain/chain.h"                              /* block_index, active_chain_at */
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
+#include "models/database.h"                          /* node_db_exec, node_db_state_set_int */
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
+#include "services/utxo_mirror_sync_service.h"        /* UTXO_MIRROR_SYNC_CURSOR_KEY */
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -227,10 +229,65 @@ static bool icb_read_source_receipt(sqlite3 *bundle_db,
     return ok;
 }
 
+/* node.db `utxos` is a DERIVED, rebuildable read-model projection —
+ * utxo_mirror_sync_service.h's own design doc: consensus reads never depend
+ * on it, its sole writer is this background service, and every drift shape
+ * it detects (cursor lag OR a row-count mismatch) is healed by a wholesale
+ * rebuild straight from coins_kv. A bundle install SWAPS coins/anchors/
+ * nullifiers to a possibly different-provenance dataset — not a continuation
+ * of whatever the mirror was tracking before — so rows the mirror already
+ * held (at ANY height, not just above the bundle height) are not guaranteed
+ * to match the freshly installed coins_kv content byte-for-byte.
+ *
+ * Left alone, a stale mirror bites on the very next boot: utxo_recovery_
+ * clean_above_tip's bounded guard (utxo_recovery_service.c,
+ * UTXO_BOOT_REWIND_MAX_ROWS=32) only auto-heals a single-block, <=32-row
+ * overshoot, so a larger stale-mirror overshoot raises the PERMANENT
+ * utxo_recovery.rewind_overshoot blocker — a wedge on a table that carries
+ * no consensus weight at all.
+ *
+ * Reset wholesale (not a height-bounded delete) plus the sync cursor, so
+ * utxo_mirror_sync_service's own drift detector fires on its first pass
+ * after boot and rebuilds the mirror straight from the just-installed
+ * coins_kv — reusing the service's existing contract rather than a bespoke
+ * partial patch here. Best-effort: the activation itself already durably
+ * succeeded, so a reset failure is loud but must not turn a successful
+ * install into a refusal. */
+static bool icb_reset_utxo_mirror(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL(ICB_SUBSYS, "post-install mirror reset: node.db not open");
+
+    bool ok = node_db_exec(ndb, "DELETE FROM utxos");
+    if (!ok)
+        LOG_WARN(ICB_SUBSYS, "post-install mirror reset: DELETE FROM utxos failed");
+    bool commitment_ok = node_db_exec(ndb,
+        "DELETE FROM node_state WHERE key='utxo_commitment'");
+    if (!commitment_ok)
+        LOG_WARN(ICB_SUBSYS,
+                 "post-install mirror reset: utxo_commitment cache clear failed");
+    /* -1 is never a valid mirror height — guarantees the next sync pass sees
+     * cursor != the newly installed coins_kv applied frontier and rebuilds,
+     * even in the edge case where DELETE FROM utxos above already left the
+     * table empty (row-count-divergence drift would also catch that, but
+     * don't rely on two guards firing when one explicit reset is simpler). */
+    bool cursor_ok = node_db_state_set_int(ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, -1);
+    if (!cursor_ok)
+        LOG_WARN(ICB_SUBSYS, "post-install mirror reset: sync cursor reset failed");
+    return ok && commitment_ok && cursor_ok;
+}
+
+#ifdef ZCL_TESTING
+bool boot_install_consensus_bundle_reset_utxo_mirror_for_test(
+    struct node_db *ndb)
+{
+    return icb_reset_utxo_mirror(ndb);
+}
+#endif
+
 void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
                                    const char *bundle_path, const char *datadir)
 {
-    (void)ndb;
     if (!bundle_path || !bundle_path[0] || !datadir || !datadir[0])
         icb_refuse("empty bundle path or datadir");
 
@@ -395,6 +452,17 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     if (!consensus_state_snapshot_install_activate(progress_store_db(), &areq,
                                                    &ares))
         icb_refuse("activation install failed after ADMIT: %s", ares.reason);
+
+    /* (6) Post-install: reset the node.db `utxos` mirror — see
+     * icb_reset_utxo_mirror. Best-effort by design (see its doc comment). */
+    if (!icb_reset_utxo_mirror(ndb))
+        LOG_WARN(ICB_SUBSYS,
+                 "post-install utxos mirror reset incomplete — the mirror "
+                 "may retain stale rows until utxo_mirror_sync_service's "
+                 "own drift detector next fires; the installed consensus "
+                 "state itself is unaffected (node.db utxos carries no "
+                 "consensus weight)");
+
     (void)close(dir_fd);
 
     fprintf(stderr,
