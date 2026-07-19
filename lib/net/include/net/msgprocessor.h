@@ -380,4 +380,30 @@ struct msg_headers_stats {
 
 void msg_headers_get_stats(struct msg_headers_stats *out);
 
+/* ── Client-puzzle PoW guard for zchunkreq / zblkreq ─────────────────
+ * See msgprocessor_snapshot.c for the full design note (stateless:
+ * challenge = SHA3-256(secret||peer_ip||time_bucket), no per-peer server
+ * state, no seed distribution round trip). Difficulty is 0 (mechanism
+ * present, gate open) until armed. */
+#define SNAP_POW_BUCKET_SECS 60   /* challenge validity window (+1 grace)  */
+#define SNAP_POW_MIN_BITS    12   /* idle floor: ~4k hashes, sub-ms        */
+#define SNAP_POW_MAX_BITS    22   /* saturated: ~4M hashes per request     */
+#define SNAP_POW_WINDOW_SECS 10   /* request-rate measurement window       */
+#define SNAP_POW_SOFT_RATE   8    /* accepted reqs/window before ramp      */
+#define SNAP_POW_RATE_STEP   4    /* +1 bit per this many reqs over soft   */
+
+void msg_snapshot_pow_set_armed(bool armed);
+bool msg_snapshot_pow_is_armed(void);
+
+/* Test hooks: drive/inspect the stateless snapshot PoW guard with an
+ * explicit clock. Not intended for production call sites. */
+bool msgprocessor_test_snap_pow_solve(const uint8_t peer_ip[16],
+                                      int64_t at_time, int difficulty_bits,
+                                      uint64_t *nonce_out);
+bool msgprocessor_test_snap_pow_admit_at(const uint8_t peer_ip[16],
+                                         int64_t at_time,
+                                         const uint64_t *nonce);
+int msgprocessor_test_snap_pow_bits_at(int64_t at_time);
+void msgprocessor_test_snap_pow_reset(void);
+
 #endif

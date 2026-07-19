@@ -4591,5 +4591,156 @@ skip_parallel_tests:
                failures++; }
     }
 
+    /* ── Client-puzzle PoW guard for zchunkreq/zblkreq (lane I3) ────
+     * See msgprocessor_snapshot.c for the stateless design note:
+     * challenge = SHA3-256(secret||peer_ip||time_bucket), no per-peer
+     * server state, no seed distribution round trip. Difficulty is 0
+     * (mechanism present, gate open) until armed. */
+
+    printf("snap_pow: disarmed by default — gate stays open regardless "
+           "of nonce... ");
+    {
+        msgprocessor_test_snap_pow_reset();
+        uint8_t ip[16] = {0}; ip[15] = 1;
+        int64_t t = 5000000;
+        bool admit_no_nonce = msgprocessor_test_snap_pow_admit_at(ip, t, NULL);
+        uint64_t bogus = 0xdeadbeefULL;
+        bool admit_bad_nonce =
+            msgprocessor_test_snap_pow_admit_at(ip, t + 1, &bogus);
+        bool ok = admit_no_nonce && admit_bad_nonce &&
+                  !msg_snapshot_pow_is_armed();
+        if (ok) printf("OK\n");
+        else { printf("FAIL (no_nonce=%d bad_nonce=%d armed=%d)\n",
+                      admit_no_nonce, admit_bad_nonce,
+                      msg_snapshot_pow_is_armed());
+               failures++; }
+    }
+
+    printf("snap_pow: armed gate rejects missing/wrong nonce, accepts a "
+           "genuinely solved one... ");
+    {
+        msgprocessor_test_snap_pow_reset();
+        msg_snapshot_pow_set_armed(true);
+        uint8_t ip[16] = {0}; ip[15] = 2;
+        int64_t t = 6000000;
+        int bits = msgprocessor_test_snap_pow_bits_at(t); /* fresh window: floor */
+
+        bool reject_missing = !msgprocessor_test_snap_pow_admit_at(ip, t, NULL);
+        uint64_t bogus = 1;
+        bool reject_bad = !msgprocessor_test_snap_pow_admit_at(ip, t, &bogus);
+
+        uint64_t nonce = 0;
+        bool solved = msgprocessor_test_snap_pow_solve(ip, t, bits, &nonce);
+        bool accept = solved &&
+                      msgprocessor_test_snap_pow_admit_at(ip, t, &nonce);
+
+        /* A solution bound to a DIFFERENT peer IP must not verify here —
+         * the puzzle is peer-bound via the challenge's peer_ip input. */
+        uint8_t other_ip[16] = {0}; other_ip[15] = 3;
+        bool cross_peer_rejected =
+            !msgprocessor_test_snap_pow_admit_at(other_ip, t, &nonce);
+
+        msg_snapshot_pow_set_armed(false);
+        bool ok = reject_missing && reject_bad && solved && accept &&
+                  cross_peer_rejected;
+        if (ok) printf("OK (bits=%d)\n", bits);
+        else { printf("FAIL (bits=%d missing=%d bad=%d solved=%d "
+                      "accept=%d cross_peer_rejected=%d)\n",
+                      bits, reject_missing, reject_bad, solved, accept,
+                      cross_peer_rejected);
+               failures++; }
+    }
+
+    printf("snap_pow: stateless recompute — no per-peer server state, "
+           "no single-use consumption... ");
+    {
+        msgprocessor_test_snap_pow_reset();
+        msg_snapshot_pow_set_armed(true);
+        uint8_t ip[16] = {0}; ip[15] = 4;
+        int64_t t = 7000000;
+        int bits = msgprocessor_test_snap_pow_bits_at(t);
+
+        /* Two independent solves for the identical (ip, time_bucket)
+         * input must land on the identical nonce — proof the challenge
+         * is a pure function of (secret, ip, bucket), not stateful
+         * server-issued material that changes between calls. */
+        uint64_t nonce1 = 0, nonce2 = 0;
+        bool solved1 = msgprocessor_test_snap_pow_solve(ip, t, bits, &nonce1);
+        bool solved2 = msgprocessor_test_snap_pow_solve(ip, t, bits, &nonce2);
+
+        /* Verifying the same solution twice both succeed — a stateful
+         * single-use ring (like fast_sync_pow_gate's) would reject the
+         * second; this guard deliberately keeps none. */
+        bool admit1 = msgprocessor_test_snap_pow_admit_at(ip, t, &nonce1);
+        bool admit2 = msgprocessor_test_snap_pow_admit_at(ip, t, &nonce1);
+
+        msg_snapshot_pow_set_armed(false);
+        bool ok = solved1 && solved2 && nonce1 == nonce2 &&
+                  admit1 && admit2;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (solved1=%d solved2=%d nonce1=%llu nonce2=%llu "
+                      "admit1=%d admit2=%d)\n",
+                      solved1, solved2,
+                      (unsigned long long)nonce1, (unsigned long long)nonce2,
+                      admit1, admit2);
+               failures++; }
+    }
+
+    printf("snap_pow: a solve for time bucket N-1 still verifies at "
+           "bucket N (grace epoch)... ");
+    {
+        msgprocessor_test_snap_pow_reset();
+        msg_snapshot_pow_set_armed(true);
+        uint8_t ip[16] = {0}; ip[15] = 5;
+        int64_t t0 = 8000000;
+        int bits = msgprocessor_test_snap_pow_bits_at(t0);
+
+        uint64_t nonce = 0;
+        bool solved = msgprocessor_test_snap_pow_solve(ip, t0, bits, &nonce);
+        /* Same wall-clock second (same load window) but one bucket later —
+         * the request-rate window (10s) is independent of the puzzle
+         * bucket (60s), so this stays at the same difficulty. */
+        int64_t t1 = t0 + SNAP_POW_BUCKET_SECS;
+        bool accept_in_grace =
+            solved && msgprocessor_test_snap_pow_admit_at(ip, t1, &nonce);
+        /* Two buckets later the solve for t0 is no longer valid. */
+        int64_t t2 = t0 + 2 * SNAP_POW_BUCKET_SECS;
+        bool reject_after_grace =
+            !msgprocessor_test_snap_pow_admit_at(ip, t2, &nonce);
+
+        msg_snapshot_pow_set_armed(false);
+        bool ok = solved && accept_in_grace && reject_after_grace;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (solved=%d accept_in_grace=%d "
+                      "reject_after_grace=%d)\n",
+                      solved, accept_in_grace, reject_after_grace);
+               failures++; }
+    }
+
+    printf("snap_pow: difficulty ramps under sustained request volume and "
+           "floors when idle again... ");
+    {
+        msgprocessor_test_snap_pow_reset();
+        int64_t base = 9000000;
+        int floor_bits = msgprocessor_test_snap_pow_bits_at(base);
+        int last_bits = floor_bits;
+        for (int i = 0; i < 60; i++)
+            last_bits = msgprocessor_test_snap_pow_bits_at(base);
+        bool ramped = last_bits > floor_bits &&
+                      last_bits <= SNAP_POW_MAX_BITS;
+
+        /* Far outside the request-rate window → back to the idle floor. */
+        int idle_bits = msgprocessor_test_snap_pow_bits_at(
+            base + SNAP_POW_WINDOW_SECS + 1);
+        bool ok = floor_bits == SNAP_POW_MIN_BITS && ramped &&
+                  idle_bits == floor_bits;
+        msgprocessor_test_snap_pow_reset();
+        if (ok) printf("OK (floor=%d ramped_to=%d idle=%d)\n",
+                       floor_bits, last_bits, idle_bits);
+        else { printf("FAIL (floor=%d ramped_to=%d idle=%d)\n",
+                      floor_bits, last_bits, idle_bits);
+               failures++; }
+    }
+
     return failures;
 }
