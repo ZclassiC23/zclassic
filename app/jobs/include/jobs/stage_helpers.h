@@ -426,11 +426,10 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
 /* Reducer window-extend failure counter. active_chain_extend_window{,_have_data}
  * return false ONLY on a zcl_malloc("active_chain") grow failure (every "nothing
  * to do" no-op returns true); the leaf is already LOG_FAIL'd at the allocation
- * site (chainstate.c), but the CALLER here historically discarded the boolean
- * via (void), so a persistently-failing window extend on the fold path made the
- * stage silently stop making progress with no attribution. LOG_WARN below names
- * every failure loudly on ALL EIGHT stages uniformly (node.log /
- * `zclassic23 getnodelog`),
+ * site (chainstate.c), but a caller that discards the boolean via (void) lets a
+ * persistently-failing window extend on the fold path stop the stage's
+ * progress with no attribution. LOG_WARN below names every failure loudly on
+ * ALL EIGHT stages uniformly (node.log / `zclassic23 getnodelog`),
  * and this counter is for direct white-box inspection (the drain-harness test).
  *
  * Deliberately NOT rolled into stage_dump_counters(): this header is

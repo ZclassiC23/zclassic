@@ -441,25 +441,25 @@ static bool rpc_healthcheck_full(const struct json_value *params,
     }
     push_chain_evidence_health_json(&checks);
     {
-        struct cac_decision d;
+        struct bsp_decision d;
         struct json_value ca = {0};
 
         block_source_policy_get_status(&d);
-        active_source = cac_source_name(d.selected_source);
-        active_source_trust = cac_source_trust_name(d.selected_source);
+        active_source = bsp_source_name(d.selected_source);
+        active_source_trust = bsp_source_trust_name(d.selected_source);
         snprintf(active_blocker, sizeof(active_blocker), "%s", d.blocker);
         non_legacy_source_selected =
-            d.result == CAC_DECISION_USE_SOURCE &&
-            d.selected_source != CAC_SOURCE_NONE &&
-            d.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR;
+            d.result == BSP_DECISION_USE_SOURCE &&
+            d.selected_source != BSP_SOURCE_NONE &&
+            d.selected_source != BSP_SOURCE_ZCLASSICD_MIRROR;
         json_set_object(&ca);
         json_push_kv_str(&ca, "authority", "local_consensus_validation");
         json_push_kv_str(&ca, "decision",
-                         cac_decision_result_name(d.result));
+                         bsp_decision_result_name(d.result));
         json_push_kv_str(&ca, "selected_source",
-                         cac_source_name(d.selected_source));
+                         bsp_source_name(d.selected_source));
         json_push_kv_str(&ca, "selected_source_trust",
-                         cac_source_trust_name(d.selected_source));
+                         bsp_source_trust_name(d.selected_source));
         json_push_kv_bool(&ca, "activation_allowed", d.activation_allowed);
         json_push_kv_bool(&ca, "mirror_fallback_allowed",
                           d.mirror_fallback_allowed);
@@ -479,9 +479,9 @@ static bool rpc_healthcheck_full(const struct json_value *params,
                          d.last_projection_deferred_time);
         json_push_kv_str(&ca, "last_projection_deferred_reason",
                          d.last_projection_deferred_reason);
-        if (d.selected_source > CAC_SOURCE_NONE &&
-            d.selected_source < CAC_SOURCE_NUM) {
-            const struct cac_source_status *s = &d.sources[d.selected_source];
+        if (d.selected_source > BSP_SOURCE_NONE &&
+            d.selected_source < BSP_SOURCE_NUM) {
+            const struct bsp_source_status *s = &d.sources[d.selected_source];
             json_push_kv_bool(&ca, "selected_source_selectable",
                               s->selectable);
             json_push_kv_str(&ca, "selected_source_selection_blocker",

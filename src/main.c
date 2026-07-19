@@ -1226,8 +1226,7 @@ static bool cli_service_exec_arg(const char *key, char *out, size_t out_size)
 
     /* `systemctl --user show zclassic23 -p ExecStart --value` — capture its
      * stdout via the no-shell spawn primitive. stderr is discarded by
-     * zcl_spawn_capture (matches the old `2>/dev/null`); the exit code is not
-     * needed (the old code ignored pclose's return too). */
+     * zcl_spawn_capture; the exit code is not needed. */
     const char *const argv[] = {
         "systemctl", "--user", "show", "zclassic23",
         "-p", "ExecStart", "--value", NULL

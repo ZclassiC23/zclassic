@@ -38,6 +38,16 @@ static struct log_throttle g_gate_suppress = LOG_THROTTLE_INIT;
  * src-private hook at the bottom of this file. */
 static int g_gate_suppress_warn_total;
 
+/* Shared de-storm gate for the remedy-path refusal/repaired WARNs below: each
+ * one persists identically across retries on a wedged node, so each gets its
+ * own log_throttle keyed on the fields that change with genuine progress. */
+static bool rfrl_throttle_emit(struct log_throttle *t, uint64_t key,
+                               uint64_t *out_reps)
+{
+    return log_throttle_should_emit(t, key, platform_time_wall_unix(), 60,
+                                    out_reps);
+}
+
 #ifdef ZCL_TESTING
 /* Test-only post-remedy hook: simulates the TIPFIN backfill bumping its
  * tipfin_backfill.progress record DURING the remedy (the production writer
@@ -399,94 +409,154 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
         return COND_REMEDY_FAILED;
     rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_REMEDY, &rr);
     if (rr.refused_coin_unknown) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "coins_applied_height absent");
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (rfrl_throttle_emit(&t, 1, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "coins_applied_height absent repeats=%llu",
+                     (unsigned long long)reps);
         return COND_REMEDY_SKIP;
     }
     if (stage_repair_tipfin_refusal_is_pending_forward(&rr)) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] pending "
-                 "tipfin backfill reason=%s binding_log=%s h=%d "
-                 "coins_applied=%d hstar=%d",
-                 stage_repair_tipfin_refused_reason_label(
-                     rr.tipfin_backfill_refused_reason),
-                 stage_repair_tipfin_refused_log_label(
-                     rr.tipfin_backfill_refused_log),
-                 rr.tipfin_backfill_refused_height,
-                 rr.coins_applied_height, rr.hstar);
+        /* Keyed on refused height + coins_applied/hstar/reason so a moving
+         * refusal re-emits but a stuck one collapses to keepalive. */
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t key =
+            ((uint64_t)(uint32_t)rr.tipfin_backfill_refused_height << 32) |
+            (uint32_t)(((uint32_t)rr.coins_applied_height << 16) ^
+                       ((uint32_t)rr.hstar << 8) ^
+                       ((uint32_t)rr.tipfin_backfill_refused_reason << 4) ^
+                       (uint32_t)rr.tipfin_backfill_refused_log);
+        uint64_t reps = 0;
+        if (rfrl_throttle_emit(&t, key, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] pending "
+                     "tipfin backfill reason=%s binding_log=%s h=%d "
+                     "coins_applied=%d hstar=%d repeats=%llu",
+                     stage_repair_tipfin_refused_reason_label(
+                         rr.tipfin_backfill_refused_reason),
+                     stage_repair_tipfin_refused_log_label(
+                         rr.tipfin_backfill_refused_log),
+                     rr.tipfin_backfill_refused_height,
+                     rr.coins_applied_height, rr.hstar,
+                     (unsigned long long)reps);
         return COND_REMEDY_SKIP;
     }
     if (rr.refused_coin_tear) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "coins_applied_height=%d hstar=%d",
-                 rr.coins_applied_height, rr.hstar);
+        /* Keyed on (coins_applied_height, hstar), mirroring
+         * stage_repair_reducer_frontier.c's l1_refuse_throttle. */
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t key = ((uint64_t)(uint32_t)rr.coins_applied_height << 32) |
+                       (uint32_t)rr.hstar;
+        uint64_t reps = 0;
+        if (rfrl_throttle_emit(&t, key, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "coins_applied_height=%d hstar=%d repeats=%llu",
+                     rr.coins_applied_height, rr.hstar,
+                     (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
     if (rr.value_overflow_repair_owner_refused) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "value_overflow repair h=%d: owner ack missing",
-                 rr.value_overflow_repair_height);
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.value_overflow_repair_height;
+        if (rfrl_throttle_emit(&t, h, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "value_overflow repair h=%d: owner ack missing "
+                     "repeats=%llu",
+                     rr.value_overflow_repair_height,
+                     (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
-    /* Belt-and-suspenders engine accounting only: the backfill Job pages the
-     * operator directly (typed blocker + EV_OPERATOR_NEEDED) on every refusal
-     * status; this surfacing must never be the paging path. */
+    /* Belt-and-suspenders engine accounting: the backfill Job pages the
+     * operator directly on every refusal status; never delete — coin_backfill
+     * owner-ack env gate — this surfacing must never be the paging path. */
     if (rr.coin_backfill_owner_refused) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "coin backfill h=%d: owner ack missing",
-                 rr.coin_backfill_hole_height);
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.coin_backfill_hole_height;
+        if (rfrl_throttle_emit(&t, h, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "coin backfill h=%d: owner ack missing repeats=%llu",
+                     rr.coin_backfill_hole_height,
+                     (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
     if (coin_backfill_refused_reconcile(&rr)) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "coin backfill h=%d status=%s unresolved=%d inserted=%d "
-                 "scan_next=%d",
-                 rr.coin_backfill_hole_height,
-                 rfrl_coin_backfill_status_label(rr.coin_backfill_status),
-                 rr.coin_backfill_unresolved, rr.coin_backfill_inserted,
-                 rr.coin_backfill_scan_next);
+        /* Keyed on hole height + status/unresolved/inserted/scan_next. */
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t key =
+            ((uint64_t)(uint32_t)rr.coin_backfill_hole_height << 32) |
+            (uint32_t)(((uint32_t)rr.coin_backfill_status << 24) ^
+                       ((uint32_t)rr.coin_backfill_unresolved << 16) ^
+                       ((uint32_t)rr.coin_backfill_inserted << 8) ^
+                       (uint32_t)rr.coin_backfill_scan_next);
+        uint64_t reps = 0;
+        if (rfrl_throttle_emit(&t, key, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "coin backfill h=%d status=%s unresolved=%d inserted=%d "
+                     "scan_next=%d repeats=%llu",
+                     rr.coin_backfill_hole_height,
+                     rfrl_coin_backfill_status_label(rr.coin_backfill_status),
+                     rr.coin_backfill_unresolved, rr.coin_backfill_inserted,
+                     rr.coin_backfill_scan_next, (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
     if (rr.stale_script_repair_genuinely_invalid) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] refused "
-                 "stale script replay h=%d: dry-run still invalid",
-                 rr.stale_script_repair_height);
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.stale_script_repair_height;
+        if (rfrl_throttle_emit(&t, h, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] refused "
+                     "stale script replay h=%d: dry-run still invalid "
+                     "repeats=%llu",
+                     rr.stale_script_repair_height,
+                     (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
     if (!rr.repaired)
         return COND_REMEDY_SKIP;
 
-    LOG_WARN("condition",
-             "[condition:reducer_frontier_reconcile_light] hstar=%d "
-             "coins_applied=%d sweep_top=%d validate_headers=%d->%d "
-             "body_fetch=%d->%d body_persist=%d->%d "
-             "script_validate=%d->%d proof_validate=%d->%d "
-             "tip_finalize=%d->%d scripts_set=%d have_data_set=%d "
-             "have_data_cleared=%d validate_hash_split=%d "
-             "script_hash_split=%d script_refill_hole=%d "
-             "proof_refill_hole=%d failed_mask_cleared=%d",
-             rr.hstar, rr.coins_applied_height, rr.sweep_top,
-             rr.validate_headers_cursor_before,
-             rr.validate_headers_cursor_after,
-             rr.body_fetch_cursor_before, rr.body_fetch_cursor_after,
-             rr.body_persist_cursor_before, rr.body_persist_cursor_after,
-             rr.script_validate_cursor_before,
-             rr.script_validate_cursor_after,
-             rr.proof_validate_cursor_before,
-             rr.proof_validate_cursor_after,
-             rr.tip_finalize_cursor_before, rr.tip_finalize_cursor_after,
-             rr.scripts_set, rr.have_data_set, rr.have_data_cleared,
-             rr.lowest_validate_headers_hash_split,
-             rr.lowest_script_validate_hash_split,
-             rr.lowest_script_validate_refill_hole,
-             rr.lowest_proof_validate_refill_hole,
-             rr.failed_mask_cleared);
+    /* A wedged node can re-derive the SAME clamp every remedy retry — key
+     * on hstar + coins_applied_height + the mutation counts, mirroring
+     * stage_repair_reducer_frontier.c's l1_repaired_throttle, so genuine
+     * forward progress still re-emits. */
+    static struct log_throttle repaired_throttle = LOG_THROTTLE_INIT;
+    uint64_t repaired_key =
+        ((uint64_t)(uint32_t)rr.hstar << 32) |
+        (uint32_t)(((uint32_t)rr.coins_applied_height << 12) ^
+                   (uint32_t)(rr.have_data_cleared + rr.failed_mask_cleared +
+                              rr.have_data_set + rr.scripts_set));
+    uint64_t repaired_reps = 0;
+    if (rfrl_throttle_emit(&repaired_throttle, repaired_key, &repaired_reps))
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] hstar=%d "
+                 "coins_applied=%d sweep_top=%d validate_headers=%d->%d "
+                 "body_fetch=%d->%d body_persist=%d->%d "
+                 "script_validate=%d->%d proof_validate=%d->%d "
+                 "tip_finalize=%d->%d scripts_set=%d have_data_set=%d "
+                 "have_data_cleared=%d validate_hash_split=%d "
+                 "script_hash_split=%d script_refill_hole=%d "
+                 "proof_refill_hole=%d failed_mask_cleared=%d repeats=%llu",
+                 rr.hstar, rr.coins_applied_height, rr.sweep_top,
+                 rr.validate_headers_cursor_before,
+                 rr.validate_headers_cursor_after,
+                 rr.body_fetch_cursor_before, rr.body_fetch_cursor_after,
+                 rr.body_persist_cursor_before, rr.body_persist_cursor_after,
+                 rr.script_validate_cursor_before,
+                 rr.script_validate_cursor_after,
+                 rr.proof_validate_cursor_before,
+                 rr.proof_validate_cursor_after,
+                 rr.tip_finalize_cursor_before, rr.tip_finalize_cursor_after,
+                 rr.scripts_set, rr.have_data_set, rr.have_data_cleared,
+                 rr.lowest_validate_headers_hash_split,
+                 rr.lowest_script_validate_hash_split,
+                 rr.lowest_script_validate_refill_hole,
+                 rr.lowest_proof_validate_refill_hole,
+                 rr.failed_mask_cleared, (unsigned long long)repaired_reps);
     return COND_REMEDY_OK;
 }
 

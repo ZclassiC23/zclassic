@@ -315,7 +315,7 @@ int test_node_db_catchup_service(void);
 int test_catchup_lifecycle_service(void);
 int test_sync_state_fsm(void);
 int test_heartbeat(void);
-int test_chain_advance_coordinator(void);
+int test_block_source_policy(void);
 int test_block_source_policy_status_json(void);
 int test_snapshot_sync_service(void);
 int test_snapshot_serve_loopback(void);

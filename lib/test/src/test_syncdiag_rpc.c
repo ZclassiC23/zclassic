@@ -4665,7 +4665,7 @@ syncdiag_net_split_done:
         json_free(&result);
         json_init(&result);
 
-        struct cac_decision stale_decision;
+        struct bsp_decision stale_decision;
         memset(&stale_decision, 0, sizeof(stale_decision));
         (void)block_source_policy_local_header_refill_needed(
             served_height - 1, served_height, 0, 0, 2, false,

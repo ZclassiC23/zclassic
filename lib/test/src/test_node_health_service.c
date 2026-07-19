@@ -537,7 +537,7 @@ int test_node_health_service(void)
         struct p2p_node *node = NULL;
         struct block_index tip;
         struct uint256 h_tip;
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = true;
         memset(&cm, 0, sizeof(cm));
         ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 120,
@@ -546,15 +546,15 @@ int test_node_health_service(void)
                                                  "source-gap-peer",
                                                  tip.nHeight);
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = tip.nHeight;
         decision.target_height = tip.nHeight + 5;
-        decision.sources[CAC_SOURCE_P2P].source = CAC_SOURCE_P2P;
-        decision.sources[CAC_SOURCE_P2P].available = true;
-        decision.sources[CAC_SOURCE_P2P].healthy = true;
-        decision.sources[CAC_SOURCE_P2P].selectable = true;
-        decision.sources[CAC_SOURCE_P2P].height = tip.nHeight + 5;
+        decision.sources[BSP_SOURCE_P2P].source = BSP_SOURCE_P2P;
+        decision.sources[BSP_SOURCE_P2P].available = true;
+        decision.sources[BSP_SOURCE_P2P].healthy = true;
+        decision.sources[BSP_SOURCE_P2P].selectable = true;
+        decision.sources[BSP_SOURCE_P2P].height = tip.nHeight + 5;
         if (ok) {
             (void)node;
             node_health_test_set_log_head_override(tip.nHeight);
@@ -669,7 +669,7 @@ int test_node_health_service(void)
         struct p2p_node *node = NULL;
         struct block_index tip;
         struct uint256 h_tip;
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = true;
 
         memset(&health, 0, sizeof(health));
@@ -682,15 +682,15 @@ int test_node_health_service(void)
                                                  "high-rss-peer",
                                                  tip.nHeight);
 
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = tip.nHeight;
         decision.target_height = tip.nHeight;
         decision.projection_height = tip.nHeight;
         decision.projection_lag = 0;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -738,7 +738,7 @@ int test_node_health_service(void)
         struct p2p_node *node = NULL;
         struct block_index tip;
         struct uint256 h_tip;
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = true;
 
         memset(&health, 0, sizeof(health));
@@ -751,15 +751,15 @@ int test_node_health_service(void)
                                                  "high-rss-blocked-peer",
                                                  tip.nHeight);
 
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = tip.nHeight;
         decision.target_height = tip.nHeight;
         decision.projection_height = tip.nHeight;
         decision.projection_lag = 0;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -831,7 +831,7 @@ int test_node_health_service(void)
         struct p2p_node *node = NULL;
         struct block_index tip;
         struct uint256 h_tip;
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = true;
 
         memset(&health, 0, sizeof(health));
@@ -844,15 +844,15 @@ int test_node_health_service(void)
                                                  "mem-pressure-peer",
                                                  tip.nHeight);
 
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = tip.nHeight;
         decision.target_height = tip.nHeight;
         decision.projection_height = tip.nHeight;
         decision.projection_lag = 0;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -908,17 +908,17 @@ int test_node_health_service(void)
 
     printf("node_health_service: coordinator at-tip overrides stale sync FSM... ");
     {
-        struct cac_decision decision;
+        struct bsp_decision decision;
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = 3117591;
         decision.target_height = 3117591;
         decision.projection_height = 3117591;
         decision.projection_lag = 0;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -945,7 +945,7 @@ int test_node_health_service(void)
         struct p2p_node *node = NULL;
         struct block_index tip;
         struct uint256 h_tip;
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = true;
 
         memset(&health, 0, sizeof(health));
@@ -958,15 +958,15 @@ int test_node_health_service(void)
                                                  "source-at-tip-peer",
                                                  tip.nHeight);
 
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = tip.nHeight;
         decision.target_height = tip.nHeight;
         decision.projection_height = tip.nHeight;
         decision.projection_lag = 0;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;

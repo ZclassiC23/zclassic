@@ -13,56 +13,56 @@ static void copy_text(char *dst, size_t dst_len, const char *src)
     snprintf(dst, dst_len, "%s", src);
 }
 
-const char *cac_source_name(enum cac_source source)
+const char *bsp_source_name(enum bsp_source source)
 {
     switch (source) {
-        case CAC_SOURCE_NONE:              return "none";
-        case CAC_SOURCE_P2P:               return "p2p";
-        case CAC_SOURCE_SNAPSHOT:          return "snapshot";
-        case CAC_SOURCE_LOCAL_IMPORT:      return "local_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR:  return "zclassicd_mirror";
-        case CAC_SOURCE_NUM:               break;
+        case BSP_SOURCE_NONE:              return "none";
+        case BSP_SOURCE_P2P:               return "p2p";
+        case BSP_SOURCE_SNAPSHOT:          return "snapshot";
+        case BSP_SOURCE_LOCAL_IMPORT:      return "local_import";
+        case BSP_SOURCE_ZCLASSICD_MIRROR:  return "zclassicd_mirror";
+        case BSP_SOURCE_NUM:               break;
     }
     return "unknown";
 }
 
-const char *cac_decision_result_name(enum cac_decision_result result)
+const char *bsp_decision_result_name(enum bsp_decision_result result)
 {
     switch (result) {
-        case CAC_DECISION_WAIT:       return "wait";
-        case CAC_DECISION_USE_SOURCE: return "use_source";
-        case CAC_DECISION_BLOCKED:    return "blocked";
-        case CAC_DECISION_RECOVER:    return "recover";
-        case CAC_DECISION_NUM:        break;
+        case BSP_DECISION_WAIT:       return "wait";
+        case BSP_DECISION_USE_SOURCE: return "use_source";
+        case BSP_DECISION_BLOCKED:    return "blocked";
+        case BSP_DECISION_RECOVER:    return "recover";
+        case BSP_DECISION_NUM:        break;
     }
     return "unknown";
 }
 
-const char *cac_source_trust_name(enum cac_source source)
+const char *bsp_source_trust_name(enum bsp_source source)
 {
     switch (source) {
-        case CAC_SOURCE_NONE:             return "none";
-        case CAC_SOURCE_P2P:              return "native_peer_validated";
-        case CAC_SOURCE_SNAPSHOT:         return "native_snapshot_proof_validated";
-        case CAC_SOURCE_LOCAL_IMPORT:     return "local_consensus_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return "bounded_advisory_fallback";
-        case CAC_SOURCE_NUM:              break;
+        case BSP_SOURCE_NONE:             return "none";
+        case BSP_SOURCE_P2P:              return "native_peer_validated";
+        case BSP_SOURCE_SNAPSHOT:         return "native_snapshot_proof_validated";
+        case BSP_SOURCE_LOCAL_IMPORT:     return "local_consensus_import";
+        case BSP_SOURCE_ZCLASSICD_MIRROR: return "bounded_advisory_fallback";
+        case BSP_SOURCE_NUM:              break;
     }
     return "unknown";
 }
 
-static int source_base_score(enum cac_source source)
+static int source_base_score(enum bsp_source source)
 {
     switch (source) {
-        case CAC_SOURCE_P2P:              return 100;
-        case CAC_SOURCE_SNAPSHOT:         return 85;
-        case CAC_SOURCE_LOCAL_IMPORT:     return 75;
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return 45;
+        case BSP_SOURCE_P2P:              return 100;
+        case BSP_SOURCE_SNAPSHOT:         return 85;
+        case BSP_SOURCE_LOCAL_IMPORT:     return 75;
+        case BSP_SOURCE_ZCLASSICD_MIRROR: return 45;
         default:                          return -1000;
     }
 }
 
-static bool mirror_fallback_allowed(const struct cac_plan_input *in)
+static bool mirror_fallback_allowed(const struct bsp_plan_input *in)
 {
     if (!in) return false;
     if (in->local_retries_exhausted) return true;
@@ -73,8 +73,8 @@ static bool mirror_fallback_allowed(const struct cac_plan_input *in)
      * makes it tertiary, not redundant. Bodies still validate through
      * local consensus; only the source is the mirror. */
     if (in->mirror_lag_sla_breach_blocks > 0) {
-        const struct cac_source_status *mir =
-            &in->sources[CAC_SOURCE_ZCLASSICD_MIRROR];
+        const struct bsp_source_status *mir =
+            &in->sources[BSP_SOURCE_ZCLASSICD_MIRROR];
         if (mir->available && mir->lag >= in->mirror_lag_sla_breach_blocks)
             return true;
     }
@@ -90,8 +90,8 @@ static int bounded_height_bonus(int local_height, int source_height)
     return 10;
 }
 
-static int target_lag_penalty(const struct cac_plan_input *in,
-                              const struct cac_source_status *s)
+static int target_lag_penalty(const struct bsp_plan_input *in,
+                              const struct bsp_source_status *s)
 {
     if (!in || !s)
         return 0;
@@ -110,7 +110,7 @@ static int target_lag_penalty(const struct cac_plan_input *in,
     return 25;
 }
 
-static int failure_penalty(const struct cac_source_status *s)
+static int failure_penalty(const struct bsp_source_status *s)
 {
     if (!s)
         return 0;
@@ -120,10 +120,10 @@ static int failure_penalty(const struct cac_source_status *s)
     return (int)penalty;
 }
 
-static int redundancy_bonus(const struct cac_plan_input *in,
-                            const struct cac_source_status *s)
+static int redundancy_bonus(const struct bsp_plan_input *in,
+                            const struct bsp_source_status *s)
 {
-    if (!in || !s || s->source != CAC_SOURCE_ZCLASSICD_MIRROR)
+    if (!in || !s || s->source != BSP_SOURCE_ZCLASSICD_MIRROR)
         return 0;
     if (!mirror_fallback_allowed(in))
         return 0;
@@ -139,11 +139,11 @@ static int redundancy_bonus(const struct cac_plan_input *in,
     return 30;
 }
 
-static void score_source(const struct cac_plan_input *in,
-                         struct cac_source_status *s)
+static void score_source(const struct bsp_plan_input *in,
+                         struct bsp_source_status *s)
 {
-    if (!in || !s || s->source <= CAC_SOURCE_NONE ||
-        s->source >= CAC_SOURCE_NUM || !s->available) {
+    if (!in || !s || s->source <= BSP_SOURCE_NONE ||
+        s->source >= BSP_SOURCE_NUM || !s->available) {
         if (s)
             s->score = -1000;
         return;
@@ -161,7 +161,7 @@ static void score_source(const struct cac_plan_input *in,
     s->score_target_lag_penalty = target_lag_penalty(in, s);
     s->score_failure_penalty = failure_penalty(s);
     s->score_mirror_gate_penalty =
-        s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
+        s->source == BSP_SOURCE_ZCLASSICD_MIRROR &&
         !mirror_fallback_allowed(in) ? 100 : 0;
 
     s->score = s->score_base +
@@ -174,18 +174,18 @@ static void score_source(const struct cac_plan_input *in,
                s->score_mirror_gate_penalty;
 }
 
-static const char *source_selection_blocker(const struct cac_plan_input *in,
-                                            const struct cac_source_status *s)
+static const char *source_selection_blocker(const struct bsp_plan_input *in,
+                                            const struct bsp_source_status *s)
 {
     if (!in || !s) return "invalid_source";
     if (!s->available) return "unavailable";
     if (!s->healthy) return "unhealthy";
     if (s->blocked) return s->blocker[0] ? s->blocker : "blocked";
     if (s->height < 0) return "unknown_height";
-    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
+    if (s->source == BSP_SOURCE_ZCLASSICD_MIRROR &&
         !mirror_fallback_allowed(in))
         return "local_recovery_gate";
-    if (s->source == CAC_SOURCE_P2P &&
+    if (s->source == BSP_SOURCE_P2P &&
         in->best_header_height >= in->local_height &&
         s->height >= in->best_header_height)
         return "";
@@ -194,13 +194,13 @@ static const char *source_selection_blocker(const struct cac_plan_input *in,
     return "";
 }
 
-void block_source_policy_plan(const struct cac_plan_input *in,
-                              struct cac_decision *out)
+void block_source_policy_plan(const struct bsp_plan_input *in,
+                              struct bsp_decision *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    out->result = CAC_DECISION_RECOVER;
-    out->selected_source = CAC_SOURCE_NONE;
+    out->result = BSP_DECISION_RECOVER;
+    out->selected_source = BSP_SOURCE_NONE;
     out->selected_score = -1000;
     copy_text(out->reason, sizeof(out->reason), "no_healthy_source");
     if (!in) {
@@ -222,9 +222,9 @@ void block_source_policy_plan(const struct cac_plan_input *in,
     bool any_blocker = false;
     const char *first_blocker = NULL;
 
-    for (int i = 0; i < CAC_SOURCE_NUM; i++) {
+    for (int i = 0; i < BSP_SOURCE_NUM; i++) {
         out->sources[i] = in->sources[i];
-        out->sources[i].source = (enum cac_source)i;
+        out->sources[i].source = (enum bsp_source)i;
         score_source(in, &out->sources[i]);
         const char *selection_blocker =
             source_selection_blocker(in, &out->sources[i]);
@@ -245,28 +245,28 @@ void block_source_policy_plan(const struct cac_plan_input *in,
         }
     }
 
-    if (out->selected_source != CAC_SOURCE_NONE) {
-        out->result = CAC_DECISION_USE_SOURCE;
+    if (out->selected_source != BSP_SOURCE_NONE) {
+        out->result = BSP_DECISION_USE_SOURCE;
         out->activation_allowed = true;
         snprintf(out->reason, sizeof(out->reason),
-                 "selected_%s", cac_source_name(out->selected_source));
+                 "selected_%s", bsp_source_name(out->selected_source));
         return;
     }
 
     if (in->local_recovery_active && !in->local_retries_exhausted) {
-        out->result = CAC_DECISION_WAIT;
+        out->result = BSP_DECISION_WAIT;
         copy_text(out->reason, sizeof(out->reason), "local_retries_pending");
         copy_text(out->blocker, sizeof(out->blocker), "local_recovery_gate");
         return;
     }
 
     if (any_blocker) {
-        out->result = CAC_DECISION_BLOCKED;
+        out->result = BSP_DECISION_BLOCKED;
         copy_text(out->reason, sizeof(out->reason), "source_blocked");
         copy_text(out->blocker, sizeof(out->blocker), first_blocker);
         return;
     }
 
-    out->result = CAC_DECISION_RECOVER;
+    out->result = BSP_DECISION_RECOVER;
     copy_text(out->reason, sizeof(out->reason), "no_healthy_source");
 }

@@ -181,7 +181,7 @@ static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
     if (!s)
         return;
 
-    struct cac_decision decision;
+    struct bsp_decision decision;
     memset(&decision, 0, sizeof(decision));
     if (block_source_policy_get_cached_status(&decision)) {
         int projection_basis = s->target_height;

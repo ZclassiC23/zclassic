@@ -356,9 +356,9 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                      * MUST be the in-tx variant: this runs inside the stage's
                      * batch BEGIN IMMEDIATE + per-step SAVEPOINT, so the
                      * own-BEGIN _set fails 100% ("cannot start a transaction
-                     * within a transaction") and never persists the root — the
-                     * pre-flip WARN-storm root cause. In-tx commits the root
-                     * atomically with this height's finalize log row.
+                     * within a transaction") and never persists the root.
+                     * In-tx commits the root atomically with this height's
+                     * finalize log row.
                      *
                      * Streak-throttled diagnostic: post_finalize runs on the
                      * serial reducer drive under progress_store_tx_lock, so the

@@ -57,7 +57,7 @@ static struct zcl_result persist_text(struct node_db *ndb, const char *key,
 }
 
 static bool source_field_key(char *buf, size_t buflen,
-                             enum cac_source source,
+                             enum bsp_source source,
                              const char *field)
 {
     if (!buf || buflen == 0 || !field)
@@ -68,7 +68,7 @@ static bool source_field_key(char *buf, size_t buflen,
 }
 
 static void persist_source_int(struct node_db *ndb,
-                               enum cac_source source,
+                               enum bsp_source source,
                                const char *field,
                                int64_t value)
 {
@@ -78,7 +78,7 @@ static void persist_source_int(struct node_db *ndb,
 }
 
 static void restore_source_int(struct node_db *ndb,
-                               enum cac_source source,
+                               enum bsp_source source,
                                const char *field,
                                int64_t *out)
 {
@@ -93,10 +93,10 @@ static void restore_source_int(struct node_db *ndb,
 }
 
 static void persist_source_snapshot(struct node_db *ndb,
-                                    enum cac_source source,
-                                    const struct cac_source_status *s)
+                                    enum bsp_source source,
+                                    const struct bsp_source_status *s)
 {
-    if (!ndb || !s || source <= CAC_SOURCE_NONE || source >= CAC_SOURCE_NUM)
+    if (!ndb || !s || source <= BSP_SOURCE_NONE || source >= BSP_SOURCE_NUM)
         return;
     char key[96];
     if (source_field_key(key, sizeof(key), source, "state"))
@@ -170,10 +170,10 @@ static void persist_source_snapshot(struct node_db *ndb,
 }
 
 static void restore_source_snapshot(struct node_db *ndb,
-                                    enum cac_source source,
-                                    struct cac_source_status *s)
+                                    enum bsp_source source,
+                                    struct bsp_source_status *s)
 {
-    if (!ndb || !s || source <= CAC_SOURCE_NONE || source >= CAC_SOURCE_NUM)
+    if (!ndb || !s || source <= BSP_SOURCE_NONE || source >= BSP_SOURCE_NUM)
         return;
     char key[96];
     char text[384] = {0};
@@ -269,7 +269,7 @@ static void restore_source_snapshot(struct node_db *ndb,
 
 struct zcl_result bsp_persist_decision(struct node_db *ndb,
                                        const char *op,
-                                       const struct cac_decision *d,
+                                       const struct bsp_decision *d,
                                        int64_t when,
                                        int64_t total)
 {
@@ -303,12 +303,12 @@ struct zcl_result bsp_persist_decision(struct node_db *ndb,
     (void)node_db_state_set_int(ndb, BSP_KEY_TARGET_HEIGHT,
                                 (int64_t)d->target_height);
 
-    for (int i = 1; i < CAC_SOURCE_NUM; i++)
-        persist_source_snapshot(ndb, (enum cac_source)i, &d->sources[i]);
+    for (int i = 1; i < BSP_SOURCE_NUM; i++)
+        persist_source_snapshot(ndb, (enum bsp_source)i, &d->sources[i]);
 
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM) {
-        const struct cac_source_status *s = &d->sources[d->selected_source];
+    if (d->selected_source > BSP_SOURCE_NONE &&
+        d->selected_source < BSP_SOURCE_NUM) {
+        const struct bsp_source_status *s = &d->sources[d->selected_source];
         (void)persist_text(ndb, BSP_KEY_SOURCE_STATE, s->state);
         (void)persist_text(ndb, BSP_KEY_SOURCE_REASON, s->reason);
         (void)persist_text(ndb, BSP_KEY_SOURCE_BLOCKER, s->blocker);
@@ -335,7 +335,7 @@ struct zcl_result bsp_restore_decision(struct node_db *ndb)
     if (!ndb)
         return ZCL_ERR(-1, "bsp_restore_decision: null ndb");
 
-    struct cac_decision d;
+    struct bsp_decision d;
     memset(&d, 0, sizeof(d));
     char op[32] = {0};
     char reason[sizeof(d.reason)] = {0};
@@ -354,10 +354,10 @@ struct zcl_result bsp_restore_decision(struct node_db *ndb)
         return ZCL_OK;
     if (!node_db_state_get_int(ndb, BSP_KEY_RESULT, &v))
         return ZCL_OK;
-    d.result = (enum cac_decision_result)v;
+    d.result = (enum bsp_decision_result)v;
     if (!node_db_state_get_int(ndb, BSP_KEY_SOURCE, &v))
         return ZCL_OK;
-    d.selected_source = (enum cac_source)v;
+    d.selected_source = (enum bsp_source)v;
     if (node_db_state_get_int(ndb, BSP_KEY_ACTIVATION_ALLOWED, &v))
         d.activation_allowed = v != 0;
     if (node_db_state_get_int(ndb, BSP_KEY_MIRROR_FALLBACK_ALLOWED, &v))
@@ -376,11 +376,11 @@ struct zcl_result bsp_restore_decision(struct node_db *ndb)
         d.best_header_height = (int)v;
     if (node_db_state_get_int(ndb, BSP_KEY_TARGET_HEIGHT, &v))
         d.target_height = (int)v;
-    for (int i = 1; i < CAC_SOURCE_NUM; i++)
-        restore_source_snapshot(ndb, (enum cac_source)i, &d.sources[i]);
-    if (d.selected_source > CAC_SOURCE_NONE &&
-        d.selected_source < CAC_SOURCE_NUM) {
-        struct cac_source_status *s = &d.sources[d.selected_source];
+    for (int i = 1; i < BSP_SOURCE_NUM; i++)
+        restore_source_snapshot(ndb, (enum bsp_source)i, &d.sources[i]);
+    if (d.selected_source > BSP_SOURCE_NONE &&
+        d.selected_source < BSP_SOURCE_NUM) {
+        struct bsp_source_status *s = &d.sources[d.selected_source];
         s->source = d.selected_source;
         s->score = d.selected_score;
         if (node_db_state_get(ndb, BSP_KEY_SOURCE_STATE, source_state,

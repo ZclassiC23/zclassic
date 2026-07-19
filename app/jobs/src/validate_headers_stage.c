@@ -46,13 +46,13 @@
 #define VH_WINDOW_MISS_BLOCKER_ID "validate_headers.window_resolve_miss"
 /* Raised when the UNCHANGED PoW+Equihash validator PASSES a header but the
  * block_index entry is BLOCK_FAILED-masked and the stale mask cannot be
- * cleared here (no repairable evidence). Live root cause: the getheaders serve
+ * cleared here (no repairable evidence). Root cause: the getheaders serve
  * path (lib/net/src/msg_headers.c) sets BLOCK_FAILED_VALID when its local index
  * copy of a header has a missing/corrupt Equihash solution ("invalid-solution",
  * classified permanent); that mask persists across boots via block_index_cache
- * and mark_valid_header refuses any FAILED-masked entry forever — which turned
- * into an 18,440-WARN/5min JOB_FATAL hot loop at h=3,179,245. A streak-throttled
- * blocker + JOB_IDLE backoff replaces that storm. */
+ * and mark_valid_header refuses any FAILED-masked entry forever. A
+ * streak-throttled blocker + JOB_IDLE backoff keeps that from becoming a
+ * WARN/JOB_FATAL hot loop. */
 #define VH_MARK_FAIL_BLOCKER_ID "validate_headers.mark_failed"
 
 /* The default header validator (PoW target + Equihash-from-nSolution)

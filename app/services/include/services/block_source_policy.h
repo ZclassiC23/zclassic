@@ -13,25 +13,25 @@ struct connman;
 struct main_state;
 struct node_db;
 
-enum cac_source {
-    CAC_SOURCE_NONE = 0,
-    CAC_SOURCE_P2P,
-    CAC_SOURCE_SNAPSHOT,
-    CAC_SOURCE_LOCAL_IMPORT,
-    CAC_SOURCE_ZCLASSICD_MIRROR,
-    CAC_SOURCE_NUM
+enum bsp_source {
+    BSP_SOURCE_NONE = 0,
+    BSP_SOURCE_P2P,
+    BSP_SOURCE_SNAPSHOT,
+    BSP_SOURCE_LOCAL_IMPORT,
+    BSP_SOURCE_ZCLASSICD_MIRROR,
+    BSP_SOURCE_NUM
 };
 
-enum cac_decision_result {
-    CAC_DECISION_WAIT = 0,
-    CAC_DECISION_USE_SOURCE,
-    CAC_DECISION_BLOCKED,
-    CAC_DECISION_RECOVER,
-    CAC_DECISION_NUM
+enum bsp_decision_result {
+    BSP_DECISION_WAIT = 0,
+    BSP_DECISION_USE_SOURCE,
+    BSP_DECISION_BLOCKED,
+    BSP_DECISION_RECOVER,
+    BSP_DECISION_NUM
 };
 
-struct cac_source_status {
-    enum cac_source source;
+struct bsp_source_status {
+    enum bsp_source source;
     bool available;
     bool healthy;
     bool blocked;
@@ -86,7 +86,7 @@ struct cac_source_status {
     char blocker[128];
 };
 
-struct cac_plan_input {
+struct bsp_plan_input {
     int local_height;
     int best_header_height;
     int target_height;
@@ -102,12 +102,12 @@ struct cac_plan_input {
      * once we've fallen demonstrably behind zclassicd. */
     int mirror_lag_sla_breach_blocks;
     char projection_state[32];
-    struct cac_source_status sources[CAC_SOURCE_NUM];
+    struct bsp_source_status sources[BSP_SOURCE_NUM];
 };
 
-struct cac_decision {
-    enum cac_decision_result result;
-    enum cac_source selected_source;
+struct bsp_decision {
+    enum bsp_decision_result result;
+    enum bsp_source selected_source;
     bool activation_allowed;
     bool mirror_fallback_allowed;
     int local_height;
@@ -124,15 +124,15 @@ struct cac_decision {
     char last_projection_deferred_reason[64];
     char reason[128];
     char blocker[128];
-    struct cac_source_status sources[CAC_SOURCE_NUM];
+    struct bsp_source_status sources[BSP_SOURCE_NUM];
 };
 
-const char *cac_source_name(enum cac_source source);
-const char *cac_source_trust_name(enum cac_source source);
-const char *cac_decision_result_name(enum cac_decision_result result);
+const char *bsp_source_name(enum bsp_source source);
+const char *bsp_source_trust_name(enum bsp_source source);
+const char *bsp_decision_result_name(enum bsp_decision_result result);
 
-void block_source_policy_plan(const struct cac_plan_input *in,
-                              struct cac_decision *out);
+void block_source_policy_plan(const struct bsp_plan_input *in,
+                              struct bsp_decision *out);
 
 /* Stateful block-source decision surface. This layer does not connect
  * blocks. It scores candidate advance sources (native P2P, snapshots,
@@ -147,14 +147,14 @@ bool block_source_policy_peer_floor_recovery_needed(
     int min_healthy,
     int local_height,
     int peer_height,
-    struct cac_decision *out);
+    struct bsp_decision *out);
 bool block_source_policy_snapshot_offer_allowed(
     int local_height,
     int snapshot_height,
     int peer_tip_height,
     bool offer_valid,
     const char *reason,
-    struct cac_decision *out);
+    struct bsp_decision *out);
 bool block_source_policy_local_header_refill_needed(
     int local_height,
     int missing_height,
@@ -162,11 +162,11 @@ bool block_source_policy_local_header_refill_needed(
     int eligible_peers,
     int retry_count,
     bool retries_exhausted,
-    struct cac_decision *out);
+    struct bsp_decision *out);
 void block_source_policy_note_projection_deferred(int height,
                                                   const char *reason);
-void block_source_policy_get_status(struct cac_decision *out);
-bool block_source_policy_get_cached_status(struct cac_decision *out);
+void block_source_policy_get_status(struct bsp_decision *out);
+bool block_source_policy_get_cached_status(struct bsp_decision *out);
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 bool block_source_policy_dump_state_json(struct json_value *out,
                                          const char *key);

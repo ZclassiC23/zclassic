@@ -6,12 +6,12 @@
  * dedicated -mint-anchor driver). Split out of reducer_ingest_service.c (which
  * keeps the synchronous block-intake path) so each file holds one seam.
  *
- * LIVELOCK GUARD (2026-07-13): reducer_kick_unbudgeted used to run with NO
- * wall-clock budget and NO frontier-progress check, so one call could drain
+ * LIVELOCK GUARD: reducer_kick_unbudgeted must never run with NO wall-clock
+ * budget and NO frontier-progress check — one call could drain
  * hard_cap(64) * ZCL_REFOLD_DRAIN_BATCH(2000) = 128k blocks back-to-back —
- * HOURS under the fsync-bound fold rate — while the boot_mint_anchor drive
- * loop (which logs progress and runs the stall detector BETWEEN kicks) never
- * regained control: the forbidden quiet spin. Two bounds close it:
+ * HOURS under the fsync-bound fold rate — starving the boot_mint_anchor drive
+ * loop (which logs progress and runs the stall detector BETWEEN kicks) of
+ * control: the forbidden quiet spin. Two bounds close it:
  *   (1) converge_on_frontier_stall — a round that advances upstream stages but
  *       not the utxo_apply frontier returns immediately (a walled fold hands
  *       control back so the driver fails closed with a named blocker);

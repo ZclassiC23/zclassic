@@ -4635,11 +4635,11 @@ int test_api(void)
         test_reset_shared_globals();
         struct main_state ms;
         struct block_index *blocks[3] = {0};
-        struct cac_decision decision;
+        struct bsp_decision decision;
         bool ok = api_test_build_chain(&ms, blocks, 3);
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = 2;
         decision.target_height = 2;
         decision.projection_height = 2;
@@ -4839,14 +4839,14 @@ int test_api(void)
         const struct json_value *groups =
             json_get(&result, "relevant_test_groups");
         ok = ok && api_test_array_has_str(groups,
-                                          "chain_advance_coordinator");
+                                          "block_source_policy");
         ok = ok && api_test_array_has_str(groups,
                                           "block_source_policy_status_json");
         ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         const struct json_value *commands =
             json_get(&result, "recommended_commands");
         ok = ok && api_test_array_has_str(
-            commands, "make t ONLY=chain_advance_coordinator");
+            commands, "make t ONLY=block_source_policy");
         json_free(&params);
         json_free(&result);
 
@@ -4985,21 +4985,21 @@ int test_api(void)
         struct net_address addr = {0};
         struct p2p_node *node = NULL;
         struct block_index *blocks[ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 3] = {0};
-        struct cac_decision decision;
+        struct bsp_decision decision;
         const int served = 1;
         const int target = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
         bool ok = api_test_build_chain(&ms, blocks, target + 1);
         ok = ok && api_test_init_connman_peer(&cm, &addr, &node, target);
 
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = target;
         decision.target_height = target;
         decision.projection_height = target;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -5226,21 +5226,21 @@ int test_api(void)
         struct net_address addr;
         struct p2p_node *node = NULL;
         struct block_index *blocks[ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 3] = {0};
-        struct cac_decision decision;
+        struct bsp_decision decision;
         const int served = 1;
         const int target = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 2;
         bool ok = api_test_build_chain(&ms, blocks, target + 1);
         ok = ok && api_test_init_connman_peer(&cm, &addr, &node, target);
 
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = target;
         decision.target_height = target;
         decision.projection_height = target;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
@@ -5306,7 +5306,7 @@ int test_api(void)
         struct net_address addr;
         struct p2p_node *node = NULL;
         struct block_index *blocks[4] = {0};
-        struct cac_decision decision;
+        struct bsp_decision decision;
         char dbdir[256];
         snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_durable_status_%d",
                  (int)getpid());
@@ -5317,14 +5317,14 @@ int test_api(void)
         ok = ok && api_test_seed_durable_tip(dbdir, 2);
 
         memset(&decision, 0, sizeof(decision));
-        decision.result = CAC_DECISION_USE_SOURCE;
-        decision.selected_source = CAC_SOURCE_P2P;
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
         decision.local_height = 2;
         decision.target_height = 3;
         decision.projection_height = 2;
-        struct cac_source_status *p2p =
-            &decision.sources[CAC_SOURCE_P2P];
-        p2p->source = CAC_SOURCE_P2P;
+        struct bsp_source_status *p2p =
+            &decision.sources[BSP_SOURCE_P2P];
+        p2p->source = BSP_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;

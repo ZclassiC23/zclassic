@@ -88,7 +88,7 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
         cm, next_h, "condition:local_header_refill_needed");
     struct watchdog_local_recovery_stats lr;
     sync_monitor_get_local_recovery_stats(&lr);
-    struct cac_decision decision;
+    struct bsp_decision decision;
     bool proceed = block_source_policy_local_header_refill_needed(
         atomic_load(&g_tip_at_detect),
         next_h,

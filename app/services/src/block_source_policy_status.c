@@ -24,38 +24,38 @@
 
 #include <string.h>
 
-const char *bsp_source_class_name(enum cac_source source)
+const char *bsp_source_class_name(enum bsp_source source)
 {
     switch (source) {
-        case CAC_SOURCE_NONE:             return "none";
-        case CAC_SOURCE_P2P:              return "native_p2p";
-        case CAC_SOURCE_SNAPSHOT:         return "snapshot";
-        case CAC_SOURCE_LOCAL_IMPORT:     return "local_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return "legacy_advisory";
-        case CAC_SOURCE_NUM:              break;
+        case BSP_SOURCE_NONE:             return "none";
+        case BSP_SOURCE_P2P:              return "native_p2p";
+        case BSP_SOURCE_SNAPSHOT:         return "snapshot";
+        case BSP_SOURCE_LOCAL_IMPORT:     return "local_import";
+        case BSP_SOURCE_ZCLASSICD_MIRROR: return "legacy_advisory";
+        case BSP_SOURCE_NUM:              break;
     }
     return "unknown";
 }
 
-static bool bsp_source_lag_known(const struct cac_source_status *s)
+static bool bsp_source_lag_known(const struct bsp_source_status *s)
 {
     if (!s)
         return false;
-    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR)
+    if (s->source == BSP_SOURCE_ZCLASSICD_MIRROR)
         return s->lag_known;
     return true;
 }
 
-static bool bsp_source_lag_valid(const struct cac_source_status *s)
+static bool bsp_source_lag_valid(const struct bsp_source_status *s)
 {
     if (!s)
         return false;
-    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR)
+    if (s->source == BSP_SOURCE_ZCLASSICD_MIRROR)
         return s->lag_valid;
     return true;
 }
 
-static void bsp_push_source_observed_lag(const struct cac_source_status *s,
+static void bsp_push_source_observed_lag(const struct bsp_source_status *s,
                                          struct json_value *out,
                                          const char *key)
 {
@@ -69,15 +69,15 @@ static void bsp_push_source_observed_lag(const struct cac_source_status *s,
     json_free(&nullv);
 }
 
-void bsp_source_to_json(const struct cac_source_status *s,
+void bsp_source_to_json(const struct bsp_source_status *s,
                         struct json_value *out)
 {
     json_set_object(out);
-    json_push_kv_str(out, "source", cac_source_name(s->source));
+    json_push_kv_str(out, "source", bsp_source_name(s->source));
     json_push_kv_str(out, "source_class", bsp_source_class_name(s->source));
     json_push_kv_str(out, "candidate_source", bsp_source_class_name(s->source));
-    json_push_kv_str(out, "trust", cac_source_trust_name(s->source));
-    json_push_kv_str(out, "candidate_trust", cac_source_trust_name(s->source));
+    json_push_kv_str(out, "trust", bsp_source_trust_name(s->source));
+    json_push_kv_str(out, "candidate_trust", bsp_source_trust_name(s->source));
     json_push_kv_bool(out, "available", s->available);
     json_push_kv_bool(out, "healthy", s->healthy);
     json_push_kv_bool(out, "blocked", s->blocked);
@@ -149,21 +149,21 @@ void bsp_source_to_json(const struct cac_source_status *s,
                      s->blocker[0] ? s->blocker : s->selection_reason);
 }
 
-void bsp_decision_to_json(const struct cac_decision *d,
+void bsp_decision_to_json(const struct bsp_decision *d,
                           struct json_value *out)
 {
     json_set_object(out);
     if (!d) return;
     json_push_kv_str(out, "decision",
-                     cac_decision_result_name(d->result));
+                     bsp_decision_result_name(d->result));
     json_push_kv_str(out, "selected_source",
-                     cac_source_name(d->selected_source));
+                     bsp_source_name(d->selected_source));
     json_push_kv_str(out, "candidate_source",
                      bsp_source_class_name(d->selected_source));
     json_push_kv_str(out, "selected_source_trust",
-                     cac_source_trust_name(d->selected_source));
+                     bsp_source_trust_name(d->selected_source));
     json_push_kv_str(out, "candidate_trust",
-                     cac_source_trust_name(d->selected_source));
+                     bsp_source_trust_name(d->selected_source));
     json_push_kv_str(out, "authority", "local_consensus_validation");
     json_push_kv_bool(out, "activation_allowed", d->activation_allowed);
     json_push_kv_bool(out, "mirror_fallback_allowed",
@@ -189,9 +189,9 @@ void bsp_decision_to_json(const struct cac_decision *d,
     json_push_kv_int(out, "selected_score", (int64_t)d->selected_score);
     json_push_kv_str(out, "reason", d->reason);
     json_push_kv_str(out, "blocker", d->blocker);
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM) {
-        const struct cac_source_status *s = &d->sources[d->selected_source];
+    if (d->selected_source > BSP_SOURCE_NONE &&
+        d->selected_source < BSP_SOURCE_NUM) {
+        const struct bsp_source_status *s = &d->sources[d->selected_source];
         json_push_kv_str(out, "selected_source_state", s->state);
         json_push_kv_str(out, "selected_source_reason", s->reason);
         json_push_kv_str(out, "selected_source_blocker", s->blocker);
@@ -222,11 +222,11 @@ void bsp_decision_to_json(const struct cac_decision *d,
 
     struct json_value arr = {0};
     json_set_array(&arr);
-    for (int i = 1; i < CAC_SOURCE_NUM; i++) {
-        struct cac_source_status source = d->sources[i];
+    for (int i = 1; i < BSP_SOURCE_NUM; i++) {
+        struct bsp_source_status source = d->sources[i];
         struct json_value child = {0};
-        if (source.source == CAC_SOURCE_NONE)
-            source.source = (enum cac_source)i;
+        if (source.source == BSP_SOURCE_NONE)
+            source.source = (enum bsp_source)i;
         bsp_source_to_json(&source, &child);
         json_push_back(&arr, &child);
         json_free(&child);
@@ -235,16 +235,16 @@ void bsp_decision_to_json(const struct cac_decision *d,
     json_free(&arr);
 }
 
-void block_source_policy_get_status(struct cac_decision *out)
+void block_source_policy_get_status(struct bsp_decision *out)
 {
     if (!out) return;
-    struct cac_plan_input in;
+    struct bsp_plan_input in;
     bsp_build_runtime_input(&in);
     block_source_policy_plan(&in, out);
     bsp_enrich_projection_deferral(out);
 }
 
-bool block_source_policy_get_cached_status(struct cac_decision *out)
+bool block_source_policy_get_cached_status(struct bsp_decision *out)
 {
     if (!out)
         return false; // raw-return-ok:null-optional-cache-read
@@ -276,7 +276,7 @@ bool block_source_policy_dump_state_json(struct json_value *out,
 {
     (void)key;
     if (!out) return false;
-    struct cac_decision d;
+    struct bsp_decision d;
     block_source_policy_get_status(&d);
 
     bsp_lock_init_once();
@@ -285,7 +285,7 @@ bool block_source_policy_dump_state_json(struct json_value *out,
     bool has_last = g_bsp.has_last;
     int64_t last_decision_time = g_bsp.last_decision_time;
     char last_op[32];
-    struct cac_decision last = g_bsp.last;
+    struct bsp_decision last = g_bsp.last;
     bool has_connman = g_bsp.connman != NULL;
     bool has_main_state = g_bsp.main_state != NULL;
     bool has_node_db = g_bsp.node_db != NULL;
@@ -300,15 +300,15 @@ bool block_source_policy_dump_state_json(struct json_value *out,
     json_push_kv_bool(out, "has_node_db", has_node_db);
     json_push_kv_str(out, "authority", "local_consensus_validation");
     json_push_kv_str(out, "decision",
-                     cac_decision_result_name(d.result));
+                     bsp_decision_result_name(d.result));
     json_push_kv_str(out, "selected_source",
-                     cac_source_name(d.selected_source));
+                     bsp_source_name(d.selected_source));
     json_push_kv_str(out, "candidate_source",
                      bsp_source_class_name(d.selected_source));
     json_push_kv_str(out, "selected_source_trust",
-                     cac_source_trust_name(d.selected_source));
+                     bsp_source_trust_name(d.selected_source));
     json_push_kv_str(out, "candidate_trust",
-                     cac_source_trust_name(d.selected_source));
+                     bsp_source_trust_name(d.selected_source));
     json_push_kv_bool(out, "activation_allowed", d.activation_allowed);
     json_push_kv_bool(out, "mirror_fallback_allowed",
                       d.mirror_fallback_allowed);
@@ -354,7 +354,7 @@ bool block_source_policy_dump_state_json(struct json_value *out,
 
     struct json_value arr = {0};
     json_set_array(&arr);
-    for (int i = 1; i < CAC_SOURCE_NUM; i++) {
+    for (int i = 1; i < BSP_SOURCE_NUM; i++) {
         struct json_value child = {0};
         bsp_source_to_json(&d.sources[i], &child);
         json_push_back(&arr, &child);
@@ -365,10 +365,10 @@ bool block_source_policy_dump_state_json(struct json_value *out,
 
     /* Reserved `_health` key (see docs/work "Adding state introspection" +
      * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
-     * Maps the already-computed decision result above — CAC_DECISION_BLOCKED
+     * Maps the already-computed decision result above — BSP_DECISION_BLOCKED
      * means no advance source is currently usable; no new health logic. */
     {
-        bool blocked = (d.result == CAC_DECISION_BLOCKED);
+        bool blocked = (d.result == BSP_DECISION_BLOCKED);
         diag_push_health(out, !blocked, blocked ? d.blocker : "");
     }
     return true;

@@ -176,10 +176,10 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "chain_advance_coordinator") == 0) {
-        printf("[test] ZCL_TEST_ONLY=chain_advance_coordinator — running source policy only\n");
-        failures += test_chain_advance_coordinator();
-        printf("\n=== chain_advance_coordinator subset complete: %d failure(s) ===\n",
+    if (only && strcmp(only, "block_source_policy") == 0) {
+        printf("[test] ZCL_TEST_ONLY=block_source_policy — running source policy only\n");
+        failures += test_block_source_policy();
+        printf("\n=== block_source_policy subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -1127,7 +1127,7 @@ int main(int argc, char **argv)
     failures += test_catchup_lifecycle_service();
     failures += test_sync_state_fsm();
     failures += test_heartbeat();
-    failures += test_chain_advance_coordinator();
+    failures += test_block_source_policy();
     { extern int test_chain_advance_atomicity(void);
       failures += test_chain_advance_atomicity(); }
     failures += test_block_source_policy_status_json();
