@@ -269,6 +269,16 @@ struct app_context {
                                  * production containment. Terminal: exits after
                                  * writing the receipt or a typed refusal. NULL unless
                                  * the operator sets the flag. */
+    bool cold_start_seed_oneshot; /* -coldstart-seed-oneshot : INTERNAL cold-start
+                                 * driver handshake (config/src/boot_cold_start.c).
+                                 * Set ONLY on the seed child the -cold-start
+                                 * driver spawns; makes app_init apply the
+                                 * -load-snapshot-at-own-height seed then return
+                                 * before services so main.c shuts down cleanly
+                                 * (WAL checkpoint + clean-shutdown marker) and
+                                 * exits, leaving a durable clean-stopped datadir
+                                 * for the driver's next stage. NEVER set on an
+                                 * operator-driven boot; a normal node ignores it. */
     bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
                                  * a baked, SHA3-verified anchor snapshot
                                  * (<datadir>/utxo-anchor.snapshot or
