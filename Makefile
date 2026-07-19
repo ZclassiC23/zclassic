@@ -5044,10 +5044,15 @@ check-honest-witness:
 # invocation and the `lint:` umbrella uniformly.
 check-%: export ZCL_LINT_PRODUCTION_SCAN := 1
 
+# tools/dev/build-epoch-integrity-cached.sh drives the two real compile-probe
+# selftests (tools/dev/build-epoch-selftest.sh and
+# tools/dev/make-depfile-scope-selftest.sh) concurrently behind a cache keyed
+# on every input those probes read; a cache hit skips the ~15s of real `cc`
+# compiles / `make -n` dry runs and reproduces the identical verdict, an
+# input change is a cache MISS that reruns both probes for real.
 check-build-epoch-integrity:
 	@echo "══ LINT: mutation-keyed compile epochs + atomic publication ══"
-	@tools/dev/build-epoch-selftest.sh
-	@tools/dev/make-depfile-scope-selftest.sh
+	@tools/dev/build-epoch-integrity-cached.sh
 
 check-checkout-lock:
 	@echo "══ LINT: checkout-wide watcher/foreground mutual exclusion ══"
