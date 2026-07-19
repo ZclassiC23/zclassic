@@ -210,11 +210,17 @@ Gates fall into three modes:
 - **HARD / FAIL** — fails on any violation.
 - **RATCHET** — fails on a *new* violation while tolerating a recorded
   baseline; the baseline file may only shrink (growing it requires an ADR).
-- **WARN** — measures only, never fails the build. Two gates carry a WARN
-  sub-tier for `lib/` (excl. `lib/test/`) + `domain/`, alongside their own
-  ENFORCED tier for the app-shape surfaces: **E1** (`check-file-size-ceiling`)
-  and **#12** (`check-long-functions`). #18 and #20 graduated WARN → RATCHET
-  as **E10**, 2026-05-26; #19 ratcheted WARN → FAIL in Phase 1.
+- **WARN** — measures only, per-file, never fails on any ONE violation. Two
+  gates carry a WARN sub-tier for `lib/` (excl. `lib/test/`) + `domain/`
+  (+ `src/` for E1), alongside their own ENFORCED tier for the app-shape
+  surfaces: **E1** (`check-file-size-ceiling`) and **#12**
+  (`check-long-functions`). #18 and #20 graduated WARN → RATCHET as **E10**,
+  2026-05-26; #19 ratcheted WARN → FAIL in Phase 1. E1's WARN tier additionally
+  ratchets the *aggregate* (new + grown) violation COUNT via
+  `tools/scripts/file_size_ceiling_lib_drift_count.txt` — no single file ever
+  fails the build, but silently accumulating drift past the reviewed count
+  does (a shrinking file never counts against this; it only tightens the
+  per-file baseline, see the script's `--fix`).
 
 Each gate's intent is one row below. Implementation scripts live under
 `tools/scripts/` or `tools/lint/`. The E-series gates are tested in
