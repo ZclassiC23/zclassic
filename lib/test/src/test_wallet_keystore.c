@@ -412,6 +412,9 @@ static int test_at_rest_boot_decision(void)
         ASSERT(wallet_at_rest_boot_decision(
                    WALLET_AT_REST_REFUSE, false,
                    ZCL_OPERATOR_LANE_COPY) == WALLET_BOOT_CREATE_PLAINTEXT);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_STANDBY) == WALLET_BOOT_CREATE_PLAINTEXT);
         PASS();
     } _test_next:;
 
