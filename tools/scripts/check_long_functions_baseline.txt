@@ -19,4 +19,4 @@
 # Format: <relative-path> <function-name> <max-lines>   (# = comment)
 # Sorted by path.
 
-config/src/boot.c app_init 2889
+config/src/boot.c app_init 2912

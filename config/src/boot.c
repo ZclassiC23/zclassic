@@ -2801,8 +2801,31 @@ bool app_init(struct app_context *ctx)
             .activation_ctl = &g_activation_ctl,
             .db_service = boot_runtime_db_service(),
         };
+        /* O(delta) unclean-restart recovery (docs/AGENT_TRAPS.md). This branch
+         * runs on every UNCLEAN restart (crash / kill -9 / OOM). When the just-
+         * run block-index repair proved the in-memory index consistent, engage
+         * the trust fastpath so the restore's internal chain_restore_finalize
+         * takes the O(tip) pprev walk instead of the ~74s O(chain) disk header
+         * re-read + block-file rescan. Scoped + cleared; the post-restore
+         * integrity check stays the fail-safe. The full disk walk is the last-
+         * resort rung — reached only when index_repaired > 0 (behind the named
+         * block-index-repair blocker), never the default. */
+        bool restore_trust =
+            chain_restore_index_verified_consistent(
+                index_repaired, g_state.map_block_index.size) &&
+            !chain_restore_trust_index_fastpath();
+        if (restore_trust) {
+            printf("[boot] index verified consistent (0 repairs, %zu entries) "
+                   "— unclean-restart recovery trusting in-memory pprev walk "
+                   "(O(delta)); skipping disk header re-read + block-file "
+                   "rescan\n", g_state.map_block_index.size);
+            fflush(stdout);
+            chain_restore_set_trust_index_fastpath(true);
+        }
         struct chain_restore_result cr =
             utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
+        if (restore_trust)
+            chain_restore_set_trust_index_fastpath(false);
         if (!cr.status.ok)
             fprintf(stderr, "[boot] UTXO chain restore failed: %s\n",
                     cr.status.message);
