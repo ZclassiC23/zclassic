@@ -1255,6 +1255,7 @@ int main(int argc, char **argv)
     { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
     failures += test_binary_staleness();
+    failures += test_binary_ab_fallback();
     { extern int test_network_monitor(void); failures += test_network_monitor(); }
     { extern int test_network_crawler(void); failures += test_network_crawler(); }
     failures += test_db_maintenance();
