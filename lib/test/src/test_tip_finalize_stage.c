@@ -7,6 +7,7 @@
 #include "json/json.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/reducer_frontier.h"
+#include "services/consensus_state_publication_cas.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -992,6 +993,29 @@ int test_tip_finalize_stage(void)
         TF_CHECK("noskip: resolver pair is self-consistent",
                  rh == 4 && memcmp(rhash, sc.hashes[4].data, 32) == 0);
 
+        /* (c') CAS frontier capture over the SAME finalized lattice. This is
+         * exactly the live -install-consensus-bundle refusal state: the durable
+         * tip resolves to 4 (a `finalized` row at H binds tip H+1) while H* is
+         * 3 (the deepest finalized ROW). The pre-fix capture demanded
+         * durable_h == H* and REFUSED (frontier_unknown); the corrected capture
+         * binds H* with H*'s OWN hash, which is (3, hash(3)). */
+        {
+            int32_t cf_h = -999; uint8_t cf_hash[32];
+            int32_t hs = -999, sf = -999;
+            progress_store_tx_lock();
+            bool hs_ok = reducer_frontier_compute_hstar(progress_store_db(),
+                                                        &hs, &sf);
+            progress_store_tx_unlock();
+            TF_CHECK("noskip: H* is 3 while durable tip is 4 (lattice +1)",
+                     hs_ok && hs == 3 && rh == hs + 1);
+            TF_CHECK("noskip: CAS capture SUCCEEDS when durable leads H* by one",
+                     consensus_state_publication_cas_capture_frontier(
+                         &cf_h, cf_hash));
+            TF_CHECK("noskip: CAS capture binds (H*, hash-of-H*)",
+                     cf_h == 3 &&
+                     memcmp(cf_hash, sc.hashes[3].data, 32) == 0);
+        }
+
         /* (d) A stale authority re-commit of an already-finalized height
          * must not downgrade the finalized row (it carries the successor
          * hash block_hash_at reads) and must not move the cursor. */
@@ -1002,6 +1026,19 @@ int test_tip_finalize_stage(void)
                  row_ok == 1 && strcmp(status, "finalized") == 0);
         TF_CHECK("noskip: stale re-commit keeps the cursor",
                  tip_finalize_stage_cursor() == 4);
+
+        /* (e) Genuine-unknown refusal: with the finalized log wiped, H*'s hash
+         * is unresolvable, so capture must REFUSE (return false) and LOG_ERROR
+         * every number — never a blind refusal. */
+        TF_CHECK("noskip: wipe tip_finalize_log for uncomputable-frontier case",
+                 exec_sql(progress_store_db(),
+                          "DELETE FROM tip_finalize_log"));
+        {
+            int32_t cf_h = -999; uint8_t cf_hash[32];
+            TF_CHECK("noskip: CAS capture REFUSES on an uncomputable frontier",
+                     !consensus_state_publication_cas_capture_frontier(
+                         &cf_h, cf_hash));
+        }
         tf_teardown(dir, &ms, &sc);
     }
 

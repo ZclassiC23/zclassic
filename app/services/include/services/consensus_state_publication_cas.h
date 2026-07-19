@@ -159,6 +159,15 @@ struct zcl_result consensus_state_publication_cas_persist_for_test(
     const struct consensus_state_publication_decision_record *record);
 #endif
 
+/* Capture the node's provable frontier (H*) and H*'s own block hash — the
+ * (height, hash) pair cas_run() binds into the decision for staleness. Reads
+ * the open progress-store singleton (process authority); returns false on a
+ * genuinely uncomputable frontier (compute_hstar fails, H*<0, or H*'s hash is
+ * unresolvable). Split out of the CAS TU as its own seam; also the direct
+ * capture surface for tests over a progress-store fixture. */
+bool consensus_state_publication_cas_capture_frontier(
+    int32_t *out_height, uint8_t out_hash[32]);
+
 const char *consensus_state_publication_decision_name(
     enum consensus_state_publication_decision decision);
 const char *consensus_state_publication_refusal_name(
