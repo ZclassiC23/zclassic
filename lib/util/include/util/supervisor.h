@@ -186,6 +186,15 @@ struct liveness_contract {
     _Atomic int64_t  progress_changed_at_us;
     _Atomic int64_t  last_progress_seen;
 
+    /* Tick-runner handoff. The sweep thread does ZERO I/O and never runs a
+     * child's on_tick inline (that caused the 2026-07-19 jbd2_log_wait_commit
+     * wedge, where a child's SQLite-commit tick froze the sweep heartbeat
+     * >=30s and the backstop killed a healthy node). Instead the sweep sets
+     * tick_pending when a period-driven child is due; the dedicated
+     * "zcl_supervisor_tick_runner" thread CAS-consumes it and executes
+     * on_tick + stamps last_tick/ticks_run. Supervisor+runner owned. */
+    _Atomic bool     tick_pending;
+
     /* vtable (set at init; never mutated after register) */
     void  *ctx;
     void (*on_tick)(struct liveness_contract *self);
@@ -338,11 +347,35 @@ void supervisor_reset_for_testing(void);
 
 /* Run exactly one supervisor sweep synchronously on the CALLING thread (no
  * dedicated supervisor thread, no real-time wait). Lets restart-policy tests
- * drive death→respawn→storm deterministically. Production never calls this. */
+ * drive death→respawn→storm deterministically. Because no tick-runner thread
+ * is running under this seam, the sweep drains due on_tick callbacks INLINE
+ * (the same degraded-but-driven fallback used if the runner ever fails to
+ * spawn), so a synchronous caller still observes on_tick + ticks_run.
+ * Production never calls this. */
 void supervisor_sweep_once_for_testing(void);
+
+/* Tick-runner monitoring seam. The runner thread is monitored INLINE by the
+ * sweep (deadline + edge-triggered named blocker), not via g_contracts, so a
+ * wedged child tick becomes the "supervisor.tick_runner_wedged" blocker while
+ * the sweep keeps heartbeating. These let a test drive that path without a
+ * real wedged thread: arm the runner contract with a short deadline, backdate
+ * its heartbeat, then run one monitor pass. */
+void supervisor_tick_runner_setup_for_testing(int64_t deadline_secs);
+void supervisor_tick_runner_backdate_hb_for_testing(int64_t age_us);
+void supervisor_tick_runner_monitor_for_testing(void);
 #endif
 
 /* ── `zclassic23 dumpstate supervisor` ────────────────────────────── */
+
+/* ── Tick-runner introspection ─────────────────────────────────────────
+ * Age (microseconds) since the tick-runner thread last heartbeat, and its
+ * stall_fires counter. A frozen age past the runner deadline means one
+ * child's on_tick is wedged (named as a blocker); the sweep is unaffected. */
+int64_t  supervisor_tick_runner_last_hb_age_us(void);
+uint32_t supervisor_tick_runner_stall_fires(void);
+bool     supervisor_tick_runner_running(void);
+
+/* ── Introspection (zcl_state subsystem=supervisor) ────────────────── */
 
 struct supervisor_snapshot {
     char     name[SUPERVISOR_NAME_MAX];

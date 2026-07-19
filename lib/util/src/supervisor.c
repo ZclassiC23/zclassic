@@ -21,6 +21,7 @@
 #include "util/supervisor.h"
 
 #include "json/json.h"
+#include "util/blocker.h"
 #include "util/thread_registry.h"
 
 #include <errno.h>
@@ -80,6 +81,32 @@ static void note_stall_fire(struct liveness_contract *c,
         atomic_load_explicit(&g_stall_observer, memory_order_acquire);
     if (obs) obs(c->name, r);
 }
+
+/* ── Tick-runner thread ────────────────────────────────────────────────
+ * A dedicated thread that executes every child's on_tick callback OFF the
+ * sweep thread. The sweep only marks due children (atomic flag) + reads
+ * atomics + heartbeats; it never enters a child callback, so a child whose
+ * tick commits a SQLite transaction (fsync → jbd2_log_wait_commit under IO
+ * saturation) can no longer freeze the sweep heartbeat and get a healthy,
+ * progressing node killed by supervisor_backstop (the 2026-07-19 wedge).
+ *
+ * The runner is itself a supervised liveness contract: g_runner_contract has
+ * a deadline, and the sweep monitors it INLINE (not via g_contracts, so the
+ * countable child registry + every child-count assertion is unchanged). If a
+ * single child's on_tick wedges the runner past the deadline, the sweep raises
+ * the edge-triggered "supervisor.tick_runner_wedged" blocker — a NAMED blocker,
+ * never a dead node — and clears it when the runner heartbeats again.
+ *
+ * g_runner_enabled doubles as the drain-ownership flag: true ⇒ the runner
+ * thread drains due ticks and the sweep monitors it; false ⇒ no runner (spawn
+ * failed, or the ZCL_TESTING synchronous seam) and the sweep drains due ticks
+ * INLINE so children are never silently un-driven. */
+#define SUPERVISOR_TICK_RUNNER_DEADLINE_SECS 30
+static _Atomic bool   g_runner_running    = false;
+static _Atomic bool   g_runner_enabled    = false;
+static pthread_t      g_runner_thread_id;
+static _Atomic bool   g_runner_handle_set = false;
+static struct liveness_contract g_runner_contract;
 
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
@@ -411,6 +438,93 @@ static void maybe_restart(struct liveness_contract *c, int64_t now)
     }
 }
 
+/* Runner on_stall: name the blocker (edge-triggered by the sweep). Pure
+ * lib/util — blocker_set lives in the same layer (util/blocker.h). No event/
+ * app-side header (Gate #14). */
+static void runner_on_stall(struct liveness_contract *self)
+{
+    (void)self;
+    struct blocker_record rec;
+    if (blocker_init(&rec, "supervisor.tick_runner_wedged", "supervisor",
+                     BLOCKER_TRANSIENT,
+                     "a supervised child's on_tick has run on the tick-runner "
+                     "thread past its deadline; the sweep heartbeat is "
+                     "unaffected (node stays alive) but one child's periodic "
+                     "work is wedged — inspect `dumpstate supervisor` for the "
+                     "child whose last_tick_age exceeds its period"))
+        (void)blocker_set(&rec);
+}
+
+/* Execute every child whose tick_pending flag is set. Runs on the tick-runner
+ * thread in production; runs inline on the sweep thread only as the
+ * runner-absent fallback. Snapshots pointers under the registry lock, releases
+ * it, then invokes callbacks outside the lock (callbacks re-enter the API). */
+static void run_due_ticks(void)
+{
+    struct liveness_contract *snap[SUPERVISOR_CAP];
+    int n;
+    pthread_mutex_lock(&g_lock);
+    n = g_contract_count;
+    memcpy(snap, g_contracts, (size_t)n * sizeof(snap[0]));
+    pthread_mutex_unlock(&g_lock);
+
+    for (int i = 0; i < n; i++) {
+        /* Same shutdown gate as the sweep: dispatch no further callbacks once
+         * process shutdown is requested (a staged-sync tick can read the
+         * chainstate app_shutdown frees). */
+        if (thread_registry_shutdown_requested()) return;
+        struct liveness_contract *c = snap[i];
+        if (!c) continue;
+        if (atomic_load(&c->completed)) continue;
+
+        bool expected = true;
+        if (!atomic_compare_exchange_strong(&c->tick_pending, &expected, false))
+            continue;   /* not marked due */
+
+        int64_t before = atomic_load(&c->last_tick_us);
+        if (c->on_tick) c->on_tick(c);
+        /* If on_tick didn't call supervisor_tick itself, stamp it now so we
+         * don't busy-fire — byte-identical to the old inline sweep semantics
+         * (works for on_tick==NULL period-driven children too). */
+        int64_t after = atomic_load(&c->last_tick_us);
+        if (after == before) {
+            atomic_store(&c->last_tick_us, platform_time_monotonic_us());
+            atomic_fetch_add(&c->ticks_run, 1u);
+        }
+        /* Heartbeat the runner BETWEEN children so a long batch of children
+         * never trips the runner deadline — only a single wedged tick does. */
+        atomic_store(&g_runner_contract.last_tick_us,
+                     platform_time_monotonic_us());
+    }
+}
+
+/* Inline runner-liveness monitor, called by the sweep once per pass when a
+ * runner thread is active. Edge-triggered: fires the named blocker once when
+ * the runner's heartbeat lapses past its deadline, and clears it (+ re-arms)
+ * when the runner heartbeats again. The sweep itself does no I/O here — this is
+ * pure atomic math + one blocker_set/blocker_clear on the transition edge. */
+static void supervisor_monitor_runner(int64_t now)
+{
+    int64_t rlt = atomic_load(&g_runner_contract.last_tick_us);
+    int64_t rdl = atomic_load(&g_runner_contract.deadline_secs);
+    int     rsr = atomic_load(&g_runner_contract.stall_reason);
+
+    if (rdl > 0 && (now - rlt) >= rdl * 1000000) {
+        int expected = SUPERVISOR_STALL_NONE;
+        if (atomic_compare_exchange_strong(&g_runner_contract.stall_reason,
+                &expected, SUPERVISOR_STALL_TIME_DEADLINE)) {
+            atomic_fetch_add(&g_runner_contract.stall_fires, 1u);
+            if (g_runner_contract.on_stall)
+                g_runner_contract.on_stall(&g_runner_contract);
+        }
+    } else if (rsr != SUPERVISOR_STALL_NONE) {
+        /* Runner heartbeat resumed within the deadline: clear the latched
+         * stall + the named blocker so a transient wedge self-heals. */
+        atomic_store(&g_runner_contract.stall_reason, SUPERVISOR_STALL_NONE);
+        blocker_clear("supervisor.tick_runner_wedged");
+    }
+}
+
 static void sweep_once(void)
 {
     int64_t now = platform_time_monotonic_us();
@@ -452,19 +566,13 @@ static void sweep_once(void)
         int64_t period_window_us = period_u > 0 ? period_u
                                                 : period_s * 1000000;
 
-        /* Periodic on_tick driving. Supervisor calls on_tick when the
-         * configured period has elapsed; on_tick is expected to do the
-         * child's actual work and then call supervisor_tick to record
-         * the heartbeat (or do work that emits supervisor_progress). */
+        /* Periodic on_tick driving. When the configured period has elapsed we
+         * only MARK the child due (an atomic flag); the tick-runner thread
+         * executes on_tick + stamps last_tick/ticks_run. The sweep never runs
+         * a child callback itself, so no child's I/O can freeze this thread.
+         * (Idempotent: re-marking an already-pending child is a no-op.) */
         if (period_window_us > 0 && (now - last_tick) >= period_window_us) {
-            if (c->on_tick) c->on_tick(c);
-            /* If on_tick didn't call supervisor_tick itself, stamp it
-             * now so we don't busy-fire. */
-            int64_t after = atomic_load(&c->last_tick_us);
-            if (after == last_tick) {
-                atomic_store(&c->last_tick_us, platform_time_monotonic_us());
-                atomic_fetch_add(&c->ticks_run, 1u);
-            }
+            atomic_store(&c->tick_pending, true);
         }
 
         /* Bounded restart policy (OTP): a restartable child whose worker has
@@ -478,7 +586,7 @@ static void sweep_once(void)
         int sr = atomic_load(&c->stall_reason);
         if (sr != SUPERVISOR_STALL_NONE) continue;
 
-        /* Reload last_tick_us in case on_tick just bumped it. */
+        /* Reload last_tick_us in case the tick-runner just bumped it. */
         int64_t lt = atomic_load(&c->last_tick_us);
 
         if (deadl_s > 0 && (now - lt) >= deadl_s * 1000000) {
@@ -501,6 +609,42 @@ static void sweep_once(void)
             }
         }
     }
+
+    /* Drain / monitor the tick-runner. When a runner thread is active it owns
+     * draining; the sweep just monitors its liveness (no I/O). When there is no
+     * runner (spawn failed, or the ZCL_TESTING synchronous seam) the sweep
+     * drains due ticks INLINE so children are never silently un-driven. */
+    if (atomic_load(&g_runner_enabled))
+        supervisor_monitor_runner(now);
+    else
+        run_due_ticks();
+}
+
+/* Tick-runner thread: the ONLY place a child's on_tick runs in production. It
+ * heartbeats its own liveness contract at the top of every loop and between
+ * children (inside run_due_ticks); a wedge inside a single child tick freezes
+ * this heartbeat, which the sweep detects and names as a blocker. */
+static void *supervisor_tick_runner_main(void *arg)
+{
+    (void)arg;
+    atomic_store(&g_runner_running, true);
+    atomic_store(&g_runner_contract.last_tick_us,
+                 platform_time_monotonic_us());
+    while (atomic_load(&g_runner_running) &&
+           !thread_registry_shutdown_requested())
+    {
+        atomic_store(&g_runner_contract.last_tick_us,
+                     platform_time_monotonic_us());
+        run_due_ticks();
+        int ms = atomic_load(&g_tick_ms);
+        if (ms < 1) ms = 1;
+        if (ms > 60000) ms = 60000;
+        struct timespec req = { ms / 1000, (long)(ms % 1000) * 1000000L };
+        nanosleep(&req, NULL);
+    }
+    atomic_store(&g_runner_running, false);
+    thread_registry_unregister_self();
+    return NULL;
 }
 
 static void *supervisor_thread_main(void *arg)
@@ -553,6 +697,34 @@ bool supervisor_start(void)
     }
     g_thread_id = tid;
     atomic_store(&g_thread_handle_set, true);
+
+    /* Spawn the dedicated tick-runner. It, not the sweep, executes every
+     * child's on_tick. Arm its liveness contract (deadline-monitored inline by
+     * the sweep — see supervisor_monitor_runner). If the spawn fails we leave
+     * g_runner_enabled=false so the sweep drains ticks inline (degraded but
+     * never un-driven); the sweep itself is already up, so the node lives. */
+    liveness_contract_init(&g_runner_contract, "supervisor.tick_runner");
+    atomic_store(&g_runner_contract.deadline_secs,
+                 (int64_t)SUPERVISOR_TICK_RUNNER_DEADLINE_SECS);
+    g_runner_contract.on_stall = runner_on_stall;
+    atomic_store(&g_runner_contract.last_tick_us,
+                 platform_time_monotonic_us());
+    atomic_store(&g_runner_running, true);
+    pthread_t rtid;
+    // thread-supervision-ok:monitored-inline-by-the-sweep-not-via-g_contracts
+    int rrc = thread_registry_spawn("zcl_supervisor_tick_runner",
+                                    supervisor_tick_runner_main, NULL, &rtid);
+    if (rrc != 0) {
+        atomic_store(&g_runner_running, false);
+        atomic_store(&g_runner_enabled, false);
+        fprintf(stderr,  // obs-ok:supervisor-tick-runner-spawn-fail
+            "[supervisor] WARN tick-runner spawn rc=%d — sweep drains ticks "
+            "inline (degraded: a slow child tick can freeze the sweep)\n", rrc);
+    } else {
+        g_runner_thread_id = rtid;
+        atomic_store(&g_runner_handle_set, true);
+        atomic_store(&g_runner_enabled, true);
+    }
     return true;
 }
 
@@ -560,6 +732,31 @@ void supervisor_stop(void)
 {
     if (!atomic_load(&g_running)) return;
     atomic_store(&g_running, false);
+
+    /* Stop the tick-runner first (it may be mid-on_tick). Disable monitoring
+     * so a slow drain during teardown doesn't spuriously name the blocker. */
+    atomic_store(&g_runner_enabled, false);
+    atomic_store(&g_runner_running, false);
+    if (atomic_load(&g_runner_handle_set)) {
+        for (;;) {
+            struct timespec rdeadline;
+            platform_time_realtime_timespec(&rdeadline);
+            rdeadline.tv_sec += 2;
+            int rjc = pthread_timedjoin_np(g_runner_thread_id, NULL, &rdeadline);
+            if (rjc == 0) {
+                atomic_store(&g_runner_handle_set, false);
+                break;
+            }
+            if (rjc != ETIMEDOUT || !thread_registry_shutdown_requested()) {
+                fprintf(stderr,  // obs-ok:supervisor-tick-runner-join
+                    "[supervisor] WARN tick-runner join rc=%d (thread still alive)\n",
+                    rjc);
+                break;
+            }
+            fprintf(stderr,  // obs-ok:shutdown-join-progress
+                "[supervisor] shutdown join: tick-runner still draining; waiting\n");
+        }
+    }
 
     /* Join the loop. It polls g_running and the global shutdown flag
      * between sweeps, and sweep_once dispatches no callbacks once
@@ -626,13 +823,57 @@ void supervisor_reset_for_testing(void)
     pthread_mutex_unlock(&g_lock);
     atomic_store(&g_tick_ms, 1000);
     atomic_store_explicit(&g_stall_observer, NULL, memory_order_release);
+
+    /* supervisor_stop() already cleared g_runner_enabled/running; clear the
+     * monitored contract's latched state so the next test starts clean. */
+    atomic_store(&g_runner_enabled, false);
+    atomic_store(&g_runner_contract.stall_reason, SUPERVISOR_STALL_NONE);
+    atomic_store(&g_runner_contract.stall_fires, 0u);
+    blocker_clear("supervisor.tick_runner_wedged");
 }
 
 void supervisor_sweep_once_for_testing(void)
 {
     sweep_once();
 }
+
+void supervisor_tick_runner_setup_for_testing(int64_t deadline_secs)
+{
+    liveness_contract_init(&g_runner_contract, "supervisor.tick_runner");
+    atomic_store(&g_runner_contract.deadline_secs, deadline_secs);
+    g_runner_contract.on_stall = runner_on_stall;
+    atomic_store(&g_runner_contract.last_tick_us,
+                 platform_time_monotonic_us());
+    atomic_store(&g_runner_enabled, true);
+}
+
+void supervisor_tick_runner_backdate_hb_for_testing(int64_t age_us)
+{
+    atomic_store(&g_runner_contract.last_tick_us,
+                 platform_time_monotonic_us() - age_us);
+}
+
+void supervisor_tick_runner_monitor_for_testing(void)
+{
+    supervisor_monitor_runner(platform_time_monotonic_us());
+}
 #endif
+
+int64_t supervisor_tick_runner_last_hb_age_us(void)
+{
+    return platform_time_monotonic_us() -
+           atomic_load(&g_runner_contract.last_tick_us);
+}
+
+uint32_t supervisor_tick_runner_stall_fires(void)
+{
+    return atomic_load(&g_runner_contract.stall_fires);
+}
+
+bool supervisor_tick_runner_running(void)
+{
+    return atomic_load(&g_runner_running);
+}
 
 /* ── Introspection ─────────────────────────────────────────────────── */
 
@@ -697,6 +938,16 @@ bool supervisor_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_sweep_heartbeat));
     json_push_kv_int (out, "sweep_last_age_us",
                       platform_time_monotonic_us() - atomic_load(&g_sweep_last_us));
+    /* Tick-runner: the thread that actually executes child on_tick callbacks.
+     * A last_hb_age_us past the runner deadline means one child's tick is
+     * wedged (named via the supervisor.tick_runner_wedged blocker); the sweep
+     * above is unaffected, so the node stays alive. */
+    json_push_kv_bool(out, "tick_runner_running",
+                      atomic_load(&g_runner_running));
+    json_push_kv_int (out, "tick_runner_last_hb_age_us",
+                      supervisor_tick_runner_last_hb_age_us());
+    json_push_kv_int (out, "tick_runner_stall_fires",
+                      (int64_t)atomic_load(&g_runner_contract.stall_fires));
 
     if (key && key[0]) {
         pthread_mutex_lock(&g_lock);

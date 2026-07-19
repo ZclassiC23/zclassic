@@ -18,6 +18,7 @@
 
 #include "test/test_helpers.h"
 #include "util/supervisor.h"
+#include "util/blocker.h"
 #include "json/json.h"
 
 #include <pthread.h>
@@ -69,6 +70,16 @@ static void obs_stall(const char *child_name,
     snprintf(g_obs_name, sizeof(g_obs_name), "%s",
              child_name ? child_name : "");
     atomic_store(&g_obs_reason, (int)reason);
+
+/* Deliberately slow on_tick: blocks 150 ms (simulating a child whose tick
+ * commits a SQLite transaction under IO pressure). It runs on the tick-runner
+ * thread, so it must NOT freeze the sweep heartbeat. */
+static void slow_tick(struct liveness_contract *self)
+{
+    struct cb_counts *cc = (struct cb_counts *)self->ctx;
+    struct timespec ts = { 0, 150 * 1000000L };
+    nanosleep(&ts, NULL);
+    if (cc) atomic_fetch_add(&cc->tick_calls, 1);
 }
 
 /* Restart-policy probe: a fake worker whose on_respawn just records the call.
@@ -623,6 +634,74 @@ int test_supervisor(void)
             atomic_load(&p.stall_calls) == 1);
         SUP_CHECK("storm stops respawning after escalation",
             atomic_load(&p.respawn_calls) == 3);
+    }
+
+    /* ── slow on_tick runs on the RUNNER, not the sweep ─────────────────
+     * The regression this whole lane exists for: a child whose on_tick blocks
+     * (SQLite commit → fsync → jbd2_log_wait_commit under IO pressure) must NOT
+     * freeze the sweep heartbeat and get a healthy node killed by the backstop.
+     * With the tick-runner thread the sweep keeps heartbeating while the slow
+     * tick runs elsewhere. */
+    supervisor_reset_for_testing();
+    supervisor_set_tick_ms_for_testing(5);
+    {
+        static struct liveness_contract c;
+        static struct cb_counts cc;
+        memset(&cc, 0, sizeof(cc));
+        liveness_contract_init(&c, "loop.slow_tick");
+        c.ctx = &cc;
+        c.on_tick = slow_tick;             /* blocks 150 ms */
+        supervisor_child_id id = supervisor_register(&c);
+        (void)id;
+
+        SUP_CHECK("supervisor_start succeeds (slow tick)", supervisor_start());
+        /* Make the child due so the runner picks it up promptly. */
+        atomic_store(&c.last_tick_us, atomic_load(&c.last_tick_us) - 2000000);
+        atomic_store(&c.period_secs, 1);
+
+        sleep_ms(30);                       /* let the runner ENTER slow_tick */
+        uint64_t hb0 = supervisor_sweep_heartbeat();
+        sleep_ms(120);                      /* runner still inside the 150ms tick */
+        uint64_t hb1 = supervisor_sweep_heartbeat();
+        SUP_CHECK("sweep heartbeat keeps advancing while a child tick blocks",
+            hb1 - hb0 >= 3);
+
+        sleep_ms(150);                      /* let the slow tick finish */
+        SUP_CHECK("slow on_tick actually executed on the runner",
+            atomic_load(&cc.tick_calls) >= 1);
+        SUP_CHECK("runner thread is alive", supervisor_tick_runner_running());
+        supervisor_stop();
+    }
+
+    /* ── a wedged tick-runner becomes a NAMED blocker (edge-triggered) ─────
+     * A child on_tick that never returns freezes the runner heartbeat. The
+     * sweep detects the lapse and names supervisor.tick_runner_wedged — a
+     * blocker, never a dead node. Recovery clears it. */
+    supervisor_reset_for_testing();
+    blocker_reset_for_testing();
+    {
+        supervisor_tick_runner_setup_for_testing(/*deadline_secs=*/1);
+        supervisor_tick_runner_backdate_hb_for_testing(5000000);  /* 5 s ago */
+        uint32_t fires0 = supervisor_tick_runner_stall_fires();
+
+        supervisor_tick_runner_monitor_for_testing();
+        SUP_CHECK("wedged runner fires stall exactly once",
+            supervisor_tick_runner_stall_fires() - fires0 == 1);
+        SUP_CHECK("wedged runner names supervisor.tick_runner_wedged blocker",
+            blocker_exists("supervisor.tick_runner_wedged"));
+
+        /* Sticky edge: a second monitor pass while still wedged does not re-fire. */
+        supervisor_tick_runner_monitor_for_testing();
+        SUP_CHECK("wedged runner stall is sticky (no re-fire)",
+            supervisor_tick_runner_stall_fires() - fires0 == 1);
+
+        /* Recovery: a fresh heartbeat within the deadline clears the blocker. */
+        supervisor_tick_runner_backdate_hb_for_testing(0);
+        supervisor_tick_runner_monitor_for_testing();
+        SUP_CHECK("runner heartbeat resumes -> blocker cleared",
+            !blocker_exists("supervisor.tick_runner_wedged"));
+
+        blocker_reset_for_testing();
     }
 
     /* Restore default tick period for any later tests. */

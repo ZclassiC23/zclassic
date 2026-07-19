@@ -148,6 +148,10 @@ ZCL_BLOCKER_REMEDY(self_heal.unsupervised,                      OWNER)
  * persistent one is a genuine hung remedy needing operator attention (OWNER).
  * The root supervisor sweep is unaffected either way — never a frozen root. */
 ZCL_BLOCKER_REMEDY(self_heal.worker_wedged,                     OWNER)
+/* Same law, one layer down: a child on_tick wedging the supervisor's shared
+ * tick-runner thread past its deadline. Sweep-raised, self-clears when the
+ * runner heartbeats again; persistent = a hung child tick (OWNER). */
+ZCL_BLOCKER_REMEDY(supervisor.tick_runner_wedged,               OWNER)
 ZCL_BLOCKER_REMEDY(connman_reactor_overflow,                    OWNER)
 ZCL_BLOCKER_REMEDY(bg_validation.reverify_failed,               OWNER)
 ZCL_BLOCKER_REMEDY(recovery_coordinator.no_applicable_rung,     OWNER)
