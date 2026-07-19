@@ -799,68 +799,6 @@ job_result_t utxo_apply_stage_step_once(void)
     return r;
 }
 
-int utxo_apply_stage_drain(int max_steps)
-{
-    if (max_steps <= 0) return 0;
-    sqlite3 *batch_db = progress_store_db();
-    bool batched = false;
-    if (batch_db) {
-        progress_store_tx_lock();
-        batched = stage_batch_begin(batch_db);
-        if (!batched) progress_store_tx_unlock();
-    }
-
-    /* Open the batch-commit conservation window (invariants a/b/c). No-op
-     * unless a batch is actually open, so the unbatched path stays untouched.
-     * Invariant (a) requires the production coins_kv-backed lookup (found ⇔ a
-     * deletable coins_kv row); a synthetic test lookup breaks that premise, so
-     * disable (a) — (b)/(c) still run — when it is not installed. */
-    if (batched) {
-        reducer_commit_invariants_batch_begin(batch_db);
-        if (!utxo_apply_stage_lookup_is_live())
-            reducer_commit_invariants_disable_coins_check();
-    }
-
-    int advanced = 0;
-    for (int i = 0; i < max_steps; i++) {
-        job_result_t r = utxo_apply_stage_step_once();
-        if (r != JOB_ADVANCED) break;
-        advanced++;
-    }
-
-    bool committed = false;
-    if (batched) {
-        committed = advanced > 0 || stage_batch_dirty();
-        /* Verify the conservation invariants BEFORE the outer COMMIT. A
-         * violation REFUSES the commit (force ROLLBACK) after raising the
-         * typed blocker naming the height + failed invariant — corruption
-         * surfaces here, not at the next hour-long install verify. On the
-         * no-commit path, drop the window without checking. */
-        if (committed) {
-            if (!reducer_commit_invariants_verify(batch_db))
-                committed = false;
-        } else {
-            reducer_commit_invariants_reset();
-        }
-        if (!stage_batch_end(batch_db, committed)) {
-            (void)stage_record_fatal(STAGE_NAME, "batch COMMIT/ROLLBACK failed");
-            committed = false;
-        }
-        progress_store_tx_unlock();
-    }
-
-    if (committed && !coins_ram_flush_due())
-        (void)stage_record_fatal(STAGE_NAME, "coins_ram deferred flush failed");
-
-    /* Post-commit, own-tx created_outputs prune (lane A1) — only after the
-     * kernel batch durably committed at least one advance, and only once the
-     * kernel tx lock has been released above (strictly sequential locks). */
-    if (committed && advanced > 0)
-        utxo_apply_created_outputs_prune_post_commit();
-
-    return advanced;
-}
-
 void utxo_apply_stage_shutdown(void)
 {
     /* Clean-stop flush of the in-RAM bulk-fold overlay BEFORE we tear down (and

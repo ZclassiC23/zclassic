@@ -72,6 +72,7 @@
 #include "jobs/body_persist_stage.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/proof_validate_stage.h"
+#include "jobs/utxo_apply_batch_commit.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_repair_coin_backfill.h"
