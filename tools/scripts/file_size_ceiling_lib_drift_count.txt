@@ -38,4 +38,18 @@
 # grew 846 -> 883 for the binary-downgrade schema-marker refusal
 # (consensus_db_schema_is_downgrade / consensus_db_finalize_flip). Reviewed
 # and accepted; re-baselined in file_size_ceiling_lib_baseline.txt.
-15
+#
+# Paydown 2026-07-19 (later still) to 14: msgprocessor_snapshot.c (2676
+# lines, the fastest-drifting file, +224 over its 2452 baseline) split by
+# responsibility — the SERVE side (cached offer/manifest/block-manifest
+# publish+accessor APIs, the zchunkreq/zblkreq client-puzzle PoW guard,
+# send_snapshot_offer_msg/push_manifest/push_block_manifest/
+# build_block_piece_payloads, and the per-command serve handlers the
+# mp_handle_zcl23_sync dispatcher calls into) moved to the new
+# lib/net/src/msgprocessor_snapshot_serve.c, mirroring the connman.c/
+# connman_dialer.c split shape. msgprocessor_snapshot.c is back under its
+# (retightened) baseline of 1666, removing it from the grown-past-baseline
+# list; msgprocessor_snapshot_serve.c is freshly baselined at its own
+# starting size (1108) so future growth on IT becomes visible the same way.
+# Net: one real paydown against the J2 raise, 15 -> 14.
+14
