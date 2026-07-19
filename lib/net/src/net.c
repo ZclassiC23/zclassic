@@ -147,6 +147,25 @@ bool net_send_over_budget(const struct p2p_node *node)
     return atomic_load(&g_send_total_bytes) >= send_total_bytes_cap();
 }
 
+/* Realloc-failure counters for the two silent-drop growth sites further
+ * down this file: p2p_node_push_address()'s addr_to_send buffer and
+ * ban_addr_ex()'s ban list. Both used to `return;` on OOM with no log and
+ * no counter — a dropped gossip address or (worse) a peer that should be
+ * banned but silently isn't. Atomic so either site can bump from any
+ * thread without a new lock. */
+static _Atomic uint64_t g_net_addr_push_alloc_fail = 0;
+static _Atomic uint64_t g_net_ban_alloc_fail = 0;
+
+uint64_t net_addr_push_alloc_fail_count(void)
+{
+    return atomic_load(&g_net_addr_push_alloc_fail);
+}
+
+uint64_t net_ban_alloc_fail_count(void)
+{
+    return atomic_load(&g_net_ban_alloc_fail);
+}
+
 size_t net_send_peer_bytes_cap(void)
 {
     size_t cap = 32 * 1024 * 1024; /* 32 MiB per peer default */
@@ -588,7 +607,14 @@ void p2p_node_push_address(struct p2p_node *node, const struct net_address *addr
             size_t newcap = node->addr_to_send_cap ? node->addr_to_send_cap * 2 : 64;
             struct net_address *tmp = zcl_realloc(node->addr_to_send,
                                                newcap * sizeof(*tmp), "addr_to_send");
-            if (!tmp) return;
+            if (!tmp) {
+                atomic_fetch_add(&g_net_addr_push_alloc_fail, 1);
+                LOG_ERROR("net",
+                          "p2p_node_push_address: addr_to_send realloc(%zu) "
+                          "failed for peer=%s — address dropped",
+                          newcap * sizeof(*tmp), node->addr_name);
+                return;
+            }
             node->addr_to_send = tmp;
             node->addr_to_send_cap = newcap;
         }
@@ -1118,7 +1144,15 @@ static void ban_addr_ex(struct net_manager *nm, const struct net_addr *addr,
     if (nm->num_banned >= nm->banned_cap) {
         size_t newcap = nm->banned_cap ? nm->banned_cap * 2 : 64;
         struct ban_entry *tmp = zcl_realloc(nm->banned, newcap * sizeof(*tmp), "ban_list");
-        if (!tmp) { zcl_mutex_unlock(&nm->cs_banned); return; }
+        if (!tmp) {
+            zcl_mutex_unlock(&nm->cs_banned);
+            atomic_fetch_add(&g_net_ban_alloc_fail, 1);
+            LOG_ERROR("net",
+                      "ban_addr_ex: ban_list realloc(%zu) failed — peer "
+                      "NOT recorded as banned (reason=%s)",
+                      newcap * sizeof(*tmp), reason ? reason : "");
+            return;
+        }
         nm->banned = tmp;
         nm->banned_cap = newcap;
     }

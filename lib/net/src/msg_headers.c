@@ -72,6 +72,22 @@ static bool getheaders_suppress_rising_edge(_Atomic bool *streak)
     return !atomic_exchange(streak, true);
 }
 
+/* Sibling silent-drop sites, same file, same defect class as the pair
+ * above: each used to `return;` / `return true;` with zero counter and
+ * zero log while a snapshot exchange owned the wire (or, for the
+ * locator-alloc case, on allocation failure). Counted + rising-edge
+ * logged for the same reason — a stall must always name a blocker,
+ * never go quiet. Surfaced via msg_headers_get_stats(). */
+static _Atomic uint64_t g_headers_recv_suppressed_snapshot = 0;
+static _Atomic bool g_headers_recv_snapshot_streak = false;
+static _Atomic uint64_t g_push_getheaders_suppressed_snapshot = 0;
+static _Atomic bool g_push_getheaders_snapshot_streak = false;
+static _Atomic uint64_t g_push_getheaders_span_suppressed_snapshot = 0;
+static _Atomic bool g_push_getheaders_span_snapshot_streak = false;
+static _Atomic uint64_t g_push_getheaders_span_alloc_fail = 0;
+static _Atomic uint64_t g_getheaders_deferred_snapshot_serving = 0;
+static _Atomic bool g_getheaders_deferred_streak = false;
+
 /* Per-peer header advancement tracking (simplified: tracks last peer). */
 static _Atomic int g_last_header_tip_height = 0;
 
@@ -400,16 +416,33 @@ void msg_headers_get_stats(struct msg_headers_stats *out)
         atomic_load(&g_getheaders_suppressed_no_hash);
     out->getheaders_suppressed_snapshot =
         atomic_load(&g_getheaders_suppressed_snapshot);
+    out->headers_recv_suppressed_snapshot =
+        atomic_load(&g_headers_recv_suppressed_snapshot);
+    out->push_getheaders_suppressed_snapshot =
+        atomic_load(&g_push_getheaders_suppressed_snapshot);
+    out->push_getheaders_span_suppressed_snapshot =
+        atomic_load(&g_push_getheaders_span_suppressed_snapshot);
+    out->push_getheaders_span_alloc_fail =
+        atomic_load(&g_push_getheaders_span_alloc_fail);
+    out->getheaders_deferred_snapshot_serving =
+        atomic_load(&g_getheaders_deferred_snapshot_serving);
 }
 
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s)
 {
     if (node->state == PEER_SNAPSHOT_SERVING || node->swarm_manifest_sent) {
-        printf("Peer %s: deferring getheaders while serving snapshot\n",
-               node->addr_name);
+        uint64_t n =
+            atomic_fetch_add(&g_getheaders_deferred_snapshot_serving, 1) + 1;
+        if (getheaders_suppress_rising_edge(&g_getheaders_deferred_streak))
+            LOG_WARN("headers",
+                     "process_getheaders: deferring getheaders from %s — "
+                     "peer snapshot serving in progress "
+                     "(deferred_snapshot_serving=%llu)",
+                     node->addr_name, (unsigned long long)n);
         return true;
     }
+    atomic_store(&g_getheaders_deferred_streak, false);
 
     struct block_locator locator;
     block_locator_init(&locator);
@@ -493,9 +526,22 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 {
     /* Defer header processing during any snapshot sync state — header parsing
      * and block index updates consume CPU and starve P2P reads.
-     * During NEGOTIATING: headers trigger getblocks which compete. */
-    if (msg_processor_snapshot_active(mp))
+     * During NEGOTIATING: headers trigger getblocks which compete. This is
+     * the receive-side twin of the push_getheaders_from() snapshot guard
+     * above: a real, intentional pause, but never a silent one — count it
+     * and name it so an exchange that latches active announces itself
+     * instead of the inbound headers stream just going quiet. */
+    if (msg_processor_snapshot_active(mp)) {
+        uint64_t n =
+            atomic_fetch_add(&g_headers_recv_suppressed_snapshot, 1) + 1;
+        if (getheaders_suppress_rising_edge(&g_headers_recv_snapshot_streak))
+            LOG_WARN("headers",
+                     "process_headers: inbound headers from %s DROPPED — "
+                     "active snapshot sync (suppressed_recv_snapshot=%llu)",
+                     node->addr_name, (unsigned long long)n);
         return true;
+    }
+    atomic_store(&g_headers_recv_snapshot_streak, false);
 
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
@@ -1158,8 +1204,17 @@ void push_getheaders_from(struct msg_processor *mp,
 
 void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    if (msg_processor_snapshot_active(mp))
+    if (msg_processor_snapshot_active(mp)) {
+        uint64_t n =
+            atomic_fetch_add(&g_push_getheaders_suppressed_snapshot, 1) + 1;
+        if (getheaders_suppress_rising_edge(&g_push_getheaders_snapshot_streak))
+            LOG_WARN("headers",
+                     "push_getheaders: request to %s SUPPRESSED by active "
+                     "snapshot sync (suppressed=%llu)",
+                     node->addr_name, (unsigned long long)n);
         return;
+    }
+    atomic_store(&g_push_getheaders_snapshot_streak, false);
 
     /* Use the active-chain locator, including recent ancestors. A locator
      * containing only tip+genesis makes a one-block local fork invisible to
@@ -1202,8 +1257,18 @@ void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
 {
     if (!mp || !node || !start_hash)
         return;
-    if (msg_processor_snapshot_active(mp))
+    if (msg_processor_snapshot_active(mp)) {
+        uint64_t n = atomic_fetch_add(
+            &g_push_getheaders_span_suppressed_snapshot, 1) + 1;
+        if (getheaders_suppress_rising_edge(
+                &g_push_getheaders_span_snapshot_streak))
+            LOG_WARN("headers",
+                     "push_getheaders_span: span request to %s SUPPRESSED "
+                     "by active snapshot sync (suppressed=%llu)",
+                     node->addr_name, (unsigned long long)n);
         return;
+    }
+    atomic_store(&g_push_getheaders_span_snapshot_streak, false);
 
     /* Minimal locator: [start_hash, genesis]. start_hash is a compiled
      * checkpoint (or our own frontier) so any honest full peer holds it
@@ -1212,8 +1277,14 @@ void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
     struct block_locator loc;
     block_locator_init(&loc);
     loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "hrs_span_locator");
-    if (!loc.vhave)
+    if (!loc.vhave) {
+        atomic_fetch_add(&g_push_getheaders_span_alloc_fail, 1);
+        LOG_ERROR("headers",
+                  "push_getheaders_span: locator alloc failed for %s — "
+                  "span header request dropped",
+                  node->addr_name);
         return;
+    }
     loc.vhave[0] = *start_hash;
     loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
     loc.num_hashes = 2;

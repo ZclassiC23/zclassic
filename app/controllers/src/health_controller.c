@@ -657,6 +657,16 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
                          (int64_t)hs.getheaders_suppressed_no_hash);
         json_push_kv_int(&hdr, "getheaders_suppressed_snapshot",
                          (int64_t)hs.getheaders_suppressed_snapshot);
+        json_push_kv_int(&hdr, "headers_recv_suppressed_snapshot",
+                         (int64_t)hs.headers_recv_suppressed_snapshot);
+        json_push_kv_int(&hdr, "push_getheaders_suppressed_snapshot",
+                         (int64_t)hs.push_getheaders_suppressed_snapshot);
+        json_push_kv_int(&hdr, "push_getheaders_span_suppressed_snapshot",
+                         (int64_t)hs.push_getheaders_span_suppressed_snapshot);
+        json_push_kv_int(&hdr, "push_getheaders_span_alloc_fail",
+                         (int64_t)hs.push_getheaders_span_alloc_fail);
+        json_push_kv_int(&hdr, "getheaders_deferred_snapshot_serving",
+                         (int64_t)hs.getheaders_deferred_snapshot_serving);
         json_push_kv(result, "headers", &hdr);
         json_free(&hdr);
     }
