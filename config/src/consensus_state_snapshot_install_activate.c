@@ -44,6 +44,26 @@
 
 #define ACTIVATE_SUBSYS "consensus_bundle_activate"
 
+/* Reuse the content-verify heartbeat primitive for the multi-minute activate
+ * phases so a long install is never silent (VALIDATE_SUBSYS aliases here). */
+#define VALIDATE_SUBSYS ACTIVATE_SUBSYS
+#include "consensus_state_bundle_validate_heartbeat.h"
+
+/* Compact per-phase progress lines for the multi-minute activate verify phases
+ * (never-silent doctrine): begin names the phase in flight, done reports
+ * elapsed. Paired via the returned start time. */
+static int64_t activate_phase_begin(const char *phase, uint64_t count)
+{
+    LOG_INFO(ACTIVATE_SUBSYS, "activate verify: phase=%s begin count=%llu",
+             phase, (unsigned long long)count);
+    return GetTimeMicros();
+}
+static void activate_phase_done(const char *phase, int64_t started_us)
+{
+    LOG_INFO(ACTIVATE_SUBSYS, "activate verify: phase=%s ok elapsed=%.0fs",
+             phase, (double)(GetTimeMicros() - started_us) / 1000000.0);
+}
+
 #ifdef ZCL_TESTING
 static void (*g_activate_after_stream_hook)(void *) = NULL;
 static void *g_activate_after_stream_hook_ctx = NULL;
@@ -199,15 +219,19 @@ static bool activate_bind_column(sqlite3_stmt *dst, int dst_col,
  * order of either store is irrelevant. */
 static bool activate_stream_copy(sqlite3 *src, sqlite3 *dst,
                                  const char *select_sql, const char *insert_sql,
-                                 int columns, uint64_t *rows_out)
+                                 int columns, const char *stage,
+                                 uint64_t expected_total, uint64_t *rows_out)
 {
     sqlite3_stmt *read = NULL;
     sqlite3_stmt *write = NULL;
     bool ok = sqlite3_prepare_v2(src, select_sql, -1, &read, NULL) == SQLITE_OK &&
               sqlite3_prepare_v2(dst, insert_sql, -1, &write, NULL) == SQLITE_OK;
     uint64_t rows = 0;
+    struct validate_heartbeat hb;
+    heartbeat_begin(&hb, stage, expected_total);
     int rc = SQLITE_ERROR;
     while (ok && (rc = sqlite3_step(read)) == SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        heartbeat_tick(&hb, rows);
         ok = sqlite3_reset(write) == SQLITE_OK &&
              sqlite3_clear_bindings(write) == SQLITE_OK;
         for (int i = 0; ok && i < columns; i++)
@@ -616,7 +640,8 @@ static bool activate_apply_in_tx(
             "SELECT txid,vout,value,height,is_coinbase,script "
             "FROM coins ORDER BY txid,vout",
             "INSERT INTO coins(txid,vout,value,height,is_coinbase,script) "
-            "VALUES(?,?,?,?,?,?)", 6, &coins) ||
+            "VALUES(?,?,?,?,?,?)", 6, "activate_stream_coins",
+            m->utxo_count, &coins) ||
         coins != m->utxo_count)
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "coin stream count mismatch (%llu want %llu)",
@@ -625,11 +650,11 @@ static bool activate_apply_in_tx(
     if (!activate_stream_copy(bundle_db, progress_db,
             "SELECT anchor,height,tree FROM anchors WHERE pool=0 ORDER BY anchor",
             "INSERT INTO sprout_anchors(anchor,height,tree) VALUES(?,?,?)",
-            3, &sprout) ||
+            3, "activate_stream_sprout_anchors", 0, &sprout) ||
         !activate_stream_copy(bundle_db, progress_db,
             "SELECT anchor,height,tree FROM anchors WHERE pool=1 ORDER BY anchor",
             "INSERT INTO sapling_anchors(anchor,height,tree) VALUES(?,?,?)",
-            3, &sapling) ||
+            3, "activate_stream_sapling_anchors", 0, &sapling) ||
         sprout > UINT64_MAX - sapling ||
         sprout + sapling != m->anchor_count)
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
@@ -638,7 +663,8 @@ static bool activate_apply_in_tx(
                              (unsigned long long)m->anchor_count);
     if (!activate_stream_copy(bundle_db, progress_db,
             "SELECT nf,pool,height FROM nullifiers ORDER BY pool,nf",
-            "INSERT INTO nullifiers(nf,pool,height) VALUES(?,?,?)", 3, &nfs) ||
+            "INSERT INTO nullifiers(nf,pool,height) VALUES(?,?,?)", 3,
+            "activate_stream_nullifiers", m->nullifier_count, &nfs) ||
         nfs != m->nullifier_count)
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "nullifier stream count mismatch (%llu want %llu)",
@@ -700,6 +726,10 @@ static bool activate_verify_destination(
     const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_activate_result *result)
 {
+    /* Each re-verify phase can be multi-minute on a full bundle; name every one
+     * so the phase in flight is never silent (anchors is now tip-Pedersen +
+     * byte-floor, no longer a full re-fold). */
+    int64_t t = activate_phase_begin("dest_coins", manifest->utxo_count);
     uint8_t got_root[32] = {0};
     int64_t got_count = coins_kv_count(progress_db);
     if (coins_kv_commitment(progress_db, got_root) != 0 ||
@@ -710,18 +740,23 @@ static bool activate_verify_destination(
                              "parity (count=%lld want=%llu)",
                              (long long)got_count,
                              (unsigned long long)manifest->utxo_count);
+    activate_phase_done("dest_coins", t);
 
+    t = activate_phase_begin("dest_anchors", manifest->anchor_count);
     if (!consensus_state_snapshot_destination_anchors_valid(progress_db,
                                                              manifest))
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "installed destination failed anchor digest/"
                              "frontier parity");
+    activate_phase_done("dest_anchors", t);
 
+    t = activate_phase_begin("dest_nullifiers", manifest->nullifier_count);
     if (!consensus_state_snapshot_destination_nullifiers_valid(progress_db,
                                                                 manifest))
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "installed destination failed nullifier digest/"
                              "count parity");
+    activate_phase_done("dest_nullifiers", t);
     return true;
 }
 
@@ -795,6 +830,8 @@ static bool activate_verify_terminal_in_tx(
     const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_activate_result *result)
 {
+    int64_t t = activate_phase_begin("terminal_frontier",
+                                     (uint64_t)manifest->height);
     int32_t hstar = -1;
     int32_t served = -1;
     int32_t applied = -1;
@@ -836,6 +873,7 @@ static bool activate_verify_terminal_in_tx(
     }
     result->hstar = hstar;
     result->coins_applied_height = applied;
+    activate_phase_done("terminal_frontier", t);
     return true;
 }
 
