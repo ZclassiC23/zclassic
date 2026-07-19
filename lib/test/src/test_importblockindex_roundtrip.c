@@ -222,7 +222,7 @@ int test_importblockindex_roundtrip(void)
 
     /* ==================================================================
      * Scenario A — header_only=true: the LITERAL --importblockindex CLI
-     * dispatch shape (src/main.c:2552). Positions must be force-zeroed
+     * dispatch shape (importblockindex_cli_mode, src/main_cli_modes.c:3083). Positions must be force-zeroed
      * (never leaked/garbled from the source), HAVE_DATA/HAVE_UNDO cleared.
      * ================================================================== */
     {
