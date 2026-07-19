@@ -16,6 +16,8 @@
 #include "storage/projection_store.h"
 #include "storage/progress_store.h"
 
+#include "sqlite_integrity_gate.h"
+#include "event/event.h"
 #include "json/json.h"
 #include "util/hw_profile.h"
 #include "util/log_macros.h"
@@ -154,6 +156,61 @@ bool projection_store_open(const char *datadir)
         (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
         return false;
+    }
+
+    /* Integrity gate. progress.kv's projection tables (address_index / txindex
+     * / created_outputs and kin) are fully rebuildable, but a corrupt file
+     * left in place would otherwise surface as a mid-fold SQLITE_CORRUPT deep
+     * inside a projection job — a JOB_FATAL with no named blocker. On a
+     * non-"ok" quick_check, quarantine the file aside and reopen a FRESH one;
+     * whichever projection job runs next re-creates its schema (CREATE TABLE
+     * IF NOT EXISTS) and re-derives its rows from the kernel, same as a
+     * brand-new node. AUTO-TERMINATING + idempotent: a fresh, just-created
+     * store that ALSO fails quick_check is a disk/fs fault, not corrupt
+     * derived state — fail the open instead of quarantine-looping. */
+    if (!sqlite_integrity_quick_check_ok(db, "projection_store")) {
+        fprintf(stderr,  // obs-ok:projection-store-open-failure
+                "[projection_store] %s failed integrity quick_check; "
+                "quarantining + re-deriving\n", path);
+        sqlite3_close(db);
+        db = NULL;
+        sqlite_integrity_quarantine_corrupt(path, "projection_store",
+                                            "projection_store_quarantine");
+
+        rc = sqlite3_open_v2(path, &db,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr,  // obs-ok:projection-store-open-failure
+                    "[projection_store] reopen after quarantine of %s failed: "
+                    "%s — disk/fs fault\n",
+                    path, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+            if (db) sqlite3_close(db);
+            (void)close(opened_dir_fd);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=projection_store_reopen_failed "
+                        "reason=disk_fault path=%s", path);
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
+        if (!sqlite_integrity_quick_check_ok(db, "projection_store")) {
+            /* A freshly-created, empty DB that fails quick_check cannot be
+             * derived-state corruption — the underlying storage is broken.
+             * Do NOT quarantine again (that would loop); fail terminally. */
+            fprintf(stderr,  // obs-ok:projection-store-open-failure
+                    "[projection_store] FRESH %s still fails quick_check — "
+                    "terminal disk/fs fault, refusing to loop\n", path);
+            sqlite3_close(db);
+            (void)close(opened_dir_fd);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=projection_store_fresh_corrupt "
+                        "reason=disk_fault path=%s", path);
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:projection-store-lifecycle
+                "[projection_store] fresh %s opened after quarantine "
+                "(projections re-derive on next fold)\n", path);
     }
 
     if (!apply_pragmas(db)) {
