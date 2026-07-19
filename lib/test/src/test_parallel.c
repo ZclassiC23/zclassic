@@ -146,7 +146,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
     X(coin_selection) X(disk_monitor) X(binary_staleness) X(binary_ab_fallback) X(network_monitor) X(network_crawler) X(db_maintenance) \
     X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(ibd_throttle) \
-    X(consensus_reject_events) X(consensus_reject_index) \
+    X(consensus_reject_events) X(consensus_reject_index) X(blocker_history) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(sprout_phgr13_kat) \
     X(rescanwitnesses_diverge_guard) \

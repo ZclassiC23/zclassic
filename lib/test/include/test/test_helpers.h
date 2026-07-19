@@ -434,6 +434,7 @@ int test_anchor_peers(void);
 int test_ibd_throttle(void);
 int test_consensus_reject_events(void);
 int test_consensus_reject_index(void);
+int test_blocker_history(void);
 int test_chain_rollback(void);
 int test_alerts(void);
 int test_ws_events(void);

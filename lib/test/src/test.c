@@ -1265,6 +1265,7 @@ int main(int argc, char **argv)
     failures += test_ibd_throttle();
     failures += test_consensus_reject_events();
     failures += test_consensus_reject_index();
+    failures += test_blocker_history();
     failures += test_chain_rollback();
     failures += test_alerts();
     failures += test_ws_events();

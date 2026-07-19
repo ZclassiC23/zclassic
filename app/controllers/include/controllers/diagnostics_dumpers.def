@@ -25,6 +25,14 @@
                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
                    "deadlines, escape actions, fire counts",
                    "lib/util/src/blocker.c", DIAG_TEST_DEFAULT),
+    DIAG_CONDITION("blocker_history", blocker_history_dump_state_json,
+                   "durable blocker/condition firing history over EV_OPERATOR_NEEDED "
+                   "pages, bridged into the durable event log and folded incrementally: "
+                   "total_events, unparsed_events, overflow_dropped, distinct_ids, "
+                   "capacity, and top {id, fire_count, first_seen_unix, last_seen_unix, "
+                   "last_reason} sorted by fire_count descending (key = max rows, default 10)",
+                   "app/services/src/blocker_history.c",
+                   "lib/test/src/test_blocker_history.c"),
     DIAG_CONDITION("watchdog", condition_engine_dump_state_json,
                    "compat alias for condition_engine status",
                    "lib/framework/src/condition.c",

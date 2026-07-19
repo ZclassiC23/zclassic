@@ -41,6 +41,7 @@
 #include "supervisors/chain_supervisor.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "services/node_health_service.h"
+#include "services/blocker_history.h"
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
 #include "util/alerts.h"
@@ -446,6 +447,12 @@ static void boot_register_core_liveness_and_reducer(
      * halt that exhausts remedies reaches an operator and the health
      * surface instead of dead-ending. */
     alerts_init();
+    /* Durable blocker-firing-history bridge: mirrors every EV_OPERATOR_NEEDED
+     * page into the durable event log (EV_OPERATOR_ALERT) so `zclassic23
+     * dumpstate blocker_history` survives restart. Registered right after
+     * alerts_init() for the same reason — BEFORE the condition engine can
+     * fire. */
+    blocker_history_bridge_register();
     self_heal_register(svc->state);
     staged_sync_supervisor_register(svc->state);
 
