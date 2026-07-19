@@ -1373,9 +1373,9 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 /* nothing to finalize */
             } else {
                 struct snapsync_end_result end_result = {0};
-                bool verified = snapsync_handle_end(svc,
-                                                    (uint32_t)node->id).ok;
-                snapsync_build_end_result(&end_result, verified);
+                struct zcl_result end_res = snapsync_handle_end(svc,
+                                                    (uint32_t)node->id);
+                snapsync_build_end_result(&end_result, end_res.ok);
                 if (end_result.verified) {
                 if (end_result.should_update_peer_state) {
                     peer_set_state_checked((uint32_t)node->id, &node->state,
@@ -1413,6 +1413,18 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     sync_set_state(end_result.sync_state,
                         "snapshot verified, sync remaining headers");
                 }
+                } else if (end_res.code == SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE) {
+                /* Honest transfer: SHA3 verification PASSED, but runtime
+                 * activation is deliberately fail-closed on OUR side until
+                 * a unified canonical installer exists (snapshot_apply.c's
+                 * snapsync_activation_contained: "continue_normal_p2p_sync
+                 * _or_upgrade"). This is not a peer fault — no offence, no
+                 * ban. Snapshot sync is simply unavailable this cycle; the
+                 * node falls back to ordinary P2P header/block sync. */
+                LOG_INFO("net",
+                    "Peer %s: snapshot verified but activation contained "
+                    "(%s) — not a peer fault, continuing normal P2P sync",
+                    node->addr_name, end_res.message);
                 } else {
                 peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
                     "snapshot SHA3 verification failed");
