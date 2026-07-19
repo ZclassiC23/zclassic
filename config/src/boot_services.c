@@ -1391,13 +1391,11 @@ bool app_init_services(struct app_context *ctx,
     atomic_store(svc->running, true);
 
     /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,
-     * oracle, rolling_anchor, ...) are ZCL_SERVICE_OPTIONAL, and the
-     * reducer/coordinator drives the authoritative chain-advance independently,
-     * so a runtime-start failure does not stall consensus. Serve DEGRADED and
-     * continue rather than crash-loop; LOUD via stderr + structured event. The
-     * sync-monitor self-heal loop re-raises to SYNCING/HEALTHY once services
-     * recover. Refresh-only if already DEGRADED (don't clobber a frontend
-     * reason with a less-specific one beyond the same state). */
+     * oracle, rolling_anchor, ...) are ZCL_SERVICE_OPTIONAL and the
+     * reducer/coordinator drives chain-advance independently, so a runtime-start
+     * failure does not stall consensus. Serve DEGRADED + continue (LOUD via
+     * stderr + event); the sync-monitor self-heal re-raises to SYNCING/HEALTHY.
+     * Refresh-only if already DEGRADED (don't clobber a frontend reason). */
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
         fprintf(stderr,
@@ -1410,6 +1408,8 @@ bool app_init_services(struct app_context *ctx,
                                   "runtime_services_unavailable");
     }
 
+    /* K3: block-body read-ahead worker; no-op unless -prefetch-blocks. */
+    boot_block_prefetch_start(ctx, svc->state);
     {
         struct block_index *tip = active_chain_tip(&svc->state->chain_active);
         int h = tip ? tip->nHeight : 0;

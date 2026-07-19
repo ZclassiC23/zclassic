@@ -206,6 +206,14 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
 
+/* K3 block-body read-ahead worker wiring (config/src/boot_block_prefetch.c).
+ * start is a no-op unless ctx->prefetch_blocks (-prefetch-blocks); stop is
+ * idempotent + safe without a prior start. */
+struct main_state;
+void boot_block_prefetch_start(const struct app_context *ctx,
+                               struct main_state *ms);
+void boot_block_prefetch_stop(void);
+
 /* ── boot_services.c accessors shared with boot_background_workers.c ──
  * The background-worker unit (config/src/boot_background_workers.c) was lifted
  * out of boot_services.c but its worker bodies still reach the boot context

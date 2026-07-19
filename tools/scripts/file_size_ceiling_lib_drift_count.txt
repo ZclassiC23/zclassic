@@ -52,4 +52,11 @@
 # list; msgprocessor_snapshot_serve.c is freshly baselined at its own
 # starting size (1108) so future growth on IT becomes visible the same way.
 # Net: one real paydown against the J2 raise, 15 -> 14.
-14
+#
+# 2026-07-19 (K3 throughput levers): src/main.c grew past its recorded 4612
+# baseline (+6 lines) to register two new default-OFF CLI flags,
+# -prefetch-blocks and -derive-drain-batch. main.c is the drift-tier monolith
+# already tracked here; this is one reviewed +6-line flag registration, not a
+# new oversized file. Ratchet raised 14 -> 15 to cover it (stays WARN-only
+# per-file; the baseline entry is NOT raised).
+15

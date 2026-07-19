@@ -354,6 +354,59 @@ int hw_profile_script_batch_cap(int64_t ram_bytes)
     return 0; /* unlimited */
 }
 
+/* +1x baseline per this many GiB of RAM; cores cap the same multiplier at
+ * 1x per 4 physical cores; overall ceiling 8x baseline; floor = baseline. */
+#define HW_PROFILE_DRAIN_BATCH_RAM_PER_MULT_GIB 16
+#define HW_PROFILE_DRAIN_BATCH_MAX_MULT         8
+#define HW_PROFILE_DRAIN_BATCH_MIN_CORES        4
+#define HW_PROFILE_DRAIN_BATCH_CORES_PER_MULT   4
+
+int hw_profile_drain_batch(int64_t ram_bytes, int physical_cores, int baseline)
+{
+    if (baseline < 1) baseline = 1;
+    if (ram_bytes <= 0 || physical_cores < HW_PROFILE_DRAIN_BATCH_MIN_CORES)
+        return baseline; /* floor — small/unknown host keeps the safe baseline */
+
+    int64_t ram_gib = ram_bytes / (1024LL * 1024 * 1024);
+    int64_t mult = 1 + ram_gib / HW_PROFILE_DRAIN_BATCH_RAM_PER_MULT_GIB;
+    if (mult > HW_PROFILE_DRAIN_BATCH_MAX_MULT)
+        mult = HW_PROFILE_DRAIN_BATCH_MAX_MULT;
+
+    /* Cores independently cap the multiplier (constant in ram_bytes, so the
+     * result stays monotone non-decreasing in RAM): don't hand a 4-core box an
+     * 8x batch just because it has a lot of RAM. */
+    int64_t core_cap = physical_cores / HW_PROFILE_DRAIN_BATCH_CORES_PER_MULT;
+    if (core_cap < 1) core_cap = 1;
+    if (mult > core_cap) mult = core_cap;
+
+    int64_t batch = (int64_t)baseline * mult;
+    if (batch < baseline) batch = baseline;
+    if (batch > (int64_t)baseline * HW_PROFILE_DRAIN_BATCH_MAX_MULT)
+        batch = (int64_t)baseline * HW_PROFILE_DRAIN_BATCH_MAX_MULT;
+    return (int)batch;
+}
+
+/* Runtime opt-in gate. Default OFF: the fold's drain cadence is unchanged. */
+static _Atomic bool g_derive_drain_batch = false;
+
+void hw_profile_set_derive_drain_batch(bool on)
+{
+    atomic_store(&g_derive_drain_batch, on);
+}
+
+bool hw_profile_derive_drain_batch_enabled(void)
+{
+    return atomic_load(&g_derive_drain_batch);
+}
+
+int hw_profile_drain_batch_effective(int baseline)
+{
+    if (!atomic_load(&g_derive_drain_batch))
+        return baseline; /* lever OFF (default): compiled baseline, no change */
+    return hw_profile_drain_batch(hw_profile_ram_bytes(),
+                                  hw_profile_physical_cores(), baseline);
+}
+
 /* ── Reducer pinning ───────────────────────────────────────────────── */
 
 bool hw_profile_pin_reducer_thread(pthread_t thread)
@@ -473,6 +526,14 @@ bool hw_profile_dump_state_json(struct json_value *out, const char *key)
                      hw_profile_sqlite_cache_kib(g_state.ram_bytes, 0, 0));
     json_push_kv_int(&derived, "sqlite_progress_db_mmap_bytes",
                      hw_profile_sqlite_mmap_bytes(g_state.ram_bytes, 0, 0));
+    json_push_kv_bool(&derived, "derive_drain_batch_enabled",
+                      hw_profile_derive_drain_batch_enabled());
+    json_push_kv_int(&derived, "reducer_drain_batch_1000",
+                     hw_profile_drain_batch(g_state.ram_bytes,
+                                            g_state.physical_cores, 1000));
+    json_push_kv_int(&derived, "header_drain_batch_100",
+                     hw_profile_drain_batch(g_state.ram_bytes,
+                                            g_state.physical_cores, 100));
     json_push_kv(out, "derived", &derived);
     json_free(&derived);
 

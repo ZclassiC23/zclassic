@@ -326,6 +326,16 @@ struct app_context {
                                  * loads an unverified/mismatched set; NEVER silently
                                  * re-folds from genesis. Default false → a normal
                                  * boot runs its current path exactly. */
+    bool prefetch_blocks;      /* -prefetch-blocks : start the bounded, supervised
+                                 * block-body read-ahead worker (lib/storage/
+                                 * block_prefetch.c) alongside runtime services, so
+                                 * the NEXT fold window's cold blk*.dat reads overlap
+                                 * the CURRENT batch's fold. FAIL-SAFE: the fold never
+                                 * waits on it; a dead/failed worker degrades to cold
+                                 * reads. Default false (measured throughput lever —
+                                 * see docs; page-cache warm only helps when the FS
+                                 * can evict, so a ramdisk sandbox cannot show the
+                                 * win). K3. */
 };
 
 void app_context_defaults(struct app_context *ctx);
