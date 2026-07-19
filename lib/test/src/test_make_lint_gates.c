@@ -5306,6 +5306,35 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
                          "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
+        /* P1 split (pure code motion): the CLI client + run-and-exit modes
+         * moved from src/main.c to src/main_cli_modes.c, and the flag ladder +
+         * usage text to config/src/args.c. This "node entry point exposes the
+         * agent surface" contract now spans all three node-entry/args sources,
+         * so concatenate them into main_buf — the assertions below assert the
+         * combined surface, exactly as they did when it all lived in main.c. */
+        {
+            char main_cli_modes_path[PATH_MAX];
+            char args_path[PATH_MAX];
+            char *main_cli_modes_buf = NULL;
+            char *args_buf = NULL;
+            ASSERT(repo_path(main_cli_modes_path, sizeof(main_cli_modes_path),
+                             "src/main_cli_modes.c") == 0);
+            ASSERT(repo_path(args_path, sizeof(args_path),
+                             "config/src/args.c") == 0);
+            ASSERT(read_entire_file(main_cli_modes_path, &main_cli_modes_buf)
+                   == 0);
+            ASSERT(read_entire_file(args_path, &args_buf) == 0);
+            size_t combined_len = strlen(main_buf) + strlen(main_cli_modes_buf)
+                                + strlen(args_buf) + 1;
+            char *combined = malloc(combined_len);
+            ASSERT(combined != NULL);
+            snprintf(combined, combined_len, "%s%s%s", main_buf,
+                     main_cli_modes_buf, args_buf);
+            free(main_buf);
+            free(main_cli_modes_buf);
+            free(args_buf);
+            main_buf = combined;
+        }
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(read_entire_file(agent_summary_path, &agent_summary_buf) == 0);
         ASSERT(read_entire_file(agent_summary_json_path,
