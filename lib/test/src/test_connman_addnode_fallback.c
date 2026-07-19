@@ -870,6 +870,11 @@ int test_connman_addnode_fallback(void)
         memset(&sigs, 0, sizeof(sigs));
         ok = ok && connman_init(&cm, params, &sigs);
 
+        /* num_listen_sockets is only claimed synthetically here (no real
+         * sockets were bound into cm.manager.listen_sockets, whose backing
+         * array is sized far below REACTOR_MAX_FDS) — reset it to 0 before
+         * connman_free() so its listen-socket teardown loop doesn't walk
+         * past the real (tiny) allocation. */
         cm.manager.num_listen_sockets = REACTOR_MAX_FDS;
         cm.manager.max_connections = 1;
 
@@ -881,6 +886,7 @@ int test_connman_addnode_fallback(void)
         /* Never partially started: no P2P thread should be live to join. */
         ok = ok && !cm.started;
 
+        cm.manager.num_listen_sockets = 0;
         connman_free(&cm);
         blocker_reset_for_testing();
         if (ok) printf("OK\n");
