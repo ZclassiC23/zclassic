@@ -37,6 +37,9 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+/* Snapshot-active stub for the push_getheaders_from suppression cases. */
+static bool ph_snapshot_active_true(void *ctx) { (void)ctx; return true; }
+
 /* Non-localhost peer (is_trusted_peer matches the IPv4-mapped 127/8
  * prefix at ip[10..12]; use 1.2.3.4) so peer_misbehaving scores it. */
 static void ph_setup_node(struct p2p_node *node)
@@ -331,6 +334,53 @@ int test_process_headers_adversarial(void)
             active_chain_register_authority(&none);
             active_chain_register_block_map(NULL);
         }
+    }
+
+    /* ── 6. push_getheaders_from continuation-suppression must be LOUD +
+     *       COUNTED, never a silent header-sync stop (the header-continuation
+     *       wedge class). Uses a fresh EMPTY main_state so the null-hash
+     *       re-anchor finds no hashed frontier and returns after counting,
+     *       and the snapshot guard returns before touching the send path —
+     *       both stay off the node send mutex. */
+    {
+        struct main_state ms2;
+        main_state_init(&ms2);
+        struct msg_processor mp2;
+        msg_processor_init(&mp2, &ms2, NULL, NULL, cp, dir, &g_ph_nm, NULL);
+
+        /* (a) null-hash anchor: counted no-hash suppression (pre-fix this
+         *     was a silent `return;` that killed the continuation). */
+        {
+            struct block_index ghost;
+            memset(&ghost, 0, sizeof(ghost));
+            ghost.nHeight = 5;
+            ghost.phashBlock = NULL;   /* stable hash slot never populated */
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            push_getheaders_from(&mp2, &node, &ghost);
+            msg_headers_get_stats(&b);
+            PH_CHECK("null-hash anchor: counted (no silent continuation drop)",
+                     b.getheaders_suppressed_no_hash ==
+                         a.getheaders_suppressed_no_hash + 1);
+        }
+
+        /* (b) active snapshot exchange: counted snapshot suppression (pre-fix
+         *     this was the silent latch that wedged header sync after one
+         *     in-flight batch). */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            msg_processor_set_snapshot_active(&mp2, ph_snapshot_active_true,
+                                              NULL);
+            push_getheaders_from(&mp2, &node, NULL);
+            msg_processor_set_snapshot_active(&mp2, NULL, NULL);
+            msg_headers_get_stats(&b);
+            PH_CHECK("snapshot active: counted getheaders suppression",
+                     b.getheaders_suppressed_snapshot ==
+                         a.getheaders_suppressed_snapshot + 1);
+        }
+
+        main_state_free(&ms2);
     }
 
     sync_set_state(sync0, "process_headers_adversarial restore");

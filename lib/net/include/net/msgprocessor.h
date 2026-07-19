@@ -376,6 +376,12 @@ struct msg_headers_stats {
     uint64_t total_rejected;
     uint64_t newly_added;
     uint64_t already_known;
+    /* push_getheaders_from() continuation-suppression counters — a
+     * non-zero, GROWING value names a silent-halt-turned-loud: either a
+     * null-hash anchor (re-anchored) or an active snapshot exchange that
+     * is pausing header sync. See msg_headers.c. */
+    uint64_t getheaders_suppressed_no_hash;
+    uint64_t getheaders_suppressed_snapshot;
 };
 
 void msg_headers_get_stats(struct msg_headers_stats *out);
