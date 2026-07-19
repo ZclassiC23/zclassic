@@ -3896,7 +3896,7 @@ slo-probe-selftest:
 # failover. install-standby installs the always-warm understudy unit; cutover
 # promotes a healthy candidate to canonical with a hard preflight + auto-
 # rollback. See deploy/zclassic23-standby.service and deploy/zclassic23-cutover.sh.
-.PHONY: install-standby cutover cutover-selftest
+.PHONY: install-standby cutover cutover-selftest migrate-role-names-selftest
 
 install-standby:
 	@install -d "$(HOME)/.config/systemd/user"
@@ -3929,6 +3929,22 @@ cutover-selftest:
 	 echo "$$out"; \
 	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^cutover-selftest: PASS"; then \
 	     echo "cutover-selftest: FAIL (rc=$$rc; no PASS line)"; \
+	     exit 1; \
+	 fi'
+
+# migrate-role-names-selftest: hermetic regression proof for
+# deploy/migrate-role-names.sh's "%h" specifier handling (see that script's
+# NAMING LAW header) — sandboxed $HOME, stubbed systemctl on PATH, no real
+# unit or datadir is ever touched. Guards the silent-orphan regression: an
+# earlier version extracted "-datadir=%h/..." from the old unit as a raw
+# string and used it unexpanded, so the rename check always no-opped while
+# the script still enabled/started the new unit against an empty datadir.
+migrate-role-names-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash deploy/migrate-role-names-selftest.sh 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^\[migrate-role-names-selftest\] ALL CHECKS PASSED"; then \
+	     echo "migrate-role-names-selftest: FAIL (rc=$$rc; no ALL CHECKS PASSED line)"; \
 	     exit 1; \
 	 fi'
 
