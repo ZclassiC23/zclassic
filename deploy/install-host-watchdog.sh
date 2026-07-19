@@ -4,6 +4,13 @@
 # deploy/zclassic23-host-watchdog.sh header for what it does. Requires
 # passwordless sudo (`sudo -n true`); refuses politely otherwise, never
 # prompts. Idempotent: safe to re-run.
+#
+# Manual operator tool — one-time root-level installer, intentionally no
+# in-repo caller. Invocation: `bash deploy/install-host-watchdog.sh` (see the
+# refusal branch below for the manual `install`/`systemctl` equivalent when
+# passwordless sudo isn't available). Owning runbook: this file's own header
+# plus deploy/zclassic23-host-watchdog.sh's header for what the watchdog does
+# once installed.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
