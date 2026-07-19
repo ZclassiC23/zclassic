@@ -148,13 +148,15 @@ static int test_backfill_ledger(void)
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
 
-    printf("zslp_ledger: open in-memory node.db (schema v32)... ");
+    printf("zslp_ledger: open in-memory node.db (schema v%d)... ",
+           NODE_DB_MAX_SCHEMA);
     if (node_db_open(&ndb, ":memory:") && ndb.open) printf("OK\n");
     else { printf("FAIL\n"); return 1; }
 
-    printf("zslp_ledger: schema_version is 32... ");
+    printf("zslp_ledger: schema_version is %d... ", NODE_DB_MAX_SCHEMA);
     { int v = node_db_schema_version(&ndb);
-      if (v == 32) printf("OK\n"); else { printf("FAIL (got %d)\n", v); failures++; } }
+      if (v == NODE_DB_MAX_SCHEMA) printf("OK\n");
+      else { printf("FAIL (got %d)\n", v); failures++; } }
 
     seed_fixture(&ndb);
 

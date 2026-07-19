@@ -21,17 +21,26 @@
 
 #include "controllers/diagnostics_internal.h"
 
+#include "config/runtime.h"
 #include "jobs/reducer_frontier.h"
+#include "models/parity_sample.h"
 #include "net/connman.h"
 #include "net/net.h"                 /* ZCL_PEER_FLOOR_HEALTHY */
 #include "services/sync_monitor.h"
 #include "storage/catalog_completeness.h"
 #include "storage/census_read.h"
 #include "platform/time_compat.h"
+#include "util/blocker.h"
 #include "json/json.h"
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+/* Named blocker raised by conditions/parity_slo_breach.c. Duplicated here
+ * (not a shared header) — same convention as every other typed-blocker-id
+ * literal read by a diagnostics dumper (e.g. diagnostics_block_index.c). */
+#define OMNISCIENCE_PARITY_SLO_BLOCKER_ID "consensus.parity_slo_breach"
 
 /* Census staleness bound: the crawler sweeps once per round
  * (NCRAWL_ROUND_INTERVAL_SECS_DEFAULT = 60s). A sweep older than 15 minutes
@@ -57,6 +66,51 @@ static int64_t omniscience_census_age_s(void)
     }
     census_read_close(r);
     return age;
+}
+
+/* Consensus-parity slice: the latest retained parity_samples row (see
+ * models/parity_sample.h) + the parity_slo_breach condition's current
+ * blocker state (app/conditions/src/parity_slo_breach.c). Read-only
+ * composition over already-shipped accessors, matching the rest of this
+ * dumper — no new state, no mutation. */
+static void omniscience_push_parity(struct json_value *out)
+{
+    struct json_value parity;
+    json_init(&parity);
+    json_set_object(&parity);
+
+    struct node_db *ndb = app_runtime_node_db();
+    struct db_parity_sample latest;
+    bool have_sample = ndb && ndb->open &&
+                       db_parity_sample_recent(ndb, &latest, 1) == 1;
+
+    json_push_kv_bool(&parity, "sample_available", have_sample);
+    if (have_sample) {
+        json_push_kv_int(&parity, "sample_ts", latest.ts);
+        json_push_kv_int(&parity, "our_height", latest.our_height);
+        json_push_kv_int(&parity, "oracle_height", latest.oracle_height);
+        json_push_kv_int(&parity, "heights_equal_at", latest.heights_equal_at);
+        json_push_kv_bool(&parity, "hash_equal", latest.hash_equal != 0);
+        json_push_kv_bool(&parity, "oracle_reachable",
+                          latest.oracle_reachable != 0);
+    }
+
+    bool breach = blocker_exists(OMNISCIENCE_PARITY_SLO_BLOCKER_ID);
+    json_push_kv_bool(&parity, "slo_breach", breach);
+    if (breach) {
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, OMNISCIENCE_PARITY_SLO_BLOCKER_ID) == 0) {
+                json_push_kv_str(&parity, "slo_breach_reason", snaps[i].reason);
+                json_push_kv_int(&parity, "slo_breach_age_us", snaps[i].age_us);
+                break;
+            }
+        }
+    }
+
+    (void)json_push_kv(out, "parity", &parity);
+    json_free(&parity);
 }
 
 bool omniscience_dump_state_json(struct json_value *out, const char *key)
@@ -114,6 +168,9 @@ bool omniscience_dump_state_json(struct json_value *out, const char *key)
 
     int64_t worst_lag = catalog_completeness_worst_lag(rows, n);
     json_push_kv_int(out, "worst_lag", worst_lag);
+
+    /* ── consensus parity (parity_slo_breach) ────────────────────────── */
+    omniscience_push_parity(out);
 
     /* ── the single-string verdict ───────────────────────────────────── */
     char verdict[96];

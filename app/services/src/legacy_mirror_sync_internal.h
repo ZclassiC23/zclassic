@@ -105,4 +105,11 @@ struct zcl_result lms_remote_hash_at(int height, char out_hex[65]);
 void lms_refresh_local_heights(int *out_local, int *out_header);
 struct zcl_result lms_request_catchup_result_internal(const char *reason);
 
+/* Trend-history write for one comparison outcome (parity_slo, see
+ * legacy_mirror_sync_parity_trend.c). Best-effort: a missing/unopened
+ * node.db is a silent no-op. `height` is the comparison height passed to
+ * lms_cache_comparison (-1 when no common height was available yet);
+ * `known`/`agree` mirror that call's own known/agree flags. */
+void lms_record_parity_sample(int height, bool known, bool agree);
+
 #endif /* ZCL_LEGACY_MIRROR_SYNC_INTERNAL_H */
