@@ -37,8 +37,10 @@
 #   --https-port=N    isolated HTTPS port (default 18935)
 #   --connect=ADDR    isolated -connect peer (default 127.0.0.1:39999 dead sink)
 #   --full            copy the WHOLE datadir incl. blocks/ + consensus_snapshot
-#                     (default is --light: node.db + progress.kv + block_index +
-#                     projections; skips the 14G blocks/ + 2.3G snapshot)
+#                     (default is --light: node.db + the kernel store
+#                     (consensus.db, or the legacy progress.kv on a pre-flip
+#                     datadir) + block_index + projections; skips the 14G
+#                     blocks/ + 2.3G snapshot)
 #   --like-live       DEPLOY GATE mode. Reconstruct the effective live systemd
 #                     ExecStart on the COPY: read the merged drop-in ExecStart +
 #                     Environment from the running `zclassic23` user unit
@@ -436,7 +438,8 @@ fi
 
 # Disk precheck: need ~110% of what we are about to copy.
 if [ "$LIGHT" = "1" ]; then
-    NEED_KB=$( { du -sk "$SRC/node.db" "$SRC/progress.kv" "$SRC/block_index.bin" 2>/dev/null; \
+    NEED_KB=$( { du -sk "$SRC/node.db" "$SRC/consensus.db" "$SRC/progress.kv" \
+                 "$SRC/block_index.bin" 2>/dev/null; \
                  du -sk "$SRC"/*_projection.db 2>/dev/null; } | awk '{s+=$1} END{print s+0}')
 else
     NEED_KB=$(du -sk "$SRC" 2>/dev/null | awk '{print $1}')
@@ -455,7 +458,12 @@ mkdir -p "$DEST"
 if [ "$LIGHT" = "1" ]; then
     # Copy the cursor/tip working set; SQLite -wal/-shm copied alongside each db
     # so the copy is self-consistent on open. Skip blocks/ (14G) + snapshot (2.3G).
-    for f in node.db node.db-wal node.db-shm progress.kv progress.kv-wal progress.kv-shm \
+    # consensus.db is the kernel store post-flip (coins/anchors/nullifiers/stage
+    # cursors); progress.kv is copied too — either it's the legacy kernel store
+    # on a pre-flip datadir, or the post-flip projections file (address_index/
+    # txindex) — both cases need it on the copy.
+    for f in node.db node.db-wal node.db-shm consensus.db consensus.db-wal \
+             consensus.db-shm progress.kv progress.kv-wal progress.kv-shm \
              block_index.bin block_index.bin.sha3; do
         [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DEST/" || true
     done

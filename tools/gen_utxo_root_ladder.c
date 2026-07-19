@@ -18,12 +18,15 @@
  * source of truth is a copy of a zclassic23 datadir, not a JSON-RPC peer.
  *
  * TWO FILES PER DATADIR: block hashes live in `node.db` (`blocks` table);
- * boundary UTXO roots live in the SEPARATE `progress.kv` file
+ * boundary UTXO roots live in the SEPARATE kernel store `consensus.db`
  * (`progress_meta` table, key "mmb_utxo_root:<height>" — see
- * lib/storage/src/progress_store.c:32, coins_kv.c:548-589). This tool
- * ATTACHes the progress.kv copy onto the node.db connection (the same
- * technique tools/export_snapshot.c uses to join sidecar files) so one
- * connection can join both.
+ * lib/storage/src/consensus_db.c, coins_kv.c:548-589). Pre-flip datadirs
+ * kept that table in `progress.kv` instead; `--source-progress-kv=`/
+ * `--second-progress-kv=` remain accepted as aliases of
+ * `--source-kernel-db=`/`--second-kernel-db=` so old runbooks still work.
+ * This tool ATTACHes the sibling kernel-db copy onto the node.db
+ * connection (the same technique tools/export_snapshot.c uses to join
+ * sidecar files) so one connection can join both.
  *
  * The blockchain is immutable history: once a stride height's boundary
  * root is folded and independently cross-checked, it is free to keep
@@ -65,11 +68,14 @@
  *
  * Usage:
  *   gen_utxo_root_ladder <source_node_db_copy> \
- *       --source-progress-kv=PATH \
- *       [--second-db=PATH] [--second-progress-kv=PATH] [--leaf-store=PATH] \
+ *       --source-kernel-db=PATH \
+ *       [--second-db=PATH] [--second-kernel-db=PATH] [--leaf-store=PATH] \
  *       [--stride=N] [--max-height=N] [--dense-height=N] \
  *       [--immutable-source] \
  *       [--out-h=PATH] [--out-c=PATH]
+ *
+ * (`--source-progress-kv=`/`--second-progress-kv=` still work as aliases
+ * for pre-flip datadirs whose kernel store is still progress.kv.)
  *
  * The operator ALWAYS points this at a COPY (never a live datadir) —
  * see docs/work/ and the golden-height ladder lane notes.
@@ -195,11 +201,12 @@ static sqlite3 *open_db_ro(const char *path, bool immutable)
     return db;
 }
 
-/* ATTACH the sibling progress.kv copy as schema "pkv" onto an already-open
- * node.db connection, so one connection can join `blocks` (node.db) with
- * `progress_meta` (progress.kv). Returns false (and logs) on failure —
+/* ATTACH the sibling kernel-db copy (consensus.db post-flip, progress.kv on
+ * a pre-flip datadir) as schema "kdb" onto an already-open node.db
+ * connection, so one connection can join `blocks` (node.db) with
+ * `progress_meta` (kernel store). Returns false (and logs) on failure —
  * callers treat that as "no boundary-root source available", not fatal. */
-static bool attach_progress_kv(sqlite3 *db, const char *path, bool immutable)
+static bool attach_kernel_db(sqlite3 *db, const char *path, bool immutable)
 {
     if (!path) return false;
     char uri[1200];
@@ -207,7 +214,7 @@ static bool attach_progress_kv(sqlite3 *db, const char *path, bool immutable)
     if (immutable) {
         if (!immutable_path_uri(path, uri, sizeof(uri))) {
             fprintf(stderr,
-                    "[gen_utxo_root_ladder] immutable progress source "
+                    "[gen_utxo_root_ladder] immutable kernel-db source "
                     "requires an absolute URI-safe path with no nonempty "
                     "WAL: %s\n", path);
             return false;
@@ -215,7 +222,7 @@ static bool attach_progress_kv(sqlite3 *db, const char *path, bool immutable)
         locator = uri;
     }
     sqlite3_stmt *stmt = NULL;
-    bool ok = sqlite3_prepare_v2(db, "ATTACH DATABASE ?1 AS pkv", -1,
+    bool ok = sqlite3_prepare_v2(db, "ATTACH DATABASE ?1 AS kdb", -1,
                                  &stmt, NULL) == SQLITE_OK &&
               sqlite3_bind_text(stmt, 1, locator, -1, SQLITE_STATIC) ==
                   SQLITE_OK &&
@@ -269,18 +276,18 @@ static bool db_block_hash_at(sqlite3 *db, int32_t height, uint8_t out[32])
     return ok;
 }
 
-/* `has_pkv` gates whether we query the attached pkv schema at all — a
+/* `has_kdb` gates whether we query the attached kdb schema at all — a
  * NULL/failed ATTACH means "no boundary-root source", not "not found at
  * this height", so callers can tell the two apart if needed. */
-static bool db_boundary_root_at(sqlite3 *db, bool has_pkv, int32_t height,
+static bool db_boundary_root_at(sqlite3 *db, bool has_kdb, int32_t height,
                                 uint8_t out[32])
 {
-    if (!has_pkv) return false;
+    if (!has_kdb) return false;
     char key[40];
     snprintf(key, sizeof(key), "mmb_utxo_root:%d", (int)height);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT value FROM pkv.progress_meta WHERE key=?",
+            "SELECT value FROM kdb.progress_meta WHERE key=?",
             -1, &s, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
@@ -313,9 +320,10 @@ static void hex32(const uint8_t h[32], char out[65])
 
 struct cli {
     const char *source_db;          /* node.db copy (required, positional) */
-    const char *source_progress_kv; /* progress.kv copy (boundary roots) */
+    const char *source_kernel_db;   /* consensus.db (or legacy progress.kv)
+                                      * copy — boundary roots */
     const char *second_db;          /* NULL = not given */
-    const char *second_progress_kv; /* NULL = not given */
+    const char *second_kernel_db;   /* NULL = not given */
     const char *leaf_store;         /* NULL = not given */
     int32_t stride;
     int32_t max_height;      /* -1 = auto */
@@ -328,9 +336,9 @@ struct cli {
 static bool parse_cli(int argc, char **argv, struct cli *c)
 {
     c->source_db = NULL;
-    c->source_progress_kv = NULL;
+    c->source_kernel_db = NULL;
     c->second_db = NULL;
-    c->second_progress_kv = NULL;
+    c->second_kernel_db = NULL;
     c->leaf_store = NULL;
     c->stride = DEFAULT_STRIDE;
     c->max_height = -1;
@@ -341,11 +349,15 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (strncmp(a, "--source-progress-kv=", 21) == 0)
-            c->source_progress_kv = a + 21;
+        if (strncmp(a, "--source-kernel-db=", 19) == 0)
+            c->source_kernel_db = a + 19;
+        else if (strncmp(a, "--source-progress-kv=", 21) == 0)
+            c->source_kernel_db = a + 21;  /* alias: pre-flip datadirs */
         else if (strncmp(a, "--second-db=", 12) == 0) c->second_db = a + 12;
+        else if (strncmp(a, "--second-kernel-db=", 19) == 0)
+            c->second_kernel_db = a + 19;
         else if (strncmp(a, "--second-progress-kv=", 21) == 0)
-            c->second_progress_kv = a + 21;
+            c->second_kernel_db = a + 21;  /* alias: pre-flip datadirs */
         else if (strncmp(a, "--leaf-store=", 13) == 0) c->leaf_store = a + 13;
         else if (strncmp(a, "--stride=", 9) == 0) c->stride = atoi(a + 9);
         else if (strncmp(a, "--max-height=", 13) == 0) c->max_height = atoi(a + 13);
@@ -355,11 +367,13 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
         else if (strncmp(a, "--out-c=", 8) == 0) c->out_c = a + 8;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             printf("Usage: %s <source_node_db_copy> "
-                   "--source-progress-kv=PATH "
-                   "[--second-db=PATH] [--second-progress-kv=PATH] "
+                   "--source-kernel-db=PATH "
+                   "[--second-db=PATH] [--second-kernel-db=PATH] "
                    "[--leaf-store=PATH] [--stride=N] [--max-height=N] "
                    "[--dense-height=N] [--immutable-source] "
-                   "[--out-h=PATH] [--out-c=PATH]\n",
+                   "[--out-h=PATH] [--out-c=PATH]\n"
+                   "  (--source-progress-kv=/--second-progress-kv= accepted "
+                   "as aliases for pre-flip datadirs)\n",
                    argv[0]);
             return false;
         } else if (a[0] == '-') {
@@ -376,10 +390,10 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
         fprintf(stderr, "missing required <source_node_db_copy> argument\n");
         return false;
     }
-    if (!c->source_progress_kv) {
-        fprintf(stderr, "missing required --source-progress-kv=PATH "
+    if (!c->source_kernel_db) {
+        fprintf(stderr, "missing required --source-kernel-db=PATH "
                         "(boundary UTXO roots live there, not in node.db — "
-                        "see lib/storage/src/progress_store.c)\n");
+                        "see lib/storage/src/consensus_db.c)\n");
         return false;
     }
     if (c->stride <= 0 || (c->stride % MMR_COMMITMENT_INTERVAL) != 0) {
@@ -610,22 +624,22 @@ int main(int argc, char **argv)
 
     sqlite3 *src = open_db_ro(c.source_db, c.immutable_source);
     if (!src) return 1;
-    bool src_has_pkv = attach_progress_kv(
-        src, c.source_progress_kv, c.immutable_source);
-    if (!src_has_pkv) {
+    bool src_has_kdb = attach_kernel_db(
+        src, c.source_kernel_db, c.immutable_source);
+    if (!src_has_kdb) {
         fprintf(stderr, "[gen_utxo_root_ladder] cannot attach "
-                        "--source-progress-kv=%s — stride rungs will all be "
+                        "--source-kernel-db=%s — stride rungs will all be "
                         "skipped (only the checkpoint rung can be emitted)\n",
-                c.source_progress_kv);
+                c.source_kernel_db);
     }
 
     sqlite3 *snd = NULL;
-    bool snd_has_pkv = false;
+    bool snd_has_kdb = false;
     if (c.second_db) {
         snd = open_db_ro(c.second_db, c.immutable_source);
         if (!snd) { sqlite3_close(src); return 1; }
-        snd_has_pkv = attach_progress_kv(
-            snd, c.second_progress_kv, c.immutable_source);
+        snd_has_kdb = attach_kernel_db(
+            snd, c.second_kernel_db, c.immutable_source);
     }
 
     int32_t src_max = -1;
@@ -659,7 +673,7 @@ int main(int argc, char **argv)
                    "source — skipping rung\n", h);
             continue;
         }
-        if (!db_boundary_root_at(src, src_has_pkv, h, ur)) {
+        if (!db_boundary_root_at(src, src_has_kdb, h, ur)) {
             printf("[gen_utxo_root_ladder] h=%d: no boundary utxo_root recorded "
                    "in source (coins_kv_boundary_root_set never ran here) — "
                    "skipping rung\n", h);
@@ -670,7 +684,7 @@ int main(int argc, char **argv)
         if (snd) {
             uint8_t bh2[32], ur2[32];
             bool have2 = db_block_hash_at(snd, h, bh2) &&
-                        db_boundary_root_at(snd, snd_has_pkv, h, ur2);
+                        db_boundary_root_at(snd, snd_has_kdb, h, ur2);
             if (!have2) {
                 printf("[gen_utxo_root_ladder] h=%d: second-db has no data yet "
                        "(still folding) — single-source rung\n", h);

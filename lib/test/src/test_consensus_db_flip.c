@@ -430,6 +430,87 @@ int test_consensus_db_flip(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── DOWNGRADE MARKER: a consensus.db schema marker NEWER than this
+     *    binary's CONSENSUS_DB_SCHEMA_VERSION must be a loud refusal, never a
+     *    silent re-flip. Silently treating a future marker as "not yet
+     *    flipped" would re-run drop_migrated_from_progress and overwrite the
+     *    newer marker with this (older) binary's version — exactly the
+     *    binary-downgrade-against-a-newer-datadir hazard. Prove: (1) the
+     *    predicate fires and names both versions, (2) finalize_flip refuses
+     *    (returns false) WITHOUT dropping progress.kv's still-present kernel
+     *    tables and WITHOUT overwriting the marker. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "consensus_db_flip", "downgrade");
+        char ppath[300], cpath[300];
+        snprintf(ppath, sizeof(ppath), "%s/progress.kv", dir);
+        snprintf(cpath, sizeof(cpath), "%s/consensus.db", dir);
+
+        CKF("downgrade: source builds", flip_build_source(dir));
+        CKF("downgrade: migrate succeeds",
+            consensus_db_migrate_from_progress(dir, err, sizeof(err)));
+        /* Migrate only — progress.kv still has its kernel tables (drop has
+         * not run yet), so a spurious drop below is directly observable. */
+        CKF("downgrade: progress.kv still has coins pre-drop",
+            flip_table_exists(ppath, "coins"));
+
+        sqlite3 *cdb = NULL;
+        bool opened = sqlite3_open_v2(cpath, &cdb,
+            SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK;
+        CKF("downgrade: consensus.db opens", opened);
+
+        /* Stamp a FUTURE marker (current version + 1) directly — a real one
+         * would come from a newer binary that already completed its flip. */
+        uint32_t future_v = (uint32_t)CONSENSUS_DB_SCHEMA_VERSION + 1;
+        uint8_t future_le[4] = {
+            (uint8_t)(future_v & 0xff), (uint8_t)((future_v >> 8) & 0xff),
+            (uint8_t)((future_v >> 16) & 0xff), (uint8_t)((future_v >> 24) & 0xff)};
+        CKF("downgrade: future marker writes",
+            cdb && progress_meta_set(cdb, CONSENSUS_DB_SCHEMA_VERSION_KEY,
+                                     future_le, sizeof(future_le)));
+
+        /* (1) The predicate fires and reports the marker's version. */
+        uint32_t marker_v = 0;
+        char derr[256] = "";
+        CKF("downgrade: is_downgrade fires",
+            cdb && consensus_db_schema_is_downgrade(cdb, &marker_v, derr,
+                                                     sizeof(derr)));
+        CKF("downgrade: is_downgrade reports the future version",
+            marker_v == future_v);
+        {
+            char want_marker[16], want_binary[16];
+            snprintf(want_marker, sizeof(want_marker), "v%u",
+                     (unsigned)future_v);
+            snprintf(want_binary, sizeof(want_binary), "v%u",
+                     (unsigned)CONSENSUS_DB_SCHEMA_VERSION);
+            CKF("downgrade: is_downgrade names both versions",
+                strstr(derr, want_marker) != NULL &&
+                strstr(derr, want_binary) != NULL);
+        }
+
+        /* (2) finalize_flip refuses loudly instead of re-flipping. */
+        char ferr[256] = "";
+        CKF("downgrade: finalize_flip refuses (returns false)",
+            cdb && !consensus_db_finalize_flip(dir, cdb, ferr, sizeof(ferr)));
+        CKF("downgrade: finalize_flip reports a message",
+            ferr[0] != '\0');
+
+        /* Neither the drop nor the marker overwrite happened. */
+        CKF("downgrade: progress.kv kernel table NOT dropped",
+            flip_table_exists(ppath, "coins"));
+        {
+            uint8_t got[8]; size_t glen = 0; bool found = false;
+            CKF("downgrade: marker still reads back as the FUTURE version",
+                cdb && progress_meta_get(cdb, CONSENSUS_DB_SCHEMA_VERSION_KEY,
+                                         got, sizeof(got), &glen, &found) &&
+                found && glen == sizeof(future_le) &&
+                memcmp(got, future_le, sizeof(future_le)) == 0);
+        }
+
+        if (cdb) sqlite3_close(cdb);
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("consensus_db_flip: %d failures\n", failures);
     return failures;
 }

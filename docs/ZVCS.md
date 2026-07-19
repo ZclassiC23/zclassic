@@ -227,7 +227,8 @@ A ZVCS repo lives beside `.git/` in the working copy, at
   writer, writes framed in `BEGIN IMMEDIATE`
   (`lib/vcs/include/vcs/vcs_index.h`). This is deliberately **outside** the
   node.db ActiveRecord lifecycle, following the same kernel-store doctrine
-  as `progress.kv` (`storage/progress_store.h`) and `seal_kv`: a small
+  as `consensus.db` (`storage/progress_store.h`, historically `progress.kv`)
+  and `seal_kv`: a small
   dedicated single-writer store below the AR layer, marked with the
   `// raw-sql-ok:vcs-index-kernel-store` lint-gate exemption. Every row in
   `index.kv` is **derived** — regenerable from the worktree plus

@@ -382,6 +382,18 @@ struct msg_headers_stats {
      * is pausing header sync. See msg_headers.c. */
     uint64_t getheaders_suppressed_no_hash;
     uint64_t getheaders_suppressed_snapshot;
+    /* Sibling silent-drop sites in the same file, closed for the same
+     * reason (a stall must always name a blocker, never go quiet):
+     * inbound `headers` dropped receive-side, push_getheaders() and
+     * push_getheaders_span() dropped send-side, all while a snapshot
+     * exchange owns the wire; the locator-alloc OOM in
+     * push_getheaders_span(); and the getheaders-serving defer while a
+     * peer snapshot transfer is in progress. See msg_headers.c. */
+    uint64_t headers_recv_suppressed_snapshot;
+    uint64_t push_getheaders_suppressed_snapshot;
+    uint64_t push_getheaders_span_suppressed_snapshot;
+    uint64_t push_getheaders_span_alloc_fail;
+    uint64_t getheaders_deferred_snapshot_serving;
 };
 
 void msg_headers_get_stats(struct msg_headers_stats *out);

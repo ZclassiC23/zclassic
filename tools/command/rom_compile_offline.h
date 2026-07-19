@@ -7,8 +7,10 @@
  * fields from on-disk artifacts of an offline `-mint-anchor` producer:
  *
  *   fold height/target/rate/eta  — consensus_state_producer_status_read()
- *                                  (READONLY progress.kv; ENOENT = idle, not an
- *                                  error) + the compiled SHA3 checkpoint height.
+ *                                  (READONLY kernel store — consensus.db, or
+ *                                  the legacy progress.kv on a pre-flip
+ *                                  datadir; ENOENT = idle, not an error) +
+ *                                  the compiled SHA3 checkpoint height.
  *   sealed_history layer          — chain_segment_store_stat(<datadir>/segments).
  *   the eight stage EWMAs + the   — tail-parsed from <datadir>/mint-progress.log
  *   bottleneck + commit EWMA        ('stages=[ha:.. vh:.. ...]' EWMAs). A
@@ -30,7 +32,7 @@ struct json_value;
 /* Fill `out` (json_init'd by the caller) with a zcl.rom_compile.v1 `state`
  * object for `datadir`. Returns false and writes a bounded reason into `err`
  * only on a hard failure (null out, empty/oversized datadir, or an
- * unreadable-but-present progress.kv). Absent artifacts (no progress.kv, no
+ * unreadable-but-present kernel store). Absent artifacts (no kernel store, no
  * segments, no progress log) are honest "idle/absent" fields, not errors. */
 bool rom_compile_offline_compose(const char *datadir, struct json_value *out,
                                  char *err, size_t errlen);

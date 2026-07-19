@@ -10,15 +10,28 @@
 
 # HANDOFF — current state (2026-07-19)
 
-## 0-LATEST. Current state (2026-07-19) — cure INSTALLED on the serve node; kernel flipped to consensus.db LIVE; climb in progress toward the wedge-pass proof
+## 0-LATEST. Current state (2026-07-19 evening) — **WEDGE-PASS: the sovereign cure is PROVEN on the serve node.** Fresh soak window open; canonical deploy is the owner's lever
 
-**The serve node (`zcl-serve1` unit, datadir `~/.zclassic-c23-serve1`, ports
-39072-39074/39473) runs the installed sovereign bundle and is CLIMBING.**
-Binary: candidate `kernelflip-79c33de32` (= main tip). Live H\* via
-`zclassic23 -datadir=$HOME/.zclassic-c23-serve1 -rpcport=39072 dumpstate reducer_frontier`.
-The proof gate is unchanged: **H\* climb past the old wedge 3,176,325** = cure
-proven; then a fresh soak window starts and canonical deploy is the owner's
-lever. A persistent monitor announces +5k milestones and the wedge-pass.
+**The serve node passed the historical wedge.** H\* = 3,179,242 >
+**3,176,325** (the shielded-anchor wedge that has held the canonical node for
+weeks), coins at the same height, folding toward network tip (~3,187,1xx),
+4 peers. Binary: candidate `tipfinfix-3b512149f` (= main
+`3b512149f`).  Live H\* via `zclassic23 -rpcport=39072 dumpstate
+reducer_frontier` (**flagless CLI answers from the DEFAULT datadir — always
+pass -rpcport=39072 for the serve node**). The persistent monitor announces
++5k milestones; the soak window runs from the wedge-pass timestamp. Canonical
+deploy after a clean soak is the owner's lever.
+
+The final pin before the pass — H\* stuck at 3,140,115 on ~1,015
+`tip_finalize_log` rowless holes — was cured by `3b512149f`: the boundary
+utxo_root persist ran an own-BEGIN inside the stage batch transaction
+(nested-BEGIN, failed at 100% of 100-height boundaries post-flip = the WARN
+storm) and the hash-bound hole backfill was reachable only for coin tears.
+The in-tx persist + the no-tear backfill gate (bounded by the coins frontier)
+deployed, self-healed the live datadir on first boot with zero persist
+failures, and H\* leapt to the frontier. `tip_finalize.rewind_churn`,
+`recovery_coordinator.no_applicable_rung`, and the sticky_escalator family all
+cleared themselves.
 
 What is true now (each copy-proven before live):
 - **Consensus-bundle install: TERMINAL ADMITTED-AND-ACTIVATED** on this datadir
@@ -40,10 +53,18 @@ What is true now (each copy-proven before live):
   live; backstop restarts stopped. Remaining transient wedge blockers
   (`supervisor.tick_runner_wedged`, `worker.stall.op.projection_backfill`)
   are contained signals, largely retired by the consensus.db flip.
-- Known follow-ups (next wave): `fast_restart` silent best-header cap +
-  `scan_best_header` height fallback (pre-existing, exposed during the flip
-  copy-prove), `tools/p2_invariant_check.c` still opens progress.kv by path,
-  spurious per-boot txn in `consensus_db_finalize_flip`.
+- **Landed since (same day):** fast-restart trust-flat skip REMOVED (the
+  silent best-header cap class is dead; the forward pass costs ~861ms),
+  projection-store corruption quarantine gate + consensus.db downgrade boot
+  refusal, loud counted suppression on every remaining silent header/net drop
+  path, store-location truth sweep across docs/tools, lint critical path
+  cached (17s → <1s warm), janitor timers installed (22GB reclaimed).
+- Remaining follow-ups: spurious per-boot txn in `consensus_db_finalize_flip`;
+  CLI wall-clock deadlines (a flagless `status` against a dead RPC port spun
+  3 days at 100% CPU); graceful stop of a folding node measured ~11 min
+  (restart flows must verify MainPID changed); post-soak cleanup of
+  `~/.zclassic-c23-serve1-BACKUP-preflip` + `-COPY-headerfix` (28GB) and old
+  candidate dirs.
 
 ---
 

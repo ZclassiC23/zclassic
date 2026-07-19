@@ -141,13 +141,35 @@ bool consensus_db_drop_migrated_from_progress(const char *datadir,
 bool consensus_db_write_schema_marker(struct sqlite3 *cdb,
                                       char *errbuf, size_t errcap);
 
+/* True when `cdb`'s durable schema marker names a version NEWER than this
+ * binary's CONSENSUS_DB_SCHEMA_VERSION — i.e. this binary is older than the
+ * one that last wrote consensus.db (a binary downgrade against a newer
+ * datadir). False on a missing/unreadable marker (nothing to compare, not a
+ * downgrade) or when the marker is <= the current version (the normal
+ * not-yet-flipped or already-flipped cases). `out_marker_version`, if
+ * non-NULL, is always set to the marker read (0 if absent/unreadable). On a
+ * true return, errbuf (if non-NULL) names both versions and the remedy (run
+ * the newer binary). This is a read-only check — it never mutates cdb or
+ * progress.kv. */
+bool consensus_db_schema_is_downgrade(struct sqlite3 *cdb,
+                                      uint32_t *out_marker_version,
+                                      char *errbuf, size_t errcap);
+
 /* Second half of the boot flip in one call, run AFTER progress_store has opened
  * consensus.db: drop the migrated tables from progress.kv
  * (consensus_db_drop_migrated_from_progress) then stamp the schema marker into
  * consensus.db (consensus_db_write_schema_marker). Both steps are idempotent +
  * crash-safe and NON-fatal — returns false (with a typed message) on the first
  * failing step so the caller can log-and-continue; consensus.db stays the sole
- * authority regardless. `cdb` is progress_store_db(). errbuf may be NULL. */
+ * authority regardless. The one EXCEPTION is a downgrade marker
+ * (consensus_db_schema_is_downgrade): that is checked FIRST and, if true,
+ * this refuses immediately (false + a typed message) WITHOUT touching
+ * progress.kv or the marker. In practice a downgrade never reaches this
+ * function at all — progress_store_open() (storage/progress_store.h) runs
+ * the SAME predicate right after opening consensus.db and refuses the open
+ * outright, which boot's existing boot_snapshot_install_gate_boot() FATALs
+ * on; this function's own check is defense-in-depth for any other caller.
+ * `cdb` is progress_store_db(). errbuf may be NULL. */
 bool consensus_db_finalize_flip(const char *datadir, struct sqlite3 *cdb,
                                 char *errbuf, size_t errcap);
 

@@ -13,6 +13,7 @@
 #include "test/test_helpers.h"
 
 #include "json/json.h"
+#include "storage/consensus_db.h"
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
 #include "util/blocker.h"
@@ -120,6 +121,23 @@ static int ps_count_corrupt(const char *dir)
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (strncmp(e->d_name, "consensus.db", 12) == 0 &&
+            strstr(e->d_name, ".corrupt.") != NULL)
+            n++;
+    }
+    closedir(d);
+    return n;
+}
+
+/* Same as ps_count_corrupt but for projection_store's progress.kv*.corrupt.*
+ * sidecars. */
+static int ps_count_corrupt_projection(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "progress.kv", 11) == 0 &&
             strstr(e->d_name, ".corrupt.") != NULL)
             n++;
     }
@@ -565,6 +583,214 @@ int test_progress_store(void)
             PS_CHECK("quarantine: no second quarantine (idempotent)",
                      ps_count_corrupt(dir) == before);
             progress_store_close();
+        }
+
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── FUTURE schema marker (binary downgrade) refuses the open ──────────
+     *
+     * A consensus.db written by a NEWER binary (schema marker version >
+     * CONSENSUS_DB_SCHEMA_VERSION) must refuse the open outright rather than
+     * being silently treated as healthy — see
+     * consensus_db_schema_is_downgrade() / progress_store_open(). Prove: (1)
+     * a healthy current-version marker opens fine, (2) bumping the marker to
+     * a future version makes the NEXT open fail (no handle), (3) the file on
+     * disk is untouched (still readable, marker unchanged) — this is a
+     * refusal, not a quarantine or a rewrite. */
+    {
+        char dir[256];
+        ps_tmpdir(dir, sizeof(dir), "downgrade");
+        mkdir_p(dir);
+
+        PS_CHECK("downgrade: seed open", progress_store_open(dir));
+        PS_CHECK("downgrade: current-version marker writes",
+                 consensus_db_write_schema_marker(progress_store_db(),
+                                                  NULL, 0));
+        progress_store_close();
+
+        /* Bump the marker to a future version via a separate raw connection
+         * (simulating what a newer binary would have left behind). */
+        char cpath[512];
+        snprintf(cpath, sizeof(cpath), "%s/consensus.db", dir);
+        {
+            sqlite3 *raw = NULL;
+            PS_CHECK("downgrade: raw open for marker bump",
+                     sqlite3_open_v2(cpath, &raw, SQLITE_OPEN_READWRITE,
+                                     NULL) == SQLITE_OK);
+            uint32_t future_v = (uint32_t)CONSENSUS_DB_SCHEMA_VERSION + 1;
+            uint8_t le[4] = {
+                (uint8_t)(future_v & 0xff), (uint8_t)((future_v >> 8) & 0xff),
+                (uint8_t)((future_v >> 16) & 0xff),
+                (uint8_t)((future_v >> 24) & 0xff)};
+            PS_CHECK("downgrade: future marker writes",
+                     raw && progress_meta_set(raw, CONSENSUS_DB_SCHEMA_VERSION_KEY,
+                                              le, sizeof(le)));
+            if (raw) sqlite3_close(raw);
+        }
+
+        /* (2) The next open must REFUSE — no handle, not self-healed. */
+        PS_CHECK("downgrade: open refuses (returns false)",
+                 !progress_store_open(dir));
+        PS_CHECK("downgrade: handle stays NULL after refused open",
+                 progress_store_db() == NULL);
+
+        /* (3) Untouched, not quarantined: no .corrupt sidecar, and the
+         * future marker is still exactly what we wrote (a refusal, not a
+         * silent re-flip/overwrite). */
+        PS_CHECK("downgrade: no .corrupt sidecar (refusal, not quarantine)",
+                 ps_count_corrupt(dir) == 0);
+        {
+            sqlite3 *raw = NULL;
+            bool opened = sqlite3_open_v2(cpath, &raw, SQLITE_OPEN_READONLY,
+                                          NULL) == SQLITE_OK;
+            PS_CHECK("downgrade: file still opens read-only", opened);
+            uint8_t got[8]; size_t glen = 0; bool found = false;
+            uint32_t future_v = (uint32_t)CONSENSUS_DB_SCHEMA_VERSION + 1;
+            uint8_t want[4] = {
+                (uint8_t)(future_v & 0xff), (uint8_t)((future_v >> 8) & 0xff),
+                (uint8_t)((future_v >> 16) & 0xff),
+                (uint8_t)((future_v >> 24) & 0xff)};
+            PS_CHECK("downgrade: marker on disk still reads as the FUTURE "
+                     "version (untouched)",
+                     raw && progress_meta_get(raw, CONSENSUS_DB_SCHEMA_VERSION_KEY,
+                                              got, sizeof(got), &glen, &found) &&
+                     found && glen == sizeof(want) &&
+                     memcmp(got, want, sizeof(want)) == 0);
+            if (raw) sqlite3_close(raw);
+        }
+
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── projection_store integrity quick_check + quarantine self-heal
+     *    (Class C projection corruption robustness) ─────────────────────
+     *
+     * projection_store's progress.kv projection tables (address_index /
+     * txindex / created_outputs) are fully rebuildable, but a corrupt file
+     * left in place would otherwise surface as a mid-fold SQLITE_CORRUPT deep
+     * inside a projection job with no named blocker. This mirrors the
+     * consensus.db quarantine gate proven above — both stores run the SAME
+     * shared gate (sqlite_integrity_gate.c). We prove the same three things:
+     *   (a) a HEALTHY store reopens with NO quarantine (no false positive),
+     *   (b) a deliberately page-garbled store is detected → quarantine file
+     *       appears → reopen succeeds with a fresh, queryable, EMPTY store,
+     *   (c) it is auto-terminating (one quarantine, not a loop). */
+    {
+        char dir[256];
+        ps_tmpdir(dir, sizeof(dir), "proj_quarantine");
+        mkdir_p(dir);
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+
+        /* Seed a healthy store with a recognizable marker row, then close so
+         * the WAL is checkpointed back into the main file. */
+        PS_CHECK("proj quarantine: seed open", projection_store_open(dir));
+        {
+            sqlite3 *pdb = projection_store_db();
+            PS_CHECK("proj quarantine: seed schema",
+                     pdb && sqlite3_exec(pdb,
+                         "CREATE TABLE IF NOT EXISTS proj_marker"
+                         "(k INTEGER PRIMARY KEY, v TEXT NOT NULL)",
+                         NULL, NULL, NULL) == SQLITE_OK);
+            PS_CHECK("proj quarantine: seed marker row",
+                     pdb && sqlite3_exec(pdb,
+                         "INSERT INTO proj_marker(k,v) "
+                         "VALUES (1,'MARKER-PRE-CORRUPT')",
+                         NULL, NULL, NULL) == SQLITE_OK);
+        }
+        projection_store_close();
+
+        /* (a) Reopen the HEALTHY file — must NOT quarantine, marker survives. */
+        PS_CHECK("proj quarantine: healthy reopen OK",
+                 projection_store_open(dir));
+        {
+            sqlite3_stmt *q = NULL;
+            bool row_ok = false;
+            if (sqlite3_prepare_v2(projection_store_db(),
+                    "SELECT v FROM proj_marker WHERE k=1", -1, &q, NULL) ==
+                SQLITE_OK) {
+                row_ok = sqlite3_step(q) == SQLITE_ROW &&
+                         strcmp((const char *)sqlite3_column_text(q, 0),
+                                "MARKER-PRE-CORRUPT") == 0;
+            }
+            sqlite3_finalize(q);
+            PS_CHECK("proj quarantine: healthy marker survives", row_ok);
+        }
+        PS_CHECK("proj quarantine: no false-positive .corrupt file",
+                 ps_count_corrupt_projection(dir) == 0);
+        projection_store_close();
+
+        /* Deliberately corrupt a middle page of the main DB file (same
+         * technique as the consensus.db quarantine test above). */
+        {
+            struct stat st;
+            PS_CHECK("proj quarantine: file exists pre-corrupt",
+                     stat(fpath, &st) == 0 && st.st_size > 4096);
+            FILE *f = fopen(fpath, "r+b");
+            PS_CHECK("proj quarantine: open file for corruption", f != NULL);
+            if (f) {
+                long start = 4096;
+                long span = st.st_size - start;
+                if (span > 4096) span = 4096;
+                if (span < 0) span = 0;
+                int seek_ok = (fseek(f, start, SEEK_SET) == 0);
+                PS_CHECK("proj quarantine: seek into file body", seek_ok);
+                uint8_t garbage[4096];
+                memset(garbage, 0xEE, sizeof(garbage));
+                size_t to_write = (size_t)span;
+                size_t wrote = fwrite(garbage, 1,
+                                      to_write < sizeof(garbage)
+                                          ? to_write : sizeof(garbage), f);
+                PS_CHECK("proj quarantine: wrote garbage page", wrote > 0);
+                fclose(f);
+            }
+        }
+
+        /* (b) Reopen the CORRUPT file — quick_check must fire the quarantine
+         *     and reopen a fresh store. open() returns true (self-healed). */
+        PS_CHECK("proj quarantine: corrupt reopen self-heals (returns true)",
+                 projection_store_open(dir));
+        PS_CHECK("proj quarantine: handle non-NULL after self-heal",
+                 projection_store_db() != NULL);
+        PS_CHECK("proj quarantine: .corrupt sidecar was created",
+                 ps_count_corrupt_projection(dir) >= 1);
+        /* Fresh store is queryable — schema-ensure (CREATE TABLE IF NOT
+         * EXISTS, exactly what every projection job runs at boot) succeeds
+         * on it just like a brand-new node. */
+        {
+            sqlite3 *pdb = projection_store_db();
+            PS_CHECK("proj quarantine: fresh store schema-ensure works",
+                     pdb && sqlite3_exec(pdb,
+                         "CREATE TABLE IF NOT EXISTS proj_marker"
+                         "(k INTEGER PRIMARY KEY, v TEXT NOT NULL)",
+                         NULL, NULL, NULL) == SQLITE_OK);
+        }
+        /* ... and EMPTY: the pre-corrupt marker row is GONE (state was
+         * derived, the kernel/anchor is the real source of truth). */
+        {
+            sqlite3_stmt *q = NULL;
+            bool found = false;
+            if (sqlite3_prepare_v2(projection_store_db(),
+                    "SELECT v FROM proj_marker WHERE k=1", -1, &q, NULL) ==
+                SQLITE_OK) {
+                found = sqlite3_step(q) == SQLITE_ROW;
+            }
+            sqlite3_finalize(q);
+            PS_CHECK("proj quarantine: fresh store dropped stale marker row",
+                     !found);
+        }
+        projection_store_close();
+
+        /* (c) A second reopen of the now-healthy fresh store does NOT create
+         *     a further .corrupt file (auto-terminating; one quarantine). */
+        {
+            int before = ps_count_corrupt_projection(dir);
+            PS_CHECK("proj quarantine: post-heal reopen OK",
+                     projection_store_open(dir));
+            PS_CHECK("proj quarantine: no second quarantine (idempotent)",
+                     ps_count_corrupt_projection(dir) == before);
+            projection_store_close();
         }
 
         test_cleanup_tmpdir(dir);

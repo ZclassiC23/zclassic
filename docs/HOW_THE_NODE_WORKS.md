@@ -6,7 +6,10 @@ you can reason about the whole node.
 ## 1. The node in four lines
 
 1. There is one durable record on disk: an append-only log of facts (in
-   `progress.kv`, a SQLite store). It is the only authority for consensus state.
+   `consensus.db`, a SQLite kernel store). It is the only authority for
+   consensus state. `progress.kv` is a separate, secondary SQLite file that
+   holds only rebuildable projections (`address_index`, `txindex`) — never
+   consensus state.
 2. There is one kind of worker — a **reducer stage**. Each stage reads the height
    its upstream stage has finished, then either **advances its own cursor by one
    height** (writing one log row) **or names a typed blocker** saying exactly why
@@ -24,7 +27,7 @@ That is the entire mental model. The eight stages are below.
 
 ## 2. The state machine — eight stages
 
-Each stage stores a **cursor** in `progress.kv`. For the first seven stages the
+Each stage stores a **cursor** in `consensus.db`. For the first seven stages the
 cursor is "the next height to process", not "the highest done"; `tip_finalize` is
 the one exception — its cursor is the served tip itself (the highest finalized
 height), which the frontier code normalizes to the same "next height" frame when

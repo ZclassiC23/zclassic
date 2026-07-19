@@ -52,9 +52,14 @@
 /* Open the <datadir>/progress.kv projection file in WAL mode, creating it if
  * absent (this store OWNS it after the A3 flip — the kernel now lives in
  * consensus.db). The Class C projection tables it holds are fully rebuildable,
- * so it does not run the kernel quarantine / candidate-refusal / quick_check
- * gates. Idempotent: a second call with the same datadir is a no-op returning
- * true; a different datadir returns false (one process, one projection store). */
+ * so this does not run the kernel's candidate-refusal gate (there is no
+ * consensus-state candidate to refuse here). It DOES run the same PRAGMA
+ * quick_check integrity gate as the kernel store: a non-"ok" verdict
+ * quarantines the file trio aside (timestamped/pid-unique rename) and
+ * reopens a FRESH, empty file — safe because every table here re-derives from
+ * the kernel on the next fold. Idempotent: a second call with the same
+ * datadir is a no-op returning true; a different datadir returns false (one
+ * process, one projection store). */
 bool projection_store_open(const char *datadir);
 
 /* Singleton handle. NULL if not yet opened or already closed. */

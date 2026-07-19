@@ -58,7 +58,7 @@ SERIAL_PROLOGUE=" check-git-hooks-installed "
 gate_command() {
     case "$1" in
         check-no-retired-agent-protocol)   echo './tools/lint/check_no_retired_agent_protocol.sh' ;;
-        check-build-epoch-integrity)       echo 'tools/dev/build-epoch-selftest.sh && tools/dev/make-depfile-scope-selftest.sh' ;;
+        check-build-epoch-integrity)       echo 'tools/dev/build-epoch-integrity-cached.sh' ;;
         check-checkout-lock)               echo 'tools/dev/checkout-lock-selftest.sh' ;;
         check-no-stray-untracked-source)   echo './tools/lint/check_no_stray_untracked_source.sh' ;;
         check-scanner-immunity)            echo './tools/lint/selftest_scanner_immunity.sh' ;;

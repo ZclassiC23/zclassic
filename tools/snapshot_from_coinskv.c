@@ -1,16 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * snapshot_from_coinskv — write a ZCLUTXO snapshot from an already-seeded
- * coins_kv (progress.kv) at a given height + block hash. Read-only over the
- * coins set; emits the SAME canonical stream as the -mint-anchor ceremony
- * and the anchor self-mint, so the resulting file is loadable by
+ * coins_kv (the kernel store — consensus.db, or the legacy progress.kv on a
+ * pre-flip datadir; progress_store_open() migrates the latter to the former
+ * in place) at a given height + block hash. Read-only over the coins set;
+ * emits the SAME canonical stream as the -mint-anchor ceremony and the
+ * anchor self-mint, so the resulting file is loadable by
  * -load-snapshot-at-own-height (which verifies the body SHA3 and checks that
  * hdr.anchor_block_hash names the in-memory active-chain location at the seed
  * height; that location check does not authenticate the state contents).
  *
  * Usage:
  *   snapshot_from_coinskv <datadir> <height> <blockhash_display_hex> <out_path>
- *     datadir   datadir containing progress.kv (the coins_kv home)
+ *     datadir   datadir containing the kernel store (the coins_kv home)
  *     height    seed height to stamp (must match the chain's block at that h)
  *     blockhash big-endian DISPLAY hex (as RPC shows it); reversed internally
  *     out_path  snapshot file to write
