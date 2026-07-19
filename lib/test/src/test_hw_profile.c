@@ -254,6 +254,43 @@ int test_hw_profile(void)
         HWP_CHECK("ram_class_of low", hw_profile_ram_class_of(4LL << 30) == HW_PROFILE_RAM_LOW);
         HWP_CHECK("ram_class_of medium", hw_profile_ram_class_of(16LL << 30) == HW_PROFILE_RAM_MEDIUM);
         HWP_CHECK("ram_class_of high", hw_profile_ram_class_of(64LL << 30) == HW_PROFILE_RAM_HIGH);
+
+        /* ── K3 derived drain batch ──────────────────────────────── */
+        int many_cores = 32; /* enough that RAM is the binding cap */
+        int d1 = hw_profile_drain_batch(r1, many_cores, 1000);
+        int d2 = hw_profile_drain_batch(r2, many_cores, 1000);
+        int d3 = hw_profile_drain_batch(r3, many_cores, 1000);
+        int d4 = hw_profile_drain_batch(r4, many_cores, 1000);
+        HWP_CHECK("drain_batch monotone non-decreasing in RAM",
+                  d1 <= d2 && d2 <= d3 && d3 <= d4);
+        HWP_CHECK("drain_batch floor is the baseline (small/unknown host)",
+                  hw_profile_drain_batch(0, many_cores, 1000) == 1000 &&
+                  hw_profile_drain_batch(r4, 1 /*cores*/, 1000) == 1000);
+        HWP_CHECK("drain_batch never below baseline floor", d1 >= 1000);
+        HWP_CHECK("drain_batch ceiling is 8x baseline",
+                  d4 == 8000 &&
+                  hw_profile_drain_batch(1024LL << 30, many_cores, 1000) == 8000);
+        HWP_CHECK("drain_batch honors the 100 baseline too (header path)",
+                  hw_profile_drain_batch(0, many_cores, 100) == 100 &&
+                  hw_profile_drain_batch(1024LL << 30, many_cores, 100) == 800);
+        HWP_CHECK("drain_batch: cores cap the multiplier (4 cores -> 1x)",
+                  hw_profile_drain_batch(1024LL << 30, 4, 1000) == 1000);
+
+        /* Runtime gate: OFF by default -> baseline; ON -> derived. */
+        HWP_CHECK("derive gate default OFF",
+                  !hw_profile_derive_drain_batch_enabled());
+        HWP_CHECK("effective returns baseline while gate OFF",
+                  hw_profile_drain_batch_effective(1000) == 1000 &&
+                  hw_profile_drain_batch_effective(100) == 100);
+        hw_profile_set_derive_drain_batch(true);
+        HWP_CHECK("derive gate reads back ON",
+                  hw_profile_derive_drain_batch_enabled());
+        HWP_CHECK("effective while ON is >= baseline (measured host)",
+                  hw_profile_drain_batch_effective(1000) >= 1000 &&
+                  hw_profile_drain_batch_effective(1000) <= 8000);
+        hw_profile_set_derive_drain_batch(false); /* restore default */
+        HWP_CHECK("effective returns baseline after gate restored OFF",
+                  hw_profile_drain_batch_effective(1000) == 1000);
     }
 
     /* ── symmetric topology: no asymmetric CCD, pin is a no-op ─────── */

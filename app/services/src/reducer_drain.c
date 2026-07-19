@@ -34,6 +34,7 @@
 #include "core/utiltime.h"
 #include "util/blocker.h"
 #include "util/hw_bench.h"
+#include "util/hw_profile.h"  /* hw_profile_drain_batch_effective (K3 lever) */
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
 #include "util/stage.h"
@@ -435,8 +436,11 @@ int reducer_drain_to_convergence_unbudgeted(void)
      * ONLY via reducer_kick_unbudgeted (the -mint-anchor driver), where the
      * mint fold ceiling is set, so refold_cadence_active() is true and the
      * accelerated ZCL_REFOLD_DRAIN_BATCH default (2000) applies; 1000 is the
-     * fallback if this path is ever reached with the gate inactive. */
-    const int per_stage_batch  = refold_cadence_drain_batch(1000);
+     * fallback if this path is ever reached with the gate inactive. K3 lever:
+     * when -derive-drain-batch is on, that 1000 fallback floor scales with
+     * measured RAM/cores (default OFF ⇒ literal 1000, unchanged). */
+    const int per_stage_batch  =
+        refold_cadence_drain_batch(hw_profile_drain_batch_effective(1000));
     return reducer_drain_core(/*budget_us=*/budget_ms * 1000, drain_hard_cap,
                               per_stage_batch,
                               /*converge_on_frontier_stall=*/true);

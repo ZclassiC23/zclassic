@@ -227,6 +227,10 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     process_block_set_tip_publication_hooks(NULL, NULL, NULL);
     g_shutdown_requested = 1;
     thread_registry_request_shutdown();
+    /* K3: stop the block-body read-ahead worker before main_state teardown (it
+     * reads active_chain_at + preads blk*.dat). Idempotent + safe if never
+     * started. */
+    boot_block_prefetch_stop();
     event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
     event_async_stop();
 

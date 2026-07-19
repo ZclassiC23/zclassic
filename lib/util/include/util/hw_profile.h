@@ -129,6 +129,29 @@ int hw_profile_verify_workers(int physical_cores);
  * peak RSS during background validation on constrained machines. */
 int hw_profile_script_batch_cap(int64_t ram_bytes);
 
+/* Reducer/header drain batch: how many blocks a stage folds/admits between
+ * COMMIT/fsync points. Scales UP off the caller's compiled `baseline` (used as
+ * the FLOOR) with more RAM and more cores — a big-RAM many-core host commits
+ * fewer, larger batches (less fsync/journal overhead per block), a small host
+ * keeps the safe baseline. Pure, allocation-free, monotone NON-DECREASING in
+ * `ram_bytes` (more RAM never lowers the result). A non-positive ram/cores
+ * argument, or fewer than 4 cores, returns `baseline` unchanged. Result is
+ * clamped to [baseline, baseline * 8]. */
+int hw_profile_drain_batch(int64_t ram_bytes, int physical_cores, int baseline);
+
+/* Runtime opt-in gate (-derive-drain-batch) for the RAM/core-derived drain
+ * batch above. Default OFF: hw_profile_drain_batch_effective() returns the
+ * caller's compiled baseline unchanged, so a normal boot's fold cadence is
+ * byte-for-byte what it is today. Thread-safe (plain atomic). Set ONCE at
+ * argv parse, before the reducer can run. */
+void hw_profile_set_derive_drain_batch(bool on);
+bool hw_profile_derive_drain_batch_enabled(void);
+
+/* Gate-aware convenience — the single call the fold's drain sites use:
+ * returns `baseline` when the -derive-drain-batch lever is OFF (the default),
+ * else hw_profile_drain_batch(measured_ram, measured_cores, baseline). */
+int hw_profile_drain_batch_effective(int baseline);
+
 /* ── Reducer pinning (advisory; NEVER fatal) ─────────────────────────
  *
  * Pins `thread` onto the largest-L3 CCD's cpuset via

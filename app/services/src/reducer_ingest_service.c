@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "util/log_macros.h"
+#include "util/hw_profile.h"  /* hw_profile_drain_batch_effective (K3 lever) */
 #include "util/reducer_drive_guard.h"
 #include "util/util.h"  /* GetDataDir */
 
@@ -399,9 +400,10 @@ bool reducer_stage_p2p_block_for_catchup(
 
     struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
                                             &block_hash);
+    const int hdr_batch = hw_profile_drain_batch_effective(100);
     for (int round = 0; !bi && round < 16; round++) {
-        int advanced = header_admit_stage_drain(100) +
-                       validate_headers_stage_drain(100);
+        int advanced = header_admit_stage_drain(hdr_batch) +
+                       validate_headers_stage_drain(hdr_batch);
         bi = block_map_find(&ctl->ms->map_block_index, &block_hash);
         if (advanced == 0)
             break;
@@ -569,10 +571,13 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * and the forward-only cursor never re-processes the height in the second
      * drain (where the body IS present), so the stale ok=0 propagated downstream
      * as upstream_failed and the block was rejected. Bounds match
-     * reducer_drain_to_convergence (4096 rounds, 100/stage). */
+     * reducer_drain_to_convergence (4096 rounds, 100/stage). K3 lever: the
+     * per-stage batch is the derived value when -derive-drain-batch is on,
+     * else the literal 100 (default). */
+    const int _hdr_batch = hw_profile_drain_batch_effective(100);
     for (int _r = 0; _r < 4096; _r++) {
-        int _adv = header_admit_stage_drain(100) +
-                   validate_headers_stage_drain(100);
+        int _adv = header_admit_stage_drain(_hdr_batch) +
+                   validate_headers_stage_drain(_hdr_batch);
         if (_adv == 0)
             break;
     }

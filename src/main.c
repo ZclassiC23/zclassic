@@ -26,6 +26,7 @@
 #include "net/file_service.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
+#include "util/hw_profile.h"  /* hw_profile_set_derive_drain_batch (K3 lever) */
 #include "util/log_level.h"
 #include "util/log_macros.h"
 #include "util/file_tree_ops.h"
@@ -4266,6 +4267,11 @@ int main(int argc, char **argv)
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        /* K3 throughput levers, default OFF (see boot.h / hw_profile.h). The
+         * derive gate is set here (pre-boot) so the reducer activation fold sees
+         * the derived cadence. */
+        else if (strcmp(argv[i], "-prefetch-blocks") == 0) ctx.prefetch_blocks = true;
+        else if (strcmp(argv[i], "-derive-drain-batch") == 0) hw_profile_set_derive_drain_batch(true);
         else if (strcmp(argv[i], "-sandbox=steady") == 0) ctx.sandbox_steady = true;
         else if (strcmp(argv[i], "-sandbox=off") == 0) ctx.sandbox_steady = false;
         else if (strcmp(argv[i], "-confine") == 0) ctx.confine = true;
