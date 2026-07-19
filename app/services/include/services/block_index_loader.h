@@ -53,20 +53,15 @@ void save_block_index_flat(const char *datadir, struct main_state *ms);
  * distinct negative code; the previous bare-bool true/false maps to .ok. */
 struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms);
 
-/* Tier-2 P2 fast restart: arm the NEXT load_block_index_flat call to TRUST the
- * flat file's stored pointer-graph-derived fields (nChainWork, nChainTx, skip
- * links, cached branch id) and SKIP the O(n log n) forward-pass re-derivation,
- * IFF the file's SHA3 payload verifies (always checked), its entry count ==
- * `expected_count`, AND the `tip_hash` entry is present in the loaded map at
- * `tip_height`. This is safe only under a matching clean-shutdown binding (the
- * caller has verified node.db is byte-clean); the stored fields are then exactly
- * what a re-derivation would produce. Single-shot: the arm is consumed by the
- * next load_block_index_flat call regardless of whether the skip fired. Never
- * called (or expected_count<=0) ⇒ the re-derivation runs (dirty-boot path,
- * bit-identical to today). */
-void block_index_loader_arm_trust_flat_fields(int64_t expected_count,
-                                              const uint8_t tip_hash[32],
-                                              int64_t tip_height);
+/* load_block_index_flat ALWAYS re-derives the pointer-graph-derived fields
+ * (nChainWork, nChainTx, skip links, cached branch id) through the canonical
+ * forward pass — measured ~861ms on a 3.19M-entry index. The former Tier-2 P2
+ * "trust-flat" fast-restart arm that skipped this pass under a verified-clean
+ * shutdown binding was removed: it saved <1s but a stale binding (saved best
+ * tip <= the coins/fold tip) left pindex_best_header pinned at the coins tip and
+ * converged the reducer drive with unfolded bodies (a live wedge). The big
+ * fast-restart win — skipping the disk chain-restore + finalize rebuild — is
+ * unaffected; it lives in boot_fast_restart_try, not here. */
 
 /* ── SQLite cache (block_index_cache table) ──────────────── */
 

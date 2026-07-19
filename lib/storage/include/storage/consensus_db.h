@@ -164,4 +164,14 @@ bool consensus_db_finalize_flip(const char *datadir, struct sqlite3 *cdb,
  * pre-flip / legacy datadir. Returns false (out[0]='\0') on a sizing error. */
 bool consensus_db_kernel_store_path(const char *datadir, char *out, size_t cap);
 
+#ifdef ZCL_TESTING
+/* Test-only instrumentation of the drop path: incremented once each time
+ * consensus_db_drop_migrated_from_progress opens progress.kv (the open+ATTACH
+ * cycle) and once each time it takes a BEGIN IMMEDIATE write transaction. Lets a
+ * test assert that a steady-state consensus_db_finalize_flip short-circuits (no
+ * open) and that an already-drained drop takes no write txn (ndrop==0). */
+extern _Atomic unsigned long g_consensus_db_drop_pdb_opens;
+extern _Atomic unsigned long g_consensus_db_drop_txn_begins;
+#endif
+
 #endif /* ZCL_STORAGE_CONSENSUS_DB_H */

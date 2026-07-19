@@ -26,6 +26,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef ZCL_TESTING
+#include <stdatomic.h>
+#endif
+
+#ifdef ZCL_TESTING
+/* Test seams: count the progress.kv open+ATTACH cycle in the drop path and the
+ * BEGIN IMMEDIATE write-lock acquisitions, so a test can assert that a steady-
+ * state (post-flip) finalize short-circuits (no open) and that an already-drained
+ * drop takes no write transaction (ndrop==0 ⇒ no BEGIN). */
+_Atomic unsigned long g_consensus_db_drop_pdb_opens = 0;
+_Atomic unsigned long g_consensus_db_drop_txn_begins = 0;
+#endif
 
 /* The kernel atomic set, in the stable order the fingerprint indexes.  These
  * are exactly the tables committed together on the reducer batch-commit path
@@ -664,6 +676,9 @@ bool consensus_db_drop_migrated_from_progress(const char *datadir, char *errbuf,
     }
 
     sqlite3 *pdb = NULL;
+#ifdef ZCL_TESTING
+    atomic_fetch_add(&g_consensus_db_drop_pdb_opens, 1);
+#endif
     if (sqlite3_open_v2(ppath, &pdb,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
                         NULL) != SQLITE_OK) {
@@ -722,13 +737,20 @@ bool consensus_db_drop_migrated_from_progress(const char *datadir, char *errbuf,
         }
     }
 
-    if (ok && sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &err) !=
-                  SQLITE_OK) {
-        cdb_set_err(errbuf, errcap, "consensus_db: drop BEGIN failed: %s",
-                    err ? err : "(no message)");
-        ok = false;
+    /* Only take the write transaction when there is something to drop. In the
+     * post-flip steady state ndrop==0 (the migrated tables are already gone), so
+     * skip the BEGIN IMMEDIATE write-lock entirely. */
+    if (ok && ndrop > 0) {
+#ifdef ZCL_TESTING
+        atomic_fetch_add(&g_consensus_db_drop_txn_begins, 1);
+#endif
+        if (sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+            cdb_set_err(errbuf, errcap, "consensus_db: drop BEGIN failed: %s",
+                        err ? err : "(no message)");
+            ok = false;
+        }
+        if (err) { sqlite3_free(err); err = NULL; }
     }
-    if (err) { sqlite3_free(err); err = NULL; }
 
     for (size_t i = 0; ok && i < ndrop; i++) {
         char sql[192];
@@ -772,9 +794,34 @@ bool consensus_db_write_schema_marker(sqlite3 *cdb, char *errbuf, size_t errcap)
     return true;
 }
 
+/* True when consensus.db already carries the current flip marker — i.e. a prior
+ * boot completed the flip. Reads only the durable BLOB marker (fail-closed on a
+ * missing/short/coerced value), no progress.kv touch. */
+static bool consensus_db_schema_already_flipped(sqlite3 *cdb)
+{
+    if (!cdb)
+        return false;
+    uint8_t le[4];
+    size_t got = 0;
+    bool found = false;
+    if (!progress_meta_get_blob_exact(cdb, CONSENSUS_DB_SCHEMA_VERSION_KEY,
+                                      le, sizeof(le), &got, &found))
+        return false;
+    if (!found || got != sizeof(le))
+        return false;
+    uint32_t v = (uint32_t)le[0] | ((uint32_t)le[1] << 8) |
+                 ((uint32_t)le[2] << 16) | ((uint32_t)le[3] << 24);
+    return v == (uint32_t)CONSENSUS_DB_SCHEMA_VERSION;
+}
+
 bool consensus_db_finalize_flip(const char *datadir, sqlite3 *cdb, char *errbuf,
                                 size_t errcap)
 {
+    /* Steady-state short-circuit: once the durable marker records the flip, the
+     * migrated progress.kv tables are already gone. Skip the progress.kv
+     * open+ATTACH+lock cycle every subsequent boot would otherwise pay. */
+    if (consensus_db_schema_already_flipped(cdb))
+        return true;
     if (!consensus_db_drop_migrated_from_progress(datadir, errbuf, errcap))
         return false;
     return consensus_db_write_schema_marker(cdb, errbuf, errcap);

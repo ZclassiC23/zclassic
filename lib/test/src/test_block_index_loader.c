@@ -1137,6 +1137,65 @@ int test_block_index_loader(void)
         free(hashes);
     }
 
+    /* ── Fast-restart: forward pass ALWAYS re-derives stored work ────────
+     * The trust-flat fast-restart skip was removed because a stale binding
+     * (flat saved best tip <= the coins/fold tip) that skipped the forward pass
+     * left pindex_best_header pinned at the coins tip and converged the reducer
+     * drive with unfolded bodies — a live wedge. Guard the removal: a flat file
+     * carrying STALE (here: zeroed) stored nChainWork must still load with the
+     * correct work, because load_block_index_flat unconditionally re-derives it
+     * from the pointer graph. If a skip ever reappeared, the loaded tip work
+     * would read back as the zeroed stored value and this fails. */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 20);
+
+        struct uint256 tip_hash = make_test_hash(19);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        struct arith_uint256 correct_work = {0};
+        bool ok = (tip != NULL);
+        if (ok) correct_work = tip->nChainWork;
+
+        /* Poison every entry's stored derived work to zero BEFORE saving, so the
+         * flat carries garbage the forward pass must overwrite on load. */
+        for (int h = 0; h < 20; h++) {
+            struct uint256 hh = make_test_hash(h);
+            struct block_index *pi = block_map_find(&ms.map_block_index, &hh);
+            if (pi) memset(&pi->nChainWork, 0, sizeof(pi->nChainWork));
+        }
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_reder", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (ok) save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct arith_uint256 zero = {0};
+        struct block_index *loaded =
+            ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+        bool rederived = loaded &&
+            arith_uint256_compare(&loaded->nChainWork, &correct_work) == 0 &&
+            arith_uint256_compare(&loaded->nChainWork, &zero) != 0;
+        BIL_CHECK("bil: load re-derives stored work (no fast-restart skip)",
+                  ok && rederived);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
     printf("=== block index loader: %d failures ===\n", failures);
     return failures;
 }
