@@ -162,6 +162,14 @@ struct connman {
     bool socket_thread_started;
     bool open_thread_started;
     bool message_thread_started;
+    /* Set when connman_join()'s bounded timed_join on the message-cycle thread
+     * times out and the thread is detached while STILL RUNNING. A detached
+     * message thread keeps dereferencing cm->manager (addrman entries, nodes,
+     * mutexes) on the addr/inv path, so connman_free() must NOT tear that state
+     * down — doing so is a use-after-free (observed 2026-07-19: addrman_add
+     * SIGSEGV after "[shutdown] connman stopped"). The process is terminating,
+     * so the state is deliberately leaked instead. */
+    bool message_thread_detached;
     struct p2p_node **deferred_free;
     size_t num_deferred_free;
     size_t deferred_free_cap;

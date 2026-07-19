@@ -631,6 +631,17 @@ place_tried:
 bool addrman_add(struct addr_man *am, const struct net_address *addr,
                  const struct net_addr *source, int64_t time_penalty)
 {
+    /* Fail-closed on a torn-down/invalid addrman — the SAME condition find_addr
+     * guards. A detached message-cycle thread can still reach addrman_add after
+     * addrman_free() has nulled am->entries and destroyed am->cs during
+     * shutdown; without this guard find_addr returns NULL ("find_addr: bad
+     * args") but addrman_add falls through to create_entry and dereferences the
+     * freed am->entries (2026-07-19 SIGSEGV). This must run BEFORE
+     * zcl_mutex_lock so we never lock an already-destroyed mutex. */
+    if (!am || !addr || !am->entries)
+        LOG_FAIL("addrman", "addrman_add: torn-down/invalid addrman (am=%p entries=%p)",
+                 (const void *)am, (const void *)(am ? am->entries : NULL));
+
     if (!net_addr_is_routable(&addr->svc.addr))
         return false;
 
