@@ -29,6 +29,7 @@
 #include "storage/anchor_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "core/uint256.h"
 #include "util/log_macros.h"
@@ -70,8 +71,8 @@ extern bool address_index_enabled(void);
 extern bool address_index_get_cursor(sqlite3 *db, int64_t *cursor_out);
 
 /* app/jobs/src/txindex_projection.c (jobs/txindex_projection.h) — the
- * txindex fold reads the shared progress.kv kernel handle (progress_store_db),
- * exactly like address_index above. */
+ * txindex fold writes on the projection handle (projection_store_db) since the
+ * Wave A2 split, exactly like address_index above. */
 extern bool txindex_projection_enabled(void);
 extern bool txindex_projection_get_cursor(sqlite3 *db, int64_t *cursor_out);
 
@@ -98,7 +99,9 @@ static int64_t cc_get_op_return_cursor(void)
 static int64_t cc_get_address_index_cursor(void)
 {
     if (!address_index_enabled()) return CATALOG_CURSOR_UNAVAILABLE;
-    sqlite3 *db = progress_store_db();
+    /* Wave A2 split: the address_index fold now writes on the projection
+     * handle; read its committed cursor from that same handle. */
+    sqlite3 *db = projection_store_db();
     if (!db) return CATALOG_CURSOR_UNAVAILABLE;
     int64_t cursor = -1;
     if (!address_index_get_cursor(db, &cursor)) {
@@ -111,7 +114,9 @@ static int64_t cc_get_address_index_cursor(void)
 static int64_t cc_get_txindex_cursor(void)
 {
     if (!txindex_projection_enabled()) return CATALOG_CURSOR_UNAVAILABLE;
-    sqlite3 *db = progress_store_db();
+    /* Wave A2 split: the txindex fold now writes on the projection handle;
+     * read its committed cursor from that same handle. */
+    sqlite3 *db = projection_store_db();
     if (!db) return CATALOG_CURSOR_UNAVAILABLE;
     int64_t cursor = -1;
     if (!txindex_projection_get_cursor(db, &cursor)) {

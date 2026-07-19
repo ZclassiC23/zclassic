@@ -17,6 +17,7 @@
 #include "services/address_index_service.h"
 #include "services/index_fold_guard.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"
@@ -95,6 +96,10 @@ int test_address_index(void)
     test_make_tmpdir(dir, sizeof(dir), "address_index", "main");
 
     AI_CHECK("progress_store opens", progress_store_open(dir));
+    /* Wave A2 split: the address_index fold + keyed dumper query run on the
+     * projection handle. Open it (same physical file) so the dumper assertions
+     * below observe the rows the raw primitives commit. */
+    AI_CHECK("projection_store opens", projection_store_open(dir));
     sqlite3 *db = progress_store_db();
     AI_CHECK("db handle", db != NULL);
 
@@ -479,6 +484,7 @@ int test_address_index(void)
     free(blk100.vtx);
     transaction_free(&blk101.vtx[0]);
     free(blk101.vtx);
+    projection_store_close();
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

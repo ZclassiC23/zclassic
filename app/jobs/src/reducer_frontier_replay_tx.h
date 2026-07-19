@@ -65,6 +65,16 @@ bool reducer_frontier_replay_stale_proof_tx(struct sqlite3 *db,
                                             int utxo_cursor,
                                             const char *marker);
 
+/* Wave A2 (D4) TX2: the created_outputs backfill of the stale-script reorg
+ * unwind, on the projection_store handle + projection tx lock. Runs STRICTLY
+ * AFTER the kernel TX1 has committed and the caller has released the kernel
+ * progress lock (LOCK ORDER LAW) — never nested inside it. Best-effort: a
+ * failure is logged and returns false; the forward re-fold (body_persist)
+ * repopulates created_outputs either way. Stamps the projection commit seq on
+ * success. No-op returning true when [replay_first, backfill_top] is empty. */
+bool reducer_frontier_replay_backfill_created_outputs_projection(
+    struct main_state *ms, int replay_first, int backfill_top);
+
 /* Lane A1 ordering proof (test observability). Returns the monotonic sequence
  * numbers stamped at the last committed kernel-authoritative rewind (TX1) and
  * the last committed projection-side created_outputs backfill (TX2) of the

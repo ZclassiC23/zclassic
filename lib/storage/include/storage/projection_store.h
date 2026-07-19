@@ -1,0 +1,97 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * projection_store — a SECOND SQLite connection to the SAME `progress.kv`
+ * file the kernel owns through progress_store.
+ *
+ * Why this exists (Wave A2 / D4)
+ * ------------------------------
+ * The reducer kernel folds chain state under progress_store_tx_lock() +
+ * BEGIN IMMEDIATE on the progress_store connection. Projection co-writers
+ * (the -addressindex / -txindex folds, the created_outputs retention prune,
+ * the created_outputs replay backfill) historically shared that ONE handle
+ * and ONE tx lock, so a projection batch's BEGIN IMMEDIATE serialised on the
+ * exact mutex the reducer drive needs — projection work could stall H*.
+ *
+ * projection_store gives those co-writers their OWN connection to the same
+ * physical file plus their OWN recursive tx mutex. A projection BEGIN
+ * IMMEDIATE now contends the kernel only at SQLite's single-WAL-writer level
+ * (bounded by busy_timeout), never on the process mutex the reducer drive
+ * holds. This is the prerequisite for the later physical `consensus.db` flip
+ * that moves the projection tables into their own file entirely.
+ *
+ * LOCK ORDER LAW (inviolable)
+ * ---------------------------
+ * The reducer drive holds the kernel progress lock. The projection lock is
+ * only ever taken AFTER the kernel lock is released — never nested inside it.
+ * Do not take progress_store_tx_lock while holding projection_store_tx_lock
+ * either; the two lock domains are strictly non-overlapping.
+ *
+ * Only PROJECTION tables (address_index, txindex, created_outputs, and their
+ * kin) are ever written through this handle. Consensus/kernel tables
+ * (coins_kv, anchor_kv, nullifier_kv, stage_cursor, every *_log) STAY on the
+ * progress_store handle — the kernel remains their single writer.
+ *
+ * Threading
+ * ---------
+ * One process-wide handle behind an atomic pointer; projection_store_db() is
+ * a relaxed-atomic load with no mutex. Callers executing SQL on the handle
+ * must hold projection_store_tx_lock() (recursive, so read helpers stay
+ * usable inside a projection transaction). */
+
+#ifndef ZCL_STORAGE_PROJECTION_STORE_H
+#define ZCL_STORAGE_PROJECTION_STORE_H
+
+#include <sqlite3.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Max length of the projection.kv path (sizing buffers). Matches
+ * progress_store's ceiling — it is the same physical file. */
+#define PROJECTION_STORE_PATH_MAX 1024
+
+/* Open a SECOND connection to <datadir>/progress.kv in WAL mode. progress_store
+ * MUST already have opened (and integrity-gated) the file — this is a plain
+ * second handle to an already-validated store, so it does not re-run the
+ * quarantine / candidate-refusal / quick_check gates. Idempotent: a second call
+ * with the same datadir is a no-op returning true; a different datadir returns
+ * false (one process, one projection store). */
+bool projection_store_open(const char *datadir);
+
+/* Singleton handle. NULL if not yet opened or already closed. */
+sqlite3 *projection_store_db(void);
+
+/* Snapshot the open path into out[cap] (false + out[0]='\0' when not open or it
+ * would not fit). */
+bool projection_store_path(char *out, size_t cap);
+
+/* Serialize operations on the singleton projection handle. Recursive so a
+ * projection step can call read helpers while its outer transaction is
+ * active. This is a DIFFERENT mutex than progress_store_tx_lock — the two lock
+ * domains must never nest (see LOCK ORDER LAW above). */
+void projection_store_tx_lock(void);
+/* Non-blocking counterpart: true with the recursive lock held, or false
+ * immediately when another projection batch owns it. */
+bool projection_store_tx_trylock(void);
+void projection_store_tx_unlock(void);
+
+/* Run `op` inside a projection BEGIN IMMEDIATE transaction: locks
+ * projection_store_tx_lock(), BEGIN IMMEDIATE on projection_store_db(), calls
+ * op(db, arg), then COMMIT on op()==true / ROLLBACK on op()==false, and
+ * unlocks. Returns op()'s result, or false if the store is closed or the
+ * BEGIN/COMMIT itself fails. `op` binds and steps its own statements. */
+bool projection_store_run_in_tx(bool (*op)(sqlite3 *db, void *arg), void *arg);
+
+/* Graceful close: sqlite3_close of the projection handle. Safe to call
+ * repeatedly and from shutdown paths. Close the projection store BEFORE
+ * progress_store (the kernel connection owns the file's WAL checkpoint on its
+ * own close). */
+void projection_store_close(void);
+
+/* For `zclassic23 dumpstate projection_store` (dump-state convention). `out` is
+ * json_set_object'd by the caller; this also calls json_set_object(out)
+ * defensively. `key` is unused. */
+struct json_value;
+bool projection_store_dump_state_json(struct json_value *out, const char *key);
+
+#endif /* ZCL_STORAGE_PROJECTION_STORE_H */

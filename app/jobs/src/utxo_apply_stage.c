@@ -856,7 +856,7 @@ int utxo_apply_stage_drain(int max_steps)
      * kernel batch durably committed at least one advance, and only once the
      * kernel tx lock has been released above (strictly sequential locks). */
     if (committed && advanced > 0)
-        utxo_apply_created_outputs_prune_post_commit(batch_db);
+        utxo_apply_created_outputs_prune_post_commit();
 
     return advanced;
 }

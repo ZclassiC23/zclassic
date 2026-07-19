@@ -436,17 +436,17 @@ bool maybe_replay_stale_script_via(
     block_free(&blk);
     if (!ok)
         return false;
-
+    /* Wave A2 (D4): created_outputs backfill (TX2) on the projection store,
+     * after the kernel lock release (LOCK ORDER LAW); best-effort. */
+    (void)reducer_frontier_replay_backfill_created_outputs_projection(
+        ms, replay_first, backfill_top);
     out->stale_script_repaired = true;
     out->stale_script_cursor_after = replay_first;
     out->refused_coin_tear = false;
     out->repaired = true;
-    LOG_WARN("stage_repair",
-             "[stage_repair] stale script repair rewound replay cursors to "
-             "h=%d for stale hole h=%d (script=%d proof=%d utxo=%d tip=%d; "
-             "coins_frontier=%d created_outputs backfilled %d..%d)",
-             replay_first, height, script_cursor, proof_cursor, utxo_cursor,
-             tip_cursor, coins_frontier, replay_first, backfill_top);
+    LOG_WARN("stage_repair", "[stage_repair] stale script rewound to h=%d "
+             "(hole h=%d; co %d..%d)", replay_first, height, replay_first,
+             backfill_top);
     return true;
 }
 

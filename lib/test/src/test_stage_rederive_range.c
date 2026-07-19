@@ -42,6 +42,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -78,6 +79,8 @@ bool reducer_frontier_replay_stale_script_tx(
     sqlite3 *db, struct main_state *ms, int height, int replay_first,
     int script_cursor, int proof_cursor, int utxo_cursor, int tip_cursor,
     int backfill_top, bool rewind_headers);
+bool reducer_frontier_replay_backfill_created_outputs_projection(
+    struct main_state *ms, int replay_first, int backfill_top);
 void reducer_frontier_replay_tx_commit_seqs(uint64_t *kernel_out,
                                             uint64_t *projection_out);
 
@@ -328,8 +331,12 @@ int test_stage_rederive_range(void)
     snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
+    projection_store_close();
     bool store_ok = progress_store_open(dir);
     SR_CHECK("progress_store opens", store_ok);
+    /* Wave A2 split: the created_outputs backfill (TX2) runs on the projection
+     * handle — open it so the projection commit is exercised. */
+    SR_CHECK("projection_store opens", !store_ok || projection_store_open(dir));
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     SR_CHECK("event log opens", lg != NULL);
     utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
@@ -338,6 +345,7 @@ int test_stage_rederive_range(void)
     if (!store_ok || !lg || !proj) {
         if (proj) utxo_projection_close(proj);
         if (lg) event_log_close(lg);
+        projection_store_close();
         progress_store_close();
         SetDataDir(""); ClearDataDirCache();
         chain_params_select(CHAIN_MAIN);
@@ -524,7 +532,12 @@ int test_stage_rederive_range(void)
             /*proof_cursor*/TIP + 1, /*utxo_cursor*/TIP + 1,
             /*tip_cursor*/TIP + 1, /*backfill_top*/TIP, /*rewind_headers*/false);
         progress_store_tx_unlock();
-        SR_CHECK("A1: stale_script_tx (kernel TX1 + projection TX2) ok", tx_ok);
+        SR_CHECK("A1: stale_script_tx kernel TX1 ok", tx_ok);
+        /* Wave A2 (D4): TX2 is now a SEPARATE projection-store call the driver
+         * makes AFTER releasing the kernel lock (LOCK ORDER LAW). */
+        bool bf_ok = reducer_frontier_replay_backfill_created_outputs_projection(
+            &ms, /*replay_first*/2, /*backfill_top*/TIP);
+        SR_CHECK("A1: created_outputs backfill (projection TX2) ok", bf_ok);
 
         uint64_t k1 = 0, p1 = 0;
         reducer_frontier_replay_tx_commit_seqs(&k1, &p1);
@@ -580,6 +593,7 @@ teardown:
     header_admit_stage_shutdown();
     utxo_projection_close(proj);
     event_log_close(lg);
+    projection_store_close();
     progress_store_close();
     test_cleanup_tmpdir(blocksdir);
     test_cleanup_tmpdir(netdir);

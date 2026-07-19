@@ -15,6 +15,7 @@
 #include "services/index_fold_guard.h"
 #include "services/txindex_projection_service.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"
@@ -45,6 +46,10 @@ int test_txindex_projection(void)
     test_make_tmpdir(dir, sizeof(dir), "txindex_projection", "main");
 
     TI_CHECK("progress_store opens", progress_store_open(dir));
+    /* Wave A2 split: the txindex fold + keyed dumper query / read_locate run on
+     * the projection handle. Open it (same physical file) so the dump/lookup
+     * assertions observe the rows the raw primitives commit. */
+    TI_CHECK("projection_store opens", projection_store_open(dir));
     sqlite3 *db = progress_store_db();
     TI_CHECK("db handle", db != NULL);
 
@@ -323,6 +328,7 @@ int test_txindex_projection(void)
     free(blk100.vtx);
     transaction_free(&blk101.vtx[0]);
     free(blk101.vtx);
+    projection_store_close();
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

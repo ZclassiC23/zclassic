@@ -136,6 +136,13 @@
                "storage", "projection", "lib/storage/src/progress_store.c",
                "persisted_projection_snapshot", "projection_summary", NULL,
                NULL, NULL, DIAG_TEST_DEFAULT, true),
+    DIAG_ENTRY("projection_store", projection_store_dump_state_json,
+               "projection.kv second handle (Wave A2 split): open/path, and "
+               "independent_of_kernel proving it is a distinct sqlite3 "
+               "connection from the reducer kernel handle on the same file",
+               "storage", "projection", "lib/storage/src/projection_store.c",
+               "persisted_projection_snapshot", "projection_summary", NULL,
+               NULL, NULL, DIAG_TEST_DEFAULT, true),
     DIAG_LOCAL("mint_preflight", boot_mint_anchor_preflight_dump_state_json,
                "last -mint-anchor producer preflight run (run_all): "
                "have_report, all_ok, per-check {name,ok,why,remedy} — "

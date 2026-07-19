@@ -25,7 +25,7 @@
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
-#include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -187,7 +187,9 @@ int address_index_service_tick_once(void)
     if (!address_index_enabled())
         return 0;
     struct main_state *ms = app_runtime_main_state();
-    sqlite3 *db = progress_store_db();
+    /* Wave A2 split: fold on the projection handle + projection tx lock, so
+     * this batch never serialises on the reducer drive's kernel tx lock. */
+    sqlite3 *db = projection_store_db();
     if (!ms || !db)
         return 0;
     char datadir[1024];
@@ -195,13 +197,13 @@ int address_index_service_tick_once(void)
     if (!datadir[0])
         return 0;
 
-    /* Non-blocking: if a reducer batch owns the store, skip this tick and try
-     * again next period. Never blocks the supervisor thread; never stalls the
-     * drive beyond one bounded batch we hold ourselves. */
-    if (!progress_store_tx_trylock())
+    /* Non-blocking: if another projection batch owns the store, skip this tick
+     * and try again next period. Never blocks the supervisor thread; never
+     * stalls the drive beyond one bounded batch we hold ourselves. */
+    if (!projection_store_tx_trylock())
         return 0;
     int folded = ai_do_batch(ms, datadir, db);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
     return folded;
 }
 
@@ -309,12 +311,12 @@ bool address_index_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "scripthash", hexbuf);
     json_push_kv_int(out, "from_height", from_height);
 
-    sqlite3 *db = progress_store_db();
+    sqlite3 *db = projection_store_db();
     if (!db) {
-        json_push_kv_str(out, "error", "progress store not open");
+        json_push_kv_str(out, "error", "projection store not open");
         return true;
     }
-    if (!progress_store_tx_trylock()) {
+    if (!projection_store_tx_trylock()) {
         json_push_kv_bool(out, "busy", true);
         return true;
     }
@@ -325,7 +327,7 @@ bool address_index_dump_state_json(struct json_value *out, const char *key)
     int n = address_index_query_appearances(db, sh, from_height,
                                             ADDRESS_INDEX_QUERY_MAX_ROWS,
                                             &arr, &balance);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
 
     if (n < 0) {
         json_push_kv_str(out, "error", "query failed");
