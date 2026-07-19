@@ -810,6 +810,34 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
 bool boot_need_legacy_header_pull(int64_t local_index_size, int64_t chain_h,
                                   bool legacy_source_present);
 
+/* Pure predicate (impl in config/src/boot_legacy_import.c): decide whether
+ * boot should hydrate the in-memory block index from the node.db `blocks`
+ * table — the sink `--importblockindex` CLI-bulk-loads header rows into
+ * (services/block_index_loader.h load_block_index_from_blocks_table).
+ *
+ * Determinism fix: an EARLIER loader rung (flat file / block_index_cache)
+ * can succeed ("loaded=true") with a small STALE map left over from a
+ * partial P2P header sync that predates the CLI import — e.g. map_size=200
+ * from a pre-import boot, then an operator runs --importblockindex which
+ * fills `blocks` with ~3.1M rows on the SAME datadir. A caller that only
+ * checks `!loaded` (ignoring how the blocks table compares to what's
+ * already loaded) then PERMANENTLY skips this rung and the node falls back
+ * to a P2P/getheaders header crawl to fill in the remainder it already has
+ * on disk (~90 min instead of the ~74s the local blocks table would give it
+ * for free). This mirrors boot_need_legacy_header_pull's ratio+empty
+ * pattern: `map_size` is compared against `blocks_table_rows` directly, NOT
+ * gated on the caller's `loaded` flag, so a stale small map never blocks
+ * the rung. blocks_table_rows == 0 is always false (nothing to hydrate). */
+bool boot_need_blocks_table_hydrate(int64_t map_size, int64_t blocks_table_rows);
+
+/* Dispatch wrapper (impl in config/src/boot_legacy_import.c): runs
+ * boot_need_blocks_table_hydrate against the LIVE node.db + in-memory map,
+ * logs the decision + row counts at INFO, and performs the hydrate when it
+ * fires. Returns true iff the hydrate ran AND succeeded. Split out purely
+ * to keep config/src/boot.c under the E1 file-size ceiling. */
+bool boot_dispatch_blocks_table_hydrate(struct node_db *ndb,
+                                        struct main_state *ms);
+
 bool app_is_running(void);
 void app_add_node(const char *host, int port);
 

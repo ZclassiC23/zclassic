@@ -2735,6 +2735,163 @@ static int import_complete_shielded_mode(int argc, char **argv)
     return 0;
 }
 
+/* Direct block-index (header chain) import — seeds the SQLite blocks table
+ * from a LevelDB block index, header-only (clears HAVE_DATA + file positions
+ * so bodies fetch lazily). Pair with --importchainstate (or the boot UTXO
+ * auto-import) so an imported UTXO anchor immediately becomes the tip
+ * instead of waiting on P2P header sync.
+ * Usage: zclassic23 [<other-args>...] --importblockindex /path/to/datadir
+ *          [dbpath] [<other-args>...]
+ *   where /path/to/datadir is the PARENT of blocks/index (e.g. ~/.zclassic
+ *   for a running zclassicd — the on-disk format is shared).
+ *
+ * `ibi_idx` is the argv index of the literal "--importblockindex" token —
+ * the caller scans for it ANYWHERE in argv (not just argv[1]) so an
+ * invocation like `zclassic23 -datadir=X --importblockindex Y` dispatches
+ * the import instead of silently falling through to a normal boot (the
+ * historical footgun: the verb only worked as argv[1], every other position
+ * was ignored by the old argv[1]-only strcmp and the node quietly booted
+ * normally — see docs/HANDOFF.md two-step cold-sync recipe /
+ * test_importblockindex_cli_dispatch.c). A missing or non-existent source
+ * datadir REFUSES loudly here (named error, non-zero exit) rather than
+ * proceeding as a normal boot or failing deep inside the importer with a
+ * generic message. */
+static int importblockindex_cli_mode(int argc, char **argv, int ibi_idx)
+{
+    if (ibi_idx + 1 >= argc) {
+        fprintf(stderr,
+                "usage: zclassic23 --importblockindex <source-datadir>"
+                " [<target-node.db-path>]\n"
+                "       (missing <source-datadir> — refusing to fall through"
+                " to a normal boot)\n");
+        return 1;
+    }
+    const char *snap_dir = argv[ibi_idx + 1];
+    const char *home = getenv("HOME");
+    char db_path[512];
+
+    /* Fail closed on a missing/invalid source BEFORE touching anything
+     * downstream: the importer's own failure (deep inside
+     * snapshot_import_block_index) is a generic "Block-index import
+     * failed", which is easy to miss in a scrollback vs this named,
+     * up-front refusal. Only the PARENT datadir is required to already
+     * exist — `blocks/index` itself is legitimately auto-created (LevelDB
+     * create_if_missing, db_wrapper_open) when importing from a datadir
+     * that predates any header sync, so requiring it upfront would refuse
+     * a case the importer has always accepted (a trivial 0-header import). */
+    {
+        struct stat src_st;
+        if (stat(snap_dir, &src_st) != 0 || !S_ISDIR(src_st.st_mode)) {
+            fprintf(stderr,
+                    "--importblockindex: REFUSING — source datadir '%s' does "
+                    "not exist (or is not a directory). Pass the PARENT of "
+                    "blocks/index (e.g. ~/.zclassic for a running "
+                    "zclassicd).\n", snap_dir);
+            return 1;
+        }
+    }
+
+    if (ibi_idx + 2 < argc) {
+        /* Positional target, NOT a flag: a '-datadir=...' here would be
+         * silently treated as a literal db filename (and fed to shell
+         * cp/rm commands). Refuse rather than guess — --importblockindex
+         * never falls through to a normal boot, so there is no legitimate
+         * unrelated node flag to skip over here. */
+        if (argv[ibi_idx + 2][0] == '-') {
+            fprintf(stderr,
+                    "usage: zclassic23 --importblockindex <source-datadir>"
+                    " [<target-node.db-path>]\n"
+                    "       (got flag-like target '%s'; pass the node.db"
+                    " PATH, e.g. ~/.zclassic-c23/node.db)\n",
+                    argv[ibi_idx + 2]);
+            return 1;
+        }
+        snprintf(db_path, sizeof(db_path), "%s", argv[ibi_idx + 2]);
+    } else
+        snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
+                 home ? home : ".");
+
+    printf("=== ZClassic Block-Index (header) Import ===\n");
+    printf("Source: %s/blocks/index (LevelDB CDiskBlockIndex)\n", snap_dir);
+    printf("Target: %s (SQLite blocks)\n", db_path);
+    printf("Mode:   header-only (bodies fetched lazily via P2P)\n\n");
+    LOG_INFO("importblockindex",
+             "CLI dispatch: argv_pos=%d source=%s target=%s mode=bulk",
+             ibi_idx, snap_dir, db_path);
+
+    /* If the source LevelDB is LOCKed (e.g. a running zclassicd owns
+     * it), copy blocks/index to a temp dir and remove the copied LOCK —
+     * NEVER touch another process's LOCK. Mirrors utxo_recovery_import_ldb.
+     * Then import from the temp parent. */
+    char import_parent[1024];
+    char tmp_cleanup[1100] = "";
+    snprintf(import_parent, sizeof(import_parent), "%s", snap_dir);
+    {
+        char src_lock[1100];
+        snprintf(src_lock, sizeof(src_lock), "%s/blocks/index/LOCK", snap_dir);
+        struct stat lst;
+        if (stat(src_lock, &lst) == 0) {
+            /* Derive a temp parent next to the target db. */
+            char ddir[700];
+            snprintf(ddir, sizeof(ddir), "%s", db_path);
+            char *slash = strrchr(ddir, '/');
+            if (slash) *slash = '\0'; else snprintf(ddir, sizeof(ddir), ".");
+            char tmp_parent[900];
+            snprintf(tmp_parent, sizeof(tmp_parent), "%s/bidx_import_tmp", ddir);
+            printf("Copying block index (source LOCK present)...\n");
+            fflush(stdout);
+            /* `rm -rf tmp_parent && mkdir -p tmp_parent/blocks &&
+             *  cp -a snap_dir/blocks/index tmp_parent/blocks/index` — the
+             * fd-based walker, no shell. PRESERVE_TIMES matches cp -a. */
+            char src_index[1100], dst_blocks[1100], dst_index[1200];
+            snprintf(src_index, sizeof(src_index), "%s/blocks/index", snap_dir);
+            snprintf(dst_blocks, sizeof(dst_blocks), "%s/blocks", tmp_parent);
+            snprintf(dst_index, sizeof(dst_index), "%s/blocks/index", tmp_parent);
+            struct zcl_result rrm = zcl_tree_remove(tmp_parent);
+            struct zcl_result rmk = rrm.ok ? zcl_mkdir_p(dst_blocks, 0755)
+                                           : rrm;
+            struct zcl_result rcp = rmk.ok
+                ? zcl_tree_copy(src_index, dst_index,
+                                ZCL_COPY_PRESERVE_TIMES, NULL, NULL)
+                : rmk;
+            if (!rcp.ok) {
+                fprintf(stderr, "Failed to copy block index: %s\n",
+                        rcp.message);
+                return 1;
+            }
+            char tmp_lock[1100];
+            snprintf(tmp_lock, sizeof(tmp_lock), "%s/blocks/index/LOCK", tmp_parent);
+            unlink(tmp_lock);
+            snprintf(import_parent, sizeof(import_parent), "%s", tmp_parent);
+            snprintf(tmp_cleanup, sizeof(tmp_cleanup), "%s", tmp_parent);
+        }
+    }
+
+    int64_t t0 = (int64_t)time(NULL);
+    int count = 0;
+    bool ok = snapshot_import_block_index(import_parent, db_path, true, &count);
+    int64_t t1 = (int64_t)time(NULL);
+    if (tmp_cleanup[0]) {
+        /* `rm -rf tmp_cleanup` via the fd-based walker (no shell). */
+        struct zcl_result rmc = zcl_tree_remove(tmp_cleanup);
+        if (!rmc.ok)
+            fprintf(stderr, "warning: failed to clean temp %s: %s\n",
+                    tmp_cleanup, rmc.message);
+    }
+    if (!ok) {
+        LOG_WARN("importblockindex",
+                 "bulk import FAILED source=%s target=%s elapsed=%llds",
+                 snap_dir, db_path, (long long)(t1 - t0));
+        fprintf(stderr, "Block-index import failed\n");
+        return 1;
+    }
+    LOG_INFO("importblockindex",
+             "bulk import complete: headers=%d elapsed=%llds target=%s",
+             count, (long long)(t1 - t0), db_path);
+    printf("\nImported %d headers in %llds\n", count, (long long)(t1 - t0));
+    return 0;
+}
+
 /* Opt-in log-level filter (Phase E3). -loglevel=<all|info|warn|error|fatal|off>
  * raises the floor the LOG_ and GUARD macros (log_macros.h) emit at. Default
  * stays ZCL_LOG_ALL (zero behavior change) unless the flag is present. An
@@ -2763,6 +2920,19 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i) {
         if (strncmp(argv[i], "-bench", 6) == 0)
             return bench_mode_main(argc, argv);
+    }
+
+    /* --importblockindex: scanned ANYWHERE in argv, not just argv[1]. The
+     * historical dispatch only matched a literal argv[1] strcmp, so any
+     * other ordering (e.g. `-datadir=X --importblockindex Y`) fell through
+     * every check below it and silently ran a normal node boot instead —
+     * an operator ran a multi-hour band-path boot believing headers were
+     * importing. This scan takes priority over every other CLI/boot mode
+     * below: --importblockindex never boots the node in the same process,
+     * so there is nothing it could conflict with. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--importblockindex") == 0)
+            return importblockindex_cli_mode(argc, argv, i);
     }
 
     /* CLI UX contract: bare `zclassic23`, zero arguments. The real node
@@ -3286,107 +3456,6 @@ int main(int argc, char **argv)
         }
 
         node_db_close(&ndb);
-        return 0;
-    }
-
-    /* Direct block-index (header chain) import — seeds the SQLite blocks
-     * table from a LevelDB block index, header-only (clears HAVE_DATA + file
-     * positions so bodies fetch lazily). Pair with --importchainstate (or the
-     * boot UTXO auto-import) so an imported UTXO anchor immediately becomes the
-     * tip instead of waiting on P2P header sync.
-     * Usage: zclassic23 --importblockindex /path/to/datadir [dbpath]
-     *   where /path/to/datadir is the PARENT of blocks/index (e.g. ~/.zclassic
-     *   for a running zclassicd — the on-disk format is shared). */
-    if (argc >= 3 && strcmp(argv[1], "--importblockindex") == 0) {
-        const char *snap_dir = argv[2];
-        const char *home = getenv("HOME");
-        char db_path[512];
-        if (argc > 3) {
-            /* Positional target, NOT a flag: a '-datadir=...' here would be
-             * silently treated as a literal db filename (and fed to shell
-             * cp/rm commands). */
-            if (argv[3][0] == '-') {
-                fprintf(stderr,
-                        "usage: zclassic23 --importblockindex <source-datadir>"
-                        " [<target-node.db-path>]\n"
-                        "       (got flag-like target '%s'; pass the node.db"
-                        " PATH, e.g. ~/.zclassic-c23/node.db)\n", argv[3]);
-                return 1;
-            }
-            snprintf(db_path, sizeof(db_path), "%s", argv[3]);
-        } else
-            snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
-                     home ? home : ".");
-
-        printf("=== ZClassic Block-Index (header) Import ===\n");
-        printf("Source: %s/blocks/index (LevelDB CDiskBlockIndex)\n", snap_dir);
-        printf("Target: %s (SQLite blocks)\n", db_path);
-        printf("Mode:   header-only (bodies fetched lazily via P2P)\n\n");
-
-        /* If the source LevelDB is LOCKed (e.g. a running zclassicd owns
-         * it), copy blocks/index to a temp dir and remove the copied LOCK —
-         * NEVER touch another process's LOCK. Mirrors utxo_recovery_import_ldb.
-         * Then import from the temp parent. */
-        char import_parent[1024];
-        char tmp_cleanup[1100] = "";
-        snprintf(import_parent, sizeof(import_parent), "%s", snap_dir);
-        {
-            char src_lock[1100];
-            snprintf(src_lock, sizeof(src_lock), "%s/blocks/index/LOCK", snap_dir);
-            struct stat lst;
-            if (stat(src_lock, &lst) == 0) {
-                /* Derive a temp parent next to the target db. */
-                char ddir[700];
-                snprintf(ddir, sizeof(ddir), "%s", db_path);
-                char *slash = strrchr(ddir, '/');
-                if (slash) *slash = '\0'; else snprintf(ddir, sizeof(ddir), ".");
-                char tmp_parent[900];
-                snprintf(tmp_parent, sizeof(tmp_parent), "%s/bidx_import_tmp", ddir);
-                printf("Copying block index (source LOCK present)...\n");
-                fflush(stdout);
-                /* `rm -rf tmp_parent && mkdir -p tmp_parent/blocks &&
-                 *  cp -a snap_dir/blocks/index tmp_parent/blocks/index` — the
-                 * fd-based walker, no shell. PRESERVE_TIMES matches cp -a. */
-                char src_index[1100], dst_blocks[1100], dst_index[1200];
-                snprintf(src_index, sizeof(src_index), "%s/blocks/index", snap_dir);
-                snprintf(dst_blocks, sizeof(dst_blocks), "%s/blocks", tmp_parent);
-                snprintf(dst_index, sizeof(dst_index), "%s/blocks/index", tmp_parent);
-                struct zcl_result rrm = zcl_tree_remove(tmp_parent);
-                struct zcl_result rmk = rrm.ok ? zcl_mkdir_p(dst_blocks, 0755)
-                                               : rrm;
-                struct zcl_result rcp = rmk.ok
-                    ? zcl_tree_copy(src_index, dst_index,
-                                    ZCL_COPY_PRESERVE_TIMES, NULL, NULL)
-                    : rmk;
-                if (!rcp.ok) {
-                    fprintf(stderr, "Failed to copy block index: %s\n",
-                            rcp.message);
-                    return 1;
-                }
-                char tmp_lock[1100];
-                snprintf(tmp_lock, sizeof(tmp_lock), "%s/blocks/index/LOCK", tmp_parent);
-                unlink(tmp_lock);
-                snprintf(import_parent, sizeof(import_parent), "%s", tmp_parent);
-                snprintf(tmp_cleanup, sizeof(tmp_cleanup), "%s", tmp_parent);
-            }
-        }
-
-        int64_t t0 = (int64_t)time(NULL);
-        int count = 0;
-        bool ok = snapshot_import_block_index(import_parent, db_path, true, &count);
-        int64_t t1 = (int64_t)time(NULL);
-        if (tmp_cleanup[0]) {
-            /* `rm -rf tmp_cleanup` via the fd-based walker (no shell). */
-            struct zcl_result rmc = zcl_tree_remove(tmp_cleanup);
-            if (!rmc.ok)
-                fprintf(stderr, "warning: failed to clean temp %s: %s\n",
-                        tmp_cleanup, rmc.message);
-        }
-        if (!ok) {
-            fprintf(stderr, "Block-index import failed\n");
-            return 1;
-        }
-        printf("\nImported %d headers in %llds\n", count, (long long)(t1 - t0));
         return 0;
     }
 

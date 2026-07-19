@@ -128,6 +128,38 @@ int test_boot_phase(void)
     BP_CHECK("ratio trigger requires legacy source present",
         !boot_need_legacy_header_pull(3, 3000000, false));
 
+    /* ── boot_need_blocks_table_hydrate (importblockindex determinism) ──
+     * MEMORY/bug: the `blocks`-table bulk-hydrate rung (config/src/boot.c,
+     * the sink --importblockindex CLI-bulk-loads header rows into) used to
+     * be gated on `!loaded && map_size<=1`. An EARLIER loader rung (flat
+     * file / block_index_cache) can succeed ("loaded=true") with a small
+     * STALE map left over from a partial P2P header sync that predates the
+     * CLI import — the `!loaded` guard then PERMANENTLY skips the bulk
+     * rung even though the blocks table holds millions of complete rows,
+     * and the node falls back to a P2P/getheaders header crawl to re-fetch
+     * headers it already has on disk (~90 min instead of ~74s). The fix
+     * keys the rung on the blocks-table row count vs the CURRENTLY loaded
+     * map size instead of the `loaded` flag — a stale small map never
+     * blocks it. */
+    BP_CHECK("empty map + blocks table populated fires (fresh datadir "
+             "chooses bulk)",
+        boot_need_blocks_table_hydrate(0, 3100000));
+    BP_CHECK("genesis-only map + blocks table populated fires",
+        boot_need_blocks_table_hydrate(1, 3100000));
+    BP_CHECK("stale small map (200) far below blocks table fires — the "
+             "exact `loaded=true` stale-map defect this closes",
+        boot_need_blocks_table_hydrate(200, 3100000));
+    BP_CHECK("blocks table empty never fires (nothing to hydrate)",
+        !boot_need_blocks_table_hydrate(0, 0));
+    BP_CHECK("map at 90pct of blocks table rows does not fire (at threshold)",
+        !boot_need_blocks_table_hydrate(2790000, 3100000));
+    BP_CHECK("map just below 90pct of blocks table rows fires (ratio "
+             "trigger)",
+        boot_need_blocks_table_hydrate(2789999, 3100000));
+    BP_CHECK("fully-loaded map (warm restart) does not re-fire — preserves "
+             "existing warm-datadir behavior",
+        !boot_need_blocks_table_hydrate(3100000, 3100000));
+
     /* ── forward-jump (legal, emits WARN) ──────────────────────── */
     boot_stage_reset_for_testing();
     boot_stage_advance_to(BOOT_STAGE_READY);
