@@ -7,6 +7,7 @@
 #include "platform/time_compat.h"
 #include "util/supervisor_backstop.h"
 #include "util/supervisor.h"
+#include "util/boot_phase.h"
 #include "util/thread_registry.h"
 #include "util/sd_notify.h"
 #include "util/log_macros.h"
@@ -34,6 +35,8 @@ static _Atomic bool    g_respawn_requested   = false;
 #ifdef ZCL_TESTING
 static _Atomic bool g_force_off_systemd      = false;
 static _Atomic bool g_force_off_systemd_set  = false;
+static _Atomic int  g_force_boot_stage       = 0;
+static _Atomic bool g_force_boot_stage_set   = false;
 #endif
 
 static bool backstop_off_systemd(void)
@@ -43,6 +46,17 @@ static bool backstop_off_systemd(void)
         return atomic_load(&g_force_off_systemd);
 #endif
     return !sd_notify_is_active();
+}
+
+/* Current boot stage as an int, with a test override so a hermetic test
+ * can pin it. Production always reads the real boot_stage_current(). */
+static int backstop_boot_stage(void)
+{
+#ifdef ZCL_TESTING
+    if (atomic_load(&g_force_boot_stage_set))
+        return atomic_load(&g_force_boot_stage);
+#endif
+    return (int)boot_stage_current();
 }
 
 /* Pure decision, shared by the production poll loop and the ZCL_TESTING
@@ -75,6 +89,41 @@ static bool backstop_decide(struct supervisor_backstop_state *st,
     return true;
 }
 
+/* Boot-stage-aware wrapper around backstop_decide — the ONE decision the
+ * production poll loop and the ZCL_TESTING seam both make. Two changes
+ * versus the bare heartbeat check:
+ *
+ *   1. Liveness = sweep_hb + boot_progress. EITHER the supervisor sweep
+ *      advancing OR a boot loop pumping boot_progress_note() re-arms the
+ *      freeze episode. During serving, boot_progress is static (no boot
+ *      loop runs), so the sweep heartbeat is the sole signal and a frozen
+ *      sweep still fires — the serving invariant is untouched.
+ *
+ *   2. Budget scales UP (never down) to SUPERVISOR_BACKSTOP_BOOT_FREEZE_US
+ *      while in a pre-serving boot stage, so a long single-threaded boot
+ *      stage that hasn't started the sweep yet is not mistaken for a hang.
+ *
+ * `out_budget_us` (optional) receives the effective budget used, for the
+ * caller's diagnostic message. */
+static bool backstop_decide_staged(struct supervisor_backstop_state *st,
+                                   uint64_t sweep_hb, uint64_t boot_progress,
+                                   int boot_stage, int64_t now_us,
+                                   int64_t serving_threshold_us,
+                                   int64_t *out_budget_us)
+{
+    uint64_t liveness = sweep_hb + boot_progress;
+
+    int64_t budget = serving_threshold_us;
+    if (serving_threshold_us > 0 &&
+        boot_stage >= 0 && boot_stage < BOOT_STAGE_SERVICES_RUNNING &&
+        SUPERVISOR_BACKSTOP_BOOT_FREEZE_US > budget)
+        budget = SUPERVISOR_BACKSTOP_BOOT_FREEZE_US;
+
+    if (out_budget_us)
+        *out_budget_us = budget;
+    return backstop_decide(st, liveness, now_us, budget);
+}
+
 #ifdef ZCL_TESTING
 bool supervisor_backstop_test_check(struct supervisor_backstop_state *state,
                                     uint64_t heartbeat, int64_t now_us,
@@ -83,11 +132,28 @@ bool supervisor_backstop_test_check(struct supervisor_backstop_state *state,
     return backstop_decide(state, heartbeat, now_us, freeze_threshold_us);
 }
 
+bool supervisor_backstop_test_check_staged(
+    struct supervisor_backstop_state *state,
+    uint64_t sweep_hb, uint64_t boot_progress, int boot_stage,
+    int64_t now_us, int64_t serving_threshold_us)
+{
+    return backstop_decide_staged(state, sweep_hb, boot_progress, boot_stage,
+                                  now_us, serving_threshold_us, NULL);
+}
+
+void supervisor_backstop_test_force_boot_stage(int boot_stage)
+{
+    atomic_store(&g_force_boot_stage, boot_stage);
+    atomic_store(&g_force_boot_stage_set, true);
+}
+
 void supervisor_backstop_test_reset(void)
 {
     atomic_store(&g_respawn_requested, false);
     atomic_store(&g_force_off_systemd, false);
     atomic_store(&g_force_off_systemd_set, false);
+    atomic_store(&g_force_boot_stage, 0);
+    atomic_store(&g_force_boot_stage_set, false);
 }
 
 void supervisor_backstop_test_force_off_systemd(bool off_systemd)
@@ -99,8 +165,11 @@ void supervisor_backstop_test_force_off_systemd(bool off_systemd)
 void supervisor_backstop_test_poll(struct supervisor_backstop_state *state,
                                   int64_t now_us, int64_t freeze_threshold_us)
 {
-    uint64_t hb = supervisor_sweep_heartbeat();
-    if (backstop_decide(state, hb, now_us, freeze_threshold_us)) {
+    uint64_t hb   = supervisor_sweep_heartbeat();
+    uint64_t bp   = boot_progress_marker();
+    int      stg  = backstop_boot_stage();
+    if (backstop_decide_staged(state, hb, bp, stg, now_us,
+                               freeze_threshold_us, NULL)) {
         if (backstop_off_systemd())
             atomic_store(&g_respawn_requested, true);
     }
@@ -119,16 +188,21 @@ static void *backstop_thread_main(void *arg)
     while (!atomic_load(&g_stop_requested) &&
            !thread_registry_shutdown_requested()) {
         uint64_t hb        = supervisor_sweep_heartbeat();
+        uint64_t bp        = boot_progress_marker();
+        int      stg       = backstop_boot_stage();
         int64_t  now       = platform_time_monotonic_us();
         int64_t  freeze_us = atomic_load(&g_freeze_threshold_us);
+        int64_t  budget_us = freeze_us;
 
-        if (backstop_decide(&st, hb, now, freeze_us)) {
+        if (backstop_decide_staged(&st, hb, bp, stg, now, freeze_us,
+                                   &budget_us)) {
             fprintf(stderr,  // obs-ok:supervisor-backstop-fatal-notice
                 "[supervisor-backstop] FATAL supervisor sweep frozen for "
-                ">=%llds (heartbeat=%llu) -- root liveness thread is dead "
-                "or wedged inside a child callback\n",
-                (long long)(freeze_us / 1000000), (unsigned long long)hb);
-            LOG_WARN("supervisor_backstop", "[supervisor_backstop] sweep heartbeat frozen >=%llds at count=%llu", (long long)(freeze_us / 1000000), (unsigned long long)hb);
+                ">=%llds (heartbeat=%llu boot_progress=%llu stage=%s) -- root "
+                "liveness thread is dead or wedged inside a child callback\n",
+                (long long)(budget_us / 1000000), (unsigned long long)hb,
+                (unsigned long long)bp, boot_stage_name((enum boot_stage)stg));
+            LOG_WARN("supervisor_backstop", "[supervisor_backstop] sweep heartbeat frozen >=%llds at count=%llu (boot_progress=%llu stage=%s)", (long long)(budget_us / 1000000), (unsigned long long)hb, (unsigned long long)bp, boot_stage_name((enum boot_stage)stg));
             if (backstop_off_systemd()) {
                 atomic_store(&g_respawn_requested, true);
                 fprintf(stderr,  // obs-ok:supervisor-backstop-respawn-notice
@@ -218,5 +292,18 @@ bool supervisor_backstop_dump_state_json(struct json_value *out,
                       (int64_t)supervisor_sweep_heartbeat());
     json_push_kv_int (out, "sweep_last_age_us",
                       platform_time_monotonic_us() - supervisor_sweep_last_us());
+    /* Boot-stage-aware liveness inputs: during a pre-serving boot stage
+     * boot_progress feeds the freeze episode alongside the sweep, and the
+     * effective budget is the generous boot value, not the 30 s bar. */
+    int stg = (int)boot_stage_current();
+    json_push_kv_int (out, "boot_progress",
+                      (int64_t)boot_progress_marker());
+    json_push_kv_str (out, "boot_stage", boot_stage_name((enum boot_stage)stg));
+    json_push_kv_int (out, "effective_freeze_threshold_us",
+                      (stg >= 0 && stg < BOOT_STAGE_SERVICES_RUNNING &&
+                       SUPERVISOR_BACKSTOP_BOOT_FREEZE_US >
+                           atomic_load(&g_freeze_threshold_us))
+                          ? (int64_t)SUPERVISOR_BACKSTOP_BOOT_FREEZE_US
+                          : atomic_load(&g_freeze_threshold_us));
     return true;
 }

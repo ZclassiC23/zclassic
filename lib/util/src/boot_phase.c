@@ -6,6 +6,7 @@
 #include "util/boot_status.h"
 #include "health/heartbeat.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,51 @@ void boot_phase_end(struct boot_phase *p)
     else
         fprintf(stderr, "[boot-phase] END %s %lldms\n",  // obs-ok:boot-phase-trace-marker
                 p->name, (long long)elapsed);
+    fflush(stderr);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Boot progress marker (the boot-liveness feed for supervisor_backstop).
+ * See util/boot_phase.h for the full rationale. */
+
+static _Atomic uint64_t g_boot_progress          = 0;
+static _Atomic int64_t  g_boot_progress_log_ms   = 0;
+
+uint64_t boot_progress_marker(void)
+{
+    return atomic_load_explicit(&g_boot_progress, memory_order_relaxed);
+}
+
+void boot_progress_note(const char *label, uint64_t done, uint64_t total)
+{
+    /* Bump the liveness counter EVERY call — this is what the
+     * supervisor_backstop watches to tell a progressing boot loop apart
+     * from a genuinely frozen supervisor sweep. Cheap: one relaxed add. */
+    atomic_fetch_add_explicit(&g_boot_progress, 1u, memory_order_relaxed);
+
+    /* Operator-visible progress line, throttled to ~1/s so a loop that
+     * pumps every N entries never floods node.log. The CAS ensures only
+     * one caller prints per window even if boot ever pumps concurrently. */
+    int64_t now  = platform_time_monotonic_ms();
+    int64_t last = atomic_load_explicit(&g_boot_progress_log_ms,
+                                        memory_order_relaxed);
+    if (now - last < 1000)
+        return;
+    if (!atomic_compare_exchange_strong_explicit(
+            &g_boot_progress_log_ms, &last, now,
+            memory_order_relaxed, memory_order_relaxed))
+        return;
+
+    if (total > 0)
+        fprintf(stderr,  // obs-ok:boot-phase-trace-marker
+            "[boot-phase] PROGRESS %s %llu/%llu (%llu%%)\n",
+            label ? label : "(unnamed)",
+            (unsigned long long)done, (unsigned long long)total,
+            (unsigned long long)(done * 100 / total));
+    else
+        fprintf(stderr,  // obs-ok:boot-phase-trace-marker
+            "[boot-phase] PROGRESS %s %llu\n",
+            label ? label : "(unnamed)", (unsigned long long)done);
     fflush(stderr);
 }
 

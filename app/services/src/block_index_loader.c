@@ -36,6 +36,7 @@
 #include <sqlite3.h>
 
 #include "util/ar_step_readonly.h"
+#include "util/boot_phase.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -471,6 +472,11 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
     /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
     for (uint32_t i = 0; i < count; i++) {
+        /* Feed the supervisor_backstop liveness marker every 64K entries so
+         * this single-threaded pre-serving loop over ~3.1M entries is not
+         * mistaken for a frozen supervisor sweep (util/boot_phase.h). */
+        if ((i & 0xFFFF) == 0)
+            boot_progress_note("block_index.flat_insert", i, count);
         if (uint256_is_null((const struct uint256 *)entries[i].hash))
             continue;
 
@@ -522,6 +528,8 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
      * overwrite the main chain entry in by_height[], causing the pprev
      * chain to follow orphan forks instead of the main chain. */
     for (uint32_t i = 0; i < count; i++) {
+        if ((i & 0xFFFF) == 0)
+            boot_progress_note("block_index.flat_link", i, count);
         struct block_index *pindex = &arena[i];
         /* Link by the entry's own prev_hash, NOT by its stored height:
          * an entry persisted with a corrupt height 0 (a detached root a
