@@ -341,6 +341,19 @@ void sync_manifest_free(struct sync_manifest *m);
 void fast_sync_chunk_hash(const struct utxo_chunk *chunk,
                            uint8_t hash_out[32]);
 
+/* Upper bound on the serialized length of one chunk (see
+ * fast_sync_serialize_chunk_for_hash). */
+#define FAST_SYNC_CHUNK_SER_MAX (8u + 1000u * (32u + 4u + 8u + 520u + 2u + 4u + 1u))
+
+/* Serialize a chunk into the EXACT byte stream fast_sync_chunk_hash() feeds to
+ * SHA3-256, so sha3_256(buf, ret) == fast_sync_chunk_hash(chunk). The manifest
+ * builder batches four independent chunk hashes through sha3_256_x4 on top of
+ * this. `buf` must hold FAST_SYNC_CHUNK_SER_MAX bytes; returns bytes written.
+ * Exposed (not internal-static) so the `fast_sync` chunk_serialize test can
+ * assert byte-identity against the streaming reference. */
+size_t fast_sync_serialize_chunk_for_hash(const struct utxo_chunk *chunk,
+                                          uint8_t *buf);
+
 /* Verify a chunk against its expected hash. */
 bool fast_sync_verify_chunk(const struct utxo_chunk *chunk,
                              const uint8_t expected_hash[32]);

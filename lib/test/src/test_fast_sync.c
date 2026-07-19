@@ -1548,6 +1548,109 @@ static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
     return failures;
 }
 
+/* ── Batched SHA3-256 consumer parity (sha3-x4-batch lane) ─────────────
+ *
+ * fast_sync_merkle_root/build_proof combine a layer four pairs at a time via
+ * sha3_256_x4, and fast_sync_build_manifest_db batches four chunk hashes on top
+ * of fast_sync_serialize_chunk_for_hash. Both must be byte-identical to the
+ * scalar per-pair / streaming reference. These two tests are that guard. */
+
+/* Independent scalar Merkle root: per-pair SHA3-256(left||right), pow2 padding
+ * with copies of the last leaf — mirrors fast_sync_merkle_root's contract but
+ * shares no code with merkle_combine_layer. */
+static void ref_merkle_root(const uint8_t (*hashes)[32], uint32_t count,
+                            uint8_t root_out[32])
+{
+    if (count == 0) { memset(root_out, 0, 32); return; }
+    if (count == 1) { memcpy(root_out, hashes[0], 32); return; }
+    uint32_t padded = 1;
+    while (padded < count) padded <<= 1;
+    uint8_t (*layer)[32] = malloc((size_t)padded * 32);
+    for (uint32_t i = 0; i < padded; i++)
+        memcpy(layer[i], hashes[i < count ? i : count - 1], 32);
+    uint32_t n = padded;
+    while (n > 1) {
+        for (uint32_t i = 0; i < n / 2; i++) {
+            struct sha3_256_ctx ctx;
+            sha3_256_init(&ctx);
+            sha3_256_write(&ctx, layer[2 * i], 32);
+            sha3_256_write(&ctx, layer[2 * i + 1], 32);
+            sha3_256_finalize(&ctx, layer[i]);
+        }
+        n /= 2;
+    }
+    memcpy(root_out, layer[0], 32);
+    free(layer);
+}
+
+static int test_merkle_root_batch_parity(void)
+{
+    int failures = 0;
+    TEST("fast_sync_merkle_root batch-of-4 == scalar per-pair, all counts") {
+        /* Counts spanning batch boundaries: <4, exactly 4, tail remainders,
+         * multi-layer (each layer re-batches), and odd counts that pad. */
+        static const uint32_t counts[] = { 1, 2, 3, 4, 5, 7, 8, 13, 16, 31,
+                                           32, 33, 64, 65, 100, 128, 257, 1000 };
+        uint64_t seed = 0xfeedface0badc0deULL;
+        for (unsigned c = 0; c < sizeof(counts)/sizeof(counts[0]); c++) {
+            uint32_t n = counts[c];
+            uint8_t (*hashes)[32] = malloc((size_t)n * 32);
+            ASSERT(hashes != NULL);
+            for (uint32_t i = 0; i < n; i++)
+                for (int b = 0; b < 32; b++) {
+                    seed ^= seed >> 12; seed ^= seed << 25; seed ^= seed >> 27;
+                    hashes[i][b] = (uint8_t)((seed * 0x2545F4914F6CDD1DULL) >> 33);
+                }
+            uint8_t got[32], want[32];
+            fast_sync_merkle_root((const uint8_t (*)[32])hashes, n, got);
+            ref_merkle_root((const uint8_t (*)[32])hashes, n, want);
+            ASSERT(memcmp(got, want, 32) == 0);
+            free(hashes);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_chunk_serialize_parity(void)
+{
+    int failures = 0;
+    TEST("fast_sync_serialize_chunk_for_hash + sha3 == streaming chunk_hash") {
+        struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "ser_chunk");
+        uint8_t *buf = zcl_malloc(FAST_SYNC_CHUNK_SER_MAX, "ser_buf");
+        ASSERT(chunk != NULL && buf != NULL);
+        uint64_t seed = 0x0123456789abcdefULL;
+        #define NEXT() (seed ^= seed >> 12, seed ^= seed << 25, seed ^= seed >> 27, \
+                        seed * 0x2545F4914F6CDD1DULL)
+        for (int trial = 0; trial < 400; trial++) {
+            chunk->chunk_index = (uint32_t)NEXT();
+            /* Include an empty chunk (0 entries) and varied non-empty sizes. */
+            chunk->num_entries = (trial == 0) ? 0 : (uint32_t)(NEXT() % 40) + 1;
+            for (uint32_t i = 0; i < chunk->num_entries; i++) {
+                for (int b = 0; b < 32; b++) chunk->entries[i].txid[b] = (uint8_t)NEXT();
+                chunk->entries[i].vout = (uint32_t)NEXT();
+                chunk->entries[i].value = (int64_t)(NEXT() % 2100000000000000ULL);
+                /* script_len spans 0, small, and the 520 cap boundary. */
+                uint16_t sl = (uint16_t)(NEXT() % 521);
+                chunk->entries[i].script_len = sl;
+                for (uint16_t b = 0; b < sl; b++) chunk->entries[i].script[b] = (uint8_t)NEXT();
+                chunk->entries[i].height = (int32_t)(NEXT() % 4000000);
+                chunk->entries[i].is_coinbase = (NEXT() & 1) != 0;
+            }
+            uint8_t ref[32], got[32];
+            fast_sync_chunk_hash(chunk, ref);
+            size_t len = fast_sync_serialize_chunk_for_hash(chunk, buf);
+            sha3_256(buf, len, got);
+            ASSERT(memcmp(ref, got, 32) == 0);
+        }
+        #undef NEXT
+        free(buf);
+        free(chunk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_fast_sync(void)
@@ -1606,6 +1709,10 @@ int test_fast_sync(void)
     failures += test_commitment_add_remove_identity();
     failures += test_commitment_order_independent();
     failures += test_commitment_merge();
+
+    /* Batched SHA3-256 consumer parity (sha3-x4-batch lane) */
+    failures += test_merkle_root_batch_parity();
+    failures += test_chunk_serialize_parity();
 
     /* Integration */
     failures += test_chunk_to_merkle_pipeline();
