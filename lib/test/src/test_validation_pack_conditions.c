@@ -7,8 +7,11 @@
  * detect -> remedy -> witness cycle.
  *
  *   - mirror_divergence_located (check 6): PERMANENT, no auto-repair.
- *   - tip_label_divergence (checks 1+2): PERMANENT, no auto-repair,
- *     OR-compound detect predicate over two independent blockers.
+ *   - tip_label_divergence (checks 1+2): PERMANENT; remedy wires the
+ *     window_rebuild seam (re-derive [refuse_from, tip] + release the linkage
+ *     holds), which needs the chain_linkage_hold latch this registry-only
+ *     fixture does not raise, so here it reports FAILED. OR-compound detect
+ *     predicate over two independent blockers.
  *   - state_window_inconsistent (checks 4+5): the ONLY one of the three
  *     with a real auto-terminating remedy arm (coins.commitment_spot_check)
  *     alongside a permanently-manual arm (window.consistency) — and its
@@ -216,8 +219,13 @@ int test_validation_pack_conditions(void)
     /* ───────────────── tip_label_divergence ─────────────────
      * detect := blocker_exists("chain.linkage_violation") ||
      *           blocker_exists("chain.coinbase_label_mismatch");
-     * OR-compound over two independently-raised blockers; remedy always
-     * FAILED; witness must stay false while EITHER arm is still set. */
+     * OR-compound over two independently-raised blockers. The remedy wires the
+     * window_rebuild seam (re-derive [refuse_from, tip] via stage_rederive_range
+     * + release the linkage holds), but here the fixture raises the blockers
+     * DIRECTLY without the chain_linkage_hold_raise latch, so
+     * chain_linkage_hold_refuse_from() is -1: the remedy has no rebuild window to
+     * open and honestly reports FAILED. The witness must stay false while EITHER
+     * arm is still set. */
     {
         vpc_fixture_reset();
         vpc_clock_install();
@@ -242,7 +250,8 @@ int test_validation_pack_conditions(void)
             "tip_label_divergence", &snap);
         VPC_CHECK("tip_label: single-arm detect fires + stays active",
                   got && snap.currently_active);
-        VPC_CHECK("tip_label: remedy honestly reports FAILED (no auto-repair)",
+        VPC_CHECK("tip_label: remedy reports FAILED without a hold-latch "
+                  "rebuild window",
                   got && snap.last_outcome == COND_REMEDY_FAILED);
 
         /* Also raise the linkage-violation arm while the first is still set:

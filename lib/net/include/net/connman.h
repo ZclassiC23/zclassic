@@ -29,6 +29,18 @@
  * fine against the default 8 MB thread stack). */
 #define REACTOR_MAX_FDS 1024
 
+/* fds the reactor reserves for listen sockets when clamping the config-derived
+ * max_connections at connman_init (config validation time). REACTOR_MAX_FDS -
+ * REACTOR_LISTEN_RESERVE = 1000 is exactly the documented operator ceiling (8×
+ * DEFAULT_MAX_PEER_CONNECTIONS), and 24 reserved listen fds is well above the
+ * practical listen-socket count (~8). Clamping max_connections to that ceiling
+ * up front makes the connman_start() near-overflow clamp + the
+ * connman_reactor_overflow blocker structurally unreachable for any listen
+ * count within the reserve; the start-time blocker survives only as the
+ * backstop for the genuinely impossible case (listen sockets ALONE exceeding
+ * the reactor). */
+#define REACTOR_LISTEN_RESERVE 24
+
 /* Reactor admission + high-water stats, exposed for the net/connman
  * dump-state JSON (see peer_lifecycle_dump_state_json). Populated at
  * connman_start() (configured_*) and updated on the socket-handler thread's

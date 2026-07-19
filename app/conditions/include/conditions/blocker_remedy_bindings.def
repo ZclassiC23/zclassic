@@ -117,7 +117,7 @@ ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* D3 */
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
-ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    reducer_frontier_reconcile_light) /* TRANSIENT: the height-keyed script_validate/proof_validate verdict row is hash-bound to a foreign block; the reconcile dry-run purges the non-canonical residue row + re-derives the correct verdict, so the next apply attempt matches and the raiser's own utxo_apply_label_splice_healed() blocker_clear() fires (utxo_apply_stage.c:354) — same self-clear class as utxo_apply.apply_failed */
 ZCL_BLOCKER_REMEDY(utxo_apply.upstream_evidence_mode,          OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.stale_upstream_hash,             OWNER)
 ZCL_BLOCKER_REMEDY(proof_validate.internal_error,              OWNER) /* D2 */
@@ -139,8 +139,8 @@ ZCL_BLOCKER_REMEDY(sha3_window_mismatch,                        OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.uv_cursor_gap,                  OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.validation_evidence,            OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.rewind_churn,                   OWNER)
-ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               OWNER)
-ZCL_BLOCKER_REMEDY(chain.linkage_violation,                     OWNER)
+ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               tip_label_divergence) /* window_rebuild seam wired: tip_label_divergence.c remedy re-derives [refuse_from_h, tip] via stage_rederive_range + releases the linkage holds; a persistent divergence re-raises at the first offending connect (witness reads still-present) */
+ZCL_BLOCKER_REMEDY(chain.linkage_violation,                     tip_label_divergence) /* same window_rebuild seam (both holds share the tip_label_divergence condition) */
 ZCL_BLOCKER_REMEDY(authority_projection_divergence,             OWNER)
 ZCL_BLOCKER_REMEDY(self_heal.unsupervised,                      OWNER)
 /* Set by self_heal_on_stall when a condition remedy hangs past the runner's

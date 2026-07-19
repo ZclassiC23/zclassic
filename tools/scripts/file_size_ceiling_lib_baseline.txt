@@ -29,7 +29,7 @@ lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761
 lib/metrics/src/prometheus_metrics.c 1204
 lib/net/src/addrman.c 1268
-lib/net/src/connman.c 2724
+lib/net/src/connman.c 2748
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 2032
 lib/net/src/file_service.c 1877
@@ -56,7 +56,7 @@ lib/storage/src/census_read.c 868
 lib/storage/src/coins_kv.c 1028
 lib/storage/src/consensus_db.c 883
 lib/storage/src/peers_projection.c 1304
-lib/storage/src/progress_store.c 840
+lib/storage/src/progress_store.c 873
 lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
 lib/storage/src/utxo_projection.c 978

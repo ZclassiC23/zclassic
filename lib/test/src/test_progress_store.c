@@ -440,6 +440,45 @@ int test_progress_store(void)
                  progress_meta_get(db, "sentinel", out, sizeof(out),
                                    &got, &found) && !found);
 
+        /* Batch-aware nesting (J3): the batch-unaware verbs
+         * progress_meta_set / progress_meta_delete used to issue an
+         * unconditional own BEGIN IMMEDIATE, which SQLite rejects when a
+         * transaction is already open ("cannot start a transaction within a
+         * transaction"). They now detect an open txn
+         * (sqlite3_get_autocommit()==0) and nest as a SAVEPOINT, so a bare call
+         * inside an outer BEGIN succeeds and commits atomically with that outer
+         * transaction. */
+        PS_CHECK("BEGIN for nested set",
+                 sqlite3_exec(db, "BEGIN IMMEDIATE",
+                              NULL, NULL, NULL) == SQLITE_OK);
+        const uint8_t nested_val = 0x5a;
+        PS_CHECK("progress_meta_set inside open BEGIN now succeeds",
+                 progress_meta_set(db, "j3.nested", &nested_val, 1));
+        memset(out, 0, sizeof(out));
+        got = 0; found = false;
+        PS_CHECK("nested set visible within outer txn",
+                 progress_meta_get(db, "j3.nested", out, sizeof(out),
+                                   &got, &found) &&
+                 found && got == 1 && out[0] == 0x5a);
+        PS_CHECK("progress_meta_delete inside open BEGIN also succeeds",
+                 progress_meta_delete(db, "j3.nested"));
+        PS_CHECK("nested delete visible within outer txn",
+                 progress_meta_get(db, "j3.nested", out, sizeof(out),
+                                   &got, &found) && !found);
+        PS_CHECK("re-set nested for commit proof",
+                 progress_meta_set(db, "j3.nested", &nested_val, 1));
+        PS_CHECK("COMMIT outer txn OK (nested savepoints released into it)",
+                 sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+        memset(out, 0, sizeof(out));
+        got = 0; found = false;
+        PS_CHECK("nested set committed durably with the outer txn",
+                 progress_meta_get(db, "j3.nested", out, sizeof(out),
+                                   &got, &found) &&
+                 found && got == 1 && out[0] == 0x5a);
+        /* clean the key so later persistence assertions are unaffected. */
+        PS_CHECK("cleanup nested key",
+                 progress_meta_delete(db, "j3.nested"));
+
         /* Bad input → false. */
         PS_CHECK("set NULL db rejected",
                  !progress_meta_set(NULL, "k", "v", 1));
