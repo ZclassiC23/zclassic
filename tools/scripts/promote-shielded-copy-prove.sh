@@ -19,8 +19,40 @@
 # producer datadir (e.g. a zclassic23-mint3-style full fold) into a target
 # copy — no zclassicd, no from-genesis nullifier/anchor re-derivation.
 #
+# MANUAL-ONLY: not wired to any Makefile target, `make test`/`make
+# test-parallel`, or CI. This is an operator-run copy-prove harness for the
+# sovereign shielded-state cure (see CLAUDE.md "Tenacity & recovery" +
+# docs/HANDOFF.md §0-LATEST for current live state; cure design/spine:
+# docs/work/self-verified-tip-plan.md). Run it by hand:
+#   tools/scripts/promote-shielded-copy-prove.sh --dry-run \
+#     --producer=$HOME/.zclassic-c23-mint3-COPY-<ts>
+# then for real (adds --expect-climb-past=H, drops --dry-run) once the plan
+# looks right. Never point --producer or --copy-dir at a live datadir — see
+# the safety invariants below, enforced by the script itself.
+#
 # ============================================================================
-# DEPENDENCY NOTICE — read before running this for real (2026-07-17)
+# STATUS (2026-07-19): -promote-shielded-history LANDED
+# ============================================================================
+# The DEPENDENCY NOTICE below described a state (2026-07-17, this script's
+# original commit) where the flag/service this script drives did not exist
+# yet anywhere on a local branch. That gap closed the same day, commit
+# 3c316a452 "feat(cure): verified shielded-history promote into a wedged
+# COPY datadir" — config/src/boot_promote_shielded_history.c,
+# app/services/src/shielded_history_promote_service.c, and
+# lib/test/src/test_shielded_history_promote.c are all present at HEAD.
+# The success banner this script matches by default
+# (PROMOTE_OK_REGEX='^PROMOTED: -promote-shielded-history:') was verified
+# against config/src/boot_promote_shielded_history.c's actual fprintf
+# literal ("PROMOTED: -promote-shielded-history: %s -> %s installed ...")
+# — no override needed. This script is live-functional, not aspirational;
+# the DEPENDENCY NOTICE below is kept verbatim as the historical record of
+# the fail-closed design (PROMOTE_OK_REGEX stays overridable regardless, in
+# case the banner literal ever changes) but its "does NOT exist" claim is
+# STALE — read this STATUS block first.
+# ============================================================================
+#
+# ============================================================================
+# DEPENDENCY NOTICE (historical, as of 2026-07-17 — see STATUS above)
 # ============================================================================
 # As of this writing, -promote-shielded-history does NOT exist on any local
 # branch (verified via `git grep` across every refs/heads/* branch, no match
@@ -47,9 +79,6 @@
 # without an edit:
 #   PROMOTE_OK_REGEX='^PROMOTED: -promote-shielded-history:' \
 #     tools/scripts/promote-shielded-copy-prove.sh ...
-# TODO(orchestrator, at merge): confirm the exact banner literal against
-# wherever shielded_history_promote_service.c lands and either update the
-# default below or fold a permanent override into the runbook.
 # ============================================================================
 #
 # Safety invariants (same class as cure-copy-prove.sh / import-copy-prove.sh
