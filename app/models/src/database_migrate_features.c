@@ -763,6 +763,34 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 33) {
+        /* v33: parity_samples — bounded, retained history of the mirror's
+         * per-tick consensus-parity comparison against the co-located
+         * zclassicd oracle (models/parity_sample.h). One row per
+         * legacy_mirror_sync comparison outcome. Purely observational —
+         * never consulted by consensus. Bounded retention: the mirror
+         * prunes to the newest N rows. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS parity_samples ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "ts INTEGER NOT NULL,"
+            "our_height INTEGER NOT NULL DEFAULT -1,"
+            "oracle_height INTEGER NOT NULL DEFAULT -1,"
+            "heights_equal_at INTEGER NOT NULL DEFAULT -1,"
+            "hash_equal INTEGER NOT NULL DEFAULT 0 CHECK(hash_equal IN (0,1)),"
+            "oracle_reachable INTEGER NOT NULL DEFAULT 0 "
+            "  CHECK(oracle_reachable IN (0,1)))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_parity_samples_ts "
+            "ON parity_samples(ts DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('033')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 33);
+        current_ver = 33;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

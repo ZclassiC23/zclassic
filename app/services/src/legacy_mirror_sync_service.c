@@ -410,6 +410,7 @@ static void lms_cache_comparison(int height,
              sizeof(g_lms.comparison_zclassicd_hash), "%s",
              remote ? remote : "");
     pthread_mutex_unlock(&g_lms.lock);
+    lms_record_parity_sample(height, known, agree);
 }
 
 static enum lms_hash_comparison_result

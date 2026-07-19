@@ -69,10 +69,10 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 679
+test_groups: 680
 port_interfaces: 12
 persistence_adapters: 13
-condition_registrations: 43
+condition_registrations: 44
 <!-- DOC-COUNTS-END -->
 
 ### Composition root — `config/src/` (26 files)
