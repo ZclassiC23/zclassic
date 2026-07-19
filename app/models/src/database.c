@@ -729,29 +729,29 @@ bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
     return true;
 }
 
-bool node_db_begin(struct node_db *ndb)
+/* Preserve the REAL sqlite rc node_db_exec() stamped into last_sqlite_rc
+ * (BUSY/LOCKED/ERROR "cannot start a transaction within a transaction", ...)
+ * on a failed BEGIN/COMMIT/ROLLBACK instead of clobbering it with a hardcoded
+ * SQLITE_ERROR — callers classify on it (retry only on BUSY/LOCKED). The
+ * lock-taking node_db_get_status() keeps the failure-path read race-free;
+ * set_tx_open marks in-transaction only for a SUCCESSFUL begin. */
+static bool node_db_tx_op(struct node_db *ndb, const char *sql,
+                          bool set_tx_open)
 {
-    bool ok = node_db_exec(ndb, "BEGIN TRANSACTION");
-    node_db_note_tx_state(ndb, ok, "BEGIN TRANSACTION",
-                          ok ? SQLITE_OK : SQLITE_ERROR);
+    bool ok = node_db_exec(ndb, sql);
+    int rc = SQLITE_OK;
+    if (!ok) {
+        struct node_db_status st;
+        node_db_get_status(ndb, &st);
+        rc = st.last_sqlite_rc;
+    }
+    node_db_note_tx_state(ndb, set_tx_open && ok, sql, rc);
     return ok;
 }
 
-bool node_db_commit(struct node_db *ndb)
-{
-    bool ok = node_db_exec(ndb, "COMMIT");
-    node_db_note_tx_state(ndb, false, "COMMIT",
-                          ok ? SQLITE_OK : SQLITE_ERROR);
-    return ok;
-}
-
-bool node_db_rollback(struct node_db *ndb)
-{
-    bool ok = node_db_exec(ndb, "ROLLBACK");
-    node_db_note_tx_state(ndb, false, "ROLLBACK",
-                          ok ? SQLITE_OK : SQLITE_ERROR);
-    return ok;
-}
+bool node_db_begin(struct node_db *ndb) { return node_db_tx_op(ndb, "BEGIN TRANSACTION", true); }
+bool node_db_commit(struct node_db *ndb) { return node_db_tx_op(ndb, "COMMIT", false); }
+bool node_db_rollback(struct node_db *ndb) { return node_db_tx_op(ndb, "ROLLBACK", false); }
 
 void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size)
 {

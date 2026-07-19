@@ -3745,7 +3745,7 @@ bool app_init(struct app_context *ctx)
                     printf("Sapling tree root MISMATCH (size=%zu) - "
                            "deferring live rebuild until after boot "
                            "(tip_h=%d)\n", old_size, tip->nHeight);
-                    atomic_store(&g_sapling_tree_rebuilding, true);
+                    sapling_tree_rebuild_start_deferred(&g_node_db, &g_state.chain_active, g_datadir, &g_state);
                     goto sapling_tree_boot_check_done;
                 }
                 printf("Sapling tree root MISMATCH (size=%zu) — "

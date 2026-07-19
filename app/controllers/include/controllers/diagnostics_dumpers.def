@@ -159,6 +159,15 @@
              "running, workers, window, queue_depth, cache_hits/misses/hit_rate, "
              "verdicts_produced, throughput_blk_per_sec, supervised/supervisor_child_id",
              "app/jobs/src/pv_lookahead.c", "lib/test/src/test_pv_lookahead.c"),
+    DIAG_SERVICE("block_prefetch", block_prefetch_dump_state_json,
+                 "block-body read-ahead worker (default OFF): warms the page "
+                 "cache for [cursor+lead, +window) ahead of the leading fold "
+                 "stage. running/nowait_probe, window/lead/warm_frontier, "
+                 "hits/warmed/nowait_misses/resident_rate, bytes, "
+                 "resolve_gaps/read_fails/passes, lru_count/lru_bytes, "
+                 "warm_blk_per_sec, supervised/supervisor_child_id",
+                 "lib/storage/src/block_prefetch.c",
+                 "lib/test/src/test_block_prefetch.c"),
     DIAG_JOB("psc", psc_dump_state_json,
              "parallel state compiler audit (opt-in; producer re-mints / full "
              "audits): last psc_audit_run verdict comparing the order-independent "
@@ -212,11 +221,25 @@
     DIAG_STAGE("utxo_apply", utxo_apply_dump_state_json,
                "utxo_apply stage: cursor, UTXO delta counters, log rows",
                "app/jobs/src/utxo_apply_stage_dump.c", "lib/test/src/test_stage.c"),
+    DIAG_JOB("batch_commit", utxo_apply_batch_commit_dump_state_json,
+             "utxo_apply kernel outer-batch COMMIT telemetry: total_commits, "
+             "last/ewma/max commit_us, a rolling ring average, and the last "
+             "batch's height range + row count — turns a slow fsync / "
+             "degraded WAL into visible data instead of a silent stall",
+             "app/jobs/src/utxo_apply_batch_commit.c",
+             "lib/test/src/test_utxo_apply_stage.c"),
     DIAG_LOCAL("reducer_drive", reducer_drive_dump_state_json,
                "synchronous reducer/mint drive: active, label, age_us, "
                "watchdog_threshold_secs, last_watchdog_fire_unix, "
                "utxo_apply_cursor vs. the lagging coins_applied_height "
                "(the -fold-inram batching gap)"),
+    DIAG_LOCAL("sync_rate", sync_rate_below_floor_dump_state_json,
+               "sync-rate SLO watchdog (sync_rate_below_floor condition): "
+               "current/floor fold-throughput bps (x1000 fixed point), "
+               "below_floor_streak vs. consecutive_ticks_required, "
+               "pending_work gate, and the episode-start snapshot "
+               "(observed/floor bps, network_tip, log_head, dominant "
+               "blocker) at the moment the blocker last fired"),
     DIAG_STAGE("tip_finalize", tip_finalize_dump_state_json,
                "tip_finalize stage: cursor, finalize counters, log rows",
                "app/jobs/src/tip_finalize_stage.c", "lib/test/src/test_stage.c"),
@@ -570,6 +593,15 @@
                "{domain_count, asymmetric, large_domain_id}, derived {verify_workers, "
                "script_batch_cap, sqlite_*_cache_kib, sqlite_*_mmap_bytes}, and "
                "pin_reducer_available (whether -pin-reducer would take effect)"),
+    DIAG_LOCAL("hw_bench", hw_bench_dump_state_json,
+               "hardware bench organ: boot-time measured fsync_us + pread_us "
+               "medians (or -1/'fallback' if unmeasured), fingerprint (hw_profile "
+               "signature the measurement was taken under), from_cache, "
+               "age_seconds, measured, and derived {batch_size_normal_100, "
+               "verify_workers_normal_4} each tagged measured/fallback — the "
+               "closed loop that scales reducer_drain.c's per-stage batch size "
+               "with measured fsync latency and bg_validation_service.c's "
+               "worker count with measured random-read latency"),
     DIAG_SERVICE("recovery", recovery_coordinator_dump_state_json,
                  "unified recovery coordinator (chain domain): last rung fired "
                  "(cursor_warm_restart/rederive_range/segment_refetch/blocker) "

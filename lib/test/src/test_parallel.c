@@ -213,7 +213,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
     X(have_data_unreadable) \
-    X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(hw_profile) X(log_level) X(service_state) \
+    X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(hw_profile) X(hw_bench) X(log_level) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
     X(clock) X(rng) X(os_proc) X(os_sandbox) X(confine) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
@@ -360,6 +360,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_funds_safety) \
     X(bundle_staleness) \
     X(block_parse_cache) \
+    X(block_prefetch) \
     X(storage_reclaim) \
     X(chain_frontier_snapshot_service) \
     X(health_rollup) X(debug_bundle) X(operator_ux) \

@@ -8,6 +8,7 @@
 
 #define _DEFAULT_SOURCE
 #include "platform/time_compat.h"
+#include "connman_internal.h"
 #include "net/connman.h"
 #include "net/v2_transport.h"
 #include "net/addrman.h"
@@ -64,7 +65,8 @@ static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
 static pthread_t g_thread_open;
 static pthread_t g_thread_message;
-static volatile bool g_stop = false;
+/* Shared with connman_dialer.c — see connman_internal.h. */
+volatile bool g_stop = false;
 
 /* Supervisor liveness for the 4 P2P threads. Root children (not
  * supervisor_register_in_domain(net,...)): lib/net cannot include the
@@ -74,10 +76,11 @@ static volatile bool g_stop = false;
  * sit idle (DNS-seed sleep cadence, outbound-dialer backoff sleep, message
  * condvar wait) so they are liveness-only (no deadline, no progress gate) —
  * present on the tree, heartbeat when they do work, never falsely flagged
- * for a quiet cycle. */
+ * for a quiet cycle. g_open_liveness lives in connman_dialer.c (the file
+ * that beats it); declared in connman_internal.h for the register/retire
+ * calls below. */
 static struct thread_liveness_child g_dns_seed_liveness = { .id = SUPERVISOR_INVALID_ID };
 static struct thread_liveness_child g_sock_liveness     = { .id = SUPERVISOR_INVALID_ID };
-static struct thread_liveness_child g_open_liveness     = { .id = SUPERVISOR_INVALID_ID };
 static struct thread_liveness_child g_msg_liveness      = { .id = SUPERVISOR_INVALID_ID };
 static _Atomic uint64_t g_sock_poll_iterations = 0;
 
@@ -535,8 +538,10 @@ static void *thread_dns_seed(void *arg)
 }
 
 /* Extract /16 subnet group from IPv4-mapped address (bytes 12-13).
- * Returns a 16-bit value representing the first two octets. */
-static uint16_t ipv4_group16(const unsigned char ip[16])
+ * Returns a 16-bit value representing the first two octets.
+ * Declared in connman_internal.h — connman_dialer.c's batch diversity
+ * tally shares this with the diversity-cap accounting below. */
+uint16_t ipv4_group16(const unsigned char ip[16])
 {
     return (uint16_t)((ip[12] << 8) | ip[13]);
 }
@@ -555,9 +560,10 @@ static int count_outbound_in_group(const struct net_manager *nm, uint16_t group)
     return count;
 }
 
-#define MAX_OUTBOUND_PER_GROUP16 2
+/* MAX_OUTBOUND_PER_GROUP16 is defined in connman_internal.h (shared with
+ * connman_dialer.c's batch diversity tally). */
 
-static int connman_outbound_group_count(struct connman *cm, uint16_t group)
+int connman_outbound_group_count(struct connman *cm, uint16_t group)
 {
     int count = 0;
 
@@ -571,40 +577,10 @@ static int connman_outbound_group_count(struct connman *cm, uint16_t group)
 }
 
 /* ── Sybil diversity: IPv6 and onion outbound caps ───────────────────
- *
- * count_outbound_in_group() above only ever inspects IPv4-mapped peers
- * (net_addr_is_ipv4() guard) — a real IPv6 or .onion outbound peer was
- * invisible to the /16 diversity cap entirely, so an attacker with many
- * distinct IPv6 addresses or (far cheaper) many distinct ephemeral
- * .onion identities could fill every outbound slot with sock-puppets
- * and eclipse the node, bypassing MAX_OUTBOUND_PER_GROUP16 completely.
- *
- * IPv6: group by the /32 prefix (first 4 bytes of the real, non-mapped
- * 16-byte address — net_addr_is_ipv6() already excludes the IPv4-mapped
- * ::ffff:a.b.c.d form, so `ip[0..3]` here is a genuine IPv6 prefix, not
- * an IPv4 octet pair). /32 is a coarser allocation unit than IPv4's /16
- * convention but mirrors it: cheap for an attacker to acquire ONE real
- * /32, expensive to acquire MANY.
- *
- * Onion: a v3 onion address is a self-generated Ed25519 public key —
- * free and unlimited to mint, with no ISP/RIR allocation cost at all.
- * There is no "group" to diversify within; the only meaningful bound is
- * a flat cap on TOTAL outbound onion connections. MAX_OUTBOUND_ONION=2
- * matches MAX_OUTBOUND_PER_GROUP16 (the existing IPv4 per-subnet cap) —
- * enough that a normal mixed clearnet+onion peer set keeps some onion
- * diversity, but a wall of attacker-minted .onion identities cannot
- * consume more than 2 of the (default 8) outbound slots.
- *
- * connman_kick_onion_seeds() / run_onion_seed_pass() is UNAFFECTED by
- * this cap: it fetches /directory.json directly over Tor via
- * tor_integration_fetch_onion_blocking() to discover CLEARNET peers —
- * it never dials an outbound P2P connection through
- * connman_pick_next_outbound_target(), so eclipse-recovery via onion
- * seeds still works even when the onion outbound bucket is full. */
-#define MAX_OUTBOUND_IPV6_GROUP32 2
-#define MAX_OUTBOUND_ONION 2
+ * See the doc comment on MAX_OUTBOUND_IPV6_GROUP32 / MAX_OUTBOUND_ONION
+ * in connman_internal.h (shared with connman_dialer.c's batch tally). */
 
-static uint32_t ipv6_group32(const unsigned char ip[16])
+uint32_t ipv6_group32(const unsigned char ip[16])
 {
     return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
            ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
@@ -639,7 +615,7 @@ static int count_outbound_onion(const struct net_manager *nm)
     return count;
 }
 
-static int connman_outbound_ipv6_group_count(struct connman *cm, uint32_t group)
+int connman_outbound_ipv6_group_count(struct connman *cm, uint32_t group)
 {
     int count = 0;
     if (!cm) return 0;
@@ -649,7 +625,7 @@ static int connman_outbound_ipv6_group_count(struct connman *cm, uint32_t group)
     return count;
 }
 
-static int connman_outbound_onion_count(struct connman *cm)
+int connman_outbound_onion_count(struct connman *cm)
 {
     int count = 0;
     if (!cm) return 0;
@@ -719,8 +695,8 @@ static bool connman_node_conflicts_with_target(
     return !node->inbound;
 }
 
-static bool connman_addr_is_connected(struct connman *cm,
-                                      const struct net_address *addr)
+bool connman_addr_is_connected(struct connman *cm,
+                               const struct net_address *addr)
 {
     bool connected = false;
 
@@ -757,8 +733,8 @@ static bool connman_addr_is_connected(struct connman *cm,
  *      double free on the next sweep. Instead run the deferred_free sweep,
  *      which is the single owner that knows the node is parked and reclaims
  *      every ref<=0 entry. */
-static void connman_release_connect_node_ref(struct connman *cm,
-                                             struct p2p_node *node)
+void connman_release_connect_node_ref(struct connman *cm,
+                                      struct p2p_node *node)
 {
     if (!cm || !node)
         return;
@@ -1232,633 +1208,6 @@ size_t connman_harvest_census_candidates(struct connman *cm,
                  "addrman (census_matched=%lld scanned=%d)",
                  harvested, (long long)matched, n);
     return harvested;
-}
-
-/* ── Parallel dialer: anchors-first candidate gathering + batch completion ──
- *
- * The old dialer dialed serially: connect_socket_directly() blocked in
- * select() for up to DEFAULT_CONNECT_TIMEOUT (5 s) PER address, up to 3
- * attempts a loop — so a cold boot could spend ~15 s of wall time before it
- * had even 3 peers if the first candidates were slow/dead. The dialer now
- * gathers a batch of distinct candidates (persisted anchors FIRST, then
- * addnode/addrman), fires up to ZCL_DIAL_BATCH_MAX non-blocking connect()s at
- * once, and poll()s them against ONE shared deadline — so N slow peers cost
- * one 5 s window total, not N×5 s, and the fastest live peers win the slots.
- * All fan-out stays inside this single thread (no new threads). */
-
-#define ZCL_DIAL_BATCH_MAX 8   /* <= MAX_OUTBOUND_CONNECTIONS */
-#define ZCL_FEELER_INTERVAL_DEFAULT_SECS 120
-#define ZCL_FEELER_HANDSHAKE_BUDGET_SECS 40
-
-void connman_collect_healthy_anchors(struct connman *cm,
-                                     struct anchor_peer_set *set)
-{
-    if (!set) return;
-    memset(set, 0, sizeof(*set));
-    if (!cm) return;
-
-    zcl_mutex_lock(&cm->manager.cs_nodes);
-    for (size_t i = 0; i < cm->manager.num_nodes &&
-                       set->count < ANCHOR_PEERS_MAX; i++) {
-        const struct p2p_node *n = cm->manager.nodes[i];
-        if (!n || n->inbound || n->disconnect || n->is_feeler)
-            continue;
-        if (n->state < PEER_HANDSHAKE_COMPLETE)
-            continue;
-        if ((n->services & NODE_NETWORK) == 0)
-            continue;
-        struct anchor_peer *a = &set->peers[set->count++];
-        a->addr = n->addr.svc.addr;
-        a->port = n->addr.svc.port;
-        a->services = n->services;
-        a->last_height = n->starting_height;
-        a->last_success = n->time_connected;
-    }
-    zcl_mutex_unlock(&cm->manager.cs_nodes);
-}
-
-/* Dialable right now: reachable ZClassic port, not one of OUR own addresses,
- * not already connected. Diversity is enforced by the batch tally below (the
- * connected-count check alone can't see in-flight dials). */
-static bool connman_candidate_addr_dialable(struct connman *cm,
-                                            const struct net_address *addr)
-{
-    if (!cm || !addr)
-        return false;
-    if (!zcl_net_port_is_reachable_candidate(addr->svc.port))
-        return false;
-    if (is_local(&cm->manager, &addr->svc))
-        return false;
-    if (connman_addr_is_connected(cm, addr))
-        return false;
-    return true;
-}
-
-/* Next un-tried anchor as a net_address, marking it tried. Returns false once
- * every loaded anchor has had its single priority attempt. */
-static bool connman_anchor_take_next(struct connman *cm, struct net_address *out)
-{
-    if (!cm || !out)
-        return false;
-    for (size_t i = 0; i < cm->anchors.count && i < ANCHOR_PEERS_MAX; i++) {
-        if (cm->anchors_tried[i])
-            continue;
-        cm->anchors_tried[i] = true;   /* one attempt each, gate-pass or not */
-        const struct anchor_peer *a = &cm->anchors.peers[i];
-        net_address_init(out);
-        out->svc.addr = a->addr;
-        out->svc.port = a->port;
-        out->nServices = a->services;
-        return true;
-    }
-    return false;
-}
-
-/* In-batch diversity/dup tally: the connected-count caps don't see the OTHER
- * in-flight dials in this same batch, so a batch of 8 could all land in one
- * /16. Track what the batch already targets and refuse a candidate that would
- * push connected+in-batch over the cap. */
-struct dial_batch_tally {
-    struct net_service svcs[ZCL_DIAL_BATCH_MAX];
-    size_t n;
-};
-
-static bool tally_has_service(const struct dial_batch_tally *t,
-                              const struct net_service *s)
-{
-    for (size_t i = 0; i < t->n; i++)
-        if (net_service_eq(&t->svcs[i], s))
-            return true;
-    return false;
-}
-
-static bool batch_diversity_ok(struct connman *cm,
-                               const struct dial_batch_tally *t,
-                               const struct net_addr *a)
-{
-    if (net_addr_is_ipv4(a)) {
-        uint16_t g = ipv4_group16(a->ip);
-        int inb = 0;
-        for (size_t i = 0; i < t->n; i++)
-            if (net_addr_is_ipv4(&t->svcs[i].addr) &&
-                ipv4_group16(t->svcs[i].addr.ip) == g)
-                inb++;
-        return connman_outbound_group_count(cm, g) + inb <
-               MAX_OUTBOUND_PER_GROUP16;
-    }
-    if (net_addr_is_tor(a)) {
-        int inb = 0;
-        for (size_t i = 0; i < t->n; i++)
-            if (net_addr_is_tor(&t->svcs[i].addr))
-                inb++;
-        return connman_outbound_onion_count(cm) + inb < MAX_OUTBOUND_ONION;
-    }
-    if (net_addr_is_ipv6(a)) {
-        uint32_t g = ipv6_group32(a->ip);
-        int inb = 0;
-        for (size_t i = 0; i < t->n; i++)
-            if (net_addr_is_ipv6(&t->svcs[i].addr) &&
-                ipv6_group32(t->svcs[i].addr.ip) == g)
-                inb++;
-        return connman_outbound_ipv6_group_count(cm, g) + inb <
-               MAX_OUTBOUND_IPV6_GROUP32;
-    }
-    return true;
-}
-
-size_t connman_gather_dial_candidates(struct connman *cm,
-                                      struct connman_dial_candidate *out,
-                                      size_t max)
-{
-    if (!cm || !out || max == 0)
-        return 0;
-    if (max > ZCL_DIAL_BATCH_MAX)
-        max = ZCL_DIAL_BATCH_MAX;
-
-    struct dial_batch_tally tally;
-    tally.n = 0;
-    size_t n = 0;
-
-    /* (1) Anchors first — but NOT in -connect-only mode, where the explicit
-     * -connect peers are the entire outbound universe. Each anchor gets one
-     * attempt (marked tried even when it fails a gate, so a dead/saturated
-     * anchor can't make us spin). */
-    if (!g_connect_only) {
-        while (n < max) {
-            struct net_address a;
-            if (!connman_anchor_take_next(cm, &a))
-                break;
-            if (!connman_candidate_addr_dialable(cm, &a))
-                continue;
-            if (tally_has_service(&tally, &a.svc))
-                continue;
-            if (!batch_diversity_ok(cm, &tally, &a.svc.addr))
-                continue;
-            out[n].addr = a;
-            out[n].source = CONNMAN_TARGET_ANCHOR;
-            out[n].addnode_index = SIZE_MAX;
-            out[n].is_feeler = false;
-            tally.svcs[tally.n++] = a.svc;
-            n++;
-        }
-    }
-
-    /* (2) addnode / addrman via the existing selector. Bound the draws so a
-     * pool that keeps returning saturated/duplicate picks can't spin. */
-    size_t draws = 0;
-    const size_t draw_cap = max * 4 + 8;
-    while (n < max && draws < draw_cap) {
-        draws++;
-        struct addr_info info;
-        enum connman_outbound_target_source src = CONNMAN_TARGET_NONE;
-        size_t idx = SIZE_MAX;
-        memset(&info, 0, sizeof(info));
-        if (!connman_pick_next_outbound_target(cm, &cm->next_addnode_cursor,
-                                               &info, &src, &idx))
-            break;
-        if (!connman_candidate_addr_dialable(cm, &info.addr)) {
-            /* Already connected → an addnode gets its attempt marked good so
-             * its cursor advances, matching the serial dialer. */
-            if (src == CONNMAN_TARGET_ADDNODE &&
-                connman_addr_is_connected(cm, &info.addr))
-                connman_record_addnode_attempt(cm, idx, true);
-            continue;
-        }
-        if (tally_has_service(&tally, &info.addr.svc))
-            continue;
-        if (!batch_diversity_ok(cm, &tally, &info.addr.svc.addr))
-            continue;
-        out[n].addr = info.addr;
-        out[n].source = src;
-        out[n].addnode_index = idx;
-        out[n].is_feeler = false;
-        tally.svcs[tally.n++] = info.addr.svc;
-        n++;
-    }
-
-    return n;
-}
-
-/* ── Feeler probes (Bitcoin Core pattern) ─────────────────────────────── */
-
-static int64_t connman_feeler_interval_secs(void)
-{
-    const char *e = getenv("ZCL_FEELER_INTERVAL_SECS");
-    if (e && e[0]) {
-        long v = strtol(e, NULL, 10);
-        if (v > 0 && v < 86400)
-            return (int64_t)v;
-    }
-    return ZCL_FEELER_INTERVAL_DEFAULT_SECS;
-}
-
-static bool connman_feeler_in_flight(struct connman *cm)
-{
-    bool found = false;
-    zcl_mutex_lock(&cm->manager.cs_nodes);
-    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-        const struct p2p_node *n = cm->manager.nodes[i];
-        if (n && n->is_feeler && !n->disconnect) { found = true; break; }
-    }
-    zcl_mutex_unlock(&cm->manager.cs_nodes);
-    return found;
-}
-
-/* Pick an addrman NEW-table address for a feeler probe. */
-static bool connman_pick_feeler_target(struct connman *cm,
-                                       struct net_address *out)
-{
-    for (int i = 0; i < 32; i++) {
-        struct addr_info pick;
-        memset(&pick, 0, sizeof(pick));
-        if (!addrman_select(&cm->manager.addrman, /*new_only=*/true, &pick))
-            return false;
-        if (!connman_candidate_addr_dialable(cm, &pick.addr))
-            continue;
-        *out = pick.addr;
-        return true;
-    }
-    return false;
-}
-
-/* Sweep feeler connections each open-thread iteration: a completed handshake
- * proves the address is real and speaks our protocol → mark it addrman_good
- * and disconnect; a feeler that never handshook inside the budget is dropped.
- * addrman_good is called AFTER releasing cs_nodes to avoid nesting the addrman
- * lock under cs_nodes (lock-order hygiene). */
-static void connman_sweep_feelers(struct connman *cm)
-{
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    struct net_service good_svcs[ZCL_DIAL_BATCH_MAX];
-    size_t ngood = 0;
-
-    zcl_mutex_lock(&cm->manager.cs_nodes);
-    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-        struct p2p_node *n = cm->manager.nodes[i];
-        if (!n || !n->is_feeler || n->disconnect)
-            continue;
-        if (n->state >= PEER_HANDSHAKE_COMPLETE) {
-            if (ngood < ZCL_DIAL_BATCH_MAX)
-                good_svcs[ngood++] = n->addr.svc;
-            n->disconnect = true;
-        } else if (now - n->time_connected > ZCL_FEELER_HANDSHAKE_BUDGET_SECS) {
-            n->disconnect = true;
-        }
-    }
-    zcl_mutex_unlock(&cm->manager.cs_nodes);
-
-    for (size_t i = 0; i < ngood; i++)
-        addrman_good(&cm->manager.addrman, &good_svcs[i], now);
-}
-
-/* ── Batch dial: fire non-blocking connects, poll to a shared deadline ──── */
-
-static void connman_record_dial_failure(struct connman *cm,
-                                        const struct connman_dial_candidate *c)
-{
-    char ipbuf[64];
-    net_addr_to_string(&c->addr.svc.addr, ipbuf, sizeof(ipbuf));
-    if (c->source == CONNMAN_TARGET_ADDNODE)
-        connman_record_addnode_attempt(cm, c->addnode_index, false);
-    else if (c->source == CONNMAN_TARGET_ADDRMAN)
-        addrman_attempt(&cm->manager.addrman, &c->addr.svc,
-                        (int64_t)platform_time_wall_time_t());
-    /* ANCHOR / feeler carry no durable per-address failure ledger. */
-    event_emitf(EV_TCP_CONNECT_FAILED, 0, "%s:%u", ipbuf, c->addr.svc.port);
-}
-
-/* Finish a dial whose TCP connect completed successfully: register the node,
- * flag feelers, record addnode success, note lifecycle. */
-static void connman_complete_dial(struct connman *cm,
-                                  struct connman_dial_candidate *c,
-                                  zcl_socket_t sock)
-{
-    enum peer_lifecycle_source ls =
-        c->source == CONNMAN_TARGET_ADDNODE ? PEER_LIFECYCLE_SOURCE_ADDNODE :
-        c->source == CONNMAN_TARGET_ANCHOR  ? PEER_LIFECYCLE_SOURCE_ANCHOR  :
-                                              PEER_LIFECYCLE_SOURCE_ADDRMAN;
-    const char *dest = NULL;
-    char destbuf[64];
-    if (c->source == CONNMAN_TARGET_ADDNODE) {
-        net_service_to_string(&c->addr.svc, destbuf, sizeof(destbuf));
-        dest = destbuf;
-    }
-
-    bool created = false;
-    struct p2p_node *node =
-        connect_node_from_socket(&cm->manager, &c->addr, dest, sock, &created);
-    if (!node) {
-        connman_record_dial_failure(cm, c);
-        return;
-    }
-    /* Only flag a FRESHLY-created node as a feeler; a dedupe race returns an
-     * existing real peer that must never be swept/disconnected as a feeler. */
-    if (c->is_feeler && created)
-        node->is_feeler = true;
-    if (c->source == CONNMAN_TARGET_ADDNODE)
-        connman_record_addnode_attempt(cm, c->addnode_index, true);
-    peer_lifecycle_note_connected(node, ls);
-    if (created) {
-        char ipbuf[64];
-        net_addr_to_string(&c->addr.svc.addr, ipbuf, sizeof(ipbuf));
-        printf("Outbound dial: connected to %s:%u%s\n", ipbuf,
-               c->addr.svc.port, c->is_feeler ? " (feeler)" : "");
-    }
-    connman_release_connect_node_ref(cm, node);
-}
-
-/* One in-flight non-blocking connect awaiting its writability edge. */
-struct dial_inflight {
-    zcl_socket_t sock;
-    size_t       ci;      /* index into the candidate batch */
-};
-
-/* Fire every candidate's non-blocking connect, then poll the in-progress set
- * against ONE shared DEFAULT_CONNECT_TIMEOUT window, completing winners and
- * closing losers. Immediate (localhost) connects complete inline. */
-static void connman_dial_batch(struct connman *cm,
-                               struct connman_dial_candidate *batch,
-                               size_t count)
-{
-    struct dial_inflight inflight[ZCL_DIAL_BATCH_MAX + 1];
-    size_t nin = 0;
-
-    for (size_t i = 0; i < count && !g_stop; i++) {
-        struct connman_dial_candidate *c = &batch[i];
-        peer_lifecycle_note_attempt(&c->addr,
-            c->source == CONNMAN_TARGET_ADDNODE ? PEER_LIFECYCLE_SOURCE_ADDNODE :
-            c->source == CONNMAN_TARGET_ANCHOR  ? PEER_LIFECYCLE_SOURCE_ANCHOR  :
-                                                  PEER_LIFECYCLE_SOURCE_ADDRMAN);
-        zcl_socket_t s = ZCL_INVALID_SOCKET;
-        enum zcl_connect_start st = connect_socket_start(&c->addr.svc, &s);
-        if (st == ZCL_CONNECT_START_ERROR) {
-            connman_record_dial_failure(cm, c);
-            continue;
-        }
-        if (st == ZCL_CONNECT_START_CONNECTED) {
-            connman_complete_dial(cm, c, s);
-            continue;
-        }
-        inflight[nin].sock = s;
-        inflight[nin].ci = i;
-        nin++;
-    }
-
-    int64_t deadline_ms = platform_time_monotonic_ms() + DEFAULT_CONNECT_TIMEOUT;
-    while (nin > 0 && !g_stop) {
-        int64_t remaining = deadline_ms - platform_time_monotonic_ms();
-        if (remaining <= 0)
-            break;
-
-        struct pollfd pfds[ZCL_DIAL_BATCH_MAX + 1];
-        for (size_t i = 0; i < nin; i++) {
-            pfds[i].fd = inflight[i].sock;
-            pfds[i].events = POLLOUT;
-            pfds[i].revents = 0;
-        }
-        int r = poll(pfds, nin, (int)(remaining > 1000000 ? 1000000 : remaining));
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-        if (r == 0)
-            continue;   /* re-check the deadline */
-
-        /* Resolve every ready fd; swap-remove from the in-flight set. */
-        for (size_t i = 0; i < nin; ) {
-            short re = pfds[i].revents;
-            if (re == 0) { i++; continue; }
-            zcl_socket_t s = inflight[i].sock;
-            struct connman_dial_candidate *c = &batch[inflight[i].ci];
-            bool ok = !(re & (POLLERR | POLLHUP | POLLNVAL)) &&
-                      connect_socket_check(s);
-            if (ok) {
-                connman_complete_dial(cm, c, s);   /* takes ownership of s */
-            } else {
-                close_socket(&s);
-                connman_record_dial_failure(cm, c);
-            }
-            /* swap-remove i */
-            inflight[i] = inflight[nin - 1];
-            pfds[i] = pfds[nin - 1];
-            nin--;
-        }
-    }
-
-    /* Deadline / stop: whatever is still connecting lost the race. */
-    for (size_t i = 0; i < nin; i++) {
-        zcl_socket_t s = inflight[i].sock;
-        close_socket(&s);
-        connman_record_dial_failure(cm, &batch[inflight[i].ci]);
-    }
-}
-
-static void *thread_open_connections(void *arg)
-{
-    struct connman *cm = (struct connman *)arg;
-
-    static int64_t s_last_addrman_attempt = 0;
-    uint64_t open_iterations = 0;
-    thread_liveness_beat(&g_open_liveness, 0);
-
-    while (!g_stop) {
-        /* Count outbound peers in two buckets:
-         *   `outbound_slot` — all non-disconnecting outbound peers,
-         *     used as the upper bound on connection slots so we don't
-         *     overflow MAX_OUTBOUND_CONNECTIONS.
-         *   `outbound_healthy` — only outbound peers past handshake,
-         *     used to decide if we need aggressive backfill. Without
-         *     this distinction a node with 1 working peer + several stuck
-         *     in PEER_CONNECTING reads as fully-outbound and never
-         *     hunts for replacements. */
-        /* Sweep any feeler probes that finished (mark good + disconnect) or
-         * timed out, BEFORE counting slots — feelers never count toward the
-         * outbound floor/slot budget. */
-        connman_sweep_feelers(cm);
-
-        size_t outbound_slot = 0;
-        size_t outbound_healthy = 0;
-        zcl_mutex_lock(&cm->manager.cs_nodes);
-        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-            struct p2p_node *n = cm->manager.nodes[i];
-            if (n->inbound || n->disconnect || n->is_feeler) continue;
-            outbound_slot++;
-            if (n->state >= PEER_HANDSHAKE_COMPLETE)
-                outbound_healthy++;
-        }
-        zcl_mutex_unlock(&cm->manager.cs_nodes);
-
-        /* RETIRE: cheap (O(MAX_ADDNODES), no I/O) — safe every iteration.
-         * Floor-guarded internally against outbound_healthy. */
-        connman_retire_dead_addnodes(cm, outbound_healthy);
-
-        size_t outbound = outbound_slot;
-
-        if (outbound >= MAX_OUTBOUND_CONNECTIONS ||
-            cm->manager.num_nodes >= (size_t)cm->manager.max_connections) {
-            sleep(1);
-            continue;
-        }
-
-        /* In connect-only mode maintain one outbound connection PER
-         * -connect addnode (each explicit target gets its own slot), not a
-         * single global connection. The old `outbound >= 1` gate stopped
-         * after the FIRST addnode connected, so a second/third -connect peer
-         * was never dialed despite the "1 connection per addnode" promise —
-         * a single-supplier node could not fan out to its other explicit
-         * peers. Multiple connections to the SAME peer still cause snapshot
-         * serving to split and stall, but that is prevented by connect_node's
-         * per-service dedupe, not by capping the global outbound count.
-         * Bound: MAX_OUTBOUND_CONNECTIONS (checked above) still caps the
-         * total, and num_addnodes <= MAX_ADDNODES. */
-        if (g_connect_only && outbound >= (size_t)cm->num_addnodes) {
-            sleep(1);
-            continue;
-        }
-
-        /* ZCL23 peer preference: 50% of connection attempts go to known
-         * ZCL23 peers (fast sync capable, high bandwidth). This creates
-         * a tight mesh of power nodes that find each other quickly. */
-        bool tried_zcl23 = false;
-        if (!g_connect_only && cm->known_zcl23_peers &&
-            (GetRand(2) == 0)) {
-            struct connman_known_peer zcl_peers[8];
-            int nzcl = cm->known_zcl23_peers(
-                cm->known_zcl23_peers_ctx, zcl_peers, 8);
-            if (nzcl > 0) {
-                struct connman_known_peer *pick =
-                    &zcl_peers[GetRand((uint64_t)nzcl)];
-                /* Check not already connected */
-                bool already = false;
-                zcl_mutex_lock(&cm->manager.cs_nodes);
-                for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
-                    struct p2p_node *n = cm->manager.nodes[ni];
-                    if (!n->disconnect &&
-                        memcmp(n->addr.svc.addr.ip, pick->ip, 16) == 0 &&
-                        n->addr.svc.port == pick->port) {
-                        already = true;
-                        break;
-                    }
-                }
-                zcl_mutex_unlock(&cm->manager.cs_nodes);
-                if (!already) {
-                    struct net_address addr;
-                    memset(&addr, 0, sizeof(addr));
-                    memcpy(addr.svc.addr.ip, pick->ip, 16);
-                    addr.svc.port = pick->port;
-                    addr.nServices = pick->services;
-                    addr.nTime = (uint32_t)platform_time_wall_time_t();
-                    peer_lifecycle_note_attempt(&addr,
-                                                PEER_LIFECYCLE_SOURCE_ZCL23_DB);
-                    struct p2p_node *node = connect_node(&cm->manager,
-                                                          &addr, NULL);
-                    if (node) {
-                        peer_lifecycle_note_connected(
-                            node, PEER_LIFECYCLE_SOURCE_ZCL23_DB);
-                        tried_zcl23 = true;
-                        /* Drop the +1 caller ref connect_node returns. */
-                        connman_release_connect_node_ref(cm, node);
-                    }
-                }
-            }
-        }
-
-        /* Parallel batch dial. Below the healthy-peer floor (3 fully-
-         * handshaked outbound) we fill many slots at once (peers stuck in
-         * PEER_CONNECTING don't count, so a node with 1 working peer + several
-         * stuck sockets still backfills aggressively). At/above the floor we
-         * dial gently, rate-limited to one candidate per 10 s. Either way the
-         * whole batch's connects run concurrently against ONE shared 5 s
-         * window instead of serially, so N slow peers no longer cost N×5 s. */
-        int64_t now_oc = (int64_t)platform_time_wall_time_t();
-        const size_t OUTBOUND_HEALTHY_FLOOR = ZCL_PEER_FLOOR_HEALTHY;
-        bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
-        bool rate_ok = below_floor ||
-                       (now_oc - s_last_addrman_attempt >= 10);
-
-        /* HARVEST: below the healthy floor AND addrman itself is running
-         * dry — pull proven-reachable candidates from the durable network
-         * census into addrman (NEVER as pinned addnodes). Cadence-gated so
-         * a persistently-hungry loop doesn't hammer the census DB every
-         * ~1s tail iteration; the outcome feeds the NEXT gather call, not
-         * necessarily this one. connman doesn't track chain height, so no
-         * min_height filter here (-1). */
-        if (below_floor &&
-            now_oc - cm->last_census_harvest_ts >=
-                ZCL_ADDNODE_HARVEST_INTERVAL_SECS) {
-            zcl_mutex_lock(&cm->manager.addrman.cs);
-            size_t am_size = addrman_size(&cm->manager.addrman);
-            zcl_mutex_unlock(&cm->manager.addrman.cs);
-            if (am_size < ZCL_ADDNODE_HARVEST_WEAK_ADDRMAN_THRESHOLD) {
-                cm->last_census_harvest_ts = now_oc;
-                connman_harvest_census_candidates(cm, -1);
-            }
-        }
-
-        size_t free_slots = MAX_OUTBOUND_CONNECTIONS - outbound; /* > 0 here */
-        size_t want = 0;
-        if (rate_ok && !tried_zcl23) {
-            if (outbound_healthy == 0)
-                want = free_slots;                    /* bootstrap: fill fast */
-            else if (below_floor)
-                want = free_slots < 4 ? free_slots : 4;
-            else
-                want = 1;                             /* healthy: gentle */
-        }
-        if (want > ZCL_DIAL_BATCH_MAX)
-            want = ZCL_DIAL_BATCH_MAX;
-
-        struct connman_dial_candidate batch[ZCL_DIAL_BATCH_MAX + 1];
-        size_t nbatch = 0;
-        if (want > 0)
-            nbatch = connman_gather_dial_candidates(cm, batch, want);
-
-        /* Feeler: at most one transient NEW-table validation probe per
-         * interval, appended beyond the slot budget (feelers never occupy an
-         * outbound slot). Skipped in -connect-only mode. */
-        if (!g_connect_only) {
-            int64_t feeler_interval = connman_feeler_interval_secs();
-            if (now_oc - cm->last_feeler_ts >= feeler_interval &&
-                !connman_feeler_in_flight(cm)) {
-                struct net_address ftarget;
-                if (connman_pick_feeler_target(cm, &ftarget)) {
-                    cm->last_feeler_ts = now_oc;
-                    batch[nbatch].addr = ftarget;
-                    batch[nbatch].source = CONNMAN_TARGET_ADDRMAN;
-                    batch[nbatch].addnode_index = SIZE_MAX;
-                    batch[nbatch].is_feeler = true;
-                    nbatch++;
-                } else {
-                    /* Nothing probeable right now — still back off the timer
-                     * so we don't re-scan the NEW table every loop. */
-                    cm->last_feeler_ts = now_oc;
-                }
-            }
-        }
-
-        if (nbatch > 0) {
-            if (rate_ok && !tried_zcl23)
-                s_last_addrman_attempt = now_oc;
-            connman_dial_batch(cm, batch, nbatch);
-        }
-
-        /* Liveness-only, not the sleep-tail's 10s cap: the batch dial above
-         * can wait on connect() for up to one 5 s window. */
-        thread_liveness_beat(&g_open_liveness, (int64_t)++open_iterations);
-
-        /* Sleep based on outbound count:
-         * 0 outbound: 200ms (desperate)
-         * below target: 1s
-         * at target: 10s (just monitoring) */
-        if (outbound == 0)
-            usleep(200000); /* 200ms */
-        else if (outbound < MAX_OUTBOUND_CONNECTIONS)
-            sleep(1);
-        else
-            sleep(10);
-    }
-    return NULL;
 }
 
 static void *thread_socket_handler(void *arg)

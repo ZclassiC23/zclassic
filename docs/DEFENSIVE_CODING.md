@@ -684,6 +684,29 @@ recipes in `Makefile:1481+`.
 
 ---
 
+## Naming — role-based, not birth-order
+
+Instance, artifact, and file names are role-based (`zcl-serve`, the mint
+datadir, `curebin-<githash>`), never birth-order sequence numbers
+(`serve1`, `install4`, `boot4` are examples of the banned pattern — they only
+encode "which attempt" of an otherwise-identical sibling). The exceptions:
+wire-format/protocol version tags (`v1`/`v2` message schemas,
+`zcl.result.v1`), crypto/algorithm names (`sha3_256`, `x4` batch width,
+`ed25519`, `equihash 200_9`), heights, and other genuinely versioned
+on-disk format markers.
+
+This law governs names picked from here forward; it does not license
+breaking references to already-existing artifacts or established labels.
+`mint3` (`~/.zclassic-c23-mint3` on disk, distinct from `~/.zclassic-c23-mint`
+— see `config/src/boot_promote_shielded_history.c`) is a real, currently-live
+datadir name and stays literal in docs until it is naturally re-created under
+a role-based name. Likewise the historical feature-round labels used
+elsewhere in this document and in `CLAUDE.md` (Round 5, Round 6) predate
+this rule and are not retroactively renamed — the law governs new names,
+not history.
+
+---
+
 ## Summary: How agents learn to follow the Rails way
 
 1. **Compiler errors** for raw `sqlite3_step` (unless opted out).

@@ -411,6 +411,47 @@ void register_sync_rate_below_floor(void)
     (void)condition_register(&c_sync_rate_below_floor);
 }
 
+bool sync_rate_below_floor_dump_state_json(struct json_value *out,
+                                           const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    bool ok = true;
+    ok = ok && json_push_kv_bool(out, "active",
+                                 atomic_load(&c_sync_rate_below_floor
+                                                  .state.currently_active));
+    ok = ok && json_push_kv_bool(out, "pending_work",
+                                 atomic_load(&g_last_had_work));
+    ok = ok && json_push_kv_int(out, "current_bps_x1000",
+                                atomic_load(&g_last_bps_scaled));
+    ok = ok && json_push_kv_int(out, "current_floor_bps_x1000",
+                                sr_floor_bps_scaled());
+    ok = ok && json_push_kv_int(out, "below_floor_streak",
+                                atomic_load(&g_below_floor_streak));
+    ok = ok && json_push_kv_int(out, "consecutive_ticks_required",
+                                SYNC_RATE_CONSECUTIVE_TICKS);
+
+    /* Episode-start snapshot (frozen at the rising edge — see
+     * detect_sync_rate_below_floor()); -1 fields mean no episode has fired
+     * yet since the last reset. */
+    ok = ok && json_push_kv_int(out, "observed_bps_x1000_at_detect",
+                                atomic_load(&g_bps_at_detect));
+    ok = ok && json_push_kv_int(out, "floor_bps_x1000_at_detect",
+                                atomic_load(&g_floor_at_detect));
+    ok = ok && json_push_kv_int(out, "network_tip_at_detect",
+                                atomic_load(&g_network_tip_at_detect));
+    ok = ok && json_push_kv_int(out, "log_head_at_detect",
+                                atomic_load(&g_log_head_at_detect));
+    ok = ok && json_push_kv_str(out, "dominant_blocker_id_at_detect",
+                                g_dominant_blocker_id_at_detect);
+    ok = ok && json_push_kv_int(out, "last_fire_unix",
+                                atomic_load(&g_last_fire_unix));
+    return ok;
+}
+
 #ifdef ZCL_TESTING
 void sync_rate_below_floor_test_reset(void)
 {
