@@ -212,11 +212,6 @@ static _Atomic uint64_t g_verify_count;
 static _Atomic uint64_t g_dlclose_count;
 static _Atomic uint64_t g_retained_mapped_count;
 
-uint64_t hotswap_activation_count(void)
-{
-    return atomic_load_explicit(&g_activation_count, memory_order_acquire);
-}
-
 static void event_json(struct json_value *obj, const struct hotswap_act_event *ev)
 {
     json_set_object(obj);

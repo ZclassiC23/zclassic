@@ -20,12 +20,4 @@
 
 void register_chain_reorg_uncorroborated(void);
 
-#ifdef ZCL_TESTING
-void chain_reorg_uncorroborated_test_reset(void);
-bool chain_reorg_uncorroborated_test_detect(void);
-/* Run the remedy directly; returns COND_REMEDY_OK/FAILED as an int to avoid
- * pulling framework/condition.h into the test include set. */
-int  chain_reorg_uncorroborated_test_remedy(void);
-#endif
-
 #endif /* ZCL_CONDITIONS_CHAIN_REORG_UNCORROBORATED_H */

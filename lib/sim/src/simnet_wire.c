@@ -1437,11 +1437,6 @@ bool simnet_wire_peer_pong_received(const struct simnet_wire *wire,
     return peer->saw_nut_pong && peer->last_pong_nonce == nonce;
 }
 
-uint64_t simnet_wire_fingerprint(const struct simnet_wire *wire)
-{
-    return wire ? wire->fingerprint : 0;
-}
-
 bool simnet_wire_get_stats(const struct simnet_wire *wire,
                            struct simnet_wire_stats *out)
 {

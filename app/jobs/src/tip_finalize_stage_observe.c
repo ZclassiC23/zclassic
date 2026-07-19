@@ -339,11 +339,6 @@ uint64_t tip_finalize_observe_header_witness_total(void)
     return atomic_load(&g_header_witness_total);
 }
 
-uint64_t tip_finalize_observe_total_work_added_high(void)
-{
-    return atomic_load(&g_total_work_added_high);
-}
-
 uint64_t tip_finalize_observe_total_work_added_low(void)
 {
     return atomic_load(&g_total_work_added_low);

@@ -156,16 +156,6 @@ bool net_send_over_budget(const struct p2p_node *node)
 static _Atomic uint64_t g_net_addr_push_alloc_fail = 0;
 static _Atomic uint64_t g_net_ban_alloc_fail = 0;
 
-uint64_t net_addr_push_alloc_fail_count(void)
-{
-    return atomic_load(&g_net_addr_push_alloc_fail);
-}
-
-uint64_t net_ban_alloc_fail_count(void)
-{
-    return atomic_load(&g_net_ban_alloc_fail);
-}
-
 size_t net_send_peer_bytes_cap(void)
 {
     size_t cap = 32 * 1024 * 1024; /* 32 MiB per peer default */
@@ -1728,8 +1718,6 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
 }
 
 /* --- socket handler loop (one iteration) --- */
-
-
 
 /* --- addr db --- */
 

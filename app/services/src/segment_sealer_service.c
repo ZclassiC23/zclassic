@@ -221,11 +221,6 @@ int segment_sealer_run_catchup(struct segment_sealer_service *svc,
     return sealed;
 }
 
-int segment_sealer_run_once(struct segment_sealer_service *svc, bool force)
-{
-    return segment_sealer_run_catchup(svc, 1, force);
-}
-
 /* ── Supervision ────────────────────────────────────────────────────────── */
 
 static int64_t seal_deadline_secs(const struct segment_sealer_service *svc)

@@ -214,13 +214,6 @@ void boot_status_set_height(int64_t height)
     pthread_mutex_unlock(&g_lock);
 }
 
-void boot_status_flush(void)
-{
-    pthread_mutex_lock(&g_lock);
-    boot_status_publish_locked();
-    pthread_mutex_unlock(&g_lock);
-}
-
 /* ── Reader (node-free) ──────────────────────────────────────────────── */
 bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
                       char *err, size_t errlen)

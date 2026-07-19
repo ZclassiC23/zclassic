@@ -92,9 +92,6 @@ struct shi_progress {
  * false only on a NULL argument. */
 bool shielded_history_import_progress_snapshot(struct shi_progress *out);
 
-/* Stable human-readable name for an enum shi_phase value (logs + the dumper). */
-const char *shielded_history_import_phase_name(int phase);
-
 /* Import the COMPLETE historical Sprout+Sapling anchor and nullifier sets from
  * a point-in-time copy / fixture of a zclassicd chainstate LevelDB at
  * `chainstate_src_path` into anchor_kv + nullifier_kv held in `progress_db`,

@@ -104,41 +104,6 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     AR_FINISH_SAVE(cbs, e, ok);
 }
 
-/* ── Find ─────────────────────────────────────────────────────── */
-
-bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
-                     struct db_mempool_entry *out)
-{
-    if (!ndb->open) return false;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT raw_tx,fee,size,time_added,height_added,spends_coinbase"
-        " FROM mempool WHERE txid=?",
-        -1, &s, NULL);
-    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
-    AR_BIND_BLOB(s, 1, txid, 32);
-    if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
-
-    memset(out, 0, sizeof(*out));
-    memcpy(out->txid, txid, 32);
-    out->raw_tx_len = (size_t)AR_COL_BYTES(s, 0);
-    const void *rt = sqlite3_column_blob(s, 0);
-    if (rt && out->raw_tx_len > 0) {
-        out->raw_tx = zcl_malloc(out->raw_tx_len, "mempool_entry raw_tx find");
-        if (out->raw_tx)
-            memcpy(out->raw_tx, rt, out->raw_tx_len);
-    }
-    out->fee = AR_COL_INT(s, 1);
-    out->size = (int)AR_COL_INT(s, 2);
-    out->time_added = AR_COL_INT(s, 3);
-    out->height_added = (int)AR_COL_INT(s, 4);
-    out->spends_coinbase = AR_COL_INT(s, 5) != 0;
-    AR_FINALIZE(s);
-    return true;
-}
-
-
-
 /* ── Delete ───────────────────────────────────────────────────── */
 
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])

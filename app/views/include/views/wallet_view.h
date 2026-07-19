@@ -20,11 +20,6 @@ struct wallet;
 struct wallet_tx;
 struct coin_entry;
 
-/* Single UTXO entry for listunspent */
-void wallet_view_utxo(struct json_value *out,
-                      const struct coin_entry *coin,
-                      const struct wallet *w);
-
 /* Diagnostic view: wallet key with per-key balance */
 struct db_wallet_key;
 void wallet_view_key_entry(struct json_value *out,

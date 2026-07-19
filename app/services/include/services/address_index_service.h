@@ -42,9 +42,6 @@ int address_index_service_tick_once(void);
  *                        appearances + confirmed balance for that script. */
 bool address_index_dump_state_json(struct json_value *out, const char *key);
 
-/* Test hook: clear counters and the registration latch. */
-void address_index_service_reset_for_test(void);
-
 /* Bounded per-tick work. */
 #define ADDRESS_INDEX_BATCH_BLOCKS   128
 #define ADDRESS_INDEX_BATCH_US       15000   /* 15 ms wall budget per tick */

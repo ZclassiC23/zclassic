@@ -56,11 +56,6 @@ bool g_connect_only = false;
 static struct peer_bandwidth g_peer_bw;
 static bool g_peer_bw_active = false;
 
-struct peer_bandwidth *peer_bandwidth_get_global(void)
-{
-    return g_peer_bw_active ? &g_peer_bw : NULL;
-}
-
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
 static pthread_t g_thread_open;
@@ -117,14 +112,6 @@ int64_t connman_time_to_first_peer_us(void)
 {
     return atomic_load(&g_first_peer_us);
 }
-
-#ifdef ZCL_TESTING
-void connman_ttfp_reset_for_testing(void)
-{
-    atomic_store(&g_connman_start_us, 0);
-    atomic_store(&g_first_peer_us, 0);
-}
-#endif
 
 void connman_get_reactor_stats(struct connman_reactor_stats *out)
 {

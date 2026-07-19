@@ -528,16 +528,6 @@ struct zcl_result blog_anchor_script_parse(
     return ZCL_OK;
 }
 
-const char *blog_publication_status_name(enum blog_publication_status status)
-{
-    switch (status) {
-    case BLOG_PUBLICATION_CONFIRMED: return "projection-confirmed";
-    case BLOG_PUBLICATION_ORPHANED: return "orphaned";
-    case BLOG_PUBLICATION_UNRESOLVED:
-    default: return "unresolved";
-    }
-}
-
 struct zcl_result blog_publication_observe_projection(
     struct node_db *ndb, const uint8_t event_id[32],
     struct blog_projection_observation *out)

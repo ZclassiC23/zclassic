@@ -87,12 +87,6 @@ void segment_sealer_init(struct segment_sealer_service *svc,
 struct zcl_result segment_sealer_start(struct segment_sealer_service *svc);
 void segment_sealer_stop(struct segment_sealer_service *svc);
 
-/* Seal at most one eligible segment synchronously. Returns 1 when a segment was
- * sealed, 0 when there was nothing to do, -1 on a seal error. For tests + the
- * background loop. Ignores the enabled flag when `force` is true. Thin wrapper
- * over segment_sealer_run_catchup(svc, 1, force). */
-int segment_sealer_run_once(struct segment_sealer_service *svc, bool force);
-
 /* Bounded backfill catch-up: seal up to `max_segments` oldest-unsealed,
  * fully-below-frontier, 10k-aligned segments this pass. Returns the count
  * sealed (>=0), or -1 when the FIRST attempt errored before any segment was

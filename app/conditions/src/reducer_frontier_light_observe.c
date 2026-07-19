@@ -485,11 +485,6 @@ void rfrl_snapshot_coin_backfill_scan(sqlite3 *db)
         rfrl_set_coin_backfill_scan_snapshot(present, next);
 }
 
-int rfrl_coin_backfill_scan_present_at_detect(void)
-{
-    return atomic_load(&g_coin_backfill_scan_present_at_detect);
-}
-
 int rfrl_coin_backfill_scan_next_at_detect(void)
 {
     return atomic_load(&g_coin_backfill_scan_next_at_detect);
@@ -561,11 +556,6 @@ void rfrl_snapshot_tipfin_backfill(sqlite3 *db)
     int progress = -1;
     if (rfrl_read_tipfin_backfill_progress(db, &present, &progress))
         rfrl_set_tipfin_backfill_snapshot(present, progress);
-}
-
-int rfrl_tipfin_backfill_present_at_detect(void)
-{
-    return atomic_load(&g_tipfin_backfill_present_at_detect);
 }
 
 int rfrl_tipfin_backfill_progress_at_detect(void)

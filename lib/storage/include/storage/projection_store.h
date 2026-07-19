@@ -65,10 +65,6 @@ bool projection_store_open(const char *datadir);
 /* Singleton handle. NULL if not yet opened or already closed. */
 sqlite3 *projection_store_db(void);
 
-/* Snapshot the open path into out[cap] (false + out[0]='\0' when not open or it
- * would not fit). */
-bool projection_store_path(char *out, size_t cap);
-
 /* Serialize operations on the singleton projection handle. Recursive so a
  * projection step can call read helpers while its outer transaction is
  * active. This is a DIFFERENT mutex than progress_store_tx_lock — the two lock
@@ -78,13 +74,6 @@ void projection_store_tx_lock(void);
  * immediately when another projection batch owns it. */
 bool projection_store_tx_trylock(void);
 void projection_store_tx_unlock(void);
-
-/* Run `op` inside a projection BEGIN IMMEDIATE transaction: locks
- * projection_store_tx_lock(), BEGIN IMMEDIATE on projection_store_db(), calls
- * op(db, arg), then COMMIT on op()==true / ROLLBACK on op()==false, and
- * unlocks. Returns op()'s result, or false if the store is closed or the
- * BEGIN/COMMIT itself fails. `op` binds and steps its own statements. */
-bool projection_store_run_in_tx(bool (*op)(sqlite3 *db, void *arg), void *arg);
 
 /* Graceful close: sqlite3_close of the projection handle. Safe to call
  * repeatedly and from shutdown paths. Close the projection store BEFORE

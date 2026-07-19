@@ -101,6 +101,4 @@ struct zcl_result blog_publication_observe_projection(
     struct node_db *ndb, const uint8_t event_id[32],
     struct blog_projection_observation *out);
 
-const char *blog_publication_status_name(enum blog_publication_status status);
-
 #endif /* ZCL_SERVICES_BLOG_PUBLICATION_SERVICE_H */

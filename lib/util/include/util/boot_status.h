@@ -81,10 +81,6 @@ void boot_status_note_stage(int stage);
  * No-op when the writer is not armed. */
 void boot_status_set_height(int64_t height);
 
-/* Explicitly write the beacon now from the current writer state. Rarely
- * needed — note/set already rewrite. No-op when unarmed. */
-void boot_status_flush(void);
-
 /* ── Reader (node-free; used by the native command + tests) ──────────── */
 
 /* Read + parse `<datadir>/boot_status.json` into `out`. Returns true on a

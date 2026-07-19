@@ -149,11 +149,6 @@ int state_auditor_mismatch_test_remedy(void)
     return (int)remedy_state_auditor_mismatch();
 }
 
-int state_auditor_mismatch_test_remedy_calls(void)
-{
-    return atomic_load(&g_test_remedy_calls);
-}
-
 bool state_auditor_mismatch_test_detect(void)
 {
     return detect_state_auditor_mismatch();
