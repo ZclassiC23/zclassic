@@ -341,10 +341,37 @@ while IFS= read -r name; do
     [ -n "$name" ] && CONDITIONS["$name"]=1
 done < <(extract_condition_names "${scan_files[@]}")
 
+# ── ESCAPE(<action>) remedies — a row may instead name a blocker escape
+# action registered via blocker_register_escape("<action>", fn): the
+# supervisor sweep's own edge-triggered escape ladder IS the auto-remedy
+# (see app/services/src/chain_activation_service.c:211). Only literal
+# quoted action-name registrations are recognized (a macro-built action
+# name can't be resolved by string matching, same limitation as the id
+# extraction above). ──
+extract_registered_escapes() {
+    grep -rhoE 'blocker_register_escape\([ \t]*"[^"]+"' "$@" 2>/dev/null |
+    sed -E 's/^blocker_register_escape\([ \t]*"//; s/"$//'
+}
+declare -A ESCAPES
+while IFS= read -r name; do
+    [ -n "$name" ] && ESCAPES["$name"]=1
+done < <(extract_registered_escapes "${scan_files[@]}")
+
 bad_remedy=()
+escape_count=0
 for id in "${TABLE_ORDER[@]}"; do
     remedy="${TABLE_REMEDY[$id]}"
     [ "$remedy" = "OWNER" ] && continue
+    if [[ "$remedy" =~ ^ESCAPE\((.+)\)$ ]]; then
+        action="${BASH_REMATCH[1]}"
+        if [ -z "${ESCAPES[$action]+x}" ]; then
+            bad_remedy+=("$id -> \"$remedy\" (no blocker_register_escape(\"$action\", ...) call site found anywhere in scope)")
+            fail=1
+        else
+            escape_count=$((escape_count + 1))
+        fi
+        continue
+    fi
     if [ -z "${CONDITIONS[$remedy]+x}" ]; then
         bad_remedy+=("$id -> \"$remedy\" (no ZCL_CONDITION($remedy) / *_COND_NAME \"$remedy\" found anywhere in scope)")
         fail=1
@@ -361,11 +388,13 @@ if [ "$fail" = "0" ]; then
     for id in "${TABLE_ORDER[@]}"; do
         if [ "${TABLE_REMEDY[$id]}" = "OWNER" ]; then
             owner_count=$((owner_count + 1))
+        elif [[ "${TABLE_REMEDY[$id]}" =~ ^ESCAPE\( ]]; then
+            :  # already counted in escape_count
         else
             cond_count=$((cond_count + 1))
         fi
     done
-    echo "check_blocker_remedy: clean — ${#TABLE_ORDER[@]} bound blocker id(s)/pattern(s) (${cond_count} condition-remedied, ${owner_count} OWNER), ${#ALL_IDS[@]} discovered in source, all covered"
+    echo "check_blocker_remedy: clean — ${#TABLE_ORDER[@]} bound blocker id(s)/pattern(s) (${cond_count} condition-remedied, ${escape_count} escape-remedied, ${owner_count} OWNER), ${#ALL_IDS[@]} discovered in source, all covered"
     exit 0
 fi
 
