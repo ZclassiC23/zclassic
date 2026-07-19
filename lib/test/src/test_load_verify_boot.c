@@ -136,7 +136,10 @@ static bool lv_write(const char *path, const struct lv_built *b)
 static bool lv_progress_path(char *out, size_t cap, const char *dir,
                              const char *suffix)
 {
-    int n = snprintf(out, cap, "%s/progress.kv%s", dir, suffix);
+    /* A4: the kernel authority store is consensus.db after the flip; these
+     * fixtures corrupt/inspect the authority, so they must target consensus.db
+     * (the file the boot loader actually opens and quarantines). */
+    int n = snprintf(out, cap, "%s/consensus.db%s", dir, suffix);
     return n > 0 && (size_t)n < cap;
 }
 
@@ -196,7 +199,7 @@ static bool lv_has_quarantined_progress_store(const char *dir)
     bool found = false;
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
-        if (strncmp(de->d_name, "progress.kv.quarantine.", 23) == 0) {
+        if (strncmp(de->d_name, "consensus.db.quarantine.", 24) == 0) {
             found = true;
             break;
         }

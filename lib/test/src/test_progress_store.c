@@ -3,7 +3,7 @@
  * Unit tests for the progress_store singleton (lib/storage/src/progress_store.c).
  *
  * Coverage:
- *   - open creates <datadir>/progress.kv with WAL + stage_cursor table
+ *   - open creates <datadir>/consensus.db with WAL + stage_cursor table
  *   - second open on the same datadir is idempotent (no error, same handle)
  *   - second open on a *different* datadir is rejected (one process, one store)
  *   - close releases the singleton; reopen on a fresh path succeeds
@@ -110,7 +110,7 @@ static void *lo_projection_writer(void *p)
     return NULL;
 }
 
-/* Count quarantine sidecar files (progress.kv*.corrupt.*) in dir. Used to
+/* Count quarantine sidecar files (consensus.db*.corrupt.*) in dir. Used to
  * assert the quick_check quarantine fired exactly when expected. */
 static int ps_count_corrupt(const char *dir)
 {
@@ -119,7 +119,7 @@ static int ps_count_corrupt(const char *dir)
     int n = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "progress.kv", 11) == 0 &&
+        if (strncmp(e->d_name, "consensus.db", 12) == 0 &&
             strstr(e->d_name, ".corrupt.") != NULL)
             n++;
     }
@@ -144,9 +144,11 @@ int test_progress_store(void)
         PS_CHECK("handle is non-NULL", progress_store_db() != NULL);
 
         char fpath[512];
-        snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+        /* After the A3 flip the kernel store file is consensus.db (a legacy
+         * progress.kv would be migrated in place first). */
+        snprintf(fpath, sizeof(fpath), "%s/consensus.db", dir);
         struct stat st;
-        PS_CHECK("progress.kv file exists",
+        PS_CHECK("consensus.db file exists",
                  stat(fpath, &st) == 0 && S_ISREG(st.st_mode));
 
         sqlite3 *db1 = progress_store_db();
@@ -271,7 +273,7 @@ int test_progress_store(void)
         PS_CHECK("open dump reports stage_cursor_rows",
                  strstr(buf, "\"stage_cursor_rows\"") != NULL);
         PS_CHECK("open dump reports path",
-                 strstr(buf, "progress.kv") != NULL);
+                 strstr(buf, "consensus.db") != NULL);
         json_free(&v_open);
 
         progress_store_close();
@@ -467,7 +469,7 @@ int test_progress_store(void)
         ps_tmpdir(dir, sizeof(dir), "quarantine");
         mkdir_p(dir);
         char fpath[512];
-        snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+        snprintf(fpath, sizeof(fpath), "%s/consensus.db", dir);
 
         /* Seed a healthy store with a recognizable marker, then close so the
          * WAL is checkpointed back into the main file (close TRUNCATEs WAL). */

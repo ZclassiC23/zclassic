@@ -78,26 +78,90 @@ bool consensus_db_kernel_stats_match(const struct consensus_db_kernel_stats *a,
                                      const struct consensus_db_kernel_stats *b,
                                      char *errbuf, size_t errcap);
 
-/* One-time, O(state) migration of the consensus kernel atomic set out of
+/* The projection (Class C) tables that STAY in progress.kv — they are written
+ * through projection_store (the SECOND handle to progress.kv), NOT the kernel
+ * handle, so they must NOT move into consensus.db. Everything else in
+ * progress.kv is reached through the kernel handle (progress_store) and MOVES
+ * with the flip. Keeping this as the definitive STAY set (rather than an
+ * explicit MOVE list) makes the migration completeness-safe: it CANNOT silently
+ * miss a kernel table, because "move = every source table not in STAY". */
+#define CONSENSUS_DB_PROJECTION_STAY_COUNT 4
+extern const char *const consensus_db_projection_stay[
+    CONSENSUS_DB_PROJECTION_STAY_COUNT];
+
+/* THE dedicated marker key (in consensus.db's progress_meta) that records the
+ * kernel store has been physically split into consensus.db. Its presence is the
+ * durable "the flip completed" signal. */
+#define CONSENSUS_DB_SCHEMA_VERSION_KEY "consensus_schema_version"
+#define CONSENSUS_DB_SCHEMA_VERSION     1
+
+/* One-time, O(state) migration of the consensus kernel out of
  * `<datadir>/progress.kv` into a fresh `<datadir>/consensus.db`.
  *
  *   - Idempotent: returns true immediately if consensus.db already exists.
  *   - Fresh node: returns true (no consensus.db created) if there is no
  *     progress.kv, or the progress.kv present has no `coins` table (nothing
  *     to migrate — boot creates consensus.db from scratch).
- *   - Otherwise copies the atomic set into consensus.db.tmp, verifies the
- *     copied fingerprint EQUALS the source fingerprint, and only then renames
- *     it into place.
+ *   - Otherwise copies EVERY source table that is not a projection (Class C)
+ *     table into consensus.db.tmp: the 7 fingerprinted kernel tables PLUS the
+ *     Class B/D tables written inside kernel txs (the stage *_log journals,
+ *     utxo_apply_delta, the producer session/receipt rows, …). It then verifies
+ *     the copied 7-table fingerprint EQUALS the source AND that every copied
+ *     table's row count matches the source, and only then renames it into
+ *     place.
  *   - On ANY integrity mismatch (or copy/verify failure) it removes the
  *     partial consensus.db.tmp, leaves progress.kv untouched, and returns
  *     false with a typed message. It NEVER leaves a half-migrated
  *     consensus.db behind.
  *
  * progress.kv is left fully intact — this call only PRODUCES consensus.db;
- * dropping the migrated tables from progress.kv belongs to the caller-flip
- * that repoints the kernel handle, not to the migration primitive. errbuf may
- * be NULL. */
+ * dropping the migrated tables from progress.kv is consensus_db_drop_migrated_
+ * from_progress(), run only AFTER the kernel handle has been repointed onto
+ * consensus.db. errbuf may be NULL. */
 bool consensus_db_migrate_from_progress(const char *datadir,
                                         char *errbuf, size_t errcap);
+
+/* Second half of the flip: idempotently DROP from `<datadir>/progress.kv` every
+ * table that was migrated into consensus.db (every table present in BOTH files
+ * that is not a projection STAY table), then leave only the Class C projections
+ * behind. Crash-safe: DROP TABLE IF EXISTS inside one transaction, re-runs
+ * clean. Refuses (returns false) unless a populated consensus.db exists — the
+ * kernel authority must already live in consensus.db before its old copy is
+ * dropped from progress.kv, so a crash can never leave the kernel homeless.
+ *
+ * A missing progress.kv (fresh node) is a clean no-op success. errbuf may be
+ * NULL. */
+bool consensus_db_drop_migrated_from_progress(const char *datadir,
+                                              char *errbuf, size_t errcap);
+
+/* Stamp the durable "flip completed" marker (CONSENSUS_DB_SCHEMA_VERSION under
+ * CONSENSUS_DB_SCHEMA_VERSION_KEY) into consensus.db's progress_meta. `cdb` is
+ * the open consensus.db handle (i.e. progress_store_db() after the repoint).
+ * Idempotent (INSERT OR REPLACE). errbuf may be NULL. */
+bool consensus_db_write_schema_marker(struct sqlite3 *cdb,
+                                      char *errbuf, size_t errcap);
+
+/* Second half of the boot flip in one call, run AFTER progress_store has opened
+ * consensus.db: drop the migrated tables from progress.kv
+ * (consensus_db_drop_migrated_from_progress) then stamp the schema marker into
+ * consensus.db (consensus_db_write_schema_marker). Both steps are idempotent +
+ * crash-safe and NON-fatal — returns false (with a typed message) on the first
+ * failing step so the caller can log-and-continue; consensus.db stays the sole
+ * authority regardless. `cdb` is progress_store_db(). errbuf may be NULL. */
+bool consensus_db_finalize_flip(const char *datadir, struct sqlite3 *cdb,
+                                char *errbuf, size_t errcap);
+
+/* THE filename of the kernel store. After the flip this is consensus.db; a
+ * caller that resolves the kernel file by PATH (rather than through the
+ * progress_store handle) must use consensus_db_kernel_store_path() so it
+ * follows the flip instead of hardcoding progress.kv. */
+#define CONSENSUS_DB_LEGACY_KERNEL_FILENAME "progress.kv"
+
+/* Resolve the datadir's kernel store path into out[cap]: `<datadir>/consensus.db`
+ * when that file exists, else the legacy `<datadir>/progress.kv`. This is the
+ * thin compatibility shim for direct-path kernel readers during the A4 window,
+ * so a reader picks up consensus.db post-flip and still works on a
+ * pre-flip / legacy datadir. Returns false (out[0]='\0') on a sizing error. */
+bool consensus_db_kernel_store_path(const char *datadir, char *out, size_t cap);
 
 #endif /* ZCL_STORAGE_CONSENSUS_DB_H */

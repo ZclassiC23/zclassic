@@ -72,6 +72,19 @@ int64_t agent_cure_progress_age_seconds(bool progress_present,
     return captured_at_unix - progress_mtime;
 }
 
+/* A4: the kernel store is consensus.db post-flip (or the legacy progress.kv on a
+ * pre-flip datadir). Report the actual file the activity mtime came from rather
+ * than a hardcoded name, so the diagnostic never claims progress.kv for a
+ * consensus.db read. The returned pointer aliases `path`, which the caller keeps
+ * live through the JSON emit. */
+static const char *cure_kernel_store_basename(const char *path)
+{
+    if (!path || !path[0])
+        return "kernel-store";
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
 static void agent_cure_activity_build(
     const char *progress_path, bool progress_present, int64_t progress_mtime,
     int64_t captured_at_unix, const struct agent_cure_eta_view *eta,
@@ -85,7 +98,9 @@ static void agent_cure_activity_build(
     out->activity_age_seconds = -1;
     out->sample_interval_seconds = -1;
     out->stale_after_seconds = CURE_PROGRESS_RECENT_SECS;
-    out->activity_source = progress_present ? "progress.kv" : "unavailable";
+    out->activity_source =
+        progress_present ? cure_kernel_store_basename(progress_path)
+                         : "unavailable";
 
     int n = snprintf(out->wal_path, sizeof(out->wal_path), "%s-wal",
                      progress_path ? progress_path : "");
@@ -96,7 +111,7 @@ static void agent_cure_activity_build(
             out->wal_present, captured_at_unix, out->wal_mtime);
         if (out->wal_present && out->wal_mtime > out->activity_mtime) {
             out->activity_mtime = out->wal_mtime;
-            out->activity_source = "progress.kv-wal";
+            out->activity_source = cure_kernel_store_basename(out->wal_path);
         }
     } else {
         out->wal_path[0] = '\0';
@@ -270,7 +285,8 @@ void agent_cure_push_eta_json(struct json_value *result,
     json_init(&obj);
     json_set_object(&obj);
     json_push_kv_bool(&obj, "available", eta && eta->available);
-    json_push_kv_str(&obj, "source", "progress.kv:utxo_apply_log.applied_at");
+    json_push_kv_str(&obj, "source",
+                     "consensus.db:utxo_apply_log.applied_at");
     json_push_kv_str(&obj, "reason", eta && eta->reason
         ? eta->reason : "durable_samples_unavailable");
     json_push_kv_int(&obj, "older_height", eta ? eta->older_height : -1);

@@ -50,6 +50,7 @@
 #include "primitives/transaction.h"
 #include "sapling/constants.h"          /* ZC_NUM_JS_OUTPUTS */
 #include "sapling/incremental_merkle_tree.h"
+#include "storage/consensus_db.h"       /* consensus_db_kernel_store_path */
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"       /* NULLIFIER_POOL_SPROUT / _SAPLING */
 #include "util/log_macros.h"
@@ -614,9 +615,19 @@ bool shielded_history_body_crosscheck_run(const char *copy_datadir,
     struct workpool wp;
     bool wp_init = false;
 
-    pdb = xck_open_ro(producer_datadir, "progress.kv");
+    /* A4: the producer's anchors/nullifiers live in the kernel store —
+     * consensus.db post-flip, or the legacy progress.kv on a pre-flip datadir. */
+    char kernel_path[PATH_MAX];
+    const char *kernel_name = "progress.kv";
+    if (consensus_db_kernel_store_path(producer_datadir, kernel_path,
+                                       sizeof(kernel_path))) {
+        const char *slash = strrchr(kernel_path, '/');
+        kernel_name = slash ? slash + 1 : kernel_path;
+    }
+    pdb = xck_open_ro(producer_datadir, kernel_name);
     if (!pdb) {
-        LOG_WARN(XCK_SUBSYS, "crosscheck: producer progress.kv unavailable");
+        LOG_WARN(XCK_SUBSYS, "crosscheck: producer kernel store (%s) unavailable",
+                 kernel_name);
         goto done;
     }
     cdb = xck_open_ro(copy_datadir, "node.db");

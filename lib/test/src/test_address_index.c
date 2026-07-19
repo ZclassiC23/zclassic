@@ -100,7 +100,10 @@ int test_address_index(void)
      * projection handle. Open it (same physical file) so the dumper assertions
      * below observe the rows the raw primitives commit. */
     AI_CHECK("projection_store opens", projection_store_open(dir));
-    sqlite3 *db = progress_store_db();
+    /* A4/A3 physical split: address_index is a projection table written and read
+     * through the projection handle (progress.kv), a DIFFERENT file from the
+     * consensus.db kernel. Fold + dump on that handle so they see the same rows. */
+    sqlite3 *db = projection_store_db();
     AI_CHECK("db handle", db != NULL);
 
     /* OMNISCIENCE default: with no -addressindex arg the projection is ON so a
@@ -454,8 +457,11 @@ int test_address_index(void)
             uint8_t blob[8];
             for (int i = 0; i < 8; i++)
                 blob[i] = (uint8_t)((uint64_t)base >> (8 * i));
+            /* A4: the seed floor is a kernel fact — write it to the kernel
+             * store (progress_store_db), where the guard now reads it. */
             AI_CHECK("write trusted_base_height=1000",
-                     progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                     progress_meta_set(progress_store_db(),
+                                       REDUCER_TRUSTED_BASE_HEIGHT_KEY,
                                        blob, sizeof(blob)));
         }
         /* An absent body BELOW the seed floor raises the named DEPENDENCY. */

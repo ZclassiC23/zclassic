@@ -6,6 +6,7 @@
 
 #include "consensus_state_snapshot_install_internal.h"
 
+#include "storage/consensus_db.h"    /* CONSENSUS_DB_FILENAME + legacy name */
 #include "util/log_macros.h"
 
 #include <errno.h>
@@ -18,12 +19,11 @@
 
 #define CANDIDATE_SUBSYS "consensus_state_candidate"
 
-static bool candidate_name_is_active_family(const char *name)
+static bool candidate_name_has_prefix_ci(const char *name, const char *prefix)
 {
-    static const char prefix[] = "progress.kv";
     if (!name)
         return false;
-    for (size_t i = 0; i < sizeof(prefix) - 1; i++) {
+    for (size_t i = 0; prefix[i] != '\0'; i++) {
         unsigned char c = (unsigned char)name[i];
         if (c == '\0')
             return false;
@@ -33,6 +33,16 @@ static bool candidate_name_is_active_family(const char *name)
             return false;
     }
     return true;
+}
+
+/* A4: refuse an export output name that would collide with EITHER live store —
+ * the consensus.db kernel authority (post-flip) or the progress.kv projection
+ * store (which also stays live for address_index/txindex). */
+static bool candidate_name_is_active_family(const char *name)
+{
+    return candidate_name_has_prefix_ci(name, CONSENSUS_DB_FILENAME) ||
+           candidate_name_has_prefix_ci(name,
+                                        CONSENSUS_DB_LEGACY_KERNEL_FILENAME);
 }
 
 static bool candidate_name_valid(const char *name)

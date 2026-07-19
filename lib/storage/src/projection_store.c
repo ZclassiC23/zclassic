@@ -2,10 +2,11 @@
  *
  * projection_store — implementation. See storage/projection_store.h.
  *
- * A second sqlite3 handle to the SAME progress.kv file progress_store owns,
- * behind an atomic pointer with a one-shot init/close mutex. Projection
- * co-writers use this handle + their OWN recursive tx mutex so their BEGIN
- * IMMEDIATE never serialises on the reducer drive's kernel tx lock.
+ * The owner of the progress.kv projection file (the kernel moved to consensus.db
+ * in the A3 flip), behind an atomic pointer with a one-shot init/close mutex.
+ * Projection co-writers use this handle + their OWN recursive tx mutex so their
+ * BEGIN IMMEDIATE never serialises on the reducer drive's kernel tx lock — and,
+ * post-flip, never shares the kernel's WAL journal either.
  *
  * Raw sqlite3_exec/step here carry the projection-store marker: like
  * progress_store this module sits below the AR lifecycle (the projection
@@ -136,12 +137,15 @@ bool projection_store_open(const char *datadir)
         return true;
     }
 
-    /* READWRITE only (no CREATE): progress_store must have created + integrity-
-     * gated the file first. A missing file here is an open-order fault, not a
-     * fresh store to mint. */
+    /* CREATE: after the Wave A3 consensus.db flip the kernel handle
+     * (progress_store) opens consensus.db, NOT progress.kv — so progress_store
+     * no longer creates progress.kv. projection_store now OWNS progress.kv as
+     * the dedicated projection file: on a fresh node it must mint it here (the
+     * Class C address_index / txindex / created_outputs projections are fully
+     * rebuildable, so a fresh or re-derived projection file is always safe). */
     sqlite3 *db = NULL;
     int rc = sqlite3_open_v2(path, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr,  // obs-ok:projection-store-open-failure
                 "[projection_store] sqlite3_open_v2(%s) failed: %s\n",

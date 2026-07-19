@@ -1,10 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * projection_store — a SECOND SQLite connection to the SAME `progress.kv`
- * file the kernel owns through progress_store.
+ * projection_store — the owner of the `progress.kv` projection file.
  *
- * Why this exists (Wave A2 / D4)
- * ------------------------------
+ * Why this exists (Wave A2 / D4 → A3 flip)
+ * ----------------------------------------
  * The reducer kernel folds chain state under progress_store_tx_lock() +
  * BEGIN IMMEDIATE on the progress_store connection. Projection co-writers
  * (the -addressindex / -txindex folds, the created_outputs retention prune,
@@ -12,12 +11,12 @@
  * and ONE tx lock, so a projection batch's BEGIN IMMEDIATE serialised on the
  * exact mutex the reducer drive needs — projection work could stall H*.
  *
- * projection_store gives those co-writers their OWN connection to the same
- * physical file plus their OWN recursive tx mutex. A projection BEGIN
- * IMMEDIATE now contends the kernel only at SQLite's single-WAL-writer level
- * (bounded by busy_timeout), never on the process mutex the reducer drive
- * holds. This is the prerequisite for the later physical `consensus.db` flip
- * that moves the projection tables into their own file entirely.
+ * A2/D4 gave those co-writers their OWN connection + recursive tx mutex. The
+ * A3 flip then moved the kernel tables into their own physical file
+ * (consensus.db, owned by progress_store), leaving progress.kv as the
+ * dedicated projection file this store owns outright. A projection BEGIN
+ * IMMEDIATE now shares neither the reducer's process mutex NOR its WAL journal
+ * — full physical isolation of the two write actors.
  *
  * LOCK ORDER LAW (inviolable)
  * ---------------------------
@@ -50,12 +49,12 @@
  * progress_store's ceiling — it is the same physical file. */
 #define PROJECTION_STORE_PATH_MAX 1024
 
-/* Open a SECOND connection to <datadir>/progress.kv in WAL mode. progress_store
- * MUST already have opened (and integrity-gated) the file — this is a plain
- * second handle to an already-validated store, so it does not re-run the
- * quarantine / candidate-refusal / quick_check gates. Idempotent: a second call
- * with the same datadir is a no-op returning true; a different datadir returns
- * false (one process, one projection store). */
+/* Open the <datadir>/progress.kv projection file in WAL mode, creating it if
+ * absent (this store OWNS it after the A3 flip — the kernel now lives in
+ * consensus.db). The Class C projection tables it holds are fully rebuildable,
+ * so it does not run the kernel quarantine / candidate-refusal / quick_check
+ * gates. Idempotent: a second call with the same datadir is a no-op returning
+ * true; a different datadir returns false (one process, one projection store). */
 bool projection_store_open(const char *datadir);
 
 /* Singleton handle. NULL if not yet opened or already closed. */

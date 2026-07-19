@@ -50,7 +50,10 @@ int test_txindex_projection(void)
      * the projection handle. Open it (same physical file) so the dump/lookup
      * assertions observe the rows the raw primitives commit. */
     TI_CHECK("projection_store opens", projection_store_open(dir));
-    sqlite3 *db = progress_store_db();
+    /* A4/A3 physical split: txindex is a projection table written and read
+     * through the projection handle (progress.kv), a DIFFERENT file from the
+     * consensus.db kernel. Fold + dump on that handle so they see the same rows. */
+    sqlite3 *db = projection_store_db();
     TI_CHECK("db handle", db != NULL);
 
     /* OMNISCIENCE default: with no -txindex arg the projection service is ON so
@@ -306,8 +309,11 @@ int test_txindex_projection(void)
             uint8_t blob[8];
             for (int i = 0; i < 8; i++)
                 blob[i] = (uint8_t)((uint64_t)base >> (8 * i));
+            /* A4: the seed floor is a kernel fact — write it to the kernel
+             * store (progress_store_db), where the guard now reads it. */
             TI_CHECK("write trusted_base_height=2000",
-                     progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                     progress_meta_set(progress_store_db(),
+                                       REDUCER_TRUSTED_BASE_HEIGHT_KEY,
                                        blob, sizeof(blob)));
         }
         index_fold_note_absent_body("txindex", "txindex", db, 1000);

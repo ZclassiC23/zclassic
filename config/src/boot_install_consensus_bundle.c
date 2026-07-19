@@ -256,8 +256,8 @@ static bool icb_coins_max_height(sqlite3 *progress_db, int64_t *out, bool *found
 }
 
 /* Post-install derived-state invalidation. The atomic activate step resets the
- * progress.kv reducer/tip_finalize authority to the installed anchor, but two
- * derived surfaces live OUTSIDE that store and would otherwise fight the new
+ * kernel store's (consensus.db) reducer/tip_finalize authority to the installed
+ * anchor, but two derived surfaces live OUTSIDE that store and would fight the new
  * kernel on the next boot (the 2026-07-19 seam). Returns true iff every derived
  * store is now consistent with the freshly installed bundle at bundle_height. */
 static bool icb_invalidate_derived_state(struct node_db *ndb,
@@ -593,7 +593,8 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
         icb_refuse("activation install failed after ADMIT: %s", ares.reason);
 
     /* (6) Post-install: invalidate the derived stores that live OUTSIDE the
-     * activated progress.kv (the persisted Sapling tree pair + the in-process
+     * activated kernel store (consensus.db) — the persisted Sapling tree pair +
+     * the in-process
      * provable-tip cache) and verify the installed coin tip matches the bundle
      * height. A mismatch means the install did not land where the ADMIT record
      * says — refuse loudly rather than reboot onto an inconsistent kernel. */

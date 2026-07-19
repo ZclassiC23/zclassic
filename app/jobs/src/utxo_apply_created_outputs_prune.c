@@ -3,11 +3,12 @@
  * Lane A1 — created_outputs retention prune, decoupled from the utxo_apply
  * kernel co-commit tx. See utxo_apply_created_outputs_prune.h.
  *
- * The prune is a projection-side retention sweep with NO consensus value:
- * created_outputs is the forward-creation index body_persist builds for the
- * replayable window above the durable coin frontier (a resolver warm cache, not
- * kernel state). Lifting it out of the kernel batch relaxes the atomicity
- * coupling. A crash between the kernel COMMIT and this prune leaves extra
+ * The prune is a retention sweep with NO consensus value: created_outputs is
+ * the forward-creation index body_persist builds for the replayable window
+ * above the durable coin frontier (a resolver warm cache, not kernel state).
+ * Lifting it out of the kernel co-commit BATCH (a separate post-commit tx on the
+ * same kernel store) relaxes the atomicity coupling. A crash between the kernel
+ * COMMIT and this prune leaves extra
  * created_outputs rows below the retention floor — harmless: the bounded
  * resolver height-ignores them and the next advancing drain re-prunes. */
 
@@ -16,7 +17,7 @@
 #include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"          /* stage_cursor_persisted */
 #include "jobs/utxo_apply_stage.h"       /* public test accessors declared here */
-#include "storage/projection_store.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "validation/main_constants.h"
 
@@ -57,26 +58,27 @@ static int utxo_apply_created_outputs_retain(void)
     return t >= 0 ? t : CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS;
 }
 
-/* Wave A2 (D4): the prune is a projection-table retention sweep. It runs on the
- * projection_store handle + projection tx lock — the caller has ALREADY released
- * the kernel progress lock (strictly sequential locks; LOCK ORDER LAW). The
- * committed utxo_apply cursor it snapshots for the floor is read from the
- * projection connection's own BEGIN IMMEDIATE snapshot, which sees the kernel's
- * just-committed cursor over the shared WAL (a read, never a stage_cursor
- * write — the kernel stays the cursor's single writer). */
+/* The prune is a retention sweep with NO consensus value, decoupled from the
+ * kernel CO-COMMIT tx (a separate post-commit BEGIN IMMEDIATE). After the A3
+ * flip created_outputs and stage_cursor both live in consensus.db (the kernel
+ * store), so the prune runs on the kernel handle (progress_store) — the caller
+ * has ALREADY released the kernel progress lock, so re-acquiring it here for a
+ * bounded post-commit DELETE cannot stall an in-flight fold. The cursor it
+ * snapshots for the floor is read inside this tx (a read, never a stage_cursor
+ * write — the reducer stays the cursor's single writer). */
 void utxo_apply_created_outputs_prune_post_commit(void)
 {
-    sqlite3 *db = projection_store_db();
+    sqlite3 *db = progress_store_db();
     if (!db)
         return;
-    projection_store_tx_lock();
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN(STAGE_NAME,
                  "[utxo_apply] created_outputs prune BEGIN failed: %s",
                  err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        projection_store_tx_unlock();
+        progress_store_tx_unlock();
         return;
     }
     /* Snapshot the committed cursor INSIDE the tx for a consistent floor. */
@@ -84,7 +86,7 @@ void utxo_apply_created_outputs_prune_post_commit(void)
     int retain = utxo_apply_created_outputs_retain();
     if (cursor <= (uint64_t)retain) {
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-        projection_store_tx_unlock();
+        progress_store_tx_unlock();
         return;
     }
     int prune_floor = (int)cursor - retain;
@@ -109,5 +111,5 @@ void utxo_apply_created_outputs_prune_post_commit(void)
         }
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     }
-    projection_store_tx_unlock();
+    progress_store_tx_unlock();
 }

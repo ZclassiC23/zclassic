@@ -477,8 +477,10 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     mkdir_p_uv(dir_out);
     SetDataDir(dir_out);
     if (!progress_store_open(dir_out)) return 1;
-    /* Wave A2 split: the created_outputs retention prune runs on the projection
-     * handle, so the harness must open it too or the post-commit prune no-ops. */
+    /* address_index / txindex projection co-writers use the projection handle;
+     * open it too so any projection tick in the harness has a store. The
+     * created_outputs prune itself now runs on the kernel handle (A3 flip —
+     * created_outputs lives in consensus.db). */
     if (!projection_store_open(dir_out)) return 1;
 
     memset(sc, 0, sizeof(*sc));

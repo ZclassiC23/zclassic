@@ -34,6 +34,7 @@
 #include "jobs/utxo_apply_nullifiers.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
+#include "storage/consensus_db.h"    /* consensus_db_kernel_store_path */
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -534,12 +535,14 @@ bool shielded_history_promote_run(const struct shielded_promote_request *req,
     report.anchor_boundary = anchor_boundary;
     report.nullifier_boundary = nullifier_boundary;
 
-    /* Open the producer progress.kv as a DEDICATED read-only connection. */
+    /* Open the producer kernel store as a DEDICATED read-only connection. The
+     * anchors/nullifiers/stage cursors read below are kernel tables, so this is
+     * consensus.db post-flip (or the legacy progress.kv on a pre-flip producer
+     * datadir). */
     char src_path[PROGRESS_STORE_PATH_MAX];
-    int pn = snprintf(src_path, sizeof(src_path), "%s/progress.kv",
-                      req->producer_datadir);
-    if (pn <= 0 || (size_t)pn >= sizeof(src_path))
-        LOG_FAIL(PROMOTE_SUBSYS, "producer progress.kv path overflow");
+    if (!consensus_db_kernel_store_path(req->producer_datadir, src_path,
+                                        sizeof(src_path)))
+        LOG_FAIL(PROMOTE_SUBSYS, "producer kernel store path overflow");
     struct sqlite3 *src = NULL;
     if (sqlite3_open_v2(src_path, &src,
                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL)

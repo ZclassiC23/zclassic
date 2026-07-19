@@ -3,6 +3,7 @@
 
 #include "config/consensus_state_producer_receipt.h"
 
+#include "storage/consensus_db.h"    /* consensus_db_kernel_store_path */
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/cure_progress_read.h"
 
@@ -529,12 +530,13 @@ bool consensus_state_producer_status_read(const char *datadir,
         return status_set_err(err, err_size,
                               "producer status: datadir exceeds 1023 bytes");
 
+    /* A4: read the kernel store — consensus.db post-flip, or the legacy
+     * progress.kv on a pre-flip producer datadir. */
     char path[CONSENSUS_STATE_PRODUCER_DATADIR_MAX +
-              sizeof("/progress.kv")];
-    int path_len = snprintf(path, sizeof(path), "%s/progress.kv", datadir);
-    if (path_len < 0 || (size_t)path_len >= sizeof(path))
+              sizeof("/consensus.db")];
+    if (!consensus_db_kernel_store_path(datadir, path, sizeof(path)))
         return status_set_err(err, err_size,
-                              "producer status: progress path overflow");
+                              "producer status: kernel store path overflow");
     struct stat stbuf;
     if (stat(path, &stbuf) != 0) {
         if (errno != ENOENT) {
@@ -548,7 +550,7 @@ bool consensus_state_producer_status_read(const char *datadir,
     }
     if (!S_ISREG(stbuf.st_mode))
         return status_set_err(err, err_size,
-                              "producer status: progress.kv is not regular");
+                              "producer status: kernel store is not regular");
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {

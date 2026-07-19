@@ -261,7 +261,7 @@ static int test_producer_status_synthetic(void)
         ASSERT(json_get_int(json_get(&reply.data, "eta_seconds")) ==
                (INT64_C(3044414000) + 5732) / 5733);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "rate_source")),
-                      "progress.kv:utxo_apply_log.applied_at") == 0);
+                      "consensus.db:utxo_apply_log.applied_at") == 0);
         const char *text = json_get_str(json_get(&reply.data, "text"));
         ASSERT(text != NULL && strchr(text, '\n') == NULL);
         ASSERT(strstr(text, "height=12344") != NULL);
@@ -373,8 +373,10 @@ static int test_producer_status_uses_one_read_snapshot(void)
         progress_store_close();
 
         struct producer_snapshot_writer writer = {0};
+        /* A4: the kernel store the reader pins is consensus.db post-flip; the
+         * mid-read writer must target the same file it reads. */
         ASSERT(snprintf(writer.progress_path, sizeof(writer.progress_path),
-                        "%s/progress.kv", dir) > 0);
+                        "%s/consensus.db", dir) > 0);
         consensus_state_producer_status_test_set_after_first_cursor_hook(
             producer_snapshot_write_between_reads, &writer);
         struct producer_status_read st;

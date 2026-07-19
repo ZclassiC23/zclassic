@@ -5542,7 +5542,11 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_anchor_status_buf,
                       "zcl.anchor_mint_status.v1") != NULL);
-        ASSERT(strstr(agent_anchor_status_buf, "progress.kv") != NULL);
+        /* A4: the anchor-status controller resolves the kernel store via the
+         * flip-aware helper (consensus.db, legacy progress.kv fallback) rather
+         * than hardcoding the store filename. */
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "consensus_db_kernel_store_path") != NULL);
         ASSERT(strstr(agent_anchor_status_buf,
                       "validated_backlog_blocks") != NULL);
         ASSERT(strstr(agent_anchor_status_buf,

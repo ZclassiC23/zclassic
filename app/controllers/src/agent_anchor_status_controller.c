@@ -7,6 +7,7 @@
 #include "controllers/strong_params.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "storage/consensus_db.h"    /* consensus_db_kernel_store_path */
 #include "util/clientversion.h"
 
 #include <sqlite3.h>
@@ -587,10 +588,9 @@ static bool anchor_status_read(const char *datadir, struct json_value *result)
 
     const char *effective_datadir = datadir && datadir[0] ? datadir : ".";
 
-    char progress_path[1100];
-    char snapshot_path[1100];
-    bool progress_path_ok = agent_cure_path_join(
-        progress_path, sizeof(progress_path), effective_datadir, "progress.kv");
+    char progress_path[1100], snapshot_path[1100]; /* kernel store = consensus.db */
+    bool progress_path_ok = consensus_db_kernel_store_path(
+        effective_datadir, progress_path, sizeof(progress_path));
     bool snapshot_path_ok = agent_cure_path_join(
         snapshot_path, sizeof(snapshot_path), effective_datadir,
         "utxo-anchor.snapshot");
@@ -842,7 +842,7 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
 {
     RPC_HELP(help, result,
         "anchorstatus [datadir]\n"
-        "\nRead a mint-anchor datadir's progress.kv directly and return the\n"
+        "\nRead a mint-anchor datadir's kernel store (consensus.db) and return the\n"
         "sovereign-anchor producer state. This is a no-cookie static command\n"
         "for offline/transient anchor mint services.\n");
 

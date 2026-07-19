@@ -1753,7 +1753,7 @@ void zcl_native_handle_ops_producer_status(
         &reply->data, "rate_future_skew_tolerance_seconds",
         NC_PRODUCER_RATE_FUTURE_SKEW_TOLERANCE_SECONDS);
     (void)json_push_kv_str(&reply->data, "rate_source",
-                           "progress.kv:utxo_apply_log.applied_at");
+                           "consensus.db:utxo_apply_log.applied_at");
     if (st.durable_rate_available) {
         (void)json_push_kv_int(&reply->data, "rate_older_height",
                                st.rate_older_height);
