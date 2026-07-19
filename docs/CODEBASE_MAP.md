@@ -20,10 +20,9 @@ re-run if exactness matters.
 
 Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 (`framework_shape_check.sh`). Filename suffix must match the shape
-(`check_framework_filename_suffix.sh`). The Event shape (FRAMEWORK.md §3 row 7)
-has no `app/` folder — the reserved-empty `app/events/` placeholder was deleted
-2026-07-17 (0 files ever lived there); the concept is owned by `lib/event/` +
-`lib/storage/event_log.c` + `lib/storage/*_projection.c`.
+(`check_framework_filename_suffix.sh`). The Event shape has no `app/`
+folder — see [`docs/FRAMEWORK.md`](FRAMEWORK.md) §3 row 7 for why (and where
+the concept actually lives).
 
 | Shape | Path | Files | Role | Exemplar |
 |-------|------|-------|------|----------|
@@ -183,9 +182,9 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 3. Wire into the pipeline in `config/src/boot_refold_staged.c` (or `boot.c`).
 4. E5 gate (`check-typed-blocker`) enforces advance-or-block.
 
-The 8 stages, in order: `header_admit → validate_headers → body_fetch →
-body_persist → script_validate → proof_validate → utxo_apply → tip_finalize`.
-The reducer is the **only** chain writer.
+Stage order and per-stage contract: see
+[`docs/HOW_THE_NODE_WORKS.md`](HOW_THE_NODE_WORKS.md) §2. The reducer is the
+**only** chain writer.
 
 ### Change a reducer stage
 1. Locate `app/jobs/src/STAGE_stage.c`; edit the advance path or the

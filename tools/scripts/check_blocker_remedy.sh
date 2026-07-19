@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint gate — blocker remedy totality (docs/work/hold-class-audit-2026-07-10.md).
+# Lint gate — blocker remedy totality (docs/work/tenacity-roadmap.md "Hold-class doctrine").
 #
 # Goal: every named typed blocker (lib/util/blocker.h) a production call
 # site can raise has a declared remedy — a condition-engine healer name

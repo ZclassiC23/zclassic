@@ -2,8 +2,9 @@
  *
  * script_validate_contextual — implementation. See
  * jobs/script_validate_contextual.h for the gate contract and
- * docs/work/contextual-check-wiring-spec-2026-06-08.md for the
- * fork-safety analysis behind the gating conditions.
+ * docs/CONSENSUS_PARITY_DOCTRINE.md ("Landed parity fixes" / the
+ * rule-to-zclassicd map) and docs/AGENT_TRAPS.md (the IBD/tip-window gating
+ * rationale) for the fork-safety analysis behind the gating conditions.
  */
 
 #include "jobs/script_validate_contextual.h"

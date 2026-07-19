@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * blocker_remedy_bindings — the ratchet baseline for "every named blocker
- * declares its remedy" (docs/work/hold-class-audit-2026-07-10.md).
+ * declares its remedy" (doctrine: docs/work/tenacity-roadmap.md "Hold-class
+ * doctrine").
  *
  * Why this exists
  * ----------------
@@ -9,9 +10,10 @@
  * escape_action AND no auto-remedy condition, and still look "handled"
  * because it IS a typed, registry-visible fact. That is exactly the class
  * that wedged the canonical node for weeks: `utxo_apply.nullifier_backfill_
- * gap` (defect D3 in the hold-class audit) had zero auto-remedy path in
- * the tree — only a human-readable reason string claiming an owner-gate
- * that no code enforced or surfaced anywhere else. Nothing FAILED A BUILD
+ * gap` had zero auto-remedy path in the tree — only a human-readable reason
+ * string claiming an owner-gate that no code enforced or surfaced anywhere
+ * else (since remedied by the owner-gated populate-only walker,
+ * app/services/src/nullifier_backfill_service.c). Nothing FAILED A BUILD
  * over that gap. This table is the fix: every blocker id (or dynamic-id
  * pattern) that any `blocker_init()`-family call in production code can
  * produce MUST have a row here, and every row's remedy must be either a
@@ -100,20 +102,24 @@ ZCL_BLOCKER_REMEDY(state_auditor.*.mismatch,                   state_auditor_mis
 
 /* ── Cross-condition remedies: a different condition's escalation ladder
  * drives the state that lets the original raiser's own blocker_clear()
- * fire (verified by reading both sides — see hold-class-audit-2026-07-10
- * sites 5 and 9; site 3 is the audit's own documented "indirect" call). */
+ * fire (verified by reading both sides — `utxo_apply.anchor_backfill_gap`'s
+ * remedy `sapling_anchor_frontier_unavailable` and
+ * `reducer_frontier.upstream_log_hole`'s remedy `reducer_frontier_reconcile_light`
+ * are the two direct instances; `script_validate.prevout_unresolved`'s remedy
+ * is the same condition reached indirectly, via coin_backfill re-deriving the
+ * missing prevout). */
 ZCL_BLOCKER_REMEDY(reducer_frontier.upstream_log_hole,        reducer_frontier_reconcile_light)
 ZCL_BLOCKER_REMEDY(utxo_apply.anchor_backfill_gap,             sapling_anchor_frontier_unavailable)
 ZCL_BLOCKER_REMEDY(script_validate.prevout_unresolved,         reducer_frontier_reconcile_light)
 ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_reconcile_light)
 
 /* ── OWNER — no auto-remedy condition exists in-tree (the visible debt).
- * hold-class-audit-2026-07-10 defects D2/D3 are the two most-cited
- * instances; the rest of this list is the FULL enumeration the audit
- * warned was needed ("D1's untyped holds... is the one change that
- * brings a currently-invisible hold class under the meta-detector" —
- * this table does the equivalent for every already-typed hold). ────── */
-ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* D3 */
+ * `proof_validate.internal_error` (transient-held-permanent, backstopped by
+ * blocker_stall_meta_detector.c) and `utxo_apply.nullifier_backfill_gap`
+ * (below) were the two most-cited instances in the 2026-07-10 hold-class
+ * audit; the rest of this list is the FULL enumeration that audit warned
+ * was needed for every already-typed hold, not just those two. */
+ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* owner-gated populate-only walker: nullifier_backfill_service.c */
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)

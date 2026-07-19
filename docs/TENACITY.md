@@ -7,8 +7,9 @@ distilled from — the divergence-surface audit, the failure-rate budget
 recovery-program L1/L2 items — is [`docs/work/tenacity-roadmap.md`](work/tenacity-roadmap.md),
 superseded as a roadmap (see `docs/work/ROADMAPS.md`) but retained on disk
 because reindex/replay-canary/seal_kv code still cites its numbered items by
-name. Near-term hardening sequencing is in
-[`stability-improvements-2026-06-16.md`](work/stability-improvements-2026-06-16.md).*
+name. Near-term hardening sequencing (including the hold-class doctrine and
+the stability-hardening backlog) is in that same file's "Hold-class doctrine"
+and "Stability hardening backlog" sections.*
 
 Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
