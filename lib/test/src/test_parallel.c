@@ -321,7 +321,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) X(bg_validation_reverify) \
     X(zslp_store_port) \
     X(sapling_tree) X(sapling_ckpt_persist) X(shutdown_marker) X(shutdown_stagewatch) X(cold_start_driver) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(importblockindex_roundtrip) X(importblockindex_cli_dispatch) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
+    X(chainstate_legacy_reader) X(importblockindex_roundtrip) X(importblockindex_cli_dispatch) X(e2e_cold_start) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
     X(utxo_snapshot_loader) \
     X(snapshot_shielded) \
     X(load_verify_boot) \
