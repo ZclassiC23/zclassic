@@ -22,6 +22,14 @@
  *   - os_proc_uptime_seconds(): system uptime (/proc/uptime) minus process
  *     start time (field 22 of /proc/self/stat, in clock ticks since boot).
  *   - os_proc_exe_path(): readlink("/proc/self/exe", ...).
+ *   - os_proc_open_self_exe(): fopen("/proc/self/exe", "rb") — the magic
+ *     self-referencing symlink into the kernel's exe_file reference.
+ *     Reading through the returned FILE* always yields the exact bytes of
+ *     the running image, even after the file at the resolved pathname has
+ *     been replaced by a later deploy (the running process keeps its old
+ *     inode open). Used by callers that need to hash/verify their own
+ *     in-memory image against what currently sits on disk (see
+ *     services/binary_staleness_service.h for the concrete consumer).
  *
  * FreeBSD mapping (header comments only — no FreeBSD build in this repo,
  * see docs/work/os-substrate-plan.md §2 "FreeBSD mapping"):
@@ -56,6 +64,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,8 +93,21 @@ bool os_proc_mem_read(struct os_proc_mem *out);
 int64_t os_proc_uptime_seconds(void);
 
 /* Resolve this process's own executable path into `buf` (NUL-terminated,
- * truncated to fit `n`). Linux: readlink /proc/self/exe. */
+ * truncated to fit `n`). Linux: readlink /proc/self/exe. Note this is the
+ * PATHNAME only — on Linux a `readlink` result whose original dentry was
+ * replaced by a create-new-file-at-same-name deploy gets a trailing
+ * " (deleted)" suffix from the kernel; callers that need the real
+ * pathname back (e.g. to `stat()`/`fopen()` it) must strip that suffix
+ * themselves. */
 bool os_proc_exe_path(char *buf, size_t n);
+
+/* Open this process's own RUNNING executable image for reading via the
+ * magic "/proc/self/exe" self-reference — see the header block above for
+ * why this differs from opening the resolved pathname. Caller owns the
+ * returned FILE* and must fclose() it. Returns NULL on failure (e.g.
+ * /proc unavailable — non-Linux or a sandboxed environment without
+ * /proc). */
+FILE *os_proc_open_self_exe(void);
 
 /* Resolve this process's cgroup v2 directory (e.g.
  * "/sys/fs/cgroup/user.slice/...") into `out`. Returns false if cgroup v2

@@ -17,6 +17,7 @@
 #include "framework/condition.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "services/binary_staleness_service.h"
 #include "services/block_index_integrity.h"
 #include "services/block_source_policy.h"
 #include "services/chain_evidence_authority_service.h"
@@ -278,6 +279,9 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
                                  "validation_pack_detail");
     healthcheck_copy_from_object(&checks, "security_posture", &agent,
                                  "security_posture");
+    /* Lock-free atomic read — cheap enough for the bounded first-call
+     * path. See services/binary_staleness_service.h. */
+    json_push_kv_bool(&checks, "binary_stale", binary_staleness_is_stale());
     {
         struct json_value ca = {0};
         json_set_object(&ca);
@@ -418,6 +422,23 @@ static bool rpc_healthcheck_full(const struct json_value *params,
     if (bii.degraded)
         json_push_kv_str(&checks, "block_index_integrity",
                          bii_recovery_action_name(bii.action));
+    {
+        /* ops.binary_stale — the on-disk binary at this process's exec
+         * path no longer matches the running image (see
+         * services/binary_staleness_service.h). Named blocker + detail
+         * so an operator sees exactly what changed without a restart. */
+        struct binary_staleness_status bs;
+        binary_staleness_status_snapshot(&bs);
+        json_push_kv_bool(&checks, "binary_stale", bs.stale);
+        if (bs.stale) {
+            char detail[256];
+            snprintf(detail, sizeof(detail),
+                     "running=%.12s on_disk=%.12s path=%s",
+                     bs.boot_digest_hex, bs.last_disk_digest_hex,
+                     bs.exe_path);
+            json_push_kv_str(&checks, "binary_stale_detail", detail);
+        }
+    }
     push_chain_evidence_health_json(&checks);
     {
         struct cac_decision d;

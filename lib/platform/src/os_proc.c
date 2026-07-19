@@ -248,3 +248,8 @@ bool os_proc_exe_path(char *buf, size_t n)
     buf[len] = '\0';
     return true;
 }
+
+FILE *os_proc_open_self_exe(void)
+{
+    return fopen("/proc/self/exe", "rb");
+}

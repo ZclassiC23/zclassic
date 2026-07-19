@@ -14,6 +14,7 @@
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_planner.h"
+#include "services/binary_staleness_service.h"
 #include "platform/time_compat.h"
 #include "util/boot_scan.h"
 #include "json/json.h"
@@ -208,5 +209,16 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     boot_scan_dump_json(&scan);
     json_push_kv(out, "scan_counters", &scan);
     json_free(&scan);
+
+    /* Stale-binary detection (see services/binary_staleness_service.h):
+     * does the on-disk binary at this process's exec path still match
+     * what's actually running? Folded into this existing "boot" dumper
+     * rather than registered as its own top-level dumpstate subsystem —
+     * see CLAUDE.md "Adding state introspection". */
+    struct json_value bin_stale;
+    json_init(&bin_stale);
+    binary_staleness_dump_state_json(&bin_stale, NULL);
+    json_push_kv(out, "binary_staleness", &bin_stale);
+    json_free(&bin_stale);
     return true;
 }

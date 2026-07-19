@@ -80,6 +80,21 @@ int test_os_proc(void)
                      ok && stat(path, &st) == 0);
     }
 
+    /* ── open self exe ────────────────────────────────────────────── */
+    {
+        FILE *fp = os_proc_open_self_exe();
+        OSPROC_CHECK("open_self_exe returns a non-NULL FILE*", fp != NULL);
+        if (fp) {
+            unsigned char buf[64];
+            size_t n = fread(buf, 1, sizeof(buf), fp);
+            /* The running test binary is always well over 64 bytes; a
+             * short read here would mean we opened the wrong thing. */
+            OSPROC_CHECK("open_self_exe reads real bytes from the running image",
+                         n == sizeof(buf));
+            fclose(fp);
+        }
+    }
+
     /* ── cgroup dir ───────────────────────────────────────────────── */
     {
         char dir[768];
