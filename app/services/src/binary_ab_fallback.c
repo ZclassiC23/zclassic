@@ -97,6 +97,64 @@ bool binary_ab_reset_streak(const char *streak_file)
     return true;
 }
 
+/* ── Streak increment (self-respawn exits) ─────────────────────────── */
+
+bool binary_ab_note_self_respawn_exit(const char *streak_file)
+{
+    if (!streak_file || streak_file[0] == '\0')
+        LOG_FAIL("binary_ab", "note_self_respawn_exit: empty streak_file path");
+
+    long cur = 0;
+    int in_fd = open(streak_file, O_RDONLY);
+    if (in_fd >= 0) {
+        char buf[32] = {0};
+        ssize_t r = read(in_fd, buf, sizeof(buf) - 1);
+        close(in_fd);
+        if (r > 0) {
+            buf[r] = '\0';
+            cur = strtol(buf, NULL, 10);
+        }
+    }
+    /* Missing/unreadable/malformed file -> streak 0, matching the launcher's
+     * own `cat "$STREAK_FILE" 2>/dev/null || echo 0` fallback. */
+    if (cur < 0) cur = 0;
+
+    char tmp[1088];
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", streak_file, (long)getpid());
+
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        LOG_FAIL("binary_ab", "note_self_respawn_exit: open(%s) failed: %s",
+                 tmp, strerror(errno));
+
+    char content[32];
+    int clen = snprintf(content, sizeof(content), "%ld\n", cur + 1);
+    ssize_t w = write(fd, content, (size_t)clen);
+    if (w != (ssize_t)clen) {
+        LOG_WARN("binary_ab", "note_self_respawn_exit: short write to %s: %s",
+                 tmp, strerror(errno));
+        close(fd);
+        unlink(tmp);
+        return false;
+    }
+    if (fsync(fd) != 0)
+        LOG_WARN("binary_ab", "note_self_respawn_exit: fsync(%s) failed: %s",
+                 tmp, strerror(errno));
+    close(fd);
+
+    if (rename(tmp, streak_file) != 0) {
+        LOG_WARN("binary_ab", "note_self_respawn_exit: rename(%s->%s) failed: %s",
+                 tmp, streak_file, strerror(errno));
+        unlink(tmp);
+        return false;
+    }
+    binary_ab_fsync_parent_dir(streak_file);
+    LOG_WARN("binary_ab",
+             "boot-failure streak incremented to %ld (self-respawn exit, %s)",
+             cur + 1, streak_file);
+    return true;
+}
+
 /* ── Promotion (current -> last-good) ───────────────────────────────── */
 
 bool binary_ab_promote(const char *slots_dir, const char *current_path)
@@ -247,4 +305,14 @@ void binary_ab_raise_fallback_blocker_env(void)
 {
     const char *fb = getenv(BINARY_AB_ENV_FALLBACK);
     binary_ab_raise_fallback_blocker(fb && fb[0] == '1' && fb[1] == '\0');
+}
+
+void binary_ab_note_self_respawn_exit_env(void)
+{
+    const char *slots = getenv(BINARY_AB_ENV_SLOTS_DIR);
+    if (!slots || slots[0] == '\0')
+        return; /* launched directly, not via the launcher */
+    char streak[1024];
+    snprintf(streak, sizeof(streak), "%s/%s", slots, BINARY_AB_STREAK_BASENAME);
+    binary_ab_note_self_respawn_exit(streak);
 }

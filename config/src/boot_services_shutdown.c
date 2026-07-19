@@ -9,6 +9,7 @@
 #include "config/boot_snapshot_offer.h"
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_fast_restart.h"
+#include "config/boot_loop_guard.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "util/shutdown_stagewatch.h"
@@ -219,6 +220,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * the verdict so a forced-but-durable stop is never mis-reported as
      * failure. See util/shutdown_stagewatch.h. */
     shutdown_stagewatch_begin(svc->datadir);
+    boot_loop_guard_note_shutdown_intent();   /* E2: exit-reason breadcrumb */
 
     atomic_store(svc->running, false);
     process_block_set_gap_fill_kick(NULL, NULL);

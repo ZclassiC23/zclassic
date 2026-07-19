@@ -64,6 +64,16 @@
  * on success, false (logged) on any IO error. NULL/empty path → false. */
 bool binary_ab_reset_streak(const char *streak_file);
 
+/* E2 boot-loop-failsafe: increment `streak_file` by 1 (tmp+rename+fsync,
+ * crash-safe), mirroring deploy/zclassic23-launch.sh's own "increment BEFORE
+ * exec" step — but for a SELF-respawn exit (main.c's in-process execv after
+ * chain_tip_watchdog / supervisor_backstop declares a liveness stall) that
+ * never goes through the launcher shell script at all, so the launcher's own
+ * increment never sees it. A missing/unreadable/malformed file reads as 0
+ * (matches the launcher's own `cat ... || echo 0` fallback). Returns true on
+ * success, false (logged) on any IO error. NULL/empty path → false. */
+bool binary_ab_note_self_respawn_exit(const char *streak_file);
+
 /* Atomically copy the bytes at `current_path` into
  * `<slots_dir>/last-good` (tmp write → fsync → chmod 0755 → rename → dir
  * fsync), so the last-good slot is an independent copy — never a symlink to
@@ -90,5 +100,13 @@ void binary_ab_promote_on_ready_env(void);
 
 /* Reads ZCL_BINARY_FALLBACK_ACTIVE and raises the blocker if set. */
 void binary_ab_raise_fallback_blocker_env(void);
+
+/* Reads ZCL_BINARY_SLOTS_DIR and increments its boot-fail-streak file (see
+ * binary_ab_note_self_respawn_exit above). Safe no-op when the slots-dir env
+ * is unset (node launched directly, not via the launcher) — there is no
+ * streak file to increment. Called from config/src/boot_loop_guard.c when
+ * this boot's exit-reason breadcrumb (util/shutdown_stagewatch.h) says the
+ * PREVIOUS exit was a self-respawn. */
+void binary_ab_note_self_respawn_exit_env(void);
 
 #endif /* ZCL_SERVICES_BINARY_AB_FALLBACK_H */

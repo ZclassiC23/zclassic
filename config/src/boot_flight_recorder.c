@@ -5,6 +5,7 @@
 
 #include "config/boot_flight_recorder.h"
 
+#include "config/boot_loop_guard.h"
 #include "config/runtime.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -207,6 +208,11 @@ void boot_flight_recorder_finish(struct node_db *ndb)
 
     int64_t boot_epoch = platform_time_wall_unix();
     bfr_persist_and_prune(ndb, boot_epoch, marks, count);
+
+    /* E2 boot-loop-failsafe: this boot's own row is now persisted (just
+     * above), so the boot-loop detector's window count includes it. See
+     * config/boot_loop_guard.h for the incident this closes. */
+    boot_loop_guard_check(ndb);
 }
 
 bool boot_flight_recorder_dump_state_json(struct json_value *out, const char *key)
@@ -261,5 +267,10 @@ bool boot_flight_recorder_dump_state_json(struct json_value *out, const char *ke
     json_push_kv_int(out, "last_boot_epoch", last_epoch);
     json_push_kv(out, "stages", &stages);
     json_free(&stages);
+    /* E2 boot-loop-failsafe: fold the boot-loop detector's state in as a
+     * "restart_loop" sub-object — see CLAUDE.md "Adding state
+     * introspection" (extending an existing dumper, not registering a new
+     * one) and config/boot_loop_guard.h for what the fields mean. */
+    boot_loop_guard_dump_state_json(out);
     return true;
 }

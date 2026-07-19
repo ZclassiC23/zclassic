@@ -26,6 +26,7 @@
 #define SHUTDOWN_GRACE_SECS 15
 
 #define SHUTDOWN_RECEIPT_NAME "shutdown-receipt.v1"
+#define SHUTDOWN_EXIT_REASON_NAME "boot-exit-reason.v1"
 
 /* ── Pure helpers (async-signal-safe where noted) ────────────────────── */
 
@@ -170,6 +171,12 @@ static shutdown_stagewatch_clock_fn g_clock = real_clock_us;
 static char g_receipt_path[1088];
 static _Atomic bool g_receipt_ok;   /* read in signal ctx */
 
+/* Exit-reason breadcrumb path — same "compute once in begin(), signal
+ * handler only ever does raw open/write/fsync of the pre-computed path"
+ * pattern as g_receipt_path above. */
+static char g_exit_reason_path[1088];
+static _Atomic bool g_exit_reason_path_ok;   /* read in signal ctx */
+
 static int64_t g_start_us;
 static struct shutdown_stage_record g_stages[SHUTDOWN_STAGEWATCH_MAX_STAGES];
 static size_t  g_n_stages;
@@ -198,6 +205,8 @@ void shutdown_stagewatch_reset_for_test(void)
     g_clock = real_clock_us;
     memset(g_receipt_path, 0, sizeof(g_receipt_path));
     atomic_store(&g_receipt_ok, false);
+    memset(g_exit_reason_path, 0, sizeof(g_exit_reason_path));
+    atomic_store(&g_exit_reason_path_ok, false);
     g_start_us = 0;
     memset(g_stages, 0, sizeof(g_stages));
     g_n_stages = 0;
@@ -231,11 +240,17 @@ void shutdown_stagewatch_begin(const char *datadir)
     memset(g_last_stage, 0, sizeof(g_last_stage));
 
     atomic_store(&g_receipt_ok, false);
+    atomic_store(&g_exit_reason_path_ok, false);
     if (datadir && *datadir) {
         int n = snprintf(g_receipt_path, sizeof(g_receipt_path), "%s/%s",
                          datadir, SHUTDOWN_RECEIPT_NAME);
         if (n > 0 && (size_t)n < sizeof(g_receipt_path))
             atomic_store(&g_receipt_ok, true);
+
+        int en = snprintf(g_exit_reason_path, sizeof(g_exit_reason_path),
+                          "%s/%s", datadir, SHUTDOWN_EXIT_REASON_NAME);
+        if (en > 0 && (size_t)en < sizeof(g_exit_reason_path))
+            atomic_store(&g_exit_reason_path_ok, true);
     }
     g_active = 1;
 }
@@ -305,6 +320,30 @@ static void write_terminal_receipt_signalsafe(enum shutdown_outcome outcome)
     (void)close(fd);
 }
 
+/* AS-safe: append a "forced=1" marker to the exit-reason breadcrumb (see
+ * util/shutdown_stagewatch.h "Exit-reason breadcrumb"). Whoever set the
+ * breadcrumb's `reason=` line (normally shutdown_stagewatch_write_exit_
+ * reason(), called in normal context right after begin(), BEFORE this alarm
+ * could ever fire) already recorded WHY the shutdown started; this only
+ * flags that the shutdown itself did not finish inside its per-stage budget
+ * and had to be force-exited from here — the exact signal a self-respawn
+ * request can otherwise lose silently (see the header doc comment). O_APPEND
+ * needs no read-modify-write, so this stays a single AS-safe open/write/
+ * fsync/close, same shape as write_terminal_receipt_signalsafe above. */
+static void mark_exit_reason_forced_signalsafe(void)
+{
+    if (!atomic_load(&g_exit_reason_path_ok))
+        return;
+    int fd = open(g_exit_reason_path,
+                 O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0)
+        return;
+    static const char line[] = "forced=1\n";
+    (void)!write(fd, line, sizeof(line) - 1);
+    (void)fsync(fd);
+    (void)close(fd);
+}
+
 void shutdown_stagewatch_on_alarm(void)
 {
     /* begin() never ran (offline path installs the handler but arms no
@@ -336,6 +375,7 @@ void shutdown_stagewatch_on_alarm(void)
     case SHUTDOWN_DEADLINE_EXIT_CLEAN:
         /* Durability secured — the remainder is resumable. Truthful success. */
         write_terminal_receipt_signalsafe(SHUTDOWN_OUTCOME_FORCED_AFTER_DURABLE);
+        mark_exit_reason_forced_signalsafe();
         (void)as_write_str(STDERR_FILENO,
             "[shutdown] watchdog: durability secured; forcing truthful clean "
             "exit (0)\n");
@@ -343,6 +383,7 @@ void shutdown_stagewatch_on_alarm(void)
 
     case SHUTDOWN_DEADLINE_EXIT_UNCLEAN:
         write_terminal_receipt_signalsafe(SHUTDOWN_OUTCOME_FORCED_UNCLEAN);
+        mark_exit_reason_forced_signalsafe();
         (void)as_write_str(STDERR_FILENO,
             "[shutdown] watchdog: durability NOT reached; forcing unclean "
             "exit (1)\n");
@@ -382,4 +423,96 @@ void shutdown_stagewatch_complete_clean(void)
         }
     }
     g_active = 0;
+}
+
+/* ── Exit-reason breadcrumb ──────────────────────────────────────────── */
+
+void shutdown_stagewatch_write_exit_reason(const char *reason)
+{
+    if (!reason || !*reason) {
+        LOG_WARN("shutdown", "write_exit_reason: empty reason — not written");
+        return;
+    }
+    if (!atomic_load(&g_exit_reason_path_ok)) {
+        LOG_WARN("shutdown",
+                 "write_exit_reason: no datadir (begin() received none) — "
+                 "'%s' not persisted", reason);
+        return;
+    }
+
+    char content[192];
+    int clen = snprintf(content, sizeof(content),
+                        "magic=ZCLEXITRSN\nversion=1\nreason=%.*s\nts=%lld\n",
+                        SHUTDOWN_EXIT_REASON_MAX - 1, reason,
+                        (long long)platform_time_wall_unix());
+    if (clen <= 0 || (size_t)clen >= sizeof(content)) {
+        LOG_WARN("shutdown", "write_exit_reason: format failed for '%s'", reason);
+        return;
+    }
+
+    char tmp[1152];
+    int tn = snprintf(tmp, sizeof(tmp), "%s.tmp", g_exit_reason_path);
+    if (tn <= 0 || (size_t)tn >= sizeof(tmp)) {
+        LOG_WARN("shutdown", "write_exit_reason: tmp path overflow");
+        return;
+    }
+
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        LOG_WARN("shutdown", "write_exit_reason: open(%s) failed: %s",
+                 tmp, strerror(errno));
+        return;
+    }
+    bool ok = (write(fd, content, (size_t)clen) == (ssize_t)clen) &&
+             (fsync(fd) == 0);
+    if (close(fd) != 0)
+        ok = false;
+    if (ok && rename(tmp, g_exit_reason_path) != 0)
+        ok = false;
+    if (!ok) {
+        LOG_WARN("shutdown", "write_exit_reason: write/rename of %s failed: %s",
+                 g_exit_reason_path, strerror(errno));
+        (void)unlink(tmp);
+        return;
+    }
+    LOG_INFO("shutdown", "exit-reason breadcrumb written: reason=%s", reason);
+}
+
+bool shutdown_stagewatch_read_exit_reason(const char *datadir,
+                                          char *reason_out, size_t n,
+                                          bool *forced_out)
+{
+    if (reason_out && n > 0) reason_out[0] = '\0';
+    if (forced_out) *forced_out = false;
+    if (!datadir || !*datadir || !reason_out || n == 0)
+        return false;
+
+    char path[1088];
+    int pn = snprintf(path, sizeof(path), "%s/%s", datadir,
+                      SHUTDOWN_EXIT_REASON_NAME);
+    if (pn <= 0 || (size_t)pn >= sizeof(path))
+        return false;
+
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;   /* no breadcrumb — not an error, e.g. first-ever boot */
+
+    char line[192];
+    bool have_reason = false;
+    bool forced = false;
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        if (strncmp(line, "reason=", 7) == 0) {
+            snprintf(reason_out, n, "%s", line + 7);
+            have_reason = true;
+        } else if (strncmp(line, "forced=1", 8) == 0) {
+            forced = true;
+        }
+    }
+    fclose(f);
+
+    if (forced_out) *forced_out = forced;
+    return have_reason;
 }

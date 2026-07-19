@@ -60,10 +60,13 @@ void boot_flight_recorder_finish(struct node_db *ndb);
 /* Diagnostics dumper (CLAUDE.md "Adding state introspection") registered
  * under subsystem "boot_timings": the most recently persisted boot's
  * per-stage ms next to each stage's recorded median (computed over all
- * durably retained boots, including that most recent one). `key` is
- * unused (NULL-safe); `out` must already be json_set_object'd by the
- * caller. Returns true even when the table is empty (first-ever boot) —
- * an empty "stages" array is a valid answer, not a failure. */
+ * durably retained boots, including that most recent one), plus a
+ * "restart_loop" sub-object (count/window_minutes/threshold/armed/fired/
+ * last_exit_reason/last_exit_forced) folded in from the boot-loop detector
+ * (config/boot_loop_guard.h). `key` is unused (NULL-safe); `out` must
+ * already be json_set_object'd by the caller. Returns true even when the
+ * table is empty (first-ever boot) — an empty "stages" array is a valid
+ * answer, not a failure. */
 bool boot_flight_recorder_dump_state_json(struct json_value *out, const char *key);
 
 #ifdef ZCL_TESTING

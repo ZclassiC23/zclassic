@@ -51,6 +51,26 @@
 #define SHUTDOWN_STAGEWATCH_MAX_STAGES 32
 #define SHUTDOWN_STAGE_NAME_MAX        48
 
+/* Exit-reason breadcrumb (E2 boot-loop-failsafe, docs/HANDOFF.md 2026-07):
+ * a durable one-row marker, sibling to shutdown-receipt.v1, that records WHY
+ * this process is about to leave — an operator/systemd-driven shutdown, or a
+ * SELF-respawn requested by chain_tip_watchdog / supervisor_backstop after
+ * declaring a genuine liveness stall. The live incident this closes: a
+ * self-respawn requests an orderly shutdown + in-process re-exec (main.c),
+ * but if a shutdown STAGE then blows its own deadline, shutdown_stagewatch_
+ * on_alarm() force-_exit()s from inside app_shutdown() before main.c ever
+ * reaches the re-exec — so the respawn silently never happens (or, under
+ * systemd, Restart=always quietly restarts it with zero named signal that
+ * this was a self-respawn attempt, not an operator restart). The next boot's
+ * boot-loop detector (config/boot_loop_guard.h) reads this breadcrumb to
+ * tell the two apart. NULL-safe throughout: a missing datadir/breadcrumb is
+ * a logged no-op / a "no breadcrumb" read, never fatal. */
+#define SHUTDOWN_EXIT_REASON_MAX 64
+#define SHUTDOWN_EXIT_REASON_OPERATOR                         "operator_or_external"
+#define SHUTDOWN_EXIT_REASON_SELF_RESPAWN_TIP_WATCHDOG        "self_respawn_tip_watchdog"
+#define SHUTDOWN_EXIT_REASON_SELF_RESPAWN_SUPERVISOR_BACKSTOP "self_respawn_supervisor_backstop"
+#define SHUTDOWN_EXIT_REASON_SELF_RESPAWN_BOTH                "self_respawn_both"
+
 /* Per-stage record: what ran, how long, and whether it blew its budget. */
 struct shutdown_stage_record {
     char    name[SHUTDOWN_STAGE_NAME_MAX];
@@ -150,5 +170,31 @@ void shutdown_stagewatch_on_alarm(void);
 /* Normal (non-signal) clean completion: close the last stage, cancel the
  * alarm, and write the CLEAN receipt. */
 void shutdown_stagewatch_complete_clean(void);
+
+/* ── Exit-reason breadcrumb ──────────────────────────────────────────── */
+
+/* Write the breadcrumb. NORMAL (non-signal) context only — call once per
+ * shutdown, right after shutdown_stagewatch_begin() returns (so the path is
+ * already computed) and BEFORE any stage runs, so the breadcrumb is durable
+ * on disk even if a later stage's deadline forces an early _exit() from the
+ * alarm handler. `reason` is truncated to fit SHUTDOWN_EXIT_REASON_MAX;
+ * NULL/empty is a logged no-op. Idempotent: a later call before the next
+ * begin() overwrites (tmp+rename+fsync). A NULL/never-set datadir (begin()
+ * received none) is a logged no-op — this is diagnostic telemetry, never a
+ * shutdown-blocking dependency. */
+void shutdown_stagewatch_write_exit_reason(const char *reason);
+
+/* Read the breadcrumb the LAST shutdown of the process that owns `datadir`
+ * wrote — call this at BOOT, before this boot's own shutdown_stagewatch_
+ * begin() ever runs (it does not touch or require begin()'s live state; it
+ * computes its own path from `datadir`, independent of any in-process
+ * lifecycle). Returns false (no breadcrumb: first-ever boot, or the file was
+ * never written — `reason_out` cleared, `forced_out` set false) or true with
+ * `reason_out` filled (truncated to `n`, always NUL-terminated) and
+ * `forced_out` set true iff shutdown_stagewatch_on_alarm() appended a
+ * forced-exit marker during that shutdown (see the alarm handler). */
+bool shutdown_stagewatch_read_exit_reason(const char *datadir,
+                                          char *reason_out, size_t n,
+                                          bool *forced_out);
 
 #endif /* ZCL_SHUTDOWN_STAGEWATCH_H */
