@@ -30,6 +30,7 @@
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "event/event.h"
+#include "util/signal_handler.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -439,6 +440,21 @@ static void child_run(size_t idx, const char *out_path)
     }
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
+
+    /* A fatal signal (SIGSEGV/SIGBUS/SIGABRT/SIGFPE) in a group's fn() used
+     * to reach the kernel default disposition with no diagnostics captured
+     * anywhere: the parent only ever learns WIFSIGNALED + the signal number
+     * (see the reap paths below), and the failing group's own stdout/stderr
+     * capture — the one artifact print_captured() replays for a SIGNALED
+     * group — stayed empty. That made a segfault indistinguishable from a
+     * silent hang and gave zero lead on root cause. Installing the same
+     * async-signal-safe handler the live node installs at boot (boot.c)
+     * means a crash now writes a symbolized backtrace to stderr — which is
+     * already redirected to this group's own log file above — before
+     * re-raising the signal so the parent's WIFSIGNALED/WTERMSIG accounting
+     * is unchanged. Best-effort: if installation fails, run uninstrumented
+     * rather than skip the group. */
+    (void)signal_handler_install();
 
     chain_params_select(CHAIN_MAIN);
     ecc_start();

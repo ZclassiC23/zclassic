@@ -22,6 +22,31 @@
 #include "wallet/wallet.h"
 #include <unistd.h>
 
+/* db_service owns two background pthreads (zcl_db_worker, zcl_db_ckpt) that
+ * run for as long as the service is started. ASSERT()'s goto _test_next
+ * (test/test_helpers.h) can leave the block that started the service on ANY
+ * failing check between db_service_start() and the matching stop — and
+ * test_blog_publication_slice keeps the service live across ~20 ASSERTs. A
+ * skipped db_service_stop() leaves both threads running against a
+ * stack-local struct db_service whose frame is about to be reused by the
+ * rest of this test group's own execution (ecc_verify_destroy/ecc_stop and
+ * process teardown all run on the SAME thread stack before _exit()). The
+ * checkpoint thread wakes once a second and dereferences that freed memory
+ * — usually harmless in isolation (the process exits before the 1 Hz timer
+ * fires), but a fatal stack-use-after-return under full-suite parallel load,
+ * where scheduling delays give the timer time to land mid-teardown. Attach
+ * this as __attribute__((cleanup(...))) on the db_service local so EVERY
+ * exit path — the normal one and any early ASSERT bailout — is guaranteed
+ * to retire both threads before the frame is reused. Idempotent: a no-op
+ * on the normal path, which already stops the service explicitly before
+ * closing the node_db it wraps. See db_txn_auto_rollback (db_txn.h) for the
+ * same pattern already used by this file's sibling, blog_publication.c. */
+static void test_blog_db_service_cleanup(struct db_service *svc)
+{
+    app_runtime_set_current(NULL);
+    db_service_stop(svc);
+}
+
 /* safe_path is static in blog_controller.c, so we replicate
  * the exact logic here for testing the validation rules. */
 static bool test_safe_path(const char *path)
@@ -491,7 +516,8 @@ static int test_blog_publication_slice(void)
         ASSERT(blog_post_view_render(
             &max_page, html, sizeof(html)) > BLOG_BODY_MAX);
 
-        struct db_service db_service;
+        struct db_service db_service
+            __attribute__((cleanup(test_blog_db_service_cleanup)));
         struct app_runtime_context runtime;
         memset(&runtime, 0, sizeof(runtime));
         db_service_init(&db_service);
@@ -621,14 +647,19 @@ int test_blog(void)
         ok = ok && (found == 0);
         found = blog_discover_onion_peers(".", peers, 0);
         ok = ok && (found == 0);
-        /* Non-existent dir — opens SQLite which may return 0 */
-        char tmpdir[] = ".zcl_blog_disc_XXXXXX";
-        char *dir = mkdtemp(tmpdir);
-        if (dir) {
-            found = blog_discover_onion_peers(dir, peers, 10);
-            ok = ok && (found == 0);
-            test_cleanup_tmpdir(dir);
-        }
+        /* Non-existent dir — opens SQLite which may return 0.
+         * test-tmp/-namespaced + pid-tagged (test_make_tmpdir), not a
+         * bare literal in the repo working tree: a raw mkdtemp() template
+         * rooted at "." drops its directory directly into the checkout
+         * root, where a crash mid-test (or any exit path that skips
+         * test_cleanup_tmpdir) leaves debris that pollutes `git status`
+         * and the source-identity inventory for every other concurrent
+         * consumer of this checkout. */
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_disc", "peers");
+        found = blog_discover_onion_peers(dir, peers, 10);
+        ok = ok && (found == 0);
+        test_cleanup_tmpdir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -636,10 +667,10 @@ int test_blog(void)
     printf("blog: serve returns 404 for missing files... ");
     {
         /* Use a temp directory with no blog/ subdirectory */
-        char tmpdir[] = ".zcl_blog_test_XXXXXX";
-        char *dir = mkdtemp(tmpdir);
-        bool ok = (dir != NULL);
-        if (ok) {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_serve", "404");
+        bool ok = true;
+        {
             char out[4096];
             memset(out, 0, sizeof(out));
             size_t len = blog_serve(dir, "/nonexistent_page", out, sizeof(out));
@@ -663,10 +694,10 @@ int test_blog(void)
 
     printf("blog: serve returns 403 for path traversal... ");
     {
-        char tmpdir[] = ".zcl_blog_403_XXXXXX";
-        char *dir = mkdtemp(tmpdir);
-        bool ok = (dir != NULL);
-        if (ok) {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_serve", "403");
+        bool ok = true;
+        {
             char out[4096];
             memset(out, 0, sizeof(out));
             size_t len = blog_serve(dir, "/../../../etc/passwd",
@@ -718,10 +749,10 @@ int test_blog(void)
 
     printf("blog: auto_announce_onion announces new address... ");
     {
-        char tmpdir[] = ".zcl_blog_ann_XXXXXX";
-        char *dir = mkdtemp(tmpdir);
-        bool ok = (dir != NULL);
-        if (ok) {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_ann", "onion");
+        bool ok = true;
+        {
             const char *addr1 =
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion";
             ok = ok && blog_auto_announce_onion(dir, addr1);
