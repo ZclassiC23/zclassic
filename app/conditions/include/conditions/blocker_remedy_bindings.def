@@ -193,3 +193,13 @@ ZCL_BLOCKER_REMEDY(confine.apply_failed,                        OWNER)
  * investigate (disk contention, a cold page cache, a regressed code
  * path), not an auto-curable condition. ─────────────────────────────── */
 ZCL_BLOCKER_REMEDY(boot.stage_regression,                       OWNER)
+
+/* ── OWNER — boot-loop detector (config/src/boot_loop_guard.c): >= 3 distinct
+ * boots landed within the last 15 minutes (durable boot_stage_timings
+ * history, see boot_flight_recorder.c). BLOCKER_TRANSIENT, fail-LOUD not
+ * fail-stop — boot always proceeds regardless; this is the named signal
+ * that closes the "orderly shutdown + self-respawn exits 0, Restart=always
+ * loops silently" incident class — a restart loop can no longer happen with
+ * zero named signal. Only an operator can diagnose+fix the underlying
+ * liveness stall or bad deploy driving the loop. ─────────────────────── */
+ZCL_BLOCKER_REMEDY(boot.restart_loop,                            OWNER)

@@ -15,14 +15,19 @@
 #include "test/test_helpers.h"
 
 #include "config/boot_flight_recorder.h"
+#include "config/boot_loop_guard.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "platform/time_compat.h"
+#include "services/binary_ab_fallback.h"
 #include "util/blocker.h"
+#include "util/shutdown_stagewatch.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define BFR_CHECK(name, expr) do {                                        \
@@ -49,6 +54,18 @@ static bool bfr_insert_history_row(sqlite3 *db, int64_t boot_epoch,
     bool ok = sqlite3_step(s) == SQLITE_DONE;
     sqlite3_finalize(s);
     return ok;
+}
+
+/* Read a small text file whole; returns -1 (buf untouched) on any failure,
+ * else the byte count read (buf is NUL-terminated within `n`). */
+static int bfr_read_file(const char *path, char *buf, size_t n)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    size_t r = fread(buf, 1, n - 1, f);
+    fclose(f);
+    buf[r] = '\0';
+    return (int)r;
 }
 
 static int64_t bfr_distinct_epoch_count(sqlite3 *db)
@@ -203,6 +220,183 @@ int test_boot_flight_recorder(void)
         sqlite3_finalize(s);
         BFR_CHECK("newest boot_epoch survives pruning",
                   max_epoch == PRUNE_EPOCH_BASE + prune_rows - 1);
+    }
+
+    /* ── E2 boot-loop-failsafe: boot_loop_guard (fired via boot_flight_
+     * recorder_finish()'s own "at finish time" call) + the exit-reason
+     * breadcrumb it reads. Clear prior history first — the retention test
+     * above seeded far-future (year ~2255) fixture epochs that, being
+     * timestamps well past "now", would otherwise fall inside ANY
+     * "last N minutes" window this section computes and corrupt the counts
+     * below. */
+    {
+        char *errmsg = NULL;
+        int rc = sqlite3_exec(ndb.db, "DELETE FROM boot_stage_timings",
+                              NULL, NULL, &errmsg);
+        BFR_CHECK("clear history ahead of boot-loop-guard tests", rc == SQLITE_OK);
+        if (errmsg) sqlite3_free(errmsg);
+    }
+    blocker_clear(BOOT_LOOP_GUARD_BLOCKER_ID);
+    boot_loop_guard_reset_for_testing();
+    int64_t bl_now = platform_time_wall_unix();
+
+    /* ── Spaced boots: two prior boots well outside the 15-minute window,
+     * plus THIS finish() call's own real-time row -> only the real-time row
+     * falls inside the window -> count=1, below threshold -> no fire. */
+    BFR_CHECK("seed spaced boot (60 min ago)",
+              bfr_insert_history_row(ndb.db, bl_now - 3600, "phase_x", 10));
+    BFR_CHECK("seed spaced boot (45 min ago)",
+              bfr_insert_history_row(ndb.db, bl_now - 2700, "phase_x", 10));
+    boot_flight_recorder_mark("phase_x", 10);
+    boot_flight_recorder_finish(&ndb);
+    BFR_CHECK("spaced boots: no restart-loop blocker",
+              !blocker_exists(BOOT_LOOP_GUARD_BLOCKER_ID));
+    {
+        struct json_value v = {0};
+        json_set_object(&v);
+        boot_flight_recorder_dump_state_json(&v, NULL);
+        const struct json_value *rl = json_get(&v, "restart_loop");
+        bool ok = rl && json_get_int(json_get(rl, "count")) == 1 &&
+                  json_get_bool(json_get(rl, "armed")) &&
+                  !json_get_bool(json_get(rl, "fired"));
+        BFR_CHECK("dumper: spaced boots report count=1 armed fired=false", ok);
+        json_free(&v);
+    }
+
+    /* ── Quick boots: two MORE boots seeded well inside the window, plus
+     * this finish() call's own real-time row -> 3 distinct boot_epochs in
+     * the last 15 minutes -> threshold (3) reached -> blocker fires. */
+    BFR_CHECK("seed quick boot (10 min ago)",
+              bfr_insert_history_row(ndb.db, bl_now - 600, "phase_x", 10));
+    BFR_CHECK("seed quick boot (2 min ago)",
+              bfr_insert_history_row(ndb.db, bl_now - 120, "phase_x", 10));
+    boot_flight_recorder_mark("phase_x", 10);
+    boot_flight_recorder_finish(&ndb);
+    BFR_CHECK("restart-loop blocker raised at the boot-count threshold",
+              blocker_exists(BOOT_LOOP_GUARD_BLOCKER_ID));
+    {
+        struct blocker_snapshot snaps[8];
+        int n = blocker_snapshot_all(snaps, 8);
+        bool found = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, BOOT_LOOP_GUARD_BLOCKER_ID) == 0) {
+                found = strstr(snaps[i].reason, "count=3") != NULL &&
+                        strstr(snaps[i].reason, "window_min=15") != NULL;
+            }
+        }
+        BFR_CHECK("blocker reason names the count + window", found);
+    }
+    BFR_CHECK("boot still proceeds past a restart-loop verdict (fail-LOUD "
+              "not fail-stop -- finish() returned, this line runs)", true);
+    blocker_clear(BOOT_LOOP_GUARD_BLOCKER_ID);
+
+    /* ── Exit-reason breadcrumb roundtrip + binary A/B streak wiring:
+     * shutdown_stagewatch_write_exit_reason() (the g_respawn_requested-
+     * driven write in config/src/boot_services.c's app_shutdown_svc) writes
+     * into <dir>/boot-exit-reason.v1; boot_loop_guard_check() (driven above
+     * via finish()) reads it back at the NEXT boot and, for a self-respawn
+     * reason, increments the binary A/B launcher's boot-failure streak file
+     * (services/binary_ab_fallback.h) since a self-respawn's in-process
+     * execv bypasses deploy/zclassic23-launch.sh entirely. */
+    {
+        /* Clear history again: boot_loop_guard_check() below (called
+         * directly, not through finish()) must not ALSO trip on the prior
+         * section's in-window rows — this section is only testing the
+         * breadcrumb/streak wiring, not the count threshold. */
+        char *errmsg = NULL;
+        int rc = sqlite3_exec(ndb.db, "DELETE FROM boot_stage_timings",
+                              NULL, NULL, &errmsg);
+        BFR_CHECK("clear history ahead of breadcrumb tests", rc == SQLITE_OK);
+        if (errmsg) sqlite3_free(errmsg);
+
+        char streak_path[600];
+        snprintf(streak_path, sizeof(streak_path), "%s/%s", dir,
+                 BINARY_AB_STREAK_BASENAME);
+        setenv(BINARY_AB_ENV_SLOTS_DIR, dir, 1);
+
+        shutdown_stagewatch_begin(dir);
+        shutdown_stagewatch_write_exit_reason(
+            SHUTDOWN_EXIT_REASON_SELF_RESPAWN_SUPERVISOR_BACKSTOP);
+        shutdown_stagewatch_reset_for_test();
+
+        blocker_clear(BOOT_LOOP_GUARD_BLOCKER_ID);
+        boot_loop_guard_reset_for_testing();
+        boot_loop_guard_check(&ndb);
+
+        char buf[64];
+        int r = bfr_read_file(streak_path, buf, sizeof(buf));
+        BFR_CHECK("self-respawn breadcrumb increments the boot-fail streak "
+                  "from missing-file (0) to 1",
+                  r > 0 && strcmp(buf, "1\n") == 0);
+
+        struct json_value v = {0};
+        json_set_object(&v);
+        boot_flight_recorder_dump_state_json(&v, NULL);
+        const struct json_value *rl = json_get(&v, "restart_loop");
+        const char *reason = rl ? json_get_str(json_get(rl, "last_exit_reason")) : NULL;
+        BFR_CHECK("dumper reports the self-respawn exit reason verbatim",
+                  reason && strcmp(reason,
+                      SHUTDOWN_EXIT_REASON_SELF_RESPAWN_SUPERVISOR_BACKSTOP) == 0);
+        json_free(&v);
+
+        /* A SECOND self-respawn exit increments the SAME streak file again
+         * (1 -> 2) -- the streak survives across boots exactly like the
+         * launcher's own shell-side increment does. */
+        shutdown_stagewatch_begin(dir);
+        shutdown_stagewatch_write_exit_reason(
+            SHUTDOWN_EXIT_REASON_SELF_RESPAWN_TIP_WATCHDOG);
+        shutdown_stagewatch_reset_for_test();
+        boot_loop_guard_check(&ndb);
+        r = bfr_read_file(streak_path, buf, sizeof(buf));
+        BFR_CHECK("a second self-respawn exit increments the streak to 2",
+                  r > 0 && strcmp(buf, "2\n") == 0);
+
+        /* An OPERATOR exit does NOT touch the streak. */
+        shutdown_stagewatch_begin(dir);
+        shutdown_stagewatch_write_exit_reason(SHUTDOWN_EXIT_REASON_OPERATOR);
+        shutdown_stagewatch_reset_for_test();
+        boot_loop_guard_check(&ndb);
+        r = bfr_read_file(streak_path, buf, sizeof(buf));
+        BFR_CHECK("an operator exit leaves the streak untouched at 2",
+                  r > 0 && strcmp(buf, "2\n") == 0);
+
+        /* Read-side "forced" parsing: a shutdown-watchdog-forced exit
+         * appends "forced=1" (async-signal-safe, see shutdown_stagewatch.c
+         * mark_exit_reason_forced_signalsafe) to the SAME breadcrumb file
+         * the normal-context write above already produced. Simulate the
+         * append directly (that call site itself only ever runs from a
+         * real SIGALRM handler) and confirm the reader surfaces it. */
+        char exit_reason_path[600];
+        snprintf(exit_reason_path, sizeof(exit_reason_path), "%s/%s", dir,
+                 "boot-exit-reason.v1");
+        FILE *f = fopen(exit_reason_path, "a");
+        BFR_CHECK("append forced=1 marker to the breadcrumb file", f != NULL);
+        if (f) { fputs("forced=1\n", f); fclose(f); }
+
+        char reason_buf[SHUTDOWN_EXIT_REASON_MAX];
+        bool forced = false;
+        bool have = shutdown_stagewatch_read_exit_reason(
+            dir, reason_buf, sizeof(reason_buf), &forced);
+        BFR_CHECK("read_exit_reason surfaces the forced marker",
+                  have && forced &&
+                  strcmp(reason_buf, SHUTDOWN_EXIT_REASON_OPERATOR) == 0);
+
+        unsetenv(BINARY_AB_ENV_SLOTS_DIR);
+        blocker_clear(BOOT_LOOP_GUARD_BLOCKER_ID);
+        boot_loop_guard_reset_for_testing();
+    }
+
+    /* ── read_exit_reason on a datadir that never had a breadcrumb written
+     * is a clean "no breadcrumb" answer, never a crash. */
+    {
+        char fresh_dir[300];
+        snprintf(fresh_dir, sizeof(fresh_dir), "%s/never-written", dir);
+        char reason_buf[SHUTDOWN_EXIT_REASON_MAX] = "unchanged";
+        bool forced = true;
+        bool have = shutdown_stagewatch_read_exit_reason(
+            fresh_dir, reason_buf, sizeof(reason_buf), &forced);
+        BFR_CHECK("no breadcrumb -> read_exit_reason returns false, clears output",
+                  !have && reason_buf[0] == '\0' && !forced);
     }
 
     app_runtime_set_current(NULL);

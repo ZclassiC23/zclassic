@@ -46,7 +46,11 @@ app/views/src/explorer_pages_view.c 823
 config/src/boot.c 4479
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
-config/src/boot_services.c 1711
+# 2026-07-19 lane/e2-boot-loop-failsafe: +2 lines (one #include, one
+# single-line call to boot_loop_guard_note_shutdown_intent() right after
+# shutdown_stagewatch_begin()) — the exit-reason breadcrumb write moved to a
+# helper in config/src/boot_loop_guard.c to keep this addition minimal.
+config/src/boot_services.c 1713
 config/src/consensus_state_producer_receipt.c 810
 config/src/consensus_state_snapshot_install_activate.c 1137
 app/services/src/header_sync_service.c 812
