@@ -7,7 +7,7 @@
  * surface: node_health_collect() returns void (it best-effort fills a
  * caller-owned snapshot, defaulting fields it cannot read rather than
  * failing), and node_health_chain_advance_synced() is a pure predicate
- * (a yes/no question over a cac_decision, not an operation that can
+ * (a yes/no question over a bsp_decision, not an operation that can
  * fail for a reason). There is no error to carry, so zcl_result would
  * add a code/message that is always ZCL_OK. Marker, not a baseline
  * entry, per check_one_result_type.sh's override path. */
@@ -93,7 +93,7 @@ static int health_tip_finalize_log_head(void)
 static _Atomic int g_test_log_head_override = -2;
 static _Atomic int64_t g_test_memory_rss_mb_override = -1;
 static bool g_test_chain_advance_decision_override_enabled;
-static struct cac_decision g_test_chain_advance_decision_override;
+static struct bsp_decision g_test_chain_advance_decision_override;
 
 void node_health_test_set_log_head_override(int log_head)
 {
@@ -101,7 +101,7 @@ void node_health_test_set_log_head_override(int log_head)
 }
 
 void node_health_test_set_chain_advance_decision_override(
-    const struct cac_decision *decision)
+    const struct bsp_decision *decision)
 {
     if (decision) {
         g_test_chain_advance_decision_override = *decision;
@@ -119,14 +119,14 @@ void node_health_test_set_memory_rss_mb_override(int64_t memory_rss_mb)
 }
 #endif
 
-bool node_health_chain_advance_synced(const struct cac_decision *decision)
+bool node_health_chain_advance_synced(const struct bsp_decision *decision)
 {
     if (!decision)
         return false;
-    if (decision->result != CAC_DECISION_USE_SOURCE)
+    if (decision->result != BSP_DECISION_USE_SOURCE)
         return false;
-    if (decision->selected_source <= CAC_SOURCE_NONE ||
-        decision->selected_source >= CAC_SOURCE_NUM)
+    if (decision->selected_source <= BSP_SOURCE_NONE ||
+        decision->selected_source >= BSP_SOURCE_NUM)
         return false;
     if (decision->blocker[0] != '\0')
         return false;
@@ -134,14 +134,14 @@ bool node_health_chain_advance_synced(const struct cac_decision *decision)
         return false;
     if (decision->local_height + 1 < decision->target_height)
         return false;
-    const struct cac_source_status *source =
+    const struct bsp_source_status *source =
         &decision->sources[decision->selected_source];
     return source->available && source->healthy && source->selectable &&
            !source->blocked && source->selection_reason[0] == '\0';
 }
 
 static bool node_health_chain_advance_blocks_at_tip(
-    const struct cac_decision *decision)
+    const struct bsp_decision *decision)
 {
     if (!decision)
         return false;
@@ -149,7 +149,7 @@ static bool node_health_chain_advance_blocks_at_tip(
         return false;
     if (decision->blocker[0] != '\0')
         return true;
-    if (decision->result == CAC_DECISION_BLOCKED)
+    if (decision->result == BSP_DECISION_BLOCKED)
         return true;
     if (decision->local_height >= 0 && decision->target_height >= 0 &&
         decision->local_height + 1 < decision->target_height)
@@ -158,7 +158,7 @@ static bool node_health_chain_advance_blocks_at_tip(
 }
 
 static void node_health_chain_advance_reason(
-    const struct cac_decision *decision,
+    const struct bsp_decision *decision,
     char *out,
     size_t out_len)
 {
@@ -184,7 +184,7 @@ static void node_health_chain_advance_reason(
         return;
     }
     snprintf(out, out_len, "chain_advance_%s",
-             cac_decision_result_name(decision->result));
+             bsp_decision_result_name(decision->result));
 }
 
 static void health_add_warning(struct node_health_snapshot *snapshot,
@@ -441,7 +441,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     }
 
     {
-        struct cac_decision decision;
+        struct bsp_decision decision;
 #ifdef ZCL_TESTING
         if (g_test_chain_advance_decision_override_enabled) {
             decision = g_test_chain_advance_decision_override;

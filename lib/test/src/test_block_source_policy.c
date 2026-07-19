@@ -18,13 +18,13 @@
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
 
-static void init_source(struct cac_plan_input *in,
-                        enum cac_source source,
+static void init_source(struct bsp_plan_input *in,
+                        enum bsp_source source,
                         bool available,
                         bool healthy,
                         int height)
 {
-    struct cac_source_status *s = &in->sources[source];
+    struct bsp_source_status *s = &in->sources[source];
     memset(s, 0, sizeof(*s));
     s->source = source;
     s->available = available;
@@ -32,9 +32,9 @@ static void init_source(struct cac_plan_input *in,
     s->height = height;
 }
 
-static struct cac_plan_input base_input(void)
+static struct bsp_plan_input base_input(void)
 {
-    struct cac_plan_input in;
+    struct bsp_plan_input in;
     memset(&in, 0, sizeof(in));
     in.local_height = 100;
     in.best_header_height = 120;
@@ -59,18 +59,18 @@ static const struct json_value *find_source_json(const struct json_value *arr,
 static int test_cac_names(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: name tables are stable")
+    TEST_CASE("block_source_policy: name tables are stable")
     {
-        ASSERT_STR_EQ(cac_source_name(CAC_SOURCE_P2P), "p2p");
-        ASSERT_STR_EQ(cac_source_name(CAC_SOURCE_ZCLASSICD_MIRROR),
+        ASSERT_STR_EQ(bsp_source_name(BSP_SOURCE_P2P), "p2p");
+        ASSERT_STR_EQ(bsp_source_name(BSP_SOURCE_ZCLASSICD_MIRROR),
                       "zclassicd_mirror");
-        ASSERT_STR_EQ(cac_source_trust_name(CAC_SOURCE_P2P),
+        ASSERT_STR_EQ(bsp_source_trust_name(BSP_SOURCE_P2P),
                       "native_peer_validated");
-        ASSERT_STR_EQ(cac_source_trust_name(CAC_SOURCE_ZCLASSICD_MIRROR),
+        ASSERT_STR_EQ(bsp_source_trust_name(BSP_SOURCE_ZCLASSICD_MIRROR),
                       "bounded_advisory_fallback");
-        ASSERT_STR_EQ(cac_decision_result_name(CAC_DECISION_USE_SOURCE),
+        ASSERT_STR_EQ(bsp_decision_result_name(BSP_DECISION_USE_SOURCE),
                       "use_source");
-        ASSERT_STR_EQ(cac_source_name((enum cac_source)CAC_SOURCE_NUM),
+        ASSERT_STR_EQ(bsp_source_name((enum bsp_source)BSP_SOURCE_NUM),
                       "unknown");
     } TEST_END
     return failures;
@@ -79,17 +79,17 @@ static int test_cac_names(void)
 static int test_cac_prefers_native_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: native P2P beats mirror when healthy")
+    TEST_CASE("block_source_policy: native P2P beats mirror when healthy")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 125);
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
+        init_source(&in, BSP_SOURCE_P2P, true, true, 125);
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_P2P);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_P2P);
         ASSERT(out.activation_allowed);
         ASSERT(out.local_height == 100);
         ASSERT(out.target_height == 120);
@@ -101,26 +101,26 @@ static int test_cac_prefers_native_p2p(void)
 static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: caught-up P2P remains selected over legacy advisory lag")
+    TEST_CASE("block_source_policy: caught-up P2P remains selected over legacy advisory lag")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_height = 120;
         in.best_header_height = 120;
         in.target_height = 122;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 120);
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 122);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
-                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
+        init_source(&in, BSP_SOURCE_P2P, true, true, 120);
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 122);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        snprintf(in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocker,
+                 sizeof(in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocker),
                  "activation-no-progress");
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocked = true;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_P2P);
-        ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason, "");
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_P2P);
+        ASSERT(out.sources[BSP_SOURCE_P2P].selectable);
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_P2P].selection_reason, "");
     } TEST_END
     return failures;
 }
@@ -128,22 +128,22 @@ static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
 static int test_cac_gates_mirror_during_local_retries(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: mirror waits behind local retries")
+    TEST_CASE("block_source_policy: mirror waits behind local retries")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_recovery_active = true;
         in.local_retries_exhausted = false;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_WAIT);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_WAIT);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT(!out.mirror_fallback_allowed);
         ASSERT_STR_EQ(out.reason, "local_retries_pending");
-        ASSERT(!out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
+        ASSERT(!out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].selectable);
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].
                       selection_reason, "local_recovery_gate");
     } TEST_END
     return failures;
@@ -152,21 +152,21 @@ static int test_cac_gates_mirror_during_local_retries(void)
 static int test_cac_allows_bounded_mirror_after_retries(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: mirror fallback after local retries exhaust")
+    TEST_CASE("block_source_policy: mirror fallback after local retries exhaust")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_recovery_active = true;
         in.local_retries_exhausted = true;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_ZCLASSICD_MIRROR);
         ASSERT(out.mirror_fallback_allowed);
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
+        ASSERT(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].selectable);
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].
                       selection_reason, "");
     } TEST_END
     return failures;
@@ -181,23 +181,23 @@ static int test_cac_allows_bounded_mirror_after_retries(void)
 static int test_cac_lag_slo_overrides_local_gate(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: lag SLO override allows concurrent mirror")
+    TEST_CASE("block_source_policy: lag SLO override allows concurrent mirror")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         /* Local recovery active, not exhausted — old gate would block. */
         in.local_recovery_active = true;
         in.local_retries_exhausted = false;
         in.mirror_lag_sla_breach_blocks = 10;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 2300);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 200; /* over breach */
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 2300);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].lag = 200; /* over breach */
         in.target_height = 2300;
 
         block_source_policy_plan(&in, &out);
         ASSERT(out.mirror_fallback_allowed);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_ZCLASSICD_MIRROR);
     } TEST_END
     return failures;
 }
@@ -205,32 +205,32 @@ static int test_cac_lag_slo_overrides_local_gate(void)
 static int test_cac_lag_slo_mirror_outranks_near_target_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: lag SLO mirror outranks near-target P2P")
+    TEST_CASE("block_source_policy: lag SLO mirror outranks near-target P2P")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_height = 3170742;
         in.best_header_height = 3170879;
         in.target_height = 3170900;
         in.mirror_lag_sla_breach_blocks = 10;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 3170898);
-        in.sources[CAC_SOURCE_P2P].timeouts = 4;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR,
+        init_source(&in, BSP_SOURCE_P2P, true, true, 3170898);
+        in.sources[BSP_SOURCE_P2P].timeouts = 4;
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR,
                     true, true, 3170900);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 158;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].lag = 158;
 
         block_source_policy_plan(&in, &out);
         ASSERT(out.mirror_fallback_allowed);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
-        ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
-        ASSERT(out.sources[CAC_SOURCE_P2P].score == 81);
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_ZCLASSICD_MIRROR);
+        ASSERT(out.sources[BSP_SOURCE_P2P].selectable);
+        ASSERT(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].selectable);
+        ASSERT(out.sources[BSP_SOURCE_P2P].score == 81);
+        ASSERT(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].
                score_redundancy_bonus == 30);
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score >
-               out.sources[CAC_SOURCE_P2P].score);
+        ASSERT(out.sources[BSP_SOURCE_ZCLASSICD_MIRROR].score >
+               out.sources[BSP_SOURCE_P2P].score);
     } TEST_END
     return failures;
 }
@@ -241,21 +241,21 @@ static int test_cac_lag_slo_mirror_outranks_near_target_p2p(void)
 static int test_cac_below_breach_still_gates_mirror(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: lag under SLO keeps mirror gated")
+    TEST_CASE("block_source_policy: lag under SLO keeps mirror gated")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_recovery_active = true;
         in.local_retries_exhausted = false;
         in.mirror_lag_sla_breach_blocks = 10;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 105);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 5; /* below breach */
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 105);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].lag = 5; /* below breach */
         in.target_height = 120;
 
         block_source_policy_plan(&in, &out);
         ASSERT(!out.mirror_fallback_allowed);
-        ASSERT(out.result == CAC_DECISION_WAIT);
+        ASSERT(out.result == BSP_DECISION_WAIT);
     } TEST_END
     return failures;
 }
@@ -263,15 +263,15 @@ static int test_cac_below_breach_still_gates_mirror(void)
 static int test_cac_peer_floor_helper_classifies_recovery(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: peer floor helper records recovery")
+    TEST_CASE("block_source_policy: peer floor helper records recovery")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(block_source_policy_peer_floor_recovery_needed(
             1, 3, 100, 130, &out));
-        ASSERT(out.result == CAC_DECISION_RECOVER);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_RECOVER);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "no_healthy_source");
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].reason,
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_P2P].reason,
                       "healthy_outbound=1 min_healthy=3");
     } TEST_END
     return failures;
@@ -280,13 +280,13 @@ static int test_cac_peer_floor_helper_classifies_recovery(void)
 static int test_cac_peer_floor_helper_accepts_healthy_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: peer floor helper accepts healthy P2P")
+    TEST_CASE("block_source_policy: peer floor helper accepts healthy P2P")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(!block_source_policy_peer_floor_recovery_needed(
             3, 3, 100, 130, &out));
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_P2P);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_P2P);
         ASSERT_STR_EQ(out.reason, "selected_p2p");
     } TEST_END
     return failures;
@@ -295,20 +295,20 @@ static int test_cac_peer_floor_helper_accepts_healthy_p2p(void)
 static int test_cac_blocks_unsafe_mirror(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: mirror blocker is surfaced")
+    TEST_CASE("block_source_policy: mirror blocker is surfaced")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
-        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
-                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocked = true;
+        snprintf(in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocker,
+                 sizeof(in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].blocker),
                  "body_hash_mismatch");
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_BLOCKED);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_BLOCKED);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.blocker, "body_hash_mismatch");
     } TEST_END
     return failures;
@@ -317,19 +317,19 @@ static int test_cac_blocks_unsafe_mirror(void)
 static int test_cac_avoids_stale_dead_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: stale or unhealthy P2P is not selected")
+    TEST_CASE("block_source_policy: stale or unhealthy P2P is not selected")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_P2P, true, false, 90);
-        in.sources[CAC_SOURCE_P2P].timeouts = 5;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
+        init_source(&in, BSP_SOURCE_P2P, true, false, 90);
+        in.sources[BSP_SOURCE_P2P].timeouts = 5;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_RECOVER);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_RECOVER);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "no_healthy_source");
-        ASSERT(!out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason,
+        ASSERT(!out.sources[BSP_SOURCE_P2P].selectable);
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_P2P].selection_reason,
                       "unhealthy");
     } TEST_END
     return failures;
@@ -338,17 +338,17 @@ static int test_cac_avoids_stale_dead_p2p(void)
 static int test_cac_snapshot_can_outrank_mirror(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: snapshot outranks mirror fallback")
+    TEST_CASE("block_source_policy: snapshot outranks mirror fallback")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_SNAPSHOT, true, true, 130);
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 140);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
+        init_source(&in, BSP_SOURCE_SNAPSHOT, true, true, 130);
+        init_source(&in, BSP_SOURCE_ZCLASSICD_MIRROR, true, true, 140);
+        in.sources[BSP_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_SNAPSHOT);
     } TEST_END
     return failures;
 }
@@ -356,23 +356,23 @@ static int test_cac_snapshot_can_outrank_mirror(void)
 static int test_cac_fresh_snapshot_outranks_stale_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: target-reaching snapshot outranks stale P2P")
+    TEST_CASE("block_source_policy: target-reaching snapshot outranks stale P2P")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.target_height = 150;
         in.best_header_height = 150;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 110);
-        in.sources[CAC_SOURCE_P2P].lag = 40;
-        init_source(&in, CAC_SOURCE_SNAPSHOT, true, true, 150);
+        init_source(&in, BSP_SOURCE_P2P, true, true, 110);
+        in.sources[BSP_SOURCE_P2P].lag = 40;
+        init_source(&in, BSP_SOURCE_SNAPSHOT, true, true, 150);
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_SNAPSHOT);
         ASSERT(out.selected_score >
-               out.sources[CAC_SOURCE_P2P].score);
-        ASSERT(out.sources[CAC_SOURCE_P2P].score_target_lag_penalty == 25);
-        ASSERT(out.sources[CAC_SOURCE_SNAPSHOT].score_target_lag_penalty == 0);
+               out.sources[BSP_SOURCE_P2P].score);
+        ASSERT(out.sources[BSP_SOURCE_P2P].score_target_lag_penalty == 25);
+        ASSERT(out.sources[BSP_SOURCE_SNAPSHOT].score_target_lag_penalty == 0);
     } TEST_END
     return failures;
 }
@@ -380,21 +380,21 @@ static int test_cac_fresh_snapshot_outranks_stale_p2p(void)
 static int test_cac_stale_p2p_can_still_advance_when_alone(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: stale P2P can still advance when alone")
+    TEST_CASE("block_source_policy: stale P2P can still advance when alone")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.target_height = 150;
         in.best_header_height = 150;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 110);
-        in.sources[CAC_SOURCE_P2P].lag = 40;
+        init_source(&in, BSP_SOURCE_P2P, true, true, 110);
+        in.sources[BSP_SOURCE_P2P].lag = 40;
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_P2P);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_P2P);
         ASSERT(out.activation_allowed);
-        ASSERT(out.sources[CAC_SOURCE_P2P].score > 0);
-        ASSERT(out.sources[CAC_SOURCE_P2P].score_target_lag_penalty == 25);
+        ASSERT(out.sources[BSP_SOURCE_P2P].score > 0);
+        ASSERT(out.sources[BSP_SOURCE_P2P].score_target_lag_penalty == 25);
     } TEST_END
     return failures;
 }
@@ -402,20 +402,20 @@ static int test_cac_stale_p2p_can_still_advance_when_alone(void)
 static int test_cac_unknown_height_source_is_not_selectable(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: unknown-height source is not selected")
+    TEST_CASE("block_source_policy: unknown-height source is not selected")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
         in.local_height = 120;
         in.best_header_height = 120;
         in.target_height = 120;
-        init_source(&in, CAC_SOURCE_P2P, true, true, -1);
+        init_source(&in, BSP_SOURCE_P2P, true, true, -1);
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_RECOVER);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
-        ASSERT(!out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason,
+        ASSERT(out.result == BSP_DECISION_RECOVER);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
+        ASSERT(!out.sources[BSP_SOURCE_P2P].selectable);
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_P2P].selection_reason,
                       "unknown_height");
     } TEST_END
     return failures;
@@ -424,11 +424,11 @@ static int test_cac_unknown_height_source_is_not_selectable(void)
 static int test_cac_projection_status_propagates(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: projection status propagates")
+    TEST_CASE("block_source_policy: projection status propagates")
     {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_P2P, true, true, 125);
+        struct bsp_plan_input in = base_input();
+        struct bsp_decision out;
+        init_source(&in, BSP_SOURCE_P2P, true, true, 125);
         in.projection_height = 99;
         in.projection_lag = 21;
         in.projection_deferred = true;
@@ -436,7 +436,7 @@ static int test_cac_projection_status_propagates(void)
                  "deferred");
 
         block_source_policy_plan(&in, &out);
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
         ASSERT(out.projection_height == 99);
         ASSERT(out.projection_lag == 21);
         ASSERT(out.projection_deferred);
@@ -448,16 +448,16 @@ static int test_cac_projection_status_propagates(void)
 static int test_cac_snapshot_offer_helper_allows_valid_offer(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: snapshot offer helper allows valid offer")
+    TEST_CASE("block_source_policy: snapshot offer helper allows valid offer")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", &out));
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_SNAPSHOT);
         ASSERT(out.activation_allowed);
         ASSERT_STR_EQ(out.reason, "selected_snapshot");
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_SNAPSHOT].reason,
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_SNAPSHOT].reason,
                       "manifest_ok");
     } TEST_END
     return failures;
@@ -466,13 +466,13 @@ static int test_cac_snapshot_offer_helper_allows_valid_offer(void)
 static int test_cac_snapshot_offer_helper_blocks_invalid_offer(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: snapshot offer helper blocks invalid offer")
+    TEST_CASE("block_source_policy: snapshot offer helper blocks invalid offer")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(!block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, false, "weak_work", &out));
-        ASSERT(out.result == CAC_DECISION_BLOCKED);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_BLOCKED);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "source_blocked");
         ASSERT_STR_EQ(out.blocker, "weak_work");
     } TEST_END
@@ -482,15 +482,15 @@ static int test_cac_snapshot_offer_helper_blocks_invalid_offer(void)
 static int test_cac_local_header_refill_helper_records_retry(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: local header refill helper records retry")
+    TEST_CASE("block_source_policy: local header refill helper records retry")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 2, 1, false, &out));
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_LOCAL_IMPORT);
+        ASSERT(out.result == BSP_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == BSP_SOURCE_LOCAL_IMPORT);
         ASSERT_STR_EQ(out.reason, "selected_local_import");
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_LOCAL_IMPORT].reason,
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_LOCAL_IMPORT].reason,
                       "missing_height=101 eligible_peers=2 retry=1");
     } TEST_END
     return failures;
@@ -499,18 +499,18 @@ static int test_cac_local_header_refill_helper_records_retry(void)
 static int test_cac_local_header_refill_helper_waits_for_peers(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: local header refill helper waits for eligible peers")
+    TEST_CASE("block_source_policy: local header refill helper waits for eligible peers")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(!block_source_policy_local_header_refill_needed(
             100, 101, 130, 0, 1, false, &out));
-        ASSERT(out.result == CAC_DECISION_WAIT);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_WAIT);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "local_retries_pending");
         ASSERT_STR_EQ(out.blocker, "local_recovery_gate");
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_LOCAL_IMPORT].selection_reason,
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_LOCAL_IMPORT].selection_reason,
                       "unhealthy");
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_LOCAL_IMPORT].reason,
+        ASSERT_STR_EQ(out.sources[BSP_SOURCE_LOCAL_IMPORT].reason,
                       "missing_height=101 eligible_peers=0 retry=1");
     } TEST_END
     return failures;
@@ -519,13 +519,13 @@ static int test_cac_local_header_refill_helper_waits_for_peers(void)
 static int test_cac_local_header_refill_helper_recovers_without_peers(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: local header refill helper recovers without peers")
+    TEST_CASE("block_source_policy: local header refill helper recovers without peers")
     {
-        struct cac_decision out;
+        struct bsp_decision out;
         ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 0, 3, true, &out));
-        ASSERT(out.result == CAC_DECISION_RECOVER);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(out.result == BSP_DECISION_RECOVER);
+        ASSERT(out.selected_source == BSP_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "no_healthy_source");
     } TEST_END
     return failures;
@@ -534,7 +534,7 @@ static int test_cac_local_header_refill_helper_recovers_without_peers(void)
 static int test_cac_dump_json_contract(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate JSON exposes authority and sources")
+    TEST_CASE("block_source_policy: dumpstate JSON exposes authority and sources")
     {
         struct json_value root;
         const struct json_value *authority;
@@ -640,7 +640,7 @@ static int test_cac_dump_json_contract(void)
 static int test_cac_dump_reports_projection_lag(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate reports projection lag")
+    TEST_CASE("block_source_policy: dumpstate reports projection lag")
     {
         struct node_db ndb;
         struct main_state ms;
@@ -705,11 +705,11 @@ static int test_cac_dump_reports_projection_lag(void)
 static int test_cac_projection_deferral_accounting(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: projection deferral accounting is stable")
+    TEST_CASE("block_source_policy: projection deferral accounting is stable")
     {
         struct json_value root;
-        struct cac_decision status;
-        struct cac_decision cached;
+        struct bsp_decision status;
+        struct bsp_decision cached;
         const struct json_value *total;
         const struct json_value *height;
         const struct json_value *when;
@@ -787,7 +787,7 @@ static struct p2p_node *test_cac_add_peer(struct connman *cm,
 static int test_cac_dump_populates_p2p_diversity(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate populates P2P diversity")
+    TEST_CASE("block_source_policy: dumpstate populates P2P diversity")
     {
         struct connman cm;
         struct json_value root;
@@ -809,7 +809,7 @@ static int test_cac_dump_populates_p2p_diversity(void)
         memset(&cm, 0, sizeof(cm));
         net_manager_init(&cm.manager);
         cm.manager.nodes = zcl_calloc(4, sizeof(*cm.manager.nodes),
-                                      "cac_test_nodes");
+                                      "bsp_test_nodes");
         cm.manager.nodes_cap = 4;
         cm.num_addnodes = 2;
         cm.addnode_backoff_sec[0] = 120;
@@ -888,7 +888,7 @@ static int test_cac_dump_populates_p2p_diversity(void)
 static int test_cac_selects_viable_caught_up_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: caught-up diverse P2P beats mirror with two peers")
+    TEST_CASE("block_source_policy: caught-up diverse P2P beats mirror with two peers")
     {
         struct connman cm;
         struct main_state ms;
@@ -912,7 +912,7 @@ static int test_cac_selects_viable_caught_up_p2p(void)
         net_manager_init(&cm.manager);
         main_state_init(&ms);
         cm.manager.nodes = zcl_calloc(4, sizeof(*cm.manager.nodes),
-                                      "cac_test_viable_p2p_nodes");
+                                      "bsp_test_viable_p2p_nodes");
         cm.manager.nodes_cap = 4;
         tip.nHeight = 130;
         best_header.nHeight = 130;
@@ -968,7 +968,7 @@ static int test_cac_selects_viable_caught_up_p2p(void)
 static int test_cac_inbound_assists_near_tip_p2p(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: inbound handshakes assist near-tip P2P")
+    TEST_CASE("block_source_policy: inbound handshakes assist near-tip P2P")
     {
         struct connman cm;
         struct main_state ms;
@@ -992,7 +992,7 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
         net_manager_init(&cm.manager);
         main_state_init(&ms);
         cm.manager.nodes = zcl_calloc(3, sizeof(*cm.manager.nodes),
-                                      "cac_test_inbound_assist_nodes");
+                                      "bsp_test_inbound_assist_nodes");
         cm.manager.nodes_cap = 3;
         tip.nHeight = 131;
         best_header.nHeight = 131;
@@ -1046,7 +1046,7 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
 static int test_cac_dump_explains_stale_p2p_height(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate explains stale P2P height")
+    TEST_CASE("block_source_policy: dumpstate explains stale P2P height")
     {
         struct connman cm;
         struct main_state ms;
@@ -1065,7 +1065,7 @@ static int test_cac_dump_explains_stale_p2p_height(void)
         net_manager_init(&cm.manager);
         main_state_init(&ms);
         cm.manager.nodes = zcl_calloc(4, sizeof(*cm.manager.nodes),
-                                      "cac_test_stale_nodes");
+                                      "bsp_test_stale_nodes");
         cm.manager.nodes_cap = 4;
         tip.nHeight = 100;
         best_header.nHeight = 150;
@@ -1107,7 +1107,7 @@ static int test_cac_dump_explains_stale_p2p_height(void)
 static int test_cac_dump_populates_live_snapshot_source(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate populates live snapshot source")
+    TEST_CASE("block_source_policy: dumpstate populates live snapshot source")
     {
         struct snapshot_sync_service svc;
         struct app_runtime_context runtime;
@@ -1166,7 +1166,7 @@ static int test_cac_dump_populates_live_snapshot_source(void)
 static int test_cac_dump_populates_local_import_recovery(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate populates local import recovery")
+    TEST_CASE("block_source_policy: dumpstate populates local import recovery")
     {
         struct connman cm;
         struct download_manager dm;
@@ -1253,7 +1253,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
 static int test_cac_dump_populates_live_mirror_source(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate populates live mirror source")
+    TEST_CASE("block_source_policy: dumpstate populates live mirror source")
     {
         struct main_state ms;
         struct block_index tip;
@@ -1458,7 +1458,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
 static int test_cac_dump_records_live_decision(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate retains last live decision")
+    TEST_CASE("block_source_policy: dumpstate retains last live decision")
     {
         struct json_value root;
         const struct json_value *total;
@@ -1499,7 +1499,7 @@ static int test_cac_dump_records_live_decision(void)
 static int test_cac_dump_records_peer_floor_decision(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate retains peer floor decision")
+    TEST_CASE("block_source_policy: dumpstate retains peer floor decision")
     {
         struct json_value root;
         const struct json_value *total;
@@ -1561,7 +1561,7 @@ static int test_cac_dump_records_peer_floor_decision(void)
 static int test_cac_dump_records_snapshot_offer_decision(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate retains snapshot offer decision")
+    TEST_CASE("block_source_policy: dumpstate retains snapshot offer decision")
     {
         struct json_value root;
         const struct json_value *last;
@@ -1590,7 +1590,7 @@ static int test_cac_dump_records_snapshot_offer_decision(void)
 static int test_cac_decision_event_contract(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: decision events expose authority and trust")
+    TEST_CASE("block_source_policy: decision events expose authority and trust")
     {
         char buf[4096];
         size_t len;
@@ -1625,7 +1625,7 @@ static int test_cac_decision_event_contract(void)
 static int test_cac_peer_floor_event_explains_no_source(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: peer floor event explains no selected source")
+    TEST_CASE("block_source_policy: peer floor event explains no selected source")
     {
         char buf[4096];
         size_t len;
@@ -1664,7 +1664,7 @@ static int test_cac_peer_floor_event_explains_no_source(void)
 static int test_cac_dump_records_local_header_refill_decision(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: dumpstate retains local header refill decision")
+    TEST_CASE("block_source_policy: dumpstate retains local header refill decision")
     {
         struct json_value root;
         const struct json_value *last;
@@ -1693,7 +1693,7 @@ static int test_cac_dump_records_local_header_refill_decision(void)
 static int test_cac_restores_last_decision_from_node_state(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: restores last decision from node_state")
+    TEST_CASE("block_source_policy: restores last decision from node_state")
     {
         struct node_db ndb;
         struct json_value root;
@@ -1823,7 +1823,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
 static int test_cac_restores_peer_floor_sources_from_node_state(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: restores peer floor source evidence")
+    TEST_CASE("block_source_policy: restores peer floor source evidence")
     {
         struct node_db ndb;
         struct json_value root;
@@ -1874,7 +1874,7 @@ static int test_cac_restores_peer_floor_sources_from_node_state(void)
 static int test_cac_restores_local_header_refill_progress(void)
 {
     int failures = 0;
-    TEST_CASE("chain_advance_coordinator: restores local refill progress evidence")
+    TEST_CASE("block_source_policy: restores local refill progress evidence")
     {
         struct node_db ndb;
         struct json_value root;
@@ -1923,7 +1923,7 @@ static int test_cac_restores_local_header_refill_progress(void)
     return failures;
 }
 
-int test_chain_advance_coordinator(void)
+int test_block_source_policy(void)
 {
     int failures = 0;
     failures += test_cac_names();

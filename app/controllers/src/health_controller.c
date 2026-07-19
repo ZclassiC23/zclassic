@@ -62,12 +62,12 @@ static void push_mirror_sync_fields(struct json_value *result)
         return;
     struct legacy_mirror_sync_stats ms;
     legacy_mirror_sync_stats_snapshot(&ms);
-    struct cac_decision d;
+    struct bsp_decision d;
     block_source_policy_get_status(&d);
     bool non_legacy_source_selected =
-        d.result == CAC_DECISION_USE_SOURCE &&
-        d.selected_source != CAC_SOURCE_NONE &&
-        d.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR;
+        d.result == BSP_DECISION_USE_SOURCE &&
+        d.selected_source != BSP_SOURCE_NONE &&
+        d.selected_source != BSP_SOURCE_ZCLASSICD_MIRROR;
     const char *legacy_blocker = legacy_mirror_sync_blocker_code(&ms);
     bool surface_legacy_blocker =
         legacy_mirror_sync_blocker_should_surface(
@@ -87,9 +87,9 @@ static void push_mirror_sync_fields(struct json_value *result)
     json_push_kv_str(result, "consensus_authority",
                      "local_consensus_validation");
     json_push_kv_str(result, "active_source",
-                     cac_source_name(d.selected_source));
+                     bsp_source_name(d.selected_source));
     json_push_kv_str(result, "active_source_trust",
-                     cac_source_trust_name(d.selected_source));
+                     bsp_source_trust_name(d.selected_source));
     json_push_kv_str(result, "active_blocker", d.blocker);
     json_push_kv_str(result, "candidate_source", "legacy_advisory");
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
@@ -473,25 +473,25 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
 
     /* Canonical chain advance coordinator */
     {
-        struct cac_decision d;
+        struct bsp_decision d;
         block_source_policy_get_status(&d);
 
         struct json_value svc = {0};
         json_set_object(&svc);
         json_push_kv_str(&svc, "name", "chain_advance_coordinator");
         json_push_kv_str(&svc, "state",
-                         d.result == CAC_DECISION_USE_SOURCE ? "ready" :
-                         d.result == CAC_DECISION_WAIT ? "waiting" :
-                         d.result == CAC_DECISION_BLOCKED ? "blocked" :
+                         d.result == BSP_DECISION_USE_SOURCE ? "ready" :
+                         d.result == BSP_DECISION_WAIT ? "waiting" :
+                         d.result == BSP_DECISION_BLOCKED ? "blocked" :
                          "recovering");
         json_push_kv_str(&svc, "decision",
-                         cac_decision_result_name(d.result));
+                         bsp_decision_result_name(d.result));
         json_push_kv_str(&svc, "authority",
                          "local_consensus_validation");
         json_push_kv_str(&svc, "selected_source",
-                         cac_source_name(d.selected_source));
+                         bsp_source_name(d.selected_source));
         json_push_kv_str(&svc, "selected_source_trust",
-                         cac_source_trust_name(d.selected_source));
+                         bsp_source_trust_name(d.selected_source));
         json_push_kv_bool(&svc, "activation_allowed",
                           d.activation_allowed);
         json_push_kv_bool(&svc, "mirror_fallback_allowed",
@@ -516,9 +516,9 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_str(&svc, "last_projection_deferred_reason",
                          d.last_projection_deferred_reason);
         json_push_kv_int(&svc, "selected_score", d.selected_score);
-        if (d.selected_source > CAC_SOURCE_NONE &&
-            d.selected_source < CAC_SOURCE_NUM) {
-            const struct cac_source_status *s = &d.sources[d.selected_source];
+        if (d.selected_source > BSP_SOURCE_NONE &&
+            d.selected_source < BSP_SOURCE_NUM) {
+            const struct bsp_source_status *s = &d.sources[d.selected_source];
             json_push_kv_bool(&svc, "selected_source_selectable",
                               s->selectable);
             json_push_kv_str(&svc, "selected_source_selection_blocker",

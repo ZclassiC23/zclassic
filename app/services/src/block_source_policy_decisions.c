@@ -27,7 +27,7 @@
 #include <string.h>
 
 struct zcl_result bsp_record_decision(const char *op,
-                                      const struct cac_decision *d)
+                                      const struct bsp_decision *d)
 {
     if (!d)
         return ZCL_ERR(-1, "bsp_record_decision: null decision op=%s",
@@ -57,7 +57,7 @@ struct zcl_result bsp_record_decision(const char *op,
 static void emit_decision_event(const char *op,
                                 const char *action_key,
                                 bool action_value,
-                                const struct cac_decision *d,
+                                const struct bsp_decision *d,
                                 const char *extra_fmt,
                                 ...)
 {
@@ -72,16 +72,16 @@ static void emit_decision_event(const char *op,
         va_end(ap);
     }
 
-    const struct cac_source_status *s = NULL;
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM)
+    const struct bsp_source_status *s = NULL;
+    if (d->selected_source > BSP_SOURCE_NONE &&
+        d->selected_source < BSP_SOURCE_NUM)
         s = &d->sources[d->selected_source];
     const char *selection_blocker =
         s && s->selection_reason[0] ? s->selection_reason : "-";
 
-    const char *source_name = cac_source_name(d->selected_source);
-    const char *trust_name = cac_source_trust_name(d->selected_source);
-    const char *decision_name = cac_decision_result_name(d->result);
+    const char *source_name = bsp_source_name(d->selected_source);
+    const char *trust_name = bsp_source_trust_name(d->selected_source);
+    const char *decision_name = bsp_decision_result_name(d->result);
 
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "op=%s ok=%s authority=local_consensus_validation "
@@ -108,11 +108,11 @@ bool block_source_policy_peer_floor_recovery_needed(
     int min_healthy,
     int local_height,
     int peer_height,
-    struct cac_decision *out)
+    struct bsp_decision *out)
 {
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
+    struct bsp_plan_input in;
+    struct bsp_decision local_out;
+    struct bsp_decision *decision = out ? out : &local_out;
     int target_height = peer_height > local_height ? peer_height
                                                    : local_height;
 
@@ -121,8 +121,8 @@ bool block_source_policy_peer_floor_recovery_needed(
     in.best_header_height = local_height;
     in.target_height = target_height;
 
-    struct cac_source_status *p2p = &in.sources[CAC_SOURCE_P2P];
-    p2p->source = CAC_SOURCE_P2P;
+    struct bsp_source_status *p2p = &in.sources[BSP_SOURCE_P2P];
+    p2p->source = BSP_SOURCE_P2P;
     p2p->available = healthy_outbound > 0;
     p2p->healthy = min_healthy > 0 && healthy_outbound >= min_healthy;
     p2p->height = peer_height;
@@ -144,10 +144,10 @@ bool block_source_policy_peer_floor_recovery_needed(
         LOG_WARN("bsp", "record peer_floor decision: %s", rec.message);
 
     bool recover = healthy_outbound < min_healthy &&
-                   decision->selected_source != CAC_SOURCE_P2P;
+                   decision->selected_source != BSP_SOURCE_P2P;
     const char *p2p_blocker =
-        decision->sources[CAC_SOURCE_P2P].selection_reason[0] ?
-        decision->sources[CAC_SOURCE_P2P].selection_reason : "-";
+        decision->sources[BSP_SOURCE_P2P].selection_reason[0] ?
+        decision->sources[BSP_SOURCE_P2P].selection_reason : "-";
     emit_decision_event(
         "peer_floor", "recover", recover, decision,
         "healthy=%d min=%d local=%d peer=%d p2psb=%s",
@@ -162,11 +162,11 @@ bool block_source_policy_snapshot_offer_allowed(
     int peer_tip_height,
     bool offer_valid,
     const char *reason,
-    struct cac_decision *out)
+    struct bsp_decision *out)
 {
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
+    struct bsp_plan_input in;
+    struct bsp_decision local_out;
+    struct bsp_decision *decision = out ? out : &local_out;
     int target_height = peer_tip_height > snapshot_height ? peer_tip_height
                                                           : snapshot_height;
 
@@ -176,8 +176,8 @@ bool block_source_policy_snapshot_offer_allowed(
     in.target_height = target_height > local_height ? target_height
                                                     : local_height;
 
-    struct cac_source_status *snap = &in.sources[CAC_SOURCE_SNAPSHOT];
-    snap->source = CAC_SOURCE_SNAPSHOT;
+    struct bsp_source_status *snap = &in.sources[BSP_SOURCE_SNAPSHOT];
+    snap->source = BSP_SOURCE_SNAPSHOT;
     snap->available = true;
     snap->healthy = offer_valid;
     snap->authorized = offer_valid;
@@ -200,7 +200,7 @@ bool block_source_policy_snapshot_offer_allowed(
         LOG_WARN("bsp", "record snapshot_offer decision: %s", rec.message);
 
     bool allowed = offer_valid &&
-                   decision->selected_source == CAC_SOURCE_SNAPSHOT;
+                   decision->selected_source == BSP_SOURCE_SNAPSHOT;
     emit_decision_event(
         "snapshot_offer", "allowed", allowed, decision,
         "local=%d snapshot=%d peer_tip=%d",
@@ -215,11 +215,11 @@ bool block_source_policy_local_header_refill_needed(
     int eligible_peers,
     int retry_count,
     bool retries_exhausted,
-    struct cac_decision *out)
+    struct bsp_decision *out)
 {
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
+    struct bsp_plan_input in;
+    struct bsp_decision local_out;
+    struct bsp_decision *decision = out ? out : &local_out;
     int target_height = peer_height > missing_height ? peer_height
                                                      : missing_height;
 
@@ -231,8 +231,8 @@ bool block_source_policy_local_header_refill_needed(
     in.local_recovery_active = true;
     in.local_retries_exhausted = retries_exhausted;
 
-    struct cac_source_status *li = &in.sources[CAC_SOURCE_LOCAL_IMPORT];
-    li->source = CAC_SOURCE_LOCAL_IMPORT;
+    struct bsp_source_status *li = &in.sources[BSP_SOURCE_LOCAL_IMPORT];
+    li->source = BSP_SOURCE_LOCAL_IMPORT;
     li->available = missing_height == local_height + 1;
     li->healthy = eligible_peers > 0;
     li->height = peer_height;
@@ -257,8 +257,8 @@ bool block_source_policy_local_header_refill_needed(
         LOG_WARN("bsp", "record local_header_refill decision: %s",
                  rec.message);
 
-    bool proceed = decision->result == CAC_DECISION_USE_SOURCE ||
-                   decision->result == CAC_DECISION_RECOVER;
+    bool proceed = decision->result == BSP_DECISION_USE_SOURCE ||
+                   decision->result == BSP_DECISION_RECOVER;
     emit_decision_event(
         "local_header_refill", "proceed", proceed, decision,
         "local=%d missing=%d peer=%d eligible=%d retry=%d",

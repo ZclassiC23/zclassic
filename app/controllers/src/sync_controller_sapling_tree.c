@@ -703,11 +703,8 @@ fail:
 
 /* ── Deferred/live background rebuild ─────────────────────────────────
  * config/src/boot.c's "Sapling tree root MISMATCH ... deferring live
- * rebuild until after boot" branch used to only set
- * g_sapling_tree_rebuilding=true and fall through into a normal boot —
- * nothing ever actually ran the rebuild afterward (a dead deferral: the
- * flag stayed true forever, so every future root-mismatch check silently
- * self-suppressed instead of ever curing the tree). This runs the SAME
+ * rebuild until after boot" branch only sets g_sapling_tree_rebuilding=true;
+ * this is what actually performs the rebuild. Runs the SAME
  * rebuild-then-reload sequence the synchronous boot-time path runs, off
  * a background thread so a multi-million-block replay never blocks node
  * startup. Living in this TU means the thread_registry_spawn call site

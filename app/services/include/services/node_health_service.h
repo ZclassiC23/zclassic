@@ -17,7 +17,7 @@
 
 struct node_db;
 struct main_state;
-struct cac_decision;
+struct bsp_decision;
 
 struct node_health_snapshot {
     enum sync_state sync_state;
@@ -165,7 +165,7 @@ struct node_health_snapshot {
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
-bool node_health_chain_advance_synced(const struct cac_decision *decision);
+bool node_health_chain_advance_synced(const struct bsp_decision *decision);
 
 /* Pure resolution of the Prime-Directive "network tip" used for the health lag
  * number, hardened against a single lying peer (see NODE_HEALTH_PLAUSIBLE_TIP_BAND
@@ -185,7 +185,7 @@ int64_t node_health_resolve_network_tip(int64_t raw_max, int peers_above_band,
 #ifdef ZCL_TESTING
 void node_health_test_set_log_head_override(int log_head);
 void node_health_test_set_chain_advance_decision_override(
-    const struct cac_decision *decision);
+    const struct bsp_decision *decision);
 void node_health_test_set_memory_rss_mb_override(int64_t memory_rss_mb);
 #endif
 

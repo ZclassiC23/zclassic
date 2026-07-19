@@ -89,7 +89,7 @@ enum blocker_class bsp_classify_mirror_blocker_class(const char *code)
     return mirror_consensus_classify_blocker_reason(code);
 }
 
-void bsp_enrich_projection_deferral(struct cac_decision *d)
+void bsp_enrich_projection_deferral(struct bsp_decision *d)
 {
     if (!d)
         return;
@@ -140,8 +140,8 @@ static int runtime_best_header_height(struct main_state *ms)
     return ms->pindex_best_header->nHeight;
 }
 
-static bool p2p_minimum_viable(const struct cac_plan_input *in,
-                               const struct cac_source_status *p2p,
+static bool p2p_minimum_viable(const struct bsp_plan_input *in,
+                               const struct bsp_source_status *p2p,
                                const struct connman_outbound_health *ph)
 {
     if (!in || !p2p || !ph)
@@ -167,7 +167,7 @@ static bool p2p_minimum_viable(const struct cac_plan_input *in,
     return true;
 }
 
-void bsp_build_runtime_input(struct cac_plan_input *in)
+void bsp_build_runtime_input(struct bsp_plan_input *in)
 {
     memset(in, 0, sizeof(*in));
     in->local_height = -1;
@@ -188,12 +188,12 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     memset(&pls, 0, sizeof(pls));
     peer_lifecycle_get_summary(&pls);
 
-    struct cac_source_status *p2p = &in->sources[CAC_SOURCE_P2P];
+    struct bsp_source_status *p2p = &in->sources[BSP_SOURCE_P2P];
     struct connman_outbound_health ph;
     memset(&ph, 0, sizeof(ph));
     if (cm)
         connman_get_outbound_health(cm, &ph);
-    p2p->source = CAC_SOURCE_P2P;
+    p2p->source = BSP_SOURCE_P2P;
     p2p->available = pls.handshake_complete > 0 ||
                      ph.healthy > 0;
     p2p->height = cm ? connman_max_peer_height(cm) : -1;
@@ -264,8 +264,8 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     in->local_recovery_active = wr.active;
     in->local_retries_exhausted = wr.retries_exhausted;
 
-    struct cac_source_status *li = &in->sources[CAC_SOURCE_LOCAL_IMPORT];
-    li->source = CAC_SOURCE_LOCAL_IMPORT;
+    struct bsp_source_status *li = &in->sources[BSP_SOURCE_LOCAL_IMPORT];
+    li->source = BSP_SOURCE_LOCAL_IMPORT;
     li->available = wr.active;
     li->healthy = wr.active && wr.distinct_peer_count > 0;
     li->height = wr.missing_height > 0 ? wr.missing_height - 1
@@ -285,8 +285,8 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     memset(&sstat, 0, sizeof(sstat));
     if (ssvc)
         snapsync_get_status_snapshot(ssvc, &sstat);
-    struct cac_source_status *snap = &in->sources[CAC_SOURCE_SNAPSHOT];
-    snap->source = CAC_SOURCE_SNAPSHOT;
+    struct bsp_source_status *snap = &in->sources[BSP_SOURCE_SNAPSHOT];
+    snap->source = BSP_SOURCE_SNAPSHOT;
     snap->available = ssvc && sstat.state != SNAPSYNC_IDLE;
     snap->healthy = ssvc &&
         (sstat.state == SNAPSYNC_NEGOTIATING ||
@@ -315,8 +315,8 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     struct legacy_mirror_sync_stats msnap;
     memset(&msnap, 0, sizeof(msnap));
     legacy_mirror_sync_stats_snapshot(&msnap);
-    struct cac_source_status *mir = &in->sources[CAC_SOURCE_ZCLASSICD_MIRROR];
-    mir->source = CAC_SOURCE_ZCLASSICD_MIRROR;
+    struct bsp_source_status *mir = &in->sources[BSP_SOURCE_ZCLASSICD_MIRROR];
+    mir->source = BSP_SOURCE_ZCLASSICD_MIRROR;
     mir->available = msnap.enabled && msnap.reachable;
     mir->healthy = msnap.enabled && msnap.lag_known && msnap.lag >= 0 &&
                    (msnap.state[0] == '\0' ||

@@ -33,7 +33,7 @@ extern struct bsp_state {
     struct connman *connman;
     struct main_state *main_state;
     struct node_db *node_db;
-    struct cac_decision last;
+    struct bsp_decision last;
     bool has_last;
     int64_t last_decision_time;
     char last_op[32];
@@ -53,7 +53,7 @@ void bsp_copy_text(char *dst, size_t dst_len, const char *src);
  * state is a best-effort mirror of in-memory decision state, so callers log
  * a non-ok result but do not change the decision (DEFENSIVE_CODING.md §2). */
 struct zcl_result bsp_persist_decision(struct node_db *ndb, const char *op,
-                                       const struct cac_decision *d,
+                                       const struct bsp_decision *d,
                                        int64_t when, int64_t total);
 struct zcl_result bsp_restore_decision(struct node_db *ndb);
 struct zcl_result bsp_restore_projection_deferral(struct node_db *ndb);
@@ -62,18 +62,18 @@ struct zcl_result bsp_restore_projection_deferral(struct node_db *ndb);
  * memory and mirrors it to node.db; returns the persist result so a failed
  * disk write is logged with context (the decision itself never fails). */
 struct zcl_result bsp_record_decision(const char *op,
-                                      const struct cac_decision *d);
-const char *bsp_source_class_name(enum cac_source source);
+                                      const struct bsp_decision *d);
+const char *bsp_source_class_name(enum bsp_source source);
 
 /* Runtime seam (block_source_policy_runtime.c). */
-void bsp_build_runtime_input(struct cac_plan_input *in);
-void bsp_enrich_projection_deferral(struct cac_decision *d);
+void bsp_build_runtime_input(struct bsp_plan_input *in);
+void bsp_enrich_projection_deferral(struct bsp_decision *d);
 enum blocker_class bsp_classify_mirror_blocker_class(const char *code);
 
 /* Status seam (block_source_policy_status.c). */
-void bsp_source_to_json(const struct cac_source_status *s,
+void bsp_source_to_json(const struct bsp_source_status *s,
                         struct json_value *out);
-void bsp_decision_to_json(const struct cac_decision *d,
+void bsp_decision_to_json(const struct bsp_decision *d,
                           struct json_value *out);
 
 #endif /* ZCL_SERVICES_BLOCK_SOURCE_POLICY_INTERNAL_H */

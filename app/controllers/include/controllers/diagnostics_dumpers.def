@@ -299,7 +299,7 @@
     DIAG_SERVICE("chain_advance_coordinator", block_source_policy_dump_state_json,
                  "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback",
                  "app/services/src/block_source_policy_status.c",
-                 "lib/test/src/test_chain_advance_coordinator.c"),
+                 "lib/test/src/test_block_source_policy.c"),
     DIAG_CONDITION("chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
                    "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts",
                    "app/services/src/chain_tip_watchdog.c", DIAG_TEST_DEFAULT),

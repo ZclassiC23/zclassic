@@ -1741,9 +1741,9 @@ bool app_init(struct app_context *ctx)
                     g_wallet.best_block_height = saved_height;
                 wallet_db_close(&legacy_wdb);
 
-                /* Persist to SQLite. Unlike the old code, we check
-                 * the result — a silent failure here is the exact
-                 * bug the state machine defends against. */
+                /* Persist to SQLite and check the result — a silent
+                 * failure here is exactly what the boot state machine's
+                 * never-silent invariant forbids. */
                 if (g_wallet_sqlite.open) {
                     struct zcl_result _r = wallet_sqlite_flush_r(
                         &g_wallet_sqlite, &g_wallet);
@@ -1986,10 +1986,7 @@ bool app_init(struct app_context *ctx)
          * gate. boot_crashonly_storage_gate() (the coins_view / progress_kv /
          * block_index gates below) records a -reindex-chainstate request and
          * exits; the NEXT boot must turn that request into an ACTUAL reindex.
-         * The consume historically sat AFTER the coins-view gate, so on the
-         * consuming boot the gate re-fired (the corrupt coins state was never
-         * cleared) and just counted another strike — the bounded re-derive
-         * ladder dead-ended without ever rebuilding. Consuming up front sets
+         * MUST run before the coins-view gate: consuming up front sets
          * ctx->reindex_chainstate so (1) boot_index_clear_coins_state wipes the
          * stale/torn coins state, (2) coins_view_sqlite_open then opens cleanly
          * (the gate does not re-fire), and (3) reindex_chainstate(...) actually

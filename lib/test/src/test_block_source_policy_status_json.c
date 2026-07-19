@@ -14,7 +14,7 @@
  * "lag_observed" (and "candidate_*" mirrors) keys that bsp_source_to_json
  * emits — exactly the surface an operator/UI actually reads.
  *
- * Every test builds a `struct cac_source_status` / `struct cac_decision` on
+ * Every test builds a `struct bsp_source_status` / `struct bsp_decision` on
  * the stack (never touching the stateful g_bsp runtime, which lives in the
  * sibling _runtime.c file and is out of scope here), serializes it, and
  * inspects the resulting struct json_value directly via json_get/json_at —
@@ -39,10 +39,10 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* Populate every field of a cac_source_status with distinct, seed-derived
+/* Populate every field of a bsp_source_status with distinct, seed-derived
  * sentinel values so a round-trip test can check each JSON key
  * individually instead of merely "doesn't crash". */
-static void bspj_fill_source(struct cac_source_status *s, enum cac_source source,
+static void bspj_fill_source(struct bsp_source_status *s, enum bsp_source source,
                               int seed)
 {
     memset(s, 0, sizeof(*s));
@@ -102,11 +102,11 @@ static int t_source_class_name_named(void)
 {
     int failures = 0;
     bool ok =
-        strcmp(bsp_source_class_name(CAC_SOURCE_NONE), "none") == 0 &&
-        strcmp(bsp_source_class_name(CAC_SOURCE_P2P), "native_p2p") == 0 &&
-        strcmp(bsp_source_class_name(CAC_SOURCE_SNAPSHOT), "snapshot") == 0 &&
-        strcmp(bsp_source_class_name(CAC_SOURCE_LOCAL_IMPORT), "local_import") == 0 &&
-        strcmp(bsp_source_class_name(CAC_SOURCE_ZCLASSICD_MIRROR), "legacy_advisory") == 0;
+        strcmp(bsp_source_class_name(BSP_SOURCE_NONE), "none") == 0 &&
+        strcmp(bsp_source_class_name(BSP_SOURCE_P2P), "native_p2p") == 0 &&
+        strcmp(bsp_source_class_name(BSP_SOURCE_SNAPSHOT), "snapshot") == 0 &&
+        strcmp(bsp_source_class_name(BSP_SOURCE_LOCAL_IMPORT), "local_import") == 0 &&
+        strcmp(bsp_source_class_name(BSP_SOURCE_ZCLASSICD_MIRROR), "legacy_advisory") == 0;
     BSPJ_RUN("bsp_source_class_name: every named source maps correctly", ok);
     return failures;
 }
@@ -117,11 +117,11 @@ static int t_source_class_name_unknown_default(void)
 {
     int failures = 0;
     bool ok =
-        strcmp(bsp_source_class_name(CAC_SOURCE_NUM), "unknown") == 0 &&
-        strcmp(bsp_source_class_name((enum cac_source)(CAC_SOURCE_NUM + 1)), "unknown") == 0 &&
-        strcmp(bsp_source_class_name((enum cac_source)-1), "unknown") == 0 &&
-        strcmp(bsp_source_class_name((enum cac_source)999), "unknown") == 0;
-    BSPJ_RUN("bsp_source_class_name: CAC_SOURCE_NUM + out-of-range fall to default \"unknown\"", ok);
+        strcmp(bsp_source_class_name(BSP_SOURCE_NUM), "unknown") == 0 &&
+        strcmp(bsp_source_class_name((enum bsp_source)(BSP_SOURCE_NUM + 1)), "unknown") == 0 &&
+        strcmp(bsp_source_class_name((enum bsp_source)-1), "unknown") == 0 &&
+        strcmp(bsp_source_class_name((enum bsp_source)999), "unknown") == 0;
+    BSPJ_RUN("bsp_source_class_name: BSP_SOURCE_NUM + out-of-range fall to default \"unknown\"", ok);
     return failures;
 }
 
@@ -134,8 +134,8 @@ static int t_mirror_lag_passthrough(void)
 
     /* known=true, valid=true */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 1);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 1);
         s.lag_known = true; s.lag_valid = true;
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
@@ -146,8 +146,8 @@ static int t_mirror_lag_passthrough(void)
     /* known=false, valid=false -> mirror must report exactly what the
      * struct says, i.e. false/false (NOT force-true). */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 2);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 2);
         s.lag_known = false; s.lag_valid = false;
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
@@ -157,8 +157,8 @@ static int t_mirror_lag_passthrough(void)
     }
     /* Mixed: known=true, valid=false -> the two fields are independent. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 3);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 3);
         s.lag_known = true; s.lag_valid = false;
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
@@ -168,8 +168,8 @@ static int t_mirror_lag_passthrough(void)
     }
     /* candidate_lag_known / candidate_lag_valid mirror the same values. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 4);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 4);
         s.lag_known = false; s.lag_valid = true;
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
@@ -177,7 +177,7 @@ static int t_mirror_lag_passthrough(void)
                    json_get_bool(json_get(&out, "candidate_lag_valid")) == true;
         json_free(&out);
     }
-    BSPJ_RUN("bsp_source_to_json: CAC_SOURCE_ZCLASSICD_MIRROR passes lag_known/lag_valid through verbatim", ok);
+    BSPJ_RUN("bsp_source_to_json: BSP_SOURCE_ZCLASSICD_MIRROR passes lag_known/lag_valid through verbatim", ok);
     return failures;
 }
 
@@ -188,11 +188,11 @@ static int t_non_mirror_lag_forced_true(void)
 {
     int failures = 0;
     bool ok = true;
-    enum cac_source non_mirror[] = {
-        CAC_SOURCE_NONE, CAC_SOURCE_P2P, CAC_SOURCE_SNAPSHOT, CAC_SOURCE_LOCAL_IMPORT
+    enum bsp_source non_mirror[] = {
+        BSP_SOURCE_NONE, BSP_SOURCE_P2P, BSP_SOURCE_SNAPSHOT, BSP_SOURCE_LOCAL_IMPORT
     };
     for (size_t i = 0; i < sizeof(non_mirror) / sizeof(non_mirror[0]); i++) {
-        struct cac_source_status s;
+        struct bsp_source_status s;
         bspj_fill_source(&s, non_mirror[i], 5);
         /* Deliberately false, to catch a flipped branch that would report
          * "lag unknown" for a source class that should always be reported
@@ -223,8 +223,8 @@ static int t_lag_observed_null_vs_int(void)
     /* Mirror source, lag_known=false -> "lag_observed" must be a JSON
      * null, not an omitted key and not the sentinel -1 int. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 6);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 6);
         s.lag_known = false;
         s.lag = 777; /* must be ignored when not known */
         struct json_value out = {0};
@@ -238,8 +238,8 @@ static int t_lag_observed_null_vs_int(void)
     /* Mirror source, lag_known=true -> "lag_observed" is the actual int
      * lag value, not omitted, not null. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_ZCLASSICD_MIRROR, 7);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_ZCLASSICD_MIRROR, 7);
         s.lag_known = true;
         s.lag = 4242;
         struct json_value out = {0};
@@ -255,8 +255,8 @@ static int t_lag_observed_null_vs_int(void)
      * the actual int lag (not null) -- the exact false-"lag unknown" UI
      * regression this test class exists to pin. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_P2P, 8);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_P2P, 8);
         s.lag_known = false;
         s.lag = 99;
         struct json_value out = {0};
@@ -274,17 +274,17 @@ static int t_lag_observed_null_vs_int(void)
 static int t_source_to_json_full_roundtrip(void)
 {
     int failures = 0;
-    struct cac_source_status s;
-    bspj_fill_source(&s, CAC_SOURCE_LOCAL_IMPORT, 13);
+    struct bsp_source_status s;
+    bspj_fill_source(&s, BSP_SOURCE_LOCAL_IMPORT, 13);
     struct json_value out = {0};
     bsp_source_to_json(&s, &out);
 
     bool ok = out.type == JSON_OBJ;
-    ok = ok && strcmp(json_get_str(json_get(&out, "source")), cac_source_name(s.source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "source")), bsp_source_name(s.source)) == 0;
     ok = ok && strcmp(json_get_str(json_get(&out, "source_class")), "local_import") == 0;
     ok = ok && strcmp(json_get_str(json_get(&out, "candidate_source")), "local_import") == 0;
-    ok = ok && strcmp(json_get_str(json_get(&out, "trust")), cac_source_trust_name(s.source)) == 0;
-    ok = ok && strcmp(json_get_str(json_get(&out, "candidate_trust")), cac_source_trust_name(s.source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "trust")), bsp_source_trust_name(s.source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "candidate_trust")), bsp_source_trust_name(s.source)) == 0;
     ok = ok && json_get_bool(json_get(&out, "available")) == s.available;
     ok = ok && json_get_bool(json_get(&out, "healthy")) == s.healthy;
     ok = ok && json_get_bool(json_get(&out, "blocked")) == s.blocked;
@@ -348,8 +348,8 @@ static int t_candidate_blocker_fallback(void)
     /* blocker non-empty -> candidate_blocker == blocker (selection_reason
      * ignored even though it is also populated). */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_P2P, 9);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_P2P, 9);
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
         ok = ok && strcmp(json_get_str(json_get(&out, "candidate_blocker")), s.blocker) == 0;
@@ -357,8 +357,8 @@ static int t_candidate_blocker_fallback(void)
     }
     /* blocker empty ("") -> candidate_blocker falls back to selection_reason. */
     {
-        struct cac_source_status s;
-        bspj_fill_source(&s, CAC_SOURCE_P2P, 10);
+        struct bsp_source_status s;
+        bspj_fill_source(&s, BSP_SOURCE_P2P, 10);
         s.blocker[0] = '\0';
         struct json_value out = {0};
         bsp_source_to_json(&s, &out);
@@ -369,12 +369,12 @@ static int t_candidate_blocker_fallback(void)
     return failures;
 }
 
-/* ── Helper: build a fully populated cac_decision on the stack ────────── */
+/* ── Helper: build a fully populated bsp_decision on the stack ────────── */
 
-static void bspj_fill_decision(struct cac_decision *d, enum cac_source selected)
+static void bspj_fill_decision(struct bsp_decision *d, enum bsp_source selected)
 {
     memset(d, 0, sizeof(*d));
-    d->result = CAC_DECISION_USE_SOURCE;
+    d->result = BSP_DECISION_USE_SOURCE;
     d->selected_source = selected;
     d->activation_allowed = true;
     d->mirror_fallback_allowed = false;
@@ -393,8 +393,8 @@ static void bspj_fill_decision(struct cac_decision *d, enum cac_source selected)
              sizeof(d->last_projection_deferred_reason), "wait_for_peer");
     snprintf(d->reason, sizeof(d->reason), "decision_reason");
     snprintf(d->blocker, sizeof(d->blocker), "decision_blocker");
-    for (int i = 1; i < CAC_SOURCE_NUM; i++)
-        bspj_fill_source(&d->sources[i], (enum cac_source)i, 40 + i);
+    for (int i = 1; i < BSP_SOURCE_NUM; i++)
+        bspj_fill_source(&d->sources[i], (enum bsp_source)i, 40 + i);
 }
 
 /* ── 8. bsp_decision_to_json: NULL decision -> empty object, no crash ──── */
@@ -417,10 +417,10 @@ static int t_selected_source_block_bounds(void)
     int failures = 0;
     bool ok = true;
 
-    /* selected_source == CAC_SOURCE_NONE -> block must be absent. */
+    /* selected_source == BSP_SOURCE_NONE -> block must be absent. */
     {
-        struct cac_decision d;
-        bspj_fill_decision(&d, CAC_SOURCE_NONE);
+        struct bsp_decision d;
+        bspj_fill_decision(&d, BSP_SOURCE_NONE);
         struct json_value out = {0};
         bsp_decision_to_json(&d, &out);
         ok = ok && json_get(&out, "selected_source_state") == NULL &&
@@ -428,17 +428,17 @@ static int t_selected_source_block_bounds(void)
                    json_get(&out, "selected_source_selectable") == NULL;
         json_free(&out);
     }
-    /* selected_source == CAC_SOURCE_NUM (past the last real source) -> also absent. */
+    /* selected_source == BSP_SOURCE_NUM (past the last real source) -> also absent. */
     {
-        struct cac_decision d;
-        bspj_fill_decision(&d, CAC_SOURCE_NUM);
+        struct bsp_decision d;
+        bspj_fill_decision(&d, BSP_SOURCE_NUM);
         struct json_value out = {0};
         bsp_decision_to_json(&d, &out);
         ok = ok && json_get(&out, "selected_source_state") == NULL &&
                    json_get(&out, "selected_source_blocked") == NULL;
         json_free(&out);
     }
-    BSPJ_RUN("bsp_decision_to_json: selected_source_* block absent for CAC_SOURCE_NONE and CAC_SOURCE_NUM", ok);
+    BSPJ_RUN("bsp_decision_to_json: selected_source_* block absent for BSP_SOURCE_NONE and BSP_SOURCE_NUM", ok);
     return failures;
 }
 
@@ -447,9 +447,9 @@ static int t_selected_source_block_bounds(void)
 static int t_selected_source_block_present(void)
 {
     int failures = 0;
-    struct cac_decision d;
-    bspj_fill_decision(&d, CAC_SOURCE_SNAPSHOT);
-    const struct cac_source_status *sel = &d.sources[CAC_SOURCE_SNAPSHOT];
+    struct bsp_decision d;
+    bspj_fill_decision(&d, BSP_SOURCE_SNAPSHOT);
+    const struct bsp_source_status *sel = &d.sources[BSP_SOURCE_SNAPSHOT];
 
     struct json_value out = {0};
     bsp_decision_to_json(&d, &out);
@@ -478,33 +478,33 @@ static int t_selected_source_block_present(void)
     return failures;
 }
 
-/* ── 11. sources array: exactly CAC_SOURCE_NUM-1 entries, indices 1..NUM-1 ── */
+/* ── 11. sources array: exactly BSP_SOURCE_NUM-1 entries, indices 1..NUM-1 ── */
 
 static int t_sources_array_size_and_order(void)
 {
     int failures = 0;
-    struct cac_decision d;
-    bspj_fill_decision(&d, CAC_SOURCE_P2P);
+    struct bsp_decision d;
+    bspj_fill_decision(&d, BSP_SOURCE_P2P);
 
     struct json_value out = {0};
     bsp_decision_to_json(&d, &out);
     const struct json_value *arr = json_get(&out, "sources");
 
     bool ok = arr != NULL && arr->type == JSON_ARR &&
-              json_size(arr) == (size_t)(CAC_SOURCE_NUM - 1);
+              json_size(arr) == (size_t)(BSP_SOURCE_NUM - 1);
 
     /* Position k (0-based) corresponds to loop index i = k+1, so
-     * arr[0].source == cac_source_name(CAC_SOURCE_P2P), etc. — CAC_SOURCE_NONE
+     * arr[0].source == bsp_source_name(BSP_SOURCE_P2P), etc. — BSP_SOURCE_NONE
      * (index 0) must never appear in the array. */
-    for (int i = 1; ok && i < CAC_SOURCE_NUM; i++) {
+    for (int i = 1; ok && i < BSP_SOURCE_NUM; i++) {
         const struct json_value *child = json_at(arr, (size_t)(i - 1));
         ok = ok && child != NULL &&
              strcmp(json_get_str(json_get(child, "source")),
-                    cac_source_name((enum cac_source)i)) == 0;
+                    bsp_source_name((enum bsp_source)i)) == 0;
     }
 
     json_free(&out);
-    BSPJ_RUN("bsp_decision_to_json: sources array has exactly CAC_SOURCE_NUM-1 entries in index 1..NUM-1 order", ok);
+    BSPJ_RUN("bsp_decision_to_json: sources array has exactly BSP_SOURCE_NUM-1 entries in index 1..NUM-1 order", ok);
     return failures;
 }
 
@@ -513,12 +513,12 @@ static int t_sources_array_size_and_order(void)
 static int t_sources_array_self_heals_zeroed_source_field(void)
 {
     int failures = 0;
-    struct cac_decision d;
+    struct bsp_decision d;
     memset(&d, 0, sizeof(d));
-    d.result = CAC_DECISION_WAIT;
-    d.selected_source = CAC_SOURCE_NONE;
+    d.result = BSP_DECISION_WAIT;
+    d.selected_source = BSP_SOURCE_NONE;
     /* Every element of d.sources[] is fully zeroed, including .source
-     * (== CAC_SOURCE_NONE for every slot, even though its true index is
+     * (== BSP_SOURCE_NONE for every slot, even though its true index is
      * 1..NUM-1). bsp_decision_to_json must self-heal each entry's .source
      * to the loop index i before serializing, rather than emitting "none"
      * for every slot. */
@@ -527,19 +527,19 @@ static int t_sources_array_self_heals_zeroed_source_field(void)
     bsp_decision_to_json(&d, &out);
     const struct json_value *arr = json_get(&out, "sources");
 
-    bool ok = arr != NULL && json_size(arr) == (size_t)(CAC_SOURCE_NUM - 1);
-    for (int i = 1; ok && i < CAC_SOURCE_NUM; i++) {
+    bool ok = arr != NULL && json_size(arr) == (size_t)(BSP_SOURCE_NUM - 1);
+    for (int i = 1; ok && i < BSP_SOURCE_NUM; i++) {
         const struct json_value *child = json_at(arr, (size_t)(i - 1));
         ok = ok && child != NULL &&
              strcmp(json_get_str(json_get(child, "source")),
-                    cac_source_name((enum cac_source)i)) == 0 &&
+                    bsp_source_name((enum bsp_source)i)) == 0 &&
              strcmp(json_get_str(json_get(child, "source")), "none") != 0;
     }
     /* The self-heal must operate on a local copy, never mutate the input
-     * decision -- every raw d.sources[i].source stays CAC_SOURCE_NONE (0)
+     * decision -- every raw d.sources[i].source stays BSP_SOURCE_NONE (0)
      * after the call. */
-    for (int i = 1; ok && i < CAC_SOURCE_NUM; i++)
-        ok = ok && d.sources[i].source == CAC_SOURCE_NONE;
+    for (int i = 1; ok && i < BSP_SOURCE_NUM; i++)
+        ok = ok && d.sources[i].source == BSP_SOURCE_NONE;
 
     json_free(&out);
     BSPJ_RUN("bsp_decision_to_json: a zeroed source.source field self-heals to the loop index i without mutating the input", ok);
@@ -551,18 +551,18 @@ static int t_sources_array_self_heals_zeroed_source_field(void)
 static int t_decision_to_json_full_roundtrip(void)
 {
     int failures = 0;
-    struct cac_decision d;
-    bspj_fill_decision(&d, CAC_SOURCE_LOCAL_IMPORT);
+    struct bsp_decision d;
+    bspj_fill_decision(&d, BSP_SOURCE_LOCAL_IMPORT);
 
     struct json_value out = {0};
     bsp_decision_to_json(&d, &out);
 
     bool ok = out.type == JSON_OBJ;
-    ok = ok && strcmp(json_get_str(json_get(&out, "decision")), cac_decision_result_name(d.result)) == 0;
-    ok = ok && strcmp(json_get_str(json_get(&out, "selected_source")), cac_source_name(d.selected_source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "decision")), bsp_decision_result_name(d.result)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "selected_source")), bsp_source_name(d.selected_source)) == 0;
     ok = ok && strcmp(json_get_str(json_get(&out, "candidate_source")), "local_import") == 0;
-    ok = ok && strcmp(json_get_str(json_get(&out, "selected_source_trust")), cac_source_trust_name(d.selected_source)) == 0;
-    ok = ok && strcmp(json_get_str(json_get(&out, "candidate_trust")), cac_source_trust_name(d.selected_source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "selected_source_trust")), bsp_source_trust_name(d.selected_source)) == 0;
+    ok = ok && strcmp(json_get_str(json_get(&out, "candidate_trust")), bsp_source_trust_name(d.selected_source)) == 0;
     ok = ok && strcmp(json_get_str(json_get(&out, "authority")), "local_consensus_validation") == 0;
     ok = ok && json_get_bool(json_get(&out, "activation_allowed")) == d.activation_allowed;
     ok = ok && json_get_bool(json_get(&out, "mirror_fallback_allowed")) == d.mirror_fallback_allowed;
@@ -593,13 +593,13 @@ static int t_source_class_name_total_adversarial(void)
 {
     int failures = 0;
     bool ok = true;
-    for (int v = -5; v <= (int)CAC_SOURCE_NUM + 5; v++) {
-        const char *n = bsp_source_class_name((enum cac_source)v);
+    for (int v = -5; v <= (int)BSP_SOURCE_NUM + 5; v++) {
+        const char *n = bsp_source_class_name((enum bsp_source)v);
         ok = ok && n != NULL && n[0] != '\0';
     }
     int extreme[] = { INT32_MIN, INT32_MAX };
     for (size_t i = 0; i < sizeof(extreme) / sizeof(extreme[0]); i++) {
-        const char *n = bsp_source_class_name((enum cac_source)extreme[i]);
+        const char *n = bsp_source_class_name((enum bsp_source)extreme[i]);
         ok = ok && n != NULL && strcmp(n, "unknown") == 0;
     }
     BSPJ_RUN("bsp_source_class_name: total function across full range + INT32_MIN/MAX adversarial input", ok);

@@ -348,11 +348,9 @@ void agent_cure_push_import_preflight_json(
                      "BIN --importblockindex \"$HOME/.zclassic\" \"$MINTDIR/node.db\"");
     json_push_kv(&prep, "argv", &argv);
     /* --importblockindex is now scanned ANYWHERE in argv (src/main.c
-     * main()), so it no longer needs to be the literal argv[1] — the
-     * historical footgun this field used to warn about (a -datadir=... or
-     * any other flag preceding the verb silently fell through to a normal
-     * boot) is closed. Kept `false` (not removed) so an older/rolled-back
-     * binary's agent guidance still reads unambiguously either way. */
+     * main()), so it no longer needs to be the literal argv[1]. Kept
+     * `false` (not removed) so an older/rolled-back binary's agent
+     * guidance still reads unambiguously either way. */
     json_push_kv_bool(&prep, "importblockindex_must_be_argv1", false);
     json_push_kv_str(&prep, "wrong_order_effect",
                      "none — --importblockindex is dispatched from any argv "
