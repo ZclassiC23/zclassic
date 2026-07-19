@@ -20,6 +20,7 @@
 #include <sqlite3.h>
 
 #include "models/database.h"
+#include "storage/consensus_db.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "storage/anchor_kv.h"
@@ -770,16 +771,17 @@ static bool boot_load_snapshot_resume_seed_from_authority(
     return true;
 }
 
-static bool quarantine_progress_file(const char *datadir, const char *suffix,
+static bool quarantine_progress_file(const char *datadir, const char *base,
+                                     const char *suffix,
                                      int64_t stamp, unsigned seq,
                                      bool *moved_any)
 {
     char src[PATH_MAX];
-    int n = snprintf(src, sizeof(src), "%s/progress.kv%s", datadir, suffix);
+    int n = snprintf(src, sizeof(src), "%s/%s%s", datadir, base, suffix);
     if (n <= 0 || (size_t)n >= sizeof(src)) {
         fprintf(stderr,
-                "[boot] -load-snapshot-at-own-height: progress.kv quarantine "
-                "path too long for suffix %s\n", suffix);
+                "[boot] -load-snapshot-at-own-height: %s quarantine "
+                "path too long for suffix %s\n", base, suffix);
         return false;
     }
 
@@ -789,17 +791,17 @@ static bool quarantine_progress_file(const char *datadir, const char *suffix,
             return true;
         fprintf(stderr,
                 "[boot] -load-snapshot-at-own-height: stat(%s) before "
-                "progress.kv quarantine failed: %s\n", src, strerror(errno));
+                "%s quarantine failed: %s\n", src, base, strerror(errno));
         return false;
     }
 
     char dst[PATH_MAX];
-    n = snprintf(dst, sizeof(dst), "%s/progress.kv%s.quarantine.%lld.%ld.%u",
-                 datadir, suffix, (long long)stamp, (long)getpid(), seq);
+    n = snprintf(dst, sizeof(dst), "%s/%s%s.quarantine.%lld.%ld.%u",
+                 datadir, base, suffix, (long long)stamp, (long)getpid(), seq);
     if (n <= 0 || (size_t)n >= sizeof(dst)) {
         fprintf(stderr,
-                "[boot] -load-snapshot-at-own-height: progress.kv quarantine "
-                "destination too long for %s\n", src);
+                "[boot] -load-snapshot-at-own-height: %s quarantine "
+                "destination too long for %s\n", base, src);
         return false;
     }
     if (rename(src, dst) != 0) {
@@ -848,11 +850,19 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
     int64_t stamp = (int64_t)platform_time_wall_time_t();
     static unsigned quarantine_seq;
     unsigned seq = ++quarantine_seq;
+    /* Reset BOTH physical stores: consensus.db is the kernel authority after
+     * the A3 flip, and progress.kv must go too so progress_store_open's
+     * migrate-on-open cannot resurrect the old kernel from progress.kv's stale
+     * pre-flip copy. The reopen then mints a fresh consensus.db and the Class C
+     * projections re-fold from the re-seeded kernel. */
     bool moved_any = false;
-    bool ok =
-        quarantine_progress_file(datadir, "", stamp, seq, &moved_any) &&
-        quarantine_progress_file(datadir, "-wal", stamp, seq, &moved_any) &&
-        quarantine_progress_file(datadir, "-shm", stamp, seq, &moved_any);
+    bool ok = true;
+    const char *const bases[] = { CONSENSUS_DB_FILENAME, "progress.kv" };
+    const char *const suffixes[] = { "", "-wal", "-shm" };
+    for (size_t b = 0; ok && b < sizeof(bases) / sizeof(bases[0]); b++)
+        for (size_t s = 0; ok && s < sizeof(suffixes) / sizeof(suffixes[0]); s++)
+            ok = quarantine_progress_file(datadir, bases[b], suffixes[s], stamp,
+                                          seq, &moved_any);
     if (!ok) {
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "load_snapshot_at_own_height progress_store_quarantine_failed "

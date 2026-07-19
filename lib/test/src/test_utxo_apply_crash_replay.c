@@ -542,7 +542,9 @@ int test_utxo_apply_crash_replay(void)
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "utxo_apply", "crash_replay");
     char dbpath[512];
-    snprintf(dbpath, sizeof(dbpath), "%s/progress.kv", dir);
+    /* After the A3 flip the kernel co-commit store is consensus.db, not
+     * progress.kv — the direct cursor read below must open that file. */
+    snprintf(dbpath, sizeof(dbpath), "%s/consensus.db", dir);
 
     /* Seed through the singleton, then CLOSE before any fork so no child
      * inherits an open handle. */

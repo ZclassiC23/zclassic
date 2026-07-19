@@ -14,6 +14,7 @@
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
 
+#include "storage/consensus_db.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "util/hw_profile.h"
@@ -31,7 +32,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PROGRESS_STORE_FILENAME  "progress.kv"
+/* THE kernel store filename is now consensus.db (Wave A3 physical flip): the
+ * reducer's consensus kernel (coins / anchors / nullifiers / stage cursors /
+ * progress_meta + the stage *_log journals it commits with) lives in its OWN
+ * SQLite file so its fsync-bearing batch commit stops sharing a WAL journal with
+ * the projection co-writers. progress.kv survives only as the projection file
+ * (projection_store's handle) holding the Class C address_index / txindex /
+ * created_outputs tables. progress_store_open() migrates a legacy progress.kv
+ * kernel into consensus.db in place before opening it, so the public API is
+ * unchanged. */
+#define PROGRESS_STORE_FILENAME  CONSENSUS_DB_FILENAME
 /* PROGRESS_STORE_PATH_MAX comes from storage/progress_store.h. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -234,6 +244,24 @@ bool progress_store_open(const char *datadir)
 {
     if (!datadir || !datadir[0]) LOG_FAIL("progress_store",
         "open: empty datadir");
+
+    /* Rename-in-place flip: migrate a legacy progress.kv kernel into
+     * consensus.db before opening it. Idempotent (a no-op once consensus.db
+     * exists, and a clean no-op on a fresh node where there is no progress.kv —
+     * the open below then creates consensus.db from scratch). A real migration
+     * integrity failure returns false here and MUST abort the open: creating a
+     * fresh empty consensus.db would orphan the kernel still sitting in
+     * progress.kv. */
+    {
+        char merr[256];
+        merr[0] = '\0';
+        if (!consensus_db_migrate_from_progress(datadir, merr, sizeof(merr))) {
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] consensus.db migration failed: %s\n",
+                    merr[0] ? merr : "(no message)");
+            return false;
+        }
+    }
 
     char display_path[PROGRESS_STORE_PATH_MAX];
     int n = snprintf(display_path, sizeof(display_path), "%s/%s",

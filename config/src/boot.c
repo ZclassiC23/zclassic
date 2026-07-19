@@ -78,6 +78,7 @@
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_view_kv.h"
 #include "storage/coins_kv.h"
+#include "storage/consensus_db.h"
 #include "storage/utxo_projection.h"
 #include "storage/coins_db.h"
 #include "storage/ldb_snapshot.h"
@@ -1835,6 +1836,17 @@ bool app_init(struct app_context *ctx)
     bool progress_open = progress_store_open(ctx->datadir);
     boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
     if (progress_open) {
+        /* Wave A3 flip, second half: progress_store_open() already migrated a
+         * legacy progress.kv kernel into consensus.db and opened it. Prune the
+         * migrated tables from progress.kv + stamp the flip marker. Idempotent,
+         * crash-safe, NON-fatal — consensus.db is the sole authority regardless;
+         * the next boot retries. */
+        char flip_err[256] = "";
+        if (!consensus_db_finalize_flip(ctx->datadir, progress_store_db(),
+                                        flip_err, sizeof(flip_err)))
+            fprintf(stderr,  // obs-ok:helper-context-logged
+                    "[boot] consensus.db flip finalize deferred: %s\n",
+                    flip_err[0] ? flip_err : "(no message)");
         if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
             !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
             !ctx->verify_rom && !boot_mint_anchor_normal_boot_gate(progress_store_db()))

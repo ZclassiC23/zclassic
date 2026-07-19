@@ -16,7 +16,6 @@
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
-#include "storage/projection_store.h"
 #include "utxo_apply_delta_internal.h"
 
 #include "core/uint256.h"
@@ -445,9 +444,11 @@ bool reducer_frontier_replay_stale_script_tx(
     (void)ms;
     (void)backfill_top;
 
-    /* TX2 (created_outputs backfill) is now a SEPARATE projection-store call the
-     * caller makes AFTER releasing the kernel progress lock — see
-     * reducer_frontier_replay_backfill_created_outputs_projection below. */
+    /* TX2 (created_outputs backfill) is a SEPARATE post-commit call the caller
+     * makes AFTER releasing the kernel progress lock — see
+     * reducer_frontier_replay_backfill_created_outputs_projection below. After
+     * the A3 flip created_outputs lives in consensus.db (the kernel store), so
+     * that call runs on the kernel handle, not projection_store. */
     return true;
 }
 
@@ -456,16 +457,21 @@ bool reducer_frontier_replay_backfill_created_outputs_projection(
 {
     if (backfill_top < replay_first)
         return true;                 /* nothing to backfill */
-    sqlite3 *pdb = projection_store_db();
+    /* created_outputs is a kernel-store table (consensus.db) written by
+     * body_persist and read by script_validate through the kernel handle; this
+     * separate post-commit backfill therefore uses the kernel connection too.
+     * The caller has already released the kernel progress lock, so re-acquiring
+     * it here (recursive) for the bounded backfill cannot stall a live fold. */
+    sqlite3 *pdb = progress_store_db();
     if (!pdb) {
         LOG_WARN("stage_repair",
                  "[stage_repair] created_outputs backfill %d..%d skipped: "
-                 "projection store not open — forward re-fold repopulates",
+                 "kernel store not open — forward re-fold repopulates",
                  replay_first, backfill_top);
         return false;
     }
 
-    projection_store_tx_lock();
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("stage_repair",
@@ -473,7 +479,7 @@ bool reducer_frontier_replay_backfill_created_outputs_projection(
                  "%d..%d: %s — forward re-fold (body_persist) repopulates",
                  replay_first, backfill_top, err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        projection_store_tx_unlock();
+        progress_store_tx_unlock();
         return false;
     }
     if (!rf_replay_backfill_created_outputs_range(pdb, ms, replay_first,
@@ -486,11 +492,11 @@ bool reducer_frontier_replay_backfill_created_outputs_projection(
                  replay_first, backfill_top, err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(pdb, "ROLLBACK", NULL, NULL, NULL);
-        projection_store_tx_unlock();
+        progress_store_tx_unlock();
         return false;
     }
     rf_replay_record_projection_commit();
-    projection_store_tx_unlock();
+    progress_store_tx_unlock();
     return true;
 }
 
