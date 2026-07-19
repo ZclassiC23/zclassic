@@ -637,6 +637,171 @@ const int *os_sandbox_node_confine_allowed_syscalls(size_t *count_out)
     return g_node_confine_allowed;
 }
 
+/* The resident node's -confine=serving allow-set: g_node_confine_allowed
+ * (the strict steady set, listed above) PLUS the socket-family syscalls the
+ * code actually uses for P2P/HTTPS/onion I/O (verified by a source sweep —
+ * `grep -rln` over lib/net, lib/rpc, app/controllers, config/src, src for
+ * each call; re-run that sweep before trusting this comment stale). The
+ * strict -confine profile deliberately omits sockets entirely (SCOPE CAVEAT
+ * above); this profile is the one to pass -confine=serving so a node doing
+ * real network I/O is not SIGSYS-killed at its first accept()/recv()/
+ * connect() after sr_confine_enter (config/src/boot.c). accept4() is NOT
+ * included: the node's listener call sites (net.c, https_server.c,
+ * file_service.c, httpserver.c) all use accept(), not accept4() — only
+ * tools/zcl_portfwd.c (a separate standalone tool, not linked into the node
+ * binary) uses accept4(). sendmsg/recvmsg have no direct node call site
+ * today either, but are included per the serving-profile spec (glibc's
+ * resolver and future socket-option paths can reach for them) — the
+ * confined-serving test proves the currently-used ops still work; if a
+ * future syscall need appears, extend this array as test_confine.c fails. */
+static const int g_node_confine_serving_allowed[] = {
+    /* ── everything the strict steady profile already allows ──────────── */
+    __NR_read, __NR_write, __NR_close, __NR_openat, __NR_lseek,
+    __NR_pread64, __NR_pwrite64, __NR_readv, __NR_writev,
+#ifdef __NR_open
+    __NR_open,
+#endif
+    __NR_fstat, __NR_newfstatat, __NR_statx,
+#ifdef __NR_stat
+    __NR_stat,
+#endif
+#ifdef __NR_lstat
+    __NR_lstat,
+#endif
+    __NR_fstatfs, __NR_statfs,
+    __NR_mmap, __NR_munmap, __NR_mprotect, __NR_mremap, __NR_madvise, __NR_brk,
+    __NR_futex,
+    __NR_clock_gettime, __NR_gettimeofday, __NR_clock_nanosleep, __NR_nanosleep,
+    __NR_getrandom,
+    __NR_rt_sigaction, __NR_rt_sigprocmask, __NR_rt_sigreturn, __NR_sigaltstack,
+    __NR_getpid, __NR_gettid, __NR_getuid, __NR_geteuid, __NR_getgid,
+    __NR_getegid,
+    __NR_fcntl, __NR_fsync, __NR_fdatasync, __NR_ftruncate,
+    __NR_dup, __NR_dup3,
+#ifdef __NR_dup2
+    __NR_dup2,
+#endif
+    __NR_getdents64, __NR_readlinkat, __NR_getcwd,
+    __NR_unlinkat, __NR_renameat2,
+#ifdef __NR_readlink
+    __NR_readlink,
+#endif
+#ifdef __NR_unlink
+    __NR_unlink,
+#endif
+#ifdef __NR_rename
+    __NR_rename,
+#endif
+#ifdef __NR_renameat
+    __NR_renameat,
+#endif
+#ifdef __NR_mkdir
+    __NR_mkdir,
+#endif
+#ifdef __NR_rmdir
+    __NR_rmdir,
+#endif
+#ifdef __NR_access
+    __NR_access,
+#endif
+    __NR_faccessat,
+#ifdef __NR_faccessat2
+    __NR_faccessat2,
+#endif
+    __NR_umask, __NR_fchmod, __NR_chmod, __NR_chdir,
+    __NR_sched_getaffinity, __NR_sched_yield, __NR_sysinfo,
+    __NR_prlimit64, __NR_getrusage, __NR_uname,
+    __NR_poll, __NR_ppoll, __NR_epoll_create1, __NR_epoll_ctl,
+    __NR_epoll_wait, __NR_epoll_pwait, __NR_pipe2, __NR_eventfd2,
+    __NR_restart_syscall,
+    __NR_exit, __NR_exit_group,
+
+    /* ── socket family: the serving-profile addition ───────────────────
+     * One entry per syscall, each commented with the subsystem(s) that call
+     * it (grep-verified against lib/net + lib/rpc + app/controllers). */
+    __NR_socket,     /* net.c listener + connman.c outbound dialer + nat.c +
+                       * netbase.c dialer + rom_fetch.c + https_server.c +
+                       * file_service.c + httpserver.c (RPC) listen sockets */
+    __NR_bind,       /* net.c listener, https_server.c, file_service.c,
+                       * httpserver.c (RPC) — bind the listen socket */
+    __NR_listen,     /* net.c listener, https_server.c, file_service.c,
+                       * httpserver.c (RPC) — mark socket passive */
+    __NR_accept,     /* net.c listener, https_server.c, file_service.c,
+                       * httpserver.c (RPC) — accept inbound connections;
+                       * the code calls accept(), NOT accept4() (confirmed:
+                       * the only accept4() call site is the standalone
+                       * tools/zcl_portfwd.c, not part of the node binary) */
+    __NR_connect,    /* connman.c reactor (outbound peer dial), nat.c
+                       * (UPnP/STUN probes), netbase.c dialer, rom_fetch.c
+                       * (ROM peer fetch), lib/rpc/legacy_rpc_client.c,
+                       * lib/rpc/client.c */
+#ifdef __NR_send
+    __NR_send,       /* some arches expose a dedicated send() syscall; on
+                       * x86_64 glibc's send() is a wrapper over sendto()
+                       * (below) — guarded so this stays portable rather than
+                       * a build break where __NR_send is absent */
+#endif
+    __NR_sendto,     /* net.c peer writer, nat.c (UDP UPnP/STUN datagrams),
+                       * ws_events.c (websocket event push),
+                       * lib/rpc/legacy_rpc_client.c,
+                       * app/controllers/rpc_client.c — the raw syscall
+                       * behind glibc's send()/sendto() on x86_64 */
+    __NR_sendmsg,    /* no direct node call site today (grep-verified); kept
+                       * for glibc resolver / future scatter-gather socket
+                       * writes — the serving test does not exercise it, add
+                       * a real call site + test before trusting coverage */
+#ifdef __NR_recv
+    __NR_recv,       /* some arches expose a dedicated recv() syscall; on
+                       * x86_64 glibc's recv() is a wrapper over recvfrom()
+                       * (below) — guarded so this stays portable rather than
+                       * a build break where __NR_recv is absent */
+#endif
+    __NR_recvfrom,   /* rom_fetch.c, connman.c reactor, file_service.c,
+                       * nat.c (UDP UPnP/STUN datagrams),
+                       * lib/rpc/legacy_rpc_client.c,
+                       * app/controllers/rpc_client.c — the raw syscall
+                       * behind glibc's recv()/recvfrom() on x86_64 */
+    __NR_recvmsg,    /* no direct node call site today (grep-verified); kept
+                       * for glibc resolver / future scatter-gather socket
+                       * reads — same caveat as sendmsg above */
+    __NR_getsockopt, /* netbase.c, rom_fetch.c, file_service.c — SO_ERROR
+                       * poll after a non-blocking connect() */
+    __NR_setsockopt, /* netbase.c, nat.c, rom_fetch.c, https_server.c,
+                       * lib/rpc/legacy_rpc_client.c, lib/rpc/client.c,
+                       * lib/rpc/httpserver.c, app/controllers/api_controller.c,
+                       * app/controllers/explorer_controller.c,
+                       * app/controllers/wallet_view_helpers.c, net.c —
+                       * SO_REUSEADDR / TCP_NODELAY / socket timeouts */
+    __NR_shutdown,   /* https_server.c, lib/rpc/rpc_timeout.c,
+                       * lib/rpc/httpserver.c, file_service.c — half-close
+                       * on connection teardown */
+    __NR_select,     /* rom_fetch.c, connman.c reactor, file_service.c —
+                       * non-blocking connect()/readiness wait (poll/ppoll/
+                       * epoll_* already covered the steady set above) */
+#ifdef __NR_pselect6
+    __NR_pselect6,   /* glibc's select() wrapper does NOT invoke the raw
+                       * select syscall on this libc/kernel — it converts the
+                       * timeval to a timespec and calls pselect6 instead
+                       * (confirmed by strace); the confined-serving test's
+                       * select() call SIGSYS-killed without this entry even
+                       * with __NR_select present. Keep both: __NR_select is
+                       * the spec-named syscall, __NR_pselect6 is what the
+                       * libc actually emits. */
+#endif
+    __NR_getsockname, /* nat.c — read back the local address/port of a
+                        * socket (UPnP/STUN local-endpoint discovery); found
+                        * by the same source sweep, not in the task's
+                        * original enumeration but genuinely called */
+};
+
+const int *os_sandbox_node_confine_serving_allowed_syscalls(size_t *count_out)
+{
+    if (count_out)
+        *count_out = sizeof(g_node_confine_serving_allowed) /
+                     sizeof(g_node_confine_serving_allowed[0]);
+    return g_node_confine_serving_allowed;
+}
+
 struct zcl_result os_sandbox_seccomp_allow(const int *allowed, size_t n_allowed)
 {
 #ifndef ZCL_HAVE_SECCOMP
@@ -910,6 +1075,38 @@ struct os_sandbox_profile os_sandbox_node_confine_profile(
     const int *allowed = os_sandbox_node_confine_allowed_syscalls(&n_allowed);
     return (struct os_sandbox_profile){
         .name = "node_confine",
+        .no_new_privs = true,
+        .apply_rlimits = false,
+        .rlimits = {0},
+        .landlock = true,
+        .fs_rules = fs_rules,
+        .n_fs_rules = n_fs_rules,
+        .seccomp = true,
+        .denied_syscalls = NULL,
+        .n_denied = 0,
+        .seccomp_deny_exec_mmap = false,
+        .seccomp_allowlist = true,
+        .allowed_syscalls = allowed,
+        .n_allowed = n_allowed,
+    };
+}
+
+struct os_sandbox_profile os_sandbox_node_confine_serving_profile(
+    const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules)
+{
+    /* The -confine=serving node profile: identical structure to
+     * os_sandbox_node_confine_profile (Landlock + a seccomp ALLOW-list,
+     * default KILL_PROCESS), but the allow-set is the serving one — the
+     * strict steady set PLUS the socket family a node actively doing P2P/
+     * HTTPS/onion I/O needs (net.c listener, connman.c reactor,
+     * https_server.c, file_service.c, nat.c, netbase.c dialer,
+     * ws_events.c). Wired at the late SERVICES_RUNNING boundary via
+     * config/src/boot.c (sr_confine_enter, -confine=serving branch). */
+    size_t n_allowed = 0;
+    const int *allowed =
+        os_sandbox_node_confine_serving_allowed_syscalls(&n_allowed);
+    return (struct os_sandbox_profile){
+        .name = "node_confine_serving",
         .no_new_privs = true,
         .apply_rlimits = false,
         .rlimits = {0},

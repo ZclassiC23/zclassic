@@ -2118,6 +2118,15 @@ static void print_usage(const char *prog)
     printf("                      blocker 'confine.apply_failed' rather than\n");
     printf("                      half-applying. Mutually exclusive with\n");
     printf("                      -sandbox=steady.\n");
+    printf("  -confine=serving    Same as -confine, but the seccomp allow-list\n");
+    printf("                      also covers the socket family (socket/bind/\n");
+    printf("                      listen/accept/connect/send*/recv*/\n");
+    printf("                      get|setsockopt/shutdown/select) so a node\n");
+    printf("                      actively doing P2P/HTTPS/onion I/O is not\n");
+    printf("                      SIGSYS-killed at its first accept()/recv()/\n");
+    printf("                      connect() after entering confinement. Plain\n");
+    printf("                      -confine deliberately omits sockets and\n");
+    printf("                      suits a status/storage-only steady state.\n");
     printf("  -hotswap-activate   Arm Tier-1 live hot-swap ACTIVATION (dev only;\n");
     printf("                      also needs ZCL_HOTSWAP_ACTIVATE=1 and the exact\n");
     printf("                      ~/.zclassic-c23-dev datadir; canonical refused).\n");
@@ -3819,6 +3828,15 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-sandbox=steady") == 0) ctx.sandbox_steady = true;
         else if (strcmp(argv[i], "-sandbox=off") == 0) ctx.sandbox_steady = false;
         else if (strcmp(argv[i], "-confine") == 0) ctx.confine = true;
+        else if (strcmp(argv[i], "-confine=serving") == 0) {
+            /* Same strict Landlock + seccomp ALLOW-list boundary as -confine,
+             * but the allow-set also covers the socket family a SERVING node
+             * needs (see os_sandbox_node_confine_serving_profile). Sets
+             * ctx.confine too so the -sandbox=steady mutual-exclusion check
+             * below and the sr_confine_enter() dispatch both see it. */
+            ctx.confine = true;
+            ctx.confine_serving = true;
+        }
         else if (strcmp(argv[i], "-hotswap-activate") == 0) {
             /* Arm Tier-1 live hot-swap ACTIVATION for this resident node. This
              * is only ONE of the two required gates: a live swap also needs
