@@ -3890,6 +3890,40 @@ logrotate-selftest:
 	 fi; \
 	 echo "logrotate-selftest: PASS"'
 
+# install-bundle-export: scheduled, verified consensus-state-bundle export +
+# retention + off-disk copy hook (deploy/zclassic23-bundle-export.sh wraps
+# the existing TERMINAL -export-consensus-bundle verb). Only the TIMER is
+# started (enable --now); review the target datadir and ZCL_EXPORT_SECONDARY
+# in deploy/zclassic23-bundle-export.service BEFORE enabling on a given box —
+# see that file's header comment.
+.PHONY: install-bundle-export bundle-export-status bundle-export-selftest
+install-bundle-export:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-bundle-export.service "$(HOME)/.config/systemd/user/zclassic23-bundle-export.service"
+	@install -m 644 deploy/zclassic23-bundle-export.timer "$(HOME)/.config/systemd/user/zclassic23-bundle-export.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-bundle-export.timer
+	@echo "installed bundle export: zclassic23-bundle-export.timer (nightly ~04:00)"
+	@echo "status: make bundle-export-status"
+
+bundle-export-status:
+	@systemctl --user list-timers zclassic23-bundle-export.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-bundle-export.service zclassic23-bundle-export.timer --no-pager -n 12 2>/dev/null || true
+
+# bundle-export-selftest: hermetic regression guard — REFUSED path against a
+# real fresh datadir (fast, no chain data needed), plus retention and
+# secondary-copy-hook logic against synthetic fixture files. No live
+# datadir touched.
+bundle-export-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash deploy/zclassic23-bundle-export.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "bundle-export-selftest: FAIL zclassic23-bundle-export.sh (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "bundle-export-selftest: PASS"'
+
 # install-replay-canary: the standing full-history replay canary (lane
 # S2d, wf/s2d-replay-canary-crashloop). nightly = --from=anchor (~45 min,
 # 04:30+jitter), weekly = --from=genesis (~6 h, Sun 05:30+jitter) — both
