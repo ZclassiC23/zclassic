@@ -63,6 +63,25 @@
 #define SUPERVISOR_BACKSTOP_DEFAULT_POLL_US    (5  * 1000000LL)
 #define SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US  (30 * 1000000LL)
 
+/* Boot-stage-aware budget. A long single-threaded boot stage (block-index
+ * load/verify over ~3.1M entries) runs BEFORE the supervisor sweep is the
+ * liveness signal (background threads only spawn after
+ * BOOT_STAGE_SERVICES_RUNNING), so the sweep heartbeat can legitimately
+ * sit unchanged for well over the 30 s serving bar without anything being
+ * wedged — treating that as a frozen sweep KILLS a healthy boot (observed
+ * live: a seed boot died to a false backstop FATAL mid-index-verify).
+ *
+ * The backstop therefore (a) folds boot_progress_marker() into the
+ * liveness signal it watches, so a boot loop that pumps progress at chunk
+ * boundaries re-arms the freeze episode, and (b) scales the freeze budget
+ * UP to this generous value while the process is in a PRE-serving boot
+ * stage (boot_stage_current() < BOOT_STAGE_SERVICES_RUNNING). It never
+ * scales DOWN: once services are running the 30 s serving bar applies
+ * unchanged, so a genuinely frozen sweep during serving still dies on
+ * time. This bounds — but does not disable — a truly wedged boot with no
+ * sweep, no stage advance, and no loop progress (anti-silent-halt). */
+#define SUPERVISOR_BACKSTOP_BOOT_FREEZE_US     (300 * 1000000LL)
+
 /* Start the backstop watcher thread. Idempotent — a second call while
  * already running returns true without spawning another thread.
  * Pass <= 0 for either argument to use the default above. Returns false
@@ -119,6 +138,27 @@ struct supervisor_backstop_state {
 bool supervisor_backstop_test_check(struct supervisor_backstop_state *state,
                                     uint64_t heartbeat, int64_t now_us,
                                     int64_t freeze_threshold_us);
+
+/* Boot-stage-aware variant of the decision the production thread now
+ * makes each poll: combine the supervisor sweep heartbeat with the
+ * boot-progress marker (either advancing re-arms the episode) and scale
+ * the freeze budget up while in a pre-serving boot stage. Drive it with
+ * fully synthetic (sweep_hb, boot_progress, boot_stage, clock) values so
+ * a unit test can prove — with no threads/sleep — that a chunk-pumping
+ * boot loop survives past the 30 s bar while a frozen sweep during
+ * serving still fires at exactly the bar. `serving_threshold_us` is the
+ * base (serving) bar; pass SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US for the
+ * production value. */
+bool supervisor_backstop_test_check_staged(
+    struct supervisor_backstop_state *state,
+    uint64_t sweep_hb, uint64_t boot_progress, int boot_stage,
+    int64_t now_us, int64_t serving_threshold_us);
+
+/* Force the boot stage the staged decision reads instead of the real
+ * boot_stage_current(), so a test_poll-based escalation test is
+ * deterministic regardless of how far the test binary's own boot
+ * advanced. Test-only; cleared by supervisor_backstop_test_reset(). */
+void supervisor_backstop_test_force_boot_stage(int boot_stage);
 
 /* Reset all module-level state (the respawn latch + any forced
  * off-systemd override) to defaults, as if the process just started.

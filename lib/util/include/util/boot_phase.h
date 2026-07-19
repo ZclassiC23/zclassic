@@ -109,6 +109,29 @@ void boot_stage_advance_to(enum boot_stage next);
  * if `s` is not the current stage. Use for read-only assertions. */
 bool boot_stage_is(enum boot_stage s);
 
+/* ──────────────────────────────────────────────────────────────────
+ * Boot progress marker — the boot-liveness feed for supervisor_backstop.
+ *
+ * Long, single-threaded boot stages (e.g. the block-index load/verify
+ * over ~3.1M entries) run BEFORE background threads exist (the watchdog
+ * spawns children only after STAGE_SERVICES_RUNNING). During them the
+ * supervisor sweep heartbeat can legitimately sit unchanged for far
+ * longer than the 30 s serving-time freeze bar without anything being
+ * wedged. The supervisor_backstop watches sweep-heartbeat PLUS this
+ * marker, so a boot loop that bumps it at bounded chunk boundaries
+ * counts as liveness and cannot be mistaken for a frozen sweep — the
+ * exact false-hang that killed a healthy seed boot mid-index-verify.
+ *
+ * boot_progress_marker() is the monotonic counter the backstop reads.
+ * boot_progress_note() bumps it (one relaxed atomic add) and, throttled
+ * to ~1/s, emits a coarse `[boot-phase] PROGRESS ...` operator line so a
+ * slow boot stage is visible rather than silent. Call it from inside a
+ * long boot loop every N iterations, with N chosen so the interval stays
+ * well under the serving freeze bar even on a slow box (e.g. every 64K
+ * entries). NULL-safe label. */
+uint64_t boot_progress_marker(void);
+void boot_progress_note(const char *label, uint64_t done, uint64_t total);
+
 #ifdef ZCL_TESTING
 /* Test-only escape hatch: reset the global stage back to INIT so unit
  * tests can exercise the advance state machine without polluting the

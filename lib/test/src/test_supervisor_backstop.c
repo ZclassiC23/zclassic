@@ -27,6 +27,7 @@
 #include "test/test_helpers.h"
 #include "util/supervisor_backstop.h"
 #include "util/supervisor.h"
+#include "util/boot_phase.h"
 #include "json/json.h"
 
 #define BS_CHECK(name, expr) do { \
@@ -122,6 +123,10 @@ int test_supervisor_backstop(void)
     {
         supervisor_backstop_test_reset();
         supervisor_backstop_test_force_off_systemd(true);
+        /* Pin the serving stage so the 30 s bar (not the generous
+         * pre-serving boot budget) applies — this test exercises the
+         * serving-time escalation plumbing. */
+        supervisor_backstop_test_force_boot_stage(BOOT_STAGE_SERVICES_RUNNING);
         struct supervisor_backstop_state st = {0};
         int64_t threshold = 30 * 1000000LL;
 
@@ -140,6 +145,7 @@ int test_supervisor_backstop(void)
     {
         supervisor_backstop_test_reset();
         supervisor_backstop_test_force_off_systemd(false);
+        supervisor_backstop_test_force_boot_stage(BOOT_STAGE_SERVICES_RUNNING);
         struct supervisor_backstop_state st = {0};
         int64_t threshold = 30 * 1000000LL;
 
@@ -150,6 +156,90 @@ int test_supervisor_backstop(void)
             !supervisor_backstop_respawn_requested());
 
         supervisor_backstop_test_reset();
+    }
+
+    /* ── boot-stage-aware: a chunk-pumping boot loop survives past 30 s ─
+     *
+     * Reproduces the live false-kill: a single-threaded PRE-serving boot
+     * stage (the ~3.1M-entry block-index verify) whose supervisor sweep
+     * heartbeat is FROZEN (background threads don't exist yet), but which
+     * pumps boot_progress_note() at chunk boundaries. The combined
+     * liveness (sweep_hb + boot_progress) keeps advancing, so the backstop
+     * must NOT fire — even as the injected wall clock runs far past both
+     * the 30 s serving bar AND the generous boot budget. */
+    {
+        struct supervisor_backstop_state st = {0};
+        int64_t serving_bar = SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US; /* 30 s */
+        int     stage = BOOT_STAGE_BLOCK_INDEX_LOADED;              /* pre-serving */
+        uint64_t sweep = 5;   /* frozen: boot is single-threaded */
+        uint64_t prog  = 0;
+        bool any_fired = false;
+
+        any_fired |= supervisor_backstop_test_check_staged(
+            &st, sweep, prog, stage, 0, serving_bar);   /* seed */
+
+        /* 40 chunks, each pumps progress once and advances the clock 10 s
+         * (=400 s total, well past the 300 s boot budget). A progressing
+         * loop must never look like a hang. */
+        for (int c = 1; c <= 40; c++) {
+            prog++;   /* chunk-tick: boot_progress_note() bumped the marker */
+            any_fired |= supervisor_backstop_test_check_staged(
+                &st, sweep, prog, stage, (int64_t)c * 10 * 1000000LL,
+                serving_bar);
+        }
+        BS_CHECK("chunk-pumping pre-serving boot loop never false-fires "
+                 "past the 30 s bar", !any_fired);
+    }
+
+    /* ── boot-stage-aware: frozen sweep DURING SERVING still dies at 30 s ─
+     *
+     * The invariant the fix must preserve: once the process is serving,
+     * boot_progress is static and the 30 s bar applies unchanged, so a
+     * genuinely frozen supervisor sweep is killed on time. */
+    {
+        struct supervisor_backstop_state st = {0};
+        int64_t serving_bar = SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US;
+        int     stage = BOOT_STAGE_READY;   /* serving */
+        uint64_t sweep = 7;                 /* frozen */
+        uint64_t prog  = 100;               /* static: no boot loop runs */
+
+        BS_CHECK("serving seed poll does not fire",
+            !supervisor_backstop_test_check_staged(&st, sweep, prog, stage,
+                                                   0, serving_bar));
+        BS_CHECK("serving just-under-30s does not fire",
+            !supervisor_backstop_test_check_staged(&st, sweep, prog, stage,
+                                                   29 * 1000000LL, serving_bar));
+        BS_CHECK("serving frozen sweep fires at exactly the 30 s bar",
+            supervisor_backstop_test_check_staged(&st, sweep, prog, stage,
+                                                  30 * 1000000LL, serving_bar));
+    }
+
+    /* ── boot-stage-aware: a genuinely wedged boot is bounded, not silent ─
+     *
+     * A pre-serving stage that makes ZERO progress (no sweep, no pump, no
+     * stage advance) must NOT be killed at the 30 s serving bar (that was
+     * the false-kill), but IS still caught at the generous boot budget —
+     * a wedge is always eventually named, never a silent halt. */
+    {
+        struct supervisor_backstop_state st = {0};
+        int64_t serving_bar = SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US;
+        int     stage = BOOT_STAGE_BLOCK_INDEX_LOADED;  /* pre-serving */
+        uint64_t sweep = 5;                             /* frozen */
+        uint64_t prog  = 0;                             /* wedged: nothing pumps */
+
+        (void)supervisor_backstop_test_check_staged(&st, sweep, prog, stage,
+                                                    0, serving_bar);   /* seed */
+        BS_CHECK("wedged pre-serving boot NOT killed at the 30 s serving bar",
+            !supervisor_backstop_test_check_staged(&st, sweep, prog, stage,
+                                                   30 * 1000000LL, serving_bar));
+        BS_CHECK("wedged pre-serving boot still survives just under boot budget",
+            !supervisor_backstop_test_check_staged(
+                &st, sweep, prog, stage,
+                SUPERVISOR_BACKSTOP_BOOT_FREEZE_US - 1000000LL, serving_bar));
+        BS_CHECK("wedged pre-serving boot IS caught at the boot budget",
+            supervisor_backstop_test_check_staged(
+                &st, sweep, prog, stage,
+                SUPERVISOR_BACKSTOP_BOOT_FREEZE_US, serving_bar));
     }
 
     /* ── dump_state_json shape ─────────────────────────────────────── */
@@ -163,6 +253,9 @@ int test_supervisor_backstop(void)
         ok = ok && json_get(&out, "respawn_requested") != NULL;
         ok = ok && json_get(&out, "sweep_heartbeat") != NULL;
         ok = ok && json_get(&out, "sweep_last_age_us") != NULL;
+        ok = ok && json_get(&out, "boot_progress") != NULL;
+        ok = ok && json_get(&out, "boot_stage") != NULL;
+        ok = ok && json_get(&out, "effective_freeze_threshold_us") != NULL;
         BS_CHECK("dump_state_json exposes the full contract", ok);
         json_free(&out);
     }
