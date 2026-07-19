@@ -454,6 +454,12 @@ static void boot_register_core_liveness_and_reducer(
      * fire. */
     blocker_history_bridge_register();
     self_heal_register(svc->state);
+    /* Spawn the dedicated condition-runner thread. The engine's detect/remedy
+     * passes can run for seconds and MUST NOT run on the root supervisor sweep
+     * thread (a heavy pass there froze supervisor_sweep_heartbeat past the 30 s
+     * backstop — live 2026-07-19). The sweep only supervises the runner's
+     * heartbeat; a hung remedy becomes a named blocker, never a frozen root. */
+    self_heal_start();
     staged_sync_supervisor_register(svc->state);
 
     /* Recover the durable finalized frontier a reboot dropped.
@@ -1534,6 +1540,12 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] stopping runtime services\n");
+    /* Stop + join the self-heal condition runner FIRST, while main_state and
+     * the progress store are still live: the runner dereferences both inside a
+     * condition tick, so it must never outlive them (they are freed in
+     * shutdown_release_owned_resources). The global shutdown flag is already
+     * set, so this joins at most one in-flight tick. */
+    self_heal_stop();
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
     /* Stop the supervisor AFTER runtime services so any stall-detection
      * callbacks they emit at teardown are still delivered. */

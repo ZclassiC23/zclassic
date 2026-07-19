@@ -142,6 +142,12 @@ ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               OWNER)
 ZCL_BLOCKER_REMEDY(chain.linkage_violation,                     OWNER)
 ZCL_BLOCKER_REMEDY(authority_projection_divergence,             OWNER)
 ZCL_BLOCKER_REMEDY(self_heal.unsupervised,                      OWNER)
+/* Set by self_heal_on_stall when a condition remedy hangs past the runner's
+ * stall deadline. The runner SELF-CLEARS it on its next completed pass
+ * (self_heal.c self_heal_worker_main), so a transient wedge auto-resolves; a
+ * persistent one is a genuine hung remedy needing operator attention (OWNER).
+ * The root supervisor sweep is unaffected either way — never a frozen root. */
+ZCL_BLOCKER_REMEDY(self_heal.worker_wedged,                     OWNER)
 ZCL_BLOCKER_REMEDY(connman_reactor_overflow,                    OWNER)
 ZCL_BLOCKER_REMEDY(bg_validation.reverify_failed,               OWNER)
 ZCL_BLOCKER_REMEDY(recovery_coordinator.no_applicable_rung,     OWNER)
