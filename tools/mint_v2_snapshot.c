@@ -365,8 +365,9 @@ int main(int argc, char **argv)
                 "usage: %s <datadir> <seed_height> <out_path> [bundle_dir]\n"
                 "\n"
                 "  Mint a v2 (UTXO + Sapling-frontier) snapshot at <seed_height>\n"
-                "  from a synced source <datadir> (read from progress.kv + node.db\n"
-                "  + blocks/). Writes the snapshot to <out_path>.\n"
+                "  from a synced source <datadir> (read from the kernel store —\n"
+                "  consensus.db, or the legacy progress.kv on a pre-flip datadir —\n"
+                "  + node.db + blocks/). Writes the snapshot to <out_path>.\n"
                 "\n"
                 "  If [bundle_dir] is given, ALSO emits a CONTIGUOUS block_index.bin\n"
                 "  there (reconstructed from the densified in-memory chain, so it is\n"
@@ -401,7 +402,7 @@ int main(int argc, char **argv)
     /* Auto-pick the seed height from the source's coins-applied frontier when
      * the caller passes 0. The ONLY coherent mint height is coins_applied-1 (the
      * coin set is exactly as-of the last applied block; the coherence guard
-     * below enforces this). Saves the caller from reading progress.kv by hand. */
+     * below enforces this). Saves the caller from reading the kernel store by hand. */
     if (seed_h == 0) {
         int32_t ca = 0;
         bool caf = false;

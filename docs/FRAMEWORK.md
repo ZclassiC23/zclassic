@@ -250,7 +250,7 @@ The contracts, briefly:
 - **Controller** — parse → authorize → call ONE service → return. No business logic, no storage, no swallowing errors. Dumb glue.
 - **Service** — typed inputs → call models/other services → return `zcl_result`. No input parsing, no direct storage.
 - **Model** — the only reader/writer of persistent state. AR lifecycle: `validate → before_save → write → after_save`. Raw `sqlite3_step` is a *compile error*.
-- **Job** — idempotent, cursor-stamped in `progress.kv`. Returns `ADVANCED` / `BLOCKED(typed)` / `IDLE` / `FATAL`. Re-running at the same cursor is a no-op. The reducer stages are the model case.
+- **Job** — idempotent, cursor-stamped in `consensus.db`. Returns `ADVANCED` / `BLOCKED(typed)` / `IDLE` / `FATAL`. Re-running at the same cursor is a no-op. The reducer stages are the model case.
 - **Supervisor** — a declared tree of children with restart policy; the deadman that edge-triggers `on_stall`. Recovery is structural, not ad-hoc.
 - **Condition** — `(detect, remedy, witness)` with backoff + max-attempts; pages on exhaustion. Every halt class is one file.
 - **Event** — typed, append-only, totally ordered. Emitting writes the fact log. Subscribers receive asynchronously.
@@ -365,7 +365,7 @@ so no inbound "repository" port fronts them — the same kind of by-design absen
 as the deleted `app/events/` folder (§3 row 7): the concept has a real home
 elsewhere and does not need an empty placeholder. App sites that call
 `lib/storage/*_sqlite.c` directly are
-legitimate (Models ARE storage; Jobs use the progress-kv kernel store; Views are
+legitimate (Models ARE storage; Jobs use the consensus.db kernel store; Views are
 read-only introspection), and `check_raw_sqlite.sh` stays CLEAN with an empty
 baseline. The `check-lib-layering` ratchet guards the write direction.
 
@@ -444,7 +444,7 @@ Gate mode/status is tracked in §5, not duplicated here.
 
 - **Shape** — one of the eight allowed kinds of `app/` code.
 - **AR (ActiveRecord)** — the model lifecycle (`AR_*_SAVE`, before/after hooks). Real and lint-enforced.
-- **Cursor** — durable position in `progress.kv` a Job advances; enables crash-safe idempotent replay.
+- **Cursor** — durable position in `consensus.db` a Job advances; enables crash-safe idempotent replay.
 - **Reducer** — the stage pipeline; the only writer; advance-cursor-or-name-blocker.
 - **Fact log** — `lib/storage/event_log.c`; the append-only durable source of truth.
 - **Projection** — a pure fold over the log into a queryable view; rebuildable, never authoritative.

@@ -421,15 +421,20 @@ contract.
 `anchorstatus` (`zcl.anchor_mint_status.v1`) is the offline/static status
 packet for the sovereign UTXO anchor producer. Run
 `zclassic23 anchorstatus /path/to/anchor-datadir` against an
-anchor-mint datadir to read `progress.kv` directly without cookies, jq, Python,
-or a running service RPC. It reports the anchor checkpoint, stage cursors,
+anchor-mint datadir to read the kernel store (`consensus.db`, or `progress.kv`
+on a pre-flip datadir — resolved via `consensus_db_kernel_store_path()`)
+directly without cookies, jq, Python, or a running service RPC. It reports the
+anchor checkpoint, stage cursors,
 durable coins frontier, validated backlog, stale header rows above the anchor,
 snapshot presence/size and verified payload SHA3, a compact `summary`, and
 `agent_next_action`. It emits an ETA only when at least 60 seconds of monotonic,
 durable `utxo_apply_log.applied_at` samples exist. It never derives an ETA from
 mtime or process uptime and never opens the producer database writable.
 Producer recency is separate: `progress_activity_*` selects the newest of the
-main DB, `progress.kv-wal`, and the latest durable UTXO sample. Its stale budget
+kernel-store main DB (`consensus.db`, or `progress.kv` on a pre-flip datadir),
+its `-wal`, and the latest durable UTXO sample — `progress_activity_source`
+reports the actual basename it came from rather than a hardcoded name. Its
+stale budget
 is the greater of 300 seconds or twice the observed durable sample interval,
 bounded at one day. An offline packet without process identity requests
 liveness/activity inspection; file age alone never recommends a restart. Its

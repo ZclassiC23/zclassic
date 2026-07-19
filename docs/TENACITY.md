@@ -94,7 +94,8 @@ traces to violating one of them.
 
 **I1 — Single source of truth.** Each fact has exactly one authoritative
 encoding. For chain progress that is the stage cursor + logs + coins inside
-progress.kv, committed as one `BEGIN IMMEDIATE`
+consensus.db (the kernel store; `progress.kv` on a pre-flip datadir),
+committed as one `BEGIN IMMEDIATE`
 (`lib/storage/include/storage/coins_kv.h:6-13` states the theorem: two WAL
 databases have no atomic cross-commit; a crash drifts copies apart and no
 forward path realigns them).
@@ -136,7 +137,7 @@ content — see the G1–G5 gate program in [`tenacity-roadmap.md`](work/tenacit
 ## The divergence surface (summary)
 
 ~3 facts, ~16 named encodings across 6+ separate stores (4 SQLite WAL databases
-— progress.kv, node.db, utxo_projection.db, block_index_projection.db — plus
+— consensus.db, node.db, utxo_projection.db, block_index_projection.db — plus
 LevelDB and the block_index.bin flat file), no atomic cross-commit between
 stores. Per-encoding authority verdicts (which is CANONICAL, which is a demote /
 delete target) live in the audit table in
@@ -147,8 +148,8 @@ The single canonical writer per fact:
 
 | Fact | Canonical encoding |
 |---|---|
-| UTXO set | `coins` table in progress.kv (coins_kv), written by the reducer inside the stage txn |
-| Applied frontier / best block | utxo_apply stage cursor in progress.kv, written by the reducer txn |
+| UTXO set | `coins` table in consensus.db (coins_kv), written by the reducer inside the stage txn |
+| Applied frontier / best block | utxo_apply stage cursor in consensus.db, written by the reducer txn |
 | Block index | event_log `EV_BLOCK_HEADER` (log-of-record); block_index.bin + SHA3 sidecar load-bearing today |
 
 Every other encoding is a duplicate to demote to a read-only derived view or

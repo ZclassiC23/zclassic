@@ -1526,7 +1526,9 @@ void zcl_native_handle_ops_profile(const struct zcl_command_request *request,
 }
 
 /* ── ops.producer.status native leaf (node-free) ────────────────────────────
- * Reads another datadir's producer progress.kv (stage cursors + session/receipt
+ * Reads another datadir's producer kernel store (`consensus.db`, or the
+ * legacy `progress.kv` on a pre-flip datadir — resolved via
+ * consensus_db_kernel_store_path(); stage cursors + session/receipt
  * lifecycle) and the mint-progress.log tail, with NO node contact, for an
  * operator watching a mint/anchor producer. Read-only. Takes datadir=. */
 static void nc_read_log_tail(const char *datadir, char *out, size_t cap)

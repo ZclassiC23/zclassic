@@ -177,7 +177,7 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 ### Add a reducer stage (Job)
 1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning
    `ADVANCED`/`BLOCKED`/`IDLE`/`FATAL`.
-2. Persist the cursor in `progress.kv` keyed by stage name (re-run at same
+2. Persist the cursor in `consensus.db` keyed by stage name (re-run at same
    cursor = no-op).
 3. Wire into the pipeline in `config/src/boot_refold_staged.c` (or `boot.c`).
 4. E5 gate (`check-typed-blocker`) enforces advance-or-block.

@@ -42,8 +42,10 @@ What is true now (each copy-proven before live):
   are contained signals, largely retired by the consensus.db flip.
 - Known follow-ups (next wave): `fast_restart` silent best-header cap +
   `scan_best_header` height fallback (pre-existing, exposed during the flip
-  copy-prove), `tools/p2_invariant_check.c` still opens progress.kv by path,
-  spurious per-boot txn in `consensus_db_finalize_flip`.
+  copy-prove), spurious per-boot txn in `consensus_db_finalize_flip`.
+  (`tools/p2_invariant_check.c` opening progress.kv by path was fixed at
+  `7b58da673` — it now prefers consensus.db and falls back to progress.kv
+  only when consensus.db is absent.)
 
 ---
 

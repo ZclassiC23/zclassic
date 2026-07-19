@@ -4,10 +4,11 @@
  *
  * The operator/diagnosis story: python is banned in this repo and the
  * sqlite3 CLI is not installed on the host, so ad-hoc inspection of the
- * node's sqlite stores (progress.kv stage cursors, node.db tables) from a
- * shell needs a vendored-sqlite C tool (same precedent as
- * tools/p2_invariant_check.c). `core storage query` covers node.db but cannot
- * reach progress.kv or a copied fixture datadir.
+ * node's sqlite stores (the `consensus.db` kernel store's stage cursors —
+ * `progress.kv` on a pre-flip datadir — node.db tables, or a copied fixture
+ * datadir) from a shell needs a vendored-sqlite C tool (same precedent as
+ * tools/p2_invariant_check.c). `core storage query` covers node.db but
+ * cannot reach the kernel store or a copied fixture datadir.
  *
  *   build/bin/sqlq <db-path> <SELECT ...>
  *
