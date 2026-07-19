@@ -954,11 +954,15 @@ error=<ID> detail=<human-readable reason> try=<a concrete next command>
 ```
 
 `UNKNOWN_COMMAND` (unrecognized top-level command), `UNKNOWN_FIELD`
-(`field=` named a key that doesn't exist), and `BAD_FLAG`/`UNKNOWN_PATH`
-(the pre-existing registry JSON error envelope, unchanged) are the codes in
-use. Exit codes follow the existing contract (§13/`enum zcl_command_exit`):
-`0` ok, `1` failed, `2` invalid input (unknown command/field), `3` blocked,
-`5` transient.
+(`field=` named a key that doesn't exist), `CONNECT_REFUSED`/`CONNECT_TIMEOUT`/
+`CONNECT_FAILED`/`RESPONSE_TIMEOUT`/`AUTH_REJECTED` (§25, the raw-RPC
+connection taxonomy), and `BAD_FLAG`/`UNKNOWN_PATH` (the pre-existing
+registry JSON error envelope, unchanged) are the codes in use. Exit codes
+follow the existing contract (§13/`enum zcl_command_exit`): `0` ok, `1`
+failed, `2` invalid input (unknown command/field), `3` blocked
+(`CONNECT_REFUSED` — nothing listening / no cookie), `4` denied
+(`AUTH_REJECTED` — wrong cookie for that port), `5` transient
+(`CONNECT_TIMEOUT`/`RESPONSE_TIMEOUT` — node busy).
 
 Implementation: `zcl_native_status_brief_render`,
 `zcl_native_status_brief_next_command`, `zcl_native_render_field_selection`,
@@ -966,3 +970,47 @@ and `zcl_native_render_unknown_command` (`tools/command/native_command.c`) —
 one implementation each, called from both the native registry path
 (`status`, `--field=`) and the raw-RPC CLI path (`dumpstate ...
 field=`, the no-arg entry point, unrecognized commands in `src/main.c`).
+
+## 25. Auth auto-discovery + connection error taxonomy (E4)
+
+`-datadir=` and `-rpcport=` each default independently (`~/.zclassic-c23`
+and `18232`), which used to make `-rpcport=<N>` alone ambiguous: the CLI
+kept reading the cookie from the *default* datadir and sending it to
+whatever is actually listening on `<N>` — either nothing (`Cannot connect`)
+or a different node (an indistinguishable `Error: Unauthorized`), with no
+way for a script to tell those two outages apart.
+
+**Cookie auto-discovery.** Every node records its bound RPC port next to
+its cookie at `<datadir>/.rpcport` (`rpc_http_start`,
+`lib/rpc/src/httpserver.c`). When `-rpcport=<N>` is given WITHOUT
+`-datadir=`, the CLI scans `<HOME>/.zclassic-c23*` (client-side only, no
+network change) for the one sibling datadir whose recorded port is `<N>`
+and a readable `.cookie`, uses that datadir, and names it on one loud
+stderr line:
+
+```
+$ zclassic23 -rpcport=39072 dumpstate reducer_frontier
+zclassic23: -rpcport=39072 given without -datadir — auto-discovered datadir /home/op/.zclassic-c23-work (pass -datadir=DIR to target a different instance)
+```
+
+An explicit `-datadir=` always wins — auto-discovery only runs when the
+operator did not name one.
+
+**Connection error taxonomy.** The raw-RPC CLI path (`dumpstate`,
+`getblockcount`, any pass-through method) now distinguishes three failure
+shapes that used to collapse into the same generic message, each on its own
+`error=<ID> detail=... try=...` line (§ above) and its own exit code:
+
+| Shape | error ID | exit | Meaning / remedy |
+|---|---|---:|---|
+| nothing listens at the port (or no `.cookie` at all) | `CONNECT_REFUSED` | 3 | node not running at PORT — start it or point at the right one |
+| TCP connects but the node never answers within 10s | `CONNECT_TIMEOUT` / `RESPONSE_TIMEOUT` | 5 | node busy — retry, or check `ops state --subsystem=supervisor` |
+| TCP connects, HTTP 401 | `AUTH_REJECTED` | 4 | auth cookie mismatch — pass `-datadir=DIR` for the node actually on that port |
+
+**`status` with no live default node.** The bare `zclassic23 status`
+command, with no `-datadir=` and no cookie at the resolved default datadir,
+prints a `zcl.cli_local_instances.v1` JSON document listing every sibling
+`~/.zclassic-c23*` instance this scan found (datadir, recorded port, and a
+bounded live/dead TCP probe) instead of a bare failure — one command answers
+"what nodes exist on this host", with exit code `5` (transient — the
+*default* target has nothing running, but this is not a dead end).

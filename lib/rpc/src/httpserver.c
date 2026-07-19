@@ -992,6 +992,25 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
             fclose(f);
             printf("RPC cookie written to %s\n", g_cookie_file);
         }
+
+        /* Record the bound RPC port alongside the cookie. NOT secret (the
+         * port is visible to anyone who can already reach the loopback
+         * listener), so a plain world-readable file is fine — no
+         * rpc_cookie_fopen_secure() needed. This is what lets a CLI
+         * invocation of the form `-rpcport=<N>` (no `-datadir=`) find the
+         * right sibling datadir by scanning `<HOME>/.zclassic-c23*` for one
+         * whose recorded port matches (see cli_autodiscover_datadir_for_port
+         * in src/main.c) instead of guessing the default datadir's cookie
+         * and getting an indistinguishable 401. Best-effort like the cookie
+         * write above: a failure here only degrades auto-discovery, it
+         * never blocks RPC startup. */
+        char port_path[600];
+        snprintf(port_path, sizeof(port_path), "%s/.rpcport", datadir);
+        FILE *pf = fopen(port_path, "w");
+        if (pf) {
+            fprintf(pf, "%u", port);
+            fclose(pf);
+        }
     }
 
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);

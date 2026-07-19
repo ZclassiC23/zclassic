@@ -157,7 +157,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(verify_bench_selftest) \
     X(crypto_perf_selftest) \
     X(sapling_prover_rng_determinism) \
-    X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \
+    X(no_hardcoded_home) X(cookie_rotation) X(cli_auth_robust) \
+    X(reorg_safety) X(reorg_parity) \
     X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
     X(coins_applied_frontier) \
     X(utxo_apply_value_balance) X(utxo_apply_unspendable) \
