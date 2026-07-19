@@ -192,6 +192,13 @@ printf '%-8s %-12s %-8s %-9s %-10s %-9s %s\n' \
 # regression. log_htip/log_ctip are the lock-free node-log corroboration.
 first_ha=""; first_hstar=""; first_htip=""
 max_ha="-1"; max_hstar="-1"; max_htip="-1"; max_ctip="-1"
+# First-half vs second-half maxima: SUSTAINED climbing requires the second
+# half to reach strictly higher than the first half's ceiling. This tells a
+# genuinely climbing node apart from one that climbed early then plateaued
+# (climb-then-wedge reads as STALLED-NAMED, not CLIMBING).
+fh_ha="-1"; fh_hstar="-1"; fh_htip="-1"
+sh_ha="-1"; sh_hstar="-1"; sh_htip="-1"
+half="$((WINDOW_SECS / 2))"
 last_blocker_ids=""
 last_blocker_count="0"
 samples=0
@@ -231,6 +238,16 @@ while [ "$t" -le "$WINDOW_SECS" ]; do
   if [ "$hs" -gt "$max_hstar" ] 2>/dev/null; then max_hstar="$hs"; fi
   if [ "$htip" -gt "$max_htip" ] 2>/dev/null; then max_htip="$htip"; fi
   if [ "$ctip" -gt "$max_ctip" ] 2>/dev/null; then max_ctip="$ctip"; fi
+  # first-half / second-half maxima (sustained-progress split)
+  if [ "$t" -le "$half" ]; then
+    if [ "$ha" -gt "$fh_ha" ] 2>/dev/null; then fh_ha="$ha"; fi
+    if [ "$hs" -gt "$fh_hstar" ] 2>/dev/null; then fh_hstar="$hs"; fi
+    if [ "$htip" -gt "$fh_htip" ] 2>/dev/null; then fh_htip="$htip"; fi
+  else
+    if [ "$ha" -gt "$sh_ha" ] 2>/dev/null; then sh_ha="$ha"; fi
+    if [ "$hs" -gt "$sh_hstar" ] 2>/dev/null; then sh_hstar="$hs"; fi
+    if [ "$htip" -gt "$sh_htip" ] 2>/dev/null; then sh_htip="$htip"; fi
+  fi
 
   last_blocker_ids="$bids"; last_blocker_count="$bc"
   samples=$((samples + 1))
@@ -245,22 +262,25 @@ done
 [ -z "$first_hstar" ] && first_hstar="-1"
 [ -z "$first_htip" ] && first_htip="-1"
 log "=== sampling complete: $samples samples ==="
-log "header_admit (dumpstate): first_valid=$first_ha max=$max_ha"
-log "hstar        (dumpstate): first_valid=$first_hstar max=$max_hstar"
-log "header tip   (node log):  first_valid=$first_htip max=$max_htip"
+log "header_admit (dumpstate): first_valid=$first_ha max=$max_ha  1st-half=$fh_ha 2nd-half=$sh_ha"
+log "hstar        (dumpstate): first_valid=$first_hstar max=$max_hstar  1st-half=$fh_hstar 2nd-half=$sh_hstar"
+log "header tip   (node log):  first_valid=$first_htip max=$max_htip  1st-half=$fh_htip 2nd-half=$sh_htip"
 log "chain tip    (node log):  max=$max_ctip"
 
-# CLIMBING = strictly-rising forward progress on the header frontier OR H*.
-# The dumpstate header_admit/hstar cursors are primary; the lock-free node-log
-# header tip is corroborating (it survives progress_store_busy read misses).
+# CLIMBING requires SUSTAINED forward progress: the second half of the window
+# must reach strictly higher than the first half's ceiling, on the header
+# frontier OR H*. The dumpstate header_admit/hstar cursors are primary; the
+# lock-free node-log header tip is corroborating (it survives progress_store_busy
+# read misses). A node that climbs early then plateaus/wedges fails this test
+# (2nd-half == 1st-half) and falls to STALLED-NAMED — the honest verdict.
 climbed=0
-if [ "$max_ha" -gt "$first_ha" ] 2>/dev/null && [ "$first_ha" != "-1" ]; then
+if [ "$sh_ha" -gt "$fh_ha" ] 2>/dev/null && [ "$fh_ha" != "-1" ]; then
   climbed=1
 fi
-if [ "$max_hstar" -gt "$first_hstar" ] 2>/dev/null && [ "$first_hstar" != "-1" ]; then
+if [ "$sh_hstar" -gt "$fh_hstar" ] 2>/dev/null && [ "$fh_hstar" != "-1" ]; then
   climbed=1
 fi
-if [ "$max_htip" -gt "$first_htip" ] 2>/dev/null && [ "$first_htip" != "-1" ]; then
+if [ "$sh_htip" -gt "$fh_htip" ] 2>/dev/null && [ "$fh_htip" != "-1" ]; then
   climbed=1
 fi
 
