@@ -1,4 +1,7 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * disk_low_pause — reclaims derived bytes when an index-fold "*.disk_low"
+ * blocker is set; see conditions/disk_low_pause.h for the full contract. */
 
 #include "conditions/disk_low_pause.h"
 #include "util/log_macros.h"

@@ -72,7 +72,7 @@ repository ports are reserved-empty.
 test_groups: 693
 port_interfaces: 12
 persistence_adapters: 13
-condition_registrations: 45
+condition_registrations: 46
 <!-- DOC-COUNTS-END -->
 
 ### Composition root — `config/src/` (26 files)

@@ -1,9 +1,9 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
-
-#ifndef ZCL_CONDITIONS_DISK_LOW_PAUSE_H
-#define ZCL_CONDITIONS_DISK_LOW_PAUSE_H
-
-/* SYMPTOM: a secondary-index backfill (address_index or txindex projection)
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * disk_low_pause — self-heal condition for the index-fold "*.disk_low"
+ * blockers.
+ *
+ * SYMPTOM: a secondary-index backfill (address_index or txindex projection)
  *   is holding a NAMED "<index_id>.disk_low" BLOCKER_RESOURCE blocker,
  *   raised by index_fold_guard.c's index_fold_disk_ok() when free space on
  *   the datadir fs drops below the fold's conservative headroom floor (or
@@ -22,6 +22,10 @@
  * WITNESSED: neither "<index_id>.disk_low" blocker is present anymore (the
  *   fold's own next pass cleared it after space returned).
  * COND_CRITICAL; poll_secs=15. */
+
+#ifndef ZCL_CONDITIONS_DISK_LOW_PAUSE_H
+#define ZCL_CONDITIONS_DISK_LOW_PAUSE_H
+
 void register_disk_low_pause(void);
 
 #ifdef ZCL_TESTING
