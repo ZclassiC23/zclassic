@@ -677,10 +677,15 @@ bool stage_reducer_frontier_try_tipfin_backfill(
         return true;
     }
 
-    /* Scope: this repair exists for the coin-tear pin only. Without a tear
-     * the normal forward tip_finalize replay at H*+1 == coins frontier is
-     * correct and there is no row to restore — not applicable, no WARN. */
-    if (!out->refused_coin_tear)
+    /* Scope: the coin-tear pin, OR a tip_finalize-ONLY rowless hole at a REAL
+     * anchored frontier (hstar > 0), served_floor > hstar, coins applied THROUGH
+     * the span (the live H*-pin class). coins-cover keeps every fill coins-backed;
+     * hstar>0 excludes the phantom-0 floor of a fresh datadir (the generic
+     * cursor-clamp's domain). G2 guards a real ok=0 row at H*+1. */
+    bool tipfin_only_hole = out->hstar > 0 && out->served_floor > out->hstar &&
+        out->coins_applied_found &&
+        out->coins_applied_height - 1 >= out->served_floor;
+    if (!out->refused_coin_tear && !tipfin_only_hole)
         return true;
 
     if (out->hstar < 0 || out->hstar >= INT32_MAX - 2) {

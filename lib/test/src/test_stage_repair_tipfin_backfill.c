@@ -1146,6 +1146,110 @@ int test_stage_repair_tipfin_backfill(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── T10 — tip_finalize-ONLY rowless hole, NO coin tear (the 16:40-flip
+     * live pin class). Every upstream log (incl. utxo_apply) is ok=1 through
+     * the range and coins is AHEAD (coins_applied == utxo_apply frontier + 1,
+     * so NO coin tear), yet a rowless span mid tip_finalize_log caps H* at the
+     * slowest log while served_floor sits ABOVE it. The forward reducer cannot
+     * re-fill it (a cursor rewind trips utxo_count_diverged / the churn gate).
+     * Pre-fix the backfill's coin-tear-ONLY gate returned handled=false and the
+     * pin held forever; post-fix the relaxed gate re-emits the hash-bound rows
+     * and H* climbs to served_floor. ── */
+    {
+        char dir[256];
+        TIPFIN_CHECK("T10 setup", open_fixture(dir, sizeof(dir), "t10", A + 9));
+        sqlite3 *db = progress_store_db();
+
+        struct uint256 h[10];
+        for (int i = 1; i <= 9; i++)
+            mk_hash(&h[i], A + i);
+
+        bool seeded = true;
+        for (int i = 1; i <= 8; i++)  /* all five logs ok=1 A+1 .. A+8 */
+            seeded = seeded && put_upstream_ok(db, A + i, &h[i]);
+        /* tip_finalize: rows at A+1, rowless HOLE A+2..A+4, rows A+5..A+8. */
+        seeded = seeded &&
+                 put_tip(db, A + 1, "finalized", 1, &h[2]) &&
+                 put_tip(db, A + 5, "finalized", 1, &h[6]) &&
+                 put_tip(db, A + 6, "finalized", 1, &h[7]) &&
+                 put_tip(db, A + 7, "finalized", 1, &h[8]) &&
+                 put_tip(db, A + 8, "finalized", 1, &h[9]) &&
+                 seed_coins_applied(db, A + 9);
+        TIPFIN_CHECK("T10 seed", seeded);
+
+        /* H* pins at the hole even though served_floor is far above it, and
+         * there is NO coin tear (coins A+9 == utxo_apply frontier A+8 + 1). */
+        int32_t hs = 0, sf = 0;
+        progress_store_tx_lock();
+        bool okc = reducer_frontier_compute_hstar(db, &hs, &sf);
+        progress_store_tx_unlock();
+        TIPFIN_CHECK("T10 H* pins at the hole, served_floor ahead",
+                     okc && hs == A + 1 && sf == A + 8);
+
+        /* Model the production no-tear snapshot (read_frontier_snapshot uses the
+         * utxo_apply OWN frontier for the tear, not the tip_finalize-pinned H*,
+         * so this rowless hole is NOT a coin tear). */
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        rr.hstar = hs;
+        rr.served_floor = sf;
+        rr.sweep_top = sf;
+        rr.coins_applied_found = true;
+        rr.coins_applied_height = A + 9;
+        rr.refused_coin_tear = false;   /* the whole point: no tear */
+        rr.tip_finalize_cursor_before = A + 9;
+        rr.tip_finalize_cursor_after = A + 9;
+
+        bool handled = false;
+        TIPFIN_CHECK("T10 backfill fills the no-tear hole (pre-fix: handled=false)",
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db, true, &rr, &handled) &&
+                     handled && rr.repaired &&
+                     rr.tipfin_backfill_count == 3 &&
+                     rr.tipfin_backfill_height == A + 4);
+
+        struct tip_row_view row;
+        TIPFIN_CHECK("T10 filled rows are hash-bound finalize_backfill",
+                     tip_row_at(db, A + 2, &row) && row.found && row.ok == 1 &&
+                     strcmp(row.status, "finalize_backfill") == 0 &&
+                     memcmp(row.hash.data, h[3].data, 32) == 0 &&
+                     tip_row_at(db, A + 3, &row) && row.found && row.ok == 1 &&
+                     memcmp(row.hash.data, h[4].data, 32) == 0 &&
+                     tip_row_at(db, A + 4, &row) && row.found && row.ok == 1 &&
+                     memcmp(row.hash.data, h[5].data, 32) == 0);
+
+        /* H* climbs to served_floor: the log is now contiguous ok=1. */
+        progress_store_tx_lock();
+        okc = reducer_frontier_compute_hstar(db, &hs, &sf);
+        progress_store_tx_unlock();
+        TIPFIN_CHECK("T10 H* climbs to served_floor after the fill",
+                     okc && hs == A + 8 && sf == A + 8);
+
+        /* Originals intact (insert-only, non-destructive): 5 seeded + 3 filled. */
+        TIPFIN_CHECK("T10 zero deletions, originals intact",
+                     tip_row_count(db) == 8 &&
+                     tip_row_at(db, A + 5, &row) && row.found && row.ok == 1 &&
+                     strcmp(row.status, "finalized") == 0 &&
+                     cursor_value(db, "tip_finalize") == A + 9);
+
+        /* Re-run is a benign no-op: contiguous now, nothing to fill. */
+        handled = false;
+        memset(&rr, 0, sizeof(rr));
+        rr.hstar = A + 8;
+        rr.served_floor = A + 8;
+        rr.coins_applied_found = true;
+        rr.coins_applied_height = A + 9;
+        rr.refused_coin_tear = false;
+        TIPFIN_CHECK("T10 healed log is not applicable (served_floor==hstar)",
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db, true, &rr, &handled) &&
+                     !handled &&
+                     rr.tipfin_backfill_refused_reason == T_REFUSED_NONE);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("stage_repair_tipfin_backfill: %d failures\n", failures);
     return failures;
 }

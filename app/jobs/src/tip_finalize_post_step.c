@@ -352,13 +352,36 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                 sqlite3 *pdb = progress_store_db();
                 if (pdb && coins_kv_commitment(pdb, utxo_root) == 0) {
                     /* Persist before the leaf so a crash between append and
-                     * save still lets the next catch-up reproduce this hash. */
-                    if (!coins_kv_boundary_root_set(pdb, pindex_new->nHeight,
-                                                    utxo_root))
-                        LOG_WARN("tip_finalize",
-                                 "boundary utxo_root persist failed h=%d "
-                                 "(leaf still carries the computed root)",
-                                 pindex_new->nHeight);
+                     * save still lets the next catch-up reproduce this hash.
+                     * MUST be the in-tx variant: this runs inside the stage's
+                     * batch BEGIN IMMEDIATE + per-step SAVEPOINT, so the
+                     * own-BEGIN _set fails 100% ("cannot start a transaction
+                     * within a transaction") and never persists the root — the
+                     * pre-flip WARN-storm root cause. In-tx commits the root
+                     * atomically with this height's finalize log row.
+                     *
+                     * Streak-throttled diagnostic: post_finalize runs on the
+                     * serial reducer drive under progress_store_tx_lock, so the
+                     * statics are race-free. Log the FIRST failure of a streak
+                     * (loud, named) and suppress the rest; the next success
+                     * emits one recovery line with the suppressed count — never
+                     * a per-boundary WARN spam. */
+                    static int s_boundary_fail_streak = 0;
+                    if (!coins_kv_boundary_root_set_in_tx(
+                            pdb, pindex_new->nHeight, utxo_root)) {
+                        if (s_boundary_fail_streak++ == 0)
+                            LOG_WARN("tip_finalize",
+                                     "boundary utxo_root persist failed h=%d "
+                                     "(leaf still carries the computed root; "
+                                     "suppressing repeats until it recovers)",
+                                     pindex_new->nHeight);
+                    } else if (s_boundary_fail_streak > 0) {
+                        LOG_INFO("tip_finalize",
+                                 "boundary utxo_root persist recovered h=%d "
+                                 "after %d suppressed failure(s)",
+                                 pindex_new->nHeight, s_boundary_fail_streak);
+                        s_boundary_fail_streak = 0;
+                    }
                 } else {
                     memset(utxo_root, 0, 32);
                     LOG_WARN("tip_finalize",

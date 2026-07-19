@@ -749,6 +749,21 @@ bool coins_kv_boundary_root_set(sqlite3 *db, int32_t height,
     return progress_meta_set(db, key, utxo_root, 32);
 }
 
+/* In-tx variant: run the INSERT inside the caller's ALREADY-OPEN transaction.
+ * The tip_finalize reducer step calls this from inside the stage's batch
+ * BEGIN IMMEDIATE + per-step SAVEPOINT, so the own-BEGIN _set above would fail
+ * with "cannot start a transaction within a transaction". progress_meta_set_in_tx
+ * issues no inner BEGIN/COMMIT, so the boundary root commits atomically with the
+ * finalize log row in the same step transaction. */
+bool coins_kv_boundary_root_set_in_tx(sqlite3 *db, int32_t height,
+                                      const uint8_t utxo_root[32])
+{
+    if (!db || !utxo_root || height < 0) return false;
+    char key[40];
+    coins_kv_boundary_root_key(height, key, sizeof(key));
+    return progress_meta_set_in_tx(db, key, utxo_root, 32);
+}
+
 bool coins_kv_boundary_root_get(sqlite3 *db, int32_t height,
                                 uint8_t out_utxo_root[32], bool *found)
 {
