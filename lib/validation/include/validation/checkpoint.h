@@ -7,11 +7,10 @@
  * snapshot activation, and rolling-anchor policy. COINBASE_MATURITY is
  * an economic spend rule and must not drive sync finality decisions.
  *
- * Before this module, the invariant was checked only at one point
- * (`process_block.c:3494`, in the extending-reorg branch). The
- * fork-point walks at lines 3413/3435/etc. could legitimately try to
- * walk past it, then the cycle guards would abort
- * the walk after the damage was done.
+ * checkpoint enforces the invariant at every fork-point walk, not just
+ * the extending-reorg branch — a single call site leaves the other
+ * fork-point walks free to walk past tip - 10 before any cycle guard
+ * would catch it.
  *
  * `reorg_is_allowed` remains the compatibility wrapper for callers
  * that predate validation/sync_evidence_policy.h. */

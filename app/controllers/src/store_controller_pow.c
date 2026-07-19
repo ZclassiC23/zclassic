@@ -17,12 +17,10 @@
  * hashcash-style client puzzle ON TOP of CSRF (CSRF stays the floor,
  * unchanged in store_controller.c): the client must find a nonce such
  * that SHA3-256(peer_id || timestamp || nonce) has FAST_SYNC_POW_BITS
- * leading zero bits — reusing fast_sync_verify_pow, the same primitive
- * lib/net/src/fast_sync.c uses to gate snapshot-sync requests (this
- * repo's other PoW-gate work, wf/file-service-pow-gate, had landed no
- * commits beyond origin/main as of this branch, so there was no richer
- * puzzle-issuance infra to build on — fast_sync_verify_pow is used
- * directly). `peer_id` here is SHA3-256("store:order:pow:<product_id>"),
+ * leading zero bits — reusing fast_sync_verify_pow directly, the same
+ * primitive lib/net/src/fast_sync.c uses to gate snapshot-sync requests
+ * (no separate puzzle-issuance infra exists for this surface).
+ * `peer_id` here is SHA3-256("store:order:pow:<product_id>"),
  * binding a solved puzzle to one product so it cannot be replayed
  * against another. An honest buyer solves ONE puzzle (~0.5s on a
  * native solver; see the browser JS solver in app/views/src/store_view.c

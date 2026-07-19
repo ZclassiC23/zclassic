@@ -36,10 +36,10 @@
 #include <sys/mman.h>
 #include <time.h>
 
-/* Live incident (2026-07): the deferred/live rebuild shares the reducer's
- * node_db connection from another thread, so a persist's BEGIN nested into
- * the reducer's open batch tx (SQLITE_ERROR, un-retryable) and spammed on
- * every checkpoint while the rebuild never completed. The primary cure is the
+/* The deferred/live rebuild shares the reducer's
+ * node_db connection from another thread, so a persist's BEGIN can nest into
+ * the reducer's open batch tx (SQLITE_ERROR, un-retryable), spamming on
+ * every checkpoint while the rebuild never completes. The primary cure is the
  * autocommit guard in sapling_tree_persist_pair_status; this bounded retry is
  * the residual defense for a genuine cross-connection BUSY/LOCKED. */
 #define SAPLING_TREE_BEGIN_MAX_ATTEMPTS 5

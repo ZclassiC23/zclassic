@@ -5,13 +5,12 @@
  *
  * Motivation
  * ----------
- * On 2026-07 the canonical node ran a 48-commit-stale binary for a full
- * week with zero signal: `make deploy` had replaced the file on disk, but
- * the already-running process kept serving its old in-memory image
- * (normal on Linux — a replaced-on-disk executable does not affect an
- * already-mapped process), and nothing in the node ever compared "what
- * am I running" against "what's on disk right now". Status/health
- * schemas silently drifted vs newer CLI clients built from the same repo.
+ * `make deploy` replaces the binary file on disk, but an already-running
+ * process keeps serving its old in-memory image (normal on Linux — a
+ * replaced-on-disk executable does not affect an already-mapped process).
+ * Nothing else in the node ever compares "what am I running" against
+ * "what's on disk right now", so status/health schemas can silently drift
+ * vs newer CLI clients built from the same repo.
  *
  * Detection trick
  * ----------------

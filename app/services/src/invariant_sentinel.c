@@ -616,13 +616,13 @@ bool invariant_sentinel_commitment_audit_once(void)
         "count_got=%llu (corruption candidate; range counts logged)",
         (unsigned long long)saved.count,
         (unsigned long long)computed.count);
-    /* DECOUPLED from chain_linkage (2026-06-29): the `utxos` table is a
+    /* Decoupled from chain_linkage: the `utxos` table is a
      * REBUILDABLE projection of the coins_kv authority — NOT the authority — and
      * this audit compares it only to a frozen out-of-band self-checkpoint, so it
      * cannot evidence coin-set-vs-chain corruption. A projection mismatch must
-     * NEVER refuse a PoW-proven tip move: the live 3164076 wedge was a commitment
-     * HOLD making tip_finalize roll back an already-inserted finalized row via
-     * JOB_FATAL, pinning H* with no auto-remedy. The consensus coin gate is
+     * NEVER refuse a PoW-proven tip move: doing so would make tip_finalize roll
+     * back an already-inserted finalized row via JOB_FATAL, pinning H* with no
+     * auto-remedy. The consensus coin gate is
      * utxo_apply's per-block ok-verdict (tip_finalize upstream.ok), untouched.
      * The non-fatal blocker above is owned by state_window_inconsistent, which
      * re-derives the projection from the coins_kv authority and clears it — it
