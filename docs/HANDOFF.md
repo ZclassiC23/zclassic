@@ -10,17 +10,28 @@
 
 # HANDOFF — current state (2026-07-19)
 
-## 0-LATEST. Current state (2026-07-19 evening) — **WEDGE-PASS: the sovereign cure is PROVEN on the serve node.** Fresh soak window open; canonical deploy is the owner's lever
+## 0-LATEST. Current state (2026-07-19 night) — **AT TIP on sovereign state.** The serve node is fully synced; soak window running; canonical deploy is the owner's lever
 
-**The serve node passed the historical wedge.** H\* = 3,179,242 >
-**3,176,325** (the shielded-anchor wedge that has held the canonical node for
-weeks), coins at the same height, folding toward network tip (~3,187,1xx),
-4 peers. Binary: candidate `tipfinfix-3b512149f` (= main
-`3b512149f`).  Live H\* via `zclassic23 -rpcport=39072 dumpstate
-reducer_frontier` (**flagless CLI answers from the DEFAULT datadir — always
-pass -rpcport=39072 for the serve node**). The persistent monitor announces
-+5k milestones; the soak window runs from the wedge-pass timestamp. Canonical
-deploy after a clean soak is the owner's lever.
+**The serve node is AT NETWORK TIP** (H\* 3,187,17x = peer max), 4 peers,
+entirely on self-verified state: past the historical 3,176,325
+shielded-anchor wedge AND past the post-wedge poisoned-solution-row stall at
+3,179,242. Binary: candidate `vhrepair-7d10e581d` (= main `7d10e581d`).
+Live H\* via `zclassic23 -rpcport=39072 dumpstate reducer_frontier`
+(**flagless CLI answers from the DEFAULT datadir — always pass
+-rpcport=39072 for the serve node**). The persistent monitor announces
+milestones and blocker-set changes; the always-synced soak window runs from
+the at-tip timestamp. Canonical deploy after a clean soak is the owner's
+lever.
+
+The post-wedge stall class is cured in code, not worked around: the
+getheaders serve path had poisoned a canonical block's index entry with a
+permanent FAILED mask over a torn local Equihash-solution copy, and nothing
+could clear it (the storm was 18k WARN lines/5min instead of one blocker).
+Now: mark failures raise ONE typed blocker and back off; a FAILED mask
+clears if and only if the unchanged PoW+Equihash validator passes with
+repairable-class evidence. Remaining named follow-up: quarantine/refetch of
+a poisoned `blocks`-table row itself (`db_block_delete` is built and
+unwired; needs copy-proof) — see the Wave N backlog memory.
 
 The final pin before the pass — H\* stuck at 3,140,115 on ~1,015
 `tip_finalize_log` rowless holes — was cured by `3b512149f`: the boundary
