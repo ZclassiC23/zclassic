@@ -10,6 +10,7 @@
 #include "services/chain_state_service.h"
 #include "storage/utxo_reimport_flag.h"
 #include "storage/progress_store.h"
+#include "storage/coins_kv.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "jobs/reducer_frontier.h"
@@ -779,6 +780,198 @@ int test_utxo_recovery_service(void)
             URS_CHECK("urs: clean above tip refuses >32 (db open failed)",
                       false);
         }
+        unlink(db_path);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 9b. Clean above tip: MIRROR-ONLY overshoot >guard self-heals ──
+     *
+     * Kernel coins_kv is proven-authority AND its own derived coins-best
+     * height (applied_height - 1) equals the chain tip exactly — the kernel
+     * itself holds nothing above the cursor. The 1500-row overshoot living
+     * only in the node.db `utxos` mirror is provably harmless (the mirror
+     * carries no consensus weight), so the unguarded purge fires instead of
+     * the 32-row guard, and NO blocker is raised. */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_mirror_only.db", getpid());
+        char progress_dir[256];
+        test_make_tmpdir(progress_dir, sizeof(progress_dir),
+                         "urs_mirror_only", "progress");
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        urs_build_chain(&ms, 50);  /* tip at h=49 */
+
+        bool pdb_open = progress_store_open(progress_dir);
+        if (node_db_open(&ndb, db_path) && pdb_open) {
+            sqlite3 *pdb = progress_store_db();
+
+            /* Kernel coins_kv proven-authority at applied_height=50, so the
+             * derived coins-best (applied-1) == 49 == tip_h. */
+            URS_CHECK("urs mirror-only: coins_kv schema",
+                      coins_kv_ensure_schema(pdb));
+            uint8_t kv_txid[32];
+            memset(kv_txid, 0, sizeof(kv_txid));
+            kv_txid[31] = 0x7E;
+            URS_CHECK("urs mirror-only: coins_kv seed row",
+                      coins_kv_add(pdb, kv_txid, 0, 1000LL, 40, false,
+                                  NULL, 0));
+            bool applied_ok =
+                sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, NULL) ==
+                    SQLITE_OK &&
+                coins_kv_set_applied_height_in_tx(pdb, 50);
+            sqlite3_exec(pdb, applied_ok ? "COMMIT" : "ROLLBACK",
+                        NULL, NULL, NULL);
+            URS_CHECK("urs mirror-only: applied_height=50 set", applied_ok);
+            uint8_t mig_flag = 1;
+            URS_CHECK("urs mirror-only: migration_complete stamped",
+                      progress_meta_set(pdb, "coins_kv_migration_complete",
+                                        &mig_flag, 1));
+
+            /* node.db `utxos` mirror: 1500 rows above tip (h=50..1549) —
+             * far past the 32-row guard, identical shape to test 7. */
+            node_db_begin(&ndb);
+            for (int i = 0; i < 1500; i++) {
+                char sql[256];
+                snprintf(sql, sizeof(sql),
+                    "INSERT INTO utxos(txid, vout, height, value, "
+                    "script) VALUES(X'%032d', %d, %d, "
+                    "100000, X'00')", i, i, 50 + i);
+                node_db_exec(&ndb, sql);
+            }
+            node_db_commit(&ndb);
+
+            blocker_reset_for_testing();
+
+            int64_t before = node_db_utxo_count(&ndb);
+            int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
+            int64_t after = node_db_utxo_count(&ndb);
+
+            URS_CHECK("urs: mirror-only overshoot >guard self-heals",
+                      before == 1500 && cleaned == 1500 && after == 0);
+            URS_CHECK("urs: mirror-only self-heal raises no blocker",
+                      !blocker_exists(
+                          UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID));
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: mirror-only overshoot fixture", false);
+            if (ndb.open)
+                node_db_close(&ndb);
+        }
+        if (pdb_open)
+            progress_store_close();
+        test_cleanup_tmpdir(progress_dir);
+        unlink(db_path);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 9c. Clean above tip: KERNEL-store overshoot still refuses ──
+     *
+     * Kernel coins_kv is proven-authority (same as 9b) but its OWN derived
+     * coins-best height (applied_height - 1 = 54) does NOT match the chain
+     * tip (49) — the kernel itself disagrees with the tip, which is genuine
+     * block_index/coins drift, not a harmless mirror artifact. The
+     * mirror-only self-heal must NOT fire; the 32-row guard's refusal (and
+     * its typed blocker) must stand exactly as it does with no progress
+     * store open at all. */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_kernel_overshoot.db", getpid());
+        char progress_dir[256];
+        test_make_tmpdir(progress_dir, sizeof(progress_dir),
+                         "urs_kernel_overshoot", "progress");
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        urs_build_chain(&ms, 50);  /* tip at h=49 */
+
+        bool pdb_open = progress_store_open(progress_dir);
+        if (node_db_open(&ndb, db_path) && pdb_open) {
+            sqlite3 *pdb = progress_store_db();
+
+            /* Kernel coins_kv proven-authority, but applied_height=55 =>
+             * derived coins-best=54 != tip_h=49 — the kernel itself is
+             * AHEAD of the chain tip (kernel-store rows above the cursor). */
+            URS_CHECK("urs kernel-overshoot: coins_kv schema",
+                      coins_kv_ensure_schema(pdb));
+            uint8_t kv_txid[32];
+            memset(kv_txid, 0, sizeof(kv_txid));
+            kv_txid[31] = 0x7F;
+            URS_CHECK("urs kernel-overshoot: coins_kv seed row",
+                      coins_kv_add(pdb, kv_txid, 0, 1000LL, 40, false,
+                                  NULL, 0));
+            bool applied_ok =
+                sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, NULL) ==
+                    SQLITE_OK &&
+                coins_kv_set_applied_height_in_tx(pdb, 55);
+            sqlite3_exec(pdb, applied_ok ? "COMMIT" : "ROLLBACK",
+                        NULL, NULL, NULL);
+            URS_CHECK("urs kernel-overshoot: applied_height=55 set",
+                      applied_ok);
+            uint8_t mig_flag = 1;
+            URS_CHECK("urs kernel-overshoot: migration_complete stamped",
+                      progress_meta_set(pdb, "coins_kv_migration_complete",
+                                        &mig_flag, 1));
+
+            /* Same 1500-row node.db mirror overshoot as 9b. */
+            node_db_begin(&ndb);
+            for (int i = 0; i < 1500; i++) {
+                char sql[256];
+                snprintf(sql, sizeof(sql),
+                    "INSERT INTO utxos(txid, vout, height, value, "
+                    "script) VALUES(X'%032d', %d, %d, "
+                    "100000, X'00')", i, i, 50 + i);
+                node_db_exec(&ndb, sql);
+            }
+            node_db_commit(&ndb);
+
+            blocker_reset_for_testing();
+
+            int64_t before = node_db_utxo_count(&ndb);
+            int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
+            int64_t after = node_db_utxo_count(&ndb);
+
+            URS_CHECK("urs: kernel-store overshoot still refuses",
+                      before == 1500 && cleaned == 0 && after == 1500);
+
+            struct blocker_snapshot snaps[8];
+            int n = blocker_snapshot_all(snaps, 8);
+            bool found = false;
+            for (int k = 0; k < n; k++) {
+                if (strcmp(snaps[k].id,
+                          UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            URS_CHECK("urs: kernel-store overshoot raises typed blocker",
+                      found);
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: kernel-store overshoot fixture", false);
+            if (ndb.open)
+                node_db_close(&ndb);
+        }
+        if (pdb_open)
+            progress_store_close();
+        test_cleanup_tmpdir(progress_dir);
         unlink(db_path);
         block_map_free(&ms.map_block_index);
     }

@@ -18,9 +18,11 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
 #include "jobs/tip_finalize_stage.h"
+#include "models/database.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/consensus_state_publication_cas.h"
 #include "services/nullifier_backfill_service.h"
+#include "services/utxo_mirror_sync_service.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/consensus_state_bundle_codec.h"
@@ -128,6 +130,83 @@ static int boot_install_gate_alias_tests(const char *root)
     (void)rmdir(copy_dir);
     (void)rmdir(canonical);
     (void)rmdir(home);
+    return failures;
+}
+
+/* Post-install node.db `utxos` mirror reset (icb_reset_utxo_mirror in
+ * boot_install_consensus_bundle.c, exercised here via the ZCL_TESTING
+ * seam boot_install_consensus_bundle_reset_utxo_mirror_for_test). A stale
+ * mirror left ABOVE (or anywhere around) a freshly installed bundle height
+ * is a derived-projection artifact, never a consensus input — see
+ * lane E5's utxo_recovery.rewind_overshoot incident (a 3,718-row mirror
+ * overshoot from a prior borrowed-state fold wedged boot with a PERMANENT
+ * blocker on a table that carries no consensus weight). This proves the
+ * reset actually wipes the mirror + its commitment cache and forces the
+ * sync cursor to a value that can never match a real coins_kv frontier. */
+static int boot_install_utxo_mirror_reset_tests(const char *root)
+{
+    int failures = 0;
+    char node_path[512];
+    snprintf(node_path, sizeof(node_path), "%s/mirror-reset-node.db", root);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool opened = node_db_open(&ndb, node_path);
+    CSI_CHECK("mirror reset: node.db opens", opened);
+    if (opened) {
+        node_db_begin(&ndb);
+        for (int i = 0; i < 10; i++) {
+            char sql[256];
+            snprintf(sql, sizeof(sql),
+                "INSERT INTO utxos(txid, vout, height, value, script) "
+                "VALUES(X'%032d', %d, %d, 100000, X'00')", i, i, i);
+            node_db_exec(&ndb, sql);
+        }
+        node_db_commit(&ndb);
+        node_db_exec(&ndb,
+            "INSERT OR REPLACE INTO node_state(key,value) "
+            "VALUES('utxo_commitment', X'AABBCCDD')");
+        CSI_CHECK("mirror reset: sync cursor seeds to a positive height",
+                  node_db_state_set_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY,
+                                        12345));
+
+        int64_t before = node_db_utxo_count(&ndb);
+        CSI_CHECK("mirror reset: fixture seeds 10 utxos rows",
+                  before == 10);
+
+        CSI_CHECK("mirror reset: NULL ndb refuses",
+                  !boot_install_consensus_bundle_reset_utxo_mirror_for_test(
+                      NULL));
+
+        bool reset_ok =
+            boot_install_consensus_bundle_reset_utxo_mirror_for_test(&ndb);
+        CSI_CHECK("mirror reset: reset reports success", reset_ok);
+
+        int64_t after = node_db_utxo_count(&ndb);
+        CSI_CHECK("mirror reset: utxos table wiped", after == 0);
+
+        size_t clen = 0;
+        uint8_t cbuf[64];
+        bool commitment_present = node_db_state_get(
+            &ndb, "utxo_commitment", cbuf, sizeof(cbuf), &clen);
+        CSI_CHECK("mirror reset: utxo_commitment cache cleared",
+                  !commitment_present);
+
+        int64_t cursor = -100;
+        bool cursor_found = node_db_state_get_int(
+            &ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cursor);
+        CSI_CHECK("mirror reset: sync cursor forced to -1 (never a real "
+                  "coins_kv frontier)",
+                  cursor_found && cursor == -1);
+
+        /* Idempotent: resetting an already-empty mirror is still success. */
+        CSI_CHECK("mirror reset: idempotent on an already-empty mirror",
+                  boot_install_consensus_bundle_reset_utxo_mirror_for_test(
+                      &ndb));
+
+        node_db_close(&ndb);
+    }
+    unlink(node_path);
     return failures;
 }
 
@@ -1665,6 +1744,7 @@ int test_consensus_state_snapshot_install(void)
     int failures=0; char dir[256];
     test_make_tmpdir(dir,sizeof(dir),"consensus_state_install","main");
     failures += boot_install_gate_alias_tests(dir);
+    failures += boot_install_utxo_mirror_reset_tests(dir);
     sqlite3 *db=NULL;
     CSI_CHECK("active DB opens",sqlite3_open(":memory:",&db)==SQLITE_OK);
     CSI_CHECK("shared bundle codec pinned SHA3 vectors",bundle_codec_kat());

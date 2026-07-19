@@ -566,6 +566,13 @@ bool boot_install_consensus_bundle_invalidate_derived_for_test(
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
     struct main_state *ms, const char *datadir, int seed_h,
     bool trust_existing_block_files);
+/* Unit surface for the post-install node.db `utxos` mirror reset (see
+ * icb_reset_utxo_mirror in boot_install_consensus_bundle.c): wipes the
+ * mirror + its utxo_commitment cache and resets the sync cursor to -1 so
+ * utxo_mirror_sync_service rebuilds it from the freshly installed coins_kv.
+ * `ndb` must already be open. */
+bool boot_install_consensus_bundle_reset_utxo_mirror_for_test(
+    struct node_db *ndb);
 #endif
 
 /* Testable production transaction used by both SHA3-verified snapshot seed

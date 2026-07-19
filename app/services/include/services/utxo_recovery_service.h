@@ -251,20 +251,35 @@ bool utxo_recovery_heal_torn_legacy_coins_anchor(
 
 /* Typed-blocker id (see util/blocker.h) raised when utxo_recovery_clean_
  * above_tip's guard REFUSES a proposed rewind — either a multi-block
- * overshoot or a single-block overshoot past UTXO_BOOT_REWIND_MAX_ROWS.
+ * overshoot or a single-block overshoot past UTXO_BOOT_REWIND_MAX_ROWS —
+ * AND the overshoot could not be classified as mirror-only (see below).
  * Advance-or-named-blocker law: this refusal is a no-op an operator must
  * investigate (block_index/coins drift), never a log line alone. Carries
  * tip_height/max_height/row_count/guard in its reason text. Cleared the
  * next time the function runs and finds nothing above tip, or successfully
- * auto-heals a bounded overshoot — see utxo_recovery_service.c. */
+ * auto-heals a bounded or mirror-only overshoot — see utxo_recovery_service.c. */
 #define UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID "utxo_recovery.rewind_overshoot"
 
 /* Delete UTXOs with height above chain tip.
- * SAFETY: only a single-block overshoot of <= UTXO_BOOT_REWIND_MAX_ROWS (32)
- * rows is auto-healable; a larger proposed wipe is refused (tip is likely
- * wrong — investigate block_index/coins drift instead). A refusal raises
- * UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID (`zclassic23 dumpstate blocker`
- * subsystem=blocker).
+ * SAFETY: a single-block overshoot of <= UTXO_BOOT_REWIND_MAX_ROWS (32) rows
+ * is always auto-healable. A LARGER overshoot is also auto-healed, UNGUARDED,
+ * when it is provably MIRROR-ONLY: the kernel coins_kv store is the
+ * proven authority (coins_kv_is_proven_authority) AND its own durable
+ * applied-height-derived coins-best (coins_applied_height - 1) matches tip_h
+ * exactly — i.e. the kernel itself holds nothing above the cursor, so every
+ * row above tip lives solely in the node.db `utxos` mirror, a derived
+ * projection consensus reads never depend on (utxo_mirror_sync_service.h).
+ * (Deliberately not reducer_frontier_derive_coins_best_now: that helper also
+ * cross-checks a hash witness against validate_headers_log/tip_finalize_log
+ * and hard-fails the whole derivation on any read error there — including
+ * "table absent", legitimate early in boot or on a coins_kv-only store — and
+ * a pure height check needs no hash witness.)
+ * Any other overshoot shape (legacy/non-canonical datadir, or the kernel's
+ * OWN derived height disagreeing with tip_h) is refused — tip is likely
+ * wrong, or the KERNEL store itself has rows above the cursor, either of
+ * which is genuine block_index/coins drift and stays owner-investigated. A
+ * refusal raises UTXO_RECOVERY_REWIND_OVERSHOOT_BLOCKER_ID (dumpstate
+ * blocker / zcl_state subsystem=blocker).
  * Returns count of UTXOs deleted (0 if refused or none found).
  * NOTE: this is also the single heal mechanism reused by the continuous
  * orphan_utxo_above_tip Condition; the boot.c one-shot caller is a
