@@ -570,6 +570,15 @@
                "{domain_count, asymmetric, large_domain_id}, derived {verify_workers, "
                "script_batch_cap, sqlite_*_cache_kib, sqlite_*_mmap_bytes}, and "
                "pin_reducer_available (whether -pin-reducer would take effect)"),
+    DIAG_LOCAL("hw_bench", hw_bench_dump_state_json,
+               "hardware bench organ: boot-time measured fsync_us + pread_us "
+               "medians (or -1/'fallback' if unmeasured), fingerprint (hw_profile "
+               "signature the measurement was taken under), from_cache, "
+               "age_seconds, measured, and derived {batch_size_normal_100, "
+               "verify_workers_normal_4} each tagged measured/fallback — the "
+               "closed loop that scales reducer_drain.c's per-stage batch size "
+               "with measured fsync latency and bg_validation_service.c's "
+               "worker count with measured random-read latency"),
     DIAG_SERVICE("recovery", recovery_coordinator_dump_state_json,
                  "unified recovery coordinator (chain domain): last rung fired "
                  "(cursor_warm_restart/rederive_range/segment_refetch/blocker) "

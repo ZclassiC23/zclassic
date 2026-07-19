@@ -33,6 +33,7 @@
 #include "event/event.h"
 #include "core/utiltime.h"
 #include "util/blocker.h"
+#include "util/hw_bench.h"
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
 #include "util/stage.h"
@@ -404,7 +405,11 @@ int reducer_drain_to_convergence(void)
 {
     const int64_t drain_budget_us = 2000 * 1000; /* 2s, same as legacy */
     const int     drain_hard_cap  = 4096;
-    const int     per_stage_batch = 100;          /* legacy cadence, unchanged */
+    /* legacy cadence (100) is the topology/no-measurement fallback;
+     * hw_bench_batch_size scales it UP when boot-time measurement found a
+     * slower-than-baseline fsync, so the per-batch fsync/journal-commit
+     * count drops on slow storage — never below 100, see hw_bench.h. */
+    const int     per_stage_batch = hw_bench_batch_size(100);
     return reducer_drain_core(drain_budget_us, drain_hard_cap, per_stage_batch,
                               /*converge_on_frontier_stall=*/false);
 }
