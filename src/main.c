@@ -19,6 +19,7 @@
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
+#include "config/boot_cold_start.h"     /* -cold-start staged driver */
 #include "hotswap/hotswap_module.h"
 #include "rpc/client.h"
 #include "rpc/protocol.h"
@@ -2798,6 +2799,16 @@ int main(int argc, char **argv)
         if (strncmp(argv[i], "-import-complete-shielded=", 26) == 0)
             return import_complete_shielded_mode(argc, argv);
 
+    /* -cold-start: one-command, staged, resumable driver that takes a fresh
+     * datadir to a serving node (header import -> snapshot seed -> optional
+     * consensus-bundle install -> serve) without operator choreography. It
+     * COMPOSES the existing verbs as child processes with durable per-stage
+     * receipts, then exec()s the plain serving boot. Scanned across argv (it
+     * follows -datadir=), not positional. See config/boot_cold_start.h. */
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "-cold-start") == 0)
+            return boot_cold_start_run(argc, argv);
+
     /* Wallet backup restore mode — decrypt an encrypted wallet backup.
      * Usage: zclassic23 --decrypt-wallet-backup <src.enc> <dst.sqlite>
      * Password comes from the WALLET_BACKUP_PASSWORD environment
@@ -3578,6 +3589,17 @@ int main(int argc, char **argv)
                          sizeof("-load-snapshot-at-own-height=") - 1) == 0)
             ctx.load_snapshot_at_own_height =
                 argv[i] + sizeof("-load-snapshot-at-own-height=") - 1;
+        else if (strcmp(argv[i], "-coldstart-seed-oneshot") == 0) {
+            /* Internal cold-start driver handshake (boot_cold_start.c): apply
+             * the -load-snapshot-at-own-height seed, then exit cleanly BEFORE
+             * services so the next cold-start stage (bundle/serve) runs on a
+             * clean-stopped datadir. Never set on an operator-driven boot. The
+             * seed reset + finalize run inline in app_init; no_services makes it
+             * return right after finalize (before P2P/RPC), and the
+             * cold_start_seed_oneshot branch below shuts down offline + exits. */
+            ctx.cold_start_seed_oneshot = true;
+            ctx.no_services = true;
+        }
         else if (strncmp(argv[i], "-install-consensus-bundle=",
                          sizeof("-install-consensus-bundle=") - 1) == 0)
             ctx.install_consensus_bundle =
@@ -3868,6 +3890,15 @@ int main(int argc, char **argv)
         bool minted = boot_mint_anchor_run(ctx.datadir);
         app_shutdown_offline();
         return minted ? 0 : 1;
+    }
+
+    /* -coldstart-seed-oneshot: app_init applied the snapshot seed and returned
+     * before services (config/src/boot.c). Cleanly WAL-checkpoint + write the
+     * clean-shutdown marker and exit so the cold-start driver's next stage
+     * boots warm on a durable, clean-stopped datadir. */
+    if (ctx.cold_start_seed_oneshot) {
+        app_shutdown_offline();
+        return 0;
     }
 
     for (int i = 1; i < argc; i++) {
