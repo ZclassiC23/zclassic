@@ -1231,12 +1231,22 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 /* E1's lib/domain WARN tier (extended to every .c under lib/, excl.
  * lib/test/ -- see tools/scripts/check_file_size_ceiling.sh's lib_files_all
- * scan + the WARN branch). No root-override env exists for E1 (unlike gate
- * #12 below), so this plants directly into the real lib/ tree like
- * E1_FIXTURE_DST does for app/ -- a violation here must PRINT (WARN) and
- * never fail the build. */
+ * scan + the WARN branch). No per-file baseline override env exists for E1
+ * (unlike gate #12 below), so this plants directly into the real lib/ tree
+ * like E1_FIXTURE_DST does for app/ -- a single violation here must PRINT
+ * (WARN) and never fail the build on its own. It CAN still fail in
+ * aggregate: the tier's total (new + grown) violation count is separately
+ * ratcheted via ZCL_FILE_SIZE_CEILING_LIB_DRIFT_RATCHET (defaulting to
+ * tools/scripts/file_size_ceiling_lib_drift_count.txt) so silent
+ * accumulation still trips `make lint`. This test points that ratchet at
+ * an isolated, generously-large tmp file so planting ONE fixture proves the
+ * per-file WARN invariant without depending on how much real drift the live
+ * tree already carries. */
 #define E1_LIB_FIXTURE_DST \
     "lib/storage/src/_e1_lib_size_ceiling_fixture_tmp.c"
+#define E1_LIB_DRIFT_RATCHET_ENV "ZCL_FILE_SIZE_CEILING_LIB_DRIFT_RATCHET"
+#define E1_LIB_DRIFT_RATCHET_TMP_REL \
+    "test-tmp/_e1_lib_drift_ratchet_isolated_tmp.txt"
 /* Gate #12 — check_long_functions.sh, extended to config/src/ (ENFORCED,
  * ratchet-baselined) and lib/ excl. lib/test/ (WARN, non-blocking). Both
  * sub-tiers run against an ISOLATED test-tmp/ scan dir + baseline (via
@@ -1735,16 +1745,40 @@ static int t_e1_file_size_ceiling(void)
     return failures;
 }
 
-/* E1 lib/domain WARN tier: an oversized, unbaselined lib/ file must WARN
- * (print) but never fail the build (exit 0), mirroring the WARN-vs-ENFORCED
- * split proven for gate #12 below. */
+/* E1 lib/domain WARN tier: a SINGLE oversized, unbaselined lib/ file must
+ * WARN (print) but never fail the build on its own (exit 0), mirroring the
+ * WARN-vs-ENFORCED split proven for gate #12 below. The tier's aggregate
+ * drift-count ratchet (see E1_LIB_FIXTURE_DST's comment above) is pointed at
+ * an isolated tmp file for the duration of this test so the assertion holds
+ * regardless of how much real, already-reviewed drift the live tree
+ * carries. */
 static int t_e1_lib_warn_tier(void)
 {
     int failures = 0;
     unlink_rel(E1_LIB_FIXTURE_DST);
-    int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+
+    char ratchet_path[PATH_MAX];
+    int ratchet_rc = repo_path(ratchet_path, sizeof(ratchet_path),
+                                E1_LIB_DRIFT_RATCHET_TMP_REL);
+    if (ratchet_rc == 0) {
+        FILE *rf = fopen(ratchet_path, "wb");
+        if (rf) {
+            fputs("999999\n", rf);
+            fclose(rf);
+        } else {
+            ratchet_rc = -1;
+        }
+    }
+
+    int baseline_rc = ratchet_rc == 0
+        ? run_gate_script_with_env(E1_SCRIPT_REL, E1_LIB_DRIFT_RATCHET_ENV,
+                                    ratchet_path)
+        : -1;
     int planted = plant_oversized_file(E1_LIB_FIXTURE_DST, 900);
-    int warn_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
+    int warn_rc = (planted == 0 && ratchet_rc == 0)
+        ? run_gate_script_with_env(E1_SCRIPT_REL, E1_LIB_DRIFT_RATCHET_ENV,
+                                    ratchet_path)
+        : -1;
     char *warn_out = NULL;
     char warn_path[PATH_MAX];
     int warn_read = (planted == 0 &&
@@ -1753,11 +1787,18 @@ static int t_e1_lib_warn_tier(void)
                         ? read_entire_file(warn_path, &warn_out)
                         : -1;
     unlink_rel(E1_LIB_FIXTURE_DST);
-    int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    int recover_rc = ratchet_rc == 0
+        ? run_gate_script_with_env(E1_SCRIPT_REL, E1_LIB_DRIFT_RATCHET_ENV,
+                                    ratchet_path)
+        : -1;
+    unlink_rel(E1_LIB_DRIFT_RATCHET_TMP_REL);
     TEST("[lint-gate] E1 lib/domain WARN tier: clean, WARN-prints (exit 0) on oversized lib file, recovers") {
+        ASSERT(ratchet_rc == 0);
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
-        /* WARN, not FAIL: this tier never fails the build. */
+        /* WARN, not FAIL: a single new WARN-tier violation never fails the
+         * build on its own (the isolated ratchet above keeps this test
+         * independent of the real tree's already-reviewed aggregate drift). */
         ASSERT(warn_rc == 0);
         ASSERT(warn_read == 0);
         ASSERT(warn_out != NULL && strstr(warn_out, "WARN") != NULL);

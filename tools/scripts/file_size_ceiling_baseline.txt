@@ -19,13 +19,13 @@
 # Sorted by path.
 
 app/controllers/src/agent_anchor_status_controller.c 861
-app/controllers/src/agent_controller.c 895
-app/controllers/src/api_controller_status.c 898
+app/controllers/src/agent_controller.c 842
+app/controllers/src/api_controller_status.c 896
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 807
-app/jobs/src/tip_finalize_stage.c 808
-app/jobs/src/utxo_apply_stage.c 979
+app/jobs/src/tip_finalize_stage.c 807
+app/jobs/src/utxo_apply_stage.c 973
 app/services/src/block_index_loader.c 1226
 app/services/src/consensus_state_publication_cas.c 801
 app/services/src/node_db_catchup_service.c 886
@@ -45,8 +45,8 @@ app/views/src/explorer_pages_view.c 823
 # boot.c; baseline is the merged wc -l.
 config/src/boot.c 4479
 config/src/boot_index.c 853
-config/src/boot_refold_staged.c 2025
-config/src/boot_services.c 1711
-config/src/consensus_state_producer_receipt.c 810
-config/src/consensus_state_snapshot_install_activate.c 1137
+config/src/boot_refold_staged.c 2024
+config/src/boot_services.c 1704
+config/src/consensus_state_producer_receipt.c 805
+config/src/consensus_state_snapshot_install_activate.c 1128
 app/services/src/header_sync_service.c 812

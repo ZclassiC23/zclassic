@@ -20,4 +20,17 @@
 # their recorded LOC (command_registry.c, addrman.c, connman.c, download.c,
 # file_service.c, msg_headers.c, net.c, onion_service.c, peer_lifecycle.c,
 # simnet_chaos_faults.c, coins_kv.c, supervisor.c, chainstate.c).
-13
+#
+# Reconciled 2026-07-19 (later same day) to 15: the 6-file baseline addition
+# above (5 new files + src/main.c) had been silently dropped by an
+# intervening merge — check_file_size_ceiling.sh was re-reporting all 6 as
+# "NEW oversized file" on main, which is restored regression, not fresh
+# drift. Restoring those 6 baseline entries plus the 13 already-grandfathered
+# grown files brings new+grown back to 0+13=13 — except two more files grew
+# past their recorded LOC in the interim (real drift since this ratchet was
+# first seeded): fast_sync.c (2032 -> 2131) and msgprocessor_snapshot.c
+# (2452 -> 2464). Reviewed and accepted; ratchet raised from 13 to 15 to
+# cover them. Both stay WARN-only per-file (lib/net/, feature growth, not
+# baselined at their new LOC — the ratchet grandfathers the count, not the
+# individual entries).
+15

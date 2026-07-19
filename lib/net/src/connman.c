@@ -2008,7 +2008,7 @@ static void *thread_socket_handler(void *arg)
                             v2_dropped = true;
                         } else {
                             /* Handshake replies / flushed sealed pending go out
-                             * verbatim; cs_recv held, this takes cs_send. */
+                             * unmodified; cs_recv held, this takes cs_send. */
                             if (wire_len)
                                 p2p_node_queue_raw(node, wire, wire_len);
                             plain = (const char *)dec;

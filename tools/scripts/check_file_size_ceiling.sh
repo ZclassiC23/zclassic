@@ -37,7 +37,20 @@
 # for straight-line generated/tabular code where LOC is not a complexity
 # signal (e.g. crypto field-arithmetic tables), add it to LIB_ALLOWLIST
 # below to skip it entirely.
+#
+# `--fix`: a file SHRINKING below its recorded baseline is progress, never a
+# failure (see "shrink" below) — but it also must never be a silent no-op
+# forever, or the ratchet stops closing. `check_file_size_ceiling.sh --fix`
+# rewrites every shrink-flagged baseline entry (both tiers) to the file's
+# current line count and exits 0. Growth/new-violation handling is
+# unaffected: --fix never touches a NEW or GROWN entry, and the normal
+# FAIL/WARN reporting below still runs against the (now-tightened) baseline.
 set -euo pipefail
+
+FIX_MODE=0
+if [ "${1:-}" = "--fix" ]; then
+    FIX_MODE=1
+fi
 
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
@@ -97,7 +110,10 @@ check_tier() {
             if [ "$loc" -gt "$recorded" ]; then
                 grown_out+=("$f grew to $loc lines (baseline $recorded)")
             elif [ "$loc" -lt "$recorded" ] && [ "$loc" -gt "$ceiling" ]; then
-                shrink_out+=("$f is now $loc lines (baseline $recorded, ceiling $ceiling) — tighten the baseline entry to $loc")
+                # Structured "path|current-loc|recorded|ceiling" — printers
+                # format the human message; --fix parses the same fields to
+                # rewrite the baseline entry without re-deriving anything.
+                shrink_out+=("$f|$loc|$recorded|$ceiling")
             fi
             continue
         fi
@@ -105,6 +121,59 @@ check_tier() {
             new_out+=("$f is $loc lines (ceiling $ceiling)")
         fi
     done
+}
+
+# Print a tier's shrink advisory from its structured shrink_out array (see
+# check_tier above), and — in --fix mode — rewrite each flagged entry's
+# recorded LOC to its current line count directly in the baseline file.
+# Shrink NEVER affects the exit code; this only tightens the ratchet.
+print_and_maybe_fix_shrink() {
+    local -n pairs="$1"
+    local baseline_file="$2"
+    local heading="$3"
+    [ "${#pairs[@]}" -gt 0 ] || return 0
+
+    echo ""
+    echo "  $heading"
+    local pair sf sloc srecorded sceiling
+    for pair in "${pairs[@]}"; do
+        IFS='|' read -r sf sloc srecorded sceiling <<< "$pair"
+        echo "    $sf is now $sloc lines (baseline $srecorded, ceiling $sceiling) — tighten the baseline entry to $sloc"
+    done
+
+    [ "$FIX_MODE" -eq 1 ] || return 0
+
+    local mapfile_tmp
+    mapfile_tmp="$(mktemp)"
+    for pair in "${pairs[@]}"; do
+        IFS='|' read -r sf sloc srecorded sceiling <<< "$pair"
+        printf '%s\t%s\n' "$sf" "$sloc" >> "$mapfile_tmp"
+    done
+    awk -v mapfile="$mapfile_tmp" '
+        BEGIN {
+            while ((getline line < mapfile) > 0) {
+                split(line, a, "\t")
+                newloc[a[1]] = a[2]
+            }
+        }
+        {
+            stripped = $0
+            sub(/#.*/, "", stripped)
+            gsub(/^[ \t]+/, "", stripped)
+            gsub(/[ \t]+$/, "", stripped)
+            if (stripped != "") {
+                n = split(stripped, parts, /[ \t]+/)
+                path = parts[1]
+                if (path in newloc) {
+                    print path " " newloc[path]
+                    next
+                }
+            }
+            print $0
+        }
+    ' "$baseline_file" > "$baseline_file.zcl_fix_tmp" && mv "$baseline_file.zcl_fix_tmp" "$baseline_file"
+    rm -f "$mapfile_tmp"
+    echo "  --fix: tightened ${#pairs[@]} baseline entr$( [ "${#pairs[@]}" -eq 1 ] && echo y || echo ies ) in $baseline_file"
 }
 
 overall_fail=0
@@ -152,13 +221,8 @@ if [ "${#enforced_new[@]}" -gt 0 ] || [ "${#enforced_grown[@]}" -gt 0 ]; then
 else
     echo "check_file_size_ceiling: clean — ${enforced_baseline_count} baselined, no new/grown oversized files (ceiling $CEILING, app/+config/src/)"
 fi
-if [ "${#enforced_shrink[@]}" -gt 0 ]; then
-    echo ""
-    echo "  Baseline can tighten (files shrank but are still over ceiling):"
-    for s in "${enforced_shrink[@]}"; do
-        echo "    $s"
-    done
-fi
+print_and_maybe_fix_shrink enforced_shrink "$ENFORCED_BASELINE" \
+    "Baseline can tighten (files shrank but are still over ceiling):"
 
 # ── WARN tier: lib/ (excluding lib/test/) + domain/ + src/ ───────────────
 # src/ (main.c, cli.c — the binary's composition entrypoint) shares this
@@ -238,12 +302,7 @@ if [ "$lib_drift_count" -lt "$lib_drift_recorded" ]; then
     echo "  Drift ratchet can tighten: $DRIFT_RATCHET records $lib_drift_recorded but current"
     echo "  drift is only $lib_drift_count — lower it to close the ratchet."
 fi
-if [ "${#lib_shrink[@]}" -gt 0 ]; then
-    echo ""
-    echo "  lib/domain baseline can tighten (files shrank but are still over ceiling):"
-    for s in "${lib_shrink[@]}"; do
-        echo "    $s"
-    done
-fi
+print_and_maybe_fix_shrink lib_shrink "$LIB_BASELINE" \
+    "lib/domain baseline can tighten (files shrank but are still over ceiling):"
 
 exit "$overall_fail"
