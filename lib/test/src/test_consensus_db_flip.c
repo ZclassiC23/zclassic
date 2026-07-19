@@ -27,6 +27,7 @@
 #include "util/stage.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -375,6 +376,57 @@ int test_consensus_db_flip(void)
         CKF("kernel path prefers consensus.db when present",
             consensus_db_kernel_store_path(dir, out, sizeof(out)) &&
             strstr(out, "consensus.db") != NULL);
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── STEADY-STATE finalize is cheap: no spurious txn/open on post-flip boots.
+     * (1) An already-drained drop (ndrop==0) opens progress.kv to enumerate but
+     *     takes NO BEGIN IMMEDIATE write transaction.
+     * (2) Once the schema marker is stamped, consensus_db_finalize_flip
+     *     short-circuits — it does not open progress.kv at all. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "consensus_db_flip", "steady");
+        char cpath[300];
+        snprintf(cpath, sizeof(cpath), "%s/consensus.db", dir);
+
+        CKF("steady: source builds", flip_build_source(dir));
+        CKF("steady: migrate succeeds",
+            consensus_db_migrate_from_progress(dir, err, sizeof(err)));
+
+        /* First drop has tables to remove → it DOES take a write transaction. */
+        unsigned long begins0 = atomic_load(&g_consensus_db_drop_txn_begins);
+        CKF("steady: first drop succeeds",
+            consensus_db_drop_migrated_from_progress(dir, err, sizeof(err)));
+        CKF("steady: first drop took a write txn (had tables to drop)",
+            atomic_load(&g_consensus_db_drop_txn_begins) > begins0);
+
+        /* Second drop finds nothing (ndrop==0): opens+enumerates but NO BEGIN. */
+        unsigned long opens1 = atomic_load(&g_consensus_db_drop_pdb_opens);
+        unsigned long begins1 = atomic_load(&g_consensus_db_drop_txn_begins);
+        CKF("steady: drained drop succeeds",
+            consensus_db_drop_migrated_from_progress(dir, err, sizeof(err)));
+        CKF("steady: drained drop opened progress.kv to enumerate",
+            atomic_load(&g_consensus_db_drop_pdb_opens) > opens1);
+        CKF("steady: drained drop took NO write txn (ndrop==0)",
+            atomic_load(&g_consensus_db_drop_txn_begins) == begins1);
+
+        /* Stamp the flip marker, then finalize_flip must short-circuit entirely:
+         * it never opens progress.kv again. */
+        sqlite3 *cdb = NULL;
+        bool opened = sqlite3_open_v2(cpath, &cdb,
+            SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK;
+        CKF("steady: consensus.db opens for marker", opened);
+        CKF("steady: schema marker writes",
+            cdb && consensus_db_write_schema_marker(cdb, err, sizeof(err)));
+
+        unsigned long opens2 = atomic_load(&g_consensus_db_drop_pdb_opens);
+        CKF("steady: finalize_flip succeeds after marker",
+            cdb && consensus_db_finalize_flip(dir, cdb, err, sizeof(err)));
+        CKF("steady: finalize_flip short-circuits (no progress.kv open)",
+            atomic_load(&g_consensus_db_drop_pdb_opens) == opens2);
+
+        if (cdb) sqlite3_close(cdb);
         test_cleanup_tmpdir(dir);
     }
 

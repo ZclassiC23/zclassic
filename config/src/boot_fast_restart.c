@@ -85,15 +85,6 @@ void boot_fast_restart_evaluate(const struct shutdown_clean_binding *binding,
     snprintf(out->reason, sizeof(out->reason), "all-bindings-verified");
 }
 
-void boot_fast_restart_arm_flat_loader(void)
-{
-    struct shutdown_clean_binding fr;
-    if (boot_shutdown_marker_peek_fast_restart_binding(&fr) &&
-        boot_shutdown_marker_quick_check_was_skipped())
-        block_index_loader_arm_trust_flat_fields(
-            fr.fr_block_index_count, fr.fr_tip_hash, fr.fr_tip_height);
-}
-
 bool boot_fast_restart_try(struct main_state *ms,
                            struct block_index **out_tip)
 {

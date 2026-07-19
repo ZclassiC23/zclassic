@@ -2283,12 +2283,8 @@ bool app_init(struct app_context *ctx)
             loaded = true;
         }
 
-        /* Tier-2 P2: arm the flat loader to skip forward-pass re-derivation
-         * under a verified-clean binding (no-op otherwise). */
-        if (!rebuilt_from_log) {
-            boot_fast_restart_arm_flat_loader();
+        if (!rebuilt_from_log)
             loaded = load_block_index_flat(ctx->datadir, &g_state).ok;
-        }
         if (!rebuilt_from_log && !loaded && g_node_db.open)
             loaded = load_block_index_sqlite(&g_node_db, &g_state).ok;
 
@@ -2920,10 +2916,10 @@ bool app_init(struct app_context *ctx)
                 sp->nStatus &= ~BLOCK_FAILED_MASK;
                 scan_cleared_failed++;
             }
-            /* Best header (most chain work) */
-            if (!scan_best_header ||
-                arith_uint256_compare(&sp->nChainWork,
-                                      &scan_best_header->nChainWork) > 0)
+            /* Best header: most chain work; height tiebreak/fallback when either side's work is zero (a rebuild-from-blocks data gap must not silently cap best_header — same rule as promote_best_header_after_load). */
+            if (!scan_best_header || (arith_uint256_is_zero(&sp->nChainWork) || arith_uint256_is_zero(&scan_best_header->nChainWork)
+                 ? sp->nHeight > scan_best_header->nHeight
+                 : arith_uint256_compare(&sp->nChainWork, &scan_best_header->nChainWork) > 0))
                 scan_best_header = sp;
             /* Fallback: most work with HAVE_DATA + nChainTx */
             if ((sp->nStatus & BLOCK_HAVE_DATA) && sp->nChainTx > 0) {

@@ -21,12 +21,6 @@ struct shutdown_clean_binding;
 struct main_state;
 struct block_index;
 
-/* Pre-flat-load arm: if this boot's marker carries a fast-restart binding and
- * node.db verified byte-clean (quick_check skipped), arm the flat block-index
- * loader to trust its SHA3-verified stored fields and skip the forward-pass
- * re-derivation. No-op otherwise. Call BEFORE load_block_index_flat. */
-void boot_fast_restart_arm_flat_loader(void);
-
 /* Post-flat decision + install. Verifies the clean-shutdown bindings against the
  * loaded state; on a full match, installs the tip from the in-memory index (no
  * per-height disk header re-read) and returns true with *out_tip set. Records

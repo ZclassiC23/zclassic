@@ -70,12 +70,20 @@ int main(int argc, char **argv)
 
     char path[4096];
     if (is_dir(arg)) {
-        snprintf(path, sizeof(path), "%s/progress.kv", arg);
+        /* Kernel-store path semantics (consensus_db_kernel_store_path): on a
+         * flipped datadir the reducer kernel (stage_cursor, progress_meta, the
+         * stage *_log journals this tool reads) lives in consensus.db and was
+         * dropped from progress.kv — so prefer consensus.db when present and
+         * fall back to the legacy progress.kv only when it is absent. */
+        snprintf(path, sizeof(path), "%s/consensus.db", arg);
+        if (!is_regular_file(path))
+            snprintf(path, sizeof(path), "%s/progress.kv", arg);
     } else {
         snprintf(path, sizeof(path), "%s", arg);
     }
     if (!is_regular_file(path)) {
-        fprintf(stderr, "progress.kv not found: %s\n", path);
+        fprintf(stderr, "kernel store (consensus.db/progress.kv) not found: %s\n",
+                path);
         return 3;
     }
 
