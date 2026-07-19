@@ -5,7 +5,9 @@
 #
 # DRY-RUN BY DEFAULT — prints the classification table and the reclaimable
 # byte total; nothing is removed unless --apply is passed explicitly.
-# Bucket method follows docs/work/worktree-cleanup-2026-07-16.md:
+# Bucket method (formalized from a one-off 2026-07-16 manual audit; recover
+# that doc with `git log --follow -- docs/work/worktree-cleanup-2026-07-16.md`
+# if the original write-up is ever needed):
 #
 #   locked         -> skip unconditionally (git worktree lock = live lane)
 #   merged + clean -> removal candidate (git worktree remove + git branch -D)
