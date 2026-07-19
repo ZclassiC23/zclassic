@@ -4524,6 +4524,20 @@ check-blocker-escape-registered:
 	@echo "══ LINT: blocker escape-action totality ══"
 	@./tools/scripts/check_blocker_escape_registered.sh
 
+# Gate — blocker remedy totality (HARD, no baseline; ratchets by exhaustive
+# enumeration instead). docs/work/hold-class-audit-2026-07-10.md defect D3
+# (`utxo_apply.nullifier_backfill_gap` had ZERO auto-remedy path anywhere in
+# the tree and wedged the canonical node for weeks): a typed blocker with an
+# empty escape_action and no auto-remedy condition looks exactly like any
+# other well-formed typed blocker. This gate makes every blocker id/pattern a
+# production call site can raise resolve to a checked-in row in
+# app/conditions/include/conditions/blocker_remedy_bindings.def — a real
+# condition name (checked to exist) or the honest token OWNER — so a new
+# permanent-no-cure blocker cannot be added without declaring that fact.
+check-blocker-remedy:
+	@echo "══ LINT: blocker remedy totality ══"
+	@./tools/scripts/check_blocker_remedy.sh
+
 # Gate #18 graduated WARN → RATCHET (E10): fails on any new off-shape
 # app/ .c file (the allowlist is the baseline and is currently empty).
 check-framework-shape:
@@ -4993,6 +5007,7 @@ LINT_GATES := \
     check-test-registration \
     check-typed-blocker \
     check-blocker-escape-registered \
+    check-blocker-remedy \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \

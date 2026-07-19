@@ -1,0 +1,170 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * blocker_remedy_bindings — the ratchet baseline for "every named blocker
+ * declares its remedy" (docs/work/hold-class-audit-2026-07-10.md).
+ *
+ * Why this exists
+ * ----------------
+ * A typed blocker (lib/util/blocker.h) can pin H* forever with an empty
+ * escape_action AND no auto-remedy condition, and still look "handled"
+ * because it IS a typed, registry-visible fact. That is exactly the class
+ * that wedged the canonical node for weeks: `utxo_apply.nullifier_backfill_
+ * gap` (defect D3 in the hold-class audit) had zero auto-remedy path in
+ * the tree — only a human-readable reason string claiming an owner-gate
+ * that no code enforced or surfaced anywhere else. Nothing FAILED A BUILD
+ * over that gap. This table is the fix: every blocker id (or dynamic-id
+ * pattern) that any `blocker_init()`-family call in production code can
+ * produce MUST have a row here, and every row's remedy must be either a
+ * condition name (a live self-cure path, checked to exist in
+ * condition_registry.def) or the literal token OWNER (an honest admission
+ * that no auto-remedy exists in-tree and only an operator can clear it).
+ *
+ * This is a RATCHET, not a design document: it doesn't invent new remedies
+ * (see hold-class-audit D2/D3 — those stay OWNER until a real cure lands),
+ * it just makes the "no cure path" class impossible to add silently. The
+ * enforcing gate is tools/scripts/check_blocker_remedy.sh (wired into
+ * `make lint`): it extracts every blocker id/pattern a production call
+ * site can actually construct and fails the build if any of them is
+ * missing from this table, or if a row's remedy names a condition that
+ * doesn't exist.
+ *
+ * Row format
+ * ----------
+ *   ZCL_BLOCKER_REMEDY(id_or_pattern, remedy)
+ *
+ * `id_or_pattern` is either:
+ *   - an EXACT blocker id, as passed verbatim to blocker_init() / the
+ *     handful of wrapper functions the gate also recognizes
+ *     (chain_linkage_hold_raise, sentinel_raise_blocker,
+ *     name_dependency_blocker); or
+ *   - a PATTERN containing literal `*` wildcard(s) for the
+ *     runtime-substituted part(s) of a dynamically-built id (e.g.
+ *     "coin_backfill.unprovable.*" for `snprintf(id, ..., "coin_backfill.
+ *     unprovable.%d", h)`). The pattern text must match, character for
+ *     character (specifiers collapsed to `*`), a `/* blocker-id: <pattern>
+ *     *​/` marker comment the gate finds at the id's construction site —
+ *     see e.g. app/conditions/src/catalog_lag_exceeded.c. A blocker_init
+ *     call whose id argument is a bare (non-literal, non-macro) variable
+ *     is a "dynamic site": its FILE must carry at least one such marker or
+ *     the gate fails it directly, independent of this table.
+ *
+ * `remedy` is either:
+ *   - the name of a condition-engine healer (a ZCL_CONDITION(<name>) entry
+ *     in condition_registry.def, or a matching `#define <X>_COND_NAME`
+ *     literal) that detects/witnesses/clears this exact blocker (either
+ *     directly — it IS the same condition that raised it — or drives the
+ *     underlying state that lets the original raiser self-clear, e.g.
+ *     sapling_anchor_frontier_unavailable arming the refold that lets
+ *     utxo_apply_anchors.c's own blocker_clear() fire); or
+ *   - the literal token OWNER: no auto-remedy exists in-tree. The blocker
+ *     is either a genuine terminal/consensus-refusal fact (never meant to
+ *     self-clear), a bounded-retry TRANSIENT that pages the operator on
+ *     budget exhaustion, or a documented gap (D2/D3) awaiting a real fix.
+ *     OWNER is never a judgment that the blocker is *fine* to leave
+ *     uncured forever — it is the honest admission the audit demanded so
+ *     the gap is visible instead of silently assumed-handled.
+ *
+ * Adding a new blocker: add exactly one row here (condition name if a
+ * genuine self-cure path exists and is verified in code; OWNER otherwise).
+ * The gate fails the build until the row exists — that is the ratchet. */
+
+#ifndef ZCL_BLOCKER_REMEDY
+#error "define ZCL_BLOCKER_REMEDY(id_or_pattern, remedy) before including blocker_remedy_bindings.def"
+#endif
+
+/* ── Self-witnessing conditions: the condition that raises the blocker  ──
+ * also detects/witnesses its own clear (poll_secs cadence, cleared on
+ * real state movement, not on blocker-registry state alone). ────────── */
+ZCL_BLOCKER_REMEDY(sync_rate_below_floor,                    sync_rate_below_floor)
+ZCL_BLOCKER_REMEDY(header_repair_no_source,                  stale_validate_headers_repair)
+ZCL_BLOCKER_REMEDY(net_partition_suspected,                  net_partition_suspected)
+ZCL_BLOCKER_REMEDY(reducer_drive_stuck,                      reducer_drive_watchdog)
+ZCL_BLOCKER_REMEDY(net_eclipse_suspected,                    net_eclipse_suspected)
+ZCL_BLOCKER_REMEDY(net_tip_regression,                       net_tip_regression)
+ZCL_BLOCKER_REMEDY(stage_step_budget_exceeded,                stage_step_budget_exceeded)
+ZCL_BLOCKER_REMEDY(net_fork_detected,                         net_fork_detected)
+ZCL_BLOCKER_REMEDY(batch_fsync_slow,                          batch_fsync_slow)
+ZCL_BLOCKER_REMEDY(memory-pressure,                            memory_pressure_high)
+ZCL_BLOCKER_REMEDY(disk-full,                                  disk_full_pause)
+ZCL_BLOCKER_REMEDY(mirror.divergence_located,                  mirror_divergence_located)
+ZCL_BLOCKER_REMEDY(catalog.*.lag_exceeded,                     catalog_lag_exceeded)
+
+/* ── Cross-condition remedies: a different condition's escalation ladder
+ * drives the state that lets the original raiser's own blocker_clear()
+ * fire (verified by reading both sides — see hold-class-audit-2026-07-10
+ * sites 5 and 9; site 3 is the audit's own documented "indirect" call). */
+ZCL_BLOCKER_REMEDY(reducer_frontier.upstream_log_hole,        reducer_frontier_reconcile_light)
+ZCL_BLOCKER_REMEDY(utxo_apply.anchor_backfill_gap,             sapling_anchor_frontier_unavailable)
+ZCL_BLOCKER_REMEDY(script_validate.prevout_unresolved,         reducer_frontier_reconcile_light)
+ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_reconcile_light)
+
+/* ── OWNER — no auto-remedy condition exists in-tree (the visible debt).
+ * hold-class-audit-2026-07-10 defects D2/D3 are the two most-cited
+ * instances; the rest of this list is the FULL enumeration the audit
+ * warned was needed ("D1's untyped holds... is the one change that
+ * brings a currently-invisible hold class under the meta-detector" —
+ * this table does the equivalent for every already-typed hold). ────── */
+ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* D3 */
+ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.upstream_evidence_mode,          OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.stale_upstream_hash,             OWNER)
+ZCL_BLOCKER_REMEDY(proof_validate.internal_error,              OWNER) /* D2 */
+ZCL_BLOCKER_REMEDY(params_missing,                             OWNER)
+ZCL_BLOCKER_REMEDY(proof_validate.stale_upstream_hash,         OWNER)
+ZCL_BLOCKER_REMEDY(proof_validate.invalid_upstream_verdict,    OWNER)
+ZCL_BLOCKER_REMEDY(proof_validate.upstream_evidence_mode,      OWNER)
+ZCL_BLOCKER_REMEDY(header_admit,                               OWNER)
+ZCL_BLOCKER_REMEDY(reducer_frontier.script_undetermined,       OWNER)
+ZCL_BLOCKER_REMEDY(body_fetch.header_solution_missing,         OWNER)
+ZCL_BLOCKER_REMEDY(validate_headers.window_resolve_miss,       OWNER)
+ZCL_BLOCKER_REMEDY(header_band_hole,                           OWNER)
+ZCL_BLOCKER_REMEDY(utxo_recovery.rewind_overshoot,              OWNER)
+ZCL_BLOCKER_REMEDY(ops.binary_stale,                            OWNER)
+ZCL_BLOCKER_REMEDY(utxo_ladder_mismatch,                        OWNER)
+ZCL_BLOCKER_REMEDY(chain.tip_behind_header_chain,               OWNER)
+ZCL_BLOCKER_REMEDY(sha3_window_mismatch,                        OWNER)
+ZCL_BLOCKER_REMEDY(tip_finalize.uv_cursor_gap,                  OWNER)
+ZCL_BLOCKER_REMEDY(tip_finalize.validation_evidence,            OWNER)
+ZCL_BLOCKER_REMEDY(tip_finalize.rewind_churn,                   OWNER)
+ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               OWNER)
+ZCL_BLOCKER_REMEDY(chain.linkage_violation,                     OWNER)
+ZCL_BLOCKER_REMEDY(authority_projection_divergence,             OWNER)
+ZCL_BLOCKER_REMEDY(self_heal.unsupervised,                      OWNER)
+ZCL_BLOCKER_REMEDY(connman_reactor_overflow,                    OWNER)
+ZCL_BLOCKER_REMEDY(bg_validation.reverify_failed,               OWNER)
+ZCL_BLOCKER_REMEDY(recovery_coordinator.no_applicable_rung,     OWNER)
+ZCL_BLOCKER_REMEDY(seed.linkage_gate,                           OWNER)
+ZCL_BLOCKER_REMEDY(seed.torn_import,                            OWNER)
+ZCL_BLOCKER_REMEDY(snapshot_sync.activation_unified_installer_required, OWNER)
+ZCL_BLOCKER_REMEDY(coin_backfill.owner_gate,                    OWNER)
+ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_base,         OWNER)
+ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_consumer,     OWNER)
+ZCL_BLOCKER_REMEDY(sticky_escalator.refold_no_anchor_artifact,  OWNER)
+ZCL_BLOCKER_REMEDY(coins.commitment_spot_check,                 OWNER)
+ZCL_BLOCKER_REMEDY(authority.pair_self_check,                   OWNER)
+ZCL_BLOCKER_REMEDY(window.consistency,                          OWNER)
+
+/* ── OWNER, dynamic-id families (cross-cutting supervisory infra + sim/
+ * fuzz harnesses — a per-name/height/reason-code blocker id, not a
+ * single subsystem's own condition). ────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(stage_spin_*,                                OWNER)
+ZCL_BLOCKER_REMEDY(*.disk_low,                                  OWNER)
+ZCL_BLOCKER_REMEDY(*.below_snapshot_seed,                       OWNER)
+ZCL_BLOCKER_REMEDY(stage_stalled_*,                             OWNER)
+ZCL_BLOCKER_REMEDY(thread_stalled_*,                            OWNER)
+ZCL_BLOCKER_REMEDY(thread_restart_storm_*,                      OWNER)
+ZCL_BLOCKER_REMEDY(mirror.*,                                    OWNER)
+ZCL_BLOCKER_REMEDY(coin_backfill.unprovable.*,                  OWNER)
+ZCL_BLOCKER_REMEDY(coin_backfill.*,                             OWNER)
+ZCL_BLOCKER_REMEDY(simnet_byz.*,                                OWNER)
+ZCL_BLOCKER_REMEDY(*.body_read_failed,                          OWNER)
+ZCL_BLOCKER_REMEDY(worker.stall.*,                              OWNER)
+ZCL_BLOCKER_REMEDY(chaos.stage_stall,                           OWNER)
+
+/* ── OWNER — boot-time one-shot mint/refold tooling (config/src/, not the
+ * live reducer). ─────────────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(mint_fold.frontier_walled,                   OWNER)
+ZCL_BLOCKER_REMEDY(mint_bundle.export_failed,                   OWNER)
+ZCL_BLOCKER_REMEDY(refold.body_gap,                             OWNER)

@@ -37,6 +37,7 @@ static _Atomic int g_test_remedy_calls;
 #endif
 
 /* Build the typed blocker id for an index. */
+/* blocker-id: catalog.*.lag_exceeded */
 static void lag_blocker_id(const char *name, char *out, size_t cap)
 {
     snprintf(out, cap, "catalog.%s.lag_exceeded", name ? name : "unknown");

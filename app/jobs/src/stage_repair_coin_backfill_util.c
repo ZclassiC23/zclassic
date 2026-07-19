@@ -559,16 +559,19 @@ bool coin_backfill_page_refusal(enum coin_backfill_status st, int h,
     const char *escape;
     switch (st) {
     case COIN_BACKFILL_OWNER_REFUSED:
+        /* blocker-id: coin_backfill.owner_gate */
         snprintf(id, sizeof(id), "coin_backfill.owner_gate");
         cls = BLOCKER_DEPENDENCY;
         escape = "export " COIN_BACKFILL_ACK_ENV "=1 in the unit env, restart";
         break;
     case COIN_BACKFILL_REFUSED_UNPROVABLE:
+        /* blocker-id: coin_backfill.unprovable.* */
         snprintf(id, sizeof(id), "coin_backfill.unprovable.%d", h);
         cls = BLOCKER_DEPENDENCY;
         escape = "fetch deep body via rebuild_recent / -cold-import";
         break;
     default: /* REFUSED_SPENT / MARKER_SEEN: refuse, never guess */
+        /* blocker-id: coin_backfill.* */
         snprintf(id, sizeof(id), "coin_backfill.%d", h);
         cls = BLOCKER_PERMANENT;
         escape = "operator: investigate lost-coin class / consensus divergence";

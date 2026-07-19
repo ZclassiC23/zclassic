@@ -192,6 +192,7 @@ static void lms_record_unknown_comparison(const char *code, const char *msg)
 
     struct blocker_record secondary;
     char blocker_id[BLOCKER_ID_MAX];
+    /* blocker-id: mirror.* */
     snprintf(blocker_id, sizeof(blocker_id), "mirror.%s",
              code && code[0] ? code : "comparison-unavailable");
     if (blocker_init(&secondary, blocker_id, "legacy_mirror",

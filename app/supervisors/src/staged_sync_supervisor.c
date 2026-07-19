@@ -254,6 +254,7 @@ static const char *staged_stage_short_name(const char *dotted_name)
 }
 
 /* Build the "stage_stalled_<name>" blocker id into `buf` (>= BLOCKER_ID_MAX). */
+/* blocker-id: stage_stalled_* */
 static void staged_stage_blocker_id(char *buf, size_t buflen,
                                     const char *dotted_name)
 {

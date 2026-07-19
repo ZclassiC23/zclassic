@@ -119,6 +119,7 @@ static int reducer_stage_spin_rounds(void)
 }
 
 /* Build the "stage_spin_<name>" blocker id into `buf` (>= BLOCKER_ID_MAX). */
+/* blocker-id: stage_spin_* */
 static void reducer_spin_blocker_id(char *buf, size_t buflen, const char *name)
 {
     snprintf(buf, buflen, "stage_spin_%s", name ? name : "unknown");

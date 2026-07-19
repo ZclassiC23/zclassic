@@ -437,6 +437,7 @@ static bool raise_blocker(enum simnet_byzantine_class kind,
     enum blocker_class cls =
         simnet_byzantine_blocker_class_for_reason(reject_reason);
     char id[64];
+    /* blocker-id: simnet_byz.* */
     snprintf(id, sizeof(id), "simnet_byz.%s",
              simnet_byzantine_class_name(kind));
     char reason[192];
