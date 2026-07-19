@@ -241,11 +241,20 @@ void wallet_at_rest_boot_report(enum wallet_boot_wallet_action action,
         break;
     case WALLET_BOOT_REFUSE:
     default:
-        fprintf(stderr, "\nFATAL: refusing to create a new PLAINTEXT wallet "
-            "— private keys (transparent WIF, Sapling spending keys, HD seed) "
-            "would be stored UNENCRYPTED in node.db. Set ZCL_WALLET_PASSPHRASE "
-            "to encrypt at rest (recommended), or pass -allow-plaintext-wallet "
-            "to accept the risk explicitly (logged loudly every boot).\n\n");
+        /* No passphrase, no opt-in: do NOT mint plaintext keys AND do NOT
+         * refuse to boot. A full node's job is to sync consensus state; the
+         * spendable wallet is an optional overlay. Boot keyless (no-spend)
+         * and sync now — creating a spendable wallet is deferred until the
+         * operator makes the at-rest decision. This keeps the security
+         * posture (zero plaintext keys ever minted silently) without making
+         * a wallet flag a precondition for syncing. */
+        fprintf(stderr, "\nNOTICE: no wallet passphrase set — booting in "
+            "NO-SPEND mode (0 keys minted). The node will SYNC normally; "
+            "sending/receiving stays disabled until you make a wallet "
+            "decision: set ZCL_WALLET_PASSPHRASE to create an ENCRYPTED "
+            "wallet (recommended), or pass -allow-plaintext-wallet to create "
+            "an unencrypted one. No private keys are written to node.db in "
+            "this mode.\n\n");
         break;
     }
 }
