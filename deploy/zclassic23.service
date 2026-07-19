@@ -68,6 +68,16 @@ RestartMaxDelaySec=600
 # manager starts its TimeoutStopSec clock.
 ExecStop=/bin/sh -c 'for i in 1 2 3; do /bin/kill -TERM "$MAINPID" 2>/dev/null || exit 0; sleep 2; done'
 
+# Truthful verdict, systemd side. The binary itself writes the authoritative
+# `shutdown-receipt.v1` into the datadir on every clean-or-forced-but-durable
+# stop (see app_shutdown_svc / util/shutdown_stagewatch.h) — a from-genesis
+# mint whose work SUCCEEDED but whose teardown was force-exited past the
+# durability point records outcome=forced-after-durable there, NOT a failure.
+# systemd's own Result can still read `timeout`/`failed` in that case, so stamp
+# it next to the receipt: operators/tools compare the two and trust the
+# datadir. The leading `-` keeps a stamp failure from masking the real result.
+ExecStopPost=-/bin/sh -c 'printf "service_result=%s\nexit_code=%s\nexit_status=%s\n" "$SERVICE_RESULT" "$EXIT_CODE" "$EXIT_STATUS" > %h/.zclassic-c23/shutdown-systemd-result.v1'
+
 # WAL drain + Tor teardown budget. The earlier 90s ceiling was
 # breached in the 2026-05-18 session (15 restarts in 8 hours, every
 # stop SIGKILL'd because WAL fsync + Tor teardown didn't complete in

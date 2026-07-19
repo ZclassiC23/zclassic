@@ -6,6 +6,7 @@
 #include "config/boot_internal.h"
 #include "util/sysinit.h"
 #include "config/boot_shutdown_marker.h"
+#include "util/shutdown_stagewatch.h"
 #include "config/boot_background_workers.h"
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
@@ -1595,9 +1596,12 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 {
     extern volatile sig_atomic_t g_shutdown_requested;
 
-    /* Once graceful shutdown is actually running, give it its own bounded
-     * window instead of inheriting time already spent finishing startup. */
-    alarm(90);
+    /* Per-stage deadlines (shutdown_stagewatch_enter below) replace the old
+     * single alarm(90) cliff: each stage is timed + budgeted, a fired deadline
+     * names its stage and escalates truthfully, and a datadir receipt records
+     * the verdict so a forced-but-durable stop is never mis-reported as
+     * failure. See util/shutdown_stagewatch.h. */
+    shutdown_stagewatch_begin(svc->datadir);
 
     atomic_store(svc->running, false);
     process_block_set_gap_fill_kick(NULL, NULL);
@@ -1612,7 +1616,9 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     /* Emergency coins flush FIRST — minimize UTXO loss window.
      * SIGKILL from OOM killer / systemd timeout can arrive at any time
      * during shutdown. Flushing coins before anything else ensures the
-     * UTXO state is safe even if the rest of shutdown is interrupted. */
+     * UTXO state is safe even if the rest of shutdown is interrupted.
+     * Durability-critical: a fired deadline grants a grace, never a skip. */
+    shutdown_stagewatch_enter("emergency-coins-flush", 30, true, true);
     if (svc->coins_tip) {
         printf("Emergency coins flush...\n");
         (void)shutdown_flush_coins_to_sqlite(svc, "emergency");
@@ -1623,8 +1629,14 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * the network is still draining. New block_msg arrivals between
      * here and quiesce will short-circuit at the global hook. */
 
+    shutdown_stagewatch_enter("frontend-stop", 15, false, true);
     shutdown_stop_frontend_services(svc);
+    shutdown_stagewatch_enter("network-quiesce", 30, true, true);
     shutdown_quiesce_network_and_flush_coins(svc);
+    /* runtime-persist holds the final WAL checkpoint + wallet flush + mempool
+     * save — the slow-after-a-long-fold stage that used to breach the 90s
+     * cliff. Durability-critical: never skipped, only graced. */
+    shutdown_stagewatch_enter("runtime-persist", 45, true, true);
     shutdown_persist_runtime_state(svc);
 
     /* Tier-2 P2: record the fast-restart binding while state + progress.kv are
@@ -1639,8 +1651,15 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * Idempotent: app_shutdown() may re-write the identical marker. */
     boot_shutdown_marker_write_clean(svc->datadir);
 
+    /* THE durability point: coins flushed, node.db WAL-checkpointed + closed,
+     * clean marker written. Everything past here is resumable at next boot, so
+     * a fired deadline now forces a TRUTHFUL clean exit (0), not a false fail. */
+    shutdown_stagewatch_mark_durable();
+
     /* Durability secured; only best-effort teardown follows. The block-index flat cache is written AFTER the marker (it previously preceded the checkpoint and lost the marker on a mid-teardown kill). */
+    shutdown_stagewatch_enter("fast-restart-persist", 20, false, true);
     shutdown_persist_fast_restart_state(svc);
+    shutdown_stagewatch_enter("thread-join", 15, false, true);
     {
         int stragglers = thread_registry_join_all(2);
         if (stragglers > 0) {
@@ -1650,19 +1669,23 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
              * the destructive frees in shutdown_release_owned_resources would
              * race that thread (use-after-free on main_state / Sapling params /
              * caches it reads). Skip the frees and exit now — the OS reclaims
-             * everything microseconds later. */
+             * everything microseconds later. Durability was secured above, so
+             * record the CLEAN receipt first: this is a truthful success. */
             fprintf(stderr,
                     "[shutdown] %d background thread(s) still finishing; state is "
                     "already saved, exiting now\n",
                     stragglers);
+            shutdown_stagewatch_complete_clean();
             fflush(stdout);
             fflush(stderr);
             _exit(0);
         }
     }
     /* I-7b phase-2: net threads are joined; safe to destroy. */
+    shutdown_stagewatch_enter("release-resources", 15, false, true);
     shutdown_release_owned_resources(svc);
 
     printf("Shutdown complete.\n");
-    alarm(0);
+    /* Closes the last stage, cancels the alarm, writes the CLEAN receipt. */
+    shutdown_stagewatch_complete_clean();
 }
