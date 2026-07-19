@@ -92,6 +92,7 @@ void mirror_consensus_record_blocker(const char *reason)
      * a rate-limited dup, suppress event emission (spam guard). */
     struct blocker_record rec;
     char bid[BLOCKER_ID_MAX];
+    /* blocker-id: mirror.* */
     snprintf(bid, sizeof(bid), "mirror.%s", r[0] ? r : "unknown");
     enum blocker_class cls = mirror_consensus_classify_blocker_reason(r);
     blocker_init(&rec, bid, "mirror_consensus",

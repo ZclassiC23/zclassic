@@ -53,6 +53,7 @@ bool index_fold_disk_ok(const char *index_id, const char *subsys,
         return true;                         /* nothing to measure — fail open */
 
     char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.disk_low */
     mk_blocker_id(id, sizeof(id), index_id, "disk_low");
 
     /* The running disk_monitor already owns the hard CRITICAL refuse; a backfill
@@ -128,6 +129,7 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
         return;
 
     char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.below_snapshot_seed */
     mk_blocker_id(id, sizeof(id), index_id, "below_snapshot_seed");
 
     int64_t seed_floor = -1;

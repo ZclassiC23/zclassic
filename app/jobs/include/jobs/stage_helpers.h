@@ -235,6 +235,7 @@ static inline void stage_upstream_log_hole_note(const char *stage_name,
 {
     const char *sn = (stage_name && stage_name[0]) ? stage_name : "stage";
     char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.upstream_log_hole */
     snprintf(id, sizeof(id), "%s.upstream_log_hole", sn);
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
@@ -305,6 +306,7 @@ static inline job_result_t stage_body_read_hold(const char *stage_name,
 {
     const char *sn = (stage_name && stage_name[0]) ? stage_name : "stage";
     char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.body_read_failed */
     snprintf(id, sizeof(id), "%s.body_read_failed", sn);
     char hashhex[65] = "(unknown)";
     if (hash)

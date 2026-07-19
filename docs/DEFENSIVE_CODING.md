@@ -576,6 +576,7 @@ add/remove a gate.
 - `check-thread-supervision`
 - `check-typed-blocker`
 - `check-blocker-escape-registered`
+- `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`
 - `check-stage-log-reorg-unsafe`

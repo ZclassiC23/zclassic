@@ -164,6 +164,7 @@ supervisor_child_id thread_liveness_register(struct thread_liveness_child *c,
     c->contract.on_stall = tl_on_stall;
 
     atomic_store(&c->blocker_standing, false);
+    /* blocker-id: thread_stalled_* */
     snprintf(c->blocker_id, sizeof c->blocker_id, "thread_stalled_%s", name);
 
     supervisor_child_id id = supervisor_register(&c->contract);  // supervisor-root-ok:cross-cutting-infra-thread
@@ -231,6 +232,7 @@ supervisor_child_id thread_liveness_register_restartable(
     c->thread_name  = name;   /* process lifetime per the contract */
     c->worker_entry = entry;
     c->worker_arg   = arg;
+    /* blocker-id: thread_restart_storm_* */
     snprintf(c->storm_blocker_id, sizeof c->storm_blocker_id,
              "thread_restart_storm_%s", name);
     if (!atomic_load(&c->restart_lock_init)) {

@@ -34,6 +34,7 @@ void worker_on_stall(struct liveness_contract *c)
     {
         struct blocker_record br;
         char id[BLOCKER_ID_MAX];
+        /* blocker-id: worker.stall.* */
         snprintf(id, sizeof(id), "worker.stall.%s", name);
         if (blocker_init(&br, id, "boot.background_workers",
                          BLOCKER_TRANSIENT, reason)) {
