@@ -105,6 +105,8 @@ int test_app_context(void)
              lane == ZCL_OPERATOR_LANE_COPY;
         ok = ok && app_operator_lane_parse("repro", &lane) &&
              lane == ZCL_OPERATOR_LANE_COPY;
+        ok = ok && app_operator_lane_parse("standby", &lane) &&
+             lane == ZCL_OPERATOR_LANE_STANDBY;
         ok = ok && app_operator_lane_parse("unknown", &lane) &&
              lane == ZCL_OPERATOR_LANE_UNKNOWN;
         ok = ok && !app_operator_lane_parse("prod", &lane);
@@ -127,6 +129,8 @@ int test_app_context(void)
                         "test") == 0 &&
                  strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_COPY),
                         "copy") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_STANDBY),
+                        "standby") == 0 &&
                  strcmp(app_operator_lane_name((enum zcl_operator_lane)999),
                         "unknown") == 0);
 

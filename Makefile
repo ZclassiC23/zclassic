@@ -3857,6 +3857,47 @@ slo-probe-selftest:
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
 
+# ── Warm-standby serving lane + scripted atomic cutover ─────────────────────
+# The canonical serving identity (ports 8033/18232, ~/.zclassic-c23) had no
+# failover. install-standby installs the always-warm understudy unit; cutover
+# promotes a healthy candidate to canonical with a hard preflight + auto-
+# rollback. See deploy/zclassic23-standby.service and deploy/zclassic23-cutover.sh.
+.PHONY: install-standby cutover cutover-selftest
+
+install-standby:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-standby.service "$(HOME)/.config/systemd/user/zclassic23-standby.service"
+	@if [ ! -e "$(HOME)/.config/zclassic23/standby.env" ]; then \
+	    install -d "$(HOME)/.config/zclassic23"; \
+	    install -m 644 deploy/zclassic23-standby.env.example "$(HOME)/.config/zclassic23/standby.env"; \
+	    echo "seeded $(HOME)/.config/zclassic23/standby.env (edit STANDBY_DATADIR/PORT/RPCPORT)"; \
+	fi
+	@echo "installed zclassic23-standby.service. To arm the understudy:"
+	@echo "  systemctl --user daemon-reload && systemctl --user enable --now zclassic23-standby"
+
+# make cutover CANDIDATE_DATADIR=<path> [YES=1] [TIMEOUT=<secs>] [CANDIDATE_RPCPORT=<n>]
+# Owner-gated by design: without YES=1 the script prints the height comparison
+# and REFUSES. It never edits the canonical unit; it swaps datadirs underneath
+# it and auto-rolls-back if the promoted node does not reach the pre-cutover H*.
+cutover:
+	@[ -n "$(CANDIDATE_DATADIR)" ] || { echo "usage: make cutover CANDIDATE_DATADIR=<path> [YES=1]"; exit 2; }
+	@CANDIDATE_DATADIR="$(CANDIDATE_DATADIR)" \
+	 $(if $(CANDIDATE_RPCPORT),CANDIDATE_RPCPORT="$(CANDIDATE_RPCPORT)",) \
+	 $(if $(TIMEOUT),READY_TIMEOUT="$(TIMEOUT)",) \
+	 ./deploy/zclassic23-cutover.sh $(if $(filter 1 yes YES true,$(YES)),--yes,)
+
+# cutover-selftest: hermetic fixture proof of the preflight comparison + the
+# auto-rollback logic — mock units (SYSTEMCTL=echo), injected H* readers, two
+# throwaway fixture datadirs. No live nodes, no real systemd.
+cutover-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash deploy/zclassic23-cutover-selftest.sh 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^cutover-selftest: PASS"; then \
+	     echo "cutover-selftest: FAIL (rc=$$rc; no PASS line)"; \
+	     exit 1; \
+	 fi'
+
 # install-logrotate: Phase E2 — size-threshold node.log rotation with NO
 # external logrotate dependency (repo rule: no external deps). Rotates
 # every ~/.zclassic-c23*/node.log + mint-progress.log past 512 MiB,

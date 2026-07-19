@@ -112,6 +112,8 @@ const char *app_operator_lane_name(enum zcl_operator_lane lane)
         return "test";
     case ZCL_OPERATOR_LANE_COPY:
         return "copy";
+    case ZCL_OPERATOR_LANE_STANDBY:
+        return "standby";
     case ZCL_OPERATOR_LANE_UNKNOWN:
     default:
         return "unknown";
@@ -148,6 +150,10 @@ bool app_operator_lane_parse(const char *name,
         *out = ZCL_OPERATOR_LANE_COPY;
         return true;
     }
+    if (strcmp(name, "standby") == 0) {
+        *out = ZCL_OPERATOR_LANE_STANDBY;
+        return true;
+    }
     if (strcmp(name, "unknown") == 0) {
         *out = ZCL_OPERATOR_LANE_UNKNOWN;
         return true;
@@ -167,6 +173,7 @@ static bool operator_lane_is_automated_noncanonical(enum zcl_operator_lane lane)
     case ZCL_OPERATOR_LANE_SOAK:
     case ZCL_OPERATOR_LANE_TEST:
     case ZCL_OPERATOR_LANE_COPY:
+    case ZCL_OPERATOR_LANE_STANDBY:
         return true;
     case ZCL_OPERATOR_LANE_CANONICAL:
     case ZCL_OPERATOR_LANE_UNKNOWN:
