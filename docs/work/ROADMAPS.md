@@ -82,9 +82,14 @@ citations unresolvable. They stay at `docs/work/<name>.md` (not archived):
 (`docs/AGENT_TRAPS.md` §2 items 3/5 — JoinSplit Ed25519 sig + `fCoinbaseMustBeProtected`
 gating; `docs/AGENT_TRAPS.md` is not editable in the normal doc-rot sweep, so this
 file stays even though its own condensed summary now also lives in
-`docs/CONSENSUS_PARITY_DOCTRINE.md`'s "Landed parity fixes" section), and
-`tip-durability-collapse.md` (the coins_kv durability rationale, flagged
-"deferred deliberately" in the 2026-07-14 purge). `contextual-check-wiring-spec-2026-06-08.md`,
+`docs/CONSENSUS_PARITY_DOCTRINE.md`'s "Landed parity fixes" section), `tip-durability-collapse.md` (the coins_kv durability rationale, flagged
+"deferred deliberately" in the 2026-07-14 purge), and
+`canonical-frontier-derived-state-plan.md` (cited by
+`app/services/src/utxo_recovery_stale_cursor.c`, `app/jobs/src/utxo_apply_delta.c`,
+`app/jobs/include/jobs/reducer_frontier.h`, and `app/models/src/database_schema.c`
+for the two-invariant frontier-bounded/coins-bounded design it records — its own
+header marks the wedge it was written against as CURED, current gates are in
+`SOVEREIGN-NETWORK-ROADMAP.md`). `contextual-check-wiring-spec-2026-06-08.md`,
 `security-audit-response-2026-06-09.md`, `stability-improvements-2026-06-16.md`,
 and `hold-class-audit-2026-07-10.md` were in this category until the 2026-07-19
 doc-rot sweep (N4) re-pointed their few code citations at permanent homes
