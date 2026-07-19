@@ -6448,9 +6448,11 @@ static int t_boot_shutdown_persistence_order_contract(void)
          * block-index flat save runs. A kill during the slow flat save must not
          * be able to strand the marker, so the marker write must precede the
          * flat-save call. (This replaces the older "fast < connman_join"
-         * contract, which required the flat save before the checkpoint.) */
+         * contract, which required the flat save before the checkpoint.)
+         * The shutdown pipeline lives in boot_services_shutdown.c. */
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_services_shutdown.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
         char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
@@ -7302,12 +7304,19 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
 
         /* The process-block hooks were extracted to boot_tip_hooks.c
          * (behavior-neutral, Wave D). boot_services.c wires them via the seam
-         * call and retains the inline NULL teardown; the hook bodies + the
-         * non-NULL registration live in boot_tip_hooks.c. node_db is still
-         * reached via svc (runtime-owned) in both. */
+         * call; the inline NULL teardown moved with the shutdown pipeline to
+         * boot_services_shutdown.c. The hook bodies + the non-NULL
+         * registration live in boot_tip_hooks.c. node_db is still reached via
+         * svc (runtime-owned) in all three. */
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_register_process_block_hooks(svc)") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_services_shutdown.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
         ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(NULL, NULL, NULL)") != NULL);
         free(buf);
