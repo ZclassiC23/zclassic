@@ -10,6 +10,7 @@
 #define ZCL_JOBS_REDUCER_FRONTIER_REPLAY_TX_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct block;
 struct main_state;
@@ -63,5 +64,14 @@ bool reducer_frontier_replay_stale_proof_tx(struct sqlite3 *db,
                                             int proof_cursor,
                                             int utxo_cursor,
                                             const char *marker);
+
+/* Lane A1 ordering proof (test observability). Returns the monotonic sequence
+ * numbers stamped at the last committed kernel-authoritative rewind (TX1) and
+ * the last committed projection-side created_outputs backfill (TX2) of the
+ * stale-script reorg unwind. A projection commit ALWAYS carries a strictly
+ * greater sequence than the kernel commit it follows: proof that the projection
+ * tx never precedes the kernel tx. Either pointer may be NULL. */
+void reducer_frontier_replay_tx_commit_seqs(uint64_t *kernel_out,
+                                            uint64_t *projection_out);
 
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_REPLAY_TX_H */

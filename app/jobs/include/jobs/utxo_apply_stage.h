@@ -70,6 +70,17 @@ void utxo_apply_stage_shutdown(void);
 job_result_t utxo_apply_stage_step_once(void);
 int utxo_apply_stage_drain(int max_steps);
 
+/* Test observability for the lane-A1 decoupled created_outputs prune: `runs`
+ * counts how many times the post-commit prune tx committed; `last_floor` is the
+ * retention floor of the most recent successful prune (-1 if none). Both may be
+ * NULL. */
+void utxo_apply_post_prune_stats(uint64_t *runs, int64_t *last_floor);
+
+/* Test-only: lower the created_outputs retention window (default is thousands
+ * of blocks) so the decoupled post-commit prune fires over a short synthetic
+ * chain. -1 restores the compile-time default. */
+void utxo_apply_created_outputs_retain_set_for_test(int retain_blocks);
+
 uint64_t utxo_apply_stage_cursor(void);
 /* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
 int64_t  utxo_apply_stage_step_us_ewma(void);

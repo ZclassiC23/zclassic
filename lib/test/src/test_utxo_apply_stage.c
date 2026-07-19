@@ -11,6 +11,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "jobs/created_outputs_index.h"
 #include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_anchors.h"
@@ -274,6 +275,22 @@ static bool exec_sql(sqlite3 *db, const char *sql)
     int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
     if (err) sqlite3_free(err);
     return rc == SQLITE_OK;
+}
+
+/* Count created_outputs rows at `height` (lane-A1 prune subtest). */
+static int co_rows_at(sqlite3 *db, int height)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM created_outputs WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, height);
+    int n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return n;
 }
 
 static bool seed_proof_validate(sqlite3 *db, const struct synth_chain_uv *sc,
@@ -1962,6 +1979,91 @@ int test_utxo_apply_stage(void)
                  blocker_class_for("utxo_apply.fatal_store") ==
                      BLOCKER_PERMANENT);
         blocker_clear("utxo_apply.fatal_store");
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* ── Lane A1: created_outputs prune DECOUPLED from the kernel co-commit ──
+     * The prune now runs post-commit in its OWN tx from utxo_apply_stage_drain,
+     * computed from the final committed cursor. Proves: (1) a crash between the
+     * kernel commit and the prune leaves extra created_outputs rows that are
+     * harmless and get pruned on the NEXT advancing drain; (2) the coins
+     * commitment is invariant to the prune (no consensus value in it). Uses the
+     * test-only retention override so the prune fires over a 6-block chain. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        const int N = 6;
+        UV_CHECK("prune_decouple: setup",
+                 uv_setup("prune_decouple", N, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+        /* retention=2 → after applying to cursor C, prune floor = C-2. */
+        utxo_apply_created_outputs_retain_set_for_test(2);
+        /* Populate created_outputs for every height exactly as body_persist
+         * (the upstream stage) would; 2 outputs per block (coinbase + tx). */
+        UV_CHECK("prune_decouple: created_outputs schema",
+                 created_outputs_index_ensure_schema(db));
+        bool seeded_co = true;
+        for (int h = 0; h < N; h++)
+            seeded_co = seeded_co &&
+                created_outputs_index_put_block(db, &sc.bodies[h], h);
+        UV_CHECK("prune_decouple: created_outputs seeded 0..5", seeded_co);
+
+        uint64_t runs0 = 0; int64_t floor0 = 0;
+        utxo_apply_post_prune_stats(&runs0, &floor0);
+
+        /* Drain the first three heights → cursor=3 → post-commit prune floor=1
+         * → created_outputs h<1 pruned (h=0 gone), h>=1 retained. */
+        UV_CHECK("prune_decouple: drain 3", utxo_apply_stage_drain(3) == 3);
+        UV_CHECK("prune_decouple: cursor at 3", utxo_apply_stage_cursor() == 3);
+        uint64_t runs1 = 0; int64_t floor1 = 0;
+        utxo_apply_post_prune_stats(&runs1, &floor1);
+        UV_CHECK("prune_decouple: post-commit prune ran (own tx)",
+                 runs1 == runs0 + 1 && floor1 == 1);
+        UV_CHECK("prune_decouple: h=0 pruned below floor", co_rows_at(db, 0) == 0);
+        UV_CHECK("prune_decouple: h=1,2 retained at/above floor",
+                 co_rows_at(db, 1) == 2 && co_rows_at(db, 2) == 2);
+
+        /* Simulate a crash that left EXTRA stale rows a completed prune would
+         * have removed: re-insert h=0's created_outputs (below the future
+         * floor). The next advancing drain's post-commit prune must remove it. */
+        UV_CHECK("prune_decouple: re-seed stale h=0 (crash residue)",
+                 created_outputs_index_put_block(db, &sc.bodies[0], 0) &&
+                 co_rows_at(db, 0) == 2);
+
+        /* Drain the remaining three heights → cursor=6 → prune floor=4 →
+         * created_outputs h<4 pruned (the re-seeded h=0 residue + 1,2,3 gone),
+         * h>=4 retained. Extra rows pruned on the NEXT drain — convergence. */
+        UV_CHECK("prune_decouple: drain rest", utxo_apply_stage_drain(100) == 3);
+        UV_CHECK("prune_decouple: cursor at 6", utxo_apply_stage_cursor() == 6);
+        uint64_t runs2 = 0; int64_t floor2 = 0;
+        utxo_apply_post_prune_stats(&runs2, &floor2);
+        UV_CHECK("prune_decouple: second post-commit prune ran",
+                 runs2 == runs1 + 1 && floor2 == 4);
+        UV_CHECK("prune_decouple: crash-residue h=0 pruned on next drain",
+                 co_rows_at(db, 0) == 0);
+        UV_CHECK("prune_decouple: h=1,2,3 pruned below floor",
+                 co_rows_at(db, 1) == 0 && co_rows_at(db, 2) == 0 &&
+                 co_rows_at(db, 3) == 0);
+        UV_CHECK("prune_decouple: h=4,5 retained at/above floor",
+                 co_rows_at(db, 4) == 2 && co_rows_at(db, 5) == 2);
+
+        /* Coins commitment is INVARIANT to the prune: all 6 heights applied,
+         * every coinbase (50+h) and tx output (900+h) live, exactly 2*N coins.
+         * The prune touched only the created_outputs projection. */
+        bool coins_ok = coins_kv_count(db) == 2 * N;
+        for (int h = 0; h < N && coins_ok; h++) {
+            struct uint256 id; int64_t v = -1;
+            synthetic_txid(&id, h, 1);
+            coins_ok = coins_ok &&
+                coins_kv_get(db, id.data, 0, &v, NULL, 0, NULL) && v == 50 + h;
+            synthetic_txid(&id, h, 2);
+            v = -1;
+            coins_ok = coins_ok &&
+                coins_kv_get(db, id.data, 0, &v, NULL, 0, NULL) && v == 900 + h;
+        }
+        UV_CHECK("prune_decouple: coins commitment unchanged by prune", coins_ok);
+
+        utxo_apply_created_outputs_retain_set_for_test(-1);
         uv_teardown(dir, &ms, &sc);
     }
 
