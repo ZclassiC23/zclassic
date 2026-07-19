@@ -242,6 +242,66 @@ bool utxo_commitment_resync_from_db(sqlite3 *db,
     return ok;
 }
 
+/* ── Bounded keyspace-window commitment (state_auditor) ────── */
+
+bool utxo_commitment_compute_range(sqlite3 *db, const char *table,
+                                   const uint8_t txid_lo[32], int max_rows,
+                                   struct utxo_commitment *out,
+                                   size_t *out_rows,
+                                   int32_t *out_min_height,
+                                   int32_t *out_max_height,
+                                   uint8_t out_last_txid[32])
+{
+    if (out) utxo_commitment_init(out);
+    if (out_rows) *out_rows = 0;
+    if (out_min_height) *out_min_height = INT32_MAX;
+    if (out_max_height) *out_max_height = INT32_MIN;
+
+    if (!db || !out || !txid_lo || max_rows <= 0)
+        return false;
+    if (!table || (strcmp(table, "coins") != 0 && strcmp(table, "utxos") != 0)) {
+        LOG_WARN("utxo_cmt", "compute_range: refusing unknown table '%s'",
+                 table ? table : "(null)");
+        return false;
+    }
+
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "SELECT txid, vout, value, height FROM %s "
+             "WHERE txid >= ? ORDER BY txid, vout LIMIT ?", table);
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        UTXO_CMT_LOG_PREPARE(db, sql);
+        return false;
+    }
+    sqlite3_bind_blob(s, 1, txid_lo, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, max_rows);
+
+    size_t n = 0;
+    uint8_t last_txid[32] = {0};
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
+        if (!txid || sqlite3_column_bytes(s, 0) < 32) continue;
+        uint32_t vout = (uint32_t)sqlite3_column_int(s, 1);
+        int64_t value = sqlite3_column_int64(s, 2);
+        int32_t height = sqlite3_column_int(s, 3);
+
+        uint8_t h[32];
+        hash_utxo(h, txid, vout, value, height);
+        xor32(out->accumulator, h);
+        out->count++;
+        n++;
+        memcpy(last_txid, txid, 32);
+        if (out_min_height && height < *out_min_height) *out_min_height = height;
+        if (out_max_height && height > *out_max_height) *out_max_height = height;
+    }
+    sqlite3_finalize(s);
+
+    if (out_rows) *out_rows = n;
+    if (out_last_txid && n > 0) memcpy(out_last_txid, last_txid, 32);
+    return true;
+}
+
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
 bool utxo_sha3_serialize_record(uint8_t *buf, size_t buf_cap, size_t *out_len,
