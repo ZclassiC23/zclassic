@@ -2073,7 +2073,7 @@ $(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
 tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
-		lib/crypto/src/sha3.c lib/encoding/src/utilstrencodings.c \
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
 		lib/util/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
@@ -2098,7 +2098,7 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/support/src/cleanse.c
+		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-unused-result -Wno-stringop-overflow \
@@ -2117,7 +2117,7 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		lib/crypto/src/sha3.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-unused-result -Wno-stringop-overflow \
@@ -2133,7 +2133,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		lib/crypto/src/sha3.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-unused-result -Wno-stringop-overflow \
@@ -4286,7 +4286,7 @@ check-observability-pairing: tools/check_observability_pairing
 .PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
-CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/support/src/cleanse.c
+CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal

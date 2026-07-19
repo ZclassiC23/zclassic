@@ -1050,6 +1050,8 @@ int main(int argc, char **argv)
       failures += test_self_folded_anchor(); }
     { extern int test_sha3_windows(void);
       failures += test_sha3_windows(); }
+    { extern int test_keccak_avx512(void);
+      failures += test_keccak_avx512(); }
     { extern int test_utxo_root_ladder(void);
       failures += test_utxo_root_ladder(); }
     { extern int test_utxo_root_ladder_tripwire(void);

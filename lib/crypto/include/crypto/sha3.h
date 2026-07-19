@@ -64,4 +64,23 @@ void zcl_sha3_512(const unsigned char *data, size_t len, unsigned char output[64
 void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
                   uint64_t counter_base, uint8_t out[256]);
 
+/* Single-stream Keccak-f[1600] permutation — the core of SHA3-256/512.
+ * `sha3_keccakf_scalar` is the always-available reference. `sha3_keccakf_avx512`
+ * is an AVX-512 variant (avx512f/vl/dq) that is bit-identical to the scalar path
+ * (proven by the `keccak_avx512` differential test group); it compiles into the
+ * x86-64-v3 baseline via target attributes and is safe to invoke only when
+ * `sha3_keccakf_avx512_available()` returns true (else it degrades to scalar).
+ * All sha3_*_write/finalize route through the selected permutation. */
+void sha3_keccakf_scalar(uint64_t st[25]);
+void sha3_keccakf_avx512(uint64_t st[25]);
+bool sha3_keccakf_avx512_available(void);
+
+/* Permutation selection for the whole sha3_* surface. AVX-512 is honored only
+ * when available (else scalar). AUTO installs the measured-fastest path (scalar
+ * on this host class). Returns the impl actually installed (SHA3_IMPL_SCALAR or
+ * SHA3_IMPL_AVX512). Not thread-safe against concurrent hashing — intended for
+ * one-time init, and for the parity oracle / benchmark to force a path. */
+enum sha3_impl { SHA3_IMPL_AUTO = -1, SHA3_IMPL_SCALAR = 0, SHA3_IMPL_AVX512 = 1 };
+int sha3_select_impl(enum sha3_impl which);
+
 #endif
