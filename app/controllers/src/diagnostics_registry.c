@@ -98,6 +98,7 @@
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
 #include "config/boot.h"
+#include "config/boot_blkidx_ladder.h"
 #include "config/boot_flight_recorder.h"
 #include "config/bundle_exporter.h"
 #include "controllers/sovereignty_controller.h"

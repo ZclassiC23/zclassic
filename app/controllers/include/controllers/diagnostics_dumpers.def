@@ -66,6 +66,11 @@
                  "(boot/restore/reconcile/degraded_serving/syncing/"
                  "healthy/repairing) + last transition reason",
                  "lib/util/src/service_state.c", DIAG_TEST_DEFAULT),
+    DIAG_LOCAL("block_index_load_rungs", boot_blkidx_rungs_dump_state_json,
+               "boot block-index load ladder: per-rung fire counters "
+               "(rebuild_from_log/flat/sqlite/kill9_projection/"
+               "flat_union_taint_check/blocks_table_hydrate/leveldb) + last "
+               "boot's rebuilt_from_log/loaded/flat_union_tainted outcome"),
     DIAG_ENTRY("block_index", diag_block_index_dump_state_json,
                "block_index entry by height or hash (in `key`)",
                "storage", "projection",

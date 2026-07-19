@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "config/boot_blkidx_ladder.h"
 #include "config/boot_blocktree_cleanup.h"
 #include "config/boot_flight_recorder.h"
 #include "config/bundle_exporter.h"
@@ -2259,164 +2260,18 @@ bool app_init(struct app_context *ctx)
      * Jeff Dean rule: use the fastest data structure available. */
     t_phase = boot_clock_ms();
     {
-        bool loaded = false;
-
-        /* Event-log cold-start (-rebuildfromlog): rebuild the in-memory
-         * block index + active tip purely from the log-derived projection,
-         * bypassing the legacy flat/SQLite/LevelDB loaders, the zclassicd-LDB
-         * import, and the legacy UTXO importer. The projection read-view (set
-         * above) is the coins authority; the legacy loaders are the fallback.
-         * Opt-in: only
-         * taken when ctx->boot_from_log is set AND the rebuild yields a
-         * non-trivial map with an authority tip — otherwise it falls through
-         * to the legacy loaders so a sparse/empty projection never bricks
-         * boot. fast-sync (snapshot_apply) seeds the projection+cursor on the
-         * FRESH path; a warm boot of that node rebuilds here. */
-        if (ctx->boot_from_log &&
-            boot_try_rebuild_block_index_from_projection(
-                &g_state, params, 1000, /*publish_tip=*/true).ok) {
-            rebuilt_from_log = true;
-            loaded = true;
-        }
-
-        if (!rebuilt_from_log)
-            loaded = load_block_index_flat(ctx->datadir, &g_state).ok;
-        if (!rebuilt_from_log && !loaded && g_node_db.open)
-            loaded = load_block_index_sqlite(&g_node_db, &g_state).ok;
-
-        /* kill-9 recovery: a node SIGKILL'd with no clean shutdown never wrote
-         * the flat file (clean-shutdown only) or the >1000-gated block_index
-         * cache, so the legacy loaders above yield an empty/genesis-only map
-         * and the forward-only finalized-tip seed (boot_services.c) can't
-         * resolve its tip_hash. Rebuild the map from the durable per-block
-         * block_index_projection (WAL-crash-safe). publish_tip=false → PURE map
-         * rebuild, NO early tip: the coins/UTXO authority owns the tip and the
-         * GUARDED seed advances forward. Fires ONLY when the legacy loaders
-         * came back empty (map.size<=1) — on a real multi-million-entry boot it
-         * is never reached, so mainnet behavior is unaffected. Precondition on this
-         * path: node.db db_height<=0 (the small chain never flushed it), so the
-         * stale-flat (1940) + tip-hash (1957) guards below short-circuit. */
-        if (!rebuilt_from_log && g_state.map_block_index.size <= 1 &&
-            boot_try_rebuild_block_index_from_projection(
-                &g_state, params, 1, /*publish_tip=*/false).ok)
-            loaded = true;
-
-        /* Check if flat file is stale — if it loaded but has far fewer
-         * entries than the chain (checked via SQLite), reload from LevelDB.
-         * This fixes the case where an old flat file with 6K entries
-         * prevents loading the full 3M+ entry index.
-         * Skipped on the log-rebuild path: the legacy SQLite db_height is
-         * not the authority there (the log/cursor tip is), and comparing
-         * against it would spuriously discard the valid log-rebuilt map. */
-        /* Set when the loaded flat file is declared CORRUPT below (tip hash
-         * maps to the wrong height — evidence of a poisoned record). The
-         * "reload" that follows find-or-inserts LevelDB records ON TOP of
-         * the already-loaded flat entries, so the map is a union that may
-         * still carry the poison; re-saving that union at the save site
-         * below would launder the corrupt record into the next flat
-         * generation forever (this is how the h=3166988 height-0 stub
-         * survived across boots, 2026-07-02). The heal happens later this
-         * boot (projection topup hydration + height repair); the SHUTDOWN
-         * save persists the healed map instead. */
-        bool flat_union_tainted = false;
-        if (!rebuilt_from_log && loaded && g_node_db.open) {
-            int64_t db_height = node_db_sync_get_tip_height(&g_node_db);
-            if (db_height < 0)
-                db_height = db_block_max_height(&g_node_db);
-            size_t flat_count = g_state.map_block_index.size;
-            if (db_height > 0 && (int64_t)flat_count < db_height - 1000) {
-                printf("Block index flat: stale (%zu entries vs chain height %lld)"
-                       " — reloading from LevelDB\n",
-                       flat_count, (long long)db_height);
-                fflush(stdout);
-                loaded = false;  /* fall through to LevelDB */
-            }
-
-            /* Consistency check: the persisted sync projection cursor must exist in
-             * the loaded flat block index AT THE CORRECT HEIGHT. Use
-             * node_state sync_projection_tip_hash/height first: the blocks table can
-             * lag by a block after crash recovery or catchup flushing. */
-            if (loaded && db_height > 0) {
-                uint8_t tip_hash_raw[32];
-                bool have_tip_hash =
-                    node_db_sync_get_tip_hash(&g_node_db, tip_hash_raw);
-                if (have_tip_hash) {
-                    struct uint256 tip_hash;
-                    memcpy(tip_hash.data, tip_hash_raw, 32);
-                    struct block_index *flat_tip = block_map_find(
-                        &g_state.map_block_index, &tip_hash);
-                    if (!flat_tip ||
-                        (int64_t)flat_tip->nHeight != db_height) {
-                        fprintf(stderr,
-                            "Block index flat: tip hash maps to wrong "
-                            "height (%d vs SQLite %lld). Corrupt flat "
-                            "file — reloading from SQLite.\n",
-                            flat_tip ? flat_tip->nHeight : -1,
-                            (long long)db_height);
-                        loaded = false;
-                        flat_union_tainted = true;
-                    }
-                } else {
-                    struct db_block tip_blk;
-                    if (db_block_find_by_height(&g_node_db, (int)db_height,
-                                                 &tip_blk)) {
-                        struct uint256 tip_hash;
-                        memcpy(tip_hash.data, tip_blk.hash, 32);
-                        struct block_index *flat_tip = block_map_find(
-                            &g_state.map_block_index, &tip_hash);
-                        if (!flat_tip ||
-                            (int64_t)flat_tip->nHeight != db_height) {
-                            fprintf(stderr,
-                                "Block index flat: tip hash maps to wrong "
-                                "height (%d vs SQLite %lld). Corrupt flat "
-                                "file — reloading from SQLite.\n",
-                                flat_tip ? flat_tip->nHeight : -1,
-                                (long long)db_height);
-                            loaded = false;
-                            flat_union_tainted = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        /* Rung: hydrate the map from the node.db `blocks` table — the sink the
-         * `--importblockindex` CLI bulk-loads header rows into. Dispatch (row
-         * counts logged at INFO) lives in boot_dispatch_blocks_table_hydrate
-         * (config/src/boot_legacy_import.c — kept out of this file for the
-         * E1 ceiling): it fires on blocks-table-vs-map-size, NOT on `!loaded`
-         * alone, so a small STALE map from an earlier rung never blocks it —
-         * see that function's contract for the P2P-crawl defect this closes. */
-        if (!rebuilt_from_log &&
-            boot_dispatch_blocks_table_hydrate(&g_node_db, &g_state))
-            loaded = true;
-
-        if (!rebuilt_from_log && !loaded) {
-            int64_t t_idx_start = (int64_t)platform_time_wall_time_t();
-            printf("Loading block index from LevelDB...\n");
-            if (!load_block_index(&g_state, params, &g_block_tree, g_block_tree_open).ok) {
-                fprintf(stderr, "Warning: Failed to load block index\n");
-            }
-            int64_t t_idx_elapsed = (int64_t)platform_time_wall_time_t() - t_idx_start;
-            printf("Block index loaded: %zu entries in %llds\n",
-                   g_state.map_block_index.size, (long long)t_idx_elapsed);
-            event_emitf(EV_BOOT_BLOCK_INDEX, 0, "loaded entries=%zu elapsed=%llds",
-                        g_state.map_block_index.size, (long long)t_idx_elapsed);
-
-            /* Save flat file for next restart — UNLESS the map is a union
-             * with a corrupt flat load (see flat_union_tainted above): the
-             * poison record is still in RAM here, and persisting it now
-             * re-infects every future boot. The shutdown save runs after
-             * the projection topup + height repair have healed the map. */
-            if (g_state.map_block_index.size > 1000) {
-                if (flat_union_tainted)
-                    printf("Block index flat: skipping mid-boot re-save of "
-                           "the corrupt-flat union — the healed map is "
-                           "persisted at shutdown\n");
-                else
-                    save_block_index_flat(ctx->datadir, &g_state);
-            }
-        }
+        struct boot_blkidx_load_ctx blkidx = {
+            .ctx = ctx, .st = &g_state, .ndb = &g_node_db, .params = params,
+            .block_tree = &g_block_tree, .block_tree_open = g_block_tree_open,
+        };
+        /* Ordered block-index load ladder (projection rebuild -> flat ->
+         * sqlite -> kill-9 projection rebuild -> flat-union taint check ->
+         * blocks-table hydrate -> LevelDB). The rung table + the
+         * flat_union_tainted guard live in config/src/boot_blkidx_ladder.c
+         * (E1 seam); the loader functions are unchanged. Per-rung fire
+         * counters: `ops state --subsystem=block_index_load_rungs`. */
+        boot_blkidx_run_ladder(&blkidx);
+        rebuilt_from_log = blkidx.rebuilt_from_log;
 
         /* If block index is much smaller than the chain, try loading
          * from zclassicd's LevelDB. This gives us 3M+ entries with
