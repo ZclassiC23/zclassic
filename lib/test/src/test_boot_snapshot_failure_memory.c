@@ -3,8 +3,10 @@
 #include "test/test_helpers.h"
 
 #include "config/boot.h"
+#include "config/boot_consensus_bundle_marker.h"
 #include "config/boot_snapshot_failure_memory.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -215,6 +217,81 @@ int test_boot_snapshot_failure_memory(void)
                    access(marker, F_OK) == 0);
 
         boot_snapshot_failure_memory_clear(marker);
+        test_rm_rf_recursive(dir);
+    }
+
+    /* Installed-bundle marker present: a leftover borrowed starter-pack seed
+     * must be REFUSED (never auto-loaded) and quarantined out of the datadir
+     * root so it can never be reselected. Benign auto-remedy: no seed selected,
+     * no marker, no blocker. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_snapshot_failure", "installed");
+        bsfm_touch_in_dir(dir, "block_index.bin");
+        bsfm_touch_in_dir(dir, "utxo-seed-99.snapshot");
+
+        uint8_t digest[32];
+        for (int i = 0; i < 32; i++)
+            digest[i] = (uint8_t)i;
+        BSFM_CHECK("marker write succeeds",
+                   boot_consensus_bundle_marker_write(dir, 3056758, digest) &&
+                   boot_consensus_bundle_marker_exists(dir));
+
+        struct app_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.datadir = dir;
+
+        bool from_autodetect = true;
+        char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
+        bool selected = boot_snapshot_failure_memory_prepare(
+            &ctx, false, -1, &from_autodetect, marker, sizeof(marker));
+
+        char seed_src[512];
+        char seed_dst[640];
+        snprintf(seed_src, sizeof(seed_src), "%s/utxo-seed-99.snapshot", dir);
+        snprintf(seed_dst, sizeof(seed_dst),
+                 "%s/quarantine-borrowed-seed/utxo-seed-99.snapshot", dir);
+        BSFM_CHECK("installed marker quarantines borrowed seed",
+                   !selected && !from_autodetect &&
+                   ctx.load_snapshot_at_own_height == NULL &&
+                   marker[0] == '\0' &&
+                   access(seed_src, F_OK) != 0 &&
+                   access(seed_dst, F_OK) == 0);
+
+        test_rm_rf_recursive(dir);
+    }
+
+    /* No marker: the exact same datadir shape auto-loads the seed (proves the
+     * quarantine is gated strictly on the installed-bundle marker). */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_snapshot_failure", "nomarker");
+        bsfm_touch_in_dir(dir, "block_index.bin");
+        bsfm_touch_in_dir(dir, "utxo-seed-99.snapshot");
+
+        struct app_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.datadir = dir;
+
+        bool from_autodetect = false;
+        char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
+        bool selected = boot_snapshot_failure_memory_prepare(
+            &ctx, false, -1, &from_autodetect, marker, sizeof(marker));
+
+        char want_snap[512];
+        char quarantined[640];
+        snprintf(want_snap, sizeof(want_snap), "%s/utxo-seed-99.snapshot", dir);
+        snprintf(quarantined, sizeof(quarantined),
+                 "%s/quarantine-borrowed-seed/utxo-seed-99.snapshot", dir);
+        BSFM_CHECK("no marker still auto-loads the seed",
+                   selected && from_autodetect &&
+                   ctx.load_snapshot_at_own_height != NULL &&
+                   strcmp(ctx.load_snapshot_at_own_height, want_snap) == 0 &&
+                   access(want_snap, F_OK) == 0 &&
+                   access(quarantined, F_OK) != 0);
+
+        boot_snapshot_failure_memory_clear(marker);
+        free((void *)ctx.load_snapshot_at_own_height);
         test_rm_rf_recursive(dir);
     }
 
