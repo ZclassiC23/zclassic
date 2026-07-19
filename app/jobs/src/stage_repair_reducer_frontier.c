@@ -614,9 +614,17 @@ static bool reducer_frontier_reconcile_light_impl(
      * just in the callees: the reconcile-light Condition polls _needed()
      * every 5s on any stalled node (tear or not), so the owner gate keeps
      * the healthy/no-tear path out of the pre-refusal adapter entirely. */
-    if (local.refused_coin_tear) {
+    /* Also fires for a tip_finalize-ONLY rowless hole with NO coin tear (the
+     * live H*-pin class): served_floor > H* while coins are applied THROUGH the
+     * span (applied-through >= served_floor), so the hash-bound insert-only
+     * backfill fills it coins-backed. The unapplied-hole clamp stays tear-only. */
+    bool tipfin_only_hole = !local.refused_coin_tear && local.hstar > 0 &&
+        local.served_floor > local.hstar && local.coins_applied_found &&
+        local.coins_applied_height - 1 >= local.served_floor;
+    if (local.refused_coin_tear || tipfin_only_hole) {
         bool handled_pre_refusal = false;
-        if (!stage_reducer_frontier_try_unapplied_hole_clamp(
+        if (local.refused_coin_tear &&
+            !stage_reducer_frontier_try_unapplied_hole_clamp(
                 db, apply, &local, &handled_pre_refusal))
             return false;
         if (!handled_pre_refusal &&

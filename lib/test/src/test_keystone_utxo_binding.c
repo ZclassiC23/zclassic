@@ -50,6 +50,52 @@ static void kb_make_leaf(struct mmb_leaf *leaf, uint32_t height,
                         sapling, work, utxo_root);
 }
 
+/* The boundary-root persist path the tip_finalize reducer step uses runs
+ * INSIDE the stage's already-open transaction (batch BEGIN IMMEDIATE +
+ * per-step SAVEPOINT). The own-BEGIN coins_kv_boundary_root_set fails there
+ * ("cannot start a transaction within a transaction") and never persists —
+ * the pre-flip 100%-WARN-storm root cause. coins_kv_boundary_root_set_in_tx
+ * MUST succeed in that context and commit atomically with the outer txn. */
+static int test_boundary_root_in_tx(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "keystone_utxo_intx", "main");
+
+    TEST("boundary utxo_root persist targets the store from inside an open txn") {
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(coins_kv_ensure_schema(db));
+
+        uint8_t root[32];
+        memset(root, 0x5c, sizeof(root));
+
+        /* Open an explicit transaction, exactly like the stage batch does. */
+        ASSERT(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK);
+
+        /* The own-BEGIN variant FAILS inside the open txn (this is the bug). */
+        ASSERT(!coins_kv_boundary_root_set(db, 200, root));
+
+        /* The in-tx variant SUCCEEDS: it joins the caller's open txn. */
+        ASSERT(coins_kv_boundary_root_set_in_tx(db, 200, root));
+
+        /* Commit and read it back — the root persisted atomically. */
+        ASSERT(sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+
+        uint8_t back[32] = {0};
+        bool found = false;
+        ASSERT(coins_kv_boundary_root_get(db, 200, back, &found));
+        ASSERT(found);
+        ASSERT(memcmp(back, root, 32) == 0);
+
+        progress_store_close();
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_keystone_utxo_binding(void);
 int test_keystone_utxo_binding(void)
 {
@@ -145,5 +191,6 @@ int test_keystone_utxo_binding(void)
         PASS();
     } _test_next:;
 
+    failures += test_boundary_root_in_tx();
     return failures;
 }

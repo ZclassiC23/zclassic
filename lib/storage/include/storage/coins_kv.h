@@ -247,13 +247,21 @@ bool coins_kv_verify_against_checkpoint(struct sqlite3 *db,
  * rebuild READ it back, so no path has to re-fold the historical UTXO set.
  *
  * Keyed per height under "mmb_utxo_root:<height>" in progress_meta (opaque
- * 32-byte blob). _set writes inside the caller's own implicit txn (own-BEGIN);
- * _get returns false in *found when the boundary root has not been recorded
- * yet, in which case the caller uses the zero sentinel (the leaf hash is then
- * the pre-keystone value for that height and is back-filled on the next pass).
+ * 32-byte blob). _set opens its OWN txn (own-BEGIN) — use ONLY when no
+ * transaction is already open on `db`. _set_in_tx runs the statement inside
+ * the caller's ALREADY-OPEN transaction (no inner BEGIN/COMMIT): this is the
+ * variant the tip_finalize reducer step MUST use, because it runs inside the
+ * stage's batch BEGIN IMMEDIATE + per-step SAVEPOINT — calling the own-BEGIN
+ * _set there fails 100% ("cannot start a transaction within a transaction")
+ * and never persists the root. _get returns false in *found when the boundary
+ * root has not been recorded yet, in which case the caller uses the zero
+ * sentinel (the leaf hash is then the pre-keystone value for that height and
+ * is back-filled on the next pass).
  */
 bool coins_kv_boundary_root_set(struct sqlite3 *db, int32_t height,
                                 const uint8_t utxo_root[32]);
+bool coins_kv_boundary_root_set_in_tx(struct sqlite3 *db, int32_t height,
+                                      const uint8_t utxo_root[32]);
 bool coins_kv_boundary_root_get(struct sqlite3 *db, int32_t height,
                                 uint8_t out_utxo_root[32], bool *found);
 
