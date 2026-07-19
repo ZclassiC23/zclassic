@@ -4,7 +4,10 @@
 #include "config/consensus_state_snapshot_install.h"
 
 #include "config/consensus_state_bundle_validate.h"
+#include "config/consensus_state_install_verify_receipt.h"
+#include "config/consensus_state_producer_receipt.h"
 #include "consensus_state_snapshot_install_internal.h"
+#include "core/utiltime.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -234,7 +237,7 @@ static void artifact_evidence_discard(
 }
 
 static struct zcl_result artifact_evidence_open_impl(
-    const char *bundle_path,
+    const char *bundle_path, int datadir_fd,
     enum consensus_state_install_failpoint requested_failpoint,
     struct consensus_state_install_result *legacy_result,
     struct consensus_state_artifact_evidence **out)
@@ -267,6 +270,31 @@ static struct zcl_result artifact_evidence_open_impl(
         artifact_evidence_discard(evidence);
         return ZCL_ERR(-5, "artifact evidence: initial complete-file hash failed");
     }
+
+    /* Install-verify receipt: a prior full content verify of this exact
+     * bundle SHA3-256 under this exact verifying binary's build epoch lets
+     * the O(bundle-size) deep scan below be skipped. Admission (chain
+     * binding, CAS, guards) is untouched — this only decides how much of
+     * consensus_state_bundle_validate_ex() runs; the cheap structural checks
+     * always run. Any failure to compute the epoch (unstamped build) or find
+     * a matching receipt fails soft to a full verify. */
+    bool skip_deep_scan = false;
+    uint8_t verifier_epoch[32];
+    bool have_epoch =
+        consensus_state_producer_receipt_current_binary_epoch(verifier_epoch);
+    if (have_epoch && datadir_fd >= 0) {
+        int64_t age_us = 0;
+        if (consensus_state_install_verify_receipt_lookup(
+                datadir_fd, evidence->file_digest, verifier_epoch,
+                &age_us)) {
+            skip_deep_scan = true;
+            LOG_INFO(INSTALL_SUBSYS,
+                     "install-verify receipt honored: deep content scan "
+                     "skipped (receipt age=%.0fs)",
+                     (double)age_us / 1000000.0);
+        }
+    }
+
     if (!open_bundle_descriptor(evidence->artifact_fd,
                                 &evidence->bundle_db)) {
         artifact_evidence_discard(evidence);
@@ -286,9 +314,9 @@ static struct zcl_result artifact_evidence_open_impl(
     memset(&validation_result, 0, sizeof(validation_result));
     struct consensus_state_install_result *validation_out =
         legacy_result ? legacy_result : &validation_result;
-    if (!consensus_state_bundle_validate(evidence->bundle_db,
-                                         &evidence->manifest,
-                                         validation_out)) {
+    if (!consensus_state_bundle_validate_ex(evidence->bundle_db,
+                                            &evidence->manifest,
+                                            validation_out, skip_deep_scan)) {
         artifact_evidence_discard(evidence);
         return ZCL_ERR(-9, "artifact evidence: semantic validation failed: %s",
                        validation_out->reason);
@@ -313,16 +341,19 @@ static struct zcl_result artifact_evidence_open_impl(
                        "artifact evidence: injected failure after validation");
     }
     artifact_receipt_digest_build(evidence, evidence->receipt_digest);
+    if (!skip_deep_scan && have_epoch && datadir_fd >= 0)
+        consensus_state_install_verify_receipt_store(
+            datadir_fd, evidence->file_digest, verifier_epoch);
     *out = evidence;
     return ZCL_OK;
 }
 
 struct zcl_result consensus_state_artifact_evidence_open(
-    const char *bundle_path,
+    const char *bundle_path, int receipt_datadir_fd,
     struct consensus_state_artifact_evidence **out)
 {
-    return artifact_evidence_open_impl(bundle_path, CONSENSUS_INSTALL_FAIL_NONE,
-                                       NULL, out);
+    return artifact_evidence_open_impl(bundle_path, receipt_datadir_fd,
+                                       CONSENSUS_INSTALL_FAIL_NONE, NULL, out);
 }
 
 void consensus_state_artifact_evidence_free(
@@ -443,8 +474,11 @@ bool consensus_state_snapshot_install(
         return install_fail(result, CONSENSUS_INSTALL_REFUSED,
                             "NULL progress_db/request/bundle_path");
     struct consensus_state_artifact_evidence *evidence = NULL;
+    /* This preview/contained verb (see the "Always false" note below) has no
+     * datadir capability of its own to key an install-verify receipt on;
+     * every call runs the full content verify. */
     struct zcl_result admitted = artifact_evidence_open_impl(
-        request->bundle_path, request->failpoint, result, &evidence);
+        request->bundle_path, -1, request->failpoint, result, &evidence);
     bool ok = admitted.ok;
     if (!ok) {
         enum consensus_state_install_status status = CONSENSUS_INSTALL_REFUSED;

@@ -114,9 +114,22 @@ struct consensus_state_candidate_result {
  * validated manifest, but cannot manufacture evidence from manifest fields.
  *
  * This is artifact admission evidence only. It is deliberately not selected-
- * chain evidence, lane authority, or publication permission. */
+ * chain evidence, lane authority, or publication permission.
+ *
+ * `receipt_datadir_fd` is a borrowed directory capability used ONLY to look
+ * up / persist the install-verify content receipt (see
+ * config/consensus_state_install_verify_receipt.h): on an exact
+ * (bundle-sha3-256, verifying-binary-build-epoch) match, the deterministic
+ * O(bundle-size) content scan (coins/anchors/nullifiers + whole-file
+ * integrity_check) is skipped; the cheap O(1)-row structural checks always
+ * still run, and a fresh receipt is persisted after a full verify succeeds.
+ * Pass -1 when no directory capability is available or wanted — every call
+ * then runs the full content verify, exactly as before this parameter
+ * existed. The receipt NEVER affects admission/chain-binding/activation
+ * authority, only how much redundant CPU a repeat verify of an unchanged
+ * artifact costs. */
 struct zcl_result consensus_state_artifact_evidence_open(
-    const char *bundle_path,
+    const char *bundle_path, int receipt_datadir_fd,
     struct consensus_state_artifact_evidence **out);
 void consensus_state_artifact_evidence_free(
     struct consensus_state_artifact_evidence *evidence);

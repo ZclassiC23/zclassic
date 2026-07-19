@@ -254,6 +254,21 @@ static bool current_v2_claim(
     return true;
 }
 
+bool consensus_state_producer_receipt_current_binary_epoch(uint8_t out[32])
+{
+    if (!out)
+        return false;
+    struct consensus_state_source_receipt claim;
+    uint8_t epoch[32];
+    /* validation_profile is not an input to the epoch digest (see
+     * consensus_state_source_epoch_digest()); CONSENSUS_STATE_VALIDATION_FULL
+     * is an arbitrary valid placeholder. */
+    if (!current_v2_claim(CONSENSUS_STATE_VALIDATION_FULL, &claim, epoch))
+        return false;
+    memcpy(out, epoch, 32);
+    return true;
+}
+
 static bool session_matches_current(
     const struct producer_session *stored,
     const struct consensus_state_source_receipt *current,

@@ -71,6 +71,19 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                                                const uint8_t block_hash[32],
                                                char *err, size_t err_size);
 
+/* This running executable's build-epoch digest: the same domain-separated
+ * SHA3-256 binding of the exact current source tree
+ * (zcl_build_source_id_sha256()), toolchain identity, and build inputs used
+ * for the producer's source_epoch_digest — but computed standalone, with no
+ * dependency on an active producer session, a datadir, or a fold. Any other
+ * consumer that needs to know "is this exactly the same build that already
+ * did X" (e.g. an install-time content-verify receipt) should key on this
+ * value rather than re-deriving it. Returns false only when this build
+ * carries no exact 64-hex source-identity stamp (a dev/unstamped build): the
+ * caller must then treat epoch-keyed authority as unavailable, never
+ * fabricate a key. */
+bool consensus_state_producer_receipt_current_binary_epoch(uint8_t out[32]);
+
 /* Read-only producer status. Opens <datadir>/progress.kv READONLY (no writes,
  * no migrations — safe against a running producer over WAL) and reports the
  * fold session/receipt lifecycle, reducer stage cursors, and a bounded
