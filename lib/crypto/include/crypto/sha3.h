@@ -83,4 +83,21 @@ bool sha3_keccakf_avx512_available(void);
 enum sha3_impl { SHA3_IMPL_AUTO = -1, SHA3_IMPL_SCALAR = 0, SHA3_IMPL_AVX512 = 1 };
 int sha3_select_impl(enum sha3_impl which);
 
+/* 4-way batched SHA3-256: hash FOUR independent messages, produce FOUR digests.
+ * msgs[k]/lens[k] describe message k (lens[k]==0 is allowed; msgs[k] may be NULL
+ * only when lens[k]==0). out[k] receives the 32-byte SHA3-256 of message k,
+ * byte-identical to sha3_256(msgs[k], lens[k], out[k]). This is the correct
+ * shape for batching MANY independent hashes (manifest chunk hashes, Merkle
+ * layer combines) — distinct from sha3_512_x4 (a keystream generator). Uses an
+ * AVX-512 4-lane Keccak when the CPU supports it and the batch path is enabled;
+ * the scalar fallback calls sha3_256 four times and is the differential-oracle
+ * reference (`sha3_256_x4` test group). */
+void sha3_256_x4(const uint8_t *const msgs[4], const size_t lens[4],
+                 uint8_t out[4][32]);
+
+/* Force/select the sha3_256_x4 implementation (parity oracle + benchmark).
+ * SHA3_IMPL_AVX512 falls back to scalar when AVX-512 is unavailable; returns the
+ * impl actually installed. Not thread-safe against concurrent batched hashing. */
+int sha3_256_x4_select_impl(enum sha3_impl which);
+
 #endif
