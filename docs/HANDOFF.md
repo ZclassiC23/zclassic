@@ -31,7 +31,10 @@ arrives chain-detached ("selected frontier changed or is not durable").
 Likely fixes to investigate: (a) install onto a datadir whose chain was built
 by a normal validated sync rather than a live-copy relink — **mint3's
 from-genesis datadir is exactly that** (fully validated, durable chain, no
-torn-copy issue); or (b) make the chain-binding evidence gate accept a
+torn-copy issue; `mint3` is `~/.zclassic-c23-mint3` on disk, a legacy
+birth-order name distinct from `~/.zclassic-c23-mint` — kept literal here
+because it names a real artifact, not minted fresh); or (b) make the
+chain-binding evidence gate accept a
 relinked-but-consistent chain. NOTE: the new **checkpoint-content install
 authority** (landed on main this session) sits DOWNSTREAM of this chain-
 binding gate, so rebuilding the binary alone will NOT clear this specific
