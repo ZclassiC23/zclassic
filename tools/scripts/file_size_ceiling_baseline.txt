@@ -45,7 +45,7 @@ app/views/src/explorer_pages_view.c 823
 # lane/confine (-confine sandbox entry) + lane/sapling-tree-persist
 # (height-aware Sapling tree verify-and-fold-forward helper) both grow
 # boot.c; baseline is the merged wc -l.
-config/src/boot.c 4487
+config/src/boot.c 4338
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2034
 config/src/boot_services.c 1456
