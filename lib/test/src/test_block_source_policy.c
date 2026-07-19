@@ -56,7 +56,7 @@ static const struct json_value *find_source_json(const struct json_value *arr,
     return NULL;
 }
 
-static int test_cac_names(void)
+static int test_bsp_names(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: name tables are stable")
@@ -76,7 +76,7 @@ static int test_cac_names(void)
     return failures;
 }
 
-static int test_cac_prefers_native_p2p(void)
+static int test_bsp_prefers_native_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: native P2P beats mirror when healthy")
@@ -98,7 +98,7 @@ static int test_cac_prefers_native_p2p(void)
     return failures;
 }
 
-static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
+static int test_bsp_keeps_caught_up_p2p_when_legacy_is_ahead(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: caught-up P2P remains selected over legacy advisory lag")
@@ -125,7 +125,7 @@ static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
     return failures;
 }
 
-static int test_cac_gates_mirror_during_local_retries(void)
+static int test_bsp_gates_mirror_during_local_retries(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: mirror waits behind local retries")
@@ -149,7 +149,7 @@ static int test_cac_gates_mirror_during_local_retries(void)
     return failures;
 }
 
-static int test_cac_allows_bounded_mirror_after_retries(void)
+static int test_bsp_allows_bounded_mirror_after_retries(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: mirror fallback after local retries exhaust")
@@ -178,7 +178,7 @@ static int test_cac_allows_bounded_mirror_after_retries(void)
  * zclassicd because the mirror was gated on local_retries_exhausted, but
  * that flag never tripped (only 1 eligible peer). The test below replays
  * exactly that state and asserts the mirror takes over. */
-static int test_cac_lag_slo_overrides_local_gate(void)
+static int test_bsp_lag_slo_overrides_local_gate(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: lag SLO override allows concurrent mirror")
@@ -202,7 +202,7 @@ static int test_cac_lag_slo_overrides_local_gate(void)
     return failures;
 }
 
-static int test_cac_lag_slo_mirror_outranks_near_target_p2p(void)
+static int test_bsp_lag_slo_mirror_outranks_near_target_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: lag SLO mirror outranks near-target P2P")
@@ -238,7 +238,7 @@ static int test_cac_lag_slo_mirror_outranks_near_target_p2p(void)
 /* Negative case: when lag is BELOW the breach threshold and local
  * recovery is in progress, the original gate still applies — the mirror
  * stays advisory until either retries exhaust or lag crosses breach. */
-static int test_cac_below_breach_still_gates_mirror(void)
+static int test_bsp_below_breach_still_gates_mirror(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: lag under SLO keeps mirror gated")
@@ -260,7 +260,7 @@ static int test_cac_below_breach_still_gates_mirror(void)
     return failures;
 }
 
-static int test_cac_peer_floor_helper_classifies_recovery(void)
+static int test_bsp_peer_floor_helper_classifies_recovery(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: peer floor helper records recovery")
@@ -277,7 +277,7 @@ static int test_cac_peer_floor_helper_classifies_recovery(void)
     return failures;
 }
 
-static int test_cac_peer_floor_helper_accepts_healthy_p2p(void)
+static int test_bsp_peer_floor_helper_accepts_healthy_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: peer floor helper accepts healthy P2P")
@@ -292,7 +292,7 @@ static int test_cac_peer_floor_helper_accepts_healthy_p2p(void)
     return failures;
 }
 
-static int test_cac_blocks_unsafe_mirror(void)
+static int test_bsp_blocks_unsafe_mirror(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: mirror blocker is surfaced")
@@ -314,7 +314,7 @@ static int test_cac_blocks_unsafe_mirror(void)
     return failures;
 }
 
-static int test_cac_avoids_stale_dead_p2p(void)
+static int test_bsp_avoids_stale_dead_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: stale or unhealthy P2P is not selected")
@@ -335,7 +335,7 @@ static int test_cac_avoids_stale_dead_p2p(void)
     return failures;
 }
 
-static int test_cac_snapshot_can_outrank_mirror(void)
+static int test_bsp_snapshot_can_outrank_mirror(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: snapshot outranks mirror fallback")
@@ -353,7 +353,7 @@ static int test_cac_snapshot_can_outrank_mirror(void)
     return failures;
 }
 
-static int test_cac_fresh_snapshot_outranks_stale_p2p(void)
+static int test_bsp_fresh_snapshot_outranks_stale_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: target-reaching snapshot outranks stale P2P")
@@ -377,7 +377,7 @@ static int test_cac_fresh_snapshot_outranks_stale_p2p(void)
     return failures;
 }
 
-static int test_cac_stale_p2p_can_still_advance_when_alone(void)
+static int test_bsp_stale_p2p_can_still_advance_when_alone(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: stale P2P can still advance when alone")
@@ -399,7 +399,7 @@ static int test_cac_stale_p2p_can_still_advance_when_alone(void)
     return failures;
 }
 
-static int test_cac_unknown_height_source_is_not_selectable(void)
+static int test_bsp_unknown_height_source_is_not_selectable(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: unknown-height source is not selected")
@@ -421,7 +421,7 @@ static int test_cac_unknown_height_source_is_not_selectable(void)
     return failures;
 }
 
-static int test_cac_projection_status_propagates(void)
+static int test_bsp_projection_status_propagates(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: projection status propagates")
@@ -445,7 +445,7 @@ static int test_cac_projection_status_propagates(void)
     return failures;
 }
 
-static int test_cac_snapshot_offer_helper_allows_valid_offer(void)
+static int test_bsp_snapshot_offer_helper_allows_valid_offer(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: snapshot offer helper allows valid offer")
@@ -463,7 +463,7 @@ static int test_cac_snapshot_offer_helper_allows_valid_offer(void)
     return failures;
 }
 
-static int test_cac_snapshot_offer_helper_blocks_invalid_offer(void)
+static int test_bsp_snapshot_offer_helper_blocks_invalid_offer(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: snapshot offer helper blocks invalid offer")
@@ -479,7 +479,7 @@ static int test_cac_snapshot_offer_helper_blocks_invalid_offer(void)
     return failures;
 }
 
-static int test_cac_local_header_refill_helper_records_retry(void)
+static int test_bsp_local_header_refill_helper_records_retry(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: local header refill helper records retry")
@@ -496,7 +496,7 @@ static int test_cac_local_header_refill_helper_records_retry(void)
     return failures;
 }
 
-static int test_cac_local_header_refill_helper_waits_for_peers(void)
+static int test_bsp_local_header_refill_helper_waits_for_peers(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: local header refill helper waits for eligible peers")
@@ -516,7 +516,7 @@ static int test_cac_local_header_refill_helper_waits_for_peers(void)
     return failures;
 }
 
-static int test_cac_local_header_refill_helper_recovers_without_peers(void)
+static int test_bsp_local_header_refill_helper_recovers_without_peers(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: local header refill helper recovers without peers")
@@ -531,7 +531,7 @@ static int test_cac_local_header_refill_helper_recovers_without_peers(void)
     return failures;
 }
 
-static int test_cac_dump_json_contract(void)
+static int test_bsp_dump_json_contract(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate JSON exposes authority and sources")
@@ -637,7 +637,7 @@ static int test_cac_dump_json_contract(void)
     return failures;
 }
 
-static int test_cac_dump_reports_projection_lag(void)
+static int test_bsp_dump_reports_projection_lag(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate reports projection lag")
@@ -702,7 +702,7 @@ static int test_cac_dump_reports_projection_lag(void)
     return failures;
 }
 
-static int test_cac_projection_deferral_accounting(void)
+static int test_bsp_projection_deferral_accounting(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: projection deferral accounting is stable")
@@ -760,7 +760,7 @@ static int test_cac_projection_deferral_accounting(void)
     return failures;
 }
 
-static struct p2p_node *test_cac_add_peer(struct connman *cm,
+static struct p2p_node *test_bsp_add_peer(struct connman *cm,
                                           unsigned char a,
                                           unsigned char b,
                                           unsigned char c,
@@ -784,7 +784,7 @@ static struct p2p_node *test_cac_add_peer(struct connman *cm,
     return node;
 }
 
-static int test_cac_dump_populates_p2p_diversity(void)
+static int test_bsp_dump_populates_p2p_diversity(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate populates P2P diversity")
@@ -817,13 +817,13 @@ static int test_cac_dump_populates_p2p_diversity(void)
         cm.addnode_tcp_failures[0] = 2;
         cm.addnode_protocol_failures[1] = 1;
 
-        ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
+        ASSERT(test_bsp_add_peer(&cm, 10, 1, 0, 1,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 2,
+        ASSERT(test_bsp_add_peer(&cm, 10, 1, 0, 2,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 172, 16, 0, 1,
+        ASSERT(test_bsp_add_peer(&cm, 172, 16, 0, 1,
                                  PEER_CONNECTING) != NULL);
-        inbound_peer = test_cac_add_peer(&cm, 203, 0, 113, 1,
+        inbound_peer = test_bsp_add_peer(&cm, 203, 0, 113, 1,
                                          PEER_HANDSHAKE_COMPLETE);
         ASSERT(inbound_peer != NULL);
         inbound_peer->inbound = true;
@@ -885,7 +885,7 @@ static int test_cac_dump_populates_p2p_diversity(void)
     return failures;
 }
 
-static int test_cac_selects_viable_caught_up_p2p(void)
+static int test_bsp_selects_viable_caught_up_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: caught-up diverse P2P beats mirror with two peers")
@@ -919,9 +919,9 @@ static int test_cac_selects_viable_caught_up_p2p(void)
         ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
-        ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
+        ASSERT(test_bsp_add_peer(&cm, 10, 1, 0, 1,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 172, 16, 0, 2,
+        ASSERT(test_bsp_add_peer(&cm, 172, 16, 0, 2,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
 
         legacy_mirror_sync_reset_for_test();
@@ -965,7 +965,7 @@ static int test_cac_selects_viable_caught_up_p2p(void)
     return failures;
 }
 
-static int test_cac_inbound_assists_near_tip_p2p(void)
+static int test_bsp_inbound_assists_near_tip_p2p(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: inbound handshakes assist near-tip P2P")
@@ -999,11 +999,11 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
         ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
-        ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
+        ASSERT(test_bsp_add_peer(&cm, 10, 1, 0, 1,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 172, 16, 0, 2,
+        ASSERT(test_bsp_add_peer(&cm, 172, 16, 0, 2,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        inbound_peer = test_cac_add_peer(&cm, 203, 0, 113, 3,
+        inbound_peer = test_bsp_add_peer(&cm, 203, 0, 113, 3,
                                          PEER_HANDSHAKE_COMPLETE);
         ASSERT(inbound_peer != NULL);
         inbound_peer->inbound = true;
@@ -1043,7 +1043,7 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
     return failures;
 }
 
-static int test_cac_dump_explains_stale_p2p_height(void)
+static int test_bsp_dump_explains_stale_p2p_height(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate explains stale P2P height")
@@ -1072,11 +1072,11 @@ static int test_cac_dump_explains_stale_p2p_height(void)
         ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
-        ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
+        ASSERT(test_bsp_add_peer(&cm, 10, 1, 0, 1,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 172, 16, 0, 2,
+        ASSERT(test_bsp_add_peer(&cm, 172, 16, 0, 2,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
-        ASSERT(test_cac_add_peer(&cm, 198, 51, 100, 3,
+        ASSERT(test_bsp_add_peer(&cm, 198, 51, 100, 3,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
 
         block_source_policy_reset_for_test();
@@ -1104,7 +1104,7 @@ static int test_cac_dump_explains_stale_p2p_height(void)
     return failures;
 }
 
-static int test_cac_dump_populates_live_snapshot_source(void)
+static int test_bsp_dump_populates_live_snapshot_source(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate populates live snapshot source")
@@ -1163,7 +1163,7 @@ static int test_cac_dump_populates_live_snapshot_source(void)
     return failures;
 }
 
-static int test_cac_dump_populates_local_import_recovery(void)
+static int test_bsp_dump_populates_local_import_recovery(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate populates local import recovery")
@@ -1250,7 +1250,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
     return failures;
 }
 
-static int test_cac_dump_populates_live_mirror_source(void)
+static int test_bsp_dump_populates_live_mirror_source(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate populates live mirror source")
@@ -1455,7 +1455,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
     return failures;
 }
 
-static int test_cac_dump_records_live_decision(void)
+static int test_bsp_dump_records_live_decision(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate retains last live decision")
@@ -1496,7 +1496,7 @@ static int test_cac_dump_records_live_decision(void)
     return failures;
 }
 
-static int test_cac_dump_records_peer_floor_decision(void)
+static int test_bsp_dump_records_peer_floor_decision(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate retains peer floor decision")
@@ -1558,7 +1558,7 @@ static int test_cac_dump_records_peer_floor_decision(void)
     return failures;
 }
 
-static int test_cac_dump_records_snapshot_offer_decision(void)
+static int test_bsp_dump_records_snapshot_offer_decision(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate retains snapshot offer decision")
@@ -1587,7 +1587,7 @@ static int test_cac_dump_records_snapshot_offer_decision(void)
     return failures;
 }
 
-static int test_cac_decision_event_contract(void)
+static int test_bsp_decision_event_contract(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: decision events expose authority and trust")
@@ -1622,7 +1622,7 @@ static int test_cac_decision_event_contract(void)
     return failures;
 }
 
-static int test_cac_peer_floor_event_explains_no_source(void)
+static int test_bsp_peer_floor_event_explains_no_source(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: peer floor event explains no selected source")
@@ -1661,7 +1661,7 @@ static int test_cac_peer_floor_event_explains_no_source(void)
     return failures;
 }
 
-static int test_cac_dump_records_local_header_refill_decision(void)
+static int test_bsp_dump_records_local_header_refill_decision(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: dumpstate retains local header refill decision")
@@ -1690,7 +1690,7 @@ static int test_cac_dump_records_local_header_refill_decision(void)
     return failures;
 }
 
-static int test_cac_restores_last_decision_from_node_state(void)
+static int test_bsp_restores_last_decision_from_node_state(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: restores last decision from node_state")
@@ -1820,7 +1820,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
     return failures;
 }
 
-static int test_cac_restores_peer_floor_sources_from_node_state(void)
+static int test_bsp_restores_peer_floor_sources_from_node_state(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: restores peer floor source evidence")
@@ -1871,7 +1871,7 @@ static int test_cac_restores_peer_floor_sources_from_node_state(void)
     return failures;
 }
 
-static int test_cac_restores_local_header_refill_progress(void)
+static int test_bsp_restores_local_header_refill_progress(void)
 {
     int failures = 0;
     TEST_CASE("block_source_policy: restores local refill progress evidence")
@@ -1926,46 +1926,46 @@ static int test_cac_restores_local_header_refill_progress(void)
 int test_block_source_policy(void)
 {
     int failures = 0;
-    failures += test_cac_names();
-    failures += test_cac_prefers_native_p2p();
-    failures += test_cac_keeps_caught_up_p2p_when_legacy_is_ahead();
-    failures += test_cac_gates_mirror_during_local_retries();
-    failures += test_cac_allows_bounded_mirror_after_retries();
-    failures += test_cac_lag_slo_overrides_local_gate();
-    failures += test_cac_lag_slo_mirror_outranks_near_target_p2p();
-    failures += test_cac_below_breach_still_gates_mirror();
-    failures += test_cac_peer_floor_helper_classifies_recovery();
-    failures += test_cac_peer_floor_helper_accepts_healthy_p2p();
-    failures += test_cac_blocks_unsafe_mirror();
-    failures += test_cac_avoids_stale_dead_p2p();
-    failures += test_cac_snapshot_can_outrank_mirror();
-    failures += test_cac_fresh_snapshot_outranks_stale_p2p();
-    failures += test_cac_stale_p2p_can_still_advance_when_alone();
-    failures += test_cac_unknown_height_source_is_not_selectable();
-    failures += test_cac_projection_status_propagates();
-    failures += test_cac_snapshot_offer_helper_allows_valid_offer();
-    failures += test_cac_snapshot_offer_helper_blocks_invalid_offer();
-    failures += test_cac_local_header_refill_helper_records_retry();
-    failures += test_cac_local_header_refill_helper_waits_for_peers();
-    failures += test_cac_local_header_refill_helper_recovers_without_peers();
-    failures += test_cac_dump_json_contract();
-    failures += test_cac_dump_reports_projection_lag();
-    failures += test_cac_projection_deferral_accounting();
-    failures += test_cac_dump_populates_p2p_diversity();
-    failures += test_cac_selects_viable_caught_up_p2p();
-    failures += test_cac_inbound_assists_near_tip_p2p();
-    failures += test_cac_dump_explains_stale_p2p_height();
-    failures += test_cac_dump_populates_live_snapshot_source();
-    failures += test_cac_dump_populates_local_import_recovery();
-    failures += test_cac_dump_populates_live_mirror_source();
-    failures += test_cac_dump_records_live_decision();
-    failures += test_cac_dump_records_peer_floor_decision();
-    failures += test_cac_dump_records_snapshot_offer_decision();
-    failures += test_cac_decision_event_contract();
-    failures += test_cac_peer_floor_event_explains_no_source();
-    failures += test_cac_dump_records_local_header_refill_decision();
-    failures += test_cac_restores_last_decision_from_node_state();
-    failures += test_cac_restores_peer_floor_sources_from_node_state();
-    failures += test_cac_restores_local_header_refill_progress();
+    failures += test_bsp_names();
+    failures += test_bsp_prefers_native_p2p();
+    failures += test_bsp_keeps_caught_up_p2p_when_legacy_is_ahead();
+    failures += test_bsp_gates_mirror_during_local_retries();
+    failures += test_bsp_allows_bounded_mirror_after_retries();
+    failures += test_bsp_lag_slo_overrides_local_gate();
+    failures += test_bsp_lag_slo_mirror_outranks_near_target_p2p();
+    failures += test_bsp_below_breach_still_gates_mirror();
+    failures += test_bsp_peer_floor_helper_classifies_recovery();
+    failures += test_bsp_peer_floor_helper_accepts_healthy_p2p();
+    failures += test_bsp_blocks_unsafe_mirror();
+    failures += test_bsp_avoids_stale_dead_p2p();
+    failures += test_bsp_snapshot_can_outrank_mirror();
+    failures += test_bsp_fresh_snapshot_outranks_stale_p2p();
+    failures += test_bsp_stale_p2p_can_still_advance_when_alone();
+    failures += test_bsp_unknown_height_source_is_not_selectable();
+    failures += test_bsp_projection_status_propagates();
+    failures += test_bsp_snapshot_offer_helper_allows_valid_offer();
+    failures += test_bsp_snapshot_offer_helper_blocks_invalid_offer();
+    failures += test_bsp_local_header_refill_helper_records_retry();
+    failures += test_bsp_local_header_refill_helper_waits_for_peers();
+    failures += test_bsp_local_header_refill_helper_recovers_without_peers();
+    failures += test_bsp_dump_json_contract();
+    failures += test_bsp_dump_reports_projection_lag();
+    failures += test_bsp_projection_deferral_accounting();
+    failures += test_bsp_dump_populates_p2p_diversity();
+    failures += test_bsp_selects_viable_caught_up_p2p();
+    failures += test_bsp_inbound_assists_near_tip_p2p();
+    failures += test_bsp_dump_explains_stale_p2p_height();
+    failures += test_bsp_dump_populates_live_snapshot_source();
+    failures += test_bsp_dump_populates_local_import_recovery();
+    failures += test_bsp_dump_populates_live_mirror_source();
+    failures += test_bsp_dump_records_live_decision();
+    failures += test_bsp_dump_records_peer_floor_decision();
+    failures += test_bsp_dump_records_snapshot_offer_decision();
+    failures += test_bsp_decision_event_contract();
+    failures += test_bsp_peer_floor_event_explains_no_source();
+    failures += test_bsp_dump_records_local_header_refill_decision();
+    failures += test_bsp_restores_last_decision_from_node_state();
+    failures += test_bsp_restores_peer_floor_sources_from_node_state();
+    failures += test_bsp_restores_local_header_refill_progress();
     return failures;
 }
