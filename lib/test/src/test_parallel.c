@@ -622,6 +622,106 @@ static void run_group_exclusive(size_t idx, pid_t parent_pid,
     results[idx].wall_seconds = (double)(now - results[idx].start);
 }
 
+/* Per-group JSON timing artifact — the same "make results visible so
+ * regressions are visible" pattern as tools/lint/run_lint.sh's
+ * .cache/lint-timing/last-run.json (schema zcl.lint_timing.v1), applied
+ * to the parallel test runner: which test GROUP is the long pole. Written
+ * once per invocation (a focused `make t-fast ONLY=X` writes its own
+ * one-group snapshot too) — inspect with `jq . .cache/test-timing/
+ * last-run.json`. Fixed-format printf, no JSON library, no new
+ * dependency. Groups are ordered slowest-first (a plain insertion sort
+ * over at most a few hundred entries — not worth a qsort comparator
+ * closure). Best-effort: a write failure is reported but never fails
+ * the run — this is an observability artifact, not a test outcome. */
+static void write_test_timing_json(const struct group_result *results,
+                                   double wall_seconds, int jobs,
+                                   size_t group_count, int failed_groups,
+                                   size_t skipped_count)
+{
+    const char *dir = ".cache/test-timing";
+    if (mkdir(".cache", 0755) != 0 && errno != EEXIST) {
+        perror("test_parallel: mkdir .cache");
+        return;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        perror("test_parallel: mkdir .cache/test-timing");
+        return;
+    }
+
+    size_t *order = malloc(group_count * sizeof(*order));
+    if (!order) {
+        fprintf(stderr, "test_parallel: timing order malloc failed\n");
+        return;
+    }
+    for (size_t i = 0; i < group_count; i++)
+        order[i] = i;
+    /* Insertion sort by wall_seconds descending; skipped groups (never
+     * measured) sort last. */
+    for (size_t a = 1; a < group_count; a++) {
+        size_t key = order[a];
+        double key_w = results[key].skipped ? -1.0 : results[key].wall_seconds;
+        size_t b = a;
+        while (b > 0) {
+            size_t prev = order[b - 1];
+            double prev_w = results[prev].skipped ? -1.0 : results[prev].wall_seconds;
+            if (prev_w >= key_w) break;
+            order[b] = order[b - 1];
+            b--;
+        }
+        order[b] = key;
+    }
+
+    char tmp_path[160], final_path[160];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/last-run.json.tmp", dir);
+    snprintf(final_path, sizeof(final_path), "%s/last-run.json", dir);
+
+    FILE *fp = fopen(tmp_path, "w");
+    if (!fp) {
+        perror("test_parallel: open timing tmp");
+        free(order);
+        return;
+    }
+
+    time_t now = platform_time_wall_time_t();
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+
+    fprintf(fp, "{\n");
+    fprintf(fp, "  \"schema\":\"zcl.test_timing.v1\",\n");
+    fprintf(fp, "  \"generated_at_utc\":\"%s\",\n", ts);
+    fprintf(fp, "  \"wall_ms\":%lld,\n", (long long)(wall_seconds * 1000.0));
+    fprintf(fp, "  \"jobs\":%d,\n", jobs);
+    fprintf(fp, "  \"group_count\":%zu,\n", group_count);
+    fprintf(fp, "  \"failed_count\":%d,\n", failed_groups);
+    fprintf(fp, "  \"skipped_count\":%zu,\n", skipped_count);
+    fprintf(fp, "  \"groups\":[\n");
+    int first = 1;
+    for (size_t k = 0; k < group_count; k++) {
+        size_t i = order[k];
+        if (results[i].skipped)
+            continue;
+        if (!first)
+            fprintf(fp, ",\n");
+        first = 0;
+        long long ms = (long long)(results[i].wall_seconds * 1000.0);
+        int rc = results[i].signaled ? -results[i].exit_code
+                                     : results[i].exit_code;
+        fprintf(fp,
+                "    {\"name\":\"%s\",\"ms\":%lld,\"rc\":%d,"
+                "\"signaled\":%s}",
+                g_groups[i].name, ms, rc,
+                results[i].signaled ? "true" : "false");
+    }
+    fprintf(fp, "\n  ]\n}\n");
+    fclose(fp);
+    free(order);
+
+    if (rename(tmp_path, final_path) != 0)
+        perror("test_parallel: rename timing artifact");
+}
+
 int main(int argc, char **argv)
 {
     int jobs = get_nproc();
@@ -891,6 +991,9 @@ int main(int argc, char **argv)
         }
         if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
+
+    write_test_timing_json(results, wall, jobs, g_num_groups, failed_groups,
+                           pre_skipped);
 
     printf("\n%s — %d/%zu groups failed, %d skipped (%.1fs wall, %d workers)%s\n",
            failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",

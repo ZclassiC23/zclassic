@@ -33,4 +33,18 @@
 # cover them. Both stay WARN-only per-file (lib/net/, feature growth, not
 # baselined at their new LOC — the ratchet grandfathers the count, not the
 # individual entries).
-14
+#
+# Paydown 2026-07-19 (later still) to 13: msgprocessor_snapshot.c (2676
+# lines, the fastest-drifting file, +224 over its 2452 baseline) split by
+# responsibility — the SERVE side (cached offer/manifest/block-manifest
+# publish+accessor APIs, the zchunkreq/zblkreq client-puzzle PoW guard,
+# send_snapshot_offer_msg/push_manifest/push_block_manifest/
+# build_block_piece_payloads, and the per-command serve handlers the
+# mp_handle_zcl23_sync dispatcher calls into) moved to the new
+# lib/net/src/msgprocessor_snapshot_serve.c, mirroring the connman.c/
+# connman_dialer.c split shape. msgprocessor_snapshot.c is back under its
+# (retightened) baseline of 1666, removing it from the grown-past-baseline
+# list; msgprocessor_snapshot_serve.c is freshly baselined at its own
+# starting size (1108) so future growth on IT becomes visible the same way.
+# Net: one real paydown, count back down from 14 to 13.
+13

@@ -1270,6 +1270,9 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
 #define QUALITY_GUARD_TEST_REL "tools/scripts/test_quality_job_guard.sh"
+#define IMPORT_COPY_PROVE_SELFTEST_REL \
+    "tools/scripts/import-copy-prove-selftest.sh"
+#define IMPORT_COPY_PROVE_SELFTEST_TIMEOUT_SECS "180"
 /* Gate E14 — condition cooldown re-arm (the 2026-07-13 27h-page bug class).
  * The script's own selftest plants an isolated tmp-dir fixture (never the
  * real app/conditions/src tree) proving a network-dependent COND_CRITICAL
@@ -2034,6 +2037,92 @@ static int t_quality_job_guard(void)
     int failures = 0;
     TEST("[tooling] quality jobs yield to mint and retain bounded logs") {
         ASSERT(run_gate_script(QUALITY_GUARD_TEST_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Like run_gate_script but execs the script under `timeout -k 5 <secs>`.
+ * import-copy-prove-selftest.sh drives ~24 hermetic assertions with more
+ * fork/subshell overhead than the rest of the lint-gate scripts (~40s wall
+ * on a normal box); a bounded ceiling turns a regression in the driver (an
+ * infinite loop, a hung fixture) into a failing test instead of a stalled
+ * parallel run. `/usr/bin/timeout` is coreutils, already relied on by
+ * tools/scripts/check_condition_cooldown.sh — no new dependency. */
+static int run_gate_script_timeout(const char *script_rel,
+                                   const char *timeout_secs)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork_with_retry();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execl("/usr/bin/timeout", "timeout", "-k", "5", timeout_secs,
+              script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+/* tools/scripts/import-copy-prove-selftest.sh — hermetic proof that the ONE
+ * canonical copy-prove driver (tools/scripts/import-copy-prove.sh) computes
+ * the mode-appropriate gate set and overall verdict correctly, in BOTH
+ * --mode=import and --mode=bundle, using faked $NODE_BIN/$RPC_BIN fixture
+ * scripts under a throwaway mktemp sandbox: no real node binary, no real
+ * zclassicd, no real chainstate/bundle, no network ports. It does not (and
+ * cannot) prove anything about the real importer/installer — only that the
+ * driver gates correctly the moment a real cure runs. See the script's own
+ * header for the full rationale. Bounded at 180s (see
+ * run_gate_script_timeout). */
+static int t_import_copy_prove_selftest(void)
+{
+    int failures = 0;
+    TEST("[tooling] import-copy-prove driver gates import+bundle modes "
+         "correctly (hermetic)") {
+        ASSERT(run_gate_script_timeout(IMPORT_COPY_PROVE_SELFTEST_REL,
+                                       IMPORT_COPY_PROVE_SELFTEST_TIMEOUT_SECS)
+               == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -6776,8 +6865,31 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") != NULL);
         ASSERT(strstr(buf, "msg_snapshot_sync(") != NULL);
         ASSERT(strstr(buf, "msg_snapshot_sync_ensure") != NULL);
-        ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
         ASSERT(strstr(buf, "mp->utxo_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") == NULL);
+        ASSERT(strstr(buf, "rpc_blockchain_get_mmb") == NULL);
+        ASSERT(strstr(buf, "g_mmb_leaf_store") == NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/mmb_leaf_store.h") == NULL);
+        ASSERT(strstr(buf, "models/block.h") == NULL);
+        ASSERT(strstr(buf, "coins/utxo_commitment.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "snapshot_sync_" "service.h") == NULL);
+        free(buf);
+        buf = NULL;
+        /* mp->block_hashes_range's only caller (the zblkreq SERVE handler,
+         * mp_serve_block_req) lives in msgprocessor_snapshot_serve.c since
+         * the lib/net/src/msgprocessor_snapshot.c SERVE-side split — see
+         * msgprocessor_snapshot_internal.h. Same injected-callback
+         * boundary applies there: it must call mp->block_hashes_range,
+         * never reach into boot/db/model internals directly. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/net/src/msgprocessor_snapshot_serve.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
         ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);
         ASSERT(strstr(buf, "utxo_commitment_sha3_compute") == NULL);
         ASSERT(strstr(buf, "rpc_blockchain_get_mmb") == NULL);
@@ -8184,6 +8296,7 @@ int test_make_lint_gates(void)
     failures += t_e9_operator_needed_sink();
     failures += t_systemd_memory_budget();
     failures += t_quality_job_guard();
+    failures += t_import_copy_prove_selftest();
     failures += t_e14_condition_cooldown_gate();
     failures += t_markdown_links_gate();
     failures += t_git_hooks_gate_enforces_tracked_pre_push();

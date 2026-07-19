@@ -7,8 +7,8 @@
  * The test binary is built WITHOUT ZCL_DEV_BUILD, so hotswap_load_leaves() is
  * the release stub (refuses, no dlopen) — that release behavior is asserted
  * too. The pure predicates + registry + dumper compile in all builds and are
- * exercised directly. A real end-to-end dlopen is proven by the standalone
- * demo in tools/scripts/hotswap_demo.sh (a ZCL_DEV_BUILD harness). */
+ * exercised directly. A real end-to-end dlopen is proven by `make
+ * hotswap-so` / `make hotswap-sim` (see docs/work/HOTSWAP.md). */
 
 #include "test/test_helpers.h"
 #include "hotswap/hotswap.h"
