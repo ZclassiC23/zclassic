@@ -229,6 +229,18 @@ struct app_context {
                                  * 'confine.apply_failed' rather than half-applying
                                  * a partial sandbox. Mutually exclusive with
                                  * -sandbox=steady. */
+    bool confine_serving;      /* -confine=serving : same strict Landlock +
+                                 * seccomp ALLOW-list confinement as -confine,
+                                 * but the allow-set additionally covers the
+                                 * socket family (socket/bind/listen/accept/
+                                 * connect/send-recv family/get+setsockopt/
+                                 * shutdown/select) a node actively doing P2P/
+                                 * HTTPS/onion I/O needs — without this, a
+                                 * SERVING node is SIGSYS-killed at its first
+                                 * accept()/recv()/connect() after entering
+                                 * the plain -confine profile (which omits
+                                 * sockets by design). Implies confine=true.
+                                 * Default false. */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
                                  * the event-log block_index_projection instead of

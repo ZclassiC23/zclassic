@@ -1143,14 +1143,18 @@ static size_t sandbox_build_fs_rules(const char *datadir,
     return n;
 }
 
-/* -confine (strict seccomp ALLOW-list + Landlock): apply once every listen
- * socket/file/thread is up. Fail-fast doctrine extended to security — an
- * unexpected syscall KILLs the process. Refuse to HALF-apply: if os_sandbox_
- * enter() fails partway, run the node UNCONFINED and raise the named blocker
- * 'confine.apply_failed' (remedy OWNER — only an operator can widen the
- * allow-list / enable Landlock and restart) rather than leaving a partial
- * sandbox. Landlock degrades gracefully on an older kernel (logged, skipped);
- * a genuine syscall failure after the ruleset is built is the raise path. */
+/* -confine / -confine=serving (strict seccomp ALLOW-list + Landlock): apply
+ * once every listen socket/file/thread is up. Fail-fast doctrine extended to
+ * security — an unexpected syscall KILLs the process. actx->confine_serving
+ * picks the wider allow-set (adds the socket family so a node doing real
+ * P2P/HTTPS/onion I/O is not SIGSYS-killed at its first accept()/recv()/
+ * connect()); plain -confine keeps the strict status/storage-only set.
+ * Refuse to HALF-apply: if os_sandbox_enter() fails partway, run the node
+ * UNCONFINED and raise the named blocker 'confine.apply_failed' (remedy
+ * OWNER — only an operator can widen the allow-list / enable Landlock and
+ * restart) rather than leaving a partial sandbox. Landlock degrades
+ * gracefully on an older kernel (logged, skipped); a genuine syscall failure
+ * after the ruleset is built is the raise path. */
 static struct zcl_result sr_confine_enter(const struct app_context *actx)
 {
     const char *datadir = actx->datadir ? actx->datadir : g_datadir;
@@ -1184,7 +1188,9 @@ static struct zcl_result sr_confine_enter(const struct app_context *actx)
     size_t n = sandbox_build_fs_rules(datadir, rules, 6, /*extra_ro=*/true,
                                       scratch, 4);
 
-    struct os_sandbox_profile prof = os_sandbox_node_confine_profile(rules, n);
+    struct os_sandbox_profile prof = actx->confine_serving
+        ? os_sandbox_node_confine_serving_profile(rules, n)
+        : os_sandbox_node_confine_profile(rules, n);
     struct zcl_result r = os_sandbox_enter(&prof);
     if (!r.ok) {
         /* Refuse to half-apply: run unconfined + raise the named blocker. Note:
@@ -1194,10 +1200,11 @@ static struct zcl_result sr_confine_enter(const struct app_context *actx)
         struct blocker_record br;
         char reason[BLOCKER_REASON_MAX];
         snprintf(reason, sizeof(reason),
-                 "os_sandbox_enter(node_confine) failed code=%d %s; running "
+                 "os_sandbox_enter(%s) failed code=%d %s; running "
                  "UNCONFINED (operator must widen the allow-list / enable "
-                 "Landlock and restart)", r.code,
-                 r.message[0] ? r.message : "?");
+                 "Landlock and restart)",
+                 actx->confine_serving ? "node_confine_serving" : "node_confine",
+                 r.code, r.message[0] ? r.message : "?");
         if (blocker_init(&br, "confine.apply_failed", "sandbox",
                          BLOCKER_PERMANENT, reason))
             (void)blocker_set(&br);

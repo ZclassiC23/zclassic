@@ -230,6 +230,18 @@ struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
  * receives its length. Named the NODE CONFINE allow-set constant. */
 const int *os_sandbox_node_confine_allowed_syscalls(size_t *count_out);
 
+/* The RESIDENT NODE's -confine=serving ALLOW-list: the node_confine steady
+ * set (above) PLUS the socket-family syscalls a node that is actively doing
+ * P2P/HTTPS/onion I/O needs (socket, bind, listen, accept, connect, send,
+ * sendto, sendmsg, recv, recvfrom, recvmsg, getsockopt, setsockopt, shutdown,
+ * select). Everything NOT in this set is still SECCOMP_RET_KILL_PROCESS —
+ * notably execve/clone, ptrace, mount/namespace, and kernel-surface syscalls
+ * stay absent, so a network-facing parser compromise still cannot pivot to
+ * code execution or escape, it can just keep talking on sockets it already
+ * held. Returns a static const array; *count_out receives its length. Named
+ * the NODE CONFINE SERVING allow-set constant. */
+const int *os_sandbox_node_confine_serving_allowed_syscalls(size_t *count_out);
+
 /* Install a hand-rolled seccomp-bpf ALLOW-list (no libseccomp): every syscall
  * NOT in `allowed` returns SECCOMP_RET_KILL_PROCESS; the listed ones default to
  * SECCOMP_RET_ALLOW. This is the strict inverse of os_sandbox_seccomp_deny — an
@@ -371,6 +383,16 @@ struct os_sandbox_profile os_sandbox_node_steady_state_profile(
  * syscall outside the allow-set kills the process. Apply at the late
  * activation-ready boundary once all listen sockets/files/threads are up. */
 struct os_sandbox_profile os_sandbox_node_confine_profile(
+    const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules);
+
+/* The -confine=serving node profile: identical to os_sandbox_node_confine_
+ * profile (no_new_privs + Landlock + a seccomp ALLOW-list, fail-fast) except
+ * the allow-set is os_sandbox_node_confine_serving_allowed_syscalls — the
+ * strict set plus the socket family a node doing real P2P/HTTPS/onion I/O
+ * needs at its first accept()/recv()/connect() after entering the strict
+ * -confine profile (which omits sockets entirely and SIGSYS-kills a serving
+ * node on first use). Apply at the same late activation-ready boundary. */
+struct os_sandbox_profile os_sandbox_node_confine_serving_profile(
     const struct os_sandbox_path_rule *fs_rules, size_t n_fs_rules);
 
 /* Apply a profile's enabled builders in the ONE correct order:
