@@ -23,8 +23,38 @@
 #include "validation/main_state.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+
+/* Lane A1 reorg-unwind ordering proof. The stale-script repair now commits the
+ * KERNEL-authoritative rewind (TX1) BEFORE the projection-side created_outputs
+ * backfill (TX2), so the two effects are no longer one atomic transaction. To
+ * make that ordering testable — "the projection tx never precedes the kernel
+ * tx" — each commit stamps a monotonic sequence number. A paired repair leaves
+ * g_rf_projection_commit_seq strictly greater than g_rf_kernel_commit_seq. */
+static _Atomic uint64_t g_rf_tx_seq = 0;
+static _Atomic uint64_t g_rf_kernel_commit_seq = 0;
+static _Atomic uint64_t g_rf_projection_commit_seq = 0;
+
+static void rf_replay_record_kernel_commit(void)
+{
+    atomic_store(&g_rf_kernel_commit_seq, atomic_fetch_add(&g_rf_tx_seq, 1) + 1);
+}
+
+static void rf_replay_record_projection_commit(void)
+{
+    atomic_store(&g_rf_projection_commit_seq,
+                 atomic_fetch_add(&g_rf_tx_seq, 1) + 1);
+}
+
+void reducer_frontier_replay_tx_commit_seqs(uint64_t *kernel_out,
+                                            uint64_t *projection_out)
+{
+    if (kernel_out) *kernel_out = atomic_load(&g_rf_kernel_commit_seq);
+    if (projection_out)
+        *projection_out = atomic_load(&g_rf_projection_commit_seq);
+}
 
 static bool rf_replay_delta_exists(sqlite3 *db, int height, bool *exists)
 {
@@ -336,15 +366,24 @@ bool reducer_frontier_replay_stale_script_tx(
     bool rewind_headers)
 {
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair BEGIN failed h=%d: %s",
-                 height, err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
 
-    /* STEP 3: NO write-once marker. The rewind deletes the stale ok=0 row(s) and
+    /* Lane A1: TWO sequential transactions, kernel-first. TX1 commits the
+     * KERNEL-authoritative rewind (coins inverse deltas, utxo_apply_delta
+     * deletes, the Class-B kernel-coupled stage-log deletes for
+     * script/proof/validate_headers, and the cursor forces). TX2 then rewrites
+     * the projection-side created_outputs backfill BEST-EFFORT.
+     *
+     * Crash between TX1 and TX2: the cursors sit at replay_first with a
+     * consistent kernel state, but created_outputs for [replay_first,
+     * backfill_top] is NOT pre-populated. The forward re-fold from replay_first
+     * re-runs body_persist (created_outputs_index_put_block, INSERT OR REPLACE)
+     * for each height BEFORE script_validate reads it, and script_validate also
+     * has its coins_kv fallback — so prevouts resolve either way and the fold
+     * converges to the identical coins commitment. The backfill in TX2 is a
+     * read-side warm-up, not a consensus effect; a TX2 failure is logged and the
+     * repair still succeeds.
+     *
+     * STEP 3: NO write-once marker. The rewind deletes the stale ok=0 row(s) and
      * rewinds the cursor(s), so the ok=0 detector stops matching next tick; STEP
      * 1 (dry==real) guarantees the forward re-fold writes ok=1, so the hole
      * cannot re-form — termination is by the body-vs-row delta, not a guard.
@@ -354,9 +393,16 @@ bool reducer_frontier_replay_stale_script_tx(
      * on-disk canonical body -> v.hash==s.block_hash by construction, the split
      * cannot persist. */
     bool rewind_coins = utxo_cursor > replay_first;
-    if (!rf_replay_backfill_created_outputs_range(db, ms, replay_first,
-                                                  backfill_top) ||
-        (rewind_coins &&
+
+    /* ── TX1: kernel-authoritative rewind ─────────────────────────────── */
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair TX1 BEGIN failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    if ((rewind_coins &&
          !reducer_frontier_replay_inverse_delta_range_checked(db, replay_first, utxo_cursor)) ||
         !reducer_frontier_replay_delete_log_range(
             db, "script_validate_log", replay_first, script_cursor) ||
@@ -380,16 +426,40 @@ bool reducer_frontier_replay_stale_script_tx(
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
-
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair COMMIT failed h=%d: %s",
+                 "[stage_repair] stale script repair TX1 COMMIT failed h=%d: %s",
                  height, err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
+    rf_replay_record_kernel_commit();
     (void)tip_cursor;
+
+    /* ── TX2: projection-side created_outputs backfill (best-effort) ──── */
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair TX2 (created_outputs "
+                 "backfill) BEGIN failed h=%d: %s — kernel rewind already "
+                 "committed; forward re-fold will repopulate",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return true;
+    }
+    if (!rf_replay_backfill_created_outputs_range(db, ms, replay_first,
+                                                  backfill_top) ||
+        sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair TX2 (created_outputs "
+                 "backfill) failed h=%d %d..%d: %s — kernel rewind already "
+                 "committed; forward re-fold (body_persist) will repopulate",
+                 height, replay_first, backfill_top, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return true;
+    }
+    rf_replay_record_projection_commit();
     return true;
 }
 
@@ -436,5 +506,9 @@ bool reducer_frontier_replay_stale_proof_tx(sqlite3 *db,
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
+    /* Proof rewind carries no created_outputs backfill — it is entirely
+     * kernel-authoritative (coins/cursors/proof_validate_log), so it is a
+     * single kernel tx with no projection TX2 to sequence after it. */
+    rf_replay_record_kernel_commit();
     return true;
 }

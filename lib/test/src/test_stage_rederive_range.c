@@ -52,6 +52,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_rederive_range.h"
+#include "jobs/created_outputs_index.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"
@@ -69,6 +70,16 @@
     if ((expr)) printf("OK\n");                            \
     else { printf("FAIL\n"); failures++; }                 \
 } while (0)
+
+/* Lane-A1 reorg-unwind transaction mechanics (src-private header
+ * app/jobs/src/reducer_frontier_replay_tx.h — forward-declared here, matching
+ * the house pattern for src-private stage primitives under test). */
+bool reducer_frontier_replay_stale_script_tx(
+    sqlite3 *db, struct main_state *ms, int height, int replay_first,
+    int script_cursor, int proof_cursor, int utxo_cursor, int tip_cursor,
+    int backfill_top, bool rewind_headers);
+void reducer_frontier_replay_tx_commit_seqs(uint64_t *kernel_out,
+                                            uint64_t *projection_out);
 
 static int sr_mkdir_p(const char *p)
 {
@@ -202,6 +213,31 @@ static int sr_coins_applied(sqlite3 *db)
     if (!coins_kv_get_applied_height(db, &v, &found) || !found)
         return -1;
     return (int)v;
+}
+
+static bool exec_sql(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);  // raw-sql-ok:test-seed
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
+/* created_outputs row count over [lo,hi] inclusive (-1 on error). */
+static int sr_co_count_range(sqlite3 *db, int lo, int hi)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM created_outputs WHERE height BETWEEN ? AND ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;  // raw-sql-ok:test-readback
+    sqlite3_bind_int(st, 1, lo);
+    sqlite3_bind_int(st, 2, hi);
+    int n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:test-readback
+        n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return n;
 }
 
 /* Fold ONE mined block through the eight stages (single-stepped, production
@@ -461,6 +497,77 @@ int test_stage_rederive_range(void)
              sr_cursor(db, "utxo_apply") == TIP + 1);
     SR_CHECK("downstream consumer advanced: coins frontier back to 4",
              sr_coins_applied(db) == TIP + 1);
+
+    /* ── Lane A1: reducer_frontier stale-script rewind = kernel(TX1) then
+     * projection(TX2); crash between them still converges ─────────────────
+     * reducer_frontier_replay_stale_script_tx now commits the KERNEL rewind
+     * (coins/cursors/logs) in TX1 BEFORE the created_outputs backfill in TX2.
+     * The state is back at tip 4 (a clean, never-crashed control). We capture
+     * the control coins commitment, drive the reducer_frontier rewind of
+     * [2,3] directly, assert (case 3) TX2 committed strictly AFTER TX1, then
+     * (case 2) simulate a crash between TX1 and TX2 by deleting the span's
+     * created_outputs (as if TX2 never committed AND the surviving body_persist
+     * rows were absent) and re-fold — the coins commitment must return to the
+     * control. Proof that the created_outputs projection is NOT load-bearing
+     * for the kernel result; prevout resolution's coins_kv fallback is covered
+     * by test_stage_repair_coin_backfill / test_script_validate_stage. */
+    {
+        int ctrl_coins = coins_kv_count(db);
+        int ctrl_applied = sr_coins_applied(db);
+
+        uint64_t k0 = 0, p0 = 0;
+        reducer_frontier_replay_tx_commit_seqs(&k0, &p0);
+
+        progress_store_tx_lock();
+        bool tx_ok = reducer_frontier_replay_stale_script_tx(
+            db, &ms, /*height*/2, /*replay_first*/2, /*script_cursor*/TIP + 1,
+            /*proof_cursor*/TIP + 1, /*utxo_cursor*/TIP + 1,
+            /*tip_cursor*/TIP + 1, /*backfill_top*/TIP, /*rewind_headers*/false);
+        progress_store_tx_unlock();
+        SR_CHECK("A1: stale_script_tx (kernel TX1 + projection TX2) ok", tx_ok);
+
+        uint64_t k1 = 0, p1 = 0;
+        reducer_frontier_replay_tx_commit_seqs(&k1, &p1);
+        /* case 3 — ordering: both advanced this repair, and the projection
+         * commit carries a strictly greater sequence than the kernel commit
+         * (TX2 never precedes TX1). */
+        SR_CHECK("A1 ordering: kernel commit advanced", k1 > k0);
+        SR_CHECK("A1 ordering: projection commit advanced", p1 > p0);
+        SR_CHECK("A1 ordering: projection seq > kernel seq (TX2 after TX1)",
+                 p1 > k1);
+
+        /* Kernel rewind landed: coins/cursors at replay_first=2, header
+         * authority untouched. */
+        SR_CHECK("A1 rewind: coins frontier inverse-rewound to 2",
+                 sr_coins_applied(db) == 2);
+        SR_CHECK("A1 rewind: kernel cursors lowered to 2",
+                 sr_cursor(db, "script_validate") == 2 &&
+                 sr_cursor(db, "proof_validate") == 2 &&
+                 sr_cursor(db, "utxo_apply") == 2 &&
+                 sr_cursor(db, "tip_finalize") == 2);
+        SR_CHECK("A1 rewind: validate_headers authority UNCHANGED at 4",
+                 sr_cursor(db, "validate_headers") == TIP + 1);
+
+        /* case 2 — crash between TX1 and TX2: drop the span's created_outputs
+         * (TX2's effect) so the forward re-fold cannot rely on it. */
+        (void)created_outputs_index_ensure_schema(db);
+        SR_CHECK("A1 crash-sim: delete created_outputs [2,3] (TX2 skipped)",
+                 exec_sql(db,
+                          "DELETE FROM created_outputs WHERE height BETWEEN 2 AND 3") &&
+                 sr_co_count_range(db, 2, 3) == 0);
+
+        /* Forward re-fold from replay_first — must converge to the control. */
+        sr_redrive(2, TIP);
+        SR_CHECK("A1 converge: utxo_apply h=2 re-applied ok=1",
+                 utxo_apply_stage_succeeded_at(2));
+        SR_CHECK("A1 converge: utxo_apply h=3 re-applied ok=1",
+                 utxo_apply_stage_succeeded_at(3));
+        SR_CHECK("A1 converge: utxo_apply cursor back to 4",
+                 sr_cursor(db, "utxo_apply") == TIP + 1);
+        SR_CHECK("A1 converge: coins commitment == never-crashed control",
+                 coins_kv_count(db) == ctrl_coins &&
+                 sr_coins_applied(db) == ctrl_applied);
+    }
 
 teardown:
     tip_finalize_stage_shutdown();
