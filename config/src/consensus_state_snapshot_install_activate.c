@@ -725,6 +725,14 @@ static bool activate_verify_destination(
     return true;
 }
 
+/* Bind (H*, hash-of-H*) on the cutover transaction's own handle — the same
+ * corrected predicate as consensus_state_publication_cas_capture_frontier()
+ * (which reads the process singleton and therefore cannot be reused inside
+ * this BEGIN IMMEDIATE). The old durable_h == hstar equality here was a
+ * clone of the pre-fix CAS capture and is unsatisfiable on any served
+ * datadir: a `finalized` tip_finalize_log row at H binds tip H+1, so the
+ * durable resolver legitimately LEADS H* by one. It is a diagnostic only,
+ * never a gate. */
 static bool activate_capture_frontier_locked(sqlite3 *progress_db,
                                              int32_t *height,
                                              uint8_t hash[32])
@@ -733,14 +741,27 @@ static bool activate_capture_frontier_locked(sqlite3 *progress_db,
     int32_t served = -1;
     int durable_h = -1;
     uint8_t durable_hash[32] = {0};
+    uint8_t hstar_hash[32] = {0};
     if (!progress_db || !height || !hash ||
         !reducer_frontier_compute_hstar(progress_db, &hstar, &served) ||
-        !tip_finalize_stage_resolve_durable_tip(progress_db, &durable_h,
-                                                durable_hash) ||
-        durable_h < 0 || durable_h != hstar)
+        hstar < 0 ||
+        !tip_finalize_stage_block_hash_at(progress_db, hstar, hstar_hash)) {
+        LOG_WARN(ACTIVATE_SUBSYS,
+                 "pre-cutover frontier capture failed: hstar=%d served=%d "
+                 "(bind requires compute_hstar ok, hstar>=0, resolvable "
+                 "hash at hstar)",
+                 hstar, served);
         return false;
+    }
+    if (tip_finalize_stage_resolve_durable_tip(progress_db, &durable_h,
+                                               durable_hash) &&
+        durable_h != hstar && durable_h != hstar + 1)
+        LOG_WARN(ACTIVATE_SUBSYS,
+                 "frontier captured at hstar=%d but durable tip resolved to "
+                 "%d (>1 above H* — check finalize lattice)",
+                 hstar, durable_h);
     *height = hstar;
-    memcpy(hash, durable_hash, 32);
+    memcpy(hash, hstar_hash, 32);
     return true;
 }
 
