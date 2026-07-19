@@ -14,11 +14,14 @@
 
 #include "conditions/clock_skew_reconcile.h"
 #include "conditions/disk_full_pause.h"
+#include "conditions/disk_low_pause.h"
 #include "conditions/memory_pressure_high.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
 #include "platform/os_proc.h"
 #include "services/disk_monitor.h"
+#include "services/index_fold_guard.h"
+#include "util/blocker.h"
 #include "util/mem_pressure.h"
 
 #include <stdatomic.h>
@@ -142,6 +145,54 @@ int test_sticky_conditions(void)
         disk_monitor_stop();
         condition_engine_reset_for_testing();
         disk_full_pause_test_reset();
+    }
+
+    /* ───────────────── disk_low_pause ───────────────── */
+    {
+        condition_engine_reset_for_testing();
+        disk_low_pause_test_reset();
+        blocker_clear("address_index.disk_low");
+        blocker_clear("txindex.disk_low");
+
+        /* Force the fold's own free-space floor absurdly high so
+         * index_fold_disk_ok() latches its "<index_id>.disk_low" blocker
+         * regardless of the real free space on /tmp — deterministic,
+         * independent of the (unrelated, unstarted here) disk_monitor
+         * background thread. */
+        index_fold_set_min_free_for_test((int64_t)1 << 62);
+        bool fold_ok = index_fold_disk_ok("address_index", "test", "/tmp");
+        SC_CHECK("disk_low: index_fold_disk_ok raises the blocker under "
+                 "an impossible floor",
+                 !fold_ok && blocker_exists("address_index.disk_low"));
+
+        register_disk_low_pause();
+        condition_engine_tick();   /* detect blocker present -> remedy */
+        SC_CHECK("disk_low: remedy ran while the index-fold blocker is set",
+                 disk_low_pause_test_remedy_calls() >= 1);
+        struct condition_runtime_snapshot lsnap;
+        bool lgot = condition_engine_get_registered_snapshot(
+                        "disk_low_pause", &lsnap);
+        SC_CHECK("disk_low: did NOT latch operator_needed (transient resource)",
+                 lgot && !lsnap.operator_needed_emitted);
+
+        /* Restore the real floor and re-run the fold gate so it clears its
+         * own blocker (disk_low_pause never clears "<index_id>.disk_low"
+         * itself — the fold's own next pass does, per index_fold_guard.c). */
+        index_fold_set_min_free_for_test(-1);
+        fold_ok = index_fold_disk_ok("address_index", "test", "/tmp");
+        SC_CHECK("disk_low: index_fold_disk_ok clears the blocker once the "
+                 "floor is realistic again",
+                 fold_ok && !blocker_exists("address_index.disk_low"));
+
+        condition_engine_tick();   /* detect false + witness -> cleared */
+        SC_CHECK("disk_low: condition clears once the index-fold blocker "
+                 "is gone",
+                 condition_engine_get_active_count() == 0);
+
+        condition_engine_reset_for_testing();
+        disk_low_pause_test_reset();
+        blocker_clear("address_index.disk_low");
+        blocker_clear("txindex.disk_low");
     }
 
     /* ───────────────── memory_pressure_high ───────────────── */

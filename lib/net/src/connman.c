@@ -2492,6 +2492,37 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     return true;
 }
 
+/* Pure admission-clamp helper — no side effects (no logging, no blocker,
+ * no globals), so it is exercisable from a fast unit test without spawning
+ * the real reactor threads. Returns the max_connections to actually use
+ * (unchanged if it already fits, else clamped to whatever room remains
+ * alongside `listen_sockets` under REACTOR_MAX_FDS). Sets *impossible_out
+ * (if non-NULL) when listen sockets ALONE leave no room for any
+ * connection at all — the one case connman_start() still refuses on. */
+static int connman_reactor_admit(size_t listen_sockets, int requested_max,
+                                  bool *impossible_out)
+{
+    if (impossible_out)
+        *impossible_out = false;
+    size_t reactor_needed = listen_sockets + (size_t)requested_max;
+    if (reactor_needed <= REACTOR_MAX_FDS)
+        return requested_max;
+    long long room = (long long)REACTOR_MAX_FDS - (long long)listen_sockets;
+    if (room > 0)
+        return (int)room;
+    if (impossible_out)
+        *impossible_out = true;
+    return requested_max;   /* caller refuses; value unused on that path */
+}
+
+#ifdef ZCL_TESTING
+int connman_reactor_admit_for_test(size_t listen_sockets, int requested_max,
+                                    bool *impossible_out)
+{
+    return connman_reactor_admit(listen_sockets, requested_max, impossible_out);
+}
+#endif
+
 bool connman_start(struct connman *cm)
 {
     if (!cm)
@@ -2514,29 +2545,46 @@ bool connman_start(struct connman *cm)
      * (boot_services binds before starting the service), so
      * num_listen_sockets is final here. If it plus max_connections would
      * overflow the hand-sized poll() fd arrays in thread_socket_handler,
-     * refuse to start instead of silently truncating the reactor to
-     * whatever fits pfds[REACTOR_MAX_FDS] with no operator-visible signal. */
+     * CLAMP max_connections down to whatever room remains instead of
+     * refusing P2P outright — a configured max_connections is an operator
+     * request for a CEILING, not a floor the node must hit-or-die on; a
+     * clamp keeps the node serving peers (loudly, at reduced capacity)
+     * where a refuse would silently produce a node with ZERO peers. Only
+     * the genuinely impossible case — listen sockets ALONE already meet or
+     * exceed REACTOR_MAX_FDS, leaving no room for any peer connection at
+     * all — still refuses to start with the named PERMANENT blocker. */
     atomic_store(&g_reactor_configured_listen_sockets,
                  cm->manager.num_listen_sockets);
     atomic_store(&g_reactor_configured_max_connections,
                  cm->manager.max_connections);
     {
-        size_t reactor_needed =
-            cm->manager.num_listen_sockets + (size_t)cm->manager.max_connections;
-        if (reactor_needed > REACTOR_MAX_FDS) {
+        bool impossible = false;
+        int admitted = connman_reactor_admit(cm->manager.num_listen_sockets,
+                                             cm->manager.max_connections,
+                                             &impossible);
+        if (impossible) {
             char reason[BLOCKER_REASON_MAX];
             snprintf(reason, sizeof reason,
-                     "connman reactor overflow: %zu listen socket(s) + "
-                     "%d configured max_connections = %zu exceeds "
-                     "REACTOR_MAX_FDS=%d — lower max_connections or the "
-                     "listen socket count before starting P2P",
-                     cm->manager.num_listen_sockets, cm->manager.max_connections,
-                     reactor_needed, REACTOR_MAX_FDS);
+                     "connman reactor overflow: %zu listen socket(s) "
+                     "alone leave no room for any peer connection under "
+                     "REACTOR_MAX_FDS=%d — lower the listen socket "
+                     "count before starting P2P",
+                     cm->manager.num_listen_sockets, REACTOR_MAX_FDS);
             struct blocker_record rec;
             if (blocker_init(&rec, "connman_reactor_overflow", "net",
                              BLOCKER_PERMANENT, reason))
                 (void)blocker_set(&rec);
             LOG_FAIL("net", "%s", reason);
+        } else if (admitted != cm->manager.max_connections) {
+            LOG_WARN("net",
+                     "connman reactor near-overflow: %zu listen socket(s) "
+                     "+ %d configured max_connections exceeds "
+                     "REACTOR_MAX_FDS=%d — clamping max_connections %d -> "
+                     "%d so the reactor still fits its fd arrays",
+                     cm->manager.num_listen_sockets,
+                     cm->manager.max_connections, REACTOR_MAX_FDS,
+                     cm->manager.max_connections, admitted);
+            cm->manager.max_connections = admitted;
         }
     }
 

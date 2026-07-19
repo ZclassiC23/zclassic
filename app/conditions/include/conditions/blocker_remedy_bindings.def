@@ -48,7 +48,7 @@
  *     is a "dynamic site": its FILE must carry at least one such marker or
  *     the gate fails it directly, independent of this table.
  *
- * `remedy` is either:
+ * `remedy` is one of:
  *   - the name of a condition-engine healer (a ZCL_CONDITION(<name>) entry
  *     in condition_registry.def, or a matching `#define <X>_COND_NAME`
  *     literal) that detects/witnesses/clears this exact blocker (either
@@ -56,6 +56,12 @@
  *     underlying state that lets the original raiser self-clear, e.g.
  *     sapling_anchor_frontier_unavailable arming the refold that lets
  *     utxo_apply_anchors.c's own blocker_clear() fire); or
+ *   - `ESCAPE(<action>)`, where <action> is a literal action name passed
+ *     to a `blocker_register_escape("<action>", fn)` call site somewhere
+ *     in scope: the blocker's OWN escape_action names that same action,
+ *     and the supervisor sweep's edge-triggered escape ladder (blocker.h)
+ *     — not the condition engine — IS the auto-remedy path (see
+ *     chain_activation_service.c's "activation_drive_connect" escape); or
  *   - the literal token OWNER: no auto-remedy exists in-tree. The blocker
  *     is either a genuine terminal/consensus-refusal fact (never meant to
  *     self-clear), a bounded-retry TRANSIENT that pages the operator on
@@ -107,7 +113,7 @@ ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_
  * brings a currently-invisible hold class under the meta-detector" —
  * this table does the equivalent for every already-typed hold). ────── */
 ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* D3 */
-ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    OWNER)
+ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    OWNER)
@@ -127,7 +133,7 @@ ZCL_BLOCKER_REMEDY(utxo_recovery.rewind_overshoot,              OWNER)
 ZCL_BLOCKER_REMEDY(ops.binary_stale,                            OWNER)
 ZCL_BLOCKER_REMEDY(binary.fallback_active,                      OWNER)
 ZCL_BLOCKER_REMEDY(utxo_ladder_mismatch,                        OWNER)
-ZCL_BLOCKER_REMEDY(chain.tip_behind_header_chain,               OWNER)
+ZCL_BLOCKER_REMEDY(chain.tip_behind_header_chain,               ESCAPE(activation_drive_connect))
 ZCL_BLOCKER_REMEDY(sha3_window_mismatch,                        OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.uv_cursor_gap,                  OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.validation_evidence,            OWNER)
@@ -146,7 +152,7 @@ ZCL_BLOCKER_REMEDY(coin_backfill.owner_gate,                    OWNER)
 ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_base,         OWNER)
 ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_consumer,     OWNER)
 ZCL_BLOCKER_REMEDY(sticky_escalator.refold_no_anchor_artifact,  OWNER)
-ZCL_BLOCKER_REMEDY(coins.commitment_spot_check,                 OWNER)
+ZCL_BLOCKER_REMEDY(coins.commitment_spot_check,                 state_window_inconsistent)
 ZCL_BLOCKER_REMEDY(authority.pair_self_check,                   OWNER)
 ZCL_BLOCKER_REMEDY(window.consistency,                          OWNER)
 

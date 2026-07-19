@@ -816,25 +816,67 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* A configured max_connections that would overflow the poll() fd
-     * arrays must refuse to start, not silently truncate the reactor. */
-    printf("connman_addnode_fallback: reactor bound-check refuses "
-           "over-cap max_connections... ");
+    /* An over-cap max_connections with room left in the reactor (listen
+     * sockets alone don't exhaust it) must be CLAMPED to whatever room
+     * remains, not refused — a configured max_connections is a ceiling
+     * request, not a start-or-die floor. Exercised via the pure admission
+     * helper so this stays a fast unit test (no real reactor threads). */
+    printf("connman_addnode_fallback: reactor admission clamps "
+           "over-cap max_connections when room remains... ");
     {
+        bool impossible = true;
+        int admitted = connman_reactor_admit_for_test(
+            /*listen_sockets=*/0, /*requested_max=*/REACTOR_MAX_FDS + 10,
+            &impossible);
+        bool ok = !impossible && admitted == REACTOR_MAX_FDS;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* A config that fits within REACTOR_MAX_FDS must pass through
+     * unchanged (no clamp, not impossible). */
+    printf("connman_addnode_fallback: reactor admission passes through "
+           "in-cap config unchanged... ");
+    {
+        bool impossible = true;
+        int admitted = connman_reactor_admit_for_test(
+            /*listen_sockets=*/2, /*requested_max=*/125, &impossible);
+        bool ok = !impossible && admitted == 125;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Listen sockets ALONE leaving no room for any peer connection is the
+     * one genuinely impossible config: it must still refuse via
+     * connman_start(), naming the PERMANENT blocker, never silently
+     * clamping to zero/negative connections. */
+    printf("connman_addnode_fallback: reactor bound-check refuses "
+           "when listen sockets alone exhaust the reactor... ");
+    {
+        bool impossible = false;
+        int admitted = connman_reactor_admit_for_test(
+            /*listen_sockets=*/(size_t)REACTOR_MAX_FDS, /*requested_max=*/1,
+            &impossible);
+        bool ok = impossible;
+        (void)admitted;   /* unused on the impossible path */
+
         blocker_reset_for_testing();
         chain_params_select(CHAIN_MAIN);
         const struct chain_params *params = chain_params_get();
         struct connman cm;
         struct node_signals sigs;
         memset(&sigs, 0, sizeof(sigs));
-        bool ok = connman_init(&cm, params, &sigs);
+        ok = ok && connman_init(&cm, params, &sigs);
 
-        /* No listen sockets bound (num_listen_sockets stays 0) — the
-         * violation comes entirely from an over-cap max_connections, proving
-         * the check sums both terms rather than only gating on listen
-         * sockets. */
-        ok = ok && cm.manager.num_listen_sockets == 0;
-        cm.manager.max_connections = REACTOR_MAX_FDS + 10;
+        /* num_listen_sockets is only claimed synthetically here (no real
+         * sockets were bound into cm.manager.listen_sockets, whose backing
+         * array is sized far below REACTOR_MAX_FDS) — reset it to 0 before
+         * connman_free() so its listen-socket teardown loop doesn't walk
+         * past the real (tiny) allocation. */
+        cm.manager.num_listen_sockets = REACTOR_MAX_FDS;
+        cm.manager.max_connections = 1;
 
         bool started = connman_start(&cm);
         ok = ok && !started;
@@ -844,6 +886,7 @@ int test_connman_addnode_fallback(void)
         /* Never partially started: no P2P thread should be live to join. */
         ok = ok && !cm.started;
 
+        cm.manager.num_listen_sockets = 0;
         connman_free(&cm);
         blocker_reset_for_testing();
         if (ok) printf("OK\n");

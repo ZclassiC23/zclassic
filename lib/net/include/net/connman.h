@@ -42,6 +42,14 @@ struct connman_reactor_stats {
 
 void connman_get_reactor_stats(struct connman_reactor_stats *out);
 
+#ifdef ZCL_TESTING
+/* Pure reactor-admission clamp math connman_start() uses internally — see
+ * connman.c. Exposed so the clamp-vs-refuse boundary is unit-testable
+ * without spawning the real reactor threads. */
+int connman_reactor_admit_for_test(size_t listen_sockets, int requested_max,
+                                    bool *impossible_out);
+#endif
+
 /* Initial capacity of the deferred-free list: starts at 256, grows
  * dynamically on overflow up to CONNMAN_DEFERRED_FREE_HARD_CAP. The fixed
  * cap-256 used to overflow under Tor-driven churn while the message
