@@ -159,6 +159,15 @@
              "running, workers, window, queue_depth, cache_hits/misses/hit_rate, "
              "verdicts_produced, throughput_blk_per_sec, supervised/supervisor_child_id",
              "app/jobs/src/pv_lookahead.c", "lib/test/src/test_pv_lookahead.c"),
+    DIAG_SERVICE("block_prefetch", block_prefetch_dump_state_json,
+                 "block-body read-ahead worker (default OFF): warms the page "
+                 "cache for [cursor+lead, +window) ahead of the leading fold "
+                 "stage. running/nowait_probe, window/lead/warm_frontier, "
+                 "hits/warmed/nowait_misses/resident_rate, bytes, "
+                 "resolve_gaps/read_fails/passes, lru_count/lru_bytes, "
+                 "warm_blk_per_sec, supervised/supervisor_child_id",
+                 "lib/storage/src/block_prefetch.c",
+                 "lib/test/src/test_block_prefetch.c"),
     DIAG_JOB("psc", psc_dump_state_json,
              "parallel state compiler audit (opt-in; producer re-mints / full "
              "audits): last psc_audit_run verdict comparing the order-independent "

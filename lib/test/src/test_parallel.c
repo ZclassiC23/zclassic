@@ -359,6 +359,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_funds_safety) \
     X(bundle_staleness) \
     X(block_parse_cache) \
+    X(block_prefetch) \
     X(storage_reclaim) \
     X(chain_frontier_snapshot_service) \
     X(health_rollup) X(debug_bundle) X(operator_ux) \
