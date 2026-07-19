@@ -96,6 +96,13 @@ enum event_log_type {
      * version, services bits, and best height. Folded into the durable
      * node_census + census_observations tables (peers_projection). */
     EV_NODE_CENSUS_OBSERVED = 28,
+    /* A durable bridge copy of the in-memory EV_OPERATOR_NEEDED bus event
+     * (lib/event/event.h — reset-on-restart namespace). Written by
+     * app/services/src/blocker_history.c's observer so an operator page
+     * survives restart; payload is "ts=<unix> <original EV_OPERATOR_NEEDED
+     * payload>". Folded into the blocker_history aggregate (id -> fire
+     * count, first/last fired). */
+    EV_OPERATOR_ALERT       = 29,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 
