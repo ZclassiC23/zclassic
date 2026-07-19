@@ -1771,23 +1771,21 @@ bool app_init(struct app_context *ctx)
     }
 
     if (g_wallet.keystore.num_keys == 0) {
-        /* Genuinely empty wallet — first-run creation. Consult the
-         * encryption-at-rest policy BEFORE minting any key material.
-         * Without a passphrase (ZCL_WALLET_PASSPHRASE) the transparent
-         * WIF keys, Sapling spending keys, and HD seed would be written
-         * to node.db in PLAINTEXT. Refuse to do that silently: require
-         * a passphrase, or an explicit, loud `-allow-plaintext-wallet`
-         * opt-in. This only blocks *creating* a new plaintext wallet —
-         * an existing plaintext wallet still opens (warned, above). */
+        /* Genuinely empty wallet — first-run. A wallet decision must NOT be a
+         * precondition for syncing, and plaintext keys must NEVER be minted
+         * silently. So REFUSE (no passphrase, no -allow-plaintext-wallet opt-in
+         * on a canonical/unknown node) means "boot KEYLESS (no-spend) and sync"
+         * — mint nothing; only an explicit passphrase (encrypt) or opt-in
+         * (plaintext) mints a keypool. */
         enum wallet_boot_wallet_action act =
             wallet_at_rest_boot_decision(wallet_at_rest_creation_policy(),
                                          ctx->mint_anchor, ctx->operator_lane);
         wallet_at_rest_boot_report(act, ctx->operator_lane);
         if (act == WALLET_BOOT_REFUSE) {
-            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                        "wallet_plaintext_creation_refused");
-            exit(1);
-        }
+            /* No-spend: sync now (NAMED via EV_BOOT_PHASE), never a required flag. */
+            event_emitf(EV_BOOT_PHASE, 0, "wallet_no_spend keyless_sync");
+            printf("Wallet: NO-SPEND mode (0 keys) — syncing.\n");
+        } else {
         if (act == WALLET_BOOT_CREATE_PLAINTEXT)
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "wallet_plaintext_created_optin");
@@ -1819,6 +1817,7 @@ bool app_init(struct app_context *ctx)
         if (g_node_db.open)
             node_db_wal_checkpoint(&g_node_db);
         printf("New wallet created.\n");
+        }
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
     boot_topmark("wallet_load", t_phase);
