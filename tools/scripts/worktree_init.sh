@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+#
+# worktree_init.sh — one-shot bootstrap for a freshly created lane worktree.
+#
+# `.claude/worktrees/*` checkouts start with `vendor/lib/*.a` missing except
+# the one archive tracked in git (`libsecp256k1.a` — see .gitignore's
+# `!vendor/lib/libsecp256k1.a`); every other archive is a `make vendor`
+# build product, gitignored, and therefore absent from a fresh worktree
+# until copied in from the checkout that built it. Skipping this step is
+# the classic worktree footgun: the whole-program LTO link fails deep into
+# `make -j` with "cannot find -l...". This script does the copy plus the
+# other two per-worktree bootstrap steps a lane needs before its first build:
+#
+#   1. vendor/lib/*.a  <- copied from the canonical checkout (idempotent:
+#      skipped when already byte-identical).
+#   2. git hooks        <- core.hooksPath is REPO-COMMON config (shared
+#      .git/config — see `git rev-parse --git-common-dir`), so it is
+#      normally already armed by whichever checkout ran `make install-hooks`
+#      first. The known worktree gotcha is a stray ABSOLUTE spelling of the
+#      same path (git config core.hooksPath resolved against the working
+#      worktree instead of the repo root by some other tool) — this step
+#      re-asserts the canonical relative spelling, which is a no-op when
+#      already correct and a repair otherwise.
+#   3. link prerequisites <- sanity-checks vendor/include/ and every archive
+#      the Makefile's VENDOR_ARCHIVES list expects, so a missing/partial
+#      vendor/lib fails LOUD here instead of as an opaque linker error
+#      minutes into `make -j`.
+#
+# Idempotent and safe to re-run any time (e.g. after `git worktree prune`
+# recreates a lane, or mid-lane if vendor/lib drifted).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$WORKTREE_ROOT"
+
+# The canonical source of vendor/lib is the MAIN checkout, i.e. the
+# directory git-common-dir sits in (not a hardcoded path — agents run this
+# from whichever clone is the main one).
+GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir)"
+CANONICAL_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
+
+echo "== worktree-init: $WORKTREE_ROOT =="
+echo "   canonical source: $CANONICAL_ROOT"
+
+# -- Step 1: vendor/lib -------------------------------------------------
+if [[ "$WORKTREE_ROOT" == "$CANONICAL_ROOT" ]]; then
+    echo "[1/3] vendor/lib: this IS the canonical checkout -- nothing to copy"
+elif [[ ! -d "$CANONICAL_ROOT/vendor/lib" ]]; then
+    echo "[1/3] vendor/lib: FAIL -- canonical $CANONICAL_ROOT/vendor/lib is missing" >&2
+    echo "  Build vendor archives in the canonical checkout first: make vendor-ready" >&2
+    exit 1
+else
+    mkdir -p vendor
+    if [[ -d vendor/lib ]] && diff -rq "$CANONICAL_ROOT/vendor/lib" vendor/lib >/dev/null 2>&1; then
+        echo "[1/3] vendor/lib: already identical to $CANONICAL_ROOT/vendor/lib -- skipped"
+    else
+        cp -a "$CANONICAL_ROOT/vendor/lib" vendor/
+        echo "[1/3] vendor/lib: copied from $CANONICAL_ROOT/vendor/lib"
+    fi
+fi
+
+# -- Step 2: git hooks ---------------------------------------------------
+# core.hooksPath lives in the repo-common config, so this is usually
+# already set by whichever checkout ran it first; re-running is a no-op.
+if [[ -d tools/githooks ]]; then
+    before="$(git config --get core.hooksPath || true)"
+    git config core.hooksPath tools/githooks
+    chmod +x tools/githooks/* 2>/dev/null || true
+    if [[ "$before" == "tools/githooks" ]]; then
+        echo "[2/3] git hooks: already armed (core.hooksPath=tools/githooks) -- skipped"
+    else
+        echo "[2/3] git hooks: armed core.hooksPath=tools/githooks (was '${before:-<unset>}')"
+    fi
+else
+    echo "[2/3] git hooks: tools/githooks not present in this checkout -- skipped"
+fi
+
+# -- Step 3: sanity-check link prerequisites -----------------------------
+# Mirrors the Makefile's VENDOR_ARCHIVES list.
+vendor_archives=(libsecp256k1.a libcrypto.a libssl.a libevent.a
+    libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a
+    libz.a librustzcash.a libtor_stub.a)
+
+missing=()
+[[ -d vendor/include ]] || missing+=("vendor/include")
+# make vendor also drops a few generated headers under vendor/include/ that
+# are gitignored (openssl/, zlib.h, zconf.h) and therefore, like vendor/lib,
+# do not exist in a fresh worktree checkout on their own.
+[[ -d vendor/include/openssl ]] || missing+=("vendor/include/openssl")
+[[ -f vendor/include/zlib.h ]] || missing+=("vendor/include/zlib.h")
+[[ -f vendor/include/zconf.h ]] || missing+=("vendor/include/zconf.h")
+for a in "${vendor_archives[@]}"; do
+    [[ -f "vendor/lib/$a" ]] || missing+=("vendor/lib/$a")
+done
+
+if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "[3/3] link prerequisites: FAIL -- missing: ${missing[*]}" >&2
+    echo "  vendor/lib gaps: re-run this script, or cp -a $CANONICAL_ROOT/vendor/lib vendor/" >&2
+    echo "  vendor/include gaps: cp -a $CANONICAL_ROOT/vendor/include vendor/ (or: make vendor in $CANONICAL_ROOT)" >&2
+    exit 1
+fi
+echo "[3/3] link prerequisites: OK (vendor/include + all ${#vendor_archives[@]} VENDOR_ARCHIVES present)"
+
+echo "== worktree-init: done =="

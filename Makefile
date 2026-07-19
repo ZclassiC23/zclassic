@@ -4018,6 +4018,25 @@ check-git-hooks-installed:
 	@echo "══ LINT: local pre-push hook installed ══"
 	@./tools/scripts/check_git_hooks_installed.sh
 
+# One-shot bootstrap for a freshly created `.claude/worktrees/*` lane: copies
+# vendor/lib/*.a in from the canonical checkout (idempotent), re-asserts the
+# shared core.hooksPath, and sanity-checks the link prerequisites so a
+# missing archive fails loud here instead of as an opaque linker error deep
+# into `make -j`. See tools/scripts/worktree_init.sh for the full writeup.
+#
+# NOTE: on a genuinely fresh worktree (vendor/lib not yet populated), `make`
+# itself establishes vendor/lib at PARSE time (line ~46, VENDOR_MISSING_INPUTS)
+# before this recipe ever runs, via the slow network `vendor-ready` path —
+# Make has no way to run a recipe before parsing prerequisites. For the fast,
+# network-free copy, run the script directly ONCE before your first `make`:
+#     bash tools/scripts/worktree_init.sh
+# `make worktree-init` is the idempotent re-verify / repeat-safe entry point
+# for every call after vendor/lib already exists (post-prune re-create, or a
+# mid-lane repair check).
+.PHONY: worktree-init
+worktree-init:
+	@./tools/scripts/worktree_init.sh
+
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f test_zcl test_parallel zclassic23 zclassic-cli zcl-rpc zcl-nodectl \
