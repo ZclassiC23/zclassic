@@ -62,7 +62,6 @@
 #include "storage/wallet_projection.h"
 #include "storage/small_projections.h"
 #include "storage/progress_store.h"
-#include "storage/projection_store.h"
 #include "storage/utxo_projection.h"
 #include "services/block_index_loader.h"
 #include "models/block.h"
@@ -1596,9 +1595,6 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
-    /* Close the projection handle BEFORE the kernel handle: the kernel
-     * connection owns the WAL checkpoint on its own close (Wave A2 split). */
-    projection_store_close();
     /* Graceful checkpoint and close of progress.kv. No-op if never opened. */
     progress_store_close();
 

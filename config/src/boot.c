@@ -36,7 +36,6 @@
 #include "services/utxo_recovery_service.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
-#include "storage/projection_store.h"
 #include "storage/anchor_kv.h"  /* seed the verified Sapling anchor frontier at boot */
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_progress_mark_started_from_anchor (B2) */
@@ -1836,14 +1835,6 @@ bool app_init(struct app_context *ctx)
     bool progress_open = progress_store_open(ctx->datadir);
     boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
     if (progress_open) {
-        /* Wave A2 split: open the SECOND handle to the same progress.kv for
-         * projection co-writers (address_index / txindex / created_outputs),
-         * so their BEGIN IMMEDIATE never serialises on the reducer drive's
-         * kernel tx lock. Non-fatal — a projection fold that finds no handle
-         * simply skips its tick; the kernel fold is unaffected. */
-        if (!projection_store_open(ctx->datadir))
-            LOG_WARN("boot", "[boot] projection_store open failed; projection "
-                     "folds will idle until reopen");
         if (!ctx->mint_anchor && !ctx->ratify_mint_anchor &&
             !ctx->export_consensus_bundle && !ctx->verify_consensus_bundle &&
             !ctx->verify_rom && !boot_mint_anchor_normal_boot_gate(progress_store_db()))

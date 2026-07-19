@@ -27,7 +27,7 @@
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
-#include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -202,7 +202,9 @@ int txindex_projection_service_tick_once(void)
     if (!txindex_projection_enabled())
         return 0;
     struct main_state *ms = app_runtime_main_state();
-    sqlite3 *db = progress_store_db();
+    /* Wave A2 split: fold on the projection handle + projection tx lock, so
+     * this batch never serialises on the reducer drive's kernel tx lock. */
+    sqlite3 *db = projection_store_db();
     if (!ms || !db)
         return 0;
     char datadir[1024];
@@ -210,13 +212,13 @@ int txindex_projection_service_tick_once(void)
     if (!datadir[0])
         return 0;
 
-    /* Non-blocking: if a reducer batch owns the store, skip this tick and try
-     * again next period. Never blocks the supervisor thread; never stalls the
-     * drive beyond one bounded batch we hold ourselves. */
-    if (!progress_store_tx_trylock())
+    /* Non-blocking: if another projection batch owns the store, skip this tick
+     * and try again next period. Never blocks the supervisor thread; never
+     * stalls the drive beyond one bounded batch we hold ourselves. */
+    if (!projection_store_tx_trylock())
         return 0;
     int folded = tx_do_batch(ms, datadir, db);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
     return folded;
 }
 
@@ -227,16 +229,16 @@ enum txindex_read_status txindex_projection_read_locate(
     if (cursor_out) *cursor_out = -1;
     if (!txid || !txindex_projection_enabled())
         return TXINDEX_READ_DISABLED;
-    sqlite3 *db = progress_store_db();
+    sqlite3 *db = projection_store_db();
     if (!db)
         return TXINDEX_READ_DISABLED;
-    if (!progress_store_tx_trylock())
+    if (!projection_store_tx_trylock())
         return TXINDEX_READ_BUSY;
     int64_t cursor = -1;
     (void)txindex_projection_get_cursor(db, &cursor);
     int r = txindex_projection_lookup(db, txid, height_out, block_hash_out,
                                       tx_n_out);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
     if (cursor_out) *cursor_out = cursor;
     if (r < 0)
         return TXINDEX_READ_BUSY;           /* transient error — fail soft */
@@ -285,13 +287,13 @@ bool txindex_projection_service_rederive(void)
 {
     if (!txindex_projection_enabled())
         return false; // raw-return-ok:opt-in-disabled-has-nothing-to-rederive
-    sqlite3 *db = progress_store_db();
+    sqlite3 *db = projection_store_db();
     if (!db)
-        LOG_FAIL("txindex", "rederive: progress store not open");
-    if (!progress_store_tx_trylock())
+        LOG_FAIL("txindex", "rederive: projection store not open");
+    if (!projection_store_tx_trylock())
         return false; // raw-return-ok:store-busy-retry-later-not-a-failure
     bool ok = txindex_projection_drop(db) && txindex_projection_ensure_schema(db);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
     if (ok) {
         atomic_fetch_add(&g_tx_resets, 1);
         atomic_store(&g_tx_schema_ready, true);
@@ -368,12 +370,12 @@ bool txindex_dump_state_json(struct json_value *out, const char *key)
      * flag): the projection tables may exist and be inspectable even on a boot
      * that isn't actively backfilling. Only a KEY engages disk; the bare status
      * path above stays side-effect-free. */
-    sqlite3 *db = progress_store_db();
+    sqlite3 *db = projection_store_db();
     if (!db) {
-        json_push_kv_str(out, "error", "progress store not open");
+        json_push_kv_str(out, "error", "projection store not open");
         return true;
     }
-    if (!progress_store_tx_trylock()) {
+    if (!projection_store_tx_trylock()) {
         json_push_kv_bool(out, "busy", true);
         return true;
     }
@@ -382,7 +384,7 @@ bool txindex_dump_state_json(struct json_value *out, const char *key)
     int64_t height = -1, tx_n = -1;
     uint8_t block_hash[32];
     int r = txindex_projection_lookup(db, txid, &height, block_hash, &tx_n);
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
 
     json_push_kv_int(out, "cursor", cursor);
     if (r < 0) {

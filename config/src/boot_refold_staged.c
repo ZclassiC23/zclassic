@@ -21,7 +21,6 @@
 
 #include "models/database.h"
 #include "storage/progress_store.h"
-#include "storage/projection_store.h"
 #include "storage/coins_kv.h"
 #include "storage/anchor_kv.h"
 #include "storage/nullifier_kv.h"
@@ -845,10 +844,6 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
         return false;
     }
 
-    /* The projection handle holds its own fd to the file we are about to
-     * quarantine+rebuild; close it first so it does not linger on the stale
-     * inode, and reopen it against the fresh store below (Wave A2 split). */
-    projection_store_close();
     progress_store_close();
     int64_t stamp = (int64_t)platform_time_wall_time_t();
     static unsigned quarantine_seq;
@@ -880,10 +875,6 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
                     "reason=%s", reason);
         return false;
     }
-    /* Reopen the projection handle against the fresh store (non-fatal). */
-    if (!projection_store_open(datadir))
-        LOG_WARN("boot", "[boot] projection_store reopen failed after "
-                 "progress.kv rebuild; projection folds will idle");
     fprintf(stderr,
             "[boot] -load-snapshot-at-own-height: progress.kv reopened after "
             "quarantine (reason=%s); snapshot was already SHA3-verified and "

@@ -14,15 +14,19 @@
 
 #include "json/json.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "util/blocker.h"
 #include "util/stage.h"
 
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define PS_CHECK(name, expr) do { \
@@ -49,6 +53,61 @@ static job_result_t step_advance_by_one(struct stage_step_ctx *c)
 {
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
+}
+
+/* ── Wave A2 lock-order concurrency fixture ─────────────────────────────
+ * Two threads, one per store handle, each holding its OWN tx lock + BEGIN
+ * IMMEDIATE for a beat. They must not deadlock (different mutex domains,
+ * WAL single-writer resolved by busy_timeout) and both must commit. */
+struct lo_thread_arg {
+    _Atomic bool committed;
+    int hold_ms;
+};
+
+static void lo_sleep_ms(int ms)
+{
+    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+static void *lo_kernel_writer(void *p)
+{
+    struct lo_thread_arg *a = p;
+    progress_store_tx_lock();
+    sqlite3 *db = progress_store_db();
+    bool ok = db != NULL &&
+              sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+    if (ok) {
+        const int32_t v = 0x1111;
+        ok = progress_meta_set_in_tx(db, "lock_order.kernel", &v, sizeof(v));
+        lo_sleep_ms(a->hold_ms);               /* hold the writer for a beat */
+        ok = sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL) ==
+                 SQLITE_OK && ok;
+    }
+    progress_store_tx_unlock();
+    atomic_store(&a->committed, ok);
+    return NULL;
+}
+
+static void *lo_projection_writer(void *p)
+{
+    struct lo_thread_arg *a = p;
+    projection_store_tx_lock();
+    sqlite3 *db = projection_store_db();
+    bool ok = db != NULL &&
+              sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+    if (ok) {
+        ok = sqlite3_exec(db,
+                          "INSERT OR REPLACE INTO lo_projection_scratch"
+                          "(k,v) VALUES(1, 0x2222)", NULL, NULL, NULL) ==
+             SQLITE_OK;
+        lo_sleep_ms(a->hold_ms);
+        ok = sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL) ==
+                 SQLITE_OK && ok;
+    }
+    projection_store_tx_unlock();
+    atomic_store(&a->committed, ok);
+    return NULL;
 }
 
 /* Count quarantine sidecar files (progress.kv*.corrupt.*) in dir. Used to
@@ -506,6 +565,93 @@ int test_progress_store(void)
             progress_store_close();
         }
 
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── Wave A2 (D4): projection_store split — independent connection +
+     *    lock-order concurrency ────────────────────────────────────────────
+     * The projection handle is a SECOND sqlite3 connection to the SAME
+     * progress.kv file. Two threads writing concurrently — kernel handle under
+     * progress_store_tx_lock, projection handle under projection_store_tx_lock —
+     * must not deadlock (disjoint mutex domains; WAL single-writer resolved by
+     * busy_timeout) and both must commit their own row. */
+    {
+        char dir[256];
+        ps_tmpdir(dir, sizeof(dir), "projsplit");
+        mkdir_p(dir);
+
+        PS_CHECK("split: progress_store opens", progress_store_open(dir));
+        PS_CHECK("split: projection_store opens", projection_store_open(dir));
+
+        /* Independent connections: same file, distinct sqlite3 handles. */
+        sqlite3 *kdb = progress_store_db();
+        sqlite3 *pdb = projection_store_db();
+        PS_CHECK("split: both handles non-NULL", kdb != NULL && pdb != NULL);
+        PS_CHECK("split: projection handle is a DISTINCT connection",
+                 kdb != NULL && pdb != NULL && kdb != pdb);
+
+        /* projection_store dumper proves the split observably. */
+        {
+            struct json_value v; json_init(&v);
+            char buf[1024];
+            PS_CHECK("split: projection dump works",
+                     projection_store_dump_state_json(&v, NULL));
+            size_t n = json_write(&v, buf, sizeof(buf));
+            PS_CHECK("split: projection dump serializes",
+                     n > 0 && n < sizeof(buf));
+            PS_CHECK("split: projection dump reports open=true",
+                     strstr(buf, "\"open\":true") != NULL);
+            PS_CHECK("split: projection dump reports independent_of_kernel=true",
+                     strstr(buf, "\"independent_of_kernel\":true") != NULL);
+            json_free(&v);
+        }
+
+        /* A scratch projection table only the projection handle writes. */
+        PS_CHECK("split: projection scratch schema",
+                 sqlite3_exec(pdb,
+                     "CREATE TABLE IF NOT EXISTS lo_projection_scratch"
+                     "(k INTEGER PRIMARY KEY, v INTEGER NOT NULL)",
+                     NULL, NULL, NULL) == SQLITE_OK);
+
+        struct lo_thread_arg ka = { false, 40 };
+        struct lo_thread_arg pa = { false, 40 };
+        pthread_t kt, pt;
+        int krc = pthread_create(&kt, NULL, lo_kernel_writer, &ka);
+        int prc = pthread_create(&pt, NULL, lo_projection_writer, &pa);
+        PS_CHECK("split: both writer threads launch", krc == 0 && prc == 0);
+        if (krc == 0) pthread_join(kt, NULL);   /* completes ⇒ no deadlock */
+        if (prc == 0) pthread_join(pt, NULL);
+
+        PS_CHECK("split: kernel tx committed (no deadlock)",
+                 atomic_load(&ka.committed));
+        PS_CHECK("split: projection tx committed (no deadlock)",
+                 atomic_load(&pa.committed));
+
+        /* Both rows landed on the shared file, each written through its own
+         * connection: the kernel key via progress_meta, the projection row via
+         * the scratch table. */
+        {
+            uint8_t out[8] = {0}; size_t got = 0; bool found = false;
+            PS_CHECK("split: kernel row present via progress_meta",
+                     progress_meta_get(kdb, "lock_order.kernel", out,
+                                       sizeof(out), &got, &found) && found &&
+                     got == sizeof(int32_t));
+            sqlite3_stmt *q = NULL;
+            int rc = sqlite3_prepare_v2(pdb,
+                "SELECT v FROM lo_projection_scratch WHERE k=1",
+                -1, &q, NULL);
+            bool proj_row = rc == SQLITE_OK &&
+                            sqlite3_step(q) == SQLITE_ROW &&
+                            sqlite3_column_int(q, 0) == 0x2222;
+            sqlite3_finalize(q);
+            PS_CHECK("split: projection row present via projection handle",
+                     proj_row);
+        }
+
+        projection_store_close();
+        PS_CHECK("split: projection handle NULL after close",
+                 projection_store_db() == NULL);
+        progress_store_close();
         test_cleanup_tmpdir(dir);
     }
 

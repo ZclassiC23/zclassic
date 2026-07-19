@@ -19,6 +19,7 @@
 #include "storage/event_log.h"
 #include "storage/event_log_singleton.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "storage/utxo_projection.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
@@ -156,6 +157,17 @@ void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb
 {
     if (!datadir || !datadir[0])
         return;
+
+    /* Wave A2 (D4) split: open the SECOND handle to the already-open
+     * progress.kv (progress_store opened it back in app_init), giving the
+     * address_index / txindex / created_outputs co-writers their OWN connection
+     * + tx lock so their BEGIN IMMEDIATE never serialises on the reducer drive's
+     * kernel tx lock. Non-fatal — a projection fold that finds no handle just
+     * idles its tick; the kernel fold is unaffected. */
+    if (!projection_store_open(datadir))
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] projection_store unavailable; projection folds idle\n");
+
     char mempool_path[PATH_MAX];
     char peers_path[PATH_MAX];
     int n2 = snprintf(mempool_path, sizeof(mempool_path),
@@ -447,4 +459,7 @@ void boot_stop_projection_storage(void)
         event_log_close(g_phase4_event_log);
         g_phase4_event_log = NULL;
     }
+    /* Close the Wave A2 projection handle to progress.kv (no-op if unopened).
+     * progress_store's own close still owns the WAL checkpoint of the file. */
+    projection_store_close();
 }

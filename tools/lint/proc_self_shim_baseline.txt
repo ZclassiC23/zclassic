@@ -33,3 +33,4 @@ app/controllers/src/anchor_controller.c
 lib/test/src/test_canary_sentinel_watch.c
 config/src/consensus_state_snapshot_install_activate.c
 lib/storage/src/progress_store.c
+lib/storage/src/projection_store.c

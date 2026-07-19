@@ -16,7 +16,7 @@
 #include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"          /* stage_cursor_persisted */
 #include "jobs/utxo_apply_stage.h"       /* public test accessors declared here */
-#include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "util/log_macros.h"
 #include "validation/main_constants.h"
 
@@ -57,18 +57,26 @@ static int utxo_apply_created_outputs_retain(void)
     return t >= 0 ? t : CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS;
 }
 
-void utxo_apply_created_outputs_prune_post_commit(struct sqlite3 *db)
+/* Wave A2 (D4): the prune is a projection-table retention sweep. It runs on the
+ * projection_store handle + projection tx lock — the caller has ALREADY released
+ * the kernel progress lock (strictly sequential locks; LOCK ORDER LAW). The
+ * committed utxo_apply cursor it snapshots for the floor is read from the
+ * projection connection's own BEGIN IMMEDIATE snapshot, which sees the kernel's
+ * just-committed cursor over the shared WAL (a read, never a stage_cursor
+ * write — the kernel stays the cursor's single writer). */
+void utxo_apply_created_outputs_prune_post_commit(void)
 {
+    sqlite3 *db = projection_store_db();
     if (!db)
         return;
-    progress_store_tx_lock();
+    projection_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN(STAGE_NAME,
                  "[utxo_apply] created_outputs prune BEGIN failed: %s",
                  err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        progress_store_tx_unlock();
+        projection_store_tx_unlock();
         return;
     }
     /* Snapshot the committed cursor INSIDE the tx for a consistent floor. */
@@ -76,7 +84,7 @@ void utxo_apply_created_outputs_prune_post_commit(struct sqlite3 *db)
     int retain = utxo_apply_created_outputs_retain();
     if (cursor <= (uint64_t)retain) {
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-        progress_store_tx_unlock();
+        projection_store_tx_unlock();
         return;
     }
     int prune_floor = (int)cursor - retain;
@@ -101,5 +109,5 @@ void utxo_apply_created_outputs_prune_post_commit(struct sqlite3 *db)
         }
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     }
-    progress_store_tx_unlock();
+    projection_store_tx_unlock();
 }

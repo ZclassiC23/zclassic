@@ -16,6 +16,7 @@
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "utxo_apply_delta_internal.h"
 
 #include "core/uint256.h"
@@ -367,21 +368,26 @@ bool reducer_frontier_replay_stale_script_tx(
 {
     char *err = NULL;
 
-    /* Lane A1: TWO sequential transactions, kernel-first. TX1 commits the
-     * KERNEL-authoritative rewind (coins inverse deltas, utxo_apply_delta
+    /* Lane A1 + Wave A2 (D4): kernel-first, then projection. TX1 (here) commits
+     * the KERNEL-authoritative rewind (coins inverse deltas, utxo_apply_delta
      * deletes, the Class-B kernel-coupled stage-log deletes for
-     * script/proof/validate_headers, and the cursor forces). TX2 then rewrites
-     * the projection-side created_outputs backfill BEST-EFFORT.
+     * script/proof/validate_headers, and the cursor forces) under the caller's
+     * kernel progress lock. TX2 — the projection-side created_outputs backfill —
+     * now runs in a SEPARATE call
+     * (reducer_frontier_replay_backfill_created_outputs_projection) on the
+     * projection_store handle + projection tx lock, which the caller invokes
+     * only AFTER releasing the kernel progress lock (LOCK ORDER LAW: the two
+     * lock domains never nest). This function returns after TX1.
      *
-     * Crash between TX1 and TX2: the cursors sit at replay_first with a
-     * consistent kernel state, but created_outputs for [replay_first,
-     * backfill_top] is NOT pre-populated. The forward re-fold from replay_first
-     * re-runs body_persist (created_outputs_index_put_block, INSERT OR REPLACE)
-     * for each height BEFORE script_validate reads it, and script_validate also
-     * has its coins_kv fallback — so prevouts resolve either way and the fold
-     * converges to the identical coins commitment. The backfill in TX2 is a
-     * read-side warm-up, not a consensus effect; a TX2 failure is logged and the
-     * repair still succeeds.
+     * Crash between TX1 and the projection backfill: the cursors sit at
+     * replay_first with a consistent kernel state, but created_outputs for
+     * [replay_first, backfill_top] is NOT pre-populated. The forward re-fold
+     * from replay_first re-runs body_persist (created_outputs_index_put_block,
+     * INSERT OR REPLACE) for each height BEFORE script_validate reads it, and
+     * script_validate also has its coins_kv fallback — so prevouts resolve
+     * either way and the fold converges to the identical coins commitment. The
+     * backfill is a read-side warm-up, not a consensus effect; a backfill
+     * failure is logged and the repair still succeeds.
      *
      * STEP 3: NO write-once marker. The rewind deletes the stale ok=0 row(s) and
      * rewinds the cursor(s), so the ok=0 detector stops matching next tick; STEP
@@ -436,30 +442,55 @@ bool reducer_frontier_replay_stale_script_tx(
     }
     rf_replay_record_kernel_commit();
     (void)tip_cursor;
+    (void)ms;
+    (void)backfill_top;
 
-    /* ── TX2: projection-side created_outputs backfill (best-effort) ──── */
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    /* TX2 (created_outputs backfill) is now a SEPARATE projection-store call the
+     * caller makes AFTER releasing the kernel progress lock — see
+     * reducer_frontier_replay_backfill_created_outputs_projection below. */
+    return true;
+}
+
+bool reducer_frontier_replay_backfill_created_outputs_projection(
+    struct main_state *ms, int replay_first, int backfill_top)
+{
+    if (backfill_top < replay_first)
+        return true;                 /* nothing to backfill */
+    sqlite3 *pdb = projection_store_db();
+    if (!pdb) {
         LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair TX2 (created_outputs "
-                 "backfill) BEGIN failed h=%d: %s — kernel rewind already "
-                 "committed; forward re-fold will repopulate",
-                 height, err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return true;
+                 "[stage_repair] created_outputs backfill %d..%d skipped: "
+                 "projection store not open — forward re-fold repopulates",
+                 replay_first, backfill_top);
+        return false;
     }
-    if (!rf_replay_backfill_created_outputs_range(db, ms, replay_first,
-                                                  backfill_top) ||
-        sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+
+    projection_store_tx_lock();
+    char *err = NULL;
+    if (sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair TX2 (created_outputs "
-                 "backfill) failed h=%d %d..%d: %s — kernel rewind already "
-                 "committed; forward re-fold (body_persist) will repopulate",
-                 height, replay_first, backfill_top, err ? err : "(no message)");
+                 "[stage_repair] created_outputs backfill BEGIN failed "
+                 "%d..%d: %s — forward re-fold (body_persist) repopulates",
+                 replay_first, backfill_top, err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        return true;
+        projection_store_tx_unlock();
+        return false;
+    }
+    if (!rf_replay_backfill_created_outputs_range(pdb, ms, replay_first,
+                                                  backfill_top) ||
+        sqlite3_exec(pdb, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] created_outputs backfill failed %d..%d: %s — "
+                 "kernel rewind already committed; forward re-fold "
+                 "(body_persist) will repopulate",
+                 replay_first, backfill_top, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(pdb, "ROLLBACK", NULL, NULL, NULL);
+        projection_store_tx_unlock();
+        return false;
     }
     rf_replay_record_projection_commit();
+    projection_store_tx_unlock();
     return true;
 }
 

@@ -22,6 +22,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "storage/projection_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -475,6 +476,9 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     mkdir_p_uv(dir_out);
     SetDataDir(dir_out);
     if (!progress_store_open(dir_out)) return 1;
+    /* Wave A2 split: the created_outputs retention prune runs on the projection
+     * handle, so the harness must open it too or the post-commit prune no-ops. */
+    if (!projection_store_open(dir_out)) return 1;
 
     memset(sc, 0, sizeof(*sc));
     sc->fail_kind = fail_kind;
@@ -506,6 +510,7 @@ static void uv_teardown(const char *dir, struct main_state *ms,
     active_chain_free(&ms->chain_active);
     block_map_free(&ms->map_block_index);
     synth_chain_uv_free(sc);
+    projection_store_close();
     progress_store_close();
     SetDataDir("");
     ClearDataDirCache();
