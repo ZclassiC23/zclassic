@@ -371,6 +371,14 @@
                     "events consumed, replace collisions, last catch_up_ms",
                     "lib/storage/src/block_index_projection.c",
                     "lib/test/src/test_block_index_projection.c"),
+    DIAG_PROJECTION("body_coverage",
+                    body_coverage_dump_state_json,
+                    "body_coverage: which block-body height ranges are held "
+                    "(total_covered, range_count, max_covered, ranges), plus "
+                    "the gap-fill scheduler view (needed range, active hole, "
+                    "holes, fill_rate_per_sec, no-source blocker)",
+                    "lib/storage/src/body_coverage.c",
+                    "lib/test/src/test_body_coverage.c"),
     DIAG_ENTRY("validation_pack", invariant_sentinel_dump_state_json,
                "fail-loud validation pack: HOLD latch, per-connect "
                "linkage + coinbase-label checks, authority-pair "

@@ -87,6 +87,7 @@
 #include "framework/condition.h"
 #include "conditions/reducer_drive_watchdog.h"
 #include "storage/block_index_projection.h"
+#include "storage/body_coverage.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"

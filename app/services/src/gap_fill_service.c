@@ -21,6 +21,8 @@
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "net/download.h"
+#include "storage/body_coverage.h"
+#include "storage/progress_store.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "json/json.h"
@@ -326,6 +328,62 @@ bool gap_fill_wake_dispatch_if_idle(struct download_manager *dm,
     return true;
 }
 
+/* Body-coverage maintenance + gap-fill scheduler drive. Composes with the
+ * download manager; never touches its peer selection. Called AFTER cs_main
+ * is released, so it dereferences no block_index — the caller captures the
+ * have-data heights under the lock and hands them in as plain integers.
+ *
+ * `needed_lo`/`needed_hi` is the range the active chain must fill
+ * ([tip+1, best_header]). `enqueued_this_pass` is true when this pass handed
+ * new work to the download manager. The no-source blocker fires only when a
+ * coverage hole persists in the needed range AND the download pipeline is
+ * fully idle (nothing queued, nothing in flight) AND this pass enqueued
+ * nothing — i.e. a known gap that no source is serving. Any in-flight or
+ * queued work clears the latch, so active sync never trips it. */
+static void gap_fill_update_coverage(const int32_t *have_heights, int n_have,
+                                     int needed_lo, int needed_hi,
+                                     struct download_manager *dm,
+                                     bool enqueued_this_pass)
+{
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    struct body_coverage_map *map = body_coverage_global_map();
+    struct body_coverage_scheduler *s = body_coverage_global_scheduler();
+
+    body_coverage_global_lock();
+    for (int i = 0; i < n_have; i++)
+        body_coverage_note_stored(map, have_heights[i]);
+
+    struct bc_range hole;
+    bool has_hole = body_coverage_scheduler_plan(s, map, needed_lo, needed_hi,
+                                                 now, &hole);
+    if (has_hole) {
+        if (enqueued_this_pass) {
+            body_coverage_scheduler_mark_enqueued(s);
+        } else {
+            uint64_t in_flight = 0, queued = 0;
+            dl_get_stats(dm, NULL, NULL, NULL, &in_flight, &queued);
+            if (in_flight == 0 && queued == 0)
+                body_coverage_scheduler_mark_no_source(s, now);
+            else
+                body_coverage_scheduler_clear_no_source(s);
+        }
+    }
+    body_coverage_global_unlock();
+}
+
+/* Best-effort persist of the coverage map to progress.kv. Rate-limited by
+ * the caller; a NULL/unopened store is a silent skip (nothing to persist to
+ * yet). */
+static void gap_fill_persist_coverage(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return;
+    body_coverage_global_lock();
+    (void)body_coverage_save(body_coverage_global_map(), db);
+    body_coverage_global_unlock();
+}
+
 /* One pass: scan [tip+1, best_header] for missing data, queue
  * downloads. Returns number of blocks enqueued (0 = idle, -1 =
  * corrupt walk detected). */
@@ -426,17 +484,26 @@ static int gap_fill_pass(void)
                                         "gap_fill_hashes");
     int32_t *heights = zcl_malloc((size_t)collected * sizeof(*heights),
                                   "gap_fill_heights");
-    if (!hashes || !heights) {
+    /* Body-coverage capture: heights in this window that already have their
+     * body on disk. Captured here under cs_main (plain ints), fed to the
+     * coverage map AFTER the lock is released so no block_index is touched
+     * off-lock. */
+    int32_t *have_heights = zcl_malloc((size_t)collected * sizeof(*have_heights),
+                                       "gap_fill_have_heights");
+    if (!hashes || !heights || !have_heights) {
         zcl_mutex_unlock(&ms->cs_main);
-        free(bis); free(hashes); free(heights);
+        free(bis); free(hashes); free(heights); free(have_heights);
         return 0;
     }
 
     int n_need = 0;
+    int n_have = 0;
     int lo = bis[collected - 1] ? bis[collected - 1]->nHeight : tip_h + 1;
     int hi = bis[0] ? bis[0]->nHeight : tip_h;
     for (int i = 0; i < collected; i++) {
         struct block_index *bi = bis[i];
+        if (bi && (bi->nStatus & BLOCK_HAVE_DATA))
+            have_heights[n_have++] = bi->nHeight;
         if (!gap_fill_block_needs_queue(bi)) continue;
         if (dl_is_in_flight(dm, bi->phashBlock)) continue;
         hashes[n_need]  = *bi->phashBlock; /* value copy */
@@ -479,8 +546,14 @@ static int gap_fill_pass(void)
         }
     }
 
+    /* Maintain the body-coverage map + drive the gap-fill scheduler over
+     * the full gap [tip+1, best_header] the active chain must fill. */
+    gap_fill_update_coverage(have_heights, n_have, tip_h + 1, best_h, dm,
+                             enqueued > 0);
+
     free(hashes);
     free(heights);
+    free(have_heights);
 
     pthread_mutex_lock(&g_gf.mu);
     g_gf.stats.last_tip_h     = tip_h;
@@ -512,6 +585,15 @@ static void *gap_fill_thread_main(void *arg)
             LOG_WARN("gap", "[gap-fill] %s:%d %s(): corrupt pprev walk detected, " "skipping pass", __FILE__, __LINE__, __func__);
         }
         gap_fill_supervisor_heartbeat();
+
+        /* Rate-limited durable persist of the coverage map (~every 64
+         * passes) so a restart resumes from the known ranges rather than
+         * an O(chain) rescan. */
+        pthread_mutex_lock(&g_gf.mu);
+        bool do_persist = (g_gf.stats.passes % 64) == 0;
+        pthread_mutex_unlock(&g_gf.mu);
+        if (do_persist)
+            gap_fill_persist_coverage();
 
         /* Sleep until kicked or GAPFILL_TICK_SECS elapsed. */
         pthread_mutex_lock(&g_gf.mu);
@@ -546,6 +628,19 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
     g_gf.ms = ms;
     g_gf.dm = dm;
     memset(&g_gf.stats, 0, sizeof(g_gf.stats));
+
+    /* Resume the body-coverage map from progress.kv (cheap; a fresh datadir
+     * has none). Best-effort: an unopened store or malformed blob leaves the
+     * map empty and the worker rebuilds coverage incrementally from its
+     * window scans. */
+    {
+        sqlite3 *db = progress_store_db();
+        if (db) {
+            body_coverage_global_lock();
+            (void)body_coverage_load(body_coverage_global_map(), db);
+            body_coverage_global_unlock();
+        }
+    }
     atomic_store(&g_gf.stop_requested, false);
     if (thread_registry_spawn("zcl_gap_fill", gap_fill_thread_main, NULL,
                                   &g_gf.thread) != 0) {
@@ -594,6 +689,8 @@ void gap_fill_stop(void)
         }
         g_gf.thread_started = false;
     }
+    /* Final durable persist so the next boot resumes from the known ranges. */
+    gap_fill_persist_coverage();
     atomic_store(&g_gf.running, false);
     pthread_mutex_lock(&g_gf.mu);
     g_gf.wake_dispatch = NULL;
