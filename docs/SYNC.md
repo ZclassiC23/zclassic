@@ -258,9 +258,8 @@ continuity-checked against compiled anchors; failures discard the runtime file.
 
 ---
 
-## Operator Runbook
+## Check sync status
 
-### Check sync status
 Use `zclassic23 status`, `zclassic23 core sync status`, and
 `zclassic23 core sync validation`. The native RPC fallback is
 `zclassic23 rpc getblockchaininfo`. Status and state
@@ -268,17 +267,12 @@ surfaces include sync phase, local/header/peer heights, immutable height,
 snapshot anchor, UTXO root, chainwork/quorum verdict, watchdog state, last
 recovery, and active acceleration source where available.
 
-### Recovery from OOM kill
-Just restart — the node detects stale state and resets to a consistent point.
-
-### Nuclear reset
-```bash
-systemctl --user stop zclassic23
-rm -rf ~/.zclassic-c23/node.db ~/.zclassic-c23/blocks/ ~/.zclassic-c23/chainstate/
-rm -f  ~/.zclassic-c23/block_index.bin
-systemctl --user start zclassic23
-```
-The node re-syncs via Method 1 or 2 from its configured peers.
+For OOM-kill recovery, memory-pressure diagnosis, and the exact stuck-tip /
+nuclear-reset recovery commands (which file list to delete — this node has no
+`chainstate/` LevelDB directory; that name belongs to the legacy `zclassicd`
+sibling install), see [`RUNBOOK.md`](./RUNBOOK.md) §"Tip Regressed / Stuck on
+Wrong Fork" and §"High Memory Usage". After any reset the node re-syncs via
+Method 1 or 2 from its configured peers.
 
 ---
 
