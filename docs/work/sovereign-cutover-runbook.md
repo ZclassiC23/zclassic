@@ -111,8 +111,8 @@ datadir. Two binding rules make this receipt easy to misuse if skimmed:
 
 - **The receipt must physically live inside the exact datadir that
   `-install-consensus-bundle=PATH` is about to run against** —
-  `activate_independent_authority_available()`
-  (`config/src/consensus_state_snapshot_install_activate.c`) reads it via the
+  `activate_receipt_authority_available()`
+  (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`) reads it via the
   install target's own `datadir_fd`, not a path argument. Copying the bundle
   without also copying the receipt file leaves the install target on the
   `CHECKPOINT_CONTENT` fallback (or `VERIFIED_CONTAINED`/refused, if that
