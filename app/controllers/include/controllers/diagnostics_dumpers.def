@@ -217,6 +217,13 @@
                "watchdog_threshold_secs, last_watchdog_fire_unix, "
                "utxo_apply_cursor vs. the lagging coins_applied_height "
                "(the -fold-inram batching gap)"),
+    DIAG_LOCAL("sync_rate", sync_rate_below_floor_dump_state_json,
+               "sync-rate SLO watchdog (sync_rate_below_floor condition): "
+               "current/floor fold-throughput bps (x1000 fixed point), "
+               "below_floor_streak vs. consecutive_ticks_required, "
+               "pending_work gate, and the episode-start snapshot "
+               "(observed/floor bps, network_tip, log_head, dominant "
+               "blocker) at the moment the blocker last fired"),
     DIAG_STAGE("tip_finalize", tip_finalize_dump_state_json,
                "tip_finalize stage: cursor, finalize counters, log rows",
                "app/jobs/src/tip_finalize_stage.c", "lib/test/src/test_stage.c"),

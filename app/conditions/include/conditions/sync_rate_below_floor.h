@@ -51,6 +51,17 @@ void register_sync_rate_below_floor(void);
 
 struct json_value;
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe (atomic loads
+ * only, no allocation — `out` is caller-initialized via json_set_object()).
+ * `key` is unused (NULL or ""). Emits: current/floor bps (x1000 fixed
+ * point), the below-floor streak (consecutive sub-floor windows seen so
+ * far), whether the peers+pending-work gate is currently open, the
+ * episode-start snapshot (observed/floor bps, network_tip, log_head,
+ * dominant blocker at the moment the blocker was raised, if any), and the
+ * last-fire unix timestamp. */
+bool sync_rate_below_floor_dump_state_json(struct json_value *out,
+                                           const char *key);
+
 #ifdef ZCL_TESTING
 void sync_rate_below_floor_test_reset(void);
 int  sync_rate_below_floor_test_remedy_calls(void);
