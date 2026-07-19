@@ -10,7 +10,7 @@
 
 # HANDOFF — current state (2026-07-17 night)
 
-## 0. Current state (2026-07-17 night) — Bundle EXPORTED + VERIFIED; both copy-install routes REFUSED at chain-binding; mint3 is the reliable path; big merge wave on main
+## 0. Current state (2026-07-17 night) — Bundle EXPORTED + VERIFIED; both copy-install routes REFUSED at chain-binding; the mint datadir is the reliable path; big merge wave on main
 
 **STATE AT SHUTDOWN: the live node is still wedged; the cure is NOT yet
 installed.** The complete bundle is exported + independently replay-verified
@@ -29,16 +29,16 @@ singleton-selected* header chain binding the checkpoint height 3,056,758 —
 even after relinking headers with `--importblockindex ~/.zclassic`. The copy
 arrives chain-detached ("selected frontier changed or is not durable").
 Likely fixes to investigate: (a) install onto a datadir whose chain was built
-by a normal validated sync rather than a live-copy relink — **mint3's
-from-genesis datadir is exactly that** (fully validated, durable chain, no
-torn-copy issue); or (b) make the chain-binding evidence gate accept a
+by a normal validated sync rather than a live-copy relink — **the mint
+datadir's from-genesis fold is exactly that** (fully validated, durable
+chain, no torn-copy issue); or (b) make the chain-binding evidence gate accept a
 relinked-but-consistent chain. NOTE: the new **checkpoint-content install
 authority** (landed on main this session) sits DOWNSTREAM of this chain-
 binding gate, so rebuilding the binary alone will NOT clear this specific
 refusal — the chain-binding precondition on the target datadir is the thing
 to solve.
 
-**THE RELIABLE PATH: let mint3 finish.** The `mint3` from-genesis fold
+**THE RELIABLE PATH: let the mint datadir finish.** Its from-genesis fold
 (~h=2.3M/3.06M at shutdown, PID under `curebin-7d4f346`, ~40–50 blk/s) is an
 INDEPENDENT complete self-derived cure source with a validated durable chain.
 When it reaches the checkpoint it produces the complete transparent+shielded
@@ -46,7 +46,7 @@ state directly (and/or is the clean target to `-install-consensus-bundle`
 onto). Do not restart/relabel it. Check `mint-progress.log` in its datadir.
 
 **Both copy-install linger units were STOPPED at shutdown** (they were on a
-failed/slow path competing with mint3 for CPU): `zcl-cure-torn-repair`
+failed/slow path competing with the mint datadir for CPU): `zcl-cure-torn-repair`
 (REFUSED, above) and `zcl-cure-step4b` (fresh datadir, still stuck in the
 slow band-path header import after ~90 min — a separate defect: a fresh
 empty datadir's `--importblockindex` should take the bulk path, not the
@@ -79,9 +79,9 @@ failure unhandled for ~8 hours; linger units make that unreachable.
 - The self-driving cure scripts live in `~/.local/lib/zcl-cure/`
   (`cure-torncopy-repair.sh`, `cure-step4-driver.sh`) — durable path, not the
   session scratchpad.
-- **mint3** from-genesis fold (an INDEPENDENT complete cure source) continues
-  under `curebin-7d4f346`, ~h=2.3M/3.06M — arrives regardless if every
-  install route stalls. Do not restart/relabel it.
+- **The mint datadir**'s from-genesis fold (an INDEPENDENT complete cure
+  source) continues under `curebin-7d4f346`, ~h=2.3M/3.06M — arrives
+  regardless if every install route stalls. Do not restart/relabel it.
 
 **The wall class is now permanently closed (landed on main this session):**
 `-install-consensus-bundle` gained a second **CHECKPOINT_CONTENT ACTIVATE
@@ -192,7 +192,7 @@ Dated producer/cure narratives (USS v3, legacy snapshot producers, the
 2026-07-11..16 cure runs) are removed from the tree, not archived in-repo.
 Recover any of them with `git log --follow -- docs/HANDOFF.md` +
 `git show <rev>:docs/HANDOFF.md`. The current live state is §0; the
-current protected producer (mint3) is described there.
+current protected producer (the mint datadir) is described there.
 
 ## 3. Zero-MCP program (complete)
 
