@@ -101,6 +101,7 @@
 #include "controllers/op_return_index_controller.h"
 #include "services/op_return_backfill_service.h"
 #include "services/zslp_ledger_backfill_service.h"
+#include "services/state_auditor.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
@@ -437,6 +438,8 @@ static void boot_register_core_liveness_and_reducer(
     invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
     op_return_backfill_set_datadir(svc->datadir);
     op_return_backfill_register(); zslp_ledger_backfill_register(); address_index_service_register(); txindex_projection_service_register(); /* projection backfills to H*: op_return + zslp_ledger (always) + -addressindex/-txindex (opt-in, no-op when off) */
+    state_auditor_set_datadir(svc->datadir);
+    state_auditor_register(); /* continuous sampled integrity scrubber — complements the hourly full-set audits above */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches an operator and the health

@@ -360,7 +360,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(health_rollup) X(debug_bundle) X(operator_ux) \
     X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger) \
     X(catalog_completeness) X(zslp_ledger) X(catalog_lag_exceeded) \
-    X(parity_slo)
+    X(parity_slo) X(state_auditor)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

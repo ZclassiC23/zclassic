@@ -89,6 +89,7 @@ ZCL_BLOCKER_REMEDY(memory-pressure,                            memory_pressure_h
 ZCL_BLOCKER_REMEDY(disk-full,                                  disk_full_pause)
 ZCL_BLOCKER_REMEDY(mirror.divergence_located,                  mirror_divergence_located)
 ZCL_BLOCKER_REMEDY(catalog.*.lag_exceeded,                     catalog_lag_exceeded)
+ZCL_BLOCKER_REMEDY(state_auditor.*.mismatch,                   state_auditor_mismatch)
 
 /* ── Cross-condition remedies: a different condition's escalation ladder
  * drives the state that lets the original raiser's own blocker_clear()

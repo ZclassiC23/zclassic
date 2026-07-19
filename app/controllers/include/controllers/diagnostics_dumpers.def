@@ -393,6 +393,14 @@
                     "cross-check: runs/checks/passes/divergences, skip "
                     "reasons, streak, last roots+counts+height, blocker latch",
                     DIAG_OWNER_LOCAL, DIAG_TEST_DEFAULT),
+    DIAG_PROJECTION("state_auditor", state_auditor_dump_state_json,
+                    "continuous sampled background integrity scrubber: "
+                    "op_return_index range-digest re-extraction and "
+                    "coins_kv-authority-vs-utxos-projection XOR keyspace-"
+                    "window checks, every few seconds — ticks/skipped/"
+                    "mismatches/clears per leg, latch state, pinned range.",
+                    "app/services/src/state_auditor.c",
+                    "lib/test/src/test_state_auditor.c"),
     DIAG_ENTRY("address_index", address_index_dump_state_json,
                "script-appearance projection (-addressindex): enabled, cursor, "
                "H*, gap, rows, SHA3 digest, coverage blocker; "

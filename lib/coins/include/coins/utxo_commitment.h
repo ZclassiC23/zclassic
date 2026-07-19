@@ -117,6 +117,43 @@ bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
 bool utxo_commitment_resync_from_db(struct sqlite3 *db,
                                     struct utxo_commitment *out_optional);
 
+/* ── Bounded keyspace-window commitment (state_auditor) ────── */
+
+/* Compute the XOR-hash accumulator (the SAME hash-and-fold used by
+ * utxo_commitment_add / utxo_commitment_compute_db) over a BOUNDED slice of
+ * `table`'s (txid,vout) primary-key keyspace: rows with txid >= txid_lo,
+ * ordered (txid,vout), capped at max_rows.
+ *
+ * WHY a keyspace window and not a height range: `table` is queried through
+ * its (txid,vout) PRIMARY KEY, so "txid >= ? ORDER BY txid,vout LIMIT ?" is
+ * an index range scan (O(log n + max_rows)) on BOTH the `coins` table
+ * (progress.kv authority — no secondary index, and this deliberately never
+ * adds one to that hot reducer-write table) and the `utxos` table (node.db
+ * projection). A `height` predicate would need a height index that `coins`
+ * does not have and should not pay for, making every sampled tick an O(n)
+ * table scan — the opposite of "bounded work per tick". Both call sites
+ * that compare two tables MUST pass the identical `txid_lo`/`max_rows` pair
+ * so the two scans cover the exact same keyspace slice.
+ *
+ * `table` must be exactly "coins" or "utxos" (SQL-injection / wrong-table
+ * guard, same idiom as utxo_commitment_sha3_compute_table) — any other value
+ * is refused: returns false, *out left empty, *out_rows 0.
+ *
+ * On success (true): *out holds the accumulator+count over the matched
+ * rows (0 rows is a valid, non-error outcome — check *out_rows), *out_rows
+ * the row count actually scanned, *out_min_height and *out_max_height the
+ * observed min/max of the `height` column among those rows (left at
+ * INT32_MAX / INT32_MIN when *out_rows==0), and out_last_txid (may be NULL)
+ * the txid of the LAST row scanned (a caller walking the whole keyspace in
+ * windows can feed this back in as the next window's txid_lo). */
+bool utxo_commitment_compute_range(struct sqlite3 *db, const char *table,
+                                   const uint8_t txid_lo[32], int max_rows,
+                                   struct utxo_commitment *out,
+                                   size_t *out_rows,
+                                   int32_t *out_min_height,
+                                   int32_t *out_max_height,
+                                   uint8_t out_last_txid[32]);
+
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
 /* Single-source per-record serializer for the SHA3 UTXO commitment.
