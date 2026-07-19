@@ -1,4 +1,7 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: boot flight recorder — collects per-stage boot timings, persists
+ * the last ~30 boots in node.db, and raises the boot.stage_regression
+ * blocker when a stage exceeds max(5s, 4x its recorded median). */
 
 #ifndef ZCL_CONFIG_BOOT_FLIGHT_RECORDER_H
 #define ZCL_CONFIG_BOOT_FLIGHT_RECORDER_H
