@@ -82,7 +82,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(agent_copy_prove) \
     X(agent_test) \
     X(db_txn) X(sync_service) X(node_db_catchup_service) X(catchup_lifecycle_service) \
-    X(utxo_mirror_sync) X(snapshot_sync_service) \
+    X(utxo_mirror_sync) X(snapshot_sync_service) X(snapshot_serve_loopback) \
     X(file_controller) X(file_ops) X(file_service_pow_gate) X(rom_seed) \
     X(rom_fetch) X(rom_bundle_admission) \
     X(file_tree_ops) X(spawn) X(integrity) X(rolling_anchor_service) \
