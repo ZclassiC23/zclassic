@@ -49,7 +49,7 @@
  *
  *   2. mp_snapshot_send_tick() itself (the per-peer serve-tick scheduler)
  *      lives in lib/net/src/msgprocessor_internal.h, a private header not
- *      on the test include path (LIB_INCLUDES only exposes lib/*/include).
+ *      on the test include path (LIB_INCLUDES only exposes lib/<name>/include).
  *      lb_drive_serve_tick() below reproduces its snapshot-serving loop
  *      verbatim from PUBLIC primitives only (snapsync_prepare_serve_step,
  *      fast_sync_get_snapshot_buf, p2p_node_begin/write/end_message,
