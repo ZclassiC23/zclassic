@@ -1,3 +1,4 @@
+// one-result-type-ok:pure-predicate — chain_restore_index_verified_consistent is a total, side-effect-free boolean question (index clean over a non-trivial size) with no failure path; the fallible service surfaces in this file already return struct zcl_result.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain restore executor - applies verified restore plans to mutable chain
@@ -229,6 +230,12 @@ struct block_index *chain_restore_execute(
     return target;
 }
 
+bool chain_restore_index_verified_consistent(int index_repaired,
+                                             size_t index_size)
+{
+    return index_repaired == 0 && index_size > 1000;
+}
+
 struct zcl_result chain_restore_finalize_verified(struct main_state *ms,
                                                   const char *datadir,
                                                   int index_repaired,
@@ -248,7 +255,8 @@ struct zcl_result chain_restore_finalize_verified(struct main_state *ms,
      * to this call and cleared immediately, so the chain_integrity_failed
      * remedy keeps its authoritative disk rebuild, and we never disturb a
      * fast-restart binding that already set the flag. */
-    bool trust = (index_repaired == 0 && index_size > 1000 &&
+    bool trust = (chain_restore_index_verified_consistent(index_repaired,
+                                                          index_size) &&
                   !chain_restore_trust_index_fastpath());
     if (trust) {
         printf("[chain-restore] index verified consistent (0 repairs, %zu "

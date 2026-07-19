@@ -40,6 +40,17 @@ struct block_index *chain_restore_execute(
     const struct chain_restore_plan *plan,
     struct main_state *ms);
 
+/* Gate for engaging the trust-index fastpath on recovery: the block-index
+ * repair passes proved the in-memory index fully consistent (index_repaired
+ * == 0) over a non-trivial index (index_size > 1000, so the tiny-datadir noise
+ * cases are excluded). When true, the disk-backed active-chain rebuild is pure
+ * waste — the in-memory pprev walk slots every ancestor in O(tip) with zero
+ * disk reads. This is the precondition the unclean-restart O(delta) fix
+ * (config/src/boot.c restore branch) and chain_restore_finalize_verified share.
+ * Pure predicate; no side effects. */
+bool chain_restore_index_verified_consistent(int index_repaired,
+                                             size_t index_size);
+
 /* Boot-path wrapper around chain_restore_finalize. When the block-index
  * repair passes just proved the in-memory index fully consistent
  * (index_repaired == 0 over a non-trivial index, index_size > 1000), trust
