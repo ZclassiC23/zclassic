@@ -53,15 +53,35 @@ enum cold_start_stage {
 };
 #define COLD_START_PREP_STAGE_COUNT 3 /* HEADERS, SEED, BUNDLE */
 
+/* Upper bound on a verbatim refusal/blocker reason recorded in a receipt and
+ * surfaced in the terminal verdict. Sized to hold an -install-consensus-bundle
+ * `REFUSED: ...` line (that verb's own reason buffer is 320). */
+#define COLD_START_REASON_MAX 320
+
+/* Outcome of a single prep stage AND of the whole drive. A stage either
+ * ADVANCES (OK — its success receipt is written and the driver moves on), fails
+ * TRANSIENTLY (a crash/kill mid-stage, or a verb error that is not a decision —
+ * NO receipt is written, so a rerun resumes at exactly this stage), or is
+ * REFUSED/BLOCKED (a DECISION, e.g. the install verb printing `REFUSED:` — a
+ * refusal receipt IS written, so a rerun with the same bound parameter stays
+ * BLOCKED forever; the driver never auto-retries a decision, only a changed
+ * parameter re-runs it). cold_start_drive() returns OK once it reaches SERVE. */
+enum cold_start_result {
+    COLD_START_OK        = 0,
+    COLD_START_TRANSIENT = 1,
+    COLD_START_BLOCKED   = 2,
+};
+
 /* Immutable description of one cold-start run. A NULL/empty parameter means that
  * prep stage is NOT configured for this run and is skipped entirely (e.g. no
  * seed_snapshot => rely on P2P for state; no header_source => rely on P2P header
  * sync). datadir must be non-empty. All pointers are borrowed (argv-lifetime). */
 struct cold_start_plan {
     const char *datadir;
-    const char *header_source;  /* --importblockindex source datadir, or NULL */
-    const char *seed_snapshot;  /* -load-snapshot-at-own-height path, or NULL  */
-    const char *install_bundle; /* -install-consensus-bundle path, or NULL     */
+    const char *header_source;  /* --importblockindex source datadir, or NULL   */
+    const char *seed_snapshot;  /* -load-snapshot-at-own-height path, or NULL    */
+    const char *install_bundle; /* -cold-start-bundle path (dispatched via the
+                                 * -install-consensus-bundle verb), or NULL      */
 };
 
 /* Stable lower-case stage name ("headers"/"seed"/"bundle"/"serve"), or "?" for
@@ -85,50 +105,78 @@ const char *cold_start_stage_param(const struct cold_start_plan *plan,
 int cold_start_receipt_path(const char *datadir, enum cold_start_stage stage,
                             char *buf, size_t n);
 
-/* Durably record that `stage` completed with bound parameter `param` (may be
- * NULL). Creates <datadir>/coldstart/ as needed, then temp+fsync+rename+dir-
- * fsync so a crash never leaves a torn receipt. Returns false (logged) on any
- * I/O failure — the caller MUST treat a write failure as a stage failure so the
- * stage is retried rather than silently skipped. */
+/* Durably record the outcome of `stage` under bound parameter `param` (may be
+ * NULL). `refused`=false writes a SUCCESS receipt (the stage advanced);
+ * `refused`=true writes a REFUSAL receipt that records `reason` verbatim (a
+ * decision — a rerun with the same param stays blocked, never re-runs). Creates
+ * <datadir>/coldstart/ as needed, then temp+fsync+rename+dir-fsync so a crash
+ * never leaves a torn receipt. Returns false (logged) on any I/O failure — the
+ * caller MUST treat a write failure as a stage failure so the stage is retried
+ * rather than silently skipped. `reason` is single-lined on write so the receipt
+ * stays line-parseable; NULL is stored as an empty reason. */
 bool cold_start_receipt_write(const char *datadir, enum cold_start_stage stage,
-                              const char *param);
+                              const char *param, bool refused,
+                              const char *reason);
 
-/* True iff a receipt for `stage` exists AND its recorded parameter equals
- * `param` (both NULL compares equal). A present-but-parameter-mismatched receipt
- * returns false so a changed source/seed/bundle re-runs that stage. */
+/* True iff a SUCCESS receipt for `stage` exists AND its recorded parameter
+ * equals `param` (both NULL compares equal). A REFUSAL receipt, or a
+ * present-but-parameter-mismatched receipt, returns false so a changed
+ * source/seed/bundle (or a prior refusal) re-runs / re-evaluates that stage. */
 bool cold_start_receipt_matches(const char *datadir, enum cold_start_stage stage,
                                 const char *param);
+
+/* True iff a REFUSAL receipt for `stage` exists AND its recorded parameter
+ * equals `param`. On true, copies the recorded verbatim reason into `reason`
+ * (bounded by `reason_n`) so the driver can re-emit the sticky BLOCKED verdict
+ * without re-running the refused stage. Both-NULL params compare equal. */
+bool cold_start_receipt_refused(const char *datadir, enum cold_start_stage stage,
+                                const char *param, char *reason,
+                                size_t reason_n);
 
 /* Pure resume decision: the first configured prep stage (in HEADERS, SEED,
  * BUNDLE order) whose receipt does not match its bound parameter. If every
  * configured prep stage already matches, returns COLD_START_STAGE_SERVE. */
 enum cold_start_stage cold_start_plan_next(const struct cold_start_plan *plan);
 
-/* Runner invoked by cold_start_drive() to execute one prep stage. Returns 0 on
- * success (the driver then writes the receipt), non-zero on failure (the driver
- * stops WITHOUT writing a receipt, so the stage is retried on the next run).
- * The live runner fork/exec()s the corresponding existing verb; tests inject a
+/* Runner invoked by cold_start_drive() to execute one prep stage. Returns:
+ *   COLD_START_OK        — succeeded; the driver writes a success receipt.
+ *   COLD_START_TRANSIENT — crashed / errored transiently; the driver stops
+ *                          WITHOUT a receipt, so a rerun retries this stage.
+ *   COLD_START_BLOCKED   — the stage REFUSED (a decision); the driver records a
+ *                          refusal receipt and never auto-retries it. The
+ *                          verbatim refusal text is copied into `reason`.
+ * `reason` (bounded by `reason_n`, may be NULL) receives the verbatim
+ * refusal/error text on a non-OK return. The live runner fork/exec()s the
+ * corresponding existing verb (classifying its captured stderr); tests inject a
  * recording fake so the drive loop is exercised without spawning a node. */
-typedef int (*cold_start_stage_runner_fn)(const struct cold_start_plan *plan,
-                                          enum cold_start_stage stage,
-                                          void *user);
+typedef enum cold_start_result (*cold_start_stage_runner_fn)(
+    const struct cold_start_plan *plan, enum cold_start_stage stage, void *user,
+    char *reason, size_t reason_n);
 
-/* Drive the plan to SERVE using `runner`. Skips already-receipted stages, runs
- * each remaining configured prep stage in order, and writes its receipt on
- * success. On reaching SERVE, sets *out_reached (if non-NULL) to
- * COLD_START_STAGE_SERVE and returns 0 WITHOUT serving — the caller performs the
- * exec. On a stage-runner failure returns that non-zero code and sets
- * *out_reached to the failed stage. On a receipt-write failure returns -1. */
-int cold_start_drive(const struct cold_start_plan *plan,
-                     cold_start_stage_runner_fn runner, void *user,
-                     enum cold_start_stage *out_reached);
+/* Drive the plan to SERVE using `runner`. Skips already-succeeded stages, honors
+ * a prior sticky refusal (a matching refusal receipt short-circuits to BLOCKED
+ * without re-running), runs each remaining configured prep stage in order, and
+ * writes its receipt on success. Sets *out_reached (if non-NULL) to the stage it
+ * stopped at (COLD_START_STAGE_SERVE when every prep stage is done). On a refusal
+ * (this run or a prior sticky one) copies the verbatim reason into `reason` and
+ * returns COLD_START_BLOCKED. On a transient stage failure returns
+ * COLD_START_TRANSIENT (rerun resumes). On reaching SERVE returns COLD_START_OK
+ * WITHOUT serving — the caller performs the exec. A receipt-write failure is
+ * treated as transient (returned as COLD_START_TRANSIENT). */
+enum cold_start_result cold_start_drive(const struct cold_start_plan *plan,
+                                        cold_start_stage_runner_fn runner,
+                                        void *user,
+                                        enum cold_start_stage *out_reached,
+                                        char *reason, size_t reason_n);
 
 /* Live `-cold-start` entry point, dispatched from main() before app_init. Parses
- * -datadir=/-cold-start-source=/-cold-start-seed=/-install-consensus-bundle=
- * out of argv, drives every configured prep stage via child processes, then
- * exec()s a plain serving boot (argv minus the cold-start-only flags). Returns a
- * non-zero exit code only when a prep stage fails; on success it exec()s and
- * does not return. */
+ * -datadir=/-cold-start-source=/-cold-start-seed=/-cold-start-bundle= out of
+ * argv, drives every configured prep stage via child processes, prints the
+ * terminal one-line verdict (`COLD-START: COMPLETE` |
+ * `COLD-START: BLOCKED:<stage>:<reason>` | `COLD-START: INCOMPLETE:<stage>:...`),
+ * then on completion exec()s a plain serving boot (argv minus the cold-start-only
+ * flags). Returns a non-zero exit code when a prep stage refuses or fails; on
+ * completion it exec()s and does not return. */
 int boot_cold_start_run(int argc, char **argv);
 
 #endif /* ZCL_BOOT_COLD_START_H */

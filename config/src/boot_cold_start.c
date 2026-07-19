@@ -31,7 +31,7 @@
 
 #define COLD_START_SUBSYS  "cold_start"
 #define COLD_START_MAGIC   "ZCLCOLDSTART"
-#define COLD_START_VERSION 1
+#define COLD_START_VERSION 2 /* v2 adds outcome=/reason= (refusal receipts) */
 
 /* ── (1) Pure helpers ─────────────────────────────────────────────────── */
 
@@ -99,8 +99,28 @@ static void cold_start_fsync_parent_dir(const char *path)
     (void)close(fd);
 }
 
+/* Copy at most `in_len` bytes of `in` into `out` (bounded by `out_n`), replacing
+ * any CR/LF with a space so the result is a single line. Always NUL-terminates. */
+static void cold_start_singleline_bounded(const char *in, size_t in_len,
+                                          char *out, size_t out_n)
+{
+    if (out_n == 0)
+        return;
+    size_t j = 0;
+    for (size_t i = 0; in && i < in_len && in[i] && j + 1 < out_n; i++)
+        out[j++] = (in[i] == '\n' || in[i] == '\r') ? ' ' : in[i];
+    out[j] = '\0';
+}
+
+/* Single-line the NUL-terminated `in` into `out` (bounded); NULL => empty. */
+static void cold_start_singleline(const char *in, char *out, size_t out_n)
+{
+    cold_start_singleline_bounded(in, in ? strlen(in) : 0, out, out_n);
+}
+
 bool cold_start_receipt_write(const char *datadir, enum cold_start_stage stage,
-                              const char *param)
+                              const char *param, bool refused,
+                              const char *reason)
 {
     if (!datadir || !datadir[0])
         LOG_FAIL(COLD_START_SUBSYS, "receipt write: empty datadir");
@@ -122,13 +142,20 @@ bool cold_start_receipt_write(const char *datadir, enum cold_start_stage stage,
     if (tn < 0 || (size_t)tn >= sizeof(tmp))
         LOG_FAIL(COLD_START_SUBSYS, "receipt write: tmp path too long");
 
-    char content[PATH_MAX + 128];
+    char reason_line[COLD_START_REASON_MAX];
+    cold_start_singleline(refused ? reason : NULL, reason_line,
+                          sizeof(reason_line));
+
+    char content[PATH_MAX + COLD_START_REASON_MAX + 192];
     int cn = snprintf(content, sizeof(content),
-                      "magic=%s\nversion=%d\nstage=%s\nhas_param=%d\nparam=%s\n",
+                      "magic=%s\nversion=%d\nstage=%s\noutcome=%s\n"
+                      "has_param=%d\nparam=%s\nreason=%s\n",
                       COLD_START_MAGIC, COLD_START_VERSION,
                       cold_start_stage_name(stage),
+                      refused ? "refused" : "ok",
                       (param && param[0]) ? 1 : 0,
-                      (param && param[0]) ? param : "");
+                      (param && param[0]) ? param : "",
+                      reason_line);
     if (cn < 0 || (size_t)cn >= sizeof(content))
         LOG_FAIL(COLD_START_SUBSYS, "receipt write: content build failed");
 
@@ -150,8 +177,8 @@ bool cold_start_receipt_write(const char *datadir, enum cold_start_stage stage,
                  path, strerror(errno));
     }
     cold_start_fsync_parent_dir(path);
-    LOG_INFO(COLD_START_SUBSYS, "stage '%s' receipt written (%s)",
-             cold_start_stage_name(stage), path);
+    LOG_INFO(COLD_START_SUBSYS, "stage '%s' %s receipt written (%s)",
+             cold_start_stage_name(stage), refused ? "REFUSAL" : "success", path);
     return true;
 }
 
@@ -186,8 +213,12 @@ static bool cold_start_receipt_field(const char *buf, const char *key,
     return false;
 }
 
-bool cold_start_receipt_matches(const char *datadir, enum cold_start_stage stage,
-                                const char *param)
+/* Read + validate a receipt into `buf`: true iff it exists, carries the magic,
+ * and its parameter matches `param` (both-NULL equal). Leaves the raw receipt in
+ * `buf` for the caller to inspect `outcome`. */
+static bool cold_start_receipt_load(const char *datadir,
+                                    enum cold_start_stage stage,
+                                    const char *param, char *buf, size_t buf_n)
 {
     char path[PATH_MAX];
     if (cold_start_receipt_path(datadir, stage, path, sizeof(path)) < 0)
@@ -195,8 +226,7 @@ bool cold_start_receipt_matches(const char *datadir, enum cold_start_stage stage
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return false;
-    char buf[PATH_MAX + 256];
-    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+    ssize_t r = read(fd, buf, buf_n - 1);
     (void)close(fd);
     if (r <= 0)
         return false;
@@ -215,13 +245,46 @@ bool cold_start_receipt_matches(const char *datadir, enum cold_start_stage stage
     if (recorded_has != want_has)
         return false;
     if (!want_has)
-        return true; /* both parameter-less — a match */
+        return true; /* both parameter-less — parameter matches */
 
     char recorded_param[PATH_MAX];
     if (!cold_start_receipt_field(buf, "param", recorded_param,
                                   sizeof(recorded_param)))
         return false;
     return strcmp(recorded_param, param) == 0;
+}
+
+/* True iff the receipt records a REFUSAL (outcome=refused); an absent outcome
+ * field reads as a success receipt (forward-compatible with v1). */
+static bool cold_start_receipt_is_refused(const char *buf)
+{
+    char outcome[16];
+    return cold_start_receipt_field(buf, "outcome", outcome, sizeof(outcome)) &&
+           strcmp(outcome, "refused") == 0;
+}
+
+bool cold_start_receipt_matches(const char *datadir, enum cold_start_stage stage,
+                                const char *param)
+{
+    char buf[PATH_MAX + COLD_START_REASON_MAX + 256];
+    if (!cold_start_receipt_load(datadir, stage, param, buf, sizeof(buf)))
+        return false;
+    return !cold_start_receipt_is_refused(buf); /* a refusal is not "stage done" */
+}
+
+bool cold_start_receipt_refused(const char *datadir, enum cold_start_stage stage,
+                                const char *param, char *reason, size_t reason_n)
+{
+    if (reason && reason_n)
+        reason[0] = '\0';
+    char buf[PATH_MAX + COLD_START_REASON_MAX + 256];
+    if (!cold_start_receipt_load(datadir, stage, param, buf, sizeof(buf)))
+        return false;
+    if (!cold_start_receipt_is_refused(buf))
+        return false;
+    if (reason && reason_n)
+        (void)cold_start_receipt_field(buf, "reason", reason, reason_n);
+    return true;
 }
 
 enum cold_start_stage cold_start_plan_next(const struct cold_start_plan *plan)
@@ -244,43 +307,97 @@ enum cold_start_stage cold_start_plan_next(const struct cold_start_plan *plan)
     return COLD_START_STAGE_SERVE;
 }
 
-int cold_start_drive(const struct cold_start_plan *plan,
-                     cold_start_stage_runner_fn runner, void *user,
-                     enum cold_start_stage *out_reached)
+/* Copy `src` into `dst` (bounded, single-lined, always NUL-terminated). */
+static void cold_start_reason_copy(char *dst, size_t dst_n, const char *src)
 {
+    cold_start_singleline(src, dst, dst_n);
+}
+
+enum cold_start_result cold_start_drive(const struct cold_start_plan *plan,
+                                        cold_start_stage_runner_fn runner,
+                                        void *user,
+                                        enum cold_start_stage *out_reached,
+                                        char *reason, size_t reason_n)
+{
+    if (reason && reason_n)
+        reason[0] = '\0';
     if (out_reached)
         *out_reached = COLD_START_STAGE_SERVE;
-    if (!plan || !plan->datadir || !plan->datadir[0])
-        LOG_ERR(COLD_START_SUBSYS, "drive: empty plan/datadir");
-    if (!runner)
-        LOG_ERR(COLD_START_SUBSYS, "drive: NULL stage runner");
+    if (!plan || !plan->datadir || !plan->datadir[0]) {
+        cold_start_reason_copy(reason, reason_n, "empty plan/datadir");
+        LOG_WARN(COLD_START_SUBSYS, "drive: empty plan/datadir");
+        return COLD_START_TRANSIENT;
+    }
+    if (!runner) {
+        cold_start_reason_copy(reason, reason_n, "NULL stage runner");
+        LOG_WARN(COLD_START_SUBSYS, "drive: NULL stage runner");
+        return COLD_START_TRANSIENT;
+    }
 
-    /* Bounded: each iteration either serves, fails, or converts exactly one
-     * prep stage from "no receipt" to "receipt present", so the loop cannot run
-     * more than the prep-stage count plus one. */
+    /* Bounded: each iteration serves, stops (transient/blocked), or converts one
+     * prep stage to "success receipt present" — at most prep-count + 1 loops. */
     for (int guard = 0; guard <= COLD_START_PREP_STAGE_COUNT; guard++) {
         enum cold_start_stage next = cold_start_plan_next(plan);
         if (out_reached)
             *out_reached = next;
         if (next == COLD_START_STAGE_SERVE)
-            return 0;
+            return COLD_START_OK;
+
+        const char *param = cold_start_stage_param(plan, next);
+
+        /* Sticky refusal: a prior run REFUSED this stage under this same param.
+         * Refusals are decisions — never auto-retry; re-emit the verdict. */
+        char sticky[COLD_START_REASON_MAX];
+        if (cold_start_receipt_refused(plan->datadir, next, param, sticky,
+                                       sizeof(sticky))) {
+            LOG_WARN(COLD_START_SUBSYS, "stage '%s' has a sticky REFUSAL "
+                     "receipt — staying blocked (change the bound parameter to "
+                     "re-evaluate): %s", cold_start_stage_name(next), sticky);
+            cold_start_reason_copy(reason, reason_n, sticky);
+            return COLD_START_BLOCKED;
+        }
+
         LOG_INFO(COLD_START_SUBSYS, "running stage '%s'",
                  cold_start_stage_name(next));
-        int rc = runner(plan, next, user);
-        if (rc != 0) {
-            LOG_WARN(COLD_START_SUBSYS, "stage '%s' failed rc=%d — halting "
-                     "(no receipt written; rerun -cold-start to resume here)",
-                     cold_start_stage_name(next), rc);
-            return rc;
+        char stage_reason[COLD_START_REASON_MAX];
+        stage_reason[0] = '\0';
+        enum cold_start_result rc =
+            runner(plan, next, user, stage_reason, sizeof(stage_reason));
+
+        if (rc == COLD_START_BLOCKED) {
+            /* A decision refusal — persist a refusal receipt (verbatim) so a
+             * rerun stays blocked, then report BLOCKED. */
+            if (!cold_start_receipt_write(plan->datadir, next, param, true,
+                                          stage_reason))
+                LOG_WARN(COLD_START_SUBSYS, "stage '%s' refused but its refusal "
+                         "receipt could not be persisted — a rerun will re-run "
+                         "the stage", cold_start_stage_name(next));
+            LOG_WARN(COLD_START_SUBSYS, "stage '%s' REFUSED (decision — not "
+                     "retried): %s", cold_start_stage_name(next), stage_reason);
+            cold_start_reason_copy(reason, reason_n, stage_reason);
+            return COLD_START_BLOCKED;
         }
-        if (!cold_start_receipt_write(plan->datadir, next,
-                                      cold_start_stage_param(plan, next)))
-            LOG_ERR(COLD_START_SUBSYS, "stage '%s' succeeded but its receipt "
-                    "could not be persisted — halting to avoid an unrecordable "
-                    "resume point", cold_start_stage_name(next));
+        if (rc != COLD_START_OK) {
+            LOG_WARN(COLD_START_SUBSYS, "stage '%s' failed transiently — halting "
+                     "(no receipt written; rerun -cold-start to resume here): %s",
+                     cold_start_stage_name(next), stage_reason);
+            cold_start_reason_copy(reason, reason_n, stage_reason);
+            return COLD_START_TRANSIENT;
+        }
+        if (!cold_start_receipt_write(plan->datadir, next, param, false, NULL)) {
+            LOG_WARN(COLD_START_SUBSYS, "stage '%s' succeeded but its receipt "
+                     "could not be persisted — halting to avoid an unrecordable "
+                     "resume point", cold_start_stage_name(next));
+            cold_start_reason_copy(reason, reason_n,
+                                   "success receipt could not be persisted");
+            return COLD_START_TRANSIENT;
+        }
     }
-    LOG_ERR(COLD_START_SUBSYS, "drive: exceeded stage bound without reaching "
-            "serve (a receipt is not persisting?)");
+    cold_start_reason_copy(reason, reason_n,
+                           "exceeded stage bound without reaching serve");
+    LOG_WARN(COLD_START_SUBSYS, "drive: exceeded stage bound without reaching "
+             "serve (a receipt is not persisting?)");
+    return COLD_START_TRANSIENT;
 }
 
 /* ── (2) Live driver ──────────────────────────────────────────────────── */
@@ -299,57 +416,181 @@ static bool cold_start_self_exe(char *buf, size_t n)
     return buf[0] != '\0';
 }
 
-/* Fork/exec a child with argv `child_argv` (NULL-terminated) and optionally set
- * `env_key=1` for it. Waits synchronously. Returns 0 iff the child exited 0. */
-static int cold_start_spawn_wait(char *const child_argv[], const char *env_key)
+/* The token an existing verb (e.g. -install-consensus-bundle) prints to stderr
+ * to signal a DECISION refusal, as opposed to a transient error/crash. */
+#define COLD_START_REFUSAL_TOKEN "REFUSED:"
+
+/* Bounded tail of a child's stderr, big enough to hold the final REFUSED line
+ * plus surrounding context. */
+#define COLD_START_TAIL_CAP 4096
+
+/* Append `n` bytes of `chunk` to the fixed-capacity tail, discarding the oldest
+ * bytes on overflow (only the END of the child's stderr matters — verbs print
+ * their terminal REFUSED/INSTALLED line last). The copy length is always <= n
+ * (bounded by the caller's read), so it never reads past `chunk`. */
+static void cold_start_tail_append(char *tail, size_t *tail_len, size_t cap,
+                                   const char *chunk, size_t n)
 {
+    /* Only the final `cap` bytes of the stream ever matter — if a single chunk
+     * already exceeds cap, keep just its tail. */
+    if (n > cap) {
+        chunk += (n - cap);
+        n = cap;
+    }
+    if (*tail_len + n > cap) {
+        size_t drop = *tail_len + n - cap;
+        memmove(tail, tail + drop, *tail_len - drop);
+        *tail_len -= drop;
+    }
+    memcpy(tail + *tail_len, chunk, n);
+    *tail_len += n;
+}
+
+/* Extract the verbatim REFUSED line (from the token to end-of-line) out of the
+ * child's stderr tail into `reason`. Returns true iff the token was present. */
+static bool cold_start_extract_refusal(const char *tail, char *reason,
+                                       size_t reason_n)
+{
+    const char *hit = strstr(tail, COLD_START_REFUSAL_TOKEN);
+    if (!hit)
+        return false;
+    /* Take the LAST occurrence — the terminal refusal is what matters. */
+    const char *next;
+    while ((next = strstr(hit + 1, COLD_START_REFUSAL_TOKEN)) != NULL)
+        hit = next;
+    const char *end = strchr(hit, '\n');
+    size_t len = end ? (size_t)(end - hit) : strlen(hit);
+    cold_start_singleline_bounded(hit, len, reason, reason_n);
+    return true;
+}
+
+/* Fork/exec a child (argv NULL-terminated), teeing its stderr to ours while
+ * capturing a bounded tail, then classify: OK (exit 0); BLOCKED (non-zero exit
+ * AND a printed REFUSED line — a decision, `reason` = that verbatim line);
+ * TRANSIENT (any other non-zero/signal/spawn failure, `reason` = a short note). */
+static enum cold_start_result cold_start_spawn_classify(char *const child_argv[],
+                                                        char *reason,
+                                                        size_t reason_n)
+{
+    if (reason && reason_n)
+        reason[0] = '\0';
+
     char exe[PATH_MAX];
-    if (!cold_start_self_exe(exe, sizeof(exe)))
-        LOG_ERR(COLD_START_SUBSYS, "spawn: cannot resolve own executable path");
+    if (!cold_start_self_exe(exe, sizeof(exe))) {
+        cold_start_reason_copy(reason, reason_n,
+                               "cannot resolve own executable path");
+        LOG_ERROR(COLD_START_SUBSYS, "spawn: cannot resolve own executable path");
+        return COLD_START_TRANSIENT;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        cold_start_reason_copy(reason, reason_n, "stderr pipe creation failed");
+        LOG_ERROR(COLD_START_SUBSYS, "spawn: pipe failed: %s", strerror(errno));
+        return COLD_START_TRANSIENT;
+    }
 
     pid_t pid = fork();
-    if (pid < 0)
-        LOG_ERR(COLD_START_SUBSYS, "spawn: fork failed: %s", strerror(errno));
+    if (pid < 0) {
+        (void)close(pipefd[0]);
+        (void)close(pipefd[1]);
+        cold_start_reason_copy(reason, reason_n, "fork failed");
+        LOG_ERROR(COLD_START_SUBSYS, "spawn: fork failed: %s", strerror(errno));
+        return COLD_START_TRANSIENT;
+    }
     if (pid == 0) {
-        if (env_key)
-            setenv(env_key, "1", 1);
+        (void)close(pipefd[0]);
+        if (dup2(pipefd[1], STDERR_FILENO) < 0)
+            _exit(126);
+        (void)close(pipefd[1]);
         execv(exe, child_argv);
-        /* Only reached on exec failure. */
+        /* Only reached on exec failure — goes down the captured stderr. */
         fprintf(stderr, "cold_start: execv %s failed: %s\n", exe,
                 strerror(errno));
         _exit(127);
     }
+
+    (void)close(pipefd[1]);
+    char tail[COLD_START_TAIL_CAP + 1];
+    size_t tail_len = 0;
+    char chunk[1024];
+    for (;;) {
+        ssize_t m = read(pipefd[0], chunk, sizeof(chunk));
+        if (m < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (m == 0)
+            break;
+        (void)write(STDERR_FILENO, chunk, (size_t)m); /* tee — operator visible */
+        cold_start_tail_append(tail, &tail_len, COLD_START_TAIL_CAP, chunk,
+                               (size_t)m);
+    }
+    (void)close(pipefd[0]);
+    tail[tail_len] = '\0';
+
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
         if (errno == EINTR)
             continue;
-        LOG_ERR(COLD_START_SUBSYS, "spawn: waitpid failed: %s", strerror(errno));
+        cold_start_reason_copy(reason, reason_n, "waitpid failed");
+        LOG_ERROR(COLD_START_SUBSYS, "spawn: waitpid failed: %s",
+                  strerror(errno));
+        return COLD_START_TRANSIENT;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        return COLD_START_OK;
+
+    /* Non-zero / abnormal: a printed REFUSED line makes it a decision. */
+    char refusal[COLD_START_REASON_MAX];
+    if (cold_start_extract_refusal(tail, refusal, sizeof(refusal))) {
+        cold_start_reason_copy(reason, reason_n, refusal);
+        return COLD_START_BLOCKED;
     }
     if (WIFEXITED(status)) {
-        int code = WEXITSTATUS(status);
-        if (code != 0)
-            LOG_WARN(COLD_START_SUBSYS, "child exited with code %d", code);
-        return code;
+        char msg[96];
+        snprintf(msg, sizeof(msg), "child exited with code %d",
+                 WEXITSTATUS(status));
+        cold_start_reason_copy(reason, reason_n, msg);
+        LOG_WARN(COLD_START_SUBSYS, "%s", msg);
+    } else if (WIFSIGNALED(status)) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "child killed by signal %d",
+                 WTERMSIG(status));
+        cold_start_reason_copy(reason, reason_n, msg);
+        LOG_WARN(COLD_START_SUBSYS, "%s", msg);
+    } else {
+        cold_start_reason_copy(reason, reason_n, "child ended abnormally");
+        LOG_WARN(COLD_START_SUBSYS, "child ended abnormally (status=0x%x)",
+                 status);
     }
-    if (WIFSIGNALED(status))
-        LOG_ERR(COLD_START_SUBSYS, "child killed by signal %d",
-                WTERMSIG(status));
-    LOG_ERR(COLD_START_SUBSYS, "child ended abnormally (status=0x%x)", status);
+    return COLD_START_TRANSIENT;
 }
 
-/* Live stage runner: fork/exec the existing verb for each prep stage. */
-static int cold_start_run_stage_live(const struct cold_start_plan *plan,
-                                     enum cold_start_stage stage, void *user)
+/* Live stage runner: fork/exec the existing verb for each prep stage, classifying
+ * the child's outcome. The BUNDLE stage dispatches the EXISTING
+ * -install-consensus-bundle verb path unchanged (a black box to this driver). */
+static enum cold_start_result cold_start_run_stage_live(
+    const struct cold_start_plan *plan, enum cold_start_stage stage, void *user,
+    char *reason, size_t reason_n)
 {
     char exe[PATH_MAX];
     (void)user;
-    if (!cold_start_self_exe(exe, sizeof(exe)))
-        LOG_ERR(COLD_START_SUBSYS, "run stage: cannot resolve executable");
+    if (!cold_start_self_exe(exe, sizeof(exe))) {
+        cold_start_reason_copy(reason, reason_n, "cannot resolve executable");
+        LOG_ERROR(COLD_START_SUBSYS, "run stage: cannot resolve executable");
+        return COLD_START_TRANSIENT;
+    }
 
     char datadir_arg[PATH_MAX + 16];
     if (snprintf(datadir_arg, sizeof(datadir_arg), "-datadir=%s",
-                 plan->datadir) >= (int)sizeof(datadir_arg))
-        LOG_ERR(COLD_START_SUBSYS, "run stage: datadir too long");
+                 plan->datadir) >= (int)sizeof(datadir_arg)) {
+        cold_start_reason_copy(reason, reason_n, "datadir path too long");
+        LOG_ERROR(COLD_START_SUBSYS, "run stage: datadir too long");
+        return COLD_START_TRANSIENT;
+    }
 
     switch (stage) {
     case COLD_START_STAGE_HEADERS: {
@@ -357,11 +598,14 @@ static int cold_start_run_stage_live(const struct cold_start_plan *plan,
          * argv so it always is. Target db = <datadir>/node.db. */
         char db_path[PATH_MAX + 16];
         if (snprintf(db_path, sizeof(db_path), "%s/node.db", plan->datadir) >=
-            (int)sizeof(db_path))
-            LOG_ERR(COLD_START_SUBSYS, "run stage: node.db path too long");
+            (int)sizeof(db_path)) {
+            cold_start_reason_copy(reason, reason_n, "node.db path too long");
+            LOG_ERROR(COLD_START_SUBSYS, "run stage: node.db path too long");
+            return COLD_START_TRANSIENT;
+        }
         char *argv[] = { exe, (char *)"--importblockindex",
                          (char *)plan->header_source, db_path, NULL };
-        return cold_start_spawn_wait(argv, NULL);
+        return cold_start_spawn_classify(argv, reason, reason_n);
     }
     case COLD_START_STAGE_SEED: {
         /* Seed as a clean one-shot: -coldstart-seed-oneshot makes app_init apply
@@ -370,34 +614,47 @@ static int cold_start_run_stage_live(const struct cold_start_plan *plan,
         char seed_arg[PATH_MAX + 40];
         if (snprintf(seed_arg, sizeof(seed_arg),
                      "-load-snapshot-at-own-height=%s", plan->seed_snapshot) >=
-            (int)sizeof(seed_arg))
-            LOG_ERR(COLD_START_SUBSYS, "run stage: seed path too long");
+            (int)sizeof(seed_arg)) {
+            cold_start_reason_copy(reason, reason_n, "seed path too long");
+            LOG_ERROR(COLD_START_SUBSYS, "run stage: seed path too long");
+            return COLD_START_TRANSIENT;
+        }
         char *argv[] = { exe, datadir_arg, seed_arg,
                          (char *)"-coldstart-seed-oneshot", NULL };
-        return cold_start_spawn_wait(argv, NULL);
+        return cold_start_spawn_classify(argv, reason, reason_n);
     }
     case COLD_START_STAGE_BUNDLE: {
         /* -install-consensus-bundle is terminal (installs then _exit()s). Runs
-         * after the seed so the bundle installs onto the seeded datadir. */
+         * after the seed so the bundle installs onto the seeded datadir. Its
+         * REFUSED lines are classified by cold_start_spawn_classify as a
+         * decision (blocked, never auto-retried). */
         char bundle_arg[PATH_MAX + 40];
         if (snprintf(bundle_arg, sizeof(bundle_arg),
                      "-install-consensus-bundle=%s", plan->install_bundle) >=
-            (int)sizeof(bundle_arg))
-            LOG_ERR(COLD_START_SUBSYS, "run stage: bundle path too long");
+            (int)sizeof(bundle_arg)) {
+            cold_start_reason_copy(reason, reason_n, "bundle path too long");
+            LOG_ERROR(COLD_START_SUBSYS, "run stage: bundle path too long");
+            return COLD_START_TRANSIENT;
+        }
         char *argv[] = { exe, datadir_arg, bundle_arg, NULL };
-        return cold_start_spawn_wait(argv, NULL);
+        return cold_start_spawn_classify(argv, reason, reason_n);
     }
     case COLD_START_STAGE_SERVE:
-        LOG_ERR(COLD_START_SUBSYS, "run stage: SERVE is not a spawned prep "
-                "stage");
+        cold_start_reason_copy(reason, reason_n, "SERVE is not a spawned stage");
+        LOG_ERROR(COLD_START_SUBSYS, "run stage: SERVE is not a spawned prep "
+                  "stage");
+        return COLD_START_TRANSIENT;
     }
-    LOG_ERR(COLD_START_SUBSYS, "run stage: unknown stage %d", (int)stage);
+    cold_start_reason_copy(reason, reason_n, "unknown stage");
+    LOG_ERROR(COLD_START_SUBSYS, "run stage: unknown stage %d", (int)stage);
+    return COLD_START_TRANSIENT;
 }
 
 /* Exec a plain serving boot: the original argv minus the cold-start-only flags
- * (-cold-start, -cold-start-source=, -cold-start-seed=) and minus
- * -install-consensus-bundle= (already installed by the bundle stage). Does not
- * return on success. */
+ * (-cold-start, -cold-start-source=, -cold-start-seed=, -cold-start-bundle=) and
+ * minus a raw -install-consensus-bundle= (defensive — the driver dispatches that
+ * terminal verb itself via the BUNDLE stage; letting it reach the serving boot
+ * would re-trigger a terminal install). Does not return on success. */
 static int cold_start_exec_serve(int argc, char **argv)
 {
     char exe[PATH_MAX];
@@ -414,6 +671,7 @@ static int cold_start_exec_serve(int argc, char **argv)
         if (strcmp(argv[i], "-cold-start") == 0 ||
             strncmp(argv[i], "-cold-start-source=", 19) == 0 ||
             strncmp(argv[i], "-cold-start-seed=", 17) == 0 ||
+            strncmp(argv[i], "-cold-start-bundle=", 19) == 0 ||
             strncmp(argv[i], "-install-consensus-bundle=", 26) == 0)
             continue;
         serve_argv[n++] = argv[i];
@@ -438,8 +696,8 @@ int boot_cold_start_run(int argc, char **argv)
             plan.header_source = argv[i] + 19;
         else if (strncmp(argv[i], "-cold-start-seed=", 17) == 0)
             plan.seed_snapshot = argv[i] + 17;
-        else if (strncmp(argv[i], "-install-consensus-bundle=", 26) == 0)
-            plan.install_bundle = argv[i] + 26;
+        else if (strncmp(argv[i], "-cold-start-bundle=", 19) == 0)
+            plan.install_bundle = argv[i] + 19;
     }
 
     /* Default datadir mirrors the rest of the binary. */
@@ -491,15 +749,46 @@ int boot_cold_start_run(int argc, char **argv)
            plan.install_bundle ? plan.install_bundle : "(none)");
 
     enum cold_start_stage reached = COLD_START_STAGE_SERVE;
-    int rc = cold_start_drive(&plan, cold_start_run_stage_live, NULL, &reached);
-    if (rc != 0) {
+    char reason[COLD_START_REASON_MAX];
+    reason[0] = '\0';
+    enum cold_start_result rc =
+        cold_start_drive(&plan, cold_start_run_stage_live, NULL, &reached,
+                         reason, sizeof(reason));
+
+    if (rc == COLD_START_BLOCKED) {
+        /* A DECISION refusal — sticky, never auto-retried. The refusal receipt
+         * under <datadir>/coldstart/ records the reason verbatim. */
+        const char *stage = cold_start_stage_name(reached);
+        printf("COLD-START: BLOCKED:%s:%s\n", stage, reason);
+        fflush(stdout);
+        LOG_ERROR(COLD_START_SUBSYS, "COLD-START: BLOCKED:%s:%s", stage, reason);
         fprintf(stderr,
-                "cold-start: stopped at stage '%s' (rc=%d). Fix the cause and "
-                "re-run the SAME -cold-start command; completed stages are "
-                "skipped via their receipts under %s/coldstart/.\n",
-                cold_start_stage_name(reached), rc, plan.datadir);
-        return rc == 0 ? 1 : rc;
+                "cold-start: BLOCKED at stage '%s' by a decision refusal — NOT "
+                "retried. Re-running the SAME -cold-start command stays blocked; "
+                "resolve the cause and change/clear the bundle parameter, or "
+                "remove %s/coldstart/%s.receipt to re-evaluate.\n",
+                stage, plan.datadir, stage);
+        return 2;
     }
-    /* Every configured prep stage is receipted — become the serving node. */
+    if (rc != COLD_START_OK) {
+        /* Transient — resumable; a rerun continues at this same stage. */
+        const char *stage = cold_start_stage_name(reached);
+        printf("COLD-START: INCOMPLETE:%s:%s\n", stage, reason);
+        fflush(stdout);
+        LOG_WARN(COLD_START_SUBSYS, "COLD-START: INCOMPLETE:%s:%s", stage,
+                 reason);
+        fprintf(stderr,
+                "cold-start: stopped at stage '%s' (transient). Fix the cause "
+                "and re-run the SAME -cold-start command; completed stages are "
+                "skipped via their receipts under %s/coldstart/.\n",
+                stage, plan.datadir);
+        return 1;
+    }
+
+    /* Every configured prep stage is receipted — announce completion, then
+     * become the serving node. */
+    printf("COLD-START: COMPLETE\n");
+    fflush(stdout);
+    LOG_INFO(COLD_START_SUBSYS, "COLD-START: COMPLETE");
     return cold_start_exec_serve(argc, argv);
 }
