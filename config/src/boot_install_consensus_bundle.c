@@ -309,9 +309,34 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
     struct consensus_state_chain_binding_request chain_req = {
         .main = ms, .artifact = artifact, .target_lane = lane,
     };
+    /* (3c) Compiled-checkpoint content authority. A snapshot-seeded target
+     * floors its block index / header-pass / script-validate logs ABOVE the
+     * checkpoint height, so the checkpoint block and its Sapling source are
+     * never materialized there — every below-checkpoint chain-binding predicate
+     * would refuse on absent index evidence even for the byte-correct compiled
+     * checkpoint bundle. Feed the compiled SHA3 checkpoint (height + block_hash)
+     * and the compiled ROM keystone (Sapling frontier root + height) as the
+     * substitute trust root. The binding decision uses it ONLY when the bundle
+     * sits at exactly this height and reproduces this content byte-for-byte;
+     * a bundle at any other height, or one that disagrees, is unaffected. */
+    const struct sha3_utxo_checkpoint *sha3_cp = get_sha3_utxo_checkpoint();
+    const struct rom_state_checkpoint *rom_cp = get_rom_state_checkpoint();
+    if (sha3_cp && rom_cp && sha3_cp->height == rom_cp->height) {
+        chain_req.checkpoint_authority.available = true;
+        chain_req.checkpoint_authority.height = sha3_cp->height;
+        memcpy(chain_req.checkpoint_authority.block_hash,
+               sha3_cp->block_hash, 32);
+        chain_req.checkpoint_authority.sapling_frontier_height =
+            (int32_t)rom_cp->sapling_frontier_height;
+        memcpy(chain_req.checkpoint_authority.sapling_frontier_root,
+               rom_cp->sapling_frontier_root, 32);
+    }
     struct consensus_state_chain_evidence *chain_evidence = NULL;
     struct zcl_result chain_built =
         consensus_state_chain_evidence_build(&chain_req, &chain_evidence);
+    bool used_checkpoint_authority =
+        chain_built.ok &&
+        consensus_state_chain_evidence_used_checkpoint_authority(chain_evidence);
 
     struct consensus_state_publication_decision_record decision;
     struct zcl_result cas = ZCL_ERR(-1, "chain evidence unavailable");
@@ -336,6 +361,20 @@ void boot_install_consensus_bundle(struct node_db *ndb, struct main_state *ms,
                    "not on this node's validated header chain, or the node is "
                    "not the open singleton): %s", chain_built.message);
     }
+    /* Auditable, not silent: state whether the below-checkpoint predicates were
+     * bound from the compiled checkpoint (the sovereignty anchor) or from the
+     * target's own materialized index. The same flag is folded into the chain
+     * evidence digest, so this decision is also durable in the ADMIT record. */
+    if (used_checkpoint_authority)
+        LOG_INFO(ICB_SUBSYS,
+                 "selected-chain binding used compiled-checkpoint content "
+                 "authority (bundle height==checkpoint height=%d; block_hash + "
+                 "Sapling frontier match the compiled keystone byte-for-byte)",
+                 manifest.height);
+    else
+        LOG_INFO(ICB_SUBSYS,
+                 "selected-chain binding used the target's materialized index "
+                 "(no checkpoint-content substitution)");
     if (!cas.ok) {
         consensus_state_artifact_evidence_free(artifact);
         icb_refuse("publication CAS run failed: %s", cas.message);

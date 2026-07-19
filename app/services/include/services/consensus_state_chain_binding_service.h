@@ -24,6 +24,31 @@ enum consensus_state_target_lane {
     CONSENSUS_STATE_TARGET_LANE_CANONICAL,
 };
 
+/* Compiled-checkpoint content authority. The compiled SHA3/ROM checkpoint is
+ * the sovereignty anchor: its block_hash and Sapling frontier root are baked
+ * into the binary and re-derivable by an independent from-genesis fold, so
+ * they are a STRONGER trust root than a snapshot-seeded target's materialized
+ * block index — which floors ABOVE the checkpoint height and therefore never
+ * materializes the checkpoint block or its Sapling source. When a bundle sits
+ * at EXACTLY this height and its own block_hash + Sapling frontier match this
+ * authority byte-for-byte, the below-checkpoint materialized-index predicates
+ * (bundle/sapling-source presence, durable validation, and their ancestry
+ * links) are authorized from this content instead of the absent index. Filled
+ * by the boot install verb from get_sha3_utxo_checkpoint() (height/block_hash)
+ * and get_rom_state_checkpoint() (Sapling frontier root/height); `available`
+ * is false when no checkpoint is compiled in, which restores the pure
+ * target-derived gate. Bundles at any OTHER height ignore this authority
+ * entirely — the gate then stays byte-for-byte as before. The target-derived
+ * frontier durability (-3), durable served H* (-4), and the target's own
+ * materialized header-tip validity remain enforced regardless. */
+struct consensus_state_checkpoint_authority {
+    bool available;
+    int32_t height;
+    uint8_t block_hash[32];
+    int32_t sapling_frontier_height;
+    uint8_t sapling_frontier_root[32];
+};
+
 /* Public only so the fail-closed decision matrix can be tested without a
  * process-global progress store.  This structure is never publication
  * authority: only consensus_state_chain_evidence_build() can create the
@@ -58,6 +83,14 @@ struct consensus_state_chain_binding_observation {
     bool selected_header_failure_free;
     bool header_descends_from_bundle;
     bool bundle_descends_from_sapling_source;
+
+    /* Compiled-checkpoint content authority carried through from the request.
+     * When it authorizes (see consensus_state_checkpoint_authority above and
+     * consensus_state_chain_binding_uses_checkpoint_authority), the decision
+     * satisfies the below-checkpoint materialized-index predicates from this
+     * content. Constant across the before/after chain samples, so it does not
+     * perturb the frontier-unchanged byte comparison. */
+    struct consensus_state_checkpoint_authority checkpoint_authority;
 };
 
 struct consensus_state_chain_binding_request {
@@ -68,11 +101,28 @@ struct consensus_state_chain_binding_request {
     /* A canonical lane tag is included in the evidence digest. It is
      * descriptive binding, not permission to activate that lane. */
     enum consensus_state_target_lane target_lane;
+    /* Compiled-checkpoint content authority (the sovereignty anchor). Filled
+     * from the compiled SHA3/ROM checkpoint by the boot install verb. Left
+     * zeroed (available=false) by callers that want the pure target-derived
+     * gate. */
+    struct consensus_state_checkpoint_authority checkpoint_authority;
 };
 
 /* Pure refusal decision. A passing result is diagnostic only and cannot be
  * converted into publication evidence by callers. */
 struct zcl_result consensus_state_chain_binding_decide(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_chain_binding_observation *observation);
+
+/* Pure predicate: true iff the decision authorizes the below-checkpoint
+ * materialized-index predicates (-5/-6/-7/-8/-9/-10 and the -11 ancestry
+ * links) from compiled-checkpoint content rather than the target's index.
+ * Requires the observation's checkpoint authority to be available AND the
+ * manifest to sit at exactly the authority height with a byte-for-byte
+ * matching block_hash + Sapling frontier (root and height). Any mismatch
+ * returns false, restoring the pure target-derived gate. Callers use this to
+ * record — auditably — that checkpoint-content authority was exercised. */
+bool consensus_state_chain_binding_uses_checkpoint_authority(
     const struct consensus_state_bundle_manifest *manifest,
     const struct consensus_state_chain_binding_observation *observation);
 
@@ -97,5 +147,13 @@ bool consensus_state_chain_evidence_matches_artifact(
 bool consensus_state_chain_evidence_digest(
     const struct consensus_state_chain_evidence *evidence,
     uint8_t out[32]);
+
+/* True iff this evidence was decided using compiled-checkpoint content
+ * authority (see consensus_state_chain_binding_uses_checkpoint_authority).
+ * The flag is also folded into the evidence digest, so it is cryptographically
+ * bound into the durable publication decision record — the audit trail cannot
+ * later claim a target-index binding it did not have. Returns false on NULL. */
+bool consensus_state_chain_evidence_used_checkpoint_authority(
+    const struct consensus_state_chain_evidence *evidence);
 
 #endif /* ZCL_SERVICES_CONSENSUS_STATE_CHAIN_BINDING_SERVICE_H */
