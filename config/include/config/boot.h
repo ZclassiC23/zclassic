@@ -211,6 +211,18 @@ struct app_context {
                                  * the off-systemd self-respawn (src/main.c) would
                                  * be killed — under systemd, Restart=always owns
                                  * respawn and no self-exec happens. */
+    bool confine;              /* -confine : after boot reaches activation-ready,
+                                 * apply strict kernel confinement (Landlock rw
+                                 * datadir + read-only extra paths, plus a seccomp
+                                 * ALLOW-list whose default action is
+                                 * KILL_PROCESS). Fail-fast: an unexpected syscall
+                                 * kills the process loudly. Default false. Unlike
+                                 * -sandbox=steady (a deny-list, FATAL on apply
+                                 * failure), a -confine apply failure runs the node
+                                 * UNCONFINED and raises the named blocker
+                                 * 'confine.apply_failed' rather than half-applying
+                                 * a partial sandbox. Mutually exclusive with
+                                 * -sandbox=steady. */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
                                  * the event-log block_index_projection instead of

@@ -169,3 +169,10 @@ ZCL_BLOCKER_REMEDY(chaos.stage_stall,                           OWNER)
 ZCL_BLOCKER_REMEDY(mint_fold.frontier_walled,                   OWNER)
 ZCL_BLOCKER_REMEDY(mint_bundle.export_failed,                   OWNER)
 ZCL_BLOCKER_REMEDY(refold.body_gap,                             OWNER)
+
+/* ── OWNER — boot-time -confine kernel-confinement apply failure. Raised at the
+ * SERVICES_RUNNING boundary (config/src/boot.c sr_confine_enter) when os_sandbox
+ * _enter(node_confine) cannot install Landlock+seccomp cleanly: the node runs
+ * UNCONFINED rather than half-applied, and only an operator can widen the
+ * allow-list / enable the kernel features and restart. ─────────────────────── */
+ZCL_BLOCKER_REMEDY(confine.apply_failed,                        OWNER)

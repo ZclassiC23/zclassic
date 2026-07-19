@@ -521,6 +521,11 @@ AGENT_IMPACT_RULE("config/src/file_ops.c|config/include/config/file_ops.h|lib/te
  * seccomp-bpf deny-list, rlimits, userns helpers, and the enter() profile
  * composer. Parity-safe; not yet wired into boot. */
 AGENT_IMPACT_RULE("lib/platform/src/os_sandbox_linux.c|lib/platform/include/platform/os_sandbox.h|lib/test/src/test_os_sandbox.c", "os_sandbox make_lint_gates")
+/* -confine strict node confinement (seccomp ALLOW-list + Landlock, applied at
+ * the SERVICES_RUNNING boundary): the allow-set + installer in os_sandbox, its
+ * boot wiring, the -confine flag, the named blocker binding, and the
+ * reproducible allow-list derivation harness (test_confine). */
+AGENT_IMPACT_RULE("lib/test/src/test_confine.c|lib/platform/src/os_sandbox_linux.c|lib/platform/include/platform/os_sandbox.h|config/src/boot.c|config/include/config/boot.h|src/main.c|app/conditions/include/conditions/blocker_remedy_bindings.def", "confine os_sandbox make_lint_gates")
 /* 2026-07-13 sovereign-state hardening slice: contained exporter/validator,
  * snapsync verify/apply TUs, evidence authority binding, loader topup, and
  * the test files the slice touched. */
