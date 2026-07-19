@@ -11,6 +11,7 @@
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
 #include "config/boot_msg_callbacks.h"
+#include "services/binary_ab_fallback.h"
 #include "services/chain_activation_service.h"
 #include "services/block_index_integrity.h"
 #include "services/block_source_policy.h"
@@ -1425,6 +1426,15 @@ bool app_init_services(struct app_context *ctx,
 
     printf("[boot]   %-28s %lldms\n", "svc.runtime_and_catchup",
            (long long)(svc_clock_ms() - t_svc));
+
+    /* Booted successfully — every runtime service started (or degraded
+     * loudly), EV_NODE_READY emitted, catchup/backfill spun up. Only NOW
+     * tell the binary-A/B launcher: reset the boot-failure streak and,
+     * unless we are the fallback slot, promote current -> last-good. Any
+     * earlier and a binary that crashes later in boot would promote itself
+     * before dying, disarming the fallback. No-op when launched directly
+     * (launcher env unset). */
+    binary_ab_promote_on_ready_env();
 
     return true;
 }

@@ -133,16 +133,12 @@ bool boot_sd_watchdog_start(void *ctx)
     if (!svc)
         return false;
 
-    /* Activation-ready reached. This is the LAST runtime service to start
-     * (boot_services.c spec order), so arriving here IS the node's own
-     * definition of "booted successfully". Tell the binary-A/B launcher:
-     * reset its boot-failure streak to 0 and, unless we are the fallback
-     * slot, promote the current binary to last-good. Runs before the
-     * sd_notify_init() early-return below so it fires whether or not the
-     * node is under systemd notify supervision — the signal is the launcher
-     * env, not systemd. No-op when launched directly (env unset). */
-    binary_ab_promote_on_ready_env();
-
+    /* NOTE: binary_ab_promote_on_ready_env() deliberately does NOT fire
+     * here — sd_watchdog starts 8th of 15 runtime services, so "reached
+     * sd_watchdog" is not "booted successfully". The promotion/streak-reset
+     * fires at the END of boot_start_runtime_and_catchup()
+     * (boot_services.c), after every runtime service, EV_NODE_READY, and
+     * the catchup/backfill spin-up. */
     if (!sd_notify_init()) {
         /* Not running under systemd notify supervision (e.g. invoked
          * from a CLI). Silent success — the unit is functionally
