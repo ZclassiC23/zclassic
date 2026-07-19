@@ -13,8 +13,6 @@
 #include "config/consensus_state_snapshot_install.h"
 #include "crypto/sha3.h"
 #include "framework/condition.h"
-#include "jobs/reducer_frontier.h"
-#include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -625,31 +623,6 @@ struct zcl_result consensus_state_publication_cas_load(
     return ZCL_OK;
 }
 
-/* ── frontier capture (read-only, process singleton) ──────────────────── */
-static bool capture_frontier(int32_t *height, uint8_t hash[32])
-{
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return false; /* raw-return-ok:no-open-progress-store */
-    bool ok = false;
-    progress_store_tx_lock();
-    int32_t hstar = -1;
-    int32_t served_floor = -1;
-    int durable_h = -1;
-    uint8_t durable_hash[32] = {0};
-    if (reducer_frontier_compute_hstar(db, &hstar, &served_floor) &&
-        tip_finalize_stage_resolve_durable_tip(db, &durable_h, durable_hash) &&
-        durable_h >= 0 && durable_h == hstar) {
-        *height = hstar;
-        memcpy(hash, durable_hash, 32);
-        ok = true;
-    }
-    progress_store_tx_unlock();
-    if (!ok)
-        LOG_WARN(CAS_SUBSYS, "durable frontier capture failed");
-    return ok;
-}
-
 static void store_latest(
     const struct consensus_state_publication_decision_record *record)
 {
@@ -711,7 +684,7 @@ struct zcl_result consensus_state_publication_cas_run(
     /* Capture the current durable frontier for the CAS binding. */
     int32_t fh = -1;
     uint8_t fhash[32] = {0};
-    if (capture_frontier(&fh, fhash)) {
+    if (consensus_state_publication_cas_capture_frontier(&fh, fhash)) {
         in.frontier_known = true;
         in.frontier_height = fh;
         memcpy(in.frontier_hash, fhash, 32);

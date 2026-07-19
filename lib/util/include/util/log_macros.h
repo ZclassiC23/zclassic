@@ -123,6 +123,17 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
+/* Log an ERROR-level line and continue (no return). The returning error
+ * macros above (LOG_ERR/LOG_FAIL/LOG_NULL) abort the caller; this one is for
+ * a diagnostic that must record ERROR-severity context yet fall through to a
+ * caller-chosen result (e.g. a bool capture that returns its own flag, or a
+ * best-effort path that logs every number before continuing). Completes the
+ * non-returning WARN/INFO pair at ERROR rank. */
+#define LOG_ERROR(domain, fmt, ...) do { \
+    ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
+            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+} while (0)
+
 /* ── Guards: check condition, log + return on failure ─────────── */
 
 /* Guard: if condition is false, log and return false. */
