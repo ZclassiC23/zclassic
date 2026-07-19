@@ -107,6 +107,44 @@ folds from; the ledger IS the append point.
 has), so the ledger never needs to know the seed engine's own artifact-
 metadata shape.
 
+## Bundle replication — one disk to many seeders
+
+The two-builder-verified consensus-state bundle (`docs/work/CONSENSUS-STATE-
+BUNDLE.md`) is exported once and, today, tends to live on a single machine's
+disk. Two pieces close that single point of failure without weakening
+rom_seed's untrusted-delivery model: a **receipt-gated admission gate**
+(`config/rom_bundle_admission.h`) and a **replication helper**
+(`tools/scripts/rom-bundle-replicate.sh`).
+
+**The gate.** `net/rom_seed.h`'s own `rom_seed_scan_datadir()` admits any
+`consensus-state-bundle-*.sqlite` on structural grounds alone (SQLite magic +
+size band) — correct for the primary datadir, where every fetcher
+re-verifies content after download regardless. A **second**, operator-
+designated directory (`-rombundlereplicadir=PATH`) goes through a stricter
+path instead: `rom_bundle_admission_register()` computes the candidate
+bundle's own SHA3-256 whole-file digest, then requires
+`PATH/consensus_state_replay_receipt.v1` to self-verify (schema + its own
+domain-separated binding digest — byte tampering fails here) **and** bind
+that exact digest, before ever calling into the shared `rom_seed` registry.
+No receipt, wrong receipt, or a receipt bound to a different bundle's bytes
+all refuse — fail-closed, catalog untouched, nothing served. This check
+deliberately does **not** require the serving node to be the exact binary
+that produced/verified the receipt (unlike the ACTIVATE authority check in
+`config/consensus_state_replay_receipt.h`, which does) — a seeding node is
+almost never the node that ran `-verify-consensus-bundle`.
+
+**The replicator.** `tools/scripts/rom-bundle-replicate.sh --bundle=... 
+--receipt=... --dest=DIR` copies the bundle + receipt (renamed to the
+canonical `consensus_state_replay_receipt.v1` the gate looks for) + a SHA3
+record of the producing binary into `DIR`, then re-hashes both copies with
+the standalone `rom_bundle_sha3` tool (`make tools/rom_bundle_sha3`; links
+only `lib/crypto/src/sha3.c`, no node libs) and refuses to report success
+unless every digest matches the source exactly. `make rom-bundle-replicate
+BUNDLE=... RECEIPT=... DEST=...` wraps the same script. Point a node's
+`-rombundlereplicadir=DIR` at the result (or at a further copy of it, on a
+different disk or a different machine entirely) to turn it into another
+free-tier P2P recovery source for the same bundle.
+
 ## Operator commands
 
 All three live under `ops.debug.rom_seed.*` (native command registry — see

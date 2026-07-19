@@ -2125,6 +2125,37 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
+# rom_bundle_sha3: standalone whole-file SHA3-256 digest tool used by
+# tools/scripts/rom-bundle-replicate.sh to verify a ROM bundle replication
+# copy byte-for-byte against its source. No node libs, no sqlite, no Tor —
+# links only lib/crypto/src/sha3.c, the same primitive rom_seed.c and every
+# other consensus-facing digest in the node uses.
+.PHONY: tools/rom_bundle_sha3
+tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
+$(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
+		lib/crypto/src/sha3.c lib/support/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Wno-unused-result -Wno-stringop-overflow \
+	    -Ilib/crypto/include -Ilib/support/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -lm
+
+# rom-bundle-replicate: copy a verified consensus-state bundle + its replay
+# receipt + a producing-binary hash record to a second directory, verified
+# byte-identical by SHA3 (tools/scripts/rom-bundle-replicate.sh). Point a
+# node's -rombundlereplicadir at DEST to serve it (config/rom_bundle_admission.h).
+#   make rom-bundle-replicate BUNDLE=path/to/consensus-state-bundle-H.sqlite \
+#       RECEIPT=path/to/consensus_state_replay_receipt.v1 DEST=/some/second/dir
+.PHONY: rom-bundle-replicate
+rom-bundle-replicate: $(BIN_DIR)/rom_bundle_sha3
+	@if [ -z "$(BUNDLE)" ] || [ -z "$(RECEIPT)" ] || [ -z "$(DEST)" ]; then \
+	    echo "usage: make rom-bundle-replicate BUNDLE=... RECEIPT=... DEST=... [BINARY=...]"; \
+	    exit 2; fi
+	tools/scripts/rom-bundle-replicate.sh --bundle="$(BUNDLE)" \
+	    --receipt="$(RECEIPT)" --dest="$(DEST)" \
+	    $(if $(BINARY),--binary="$(BINARY)",)
+
 # gen_utxo_snapshot: build-time tool that walks a legacy zclassicd
 # chainstate LevelDB and emits a canonical UTXO sidecar file ready
 # for runtime mmap+SHA3-verify+bulk-INSERT (Stage J of fast-sync
