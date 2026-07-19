@@ -61,7 +61,7 @@ lib/storage/src/coins_view_sqlite.c 1247
 lib/storage/src/utxo_projection.c 978
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
-lib/wallet/src/wallet.c 1713
+lib/wallet/src/wallet.c 1705
 lib/wallet/src/wallet_sqlite.c 1371
 lib/sim/src/simnet_chaos_faults.c 1014
 lib/util/src/supervisor.c 801
