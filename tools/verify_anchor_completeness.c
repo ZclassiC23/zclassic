@@ -1,9 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * verify_anchor_completeness — cross-checks a zclassicd chainstate LevelDB
- * against a zclassic23 progress.kv to answer one question: did the shielded
- * history importer (shielded_history_import_service.c) capture every anchor
- * and nullifier its SOURCE chainstate held?
+ * against a zclassic23 kernel store (consensus.db, or the legacy progress.kv
+ * on a pre-flip datadir) to answer one question: did the shielded history
+ * importer (shielded_history_import_service.c) capture every anchor and
+ * nullifier its SOURCE chainstate held?
  *
  * Deliberately independent of chainstate_legacy_reader.c: this walks the raw
  * LevelDB keyspace directly via the vendored leveldb C API and counts keys by
@@ -15,10 +16,11 @@
  *   'Z' = DB_SAPLING_ANCHOR      'A' = DB_SPROUT_ANCHOR
  *   'S' = DB_SAPLING_NULLIFIER   's' = DB_NULLIFIER (sprout)
  *
- * The chainstate LevelDB and the progress.kv are both opened read-only —
+ * The chainstate LevelDB and the kernel store are both opened read-only —
  * this never writes to either. Point this at a COPY of zclassicd's
- * chainstate (zclassicd holds an exclusive lock on the live one) and a
- * progress.kv belonging to a node that ran the historical import.
+ * chainstate (zclassicd holds an exclusive lock on the live one) and the
+ * consensus.db (or, for a pre-flip datadir, progress.kv) belonging to a
+ * node that ran the historical import.
  *
  * A raw-key deficit vs. the imported count is EXPECTED and not a bug when it
  * traces to real chain growth after the importer's source snapshot was taken
@@ -27,7 +29,7 @@
  * chainstate (the exact copy the import ran against) has keys the importer's
  * own reported count does not account for.
  *
- * Usage: verify_anchor_completeness <chainstate_dir> <progress.kv>
+ * Usage: verify_anchor_completeness <chainstate_dir> <kernel_store_path>
  */
 #include <leveldb/c.h>
 #include <sqlite3.h>
@@ -117,12 +119,12 @@ static long long sql_count1(sqlite3 *db, const char *sql)
     return v;
 }
 
-static int count_progress_kv(const char *progress_kv_path, struct imported_counts *out)
+static int count_kernel_store(const char *kernel_store_path, struct imported_counts *out)
 {
     memset(out, 0, sizeof(*out));
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(progress_kv_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        fprintf(stderr, "progress.kv open failed: %s\n", sqlite3_errmsg(db));
+    if (sqlite3_open_v2(kernel_store_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        fprintf(stderr, "kernel store open failed: %s\n", sqlite3_errmsg(db));
         if (db) sqlite3_close(db);
         return -1;
     }
@@ -161,22 +163,22 @@ static void report_line(const char *label, long long chainstate, long long impor
 int main(int argc, char **argv)
 {
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <chainstate_dir> <progress.kv>\n", argv[0]);
+        fprintf(stderr, "usage: %s <chainstate_dir> <kernel_store_path>\n", argv[0]);
         return 2;
     }
     const char *chainstate_dir = argv[1];
-    const char *progress_kv = argv[2];
+    const char *kernel_store_path = argv[2];
 
     struct raw_counts rc;
     if (count_chainstate(chainstate_dir, &rc) != 0)
         return 1;
 
     struct imported_counts ic;
-    if (count_progress_kv(progress_kv, &ic) != 0)
+    if (count_kernel_store(kernel_store_path, &ic) != 0)
         return 1;
 
     printf("chainstate: %s\n", chainstate_dir);
-    printf("progress.kv: %s\n", progress_kv);
+    printf("kernel store: %s\n", kernel_store_path);
     if (ic.have_provenance)
         printf("import provenance: %s\n", ic.provenance);
     printf("\n");
@@ -196,7 +198,7 @@ int main(int argc, char **argv)
         rc.s_sapling_nullifier < ic.sapling_nullifiers ||
         rc.s_sprout_nullifier < ic.sprout_nullifiers) {
         printf("VERDICT: IMPOSSIBLE — imported count exceeds this chainstate's raw "
-               "key count for at least one pool. Either progress.kv holds rows from a "
+               "key count for at least one pool. Either the kernel store holds rows from a "
                "different/larger chainstate, or the chainstate copy is torn.\n");
         return 1;
     }
@@ -205,11 +207,11 @@ int main(int argc, char **argv)
         rc.s_sapling_nullifier == ic.sapling_nullifiers &&
         rc.s_sprout_nullifier == ic.sprout_nullifiers) {
         printf("VERDICT: COMPLETE — every anchor/nullifier key in this chainstate copy "
-               "is accounted for in progress.kv.\n");
+               "is accounted for in the kernel store.\n");
         return 0;
     }
     printf("VERDICT: DEFICIT — this chainstate copy has more anchor/nullifier keys than "
-           "progress.kv reports imported. Confirm whether this chainstate is NEWER than "
+           "the kernel store reports imported. Confirm whether this chainstate is NEWER than "
            "the import's own source (compare its 'B' best-block height against the "
            "provenance line's best_block/tip_h above) before treating this as a reader "
            "bug — chain growth after the import's source snapshot produces exactly this "

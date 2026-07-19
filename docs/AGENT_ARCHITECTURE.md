@@ -102,8 +102,8 @@ Build each feature in this order.
 - Add indexes before exposing a list/filter route; never make REST depend on a
   full-table scan by accident.
 - Migrations must be safe to run repeatedly and safe on an existing live db.
-- `progress.kv` is the reducer kernel store, not a domain model store. Do not
-  route stage cursors through ActiveRecord.
+- `consensus.db` (the kernel store — `progress.kv` on a pre-flip datadir) is
+  not a domain model store. Do not route stage cursors through ActiveRecord.
 
 ## REST Rules
 

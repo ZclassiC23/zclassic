@@ -59,7 +59,7 @@ window with complete security posture and zero intervention. Run that with
 Operator paging rate target: **0/month**.
 The user is not an operator. If zclassic23 stalls, recovery is automatic or the node
 is broken. There is no acceptable middle ground where "operator manually deletes a
-sentinel from progress.kv" is the answer.
+sentinel from consensus.db" is the answer.
 
 ## How we know we hit them
 

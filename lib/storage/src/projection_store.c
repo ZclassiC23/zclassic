@@ -141,8 +141,10 @@ bool projection_store_open(const char *datadir)
      * (progress_store) opens consensus.db, NOT progress.kv — so progress_store
      * no longer creates progress.kv. projection_store now OWNS progress.kv as
      * the dedicated projection file: on a fresh node it must mint it here (the
-     * Class C address_index / txindex / created_outputs projections are fully
-     * rebuildable, so a fresh or re-derived projection file is always safe). */
+     * Class C address_index / txindex projections are fully rebuildable, so a
+     * fresh or re-derived projection file is always safe; created_outputs is
+     * a KERNEL table written through the consensus.db handle, not here — see
+     * consensus_db.c's projection-stay exclusion list). */
     sqlite3 *db = NULL;
     int rc = sqlite3_open_v2(path, &db,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);

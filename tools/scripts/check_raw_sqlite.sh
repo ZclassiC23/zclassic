@@ -16,15 +16,16 @@
 # It also scans for direct sqlite3_exec(ndb->db|ndb.db, "INSERT/DELETE/UPDATE/
 # REPLACE ...") because those are node.db write statements that can be prepared
 # and stepped through ar_exec_write_sql()/AR_STEP_WRITE. Transaction control,
-# PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, progress.kv, and central
-# checked helpers remain out of this narrow DML gate.
+# PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, the kernel store, and
+# central checked helpers remain out of this narrow DML gate.
 #
 # Two distinct hatches, NOT the same thing:
 #
 #   1. Per-line `// raw-sql-ok:<tag>` markers. These are PRINCIPLED, not
 #      debt. The load-bearing one is `progress-kv-kernel-store`: the
 #      reducer pipeline writes its stage cursor + per-stage *_log tables
-#      to progress.kv — a separate singleton WAL KERNEL store that sits
+#      to consensus.db (historically progress.kv; the tag name is unchanged
+#      across the flip) — a separate singleton WAL KERNEL store that sits
 #      BELOW the AR/domain-model layer (a stage_cursor row is not a model;
 #      see DEFENSIVE_CODING.md §1 "The one principled exception" and
 #      lib/storage/src/progress_store.c). Routing these through AR would be
@@ -74,9 +75,10 @@ raw_hits=$(printf '%s\n' "$raw_scan" \
     | grep -vE '// raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+' \
     || true)
 
-# Principled kernel-store hatch: progress.kv stage cursor + *_log sites,
-# correct-by-design below the AR layer. Bounded, NOT migration debt — we
-# report the count for visibility, but it does not gate or ratchet.
+# Principled kernel-store hatch: kernel-store (consensus.db, historically
+# progress.kv) stage cursor + *_log sites, correct-by-design below the AR
+# layer. Bounded, NOT migration debt — we report the count for visibility,
+# but it does not gate or ratchet.
 kernel_store_total=$(grep -rn '// raw-sql-ok:progress-kv-kernel-store' \
     app/ lib/ config/ src/ --include='*.c' 2>/dev/null \
     | grep -v 'vendor/\|/test/' | wc -l | tr -d ' ')
@@ -151,7 +153,7 @@ if [[ -n "${violations//[[:space:]]/}" ]]; then
     echo "  app/models/include/models/activerecord.h), wrap in AR_BEGIN_SAVE /"
     echo "  AR_EXEC_BOOL, ar_exec_write_sql(), or — for unavoidable cases like schema bootstrap —"
     echo "  add a // raw-sql-ok:<tag> comment on the line (no space after the"
-    echo "  colon). progress.kv kernel-store sites use the canonical tag"
+    echo "  colon). Kernel-store (consensus.db) sites use the canonical tag"
     echo "  // raw-sql-ok:progress-kv-kernel-store (see DEFENSIVE_CODING.md §1)."
     echo "  Allowlisted files (still pending sqlite3_step → AR migration) accounted for:"
     echo "    $allowed_total raw call sites across $(wc -l < <(grep -v '^[[:space:]]*#\|^[[:space:]]*$' "$ALLOWLIST" 2>/dev/null || true)) files"
@@ -168,8 +170,8 @@ else
 fi
 
 # Surface the principled kernel-store hatch separately. This count is
-# BOUNDED and stable-by-design (progress.kv stage cursor + *_log tables,
+# BOUNDED and stable-by-design (kernel-store stage cursor + *_log tables,
 # below the AR layer) — it is not debt and does not gate.
-echo "  Principled kernel-store sites (progress.kv, correct-by-design,"
+echo "  Principled kernel-store sites (consensus.db, correct-by-design,"
 echo "  below AR): $kernel_store_total // raw-sql-ok:progress-kv-kernel-store"
 exit 0

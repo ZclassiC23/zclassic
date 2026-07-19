@@ -49,33 +49,37 @@ domain-model saves still use the AR lifecycle entry points above so validation
 and before/after hooks fire. Direct `sqlite3_exec(ndb->db|ndb.db, "...")` DML
 (`INSERT`/`DELETE`/`UPDATE`/`REPLACE`) is also linted and must route through
 `ar_exec_write_sql()` / `AR_STEP_WRITE` or a reviewed helper; transaction
-control, PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, and progress.kv
-remain outside that narrow DML gate. `make lint` runs `check_raw_sqlite.sh`
+control, PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, and the kernel
+store remain outside that narrow DML gate. `make lint` runs `check_raw_sqlite.sh`
 (one of the gates in the canonical block below).
 
-### The one principled exception: the `progress.kv` kernel store
+### The one principled exception: the kernel store (`consensus.db`)
 
 The AR lifecycle is the law for **`node.db` domain models** — blocks, UTXOs,
 wallet keys, peers, mempool entries. Those rows have an identity, a
 `validate_*` function, and before/after-save hooks.
 
 The reducer pipeline does **not** write its stage state to `node.db`. It writes
-to `progress.kv` — a separate, singleton, WAL kernel store
-(`lib/storage/src/progress_store.c`, opened once at boot) holding the F-2
-`stage` primitive's `stage_cursor` table plus the per-stage `*_log` tables
-(`header_admit_log`, `body_fetch_log`, `validate_headers_log`, `utxo_apply_log`,
-`utxo_apply_delta`, `created_outputs`, `tip_finalize_log`, …). `progress.kv`
+to `consensus.db` — a separate, singleton, WAL kernel store
+(`lib/storage/src/progress_store.c`/`consensus_db.c`, opened once at boot via
+`progress_store_open()`) holding the F-2 `stage` primitive's `stage_cursor`
+table plus the per-stage `*_log` tables (`header_admit_log`, `body_fetch_log`,
+`validate_headers_log`, `utxo_apply_log`, `utxo_apply_delta`, `created_outputs`,
+`tip_finalize_log`, …). The store was physically `progress.kv` before the Wave
+A3 flip; a pre-flip datadir is migrated in place on open, and `progress.kv` now
+holds only the rebuildable `address_index`/`txindex` projections. This store
 sits **below** the AR/domain-model layer by design (see
-`storage/progress_store.h`, `docs/FRAMEWORK.md`): a `stage_cursor` row is not a
-model, has no domain identity, no save hooks. Cursor commits are tiny, hot-path,
-and want their own WAL out of the way of larger `node.db` transactions; the saga
-atomicity contract (a stage advance and its log row commit together) lives in
-`progress_store_tx_lock()` + `BEGIN IMMEDIATE`, not in AR.
+`storage/progress_store.h`, `storage/consensus_db.h`, `docs/FRAMEWORK.md`): a
+`stage_cursor` row is not a model, has no domain identity, no save hooks.
+Cursor commits are tiny, hot-path, and want their own WAL out of the way of
+larger `node.db` transactions; the saga atomicity contract (a stage advance and
+its log row commit together) lives in `progress_store_tx_lock()` +
+`BEGIN IMMEDIATE`, not in AR.
 
 Routing these through AR would be a **category error** (no model to validate, no
 hook to fire). The discipline:
 
-- A raw `sqlite3_step` on the `progress.kv` handle (always from
+- A raw `sqlite3_step` on the kernel-store handle (always from
   `progress_store_db()`, never a `node_db`/`ndb` handle) is correct-by-design,
   not migration debt.
 - Every such site MUST carry the canonical marker
@@ -86,7 +90,7 @@ hook to fire). The discipline:
   toward zero. `check_raw_sqlite.sh` treats `progress-kv-kernel-store` as the
   principled kernel-store hatch.
 
-A reducer Job that writes a `node.db` **model** (not a progress.kv `*_log`/cursor
+A reducer Job that writes a `node.db` **model** (not a kernel-store `*_log`/cursor
 row) does NOT get the kernel-store marker — it goes through the AR lifecycle.
 
 ---
@@ -665,8 +669,9 @@ name a genuinely unique structural property
   `helper-return-path`, `paired-with-return-false-below`,
   `paired-with-event_emitf-below`, `warning-only-on-best-effort-path`,
   `crash-dump-banner`.
-- `raw-sql-ok:` — `progress-kv-kernel-store` (reducer `progress.kv` cursor +
-  `*_log` tables, the kernel store below AR — see §1), `kernel-primitive`
+- `raw-sql-ok:` — `progress-kv-kernel-store` (reducer kernel-store cursor +
+  `*_log` tables — `consensus.db` post-flip, historically `progress.kv`,
+  the tag name is unchanged — below AR, see §1), `kernel-primitive`
   (inside `progress_store.c` itself), `kv-state-primitive`,
   `read-only-introspection`, `state-kv-write-caller-handles-rc`,
   `cvs-zcl-ar-raw-sql-rationale`, `test-fixture-setup`, `test-fixture-verify`,

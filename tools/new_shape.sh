@@ -220,8 +220,8 @@ bool db_${NAME}_validate(const struct db_${NAME} *r, struct ar_errors *errors)
 
 /* ── Save ──────────────────────────────────────────────────────── */
 
-/* TODO: take the real handle (struct node_db * or a progress.kv wrapper),
- * prepare/bind the INSERT, and step it through an AR_*_SAVE macro — never a
+/* TODO: take the real handle (struct node_db * or a progress_store/kernel-db
+ * wrapper), prepare/bind the INSERT, and step it through an AR_*_SAVE macro — never a
  * raw sqlite3 step call. The skeleton below shows the lifecycle shape with the
  * AR_BEGIN_SAVE guard; fill in the bind + step against your statement.
  *
@@ -253,7 +253,7 @@ NEXT — for a model with a persistent table:
   - declare struct db_${NAME} and the public fns in a header under
     app/models/include/models/${NAME}.h (it must #include "models/activerecord.h").
   - prepare/cache the INSERT statement on your db handle (node_db or a
-    progress.kv wrapper) and step it through an AR_*_SAVE macro.
+    progress_store/kernel-db wrapper) and step it through an AR_*_SAVE macro.
   - critical models (utxo/block/wallet_*) must keep a before_save hook
     (check-before-save-hooks gate).
 EOF
