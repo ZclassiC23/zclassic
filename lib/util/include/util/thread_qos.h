@@ -1,0 +1,32 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Background thread OS-QoS armor (lane/os-armor). One knob:
+ * zcl_thread_qos_background() — call it once, at thread start, from a
+ * genuinely-background bulk worker (catalog/backfill jobs, the background
+ * validation walker, similar linger workers). NEVER call it from the
+ * reducer pipeline, net, RPC, or tip-follow threads — those must stay
+ * responsive and are scheduled normally.
+ */
+
+#ifndef ZCL_THREAD_QOS_H
+#define ZCL_THREAD_QOS_H
+
+#include <stdbool.h>
+
+/* Apply background QoS to the CALLING thread:
+ *   - CPU: SCHED_BATCH scheduling class (sched_setscheduler). The kernel
+ *     treats the thread as CPU-bound/non-interactive — it is still fully
+ *     scheduled (no starvation, unlike SCHED_IDLE), it just yields to
+ *     interactive threads more readily. Needs no special privilege.
+ *   - I/O: IOPRIO_CLASS_IDLE I/O priority (ioprio_set syscall — no glibc
+ *     wrapper exists, so the syscall is hand-rolled). The thread only gets
+ *     disk I/O when no other process wants the device.
+ *
+ * Fail-soft: a denied syscall is logged via LOG_WARN and the thread keeps
+ * running at its inherited priority — this is best-effort armor, not a
+ * precondition. The return value reports whether BOTH knobs were applied;
+ * callers are not required to check it. Idempotent — safe to call more
+ * than once from the same thread. */
+bool zcl_thread_qos_background(void);
+
+#endif /* ZCL_THREAD_QOS_H */

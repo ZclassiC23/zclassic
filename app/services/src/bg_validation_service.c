@@ -80,6 +80,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
+#include "util/thread_qos.h"
 #include "util/thread_registry.h"
 
 /* Global instance for RPC access */
@@ -309,6 +310,13 @@ static void *bg_validation_thread(void *arg)
     const struct chain_params *params = svc->params;
     const char *datadir = svc->datadir;
     int num_workers = svc->num_workers;
+
+    /* Genuinely-background bulk walker (full proof/script re-verification
+     * from genesis) — never the reducer/net/RPC/tip-follow path. Apply OS
+     * QoS armor before any work so the kernel schedules it behind the
+     * node's liveness threads (lane/os-armor). */
+    zcl_thread_qos_background();
+
     bg_validation_supervisor_heartbeat(svc);
 
     /* Load resume point */

@@ -189,6 +189,13 @@ static void scan_parse_one_file(struct boot_scan_file_result *r)
     }
     r->file_size = (long)st.st_size;
 
+    /* This scan walks the whole blk*.dat front-to-back (the `pos` cursor
+     * below only ever advances) during boot index rebuild / import — tell
+     * the kernel to read ahead aggressively instead of caching for random
+     * access. Advisory only: a denied/unsupported call just forgoes the
+     * readahead hint, never fails the scan. */
+    (void)posix_fadvise(fd, 0, st.st_size, POSIX_FADV_SEQUENTIAL);
+
     uint8_t *data = mmap(NULL, (size_t)st.st_size, PROT_READ,
                          MAP_PRIVATE, fd, 0);
     close(fd);

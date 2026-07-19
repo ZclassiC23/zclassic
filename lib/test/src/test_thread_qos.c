@@ -1,0 +1,161 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * thread_qos: prove zcl_thread_qos_background() actually changes the
+ * calling thread's CPU scheduling policy (SCHED_BATCH) and I/O priority
+ * class (IOPRIO_CLASS_IDLE) — not just that it runs without crashing.
+ * Both knobs are per-thread kernel attributes, so the assertions run
+ * INSIDE a freshly spawned worker thread that calls the helper on itself,
+ * then reads back sched_getscheduler() and the ioprio_get(2) syscall
+ * (hand-rolled the same way the production code hand-rolls ioprio_set)
+ * before reporting results to the parent via a shared struct.
+ */
+
+#define _GNU_SOURCE  /* SCHED_BATCH, syscall() */
+
+#include "test/test_helpers.h"
+#include "util/thread_qos.h"
+
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <errno.h>
+
+#ifndef IOPRIO_WHO_PROCESS
+#define IOPRIO_WHO_PROCESS 1
+#endif
+#ifndef IOPRIO_CLASS_IDLE
+#define IOPRIO_CLASS_IDLE 3
+#endif
+#define TQ_IOPRIO_CLASS_SHIFT 13
+#define TQ_IOPRIO_CLASS(value) ((value) >> TQ_IOPRIO_CLASS_SHIFT)
+
+struct tq_worker_result {
+    bool  qos_call_ok;
+    int   sched_policy;
+    long  ioprio_value;
+    bool  ioprio_call_ok;
+};
+
+static void *tq_worker(void *arg)
+{
+    struct tq_worker_result *r = arg;
+
+    r->qos_call_ok = zcl_thread_qos_background();
+
+    /* Read back the CALLING thread's own scheduling policy — pid=0 means
+     * "the calling thread", same convention the production code relies
+     * on for sched_setscheduler(). */
+    r->sched_policy = sched_getscheduler(0);
+
+    long rc = syscall(SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0);
+    if (rc < 0) {
+        r->ioprio_call_ok = false;
+        r->ioprio_value = -1;
+    } else {
+        r->ioprio_call_ok = true;
+        r->ioprio_value = rc;
+    }
+    return NULL;
+}
+
+/* Baseline: on the box's default scheduling policy (SCHED_OTHER == 0), a
+ * fresh thread must NOT already read back SCHED_BATCH / IOPRIO_CLASS_IDLE
+ * on its own — otherwise the test below would pass for free and prove
+ * nothing. */
+static void *tq_baseline_worker(void *arg)
+{
+    struct tq_worker_result *r = arg;
+
+    r->qos_call_ok = true; /* not exercised on the baseline thread */
+    r->sched_policy = sched_getscheduler(0);
+
+    long rc = syscall(SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0);
+    r->ioprio_call_ok = (rc >= 0);
+    r->ioprio_value = rc;
+    return NULL;
+}
+
+static int t_thread_qos_applies_sched_batch_and_ioprio_idle(void)
+{
+    int failures = 0;
+
+    TEST("thread_qos: background QoS lands SCHED_BATCH + IOPRIO_CLASS_IDLE "
+         "on the calling thread") {
+        struct tq_worker_result baseline = {0};
+        struct tq_worker_result applied = {0};
+        pthread_t t;
+
+        /* Baseline thread: never calls the helper. Confirms the assertions
+         * below are actually discriminating, not tautologically true for
+         * any freshly spawned thread on this host. */
+        ASSERT_EQ(pthread_create(&t, NULL, tq_baseline_worker, &baseline), 0);
+        ASSERT_EQ(pthread_join(t, NULL), 0);
+        ASSERT(baseline.sched_policy != SCHED_BATCH);
+        if (baseline.ioprio_call_ok)
+            ASSERT(TQ_IOPRIO_CLASS(baseline.ioprio_value) != IOPRIO_CLASS_IDLE);
+
+        /* Applied thread: calls zcl_thread_qos_background() on itself, then
+         * reads its own policy/class back. */
+        ASSERT_EQ(pthread_create(&t, NULL, tq_worker, &applied), 0);
+        ASSERT_EQ(pthread_join(t, NULL), 0);
+
+        /* sched_setscheduler(SCHED_BATCH) needs no special privilege on
+         * Linux — it must always take. */
+        ASSERT_EQ(applied.sched_policy, SCHED_BATCH);
+
+        /* ioprio_set(IOPRIO_CLASS_IDLE) can in principle be denied by a
+         * restrictive sandbox (seccomp/LSM); the helper is fail-soft, so
+         * only assert the class landed when the readback syscall itself
+         * succeeded AND the helper reported the ioprio half as applied. */
+        if (applied.ioprio_call_ok) {
+            ASSERT_EQ(TQ_IOPRIO_CLASS(applied.ioprio_value),
+                      IOPRIO_CLASS_IDLE);
+        }
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* Idempotency: calling the helper twice from the same thread must not
+ * error or change the outcome. */
+static void *tq_double_apply_worker(void *arg)
+{
+    bool *both_ok = arg;
+    bool first = zcl_thread_qos_background();
+    bool second = zcl_thread_qos_background();
+    *both_ok = first && second;
+    return NULL;
+}
+
+static int t_thread_qos_idempotent(void)
+{
+    int failures = 0;
+
+    TEST("thread_qos: calling twice from the same thread is safe") {
+        bool both_ok = false;
+        pthread_t t;
+
+        ASSERT_EQ(pthread_create(&t, NULL, tq_double_apply_worker, &both_ok),
+                  0);
+        ASSERT_EQ(pthread_join(t, NULL), 0);
+        ASSERT(both_ok);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+int test_thread_qos(void);
+
+int test_thread_qos(void)
+{
+    printf("\n=== thread_qos tests ===\n");
+    int failures = 0;
+    failures += t_thread_qos_applies_sched_batch_and_ioprio_idle();
+    failures += t_thread_qos_idempotent();
+    return failures;
+}

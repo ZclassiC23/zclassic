@@ -37,5 +37,12 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=300
 
+# Memory pressure armor (lane/os-armor, 2026-07-19) — same rationale as
+# deploy/zclassic23.service: this is a sibling node unit running the same
+# binary, and a host-wide OOM event should shed unprotected processes
+# before either node. See zclassic23.service for the -800/2G rationale.
+OOMScoreAdjust=-800
+MemoryMin=2G
+
 [Install]
 WantedBy=default.target

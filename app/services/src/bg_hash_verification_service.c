@@ -22,6 +22,7 @@
 #include "util/log_macros.h"
 #include "util/result.h"
 #include "util/supervisor.h"
+#include "util/thread_qos.h"
 #include "util/thread_registry.h"
 
 #define SAVE_INTERVAL 1000
@@ -151,6 +152,12 @@ static void *bg_hash_verify_thread(void *arg)
 {
     struct bg_hash_verification_service *svc = arg;
     struct main_state *ms = svc->ms;
+
+    /* Genuinely-background bulk walker (historical block hash
+     * re-verification from genesis) — never the reducer/net/RPC/tip-follow
+     * path. Apply OS QoS armor before any work (lane/os-armor). */
+    zcl_thread_qos_background();
+
     bg_hash_verify_supervisor_heartbeat(svc);
 
     int start_height = load_progress(&svc->progress_store);

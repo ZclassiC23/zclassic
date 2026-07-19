@@ -1325,6 +1325,8 @@ int main(int argc, char **argv)
     failures += test_app_checkpoint_manifest();
     { extern int test_thread_registry(void);
       failures += test_thread_registry(); }
+    { extern int test_thread_qos(void);
+      failures += test_thread_qos(); }
     failures += test_bip113_bip65();
     failures += test_block_timestamp_adversarial();
     failures += test_mempool_orphan();
