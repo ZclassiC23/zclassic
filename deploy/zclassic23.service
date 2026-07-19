@@ -13,18 +13,33 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-# Type=simple — main node is operator-controlled, never auto-restarted
-# by systemd. A 120s stall during heavy fsync, big block, or LevelDB
-# compaction is normal under load; auto-restart would loop and burn
-# peer reputation (memory: 15 restarts in 8h crashed peer count 5→1,
-# 12-48h recovery via addrman gossip). Failure signal comes via
-# health.healthy=false + EV_LAG_SLO_BREACH events + Prometheus
-# metrics — operator picks the restart window.
+# External hang watchdog (2026-07-18): a HUNG-but-alive process (the
+# internal supervisor tree wedges, but the process itself never exits)
+# is invisible to Restart=always above — systemd only restarts on exit,
+# and a wedge is not an exit. WatchdogSec=120 + NotifyAccess close that
+# gap: boot_sd_watchdog_start (config/src/boot_sd_watchdog.c) pings
+# WATCHDOG=1 every WATCHDOG_USEC/2 (~60s here) ONLY while the root
+# supervisor's sweep heartbeat (util/supervisor.h) is fresh AND node
+# health/boot-progress looks live; a wedged supervisor tree stops the
+# ping and systemd's own watchdog timer kills the unit 120s later.
+# Restart=always (not on-watchdog) stays: it covers every watchdog kill
+# (a watchdog timeout counts as a failing exit) AND the clean,
+# intentional exits the self-recovery escape hatches rely on.
 #
-# The binary still supports Type=notify (boot_sd_watchdog_start
-# emits READY=1) — see deploy/zclassic23-test.service for the
-# auto-restart variant used on the test instance.
-Type=simple
+# Type=notify is REQUIRED with WatchdogSec, not optional: under
+# Type=simple systemd considers startup complete at fork, so the
+# WatchdogSec clock starts before a single line of node boot has run —
+# and boot_sd_watchdog_start (the only WATCHDOG=1 source) is the LAST
+# step of boot. Any boot slower than 120s (documented cold-recovery
+# boots run tens of minutes) would be SIGABRT'd mid-boot and
+# Restart=always would livelock it. Type=notify holds the watchdog
+# clock until READY=1 (emitted by boot_sd_watchdog_start), and
+# TimeoutStartSec bounds the boot itself with a cold-recovery-sized
+# budget instead of the 90s default.
+Type=notify
+TimeoutStartSec=1800
+WatchdogSec=120
+NotifyAccess=main
 
 # P5.2: operator-specific flags (externalip + addnodes) live in
 # ~/.config/zclassic23/env, NOT here. The `-` prefix makes the file

@@ -9,10 +9,16 @@
  * health degrades the heartbeat stops and systemd's WatchdogSec timer trips,
  * restarting the unit. No-op when NOTIFY_SOCKET is absent (e.g. CLI use).
  *
- * Pillar 7 — "supervise the supervisor": the ping is ALSO gated on the root
- * supervisor's sweep heartbeat (util/supervisor.h) being fresh. The
- * node-health snapshot below is collected independently of the supervisor
- * tree, so a wedged/dead zcl_supervisor thread would otherwise leave every
+ * Pillar 7 — "supervise the supervisor": the ping is gated on the root
+ * supervisor's sweep heartbeat (util/supervisor.h) being fresh, TWICE:
+ * once here (the explicit `supervisor_alive` check below, which also
+ * drives the STATUS= label) and once more inside sd_notify_watchdog_ping()
+ * itself via sd_notify_set_health_check() (registered in
+ * boot_sd_watchdog_start below) — a defense-in-depth backstop so the
+ * guarantee holds even for a future caller of sd_notify_watchdog_ping()
+ * that forgets to check supervisor health first. The node-health snapshot
+ * below is collected independently of the supervisor tree, so a
+ * wedged/dead zcl_supervisor thread would otherwise leave every
  * supervisor-driven stage frozen while this tick kept pinging happily
  * (health looking fine from a stale-but-not-yet-detected angle) — this is
  * the PREFERRED escalation path from the design: a frozen sweep stops the
@@ -152,6 +158,10 @@ bool boot_sd_watchdog_start(void *ctx)
                                                 boot_sd_watchdog_tick, svc);
     if (g_sd_watchdog_id == HEALTH_INVALID_ID)
         return false;
+    /* Defense-in-depth: sd_notify_watchdog_ping() itself now refuses to
+     * send WATCHDOG=1 whenever the root supervisor sweep is stale, even
+     * if some future call site forgets the explicit check above. */
+    sd_notify_set_health_check(boot_sd_watchdog_supervisor_alive);
     sd_notify_ready();
     sd_notify_status("zclassic23 started");
     printf("[sd-watchdog] active, period=%ds WATCHDOG_USEC=%llu\n",
@@ -169,5 +179,6 @@ void boot_sd_watchdog_stop(void *ctx)
     }
     if (sd_notify_is_active())
         sd_notify_stopping("shutdown");
+    sd_notify_set_health_check(NULL);
     g_sd_watchdog_ctx = NULL;
 }

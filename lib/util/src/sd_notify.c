@@ -22,6 +22,7 @@ static _Atomic int      g_active;
 static _Atomic uint64_t g_watchdog_usec;
 static char             g_socket_path[108]; /* sun_path max */
 static int              g_socket_path_len;
+static sd_notify_health_check_fn _Atomic g_health_check;
 
 bool sd_notify_init(void)
 {
@@ -107,7 +108,16 @@ bool sd_notify_ready(void)
 
 bool sd_notify_watchdog_ping(void)
 {
+    sd_notify_health_check_fn health =
+        atomic_load_explicit(&g_health_check, memory_order_acquire);
+    if (health && !health())
+        return false;
     return sd_send("WATCHDOG=1\n");
+}
+
+void sd_notify_set_health_check(sd_notify_health_check_fn fn)
+{
+    atomic_store_explicit(&g_health_check, fn, memory_order_release);
 }
 
 bool sd_notify_status(const char *msg)
@@ -127,3 +137,14 @@ bool sd_notify_stopping(const char *reason)
     if (n <= 0) return false;
     return sd_send(buf);
 }
+
+#ifdef ZCL_TESTING
+void sd_notify_reset_for_testing(void)
+{
+    atomic_store(&g_active, 0);
+    atomic_store(&g_watchdog_usec, 0);
+    g_socket_path[0] = '\0';
+    g_socket_path_len = 0;
+    atomic_store_explicit(&g_health_check, NULL, memory_order_release);
+}
+#endif
