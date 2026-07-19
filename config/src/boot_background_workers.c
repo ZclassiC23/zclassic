@@ -43,6 +43,7 @@
 #include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
+#include "util/thread_qos.h"
 #include <stdatomic.h>
 #include <time.h>
 #include <stdio.h>
@@ -267,6 +268,11 @@ static void *hodl_history_worker_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
     int64_t loop_iterations = 0;
+
+    /* Genuinely-background bulk backfill (linger-style HODL history
+     * fill) — never the reducer/net/RPC/tip-follow path (lane/os-armor). */
+    zcl_thread_qos_background();
+
     if (!svc) {
         boot_complete_worker_supervisor(&g_hodl_history_sup_id);
         return NULL;
@@ -323,6 +329,10 @@ static void *projection_backfill_service_thread(void *arg)
     int hole_rewind_attempts = 0;
     bool hole_rewind_gave_up_reported = false;
     int64_t loop_iterations = 0;
+
+    /* Genuinely-background bulk backfill worker — never the
+     * reducer/net/RPC/tip-follow path (lane/os-armor). */
+    zcl_thread_qos_background();
 
     if (!svc) {
         boot_complete_worker_supervisor(&g_projection_backfill_sup_id);
@@ -618,6 +628,11 @@ static void *payment_processor_thread(void *arg)
     struct boot_svc_ctx *svc = arg;
     int64_t loop_iterations = 0;
 
+    /* Genuinely-background linger worker (payment store processing on a
+     * 30s tick) — never the reducer/net/RPC/tip-follow path
+     * (lane/os-armor). */
+    zcl_thread_qos_background();
+
     /* The frontend kernel spawns this thread BEFORE boot flips
      * svc->running true (boot_services.c starts the kernel ahead of the
      * atomic_store), so entering the while(boot_running) loop immediately
@@ -651,6 +666,10 @@ static void *address_backfill_service_thread(void *arg)
     struct boot_svc_ctx *svc = arg;
     char *db_path = NULL;
     supervisor_child_id sup_id = atomic_load(&g_address_backfill_sup_id);
+
+    /* Genuinely-background bulk backfill worker — never the
+     * reducer/net/RPC/tip-follow path (lane/os-armor). */
+    zcl_thread_qos_background();
 
     if (!svc || !svc->datadir)
         goto done;
