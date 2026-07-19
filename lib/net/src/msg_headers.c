@@ -48,6 +48,28 @@ static _Atomic uint64_t g_headers_total_rejected = 0;
 static _Atomic uint64_t g_headers_newly_added = 0;
 static _Atomic uint64_t g_headers_already_known = 0;
 
+/* ── getheaders continuation-suppression counters ──────────────────
+ *
+ * push_getheaders_from() has two guards that used to `return;` silently:
+ * a null-hash anchor and an active snapshot exchange. A silent header-sync
+ * stop is forbidden by construction (a stall must always name a blocker or
+ * a growing gap), so each guard now increments a counter and LOG_WARNs
+ * once on the RISING EDGE of a suppression streak. The streak clears when
+ * the guard stops firing, so a later stall re-announces itself instead of
+ * the guard spamming the log on every ~10s poll. Surfaced through
+ * msg_headers_get_stats() → health `headers` object. */
+static _Atomic uint64_t g_getheaders_suppressed_no_hash = 0;
+static _Atomic uint64_t g_getheaders_suppressed_snapshot = 0;
+static _Atomic bool g_no_hash_streak = false;
+static _Atomic bool g_snapshot_streak = false;
+
+/* Rising edge of a suppression streak: true the first call after `streak`
+ * was cleared, false while the streak persists. */
+static bool getheaders_suppress_rising_edge(_Atomic bool *streak)
+{
+    return !atomic_exchange(streak, true);
+}
+
 /* Per-peer header advancement tracking (simplified: tracks last peer). */
 static _Atomic int g_last_header_tip_height = 0;
 
@@ -372,6 +394,10 @@ void msg_headers_get_stats(struct msg_headers_stats *out)
     out->total_rejected   = atomic_load(&g_headers_total_rejected);
     out->newly_added      = atomic_load(&g_headers_newly_added);
     out->already_known    = atomic_load(&g_headers_already_known);
+    out->getheaders_suppressed_no_hash =
+        atomic_load(&g_getheaders_suppressed_no_hash);
+    out->getheaders_suppressed_snapshot =
+        atomic_load(&g_getheaders_suppressed_snapshot);
 }
 
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
@@ -951,11 +977,60 @@ void push_getheaders_from(struct msg_processor *mp,
                           struct p2p_node *node,
                           struct block_index *from)
 {
-    if (from && !from->phashBlock) return;
+    /* Robust continuation anchor. A caller may hand us a block_index whose
+     * stable per-node hash slot was never populated (phashBlock == NULL).
+     * Dropping the request here is a SILENT header-sync stop — forbidden by
+     * construction. Re-anchor at the best-header tree tip, then the active-
+     * chain tip (both always carry a hash), so the conversation continues
+     * from the highest hashed frontier we hold. Give up only when nothing
+     * anywhere has a hash, and then LOUDLY with a counter. */
+    if (from && !from->phashBlock) {
+        struct block_index *reanchor = NULL;
+        if (mp && mp->main_state) {
+            if (mp->main_state->pindex_best_header &&
+                mp->main_state->pindex_best_header->phashBlock) {
+                reanchor = mp->main_state->pindex_best_header;
+            } else {
+                struct block_index *tip =
+                    active_chain_tip(&mp->main_state->chain_active);
+                if (tip && tip->phashBlock)
+                    reanchor = tip;
+            }
+        }
+        uint64_t n = atomic_fetch_add(&g_getheaders_suppressed_no_hash, 1) + 1;
+        if (getheaders_suppress_rising_edge(&g_no_hash_streak))
+            LOG_WARN("headers",
+                     "push_getheaders_from: anchor h=%d has no block hash — "
+                     "re-anchoring at %s (suppressed_no_hash=%llu)",
+                     from->nHeight,
+                     reanchor ? "best-header/chain tip"
+                              : "NONE (request skipped)",
+                     (unsigned long long)n);
+        from = reanchor;
+        if (!from)
+            return;  /* no hashed frontier anywhere — cannot build a locator */
+    } else {
+        atomic_store(&g_no_hash_streak, false);
+    }
 
-    /* Don't request headers during any snapshot sync state. */
-    if (msg_processor_snapshot_active(mp))
+    /* Snapshot sync owns the wire while a peer snapshot exchange is live;
+     * requesting headers then just competes with chunk transfer. This is a
+     * real, intentional pause — but never a silent one: count it and name
+     * it so a snapshot exchange that latches active (and thus wedges header
+     * sync after one in-flight batch) announces itself instead of stalling
+     * quietly. */
+    if (msg_processor_snapshot_active(mp)) {
+        uint64_t n = atomic_fetch_add(&g_getheaders_suppressed_snapshot, 1) + 1;
+        if (getheaders_suppress_rising_edge(&g_snapshot_streak))
+            LOG_WARN("headers",
+                     "push_getheaders_from: header request SUPPRESSED by "
+                     "active snapshot sync (anchor h=%d suppressed_snapshot="
+                     "%llu) — header sync is paused until the snapshot "
+                     "exchange completes or resets",
+                     from ? from->nHeight : -1, (unsigned long long)n);
         return;
+    }
+    atomic_store(&g_snapshot_streak, false);
 
     /* Build locator for getheaders request.
      * After bulk height repair, heights are trustworthy — use a proper
