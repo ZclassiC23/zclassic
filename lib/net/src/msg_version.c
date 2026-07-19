@@ -244,6 +244,8 @@ void msg_version_build(struct version_message *ver,
     ver->services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         ver->services |= NODE_BLOOM;
+    if (mp->net_mgr && mp->net_mgr->v2_enabled)
+        ver->services |= NODE_V2TRANSPORT;
     ver->timestamp = (int64_t)platform_time_wall_time_t();
     ver->addr_recv = node->addr;
     if (g_has_external_ip) {

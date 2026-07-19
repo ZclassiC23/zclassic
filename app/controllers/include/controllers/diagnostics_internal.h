@@ -233,6 +233,12 @@ bool unhealthy_dump_state_json(struct json_value *out, const char *key);
  * nothing new. */
 bool network_dump_state_json(struct json_value *out, const char *key);
 
+/* diagnostics_network.c — the "transport" g_dumpers[] entry: per-peer P2P
+ * transport mode (plaintext vs noise_xx), handshake state, and frame counters,
+ * with plaintext/noise peer counts. Names AND counts plaintext peers so a
+ * default-off (all-plaintext) node is explicit, not silent. */
+bool net_transport_dump_state_json(struct json_value *out, const char *key);
+
 /* diagnostics_omniscience.c — the "omniscience" g_dumpers[] entry: the
  * capstone one-call verdict on whether the node knows everything it should.
  * Composes the catalog_completeness per-index lag table (against reducer H*),

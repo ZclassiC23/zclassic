@@ -9,6 +9,7 @@
 #define _DEFAULT_SOURCE
 #include "platform/time_compat.h"
 #include "net/connman.h"
+#include "net/v2_transport.h"
 #include "net/addrman.h"
 #include "event/event.h"
 #include "net/peer_bandwidth.h"
@@ -31,13 +32,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #include "core/utiltime.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"
 #include "util/log_macros.h"
+#include "crypto/random_secret.h"
+#include "crypto/curve25519.h"
+#include "support/cleanse.h"
 #include "util/thread_registry.h"
 #include "util/thread_liveness.h"
 #include "util/blocker.h"
@@ -1983,12 +1989,49 @@ static void *thread_socket_handler(void *arg)
                 }
                 ssize_t n = recv(target_fd, buf, recv_cap, MSG_DONTWAIT);
                 if (n > 0) {
-                    if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
+                    /* v2 transport seam: decrypt below the message layer. The
+                     * plaintext path (transport == NULL) is the UNCHANGED else
+                     * — `plain`/`plain_n` remain the raw recv bytes. */
+                    const char *plain = buf;
+                    unsigned int plain_n = (unsigned int)n;
+                    uint8_t *dec = NULL, *wire = NULL;
+                    size_t dec_len = 0, wire_len = 0;
+                    bool v2_dropped = false;
+                    if (node->transport) {
+                        if (!v2_transport_feed(node->transport,
+                                               (const uint8_t *)buf, (size_t)n,
+                                               &wire, &wire_len,
+                                               &dec, &dec_len)) {
+                            connman_note_addnode_prehandshake_disconnect(
+                                cm, node, "v2-transport");
+                            node->disconnect = true;
+                            v2_dropped = true;
+                        } else {
+                            /* Handshake replies / flushed sealed pending go out
+                             * verbatim; cs_recv held, this takes cs_send. */
+                            if (wire_len)
+                                p2p_node_queue_raw(node, wire, wire_len);
+                            plain = (const char *)dec;
+                            plain_n = (unsigned int)dec_len;
+                            /* Responder saw v1 magic: drop the transport and
+                             * continue plaintext. `dec` carries the buffered
+                             * raw bytes to replay through the parser. */
+                            if (node->transport->state ==
+                                V2_PLAINTEXT_FALLBACK) {
+                                v2_transport_free(node->transport);
+                                node->transport = NULL;
+                            }
+                        }
+                        free(wire);
+                    }
+                    if (!v2_dropped && plain_n &&
+                        !p2p_node_receive_bytes(node, plain, plain_n,
                                                 cm->manager.message_start)) {
                         connman_note_addnode_prehandshake_disconnect(
                             cm, node, "message-parse");
                         node->disconnect = true;
                     }
+                    free(dec);
                     /* Single framing-layer scoring point: the parse path has
                      * no net_manager back-pointer, so it only TAGS abuse
                      * (bad start-magic / oversize / parse-fail). Drain the tag
@@ -2451,6 +2494,54 @@ static void *thread_message_handler(void *arg)
     return NULL;
 }
 
+/* Load the persistent v2 static identity from {datadir}/v2_identity.key, or
+ * generate + persist it (0600) on first boot. Only called when -v2transport is
+ * set, so the default-off node never touches disk here. On any failure the
+ * transport is disabled rather than run with a zero key. */
+static void v2_identity_load_or_generate(struct net_manager *nm)
+{
+    char datadir[1024];
+    GetDataDir(true, datadir, sizeof(datadir));
+    char path[1152];
+    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
+
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        uint8_t priv[32];
+        size_t rd = fread(priv, 1, sizeof(priv), f);
+        fclose(f);
+        if (rd == sizeof(priv) &&
+            curve25519_scalarmult_base(nm->identity_pub, priv)) {
+            memcpy(nm->identity_priv, priv, sizeof(priv));
+            memory_cleanse(priv, sizeof(priv));
+            return;
+        }
+        memory_cleanse(priv, sizeof(priv));
+        LOG_WARN("net", "v2_identity: unreadable key at %s, regenerating", path);
+    }
+
+    uint8_t priv[32];
+    if (!zcl_random_secret_bytes(priv, sizeof(priv), "v2_identity") ||
+        !curve25519_scalarmult_base(nm->identity_pub, priv)) {
+        memory_cleanse(priv, sizeof(priv));
+        nm->v2_enabled = false;
+        LOG_WARN("net", "v2_identity: key generation failed; v2 transport disabled");
+        return;
+    }
+    memcpy(nm->identity_priv, priv, sizeof(priv));
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd >= 0) {
+        ssize_t wr = write(fd, priv, sizeof(priv));
+        if (wr != (ssize_t)sizeof(priv))
+            LOG_WARN("net", "v2_identity: short write persisting key at %s", path);
+        close(fd);
+    } else {
+        LOG_WARN("net", "v2_identity: could not persist key at %s", path);
+    }
+    memory_cleanse(priv, sizeof(priv));
+}
+
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals)
 {
@@ -2485,6 +2576,15 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     cm->manager.local_services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         cm->manager.local_services |= NODE_BLOOM;
+
+    /* v2 Noise transport: default OFF. When -v2transport is passed, advertise
+     * NODE_V2TRANSPORT and load/generate the persistent static identity. */
+    cm->manager.v2_enabled = GetBoolArg("-v2transport", false);
+    if (cm->manager.v2_enabled) {
+        v2_identity_load_or_generate(&cm->manager);
+        if (cm->manager.v2_enabled)
+            cm->manager.local_services |= NODE_V2TRANSPORT;
+    }
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH, "%s",
              msg_version_user_agent());

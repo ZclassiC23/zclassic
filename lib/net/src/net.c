@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/net.h"
+#include "net/v2_transport.h"
 #include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
@@ -398,6 +399,11 @@ void p2p_node_free(struct p2p_node *node)
     free(node->blk_bitmap);
     node->blk_bitmap = NULL;
 
+    if (node->transport) {
+        v2_transport_free(node->transport);
+        node->transport = NULL;
+    }
+
     zcl_mutex_destroy(&node->cs_send);
     zcl_mutex_destroy(&node->cs_recv);
     zcl_mutex_destroy(&node->cs_inventory);
@@ -705,9 +711,36 @@ bool p2p_node_end_message(struct p2p_node *node)
                     "%s size=%u", cmd, payload_size);
     }
 
-    struct send_segment *seg = send_segment_create(buf, total);
-    stream_free(&tls_msg_stream);
-    tls_msg_active = false;
+    /* v2 transport seam: seal below the message layer. The plaintext path
+     * (transport == NULL) is the UNCHANGED else — byte-for-byte v1 wire. */
+    struct send_segment *seg;
+    if (node->transport) {
+        uint8_t *ct = NULL;
+        size_t ct_len = 0;
+        if (!v2_transport_write(node->transport, buf, total, &ct, &ct_len)) {
+            free(ct);
+            stream_free(&tls_msg_stream);
+            tls_msg_active = false;
+            node->disconnect = true;
+            zcl_mutex_unlock(&node->cs_send);
+            LOG_FAIL("net", "v2 transport write failed node id=%d", (int)node->id);
+        }
+        stream_free(&tls_msg_stream);
+        tls_msg_active = false;
+        if (ct_len == 0) {
+            /* Buffered during handshake — nothing to put on the wire yet;
+             * it is sealed and flushed when the handshake completes. */
+            free(ct);
+            zcl_mutex_unlock(&node->cs_send);
+            return true;
+        }
+        seg = send_segment_create(ct, ct_len);
+        free(ct);
+    } else {
+        seg = send_segment_create(buf, total);
+        stream_free(&tls_msg_stream);
+        tls_msg_active = false;
+    }
 
     if (!seg) {
         zcl_mutex_unlock(&node->cs_send);
@@ -728,6 +761,37 @@ bool p2p_node_end_message(struct p2p_node *node)
 
     zcl_mutex_unlock(&node->cs_send);
     return true;
+}
+
+/* Queue raw bytes (handshake messages, or records already sealed by the v2
+ * transport) verbatim onto the node's send stream. Mirrors the tail of
+ * p2p_node_end_message but performs no framing/sealing. Lock order: callers on
+ * the recv path hold cs_recv first, then this acquires cs_send. */
+void p2p_node_queue_raw(struct p2p_node *node, const uint8_t *bytes, size_t len)
+{
+    if (!node || !bytes || len == 0)
+        return;
+
+    zcl_mutex_lock(&node->cs_send);
+    struct send_segment *seg = send_segment_create(bytes, len);
+    if (!seg) {
+        node->disconnect = true;
+        zcl_mutex_unlock(&node->cs_send);
+        LOG_WARN("net", "p2p_node_queue_raw: send_segment_create failed node id=%d",
+                 (int)node->id);
+        return;
+    }
+    if (node->send_tail) {
+        node->send_tail->next = seg;
+        node->send_tail = seg;
+    } else {
+        node->send_head = seg;
+        node->send_tail = seg;
+    }
+    node->send_size += seg->size;
+    if (node->send_head == seg)
+        socket_send_data(node);
+    zcl_mutex_unlock(&node->cs_send);
 }
 
 /* --- socket_send_data --- */
@@ -914,6 +978,19 @@ struct p2p_node *connect_node_from_socket(struct net_manager *nm,
     if (!node) {
         close_socket(&sock);
         LOG_NULL("net", "p2p_node_create failed for outbound connection");
+    }
+
+    /* v2 transport (default OFF): arm as INITIATOR when enabled and the peer's
+     * advertised services carry NODE_V2TRANSPORT. Queues msg1 (`-> e`) raw; the
+     * subsequent push_version rides sealed once the handshake completes. */
+    if (nm->v2_enabled && (addr_connect->nServices & NODE_V2TRANSPORT)) {
+        uint8_t *msg1 = NULL;
+        size_t msg1_len = 0;
+        node->transport = v2_transport_begin(true, nm->identity_priv,
+                                             nm->message_start, &msg1, &msg1_len);
+        if (node->transport && msg1_len)
+            p2p_node_queue_raw(node, msg1, msg1_len);
+        free(msg1);
     }
 
     /* Symmetric-ref contract: connect_node ALWAYS returns a +1 caller-owned
@@ -1593,6 +1670,18 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
         close_socket(&sock);
         LOG_FAIL("net", "p2p_node_create failed for inbound connection");
     }
+
+    /* v2 transport (default OFF): arm as RESPONDER in V2_DETECT when enabled.
+     * The first inbound bytes decide plaintext (v1 magic) vs Noise msg1. */
+    if (nm->v2_enabled) {
+        uint8_t *unused = NULL;
+        size_t unused_len = 0;
+        node->transport = v2_transport_begin(false, nm->identity_priv,
+                                             nm->message_start,
+                                             &unused, &unused_len);
+        free(unused);
+    }
+
     p2p_node_add_ref(node);
     node->whitelisted = is_whitelisted;
     peer_lifecycle_note_connected(node, PEER_LIFECYCLE_SOURCE_INBOUND);

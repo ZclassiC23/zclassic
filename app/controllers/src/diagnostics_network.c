@@ -41,6 +41,8 @@
 #include "json/json.h"
 #include "net/addrman.h"
 #include "net/connman.h"
+#include "net/net.h"
+#include "net/v2_transport.h"
 #include "net/peer_lifecycle.h"
 #include "services/network_crawler.h"
 #include "services/network_monitor.h"
@@ -242,5 +244,59 @@ bool network_dump_state_json(struct json_value *out, const char *key)
     json_push_kv(out, "peer_lifecycle", &pl);
     json_free(&pl);
 
+    return true;
+}
+
+/* "transport" subsystem — per-peer P2P transport mode + frame counters. Walks
+ * cm->manager.nodes under cs_nodes and emits {v2_enabled, plaintext_peers,
+ * noise_peers, handshaking_peers, peers:[{id, mode, state, ...}]}. A peer with
+ * node->transport == NULL is plaintext (every zclassicd peer / default-off
+ * node), NAMED and counted so the plaintext floor is never silent. */
+bool net_transport_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct connman *cm = rpc_net_get_connman();
+    if (!cm) {
+        json_push_kv_bool(out, "wired", false);
+        return true;
+    }
+    json_push_kv_bool(out, "wired", true);
+    json_push_kv_bool(out, "v2_enabled", cm->manager.v2_enabled);
+
+    int64_t plaintext_peers = 0, noise_peers = 0, handshaking_peers = 0;
+    struct json_value peers = {0};
+    json_set_array(&peers);
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (!node || node->disconnect)
+            continue;
+        struct json_value peer = {0};
+        if (!node->transport) {
+            plaintext_peers++;
+            v2_transport_dump_peer(&peer, NULL);
+        } else if (node->transport->state == V2_ESTABLISHED) {
+            noise_peers++;
+            v2_transport_dump_peer(&peer, node->transport);
+        } else {
+            handshaking_peers++;
+            v2_transport_dump_peer(&peer, node->transport);
+        }
+        json_push_kv_int(&peer, "id", (int64_t)node->id);
+        json_push_back(&peers, &peer);
+        json_free(&peer);
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    json_push_kv_int(out, "plaintext_peers", plaintext_peers);
+    json_push_kv_int(out, "noise_peers", noise_peers);
+    json_push_kv_int(out, "handshaking_peers", handshaking_peers);
+    json_push_kv(out, "peers", &peers);
+    json_free(&peers);
     return true;
 }
