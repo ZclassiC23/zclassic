@@ -13,7 +13,7 @@
 
 static inline uint64_t rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
 
-static void keccakf(uint64_t st[25])
+void sha3_keccakf_scalar(uint64_t st[25])
 {
     static const uint64_t RNDC[24] = {
         0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
@@ -97,6 +97,47 @@ static void keccakf(uint64_t st[25])
     }
 }
 
+/* ── Permutation dispatch ──────────────────────────────────────────
+ *
+ * The permutation is selected once; every sha3_*_write/finalize routes
+ * through g_keccakf. The scalar path (sha3_keccakf_scalar) is the always-safe
+ * default and — per measured benchmarks on this class of host (Zen 4
+ * double-pumps 512-bit ops, and single-stream Keccak-f is dominated by the
+ * cross-lane π gather) — also the fastest, so AUTO stays on scalar. The
+ * machinery lets a future host that measures AVX-512 faster flip the default
+ * in one place, and lets the parity oracle / bench force either path. Setting
+ * a function pointer is not torn on any supported target; do not call
+ * sha3_select_impl concurrently with active hashing. */
+#ifndef SHA3_AVX512_DEFAULT_ENABLED
+#define SHA3_AVX512_DEFAULT_ENABLED 0  /* measured: scalar is fastest on Zen 4 */
+#endif
+
+static void (*g_keccakf)(uint64_t[25]) = sha3_keccakf_scalar;
+
+int sha3_select_impl(enum sha3_impl which)
+{
+    switch (which) {
+    case SHA3_IMPL_SCALAR:
+        g_keccakf = sha3_keccakf_scalar;
+        return SHA3_IMPL_SCALAR;
+    case SHA3_IMPL_AVX512:
+        if (sha3_keccakf_avx512_available()) {
+            g_keccakf = sha3_keccakf_avx512;
+            return SHA3_IMPL_AVX512;
+        }
+        g_keccakf = sha3_keccakf_scalar;
+        return SHA3_IMPL_SCALAR;
+    case SHA3_IMPL_AUTO:
+    default:
+        if (SHA3_AVX512_DEFAULT_ENABLED && sha3_keccakf_avx512_available()) {
+            g_keccakf = sha3_keccakf_avx512;
+            return SHA3_IMPL_AVX512;
+        }
+        g_keccakf = sha3_keccakf_scalar;
+        return SHA3_IMPL_SCALAR;
+    }
+}
+
 void sha3_256_init(struct sha3_256_ctx *ctx)
 {
     ctx->bufsize = 0;
@@ -113,7 +154,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
-            keccakf(ctx->state);
+            g_keccakf(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -122,7 +163,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
-            keccakf(ctx->state);
+            g_keccakf(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -138,7 +179,7 @@ void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char *output)
     ctx->buffer[ctx->bufsize] ^= 0x06;
     ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
     ctx->state[SHA3_256_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
-    keccakf(ctx->state);
+    g_keccakf(ctx->state);
     for (unsigned i = 0; i < 4; ++i) {
         WriteLE64(output + 8 * i, ctx->state[i]);
     }
@@ -162,7 +203,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
-            keccakf(ctx->state);
+            g_keccakf(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -171,7 +212,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
-            keccakf(ctx->state);
+            g_keccakf(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -187,7 +228,7 @@ void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64])
     ctx->buffer[ctx->bufsize] ^= 0x06;
     ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
     ctx->state[SHA3_512_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
-    keccakf(ctx->state);
+    g_keccakf(ctx->state);
     for (unsigned i = 0; i < 8; ++i)
         WriteLE64(output + 8 * i, ctx->state[i]);
 }
