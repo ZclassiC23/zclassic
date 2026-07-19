@@ -16,6 +16,7 @@
 #include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include "util/file_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -157,25 +158,23 @@ size_t blog_serve(const char *datadir, const char *path,
                              body, strlen(body));
     }
 
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (fsize <= 0 || (size_t)fsize > out_len - 512) {
-        fclose(f);
-        const char *body = "<h1>500 File too large</h1>";
-        return http_response(out, out_len, 500, "text/html",
-                             body, strlen(body));
-    }
-
-    char *body = zcl_malloc((size_t)fsize, "blog file body");
-    if (!body) { fclose(f); return 0; }
-    size_t nread = fread(body, 1, (size_t)fsize, f);
     fclose(f);
+
+    /* Cap the read at what the response buffer can hold (leaving room for
+     * the HTTP headers) so an oversized file is refused before it is ever
+     * allocated, matching the pre-consolidation behavior. */
+    size_t max_body = (out_len > 512) ? out_len - 512 : 0;
+    uint8_t *body = NULL;
+    size_t nread = 0;
+    if (!zcl_read_whole_file(filepath, max_body, &body, &nread, "blog")) {
+        const char *msg = "<h1>500 File too large</h1>";
+        return http_response(out, out_len, 500, "text/html",
+                             msg, strlen(msg));
+    }
 
     size_t result = http_response(out, out_len, 200,
                                    content_type_for(filepath),
-                                   body, nread);
+                                   (const char *)body, nread);
     free(body);
     return result;
 }

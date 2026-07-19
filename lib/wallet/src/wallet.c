@@ -10,6 +10,7 @@
 #include "chain/chainparams.h"
 #include "consensus/consensus.h"
 #include "consensus/upgrades.h"
+#include "util/file_io.h"
 #include "util/log_macros.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -1439,19 +1440,10 @@ int wallet_scan_blockfiles(struct wallet *w, const char *datadir)
         snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                  datadir, file_num);
 
-        FILE *f = fopen(path, "rb");
-        if (!f) break;
-
-        /* Get file size */
-        fseek(f, 0, SEEK_END);
-        long file_size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        unsigned char *buf = zcl_malloc((size_t)file_size, "wallet_block_file_buf");
-        if (!buf) { fclose(f); break; }
-
-        size_t nread = fread(buf, 1, (size_t)file_size, f);
-        fclose(f);
+        unsigned char *buf = NULL;
+        size_t nread = 0;
+        if (!zcl_read_whole_file(path, 0, &buf, &nread, "wallet"))
+            break;
 
         /* Parse blocks from the file */
         size_t pos = 0;

@@ -8,9 +8,11 @@
 
 #include "test/test_helpers.h"
 #include "net/https_server.h"
+#include "util/file_io.h"
 #include "util/path_check.h"
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -180,6 +182,89 @@ int test_path_check(void)
                  !https_server_acme_challenge_filepath_for_testing(
                      root, "/.well-known/acme-challenge/link",
                      out, sizeof(out)));
+
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── zcl_read_whole_file / zcl_read_whole_file_text ──────── */
+    {
+        char dir[256];
+        char present[PATH_MAX];
+        char empty[PATH_MAX];
+        char missing[PATH_MAX];
+
+        test_make_tmpdir(dir, sizeof(dir), "path_check", "file_io");
+        snprintf(present, sizeof(present), "%s/present.bin", dir);
+        snprintf(empty, sizeof(empty), "%s/empty.bin", dir);
+        snprintf(missing, sizeof(missing), "%s/missing.bin", dir);
+
+        PC_CHECK("file_io present fixture",
+                 write_small_file(present, "hello world"));
+        PC_CHECK("file_io empty fixture",
+                 write_small_file(empty, ""));
+
+        {
+            uint8_t *buf = NULL;
+            size_t len = 0;
+            PC_CHECK("read_whole_file reads full contents",
+                     zcl_read_whole_file(present, 0, &buf, &len, "test") &&
+                     len == strlen("hello world") &&
+                     memcmp(buf, "hello world", len) == 0);
+            free(buf);
+        }
+
+        {
+            uint8_t *buf = (uint8_t *)0x1;
+            size_t len = 99;
+            PC_CHECK("read_whole_file on empty file yields NULL/0",
+                     zcl_read_whole_file(empty, 0, &buf, &len, "test") &&
+                     buf == NULL && len == 0);
+        }
+
+        {
+            uint8_t *buf = (uint8_t *)0x1;
+            size_t len = 99;
+            PC_CHECK("read_whole_file on missing path fails and zeroes out",
+                     !zcl_read_whole_file(missing, 0, &buf, &len, "test") &&
+                     buf == NULL && len == 0);
+        }
+
+        {
+            uint8_t *buf = (uint8_t *)0x1;
+            size_t len = 99;
+            PC_CHECK("read_whole_file refuses a file over max_len",
+                     !zcl_read_whole_file(present, 4, &buf, &len, "test") &&
+                     buf == NULL && len == 0);
+        }
+
+        {
+            uint8_t *buf = NULL;
+            size_t len = 0;
+            PC_CHECK("read_whole_file accepts a file exactly at max_len",
+                     zcl_read_whole_file(present, strlen("hello world"),
+                                         &buf, &len, "test") &&
+                     len == strlen("hello world"));
+            free(buf);
+        }
+
+        {
+            char *text = NULL;
+            size_t len = 0;
+            PC_CHECK("read_whole_file_text NUL-terminates",
+                     zcl_read_whole_file_text(present, 0, &text, &len, "test") &&
+                     len == strlen("hello world") &&
+                     strcmp(text, "hello world") == 0);
+            free(text);
+        }
+
+        {
+            char *text = NULL;
+            size_t len = 99;
+            PC_CHECK("read_whole_file_text on empty file yields empty string",
+                     zcl_read_whole_file_text(empty, 0, &text, &len, "test") &&
+                     text != NULL && text[0] == '\0' && len == 0);
+            free(text);
+        }
 
         test_cleanup_tmpdir(dir);
     }
