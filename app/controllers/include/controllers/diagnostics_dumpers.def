@@ -212,6 +212,13 @@
     DIAG_STAGE("utxo_apply", utxo_apply_dump_state_json,
                "utxo_apply stage: cursor, UTXO delta counters, log rows",
                "app/jobs/src/utxo_apply_stage_dump.c", "lib/test/src/test_stage.c"),
+    DIAG_JOB("batch_commit", utxo_apply_batch_commit_dump_state_json,
+             "utxo_apply kernel outer-batch COMMIT telemetry: total_commits, "
+             "last/ewma/max commit_us, a rolling ring average, and the last "
+             "batch's height range + row count — turns a slow fsync / "
+             "degraded WAL into visible data instead of a silent stall",
+             "app/jobs/src/utxo_apply_batch_commit.c",
+             "lib/test/src/test_utxo_apply_stage.c"),
     DIAG_LOCAL("reducer_drive", reducer_drive_dump_state_json,
                "synchronous reducer/mint drive: active, label, age_us, "
                "watchdog_threshold_secs, last_watchdog_fire_unix, "

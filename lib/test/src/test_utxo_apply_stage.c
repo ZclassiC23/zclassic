@@ -12,6 +12,7 @@
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/utxo_apply_batch_commit.h"
 #include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_anchors.h"
@@ -2069,6 +2070,102 @@ int test_utxo_apply_stage(void)
         UV_CHECK("prune_decouple: coins commitment unchanged by prune", coins_ok);
 
         utxo_apply_created_outputs_retain_set_for_test(-1);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* ── H2: batch-commit telemetry (ring/EWMA math + a commit records it) ── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        const int N = 5;
+        UV_CHECK("batch_commit: setup",
+                 uv_setup("batch_commit", N, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+
+        /* Deterministic starting point: zero every rolling-stats field so
+         * this block's assertions are exact, not "increased by at least". */
+        utxo_apply_batch_commit_reset_for_test();
+
+        struct json_value idle;
+        json_init(&idle);
+        UV_CHECK("batch_commit: idle dump before any commit",
+                 utxo_apply_batch_commit_dump_state_json(&idle, NULL));
+        UV_CHECK("batch_commit: idle total_commits == 0",
+                 json_get_int(json_get(&idle, "total_commits")) == 0);
+        UV_CHECK("batch_commit: idle ring_samples == 0",
+                 json_get_int(json_get(&idle, "ring_samples")) == 0);
+        json_free(&idle);
+
+        /* Drain all N heights in one call -> exactly one outer-batch COMMIT,
+         * so this is the simplest possible "a commit records a sample"
+         * proof: the drive itself calls utxo_apply_batch_commit_record()
+         * from inside utxo_apply_stage_drain() on the committed path. */
+        UV_CHECK("batch_commit: drain all N heights in one batch",
+                 utxo_apply_stage_drain(100) == N);
+
+        struct json_value after1;
+        json_init(&after1);
+        UV_CHECK("batch_commit: dump after first drain",
+                 utxo_apply_batch_commit_dump_state_json(&after1, NULL));
+        UV_CHECK("batch_commit: total_commits == 1 after one drain",
+                 json_get_int(json_get(&after1, "total_commits")) == 1);
+        UV_CHECK("batch_commit: ring_samples == 1 after one drain",
+                 json_get_int(json_get(&after1, "ring_samples")) == 1);
+        /* Heights are 0-indexed (h=0..N-1) and g_ua_last_advance_height
+         * starts at -1 (fresh init), so a first-ever batch that folds all N
+         * heights reports the range 0..N-1. */
+        UV_CHECK("batch_commit: last_height_lo == 0, last_height_hi == N-1",
+                 json_get_int(json_get(&after1, "last_height_lo")) == 0 &&
+                 json_get_int(json_get(&after1, "last_height_hi")) == N - 1);
+        UV_CHECK("batch_commit: last_rows == N",
+                 json_get_int(json_get(&after1, "last_rows")) == N);
+        int64_t first_us = json_get_int(json_get(&after1, "last_commit_us"));
+        UV_CHECK("batch_commit: last_commit_us >= 1 (floored, never 0)",
+                 first_us >= 1);
+        UV_CHECK("batch_commit: commit_us_ewma == first sample "
+                 "(EWMA seeds from the first sample)",
+                 json_get_int(json_get(&after1, "commit_us_ewma")) == first_us);
+        UV_CHECK("batch_commit: commit_us_max == first sample",
+                 json_get_int(json_get(&after1, "commit_us_max")) == first_us);
+        UV_CHECK("batch_commit: ring_avg_us == first sample",
+                 json_get_int(json_get(&after1, "ring_avg_us")) == first_us);
+        json_free(&after1);
+        UV_CHECK("batch_commit: drain returns 0 at tip (no further commit)",
+                 utxo_apply_stage_drain(100) == 0);
+
+        /* No further heights to fold, so no second outer-batch COMMIT is
+         * issued (a drain with advanced==0 and no dirty non-advancing work
+         * never opens/COMMITs a batch) -> total_commits stays 1. Exercise
+         * the ring/EWMA math directly instead, over a synthetic sequence
+         * with a known closed form, decoupled from real fold timing. */
+        utxo_apply_batch_commit_reset_for_test();
+        int64_t samples[] = { 100, 200, 300, 400 };
+        int64_t ewma = 0;
+        for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+            /* height_before_batch = i*10, rows=1 -> folded height i*10+1. */
+            utxo_apply_batch_commit_record((int64_t)(i * 10), 1, samples[i]);
+            ewma = (i == 0) ? samples[i] : ewma + (samples[i] - ewma) / 16;
+        }
+        struct json_value synth;
+        json_init(&synth);
+        UV_CHECK("batch_commit: synthetic dump",
+                 utxo_apply_batch_commit_dump_state_json(&synth, NULL));
+        UV_CHECK("batch_commit: synthetic total_commits == 4",
+                 json_get_int(json_get(&synth, "total_commits")) == 4);
+        UV_CHECK("batch_commit: synthetic ring_samples == 4",
+                 json_get_int(json_get(&synth, "ring_samples")) == 4);
+        UV_CHECK("batch_commit: synthetic commit_us_ewma matches closed form",
+                 json_get_int(json_get(&synth, "commit_us_ewma")) == ewma);
+        UV_CHECK("batch_commit: synthetic commit_us_max == 400 (running max)",
+                 json_get_int(json_get(&synth, "commit_us_max")) == 400);
+        UV_CHECK("batch_commit: synthetic ring_avg_us == mean(100,200,300,400)",
+                 json_get_int(json_get(&synth, "ring_avg_us")) == 250);
+        UV_CHECK("batch_commit: synthetic last_height_lo/hi == last record's "
+                 "folded height (30+1)",
+                 json_get_int(json_get(&synth, "last_height_lo")) == 31 &&
+                 json_get_int(json_get(&synth, "last_height_hi")) == 31);
+        json_free(&synth);
+
+        utxo_apply_batch_commit_reset_for_test();
         uv_teardown(dir, &ms, &sc);
     }
 
