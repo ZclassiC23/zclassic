@@ -37,8 +37,6 @@ points in order; dated evidence and backlog material are intentionally omitted.
   #1 sovereign transparent + shielded state cure.
 - [`work/CONSENSUS-STATE-BUNDLE.md`](./work/CONSENSUS-STATE-BUNDLE.md) — atomic
   complete-state artifact contract.
-- [`work/fast-fold-sync-plan.md`](./work/fast-fold-sync-plan.md) — dated fold
-  experiments and measurements; `HANDOFF.md` owns the current verdict.
 - [`work/sovereign-cutover-runbook.md`](./work/sovereign-cutover-runbook.md) —
   owner-gated copy-proof and cutover sequence.
 
