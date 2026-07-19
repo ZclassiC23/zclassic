@@ -66,6 +66,7 @@
 #include "event/event.h"
 #include "platform/rng.h"
 #include "util/blocker.h"
+#include "util/hw_bench.h"
 #include "util/hw_profile.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -529,9 +530,18 @@ void bg_validation_init(struct bg_validation_service *svc,
      * a re-source, not a behavior change, on any machine with >=8 physical
      * cores (the clamp already dominated the old nproc/2 formula there).
      * pread()-based disk I/O is fully thread-safe, so multiple workers
-     * can read blocks concurrently without the old FILE* cache races. */
+     * can read blocks concurrently without the old FILE* cache races.
+     *
+     * hw_bench_verify_workers then refines the topology-derived worker
+     * count with a MEASURED random-read latency (lib/util/src/hw_bench.c):
+     * unchanged when unmeasured or on fast storage, scaled down (never
+     * below 1, never above the topology count) when the boot-time 4KB
+     * pread probe found slow/contended storage — fewer concurrent
+     * verify workers means less I/O thrashing on that class of disk. */
     hw_profile_init(svc->datadir);
-    svc->num_workers = hw_profile_verify_workers(hw_profile_physical_cores());
+    hw_bench_init(svc->datadir);
+    svc->num_workers =
+        hw_bench_verify_workers(hw_profile_verify_workers(hw_profile_physical_cores()));
     svc->max_script_batch = hw_profile_script_batch_cap(hw_profile_ram_bytes());
 
     atomic_store(&svc->progress.state, BG_VALIDATION_IDLE);

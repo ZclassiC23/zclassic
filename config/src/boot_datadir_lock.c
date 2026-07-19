@@ -2,6 +2,8 @@
 
 #include "config/boot_datadir_lock.h"
 
+#include "util/hw_bench.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -136,6 +138,18 @@ bool boot_datadir_lock_acquire(const char *datadir)
 
     close(dir_fd);
     g_pidfile_fd = fd;
+
+    /* This is the earliest point boot has exclusive, safe possession of the
+     * datadir — before crypto/wallet/progress-store setup and well before
+     * the block-ingest reducer can ever run. Kick the hardware-bench
+     * organ's one-time (possibly synchronous, up to ~300ms) fsync/pread
+     * probe HERE so hw_bench_batch_size() (reducer_drain.c, called on
+     * every reducer_kick under ctl->mutex) never has to run it lazily on
+     * that hot path — see hw_bench.h's CALLER CONTRACT. Idempotent: a
+     * concurrent/earlier hw_bench_init() (e.g. bg_validation_init) just
+     * observes the cached result. */
+    hw_bench_init(datadir);
+
     return true;
 }
 
