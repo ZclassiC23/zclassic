@@ -164,11 +164,17 @@ static int test_blog_publication_slice(void)
         ASSERT(blog_test_save_name(&publisher, owner));
         ASSERT(blog_test_save_name(&reader, owner));
 
-        struct wallet wallet;
-        wallet_init(&wallet);
-        ASSERT(wallet_import_key(&wallet, &key));
-        size_t wallet_tx_count = wallet.num_wallet_tx;
-        size_t wallet_spent_count = wallet.num_spent;
+        /* struct wallet is megabytes (MAX_WALLET_TX=65536 wallet_tx entries
+         * plus the key pool and spent set) — on the heap, per convention
+         * used by every other wallet test (see test_wallet.c), not the
+         * stack: a stack instance overflows the default 8 MiB ulimit -s. */
+        struct wallet *wallet = zcl_calloc(1, sizeof(struct wallet),
+                                           "test_blog_wallet");
+        ASSERT(wallet != NULL);
+        wallet_init(wallet);
+        ASSERT(wallet_import_key(wallet, &key));
+        size_t wallet_tx_count = wallet->num_wallet_tx;
+        size_t wallet_spent_count = wallet->num_spent;
 
         struct zcl_app_event_scope_v1 scope;
         ASSERT(blog_publication_scope(&scope).ok);
@@ -217,13 +223,13 @@ static int test_blog_publication_slice(void)
             &publisher, &invalid_request).ok);
         struct blog_publish_result published;
         result = blog_post_controller_create(
-            &publisher, &wallet, binding, &request, &published);
+            &publisher, wallet, binding, &request, &published);
         ASSERT(result.ok);
         ASSERT(db_blog_post_count(&publisher, "alice") == 1);
         ASSERT(db_app_event_count(
             &publisher, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 1);
-        ASSERT(wallet.num_wallet_tx == wallet_tx_count);
-        ASSERT(wallet.num_spent == wallet_spent_count);
+        ASSERT(wallet->num_wallet_tx == wallet_tx_count);
+        ASSERT(wallet->num_spent == wallet_spent_count);
 
         char anchor_name[BLOG_NAME_MAX + 1];
         uint8_t anchor_event_id[32];
@@ -354,12 +360,12 @@ static int test_blog_publication_slice(void)
         memcpy(fork_request.previous_event_id, published.post.event_id, 32);
         struct blog_publish_result fork_a, fork_b;
         result = blog_post_controller_create(
-            &publisher, &wallet, binding, &fork_request, &fork_a);
+            &publisher, wallet, binding, &fork_request, &fork_a);
         ASSERT(result.ok);
         fork_request.body = "Variant B";
         fork_request.created_at++;
         result = blog_post_controller_create(
-            &publisher, &wallet, binding, &fork_request, &fork_b);
+            &publisher, wallet, binding, &fork_request, &fork_b);
         ASSERT(result.ok);
         ASSERT(memcmp(fork_a.post.event_id, fork_b.post.event_id, 32) != 0);
 
@@ -564,7 +570,8 @@ static int test_blog_publication_slice(void)
         ASSERT(!db_blog_post_validate(&invalid, &errors));
 
         zcl_app_event_signing_binding_v1_test_destroy(binding);
-        wallet_free(&wallet);
+        wallet_free(wallet);
+        free(wallet);
         node_db_close(&reader);
         node_db_close(&publisher);
         PASS();
