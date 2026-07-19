@@ -38,17 +38,17 @@ Plain meaning: the **sovereign cure** is the self-verified UTXO rebuild that
 starts from the in-binary SHA3/PoW checkpoint, folds real block bodies forward,
 then deletes the borrowed `zclassicd`-minted seed path.
 
-**Current canonical state is wedged, not synced.** The public daily-driver is
-held below tip by incomplete historical shielded anchors and nullifiers; verify
-the live H\* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before acting
-(`docs/HANDOFF.md` holds current state). The consolidated loader did
-previously seed transparent `coins_kv` from a `zclassicd`-minted snapshot and
-reach tip, but matching that artifact's anchor hash to a validated local header
-binds only its height/hash location. ZClassic headers do **not** commit the UTXO,
-Sapling/Sprout frontier, or nullifier contents, so the borrowed state is not
-PoW- or consensus-bound content. The cure must install complete independently
-validated transparent and shielded state atomically and pass copy proof; the
-current v1-oriented refold reset must not discard v3 shielded sections.
+**Current live state lives exclusively in [`docs/HANDOFF.md`](./docs/HANDOFF.md)**
+— this file carries no live height/sync-status claims; verify with
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before acting.
+The standing architectural fact behind every cure (past or future): ZClassic
+headers do **not** commit the UTXO, Sapling/Sprout frontier, or nullifier
+contents, so a state artifact whose height/hash merely matches a validated
+header is not thereby PoW- or consensus-bound content — installing borrowed
+state requires independently validating its transparent and shielded contents
+atomically and passing copy proof, matching a header alone is not enough.
+Watch the v1-oriented refold-reset path (`config/src/boot_shielded_seed.c`)
+on any future cure: it must not discard a captured v3 shielded section.
 
 **The legacy TWO-step recipe still works** (verified 2026-06-11: hash-identical
 tip vs zclassicd at multiple heights, ~25 min total, warm-reboot-proven; this is
@@ -80,22 +80,23 @@ is a regression floor, not a liveness proof.
 
 ## Current focus — **Ship v1 (MVP 8/8)**
 
-> **Check the live node before treating MVP/soak as the active mission.** The
-> canonical node is currently wedged below tip (live H\* via `zclassic23 status`) on the permanent
-> `utxo_apply.anchor_backfill_gap` / nullifier-history dependency. A prior
-> transparent borrowed seed reaching tip did not prove complete shielded state.
-> No canonical soak time is clean evidence while this gap exists; cure and
-> copy-prove the complete state first, then start a fresh exact-parity soak
-> window. Current truth: [`docs/HANDOFF.md`](./docs/HANDOFF.md). Cure design:
-> [`docs/work/self-verified-tip-plan.md`](./docs/work/self-verified-tip-plan.md).
+> **Check the live node before treating any status claim below as current.**
+> This file states the durable mission shape only; it never carries a live
+> height, wedge, or soak-progress claim — that all lives in
+> [`docs/HANDOFF.md`](./docs/HANDOFF.md) §0-LATEST, re-derived from
+> `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before acting.
+> A doc can be stale; the node cannot.
 
-**The active #1 track is the sovereign shielded-state cure and copy proof.**
-The typed native CLI (`zclassic23 <command>`) is the only agent interface.
-The source-code navigator lives under `lib/codeindex/` and is exposed through
-the native `code` command branch.
+The mission is one node that reaches and holds the network tip on
+**self-verified state** — a UTXO/anchor/nullifier set the node re-derived from
+block bodies and its own baked checkpoint, never one borrowed from an external
+snapshot — and then earns a clean soak window on that foundation. The typed
+native CLI (`zclassic23 <command>`) is the only agent interface. The
+source-code navigator lives under `lib/codeindex/` and is exposed through the
+native `code` command branch.
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
-**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: complete and copy-prove the sovereign shielded-state cure; only then start a fresh exact-candidate soak.**
+**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path; it carries the current ordered priority, not this file. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md).
 
 **The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 

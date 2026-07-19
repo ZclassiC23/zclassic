@@ -1,4 +1,10 @@
-> **Correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged below tip on incomplete shielded anchors/nullifiers (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
+> **Correction (2026-07-19):** the shielded-anchor wedge this doc's earlier
+> correction referenced is CURED — the serve node is AT NETWORK TIP on
+> self-verified state (`docs/HANDOFF.md` §0-LATEST). Verify the live H* via
+> `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before trusting
+> either that or this note. This derive-state/delete-heal-ladder design
+> remains historical input, not an open plan; current gates are in
+> `SOVEREIGN-NETWORK-ROADMAP.md`.
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 

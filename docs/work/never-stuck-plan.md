@@ -1,22 +1,16 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
-> **STATUS: canonical is wedged below tip** on incomplete
-> shielded anchor/nullifier history (verify the live H* via `zclassic23 status` /
-> `dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state).
-> Commit `ab512d577` repaired the earlier
-> transparent-loader failure and temporarily reached tip from the borrowed
-> h=3,156,809 artifact; it did not prove complete state. This doc is retained
-> as historical diagnosis and as input to the current sovereign cure, but the
-> authoritative gates are in `SOVEREIGN-NETWORK-ROADMAP.md`. It remains the
-> design record for the
-> sovereign cure** (fold forward from our own checkpoint, then delete the
-> borrowed-seed machinery) + the never-stuck hardening map + the per-100-block
-> UTXO-ladder investigation. **Still BORROWED — not full sovereignty:** the
-> snapshot is minted from the zclassicd oracle; its height/hash matches a
-> validated header, but ZClassic headers commit neither its UTXO nor shielded
-> contents. So the sovereign cure (self-mint a from-genesis SHA3
-> anchor at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → DELETE
-> the borrowed loader) remains the END GOAL, not done. The dated "LIVE
+> **STATUS: the wedge this doc diagnoses is CURED** — the serve node is AT
+> NETWORK TIP on self-verified state (`docs/HANDOFF.md` §0-LATEST,
+> 2026-07-19), via the checkpoint-content consensus-bundle install path, NOT
+> via this doc's literal "self-mint a from-genesis SHA3 anchor →
+> `-refold-from-anchor` cutover → DELETE the borrowed loader" sequence (that
+> sequence is still undone in code — see `self-verified-tip-plan.md`'s
+> top-of-file note). Verify current live state fresh via `zclassic23 status` /
+> `zclassic23 dumpstate reducer_frontier`; this file is retained as historical
+> diagnosis and as a design record for the never-stuck hardening map + the
+> per-100-block UTXO-ladder investigation, not as an open cure plan. The
+> authoritative gates are in `SOVEREIGN-NETWORK-ROADMAP.md`. The dated "LIVE
 > RE-VERIFICATION" section below (pinned tip 3,151,411, H\*=3,056,759, the
 > prevout_unresolved false-rejects) is **historical** — that wedge instance is
 > fixed; treat those numbers as the diagnosis behind the cure, not the live node.

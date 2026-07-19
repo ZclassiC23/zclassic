@@ -1,31 +1,30 @@
-# Sovereign cutover runbook — install the consensus-state bundle, cure the wedge
+# Sovereign cutover runbook — install the consensus-state bundle (the path that cured the wedge)
 
-**Status 2026-07-15 — transaction engine copy-testable, production activation
-contained, no admissible artifact yet.** The
-`zclassic23-mint-receipt` producer reached the checkpoint and failed the
-compiled UTXO count/root gate (short by two outputs); it did **not** emit an
-installable bundle. Its restart policy repeated the same deterministic failure
-187 times before the owner-authorized stop; it is now inactive/dead. Preserve
-that datadir as evidence and do not run any command in this document against
-production until a new producer passes parity, the complete bundle passes copy
-proof, and an independently replay-bound receipt outside the bundle replaces
-the current self-asserted provenance. Production ACTIVATE currently returns
-`VERIFIED_CONTAINED` before any write. This runbook supersedes the pre-bundle `-refold-from-anchor` /
-`utxo-anchor.snapshot` recipe that lived in this file through 2026-07-08 (that
-mechanism only ever carried transparent coins; it produced the exact
-`utxo_apply.anchor_backfill_gap` wedge the live node is stuck on today —
-empty shielded anchors below the reducer cursor with a positive activation
-boundary). The cure now flows through a **complete consensus-state bundle**
-(coins + Sprout/Sapling anchors + nullifiers, `history_complete=true`,
+**Status: this runbook's cutover SUCCEEDED live (2026-07-19) — the serve node
+is AT NETWORK TIP on self-verified state** (`docs/HANDOFF.md` §0-LATEST):
+`-install-consensus-bundle` reached the **CHECKPOINT_CONTENT ACTIVATE**
+authority (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`)
+and admitted-and-activated a bundle whose coins reproduce the compiled SHA3
+checkpoint and whose Sapling frontier roots to the local validated header.
+The `zclassic23-mint-receipt` producer failure and the chain-binding refusals
+narrated in earlier revisions of this file are historical — recover with
+`git log --follow -- docs/work/sovereign-cutover-runbook.md` if that forensic
+detail is ever needed. This runbook is kept live as the **reference procedure**
+for the next time a datadir needs the same cure (a fresh node, a future
+regression, or a second lane) — re-verify every fact below against the live
+node and current source before running any command in it; heights, commits,
+and producer state rot fast in this repo, and the mechanism below is what
+actually shipped, not a still-open design.
+
+The cure flows through a **complete consensus-state bundle** (coins +
+Sprout/Sapling anchors + nullifiers, `history_complete=true`,
 `activation_boundary=0`) and a dedicated boot-time consumer flag,
 `-install-consensus-bundle=PATH`. `-refold-from-anchor` still exists in the
 binary and `tools/repro_on_copy.sh` still supports it (the sticky-escalator
-rung uses it until B4 lands — see `docs/work/tender-coral` lane notes /
-`project_always_synced_program_2026-07-13_night2` memory), but it is not the
-cutover path documented here: do not use it for the live wedge cure.
-
-Re-verify every fact below against the live node and current source before
-acting — heights, commits, and producer state rot fast in this repo.
+rung uses it — see `project_always_synced_program_2026-07-13_night2`
+memory), but it is a different, narrower recipe (transparent-only, no
+independent shielded-history validation): do not use it in place of this
+bundle-install cure.
 
 ## The mechanism (for orientation — full contract in source)
 

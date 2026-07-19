@@ -1,5 +1,30 @@
 # The Self-Verified Tip Plan — the detective's forward plan
 
+> **PROVEN LIVE (2026-07-19) — the G-SOV property this plan targets is now
+> real on the serve node** (`docs/HANDOFF.md` §0-LATEST: AT NETWORK TIP on
+> self-verified state, past the historical shielded-anchor wedge). Read the
+> mechanism carefully before citing this file as "the cure landed exactly as
+> designed": the live cure passed the wedge via the
+> **checkpoint-content consensus-bundle install** path
+> (`docs/work/sovereign-cutover-runbook.md`,
+> `config/src/consensus_state_snapshot_install_checkpoint_authority.c`), which
+> proves the same G-SOV predicate (coins reproduce the compiled SHA3
+> checkpoint + Sapling frontier roots to the validated header) a different way
+> than Act 3 below specifies. **Verified against HEAD (2026-07-19):** Act 3's
+> literal steps are NOT done — `REDUCER_FRONTIER_TRUSTED_ANCHOR` is still a
+> hardcoded `3056758` (`app/jobs/include/jobs/reducer_frontier.h:66`, not
+> self-derived), `-refold-from-anchor` is still an explicit opt-in flag, not
+> the cold-start default (`src/main.c:4151`, `config/src/boot.c:3904`), and
+> the borrowed-seed loader is not deleted. Act 2's vehicle
+> (`-fold-inram`/`storage/coins_ram.h`) exists and is wired into the
+> from-genesis mint path (`src/main.c:4186-4190`) — treat as PARTIAL, not
+> gate-proven here; verify against `refold-fold-rate-bottlenecks.md` before
+> citing it as closed. This file is retained as the **design reference** for
+> the G-SOV predicate (still the live sovereignty gate,
+> `app/controllers/src/sovereignty_controller.c`) and for the still-open
+> hardening in Acts 2–4; it is no longer an in-progress execution log — read
+> `docs/HANDOFF.md` for current status, not the Act markers below.
+
 > **One metric: T = time-to-self-verified-tip.** Wall-clock from a cold or
 > stalled start until `(tip, utxo)` is backed by PoW + the node's *own* fold,
 > with **zero borrowed trust**. *Fast*, *secure*, and *never-stuck* are three
@@ -132,7 +157,7 @@ a borrowed copy.**
   proof rows re-derived by the forward stage, not merely on the repair function
   returning success.
 
-## ACT 2 — Make re-reading cheap (the measured speed root) · **NOT-STARTED**
+## ACT 2 — Make re-reading cheap (the measured speed root) · **PARTIAL — see top-of-file note**
 
 - **Detective beat:** re-reading the file is the right reflex, but it takes all
   night — so he cheats with cards. Make re-reading fast.
@@ -161,11 +186,14 @@ a borrowed copy.**
   1. **Self-derive the anchor** — fold genesis→3,056,758 vs the baked checkpoint
      (`config/src/boot_mint_anchor.c:152-186`); replace the hardcoded
      `REDUCER_FRONTIER_TRUSTED_ANCHOR=3056758`
-     (`app/jobs/include/jobs/reducer_frontier.h:39`) with the self-derived value
+     (`app/jobs/include/jobs/reducer_frontier.h:66`, line drifted from `:39`
+     as of 2026-07-19 — re-grep before editing) with the self-derived value
      at its call sites (`app/jobs/src/reducer_frontier.c:451-457,554`).
   2. **Flip the default** — make `-refold-from-anchor` the default cold start
-     (today needs a CLI flag, `src/main.c:1793`; default boot imports the
-     borrowed seed via `utxo_recovery_import_ldb`, `config/src/boot.c:2487`).
+     (today needs a CLI flag, `src/main.c:4151` as of 2026-07-19, drifted from
+     `:1793`; default boot imports the borrowed seed via
+     `utxo_recovery_import_ldb`, `config/src/boot.c:2845`, drifted from
+     `:2487` — re-grep before editing).
   3. **Delete the borrow** — remove the `coins_kv` seed copy
      (`utxo_recovery_restore.c:369`) and the ~9k-LOC carve in dependency order
      per the removed `archive/architecture-deletion-plan.md` (recover with
@@ -233,7 +261,9 @@ A boot is *self-verified-sovereign* iff **all three** hold:
 2. `coins_applied_height == H* + 1` — continuous log coverage, no NULL/stamped
    span (`tip_finalize_log` vs `utxo_apply_log` contiguity);
 3. `coins_kv_is_proven_authority() == false`, **or** (`== true` **and**
-   `coins_kv_contains_refold_marker()` — a single `progress.kv` key proving a
+   `coins_kv_contains_refold_marker()` — a single kernel-store key
+   (`COINS_KV_SELF_FOLDED_KEY`, `progress.kv` pre-flip / `consensus.db` after
+   the A3+A4 kernel-store flip, `docs/HANDOFF.md` §0-LATEST) proving a
    from-anchor reset ran). This separates self-derived from borrowed-and-stamped.
 
 `G-SOV` is the quantitative Prime Directive: `health = network_tip − log_head`,

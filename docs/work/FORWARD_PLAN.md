@@ -11,65 +11,112 @@
 
 ---
 
-## #1 PRIORITY — cure canonical shielded state, then earn clean evidence
+## #1 PRIORITY — hold the at-tip sovereign state through a clean soak, then canonical deploy
 
-> **Canonical is wedged now**, below tip, by incomplete historical shielded
-> anchors and nullifiers (verify the live H\* via `zclassic23 status` / `zclassic23 dumpstate
-> reducer_frontier`; `docs/HANDOFF.md` holds current state).
-> `ab512d577` repaired an earlier transparent snapshot-loader failure; it did
-> not prove or install complete shielded history. A snapshot payload digest and
-> a matching validated anchor header authenticate the artifact and its chain
-> location, but ZClassic headers do not commit UTXO, Sapling/Sprout, or
-> nullifier roots. Those contents are therefore borrowed, not PoW-bound.
->
-> Two complementary cure tracks are now in flight — current truth is
-> [`../HANDOFF.md`](../HANDOFF.md), read it fresh before acting:
-> **(A) operational import-path** — the complete-shielded-history import
-> (`-import-complete-shielded`) is proven to clear this exact wedge on a
-> throwaway datadir copy (`../HANDOFF.md` §0-NEWEST, 2026-07-16); it is
-> release-assisted trust, not sovereign, and is NOT yet folded to the header
-> tip, NOT yet pushed to `origin/main`, and NOT yet cut over on the live
-> canonical datadir. **(B) sovereign producer/bundle** — a re-baked checkpoint
-> fixed the root cause and a new producer is folding real blocks forward from
-> it (`../HANDOFF.md` §0-NEW); production ACTIVATE stays contained
-> (`VERIFIED_CONTAINED`) until an independent replay receipt lifts it. Track A
-> reaches a verified tip fast; Track B later upgrades the same node to fully
-> sovereign (`coins_kv_self_folded=true`). Do not feed a shielded v3 artifact
-> through the current v1-oriented refold reset that can discard its shielded
-> sections. Cure design details: [`self-verified-tip-plan.md`](./self-verified-tip-plan.md)
-> (Track B) and [`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md)
-> (Track A). The durable Phase 0–6 hierarchy and promotion gates are in
+> **The sovereign shielded-state cure landed and passed the wedge.** The
+> serve node is AT NETWORK TIP on self-verified state, past the historical
+> shielded-anchor wedge this section used to track — read
+> [`../HANDOFF.md`](../HANDOFF.md) §0-LATEST fresh before acting; this file
+> carries no live height/soak numbers. Of the two cure tracks this section
+> used to run in parallel, **the sovereign consensus-bundle install**
+> (`docs/work/sovereign-cutover-runbook.md`) is the one that actually passed
+> the wedge live; the operational import-path track
+> ([`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md))
+> documents currently-shipped importer code but was not cut over. Cure design
+> record (now PROVEN, not an open plan):
+> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). The durable
+> Phase 0–6 hierarchy and promotion gates remain
 > [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
-> Copy-prove every recovery path on a datadir COPY before live; gate on H\* climb.
 
-**The #1 work now:** finish folding Track A to the header tip and pass its full
-copy-proof gate (or let Track B's producer complete and its bundle pass
-independent replay verification), then copy-prove H\* climb on a canonical
-datadir copy before any live cutover. CI-gate promotion may proceed in
-parallel on isolated lanes, but canonical soak/canary/seal evidence does not
-accrue while the node is wedged. Only after H\* climb, complete security
-posture, and exact same-height parity are copy-proven may a fresh evidence
-window begin. Root-cause on the preserved fixture, datadir COPY never live
-([`fast-path.md`](./fast-path.md)); delete recovery ladders only after their
-replacement and rollback are proven.
+**The #1 work now, in order:**
+
+1. **Soak (C6)** — hold the serve node at tip through a clean 168h window:
+   zero manual restarts, gap ≤1, exact same-height hash vs `zclassicd` (C8),
+   continuous evidence. `tools/mvp_gate.sh` reports live soak-accrual;
+   `make soak-evidence-report` is the authoritative JSONL judge. Do not churn
+   the serve datadir during the window — copy-prove any change on a fixture,
+   never on the soaking node.
+2. **Canonical deploy gate** — after a clean soak, cutting the canonical lane
+   over to the proven serve binary/datadir is the owner's lever (`make
+   deploy`, owner-gated, never automatic). Post-deploy cleanup named in
+   `../HANDOFF.md` §0-LATEST: reclaim the pre-flip backup and old candidate
+   datadirs once the deploy is confirmed durable.
+3. **Fresh-machine-to-tip gap (C3)** — the at-tip proof so far is on the ONE
+   node that ran the cure; C3's actual claim is a genuinely FRESH zclassic23
+   node reaching tip from a serving zclassic23 peer in <10 min. That path
+   (FlyClient + ROM/SHA3 snapshot serve+fetch) is not proven end-to-end: the
+   **seed** side (`rom_seed`) is on `main`; the **fetch** side
+   (`lane/rom-fetch2` — multi-seeder verify-by-content download + resume) is
+   NOT done. Prove C3 by syncing a second, genuinely fresh zclassic23 node
+   against the serve node, not against `zclassicd`.
+4. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
+   parallel read-only auditors covering integrity/trust/repair-consolidation/
+   pipeline-simplification, memory
+   `project_wave_n_first_principles_backlog_2026-07-19`, HEAD ~b2eb1393b):
+   1. **[in-flight]** Blocks-table row repair: per-row skip+purge in
+      `load_block_index_from_blocks_table` instead of whole-table refusal;
+      quarantine via the existing unwired `db_block_delete`
+      (`app/models/src/block.c`), drop `HAVE_DATA` → `body_fetch` refetch →
+      revalidate; typed blocker. This is the §0-LATEST-named follow-up
+      (poisoned solution-row quarantine/refetch).
+   2. Persisted FAILED-bit trust at boot made consistent: below the ROM
+      checkpoint, re-derive, never trust a persisted status bit; above it,
+      treat a persisted FAILED bit as a revalidate candidate, never let it
+      gate `promote_best_header` (today only the blocks-hydrate rung drops
+      FAILED bits; the flat/SQLite loaders trust `n_status` verbatim).
+   3. `block_index_cache` integrity envelope: the flat file has an embedded
+      SHA3 (`bii_verify_embedded`); the SQLite cache has only `COUNT>1000`.
+      Add the same envelope or demote the SQLite cache to a pure
+      re-derivable cache.
+   4. Import-time per-row verify: `--importblockindex`'s bulk memcpy trusts
+      legacy bytes; hash-bind+PoW-verify per row at import time and
+      quarantine bad rows instead of the hydrate rung refusing the whole
+      batch on one bad row.
+   5. Consolidation: fold `recovery_coordinator` R1–R3 into condition-engine
+      scheduling (keep R4, ~250 LOC); replace the boot loader's 6-rung
+      if/else ladder with a dispatch table + dumpstate-visible counters;
+      build `window_rebuild` once and reuse it for both
+      `mirror_divergence_located` and `state_window_inconsistent`;
+      standardize every remedy-loop WARN on `log_throttle_should_emit`.
+      **Guards that must survive any consolidation verbatim:** the
+      `coin_backfill` owner-ack env gate, the durable-vs-transient refusal
+      marker distinction, `cooldown_max_rearms=0` retry-forever semantics,
+      the `poison_rewind` served_floor bound, segment chmod-before-unlink,
+      and any DEFAULT-OFF consensus-tightening flag (replay-gated — never
+      flip without a full-history replay, the h=478544 lesson).
+   6. Boundary-root ladder sparse coverage: `mmb_utxo_root` rows at
+      non-rung heights (rungs stride 100k) are never cross-checked —
+      densify rung coverage or self-hash the rows.
+   7. `coins_applied_height` unbound, and `sapling_anchors` read-failure
+      silently skipping instead of naming a typed blocker — small
+      hardening pair.
+   8. Non-anchor peer snapshot staging must refuse without
+      checkpoint/PoW binding.
+   9. Mechanical: the `cac_`/`chain_advance_coordinator` →
+      `block_source_policy` rename mostly landed (Wave N,
+      `7855fcb57`/`47877391d`); `git grep 'cac_\|chain_advance_coordinator'`
+      still surfaces ~13 files — verify each is a legitimate compatibility
+      name (e.g. a stable `dumpstate` subsystem key) before treating the
+      rename as fully closed.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
 NEVER ship a consensus-adjacent change without a copy proof.
 
 **MRS scoreboard:** see **[`docs/MVP.md`](../MVP.md)** (scoreboard of record).
-Current score is **4/8** by local operator proof; hermetic slices keep the
-remaining criteria honest but do not promote them to ✅.
+Re-run `tools/mvp_gate.sh` for the current MRS — do not trust a pinned number
+here (`do not bump without proof`, `../HANDOFF.md` §4).
 
 ---
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **land the complete sovereign state cure → prove sustained
-exact parity and liveness → make evidence commit-bound → finish native
-transactional hot swap / native-command consolidation → build the sandboxed App and publishing
-planes.** Refactor debt does not block a working sovereign node and must not
-jump the queue.
+Ordering principle: **the sovereign state cure is LANDED → prove sustained
+exact parity and liveness through the soak window → canonical deploy → close
+the fresh-machine-to-tip gap (C3) → work the Wave-N hardening backlog → finish
+native transactional hot swap / native-command consolidation → build the
+sandboxed App and publishing planes.** Refactor debt does not block a working
+sovereign node and must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
 - [x] **Criterion tests are real CI gates (hermetic slices)** — `make ci` chains
@@ -209,21 +256,24 @@ jump the queue.
 - [x] **zclassicd oracle up** (2026-06-12) — RPC 8232 reachable; the C8 parity
       oracle runs against it continuously (read-only; per doctrine never stop
       `zclassicd`).
-- [ ] **Run the 7-day soak (C6)** — NOT ACCRUING on canonical while its shielded
-      history is incomplete. After cure/copy proof, rebaseline an exact release
-      candidate and require gap ≤1, exact same-height hash, complete security
-      posture, continuous evidence, RSS plateau, and zero manual restarts — measure against
+- [ ] **Run the 7-day soak (C6)** — the cure landed and the window is running
+      on the serve node (`../HANDOFF.md` §0-LATEST); require gap ≤1, exact
+      same-height hash, complete security posture, continuous evidence, RSS
+      plateau, and zero manual restarts for the full 168h — measure against
       [`../USER_BENCHMARKS.md`](../USER_BENCHMARKS.md) /
-      [`../BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md).
+      [`../BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md). Judge with
+      `make soak-evidence-report`; re-read live accrual with
+      `tools/mvp_gate.sh`, do not trust a pinned percentage here.
 - [ ] **Full-binary kill-9 (C7)** — extend `make chaos`
       ([`../CHAOS_HARNESS.md`](../CHAOS_HARNESS.md)) from the SQLite-atomicity
       slice to restart-to-peer-tip (opt-in `make test-two-node-peer-tip` already
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** C3/C6/C8 are blocked on the current canonical shielded-state
-wedge. The next promotion is the complete atomic cure plus copy proof; only then
-can a fresh exact-parity 168-hour window begin. CI promotion (A) gates honest
+**Gating summary:** C6/C8's shielded-state-cure precondition is CLEARED — the
+next promotion is a clean 168-hour soak window on the at-tip sovereign state,
+then canonical deploy. C3's fresh-machine-to-tip proof is a separate,
+still-open gap (see #1 PRIORITY item 3). CI promotion (A) gates honest
 measurement; the boot refactor gates nothing v1.
 
 ---
