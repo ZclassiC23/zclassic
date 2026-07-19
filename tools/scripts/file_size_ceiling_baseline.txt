@@ -40,7 +40,7 @@ app/views/src/explorer_pages_view.c 823
 # and -export-consensus-bundle terminal-verb dispatches raise the boot
 # recovery-selection owner's baseline; boot_index.c gains the
 # genesis-readability verb-check probe.
-config/src/boot.c 4130
+config/src/boot.c 4165
 config/src/boot_index.c 853
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1668

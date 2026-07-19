@@ -47,6 +47,7 @@
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
+#include "services/binary_staleness_service.h"
 #include "services/ibd_throttle.h"
 #include "services/db_maintenance.h"
 #include "config/boot_network_monitor.h"
@@ -177,6 +178,7 @@ const char *g_blog_datadir = NULL;
 static _Atomic bool g_running = false;
 static struct wallet_backup_config g_wallet_backup_cfg;
 static struct disk_monitor_config g_disk_monitor_cfg;
+static struct binary_staleness_config g_binary_staleness_cfg;
 static struct ibd_throttle_config g_ibd_throttle_cfg;
 static struct zcl_service_kernel g_guard_kernel;
 static struct zcl_service_kernel g_maintenance_kernel;
@@ -894,6 +896,32 @@ static void boot_db_maintenance_service_stop(void *ctx)
     db_maintenance_stop();
 }
 
+static bool boot_binary_staleness_service_start(void *ctx)
+{
+    (void)ctx;
+    binary_staleness_config_defaults(&g_binary_staleness_cfg);
+    struct zcl_result bsr = binary_staleness_start(&g_binary_staleness_cfg);
+    if (bsr.ok) {
+        printf("Binary staleness monitor started (poll=%ds)\n",
+               g_binary_staleness_cfg.poll_seconds);
+        return true;
+    }
+    fprintf(stderr,
+            "[boot] %s:%d binary_staleness_start failed: code=%d %s\n",
+            bsr.source_file, bsr.source_line, bsr.code, bsr.message);
+    /* Registered ZCL_SERVICE_OPTIONAL below — the kernel marks this
+     * service FAILED and continues booting rather than aborting: stale-
+     * binary detection is an observability signal, not a consensus or
+     * data-safety dependency. */
+    return false;
+}
+
+static void boot_binary_staleness_service_stop(void *ctx)
+{
+    (void)ctx;
+    binary_staleness_stop();
+}
+
 static bool boot_register_guard_services(const char *datadir)
 {
     const struct zcl_service_spec disk_spec = {
@@ -929,8 +957,15 @@ static bool boot_register_maintenance_services(void)
         .ctx = &g_node_db,
         .flags = ZCL_SERVICE_OPTIONAL,
     };
+    const struct zcl_service_spec binary_staleness_spec = {
+        .name = "binary_staleness",
+        .start = boot_binary_staleness_service_start,
+        .stop = boot_binary_staleness_service_stop,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
     return zcl_service_kernel_register(&g_maintenance_kernel, &wallet_backup_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel, &db_maintenance_spec) &&
+           zcl_service_kernel_register(&g_maintenance_kernel, &binary_staleness_spec) &&
            bundle_exporter_register_service(&g_maintenance_kernel, g_datadir) &&
            boot_register_network_monitor_service(&g_maintenance_kernel,
                                                  &g_node_db);
