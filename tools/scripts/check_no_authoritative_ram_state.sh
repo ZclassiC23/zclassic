@@ -10,20 +10,15 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 BASELINE=tools/scripts/no_authoritative_ram_state_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
 baseline_count=0
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    baseline["$line"]=1
-    baseline_count=$((baseline_count + 1))
-done < "$BASELINE"
+gate_load_list_file "$BASELINE" baseline baseline_count
 
 pattern='(\.|->)chain_active\.(height|chain|capacity)|(^|[[:space:]])static[[:space:]]+struct[[:space:]]+active_chain[[:space:]]+[A-Za-z_][A-Za-z0-9_]*|(^|[[:space:]])struct[[:space:]]+active_chain[[:space:]]+g_[A-Za-z_][A-Za-z0-9_]*'
 

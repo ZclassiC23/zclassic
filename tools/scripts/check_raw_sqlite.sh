@@ -48,20 +48,13 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source "$ROOT/tools/lint/scan_exclusions.sh"
+# shellcheck source=tools/lint/gate_lib.sh
+source "$ROOT/tools/lint/gate_lib.sh"
 
 ALLOWLIST="$SCRIPT_DIR/raw_sqlite_allowlist.txt"
 
 declare -A ALLOWED=()
-if [[ -f "$ALLOWLIST" ]]; then
-    while IFS= read -r line; do
-        # strip comments and blanks
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        ALLOWED["$line"]=1
-    done < "$ALLOWLIST"
-fi
+gate_load_list_file "$ALLOWLIST" ALLOWED
 
 # Fail-loud grep: a grep exit >=2 is a REAL ERROR (bad pattern, unreadable
 # tree, non-GNU grep rejecting the syntax). The old form swallowed it with

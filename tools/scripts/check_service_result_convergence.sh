@@ -108,17 +108,8 @@ has_override_marker() {
 
 # Load baseline into an associative array: path -> recorded legacy count.
 declare -A baseline
-baseline_count=0
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    path="${line%% *}"
-    n="${line##* }"
-    baseline["$path"]="$n"
-    baseline_count=$((baseline_count + 1))
-done < "$BASELINE"
+gate_load_kv_file "$BASELINE" baseline
+baseline_count="${#baseline[@]}"
 
 # Fail-loud preflight: the scan set MUST be non-empty.
 mapfile -t scan_files < <(find "$SCAN_DIR" -type f -name '*.c' 2>/dev/null | sort)

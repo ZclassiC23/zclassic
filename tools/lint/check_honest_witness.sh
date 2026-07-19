@@ -46,6 +46,8 @@ COND_DIR="app/conditions/src"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 # Observable-progress tokens. An honest witness must reference at least one:
 # real height/cursor advance, reducer-frontier H*, block_map iteration, a
@@ -58,15 +60,7 @@ OBSERVABLE_RE='active_chain_height|active_chain_tip|current_tip_height|reducer_f
 
 # Load baseline (set of witness names allowed to be dishonest, grandfathered).
 declare -A BASELINED=()
-if [[ -f "$BASELINE" ]]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        BASELINED["$line"]=1
-    done < "$BASELINE"
-fi
+gate_load_list_file "$BASELINE" BASELINED
 
 scanned=0
 violations=0

@@ -64,15 +64,7 @@ is_placed() {
 }
 
 declare -A ALLOWED=()
-if [[ -f "$BASELINE" ]]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" ]] && continue
-        ALLOWED["$line"]=1
-    done < "$BASELINE"
-fi
+gate_load_list_file "$BASELINE" ALLOWED
 
 scanned=0
 considered=0

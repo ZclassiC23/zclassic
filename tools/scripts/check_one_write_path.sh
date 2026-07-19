@@ -36,14 +36,7 @@ BASELINE=tools/scripts/one_write_path_baseline.txt
 
 declare -A baseline
 baseline_count=0
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    baseline["$line"]=1
-    baseline_count=$((baseline_count + 1))
-done < "$BASELINE"
+gate_load_list_file "$BASELINE" baseline baseline_count
 
 pattern='active_chain_set_tip[[:space:]]*\(|coins_view_sqlite_batch_write(_ex)?[[:space:]]*\(|coins_view_cache_flush[[:space:]]*\(|utxo_projection_set_author[[:space:]]*\(|process_new_block[[:space:]]*\(|connect_tip[[:space:]]*\(|disconnect_tip[[:space:]]*\('
 
