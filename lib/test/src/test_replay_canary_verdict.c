@@ -796,6 +796,209 @@ static int test_from_genesis_sentinel_name(void)
     return failures;
 }
 
+/* A self-test run whose binary-identity capture fails (nonexistent/
+ * non-executable ZCL_CANARY_SELFTEST_NODE_BIN) could not attempt a replay at
+ * all — it must write a BLOCKED sentinel (exit 2), never a FAIL (exit 1),
+ * so an operator/ops-surface reader can tell "the canary's own prerequisite
+ * was unmet" apart from "the canary ran and found a consensus-grade
+ * anomaly" (lane E2 objective 2). This exercises `blocked()` end to end:
+ * the sentinel write, the distinct exit code, and (per
+ * canary_sentinel_watch.h's documented contract) that only verdict=="FAIL"
+ * pages — a verdict other than PASS/FAIL, like BLOCKED, is inert there by
+ * construction, so no node-side assertion is needed here. */
+static int test_blocked_on_identity_capture_failure(void)
+{
+    int failures = 0;
+    TEST("replay-canary: unusable node binary => BLOCKED (not FAIL), exit 2") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        char fx[PATH_MAX], vd[PATH_MAX];
+        snprintf(fx, sizeof(fx), "/tmp/test_canary_blocked_fx_%d", (int)getpid());
+        snprintf(vd, sizeof(vd), "/tmp/test_canary_blocked_vd_%d", (int)getpid());
+        mkdir(fx, 0755);
+        mkdir(vd, 0755);
+        seed_fixtures(fx, "pass");
+
+        /* A path that cannot exist: capture_binary_identity's `[ -x "$binary" ]`
+         * guard must reject it, driving run_self_test's identity-capture
+         * failure branch. */
+        char bogus_bin[PATH_MAX];
+        snprintf(bogus_bin, sizeof(bogus_bin),
+                 "/tmp/test_canary_blocked_no_such_binary_%d", (int)getpid());
+
+        char cmd[PATH_MAX * 4];
+        snprintf(cmd, sizeof(cmd),
+            "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
+            "ZCL_CANARY_SELFTEST_NODE_BIN='%s' "
+            "bash '%s/%s' --from=anchor --self-test=pass >/dev/null 2>&1",
+            fx, vd, bogus_bin, root, CANARY_REL);
+        int rc = system(cmd);
+        int exit_code = (rc == -1) ? -1 : WEXITSTATUS(rc);
+
+        char sentinel[PATH_MAX];
+        snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_anchor.json", vd);
+        char buf[2048] = {0};
+        bool have_sentinel = read_file(sentinel, buf, sizeof(buf));
+
+        char rm[PATH_MAX + 32];
+        snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
+        if (system(rm) != 0) { /* best-effort cleanup */ }
+
+        ASSERT_EQ(exit_code, 2);
+        ASSERT(have_sentinel);
+        ASSERT(strstr(buf, "\"verdict\":\"BLOCKED\"") != NULL);
+        ASSERT(strstr(buf, "\"reason\":\"source_identity_capture_failed\"") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Static source guards ──────────────────────────────────────────
+ *
+ * These four checks pin shell-level invariants that the fixture harness
+ * above cannot reach without spawning a real mainnet node (explicitly out
+ * of scope for this hermetic suite — see the file header). Each guards a
+ * concrete, previously-live defect:
+ *
+ *   1. The "UC: unbound variable" crash (observed live 2026-07-17/19,
+ *      `journalctl -u zclassic23-replay-canary-nightly`): run_live's
+ *      budget-timeout branch populated SD/DIAG/TX/ZD but not UC, so
+ *      evaluate_verdict's leading "every blob present" gate died on an
+ *      unbound reference under `set -u` BEFORE fail() could run, leaving
+ *      no sentinel at all. Two defenses now exist — a script-wide default
+ *      (SD=""; DIAG=""; UC=""; TX=""; ZD="") and an explicit UC= in the
+ *      timeout branch — this guard pins both so a future edit cannot drop
+ *      either half.
+ *   2. "cannot attempt a replay" conditions (missing binary, no disk, a
+ *      bad source datadir, a failed header import) must route through
+ *      blocked(), not a bare `exit`, so they leave a durable, typed
+ *      sentinel distinct from a replay MISMATCH.
+ *   3. The genesis track's ONLY real peer must be dialed via -connect=
+ *      (which sets g_connect_only and disables DNS-seed/addrman outbound
+ *      discovery), never -addnode= (which only adds a candidate and
+ *      leaves discovery live) — the isolation-invariant violation
+ *      confirmed live 2026-07-19 (a weekly run reached four public IPs).
+ *   4. isolated_mainnet_env.sh's iso_die (not directly test-mapped in
+ *      agent_impact_rules.def — nearest mapped test is this file) must
+ *      still route a fatal isolation-setup problem through blocked() when
+ *      the sourcing script defines it, so THAT class of "cannot run"
+ *      failure is durable too. */
+
+static bool read_script_source(const char *root, const char *rel,
+                               char *buf, size_t bufsz)
+{
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/%s", root, rel) >= (int)sizeof(path))
+        return false;
+    return read_file(path, buf, bufsz);
+}
+
+static int test_source_guard_no_unbound_result_vars(void)
+{
+    int failures = 0;
+    TEST("replay-canary: SD/DIAG/UC/TX/ZD always defaulted + timeout branch sets UC") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        static char body[65536];
+        ASSERT(read_script_source(root, CANARY_REL, body, sizeof(body)));
+
+        /* (1a) the script-wide default that makes every blob variable
+         * always-bound regardless of which run mode/branch populates it. */
+        ASSERT(strstr(body, "SD=\"\"; DIAG=\"\"; UC=\"\"; TX=\"\"; ZD=\"\"") != NULL);
+
+        /* (1b) the timeout branch (identified by its synthetic bg_state
+         * marker) must assign UC before evaluate_verdict runs. Bounded
+         * window so this cannot false-pass on a UC= assignment written
+         * somewhere unrelated in the file. */
+        const char *marker = strstr(body, "R_BGSTATE=\"timeout\"");
+        ASSERT(marker != NULL);
+        const char *eval_call = strstr(marker, "evaluate_verdict");
+        ASSERT(eval_call != NULL);
+        const char *uc_assign = strstr(marker, "UC=\"$(iso_rpc getutxocommitment)\"");
+        ASSERT(uc_assign != NULL && uc_assign < eval_call);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_source_guard_missing_prereqs_route_through_blocked(void)
+{
+    int failures = 0;
+    TEST("replay-canary: cannot-run prerequisites route through blocked(), not a bare exit") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        static char body[65536];
+        ASSERT(read_script_source(root, CANARY_REL, body, sizeof(body)));
+
+        static const char *want[] = {
+            "blocked \"binary_missing_zclassic23\"",
+            "blocked \"binary_missing_zcl_rpc\"",
+            "blocked \"source_identity_capture_failed\"",
+            "blocked \"insufficient_disk\"",
+            "blocked \"src_datadir_missing\"",
+            "blocked \"blockindex_import_failed\"",
+        };
+        for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+            if (!strstr(body, want[i])) {
+                printf("FAIL: missing '%s' — a cannot-run prerequisite check "
+                       "regressed to a bare exit instead of blocked()\n",
+                       want[i]);
+                failures++;
+                goto _test_next;
+            }
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_source_guard_genesis_uses_connect_not_addnode(void)
+{
+    int failures = 0;
+    TEST("replay-canary: genesis dials zclassicd via -connect= (g_connect_only), never -addnode=") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        static char body[65536];
+        ASSERT(read_script_source(root, CANARY_REL, body, sizeof(body)));
+
+        /* The actual invocation must use -connect=. (Not asserting the
+         * absence of the string "-addnode=127.0.0.1:8034" anywhere in the
+         * file: the fix's own explanatory comment quotes the old, wrong
+         * flag on purpose — this checks the live call site, not prose.) */
+        ASSERT(strstr(body, "iso_spawn_mainnet_node \"-nolegacyimport -connect=127.0.0.1:8034\"") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_source_guard_iso_die_routes_through_blocked(void)
+{
+    int failures = 0;
+    TEST("replay-canary: isolated_mainnet_env.sh's iso_die routes through blocked() when defined") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        static char body[65536];
+        ASSERT(read_script_source(root,
+            "tools/scripts/isolated_mainnet_env.sh", body, sizeof(body)));
+
+        const char *fn = strstr(body, "iso_die() {");
+        ASSERT(fn != NULL);
+        const char *close = strstr(fn, "\n}\n");
+        ASSERT(close != NULL);
+        const char *check = strstr(fn, "command -v blocked");
+        ASSERT(check != NULL && check < close);
+        const char *call = strstr(fn, "blocked \"isolation_setup_failed\"");
+        ASSERT(call != NULL && call < close);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ───────────────────────────────────────────────── */
 
 int test_replay_canary_verdict(void)
@@ -814,5 +1017,10 @@ int test_replay_canary_verdict(void)
     failures += test_pass_replaces_stale_sentinel();
     failures += test_identity_is_captured_once_before_replay();
     failures += test_from_genesis_sentinel_name();
+    failures += test_blocked_on_identity_capture_failure();
+    failures += test_source_guard_no_unbound_result_vars();
+    failures += test_source_guard_missing_prereqs_route_through_blocked();
+    failures += test_source_guard_genesis_uses_connect_not_addnode();
+    failures += test_source_guard_iso_die_routes_through_blocked();
     return failures;
 }
