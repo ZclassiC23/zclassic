@@ -1,30 +1,24 @@
-# Sovereign cutover runbook — install the consensus-state bundle (the path that cured the wedge)
+# Sovereign cutover runbook — install the consensus-state bundle
 
-**Status: this runbook's cutover SUCCEEDED live (2026-07-19) — the serve node
-is AT NETWORK TIP on self-verified state** (`docs/HANDOFF.md` §0-LATEST):
-`-install-consensus-bundle` reached the **CHECKPOINT_CONTENT ACTIVATE**
-authority (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`)
-and admitted-and-activated a bundle whose coins reproduce the compiled SHA3
+**Status: proven mechanism.** `-install-consensus-bundle` reaches the
+**CHECKPOINT_CONTENT ACTIVATE** authority
+(`config/src/consensus_state_snapshot_install_checkpoint_authority.c`) and
+admits-and-activates a bundle whose coins reproduce the compiled SHA3
 checkpoint and whose Sapling frontier roots to the local validated header.
-The `zclassic23-mint-receipt` producer failure and the chain-binding refusals
-narrated in earlier revisions of this file are historical — recover with
-`git log --follow -- docs/work/sovereign-cutover-runbook.md` if that forensic
-detail is ever needed. This runbook is kept live as the **reference procedure**
-for the next time a datadir needs the same cure (a fresh node, a future
-regression, or a second lane) — re-verify every fact below against the live
-node and current source before running any command in it; heights, commits,
-and producer state rot fast in this repo, and the mechanism below is what
-actually shipped, not a still-open design.
+This runbook is the **reference procedure** for installing that cure (a
+fresh node, a future regression, or a second lane) — re-verify every fact
+below against the live node and current source before running any command
+in it; heights, commits, and producer state rot fast in this repo. Current
+live state: `docs/HANDOFF.md`.
 
 The cure flows through a **complete consensus-state bundle** (coins +
 Sprout/Sapling anchors + nullifiers, `history_complete=true`,
 `activation_boundary=0`) and a dedicated boot-time consumer flag,
 `-install-consensus-bundle=PATH`. `-refold-from-anchor` still exists in the
-binary and `tools/repro_on_copy.sh` still supports it (the sticky-escalator
-rung uses it — see `project_always_synced_program_2026-07-13_night2`
-memory), but it is a different, narrower recipe (transparent-only, no
-independent shielded-history validation): do not use it in place of this
-bundle-install cure.
+binary and `tools/repro_on_copy.sh` still supports it (a sticky-escalator
+recovery rung uses it), but it is a different, narrower recipe
+(transparent-only, no independent shielded-history validation): do not use
+it in place of this bundle-install cure.
 
 ## The mechanism (for orientation — full contract in source)
 
@@ -35,11 +29,8 @@ bundle-install cure.
   (`config/src/boot_mint_anchor.c:boot_mint_anchor_export_bundle`,
   `config/include/config/boot.h:420-430`). The export is proof-bound to the
   exact running binary (`running_binary_digest == SHA3(/proc/self/exe)`) and
-  refuses while the in-RAM fold overlay is live. The failed source producer is
-  the `zclassic23-mint-receipt` systemd --user unit, datadir
-  `$HOME/.zclassic-c23-mint-receipt`; the unit is stopped and the datadir is
-  evidence, not an artifact source.
-  Current truth and the exact mismatch are in `docs/HANDOFF.md`.
+  refuses while the in-RAM fold overlay is live. Current producer status:
+  `docs/HANDOFF.md`.
 - **Consumer side** (this doc, currently contained in production):
   `-install-consensus-bundle=PATH`
   (`config/src/boot_install_consensus_bundle.c`, wired in `config/src/boot.c`
@@ -136,8 +127,8 @@ pair together as the portable artifact for every subsequent install call
 
 ## Preconditions (do not start the cutover before all of these hold)
 
-1. **The bundle artifact exists and is admissible.** This precondition is
-   currently **NOT MET**. Confirm
+1. **The bundle artifact exists and is admissible.** Re-verify this fresh —
+   do not assume it holds from a prior run. Confirm
    `<producer-datadir>/consensus-state-bundle-<anchor>.sqlite` is present
    (currently expected at
    `$HOME/.zclassic-c23-mint-receipt/consensus-state-bundle-3056758.sqlite`)
@@ -161,51 +152,21 @@ pair together as the portable artifact for every subsequent install call
    `tools/repro_on_copy.sh --help 2>&1 | grep install-consensus-bundle` or by
    reading the script header).
 
-## Known-good: `-install-consensus-bundle` end-to-end proof (as of 2026-07-18)
+## Known-good
 
-**PASS.** The verb, the chain-binding gate, the publication CAS, the
-CHECKPOINT_CONTENT authority path, and the atomic cutover all behaved exactly
-as written on a copy-proof fixture — no installer defect found, no gate
-predicate touched, no code change made.
-
-- Fixture: `--importblockindex` header pull (3,170,490 headers) + hand-stamped
-  minimal durable state (coins-proven authority, the 8 production stage
-  cursors at the anchor layout, a `tip_finalize` anchor row, and the two
-  `validate_headers` pass records the gate reads) — everything the gate
-  reads that a bare imported datadir does not already provide, and nothing
-  more (no UTXO set, no anchor/nullifier tables, no reducer log rows above
-  the anchor). Fixture-stamp and post-install proof-read recipe: one-shot
-  mission tooling used for this run, since removed (git history has it if a
-  future proof needs to reconstruct the exact stamp).
-- Firing `-install-consensus-bundle=<bundle>` printed `INSTALLED:` (exit 0)
-  and activated via `authority=checkpoint_content` (no replay receipt on the
-  fixture — expected; CHECKPOINT_CONTENT is the designed fallback lattice
-  member for exactly that case).
-- Post-install boot served `hstar=served_floor=3056758 served_gap=0`, all 8
-  cursors at the anchor layout, no `anchor_backfill_gap` wedge (the bundle's
-  shielded history is complete). The node's own `core consensus utxo
-  commitment` recompute AND an independent recompute outside this repo's code
-  both matched the compiled checkpoint root
-  (`5817f0ec6673…`, 1,354,769 coins, supply 10,364,137.94674881 ZCL) — the
-  UTXO integrity claim is doubly verified, not self-reported.
-- Cost: admission (root/count/supply + every anchor tree + nullifier digest
-  recompute over the artifact) dominates wall time, ~40 min/pass on the
-  proving host, and the install path admits twice (verb + activate
-  re-admission) plus a destination re-verification — budget the maintenance
-  window accordingly for the live cutover. The admission loop does not
-  respond to SIGTERM mid-compute (SIGKILL only, fixture processes only —
-  never a live node).
-- Fixture-recipe lessons (not installer defects): the `blocks` table left by
-  `--importblockindex` is a projection only — no boot loader reads it into
-  the in-memory chain, so the fixture (like the canonical two-step recipe)
-  still needs the legacy header pull to populate `chain_active`; and
-  `reducer_frontier_compute_hstar` LOG_FAILs on a missing log table, so a
-  hand-built store must create the six empty success-checked log tables, not
-  just stamp rows into them.
-- Remaining blocker for the CANONICAL cutover is not this installer but
-  building the canonical datadir's own evidence (validated chain state at/
-  above the anchor with pass records + proven coins authority) — see
-  `self-verified-tip-plan.md`.
+**Status: proven mechanism**, last exercised end-to-end on a copy-proof
+fixture — the verb, the chain-binding gate, the publication CAS, the
+CHECKPOINT_CONTENT authority path, and the atomic cutover all behave exactly
+as designed: no installer defect found, no gate predicate touched. The
+node's own `core consensus utxo commitment` recompute and an independent
+recompute outside this repo's code both matched the compiled checkpoint
+root — the UTXO integrity claim is doubly verified, not self-reported.
+Admission (root/count/supply + every anchor tree + nullifier digest
+recompute over the artifact) dominates wall time; budget the maintenance
+window accordingly for a live cutover. The remaining blocker for the
+CANONICAL cutover is not this installer but building the canonical
+datadir's own evidence (validated chain state at/above the anchor with
+pass records + proven coins authority) — see `self-verified-tip-plan.md`.
 
 ## Copy-prove step (mandatory — never live surgery)
 

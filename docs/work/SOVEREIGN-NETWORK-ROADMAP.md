@@ -44,49 +44,7 @@ higher one.
 
 ## Current baseline
 
-> Re-derived 2026-07-19: the shielded-state wedge this section used to lead
-> with is CURED (`docs/HANDOFF.md` §0-LATEST — serve node AT NETWORK TIP on
-> self-verified state, via the checkpoint-content consensus-bundle install
-> path, `docs/work/sovereign-cutover-runbook.md`). Verify the live H\* via
-> `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before trusting
-> either this note or `docs/HANDOFF.md` — both are snapshots, not live reads.
-
-- The state-truth invariant (layer 2 above) is now met on the serve node: a
-  matching ZClassic header alone never authenticated the previous borrowed
-  snapshot's UTXO/shielded contents, so the cure independently validated
-  complete transparent + shielded state before activation
-  (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`).
-- Legacy USS v3 can carry current shielded frontiers and supplied nullifiers,
-  but it omits historical anchor rows and cannot prove complete nullifier
-  history. The v1-oriented `-refold-from-anchor` reset can additionally
-  reject or discard those sections — this caution still applies to any future
-  cure attempt, even though the current one used a different path. USS v3 is
-  not the sovereign cure.
-- The soak window is now running on the at-tip serve node (`docs/HANDOFF.md`
-  §0-LATEST). Judge with `make soak-evidence-report`; re-read live accrual
-  with `tools/mvp_gate.sh` — do not trust a pinned verdict here. One-block
-  lookahead or uptime without exact same-height parity and complete security
-  posture is still not evidence.
-- MVP is 4/8 as of the last read (`docs/HANDOFF.md` §4, "do not bump without
-  proof"); re-run `tools/mvp_gate.sh` for the current number. Exact parity,
-  fresh-machine cold-sync, market, and the 168-hour soak claim remain open.
-- Background quality evidence is not yet immutable/exact-commit complete; fuzz
-  and coverage lanes are red or stale.
-- Native hot-swap primitives exist, but source epochs, complete proof receipts,
-  behavioral probes, atomic generation publication, and rollback are not yet
-  one enforced transaction. Automatic apply is therefore contained. Resident
-  discard-only probing is contained too: `dlopen` can execute constructors
-  before the current manifest admission. The existing dirty-overlay SHA-256
-  identity is only a supersession diagnostic, not `zcl.dev_source_epoch.v1`.
-- Stable starter-pack publication is contained: local `make bootstrap` remains
-  available; `make bootstrap-publish` refuses until exact-candidate quality,
-  release, reproducibility, signing, and copy-proof evidence lands.
-- Runtime peer snapshots may download and verify, but canonical activation is
-  contained until the unified full-state installer exists. The manual
-  owner-gated loader carries an interim payload-bound in-progress marker that
-  forces restart convergence; this is not a claim of multi-store atomicity.
-- The public out-of-process App runtime and signed package/content network are
-  design targets, not stable shipped surfaces.
+Live state: `docs/HANDOFF.md`.
 
 ## Phase 0 — containment and truthful control planes
 
@@ -138,29 +96,11 @@ explicitly open until its generation-driven tests pass.
 Goal: cure canonical first, then make fast readiness and eventual sovereignty
 honest, repeatable states.
 
-### Immediate cure — **LANDED** (`docs/HANDOFF.md` §0-LATEST, 2026-07-19)
+### Immediate cure — LANDED
 
-The design below is what shipped as the checkpoint-content consensus-bundle
-install path (`docs/work/sovereign-cutover-runbook.md`); kept as the
-as-designed record, not an open task list.
-
-- Build one `consensus_state_snapshot_install()` service for both loader and
-  refold paths.
-- Independently validate payload SHA3; transparent root/count/supply; local
-  validated height/hash; Sapling and Sprout frontiers; complete nullifiers; and
-  producer/source/proof provenance.
-- Stage and atomically promote all state, trusted base, cursors, logs, and
-  provenance. On malformed input, ENOSPC, interruption, or kill at any boundary,
-  publish nothing and retain the previous state.
-- Preserve the existing slow from-genesis mint. Do not kill or rewrite its data;
-  benchmark any newer producer at lower priority on an isolated prefix.
-- Copy-prove the exact cure branch on canonical data before requesting an
-  owner-approved immutable-candidate deployment with backup and rollback.
-
-Immediate gate: H\* climbs past 3,176,326 to normal lookahead;
-`coins_applied_height == H* + 1`; anchor/nullifier histories are complete; seed,
-wedge, and same-height tip hashes match zclassicd; warm restart and kill-9 resume
-without partial reinstall; every malformed/missing component publishes nothing.
+Shipped as the checkpoint-content consensus-bundle install path — see
+`docs/work/sovereign-cutover-runbook.md` for the mechanism and acceptance
+gate.
 
 ### Permanent architecture
 
