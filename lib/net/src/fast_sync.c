@@ -23,6 +23,7 @@
 #include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "json/json.h"
 #ifdef __GLIBC__
 #include <malloc.h>
 #endif
@@ -198,20 +199,6 @@ void fast_sync_compute_utxo_root_db(sqlite3 *db, uint8_t root_out[32])
      * snapshot offer hash matches what the receiver will compute. */
     uint64_t count = 0;
     utxo_commitment_sha3_compute(db, root_out, &count);
-}
-
-bool fast_sync_compute_utxo_root(const char *datadir,
-                                  uint8_t root_out[32])
-{
-    char db_path[1024];
-    zcl_node_db_path(db_path, sizeof(db_path), datadir);
-
-    sqlite3 *db = NULL;
-    fast_sync_open_readonly_db(db_path, &db, "compute_utxo_root");
-
-    fast_sync_compute_utxo_root_db(db, root_out);
-    sqlite3_close(db);
-    return true;
 }
 
 /* ── Pre-serialized snapshot for zero-copy serving ───────────── */
@@ -536,58 +523,77 @@ const uint8_t *fast_sync_get_snapshot_buf(int64_t *size)
     return buf;
 }
 
-bool fast_sync_serve_snapshot(const char *datadir,
-                               int from_height,
-                               chunk_callback cb, void *ctx)
+/* ── Diagnostics: `ops state --subsystem=fast_sync` ──────────────────
+ *
+ * See CLAUDE.md "Adding state introspection". Reports the two module-global
+ * runtime caches that back snapshot offers/serving: the UTXO-root offer cache
+ * (fast_sync_publish_utxo_root_cache) and the pre-serialized snapshot cache
+ * (fast_sync_prebuild_snapshot / fast_sync_publish_snapshot_cache). The PoW
+ * admission gate and rate limiter are caller-owned structs, not globals, so
+ * they are not part of this whole-subsystem snapshot. Snapshot consistency via
+ * brief acquires of the two cache mutexes (matches every accessor above). */
+bool fast_sync_dump_state_json(struct json_value *out, const char *key)
 {
-    char db_path[1024];
-    zcl_node_db_path(db_path, sizeof(db_path), datadir);
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
 
-    sqlite3 *db = NULL;
-    fast_sync_open_readonly_db(db_path, &db, "serve_snapshot");
+    /* UTXO-root offer cache. */
+    pthread_mutex_lock(&g_utxo_root_cache_mutex);
+    bool root_valid = g_cached_root_valid;
+    uint64_t root_count = g_cached_utxo_count;
+    uint64_t root_version = g_cached_utxo_root_version;
+    uint8_t root[32];
+    memcpy(root, g_cached_utxo_root, sizeof(root));
+    pthread_mutex_unlock(&g_utxo_root_cache_mutex);
 
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT txid, vout, value, script, height, is_coinbase "
-        "FROM utxos ORDER BY txid, vout",
-        -1, &s, NULL);
-
-    struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "utxo_chunk");
-    if (!chunk) { sqlite3_finalize(s); sqlite3_close(db); LOG_FAIL("sync", "serve_snapshot: alloc utxo_chunk failed"); }
-
-    (void)from_height;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        uint32_t idx = chunk->num_entries;
-        const void *txid = sqlite3_column_blob(s, 0);
-        if (txid) memcpy(chunk->entries[idx].txid, txid, 32);
-        chunk->entries[idx].vout = (uint32_t)sqlite3_column_int(s, 1);
-        chunk->entries[idx].value = sqlite3_column_int64(s, 2);
-
-        const void *script = sqlite3_column_blob(s, 3);
-        int slen = sqlite3_column_bytes(s, 3);
-        if (script && slen > 0) {
-            if (slen > (int)sizeof(chunk->entries[idx].script))
-                slen = (int)sizeof(chunk->entries[idx].script);
-            memcpy(chunk->entries[idx].script, script, (size_t)slen);
-            chunk->entries[idx].script_len = (uint16_t)slen;
-        }
-        chunk->entries[idx].height = sqlite3_column_int(s, 4);
-        chunk->entries[idx].is_coinbase = sqlite3_column_int(s, 5) != 0;
-        chunk->num_entries++;
-
-        if (chunk->num_entries >= 1000) {
-            if (!cb(chunk, ctx)) break;
-            memset(chunk, 0, sizeof(*chunk));
-        }
+    struct json_value uc = {0};
+    json_set_object(&uc);
+    json_push_kv_bool(&uc, "valid", root_valid);
+    json_push_kv_int(&uc, "utxo_count", (int64_t)root_count);
+    json_push_kv_int(&uc, "version", (int64_t)root_version);
+    if (root_valid) {
+        char hex[65];
+        for (int i = 0; i < 32; i++)
+            sprintf(hex + i * 2, "%02x", root[i]);
+        json_push_kv_str(&uc, "root", hex);
     }
+    json_push_kv(out, "utxo_root_cache", &uc);
+    json_free(&uc);
 
-    /* Send remaining */
-    if (chunk->num_entries > 0)
-        cb(chunk, ctx);
+    /* Pre-serialized snapshot cache (metadata always; RAM buffer optional). */
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    bool snap_valid = g_snapshot_sha3_valid;
+    uint64_t snap_count = g_snapshot_count;
+    uint64_t snap_version = g_snapshot_cache_version;
+    bool buf_resident = g_snapshot_buf != NULL;
+    int64_t buf_size = g_snapshot_buf_size;
+    uint32_t num_chunks = g_snapshot_num_chunks;
+    uint8_t sha3[32];
+    memcpy(sha3, g_snapshot_sha3, sizeof(sha3));
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
 
-    free(chunk);
-    sqlite3_finalize(s);
-    sqlite3_close(db);
+    struct json_value sc = {0};
+    json_set_object(&sc);
+    json_push_kv_bool(&sc, "sha3_valid", snap_valid);
+    json_push_kv_int(&sc, "utxo_count", (int64_t)snap_count);
+    json_push_kv_int(&sc, "version", (int64_t)snap_version);
+    json_push_kv_bool(&sc, "buf_resident", buf_resident);
+    json_push_kv_int(&sc, "buf_bytes", buf_size);
+    json_push_kv_int(&sc, "num_chunks", (int64_t)num_chunks);
+    if (snap_valid) {
+        char hex[65];
+        for (int i = 0; i < 32; i++)
+            sprintf(hex + i * 2, "%02x", sha3[i]);
+        json_push_kv_str(&sc, "sha3", hex);
+    }
+    json_push_kv(out, "snapshot_cache", &sc);
+    json_free(&sc);
+
+    diag_push_health(out, true,
+                     snap_valid ? "snapshot metadata published"
+                                : "no snapshot published yet");
     return true;
 }
 

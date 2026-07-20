@@ -127,6 +127,11 @@ bool fs_server_is_running(void);
 uint16_t fs_server_get_port(void);
 bool fs_server_refresh_manifest(void);
 
+/* Diagnostics dump (`ops state --subsystem=file_service`).
+ * See CLAUDE.md "Adding state introspection". Reentrant-safe; initializes out. */
+struct json_value;
+bool file_service_dump_state_json(struct json_value *out, const char *key);
+
 /* High-level: connect to peer and download all chunks. */
 bool fs_client_sync(const char *peer_addr, uint16_t port,
                      const char *datadir, const uint8_t utxo_root[32]);

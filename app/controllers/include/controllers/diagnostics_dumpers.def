@@ -660,3 +660,27 @@
                  "self-attestation, never elevated to trusted.",
                  "lib/storage/src/checkpoint_ladder.c",
                  "lib/test/src/test_consensus_state_snapshot_export.c"),
+    DIAG_SERVICE("fast_sync", fast_sync_dump_state_json,
+                 "fast-sync snapshot serving state: the UTXO-root offer cache "
+                 "(valid/utxo_count/version/root) and the pre-serialized "
+                 "snapshot cache (sha3_valid/utxo_count/version/buf_resident/"
+                 "buf_bytes/num_chunks/sha3) that back zsnapshot offers + "
+                 "chunk serving. The PoW gate + rate limiter are caller-owned "
+                 "structs, not part of this whole-subsystem snapshot",
+                 "lib/net/src/fast_sync.c",
+                 "lib/test/src/test_fast_sync.c"),
+    DIAG_SERVICE("file_service", file_service_dump_state_json,
+                 "P2P file-market server: running/port/datadir_set, "
+                 "server_workers + worker_threads_started, client connection "
+                 "backlog (client_queue_len/cap), served-data manifest "
+                 "(have_manifest/manifest_chunks/manifest_height), and the "
+                 "per-IP admission table (active_ips/concurrent_serves/cap)",
+                 "lib/net/src/file_service.c",
+                 "lib/test/src/test_file_service_pow_gate.c"),
+    DIAG_SERVICE("messaging", messaging_dump_state_json,
+                 "ZMSG channels: controller_wired/db_open/network_available, "
+                 "p2p_channel_available (always; plaintext on the wire), "
+                 "onchain_channel_ready (Sapling prover params loaded), "
+                 "in-memory inbox_store_count/cap, and onchain_memo_max_bytes",
+                 "app/controllers/src/messaging_controller.c",
+                 DIAG_TEST_DEFAULT),
