@@ -45,19 +45,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* cwd-relative tmpdir (no /tmp), matching test_progress_store.c. */
-static void cc_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/catalog_completeness_%d_%s", (int)getpid(),
-             tag);
-}
-
-static int cc_mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
 
 static void cc_fill_hash(struct uint256 *h, uint8_t b)
 {
@@ -96,8 +83,7 @@ int test_catalog_completeness(void)
      * target ─────────────────────────────────────────────────────────── */
     {
         char dir[256];
-        cc_tmpdir(dir, sizeof(dir), "genesis");
-        cc_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "catalog_completeness", "genesis");
         CC_CHECK("scenario A: progress_store opens", progress_store_open(dir));
         sqlite3 *db = progress_store_db();
         CC_CHECK("scenario A: db handle non-NULL", db != NULL);
@@ -245,8 +231,7 @@ int test_catalog_completeness(void)
      * target height, matching the node's existing gap semantics. ────── */
     {
         char dir[256];
-        cc_tmpdir(dir, sizeof(dir), "gap");
-        cc_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "catalog_completeness", "gap");
         CC_CHECK("scenario B: progress_store opens", progress_store_open(dir));
         sqlite3 *db = progress_store_db();
 

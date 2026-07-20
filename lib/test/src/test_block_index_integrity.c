@@ -57,11 +57,13 @@ static void bii_install_observer(void)
 
 static bool bii_make_tmpdir(char *out, size_t cap)
 {
-    /* Unique suffix via PID+counter so parallel tests don't collide. */
+    /* Unique suffix via a counter so parallel tests don't collide;
+     * path-build + stale-cleanup + mkdir delegate to the shared helper. */
     static _Atomic int seq = 0;
     int s = atomic_fetch_add(&seq, 1);
-    snprintf(out, cap, "/tmp/zcl23_bii_test_%d_%d", (int)getpid(), s);
-    mkdir(out, 0700);
+    char tag[16];
+    snprintf(tag, sizeof(tag), "%d", s);
+    test_make_tmpdir(out, cap, "bii", tag);
     return true;
 }
 

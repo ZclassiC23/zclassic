@@ -58,11 +58,6 @@ static void bip_ensure_root(void)
     bip_mkdir_p("./test-tmp");
 }
 
-static void bip_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/bip_%d_%s", (int)getpid(), tag);
-}
-
 static void bip_cleanup_dir(const char *dir)
 {
     test_cleanup_tmpdir(dir);
@@ -115,8 +110,7 @@ static int run_open_close_clean(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "open_close");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "open_close");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -156,8 +150,7 @@ static int run_single_header_consumed(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "single");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "single");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -199,8 +192,7 @@ static int run_get_by_height(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "by_height");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "by_height");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -267,8 +259,7 @@ static int run_iterate_canonical(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "iterate");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "iterate");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -315,8 +306,7 @@ static int run_replay_idempotent(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "replay");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "replay");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -357,8 +347,7 @@ static int run_reorg_replace(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "reorg");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "reorg");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -402,8 +391,7 @@ static int run_commitment_canonical(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "commitment");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "commitment");
     char el_path1[320]; snprintf(el_path1, sizeof(el_path1), "%s/log1.bin", dir);
     char el_path2[320]; snprintf(el_path2, sizeof(el_path2), "%s/log2.bin", dir);
     char db_path1[320]; snprintf(db_path1, sizeof(db_path1), "%s/p1.db", dir);
@@ -470,8 +458,7 @@ static int run_resume_from_partial(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "resume");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "resume");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 
@@ -589,8 +576,7 @@ static int run_collision_accounting_cached_stmt(int *failures)
 {
     int start_failures = *failures;
 
-    char dir[256]; bip_tmpdir(dir, sizeof(dir), "collision");
-    bip_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "bip", "collision");
     char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
     char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
 

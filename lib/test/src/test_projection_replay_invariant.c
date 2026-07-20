@@ -102,10 +102,6 @@ static int pri_mkdir_p(const char *p)
     return -1;
 }
 static void pri_ensure_root(void) { pri_mkdir_p("./test-tmp"); }
-static void pri_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/pri_%d_%s", (int)getpid(), tag);
-}
 
 /* ──────────────────────────────────────────────────────────────────────
  * Shared seed: a fixed default keeps the suite deterministic, but the
@@ -201,8 +197,7 @@ static bool utxo_proj_equal(utxo_projection_t *a, utxo_projection_t *b,
 static int run_utxo(uint64_t base_seed, int *failures_out)
 {
     int failures = 0;
-    char dir[256]; pri_tmpdir(dir, sizeof(dir), "utxo");
-    pri_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "pri", "utxo");
     char log_path[400], live_path[400], replay_path[400], pert_path[400];
     snprintf(log_path,    sizeof(log_path),    "%s/events.log",  dir);
     snprintf(live_path,   sizeof(live_path),   "%s/live.db",     dir);
@@ -445,8 +440,7 @@ static bool bip_proj_equal(block_index_projection_t *a,
 static int run_block_index(uint64_t base_seed, int *failures_out)
 {
     int failures = 0;
-    char dir[256]; pri_tmpdir(dir, sizeof(dir), "bip");
-    pri_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "pri", "bip");
     char log_path[400], live_path[400], replay_path[400], pert_path[400];
     snprintf(log_path,    sizeof(log_path),    "%s/events.log", dir);
     snprintf(live_path,   sizeof(live_path),   "%s/live.db",    dir);
@@ -614,8 +608,7 @@ static bool mp_proj_equal(mempool_projection_t *a, mempool_projection_t *b,
 static int run_mempool(uint64_t base_seed, int *failures_out)
 {
     int failures = 0;
-    char dir[256]; pri_tmpdir(dir, sizeof(dir), "mp");
-    pri_mkdir_p(dir);
+    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "pri", "mp");
     char log_path[400], live_path[400], replay_path[400], pert_path[400];
     snprintf(log_path,    sizeof(log_path),    "%s/events.log", dir);
     snprintf(live_path,   sizeof(live_path),   "%s/live.db",    dir);

@@ -39,16 +39,6 @@
     if (!(expr)) { printf("  FAIL: %s\n", name); failures++; } \
 } while (0)
 
-static void ua_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "/tmp/zcl_ua_%s_%d", tag, (int)getpid());
-}
-
-static void ua_mkdir_p(const char *dir)
-{
-    mkdir(dir, 0700);
-}
-
 static void make_txid(uint8_t txid[32], uint8_t seed)
 {
     for (int i = 0; i < 32; i++)
@@ -80,8 +70,7 @@ static int run_ordering_equivalence(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    ua_tmpdir(dir, sizeof(dir), "order");
-    ua_mkdir_p(dir);
+    test_make_tmpdir(dir, sizeof(dir), "ua", "order");
     char logA[512], projA[512], logB[512], projB[512];
     snprintf(logA,  sizeof(logA),  "%s/a.log",  dir);
     snprintf(projA, sizeof(projA), "%s/a.db",   dir);

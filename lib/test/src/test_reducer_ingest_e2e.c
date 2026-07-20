@@ -111,11 +111,6 @@ static int rie_mkdir_p(const char *p)
     return -1;
 }
 
-static void rie_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/reducer_ingest_e2e_%d_%s", (int)getpid(), tag);
-}
-
 /* ── Real block builders (mirror test_stage_reorg_unwind_parity) ─────── */
 
 static void cb_txid(struct uint256 *out, uint8_t branch_tag, int h)
@@ -569,8 +564,7 @@ static bool rie_env_open(struct rie_env *e, const char *tag,
                          const struct rie_ext_coin *ext, int n_ext)
 {
     memset(e, 0, sizeof(*e));
-    rie_tmpdir(e->dir, sizeof(e->dir), tag);
-    rie_mkdir_p(e->dir);
+    test_make_tmpdir(e->dir, sizeof(e->dir), "reducer_ingest_e2e", tag);
 
     char log_path[512], proj_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", e->dir);

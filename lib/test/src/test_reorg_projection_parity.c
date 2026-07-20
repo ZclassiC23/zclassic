@@ -72,20 +72,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* ── Temp-dir helpers (mirror test_utxo_projection.c) ────────────── */
-
-static void rpp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/reorg_proj_parity_%d_%s", (int)getpid(), tag);
-}
-
-static int rpp_mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
-
 /* ── Builders (mirror test_reorg_parity.c) ───────────────────────── */
 
 static struct transaction make_coinbase_seeded(int height, uint8_t seed)
@@ -212,10 +198,8 @@ int test_reorg_projection_parity(void)
            "(projection through reorg) ===\n");
     int failures = 0;
 
-    rpp_mkdir_p("./test-tmp");
     char dir[256];
-    rpp_tmpdir(dir, sizeof(dir), "main");
-    rpp_mkdir_p(dir);
+    test_make_tmpdir(dir, sizeof(dir), "reorg_proj_parity", "main");
 
     char log1_path[512], proj1_path[512], log2_path[512], proj2_path[512];
     snprintf(log1_path,  sizeof(log1_path),  "%s/events1.log",      dir);

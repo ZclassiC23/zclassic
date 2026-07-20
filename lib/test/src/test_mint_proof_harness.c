@@ -98,11 +98,6 @@ static int mp_mkdir_p(const char *p)
     return -1;
 }
 
-static void mp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/mintproof_%d_%s", (int)getpid(), tag);
-}
-
 static double mp_now_sec(void)
 {
     /* Fold-rate measurement clock, routed through platform.clock. */
@@ -236,8 +231,7 @@ static int mp_fold_synthetic_chain(const char *tag, int n_blocks,
 {
     memset(out_commit, 0, 32);
     char dir[256];
-    mp_tmpdir(dir, sizeof(dir), tag);
-    mp_mkdir_p(dir);
+    test_make_tmpdir(dir, sizeof(dir), "mintproof", tag);
 
     progress_store_close();
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return 1; }
@@ -311,8 +305,7 @@ static int mp_part1_determinism(void)
      * reopen, read again — coins_kv_commitment must be byte-stable on disk. */
     {
         char dir[256];
-        mp_tmpdir(dir, sizeof(dir), "p1c");
-        mp_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "mintproof", "p1c");
         progress_store_close();
         bool opened = progress_store_open(dir);
         uint8_t before[32] = {0}, after[32] = {0};
@@ -455,8 +448,7 @@ static int mp_part2_roundtrip(void)
     /* Source datadir: fold a synthetic chain, write a sidecar, capture the
      * original commitment. */
     char src_dir[256], snap_path[320];
-    mp_tmpdir(src_dir, sizeof(src_dir), "p2src");
-    mp_mkdir_p(src_dir);
+    test_make_tmpdir(src_dir, sizeof(src_dir), "mintproof", "p2src");
     snprintf(snap_path, sizeof(snap_path), "%s/utxo.snap", src_dir);
 
     progress_store_close();
@@ -503,8 +495,7 @@ static int mp_part2_roundtrip(void)
     /* Reload the sidecar into a FRESH isolated coins_kv via the real loader,
      * verifying the body SHA3 up-front (cold-start trust mode). */
     char dst_dir[256];
-    mp_tmpdir(dst_dir, sizeof(dst_dir), "p2dst");
-    mp_mkdir_p(dst_dir);
+    test_make_tmpdir(dst_dir, sizeof(dst_dir), "mintproof", "p2dst");
 
     struct uss_header hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -703,8 +694,7 @@ static int mp_part3_foldrate(void)
      * the live datadir. 96 MB of early blk00000.dat is well over 1,000
      * blocks. */
     char dir[256], dat_copy[320];
-    mp_tmpdir(dir, sizeof(dir), "p3");
-    mp_mkdir_p(dir);
+    test_make_tmpdir(dir, sizeof(dir), "mintproof", "p3");
     snprintf(dat_copy, sizeof(dat_copy), "%s/blk_copy.dat", dir);
     long copied = mp_copy_prefix(src_blk, dat_copy, 96L << 20);
     MP_CHECK("part3: isolated copy of block data made", copied > 0);
