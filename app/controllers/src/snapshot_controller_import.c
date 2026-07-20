@@ -23,12 +23,17 @@
 #include "storage/block_index_db.h"
 #include "storage/coins_db.h"
 #include "chain/chain.h"   /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO */
+#include "chain/chainparams.h"
+#include "chain/checkpoints.h"  /* get_rom_state_checkpoint (re-derive floor) */
+#include "chain/equihash.h"
+#include "chain/pow.h"
 #include "models/block.h"
 #include "models/database.h"   /* node_db_state_set_int (fast-boot cursors) */
 #include "models/utxo.h"
 #include "wallet/wallet.h"
 #include "core/serialize.h"
 #include "primitives/block.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +41,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pthread.h>
+#include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/thread_registry.h"
 
 /* ---- Thread 1: Block index LevelDB → SQLite blocks table ---- */
@@ -47,13 +54,153 @@ struct block_index_import_args {
     bool header_only;   /* strip HAVE_DATA + file positions (lazy bodies) */
     int result;
     int count;
+    int quarantined;    /* rows skipped this run — see import_row_verify() */
 };
+
+/* ── Per-row verify (lane C4 — importblockindex trust hardening) ─────────
+ *
+ * --importblockindex bulk-memcpys legacy zclassicd CDiskBlockIndex bytes
+ * straight into node.db without checking that the record actually IS what
+ * its own LevelDB key claims, or that it carries real proof-of-work. Below,
+ * every row gets hash-bound (the header this row deserializes to must hash
+ * back to the LevelDB key that named it — the SAME round-trip
+ * disk_block_index_get_hash() proves for the live tip-advance path) and PoW
+ * target-checked (CheckProofOfWork — cheap, no disk/crypto beyond the hash
+ * already computed for the hash-bind). A row failing either is quarantined:
+ * skipped, counted, and reported via a single rate-limited typed blocker —
+ * the ~3.1M-row bulk import must never abort on one bad legacy row.
+ *
+ * Full Equihash solution verification (check_equihash_solution) is the
+ * expensive half — profiled at ~ms/block, which would blow the "~2x the
+ * unverified baseline" import-throughput budget (~60-74s for ~3.1M
+ * headers) if run on every row. It runs on a deterministic stride PLUS
+ * every row above the baked ROM state checkpoint (get_rom_state_checkpoint,
+ * core/chainparams/src/checkpoints.c) — below that checkpoint the fold is
+ * re-derived from block bodies later anyway (this import only seeds
+ * headers for lazy P2P body fetch); above it there is no later from-genesis
+ * re-derivation pass to catch a bad header, so every row gets the full
+ * check. See CLAUDE.md "Consensus rule: validate against the CHAIN" — this
+ * does not change any consensus predicate, only which already-consensus
+ * checks run at import time. */
+#define IMPORT_ROW_POW_STRIDE 10000
+
+/* Process-lifetime count of rows quarantined by import_row_verify() across
+ * every --importblockindex / snapshot-bundle call in this process. Exposed
+ * for tests/diagnostics; never resets mid-process (a fresh CLI process
+ * starts it at 0). */
+static _Atomic(uint64_t) g_import_row_quarantine_total = 0;
+
+uint64_t snapshot_import_block_index_quarantine_total(void)
+{
+    return atomic_load_explicit(&g_import_row_quarantine_total,
+                                memory_order_relaxed);
+}
+
+static struct log_throttle g_import_row_verify_warn_throttle = LOG_THROTTLE_INIT;
+
+static void import_row_build_header(const struct disk_block_index *dbi,
+                                    struct block_header *out)
+{
+    block_header_init(out);
+    out->nVersion = dbi->nVersion;
+    out->hashPrevBlock = dbi->hashPrev;
+    out->hashMerkleRoot = dbi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
+    out->nTime = dbi->nTime;
+    out->nBits = dbi->nBits;
+    out->nNonce = dbi->nNonce;
+    size_t sol_len = dbi->nSolutionSize;
+    if (sol_len > sizeof(out->nSolution))
+        sol_len = sizeof(out->nSolution);
+    memcpy(out->nSolution, dbi->nSolution, sol_len);
+    out->nSolutionSize = sol_len;
+}
+
+/* Hash-bind + PoW-target-check every row; full Equihash solution check on
+ * the stride/above-checkpoint subset (see block comment above). Returns
+ * true (row admissible) or false with a short machine-readable reason in
+ * `out_reason` (never NULL-terminated beyond out_reason_size). */
+static bool import_row_verify(const struct disk_block_index *dbi,
+                              const uint8_t block_hash[32],
+                              const struct chain_params *cp,
+                              int64_t rom_checkpoint_height,
+                              char *out_reason, size_t out_reason_size)
+{
+    struct uint256 computed_hash;
+    disk_block_index_get_hash(dbi, &computed_hash);
+    if (memcmp(computed_hash.data, block_hash, 32) != 0) {
+        snprintf(out_reason, out_reason_size, "hash-bind-mismatch");
+        return false;
+    }
+
+    if (!cp) {
+        snprintf(out_reason, out_reason_size, "no-chain-params");
+        return false;
+    }
+    if (!CheckProofOfWork(computed_hash, dbi->nBits, &cp->consensus)) {
+        snprintf(out_reason, out_reason_size, "high-hash");
+        return false;
+    }
+
+    bool full_check =
+        (dbi->nHeight > 0 && (dbi->nHeight % IMPORT_ROW_POW_STRIDE) == 0) ||
+        (rom_checkpoint_height >= 0 && dbi->nHeight > rom_checkpoint_height);
+    if (full_check) {
+        struct block_header h;
+        import_row_build_header(dbi, &h);
+        if (!check_equihash_solution(&h, cp)) {
+            snprintf(out_reason, out_reason_size, "invalid-equihash-solution");
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Quarantine bookkeeping: bump the process counter, refresh the (rate-
+ * limited) typed blocker, and log — never a silent skip. `reason` is a
+ * short machine token from import_row_verify(); `block_hash` is the
+ * LevelDB key's claimed hash (the same bytes the caller already has, valid
+ * regardless of whether hash-bind itself is what failed). */
+static void import_row_quarantine(int height, const uint8_t block_hash[32],
+                                  const char *reason)
+{
+    atomic_fetch_add_explicit(&g_import_row_quarantine_total, 1,
+                              memory_order_relaxed);
+
+    char hash_hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(hash_hex + i * 2, 3, "%02x", block_hash[31 - i]);
+
+    struct blocker_record r;
+    char reason_buf[BLOCKER_REASON_MAX];
+    snprintf(reason_buf, sizeof(reason_buf),
+             "importblockindex: row quarantined height=%d hash=%s reason=%s "
+             "(row skipped, bulk import continues)",
+             height, hash_hex, reason);
+    if (blocker_init(&r, "importblockindex_row_quarantine", "importblockindex",
+                     BLOCKER_TRANSIENT, reason_buf))
+        (void)blocker_set(&r);
+
+    uint64_t reps = 0;
+    if (log_throttle_should_emit(&g_import_row_verify_warn_throttle,
+                                 (uint64_t)height, platform_time_wall_unix(),
+                                 30, &reps))
+        LOG_WARN("importblockindex",
+                 "row quarantined height=%d hash=%s reason=%s "
+                 "(suppressed_since_last=%llu)",
+                 height, hash_hex, reason, (unsigned long long)reps);
+}
 
 static void *import_block_index_thread(void *arg)
 {
     struct block_index_import_args *a = arg;
     a->result = -1;
     a->count = 0;
+    a->quarantined = 0;
+
+    const struct chain_params *cp = chain_params_get();
+    const struct rom_state_checkpoint *rom_cp = get_rom_state_checkpoint();
+    int64_t rom_checkpoint_height = rom_cp ? (int64_t)rom_cp->height : -1;
 
     /* Open our own SQLite connection */
     struct node_db ndb;
@@ -158,6 +305,22 @@ static void *import_block_index_thread(void *arg)
             continue;
         }
         stream_free(&s);
+
+        /* Trust hardening (lane C4): hash-bind this row to the LevelDB key
+         * that named it, and check its PoW target — see import_row_verify()
+         * doc comment above. A row failing either is quarantined (skipped,
+         * counted, typed blocker) — the bulk import CONTINUES rather than
+         * aborting on one bad legacy row. */
+        {
+            char reason[64];
+            if (!import_row_verify(&dbi, block_hash, cp, rom_checkpoint_height,
+                                   reason, sizeof(reason))) {
+                import_row_quarantine(dbi.nHeight, block_hash, reason);
+                a->quarantined++;
+                db_iter_next(&it);
+                continue;
+            }
+        }
 
         /* Insert into SQLite blocks table */
         struct db_block db_blk;
@@ -296,8 +459,9 @@ static void *import_block_index_thread(void *arg)
     node_db_close(&ndb);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
-    printf("T1: block index import complete: %d blocks in %llds\n",
-           a->count, (long long)elapsed);
+    printf("T1: block index import complete: %d blocks in %llds"
+           " (%d quarantined)\n",
+           a->count, (long long)elapsed, a->quarantined);
     fflush(stdout);
 
     a->result = 0;

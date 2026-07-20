@@ -5,6 +5,7 @@
 
 #include "models/database.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <pthread.h>
 
 struct wallet;
@@ -59,6 +60,15 @@ int snapshot_import(const char *snapshot_dir,
  * Returns true on success; *out_count = number of headers imported. */
 bool snapshot_import_block_index(const char *snapshot_dir, const char *db_path,
                                  bool header_only, int *out_count);
+
+/* Process-lifetime count of rows quarantined by the per-row hash-bind /
+ * PoW-target verify inside snapshot_import_block_index() (see the
+ * import_row_verify block comment in snapshot_controller_import.c). A
+ * quarantined row is skipped (not written) and never aborts the bulk
+ * import; this counter plus the "importblockindex_row_quarantine" typed
+ * blocker are how a caller notices it happened. Monotonic within one
+ * process — a fresh CLI process starts at 0. */
+uint64_t snapshot_import_block_index_quarantine_total(void);
 
 /* Build transaction index from block files on a caller-owned thread.
  * Reads block positions from blocks table, parses block files
