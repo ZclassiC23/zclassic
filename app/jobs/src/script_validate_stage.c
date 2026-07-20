@@ -154,6 +154,43 @@ static void sv_unresolved_clear(sqlite3 *db)
     }
 }
 
+/* Root-cause chaining exemplar (see util/blocker.h "Root-cause chaining").
+ * A missing prevout means some earlier height's creating coin never entered
+ * coins_kv; if an upstream stage is currently HELD on its own body-read
+ * failure (stage_body_read_hold, "*.body_read_failed"), that stall is very
+ * likely why the coin never applied — not an independent script_validate
+ * fault. utxo_apply is checked first (it is the stage that must itself read
+ * the block bytes to fold the coin into coins_kv, so its own read failure is
+ * the most direct match); body_persist is the fallback (a body_persist
+ * read-hold blocks its own cursor, so script_validate would never even reach
+ * a later height while it holds — but check it anyway for completeness). */
+static const char *const SV_BODY_AVAIL_BLOCKER_CANDIDATES[] = {
+    "utxo_apply.body_read_failed",
+    "body_persist.body_read_failed",
+};
+
+/* Read-only: the first candidate body-availability blocker id currently
+ * active, or NULL if none. `snap_out` receives the matched snapshot; the
+ * returned pointer aliases `snap_out->id` — callers should copy it out
+ * before this function is called again, since `snap_out` is caller-owned
+ * stack storage, not registry-owned.
+ * Deliberately non-static (no public header entry) so
+ * test_script_validate_stage.c can drive it directly without waiting on the
+ * real-wall-clock SV_UNRESOLVED_BUDGET_SECONDS hold — same pattern as
+ * find_lowest_prevout_unresolved_hole_unlocked in
+ * stage_repair_coin_backfill_util.c. */
+const char *sv_find_body_availability_cause(
+    struct blocker_snapshot *snap_out)
+{
+    for (size_t k = 0; k < sizeof(SV_BODY_AVAIL_BLOCKER_CANDIDATES) /
+                            sizeof(SV_BODY_AVAIL_BLOCKER_CANDIDATES[0]); k++) {
+        if (blocker_find_by_id_prefix(SV_BODY_AVAIL_BLOCKER_CANDIDATES[k],
+                                      snap_out))
+            return snap_out->id;
+    }
+    return NULL;
+}
+
 /* HOLD the cursor on a transient prevout_unresolved / block_decode_failed at
  * `height`: within the blocked-since budget return JOB_IDLE (re-derive next
  * tick, no ok=0 row written); past the budget name ONE PERMANENT blocker +
@@ -206,16 +243,21 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
      * an ancestor height (lane E3): the descendant's prevout is unresolvable
      * precisely because that torn body has not yet been refetched + revalidated,
      * so the operator-visible blocker points at the block to fix rather than the
-     * downstream symptom. (E4's typed cause field is additive and may be absent
-     * on this merge base; carry the cause in the blocker detail string.) */
+     * downstream symptom. `torn_h` also feeds the typed caused_by/cause_detail
+     * fields below (lane E4) once the blocker record exists — kept as a plain
+     * string here too so the reason text stays self-contained for anyone
+     * reading it without decoding the typed fields. */
     char cause[96];
     cause[0] = '\0';
+    int64_t torn_h = -1;
     if (reducer_frontier_body_read_note_active()) {
-        int64_t torn_h = reducer_frontier_body_read_note_height();
-        if (torn_h >= 0 && torn_h < (int64_t)height)
+        int64_t h = reducer_frontier_body_read_note_height();
+        if (h >= 0 && h < (int64_t)height) {
+            torn_h = h;
             snprintf(cause, sizeof(cause),
                      " cause: torn body height=%lld awaiting refetch",
                      (long long)torn_h);
+        }
     }
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
@@ -232,6 +274,31 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
         return JOB_IDLE;
     }
     c->blocker.retry_budget = -1;
+    /* Root-cause chaining (lane E4's typed caused_by/cause_detail, see
+     * util/blocker.h "Root-cause chaining"): prefer the torn-ancestor-body
+     * note above (lane E3, the most direct and precise match — it names the
+     * exact height a coin_backfill/have_data_unreadable refetch is waiting
+     * on). Fall back to a live body-availability blocker (utxo_apply /
+     * body_persist read failure) only when no torn-body note is active, so
+     * the two mechanisms never fight over which cause wins. */
+    if (torn_h >= 0) {
+        snprintf(c->blocker.caused_by, sizeof(c->blocker.caused_by),
+                 "%s", "reducer_frontier.body_read_torn");
+        snprintf(c->blocker.cause_detail, sizeof(c->blocker.cause_detail),
+                 "torn body height=%lld", (long long)torn_h);
+    } else {
+        struct blocker_snapshot root_snap;
+        const char *root_id = sv_find_body_availability_cause(&root_snap);
+        if (root_id) {
+            char cause_detail[BLOCKER_CAUSE_DETAIL_MAX];
+            snprintf(cause_detail, sizeof(cause_detail),
+                     "prevout height=%d", height);
+            snprintf(c->blocker.caused_by, sizeof(c->blocker.caused_by),
+                     "%s", root_id);
+            snprintf(c->blocker.cause_detail, sizeof(c->blocker.cause_detail),
+                     "%s", cause_detail);
+        }
+    }
     /* Page the operator exactly once per held height (EXACTLY ONE escalation). */
     if (atomic_exchange(&g_sv_unresolved_paged_height, (int64_t)height) !=
         (int64_t)height)
