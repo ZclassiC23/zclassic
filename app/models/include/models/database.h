@@ -121,6 +121,30 @@ void node_db_close(struct node_db *ndb);
 typedef bool (*node_db_quick_check_skip_probe_fn)(const char *path);
 void node_db_set_quick_check_skip_probe(node_db_quick_check_skip_probe_fn fn);
 
+/* ── Long-running maintenance-op visibility ─────────────────────────────
+ *
+ * PRAGMA quick_check and the staging-cleanup DELETE run for many seconds
+ * (minutes on a multi-GB node.db) on the SHARED node.db connection. While one
+ * runs, SQLite's serialized per-connection mutex makes every other query on
+ * that connection block for the op's full duration — which is exactly why a
+ * healthy, tip-ingesting node's status command once went dark for ~11 minutes.
+ *
+ * db_long_op_start/finish publish the currently-running op into this lock-free
+ * registry so responsive surfaces (status/health) can (a) NAME the maintenance
+ * op instead of hanging, and (b) route around the busy connection by serving an
+ * in-memory snapshot. This is a pure read of in-process atomics — it never
+ * touches the DB, so it cannot itself block. Returns true iff a long op is
+ * currently executing; when true, `op_out` (if non-NULL) receives the op's
+ * static name and `elapsed_ms_out` (if non-NULL) receives its elapsed time. */
+bool node_db_long_op_active(const char **op_out, int64_t *elapsed_ms_out);
+
+#ifdef ZCL_TESTING
+/* Simulate a busy connection without a real multi-minute maintenance op, so
+ * status/health non-blocking paths can be proven in a hermetic fixture. */
+void node_db_long_op_test_set(const char *op, int64_t elapsed_ms);
+void node_db_long_op_test_clear(void);
+#endif
+
 /* Execute raw SQL (for migrations, debugging). */
 bool node_db_exec(struct node_db *ndb, const char *sql);
 bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,

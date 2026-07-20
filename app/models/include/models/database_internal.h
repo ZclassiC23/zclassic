@@ -66,4 +66,38 @@ void node_db_note_turbo_mode(struct node_db *ndb, bool turbo_mode,
  * in database_migrate.c.) */
 void node_db_note_activity(struct node_db *ndb, const char *op, int rc);
 
+/* ── Long-running maintenance-op machinery (database_long_op.c) ─────────
+ *
+ * The progress-handler wrappers and the lock-free busy-op registry that backs
+ * the public node_db_long_op_active() live in database_long_op.c so database.c
+ * stays focused on the connection open/migration lifecycle. db_quick_check_ok()
+ * and node_db_open() (in database.c) call db_long_op_start/finish and
+ * db_exec_checked_progress;
+ * the progress callback raises the deadline blocker via note_deadline. See
+ * database.h for the public reader and database_long_op.c for the rationale. */
+#define ZCL_DB_LONG_OP_DEADLINE_MS  (15 * 60 * 1000)
+
+struct db_long_op_progress {
+    const char *op;
+    const char *path;
+    int64_t start_ms;
+    int64_t last_log_ms;
+    uint64_t callbacks;
+    bool log_enabled;
+};
+
+/* Install/remove the SQLite progress handler and publish/clear the busy op. */
+void db_long_op_start(sqlite3 *db, struct db_long_op_progress *progress,
+                      const char *op, const char *path);
+void db_long_op_finish(sqlite3 *db, struct db_long_op_progress *progress,
+                       bool ok, int rc);
+/* db_exec_checked wrapped in the long-op progress lifecycle. */
+int db_exec_checked_progress(sqlite3 *db, const char *sql,
+                             const char *where, const char *path);
+
+/* Registry hooks shared with the progress callback. */
+void db_long_op_publish(const char *op, int64_t start_ms);
+void db_long_op_unpublish(void);
+void db_long_op_note_deadline(const char *op, int64_t elapsed_ms);
+
 #endif

@@ -241,3 +241,16 @@ ZCL_BLOCKER_REMEDY(boot.restart_loop,                            OWNER)
  * never an auto-cure. ───────────────────────────────────────────────── */
 ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.persist_busy,           OWNER)
 ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.fail_closed,            OWNER)
+/* ── OWNER — a long node.db maintenance op (PRAGMA quick_check / staging
+ * cleanup) that outran ZCL_DB_LONG_OP_DEADLINE_MS (15 min) on the shared
+ * connection (app/models/src/database_long_op.c, raised from the SQLite
+ * progress callback in database.c). BLOCKER_TRANSIENT, fail-LOUD not
+ * fail-stop: the node stays servable from the in-memory status snapshot
+ * while it fires. It SELF-CLEARS the moment the op completes
+ * (db_long_op_unpublish → blocker_clear), so no condition-engine healer
+ * drives it; a run past 15 min is a genuinely stuck op (the legitimately
+ * slowest observed op is ~11 min) that an operator investigates. This
+ * closes the "healthy node's status goes silently dark for ~11 minutes"
+ * incident class — the maintenance is now a named blocker, never a quiet
+ * hang. ──────────────────────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(db.maintenance_slow,                         OWNER)

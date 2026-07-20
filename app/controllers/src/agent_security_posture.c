@@ -6,12 +6,15 @@
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "json/json.h"
+#include "models/database.h"
+#include "platform/time_compat.h"
 #include "services/chain_evidence_authority_service.h"
 #include "storage/anchor_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -25,6 +28,49 @@ static void posture_str(char *dst, size_t dst_sz, const char *src)
     if (!dst || dst_sz == 0)
         return;
     snprintf(dst, dst_sz, "%s", src ? src : "");
+}
+
+/* ── Last-live posture snapshot (see agent_security_posture.h) ──────────
+ *
+ * Every live collection republishes this cache. When the shared node.db
+ * connection is busy with a long maintenance op, collect() serves this cache
+ * instead of issuing reads that would serialize behind the op. The critical
+ * section is a bare struct copy (microseconds); it is guarded by a plain mutex,
+ * NOT the DB, so a reader can never block on maintenance — the whole point. */
+static pthread_mutex_t g_posture_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct agent_security_posture g_posture_cache;
+static int64_t g_posture_cache_ms;
+static bool g_posture_cache_valid;
+
+static void posture_cache_store(const struct agent_security_posture *p)
+{
+    if (!p)
+        return;
+    pthread_mutex_lock(&g_posture_cache_lock);
+    g_posture_cache = *p;
+    g_posture_cache.served_from_cache = false;
+    g_posture_cache.cache_age_ms = 0;
+    g_posture_cache_ms = platform_time_monotonic_ms();
+    g_posture_cache_valid = true;
+    pthread_mutex_unlock(&g_posture_cache_lock);
+}
+
+static bool posture_cache_load(struct agent_security_posture *out)
+{
+    bool ok;
+    if (!out)
+        return false;
+    pthread_mutex_lock(&g_posture_cache_lock);
+    ok = g_posture_cache_valid;
+    if (ok) {
+        *out = g_posture_cache;
+        int64_t now = platform_time_monotonic_ms();
+        out->served_from_cache = true;
+        out->cache_age_ms = now > g_posture_cache_ms
+            ? now - g_posture_cache_ms : 0;
+    }
+    pthread_mutex_unlock(&g_posture_cache_lock);
+    return ok;
 }
 
 static void posture_collect_bootstrap(struct agent_security_posture *out,
@@ -246,6 +292,32 @@ void agent_security_posture_collect(struct agent_security_posture *out,
     out->sprout_anchor_activation_cursor = -1;
     out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
+
+    /* If a long maintenance op holds the shared node.db connection, every read
+     * below would serialize behind it (once observed at ~11 minutes). Route
+     * around it: serve the last live snapshot so status never goes dark. */
+    if (node_db_long_op_active(NULL, NULL)) {
+        if (posture_cache_load(out))
+            return;
+        /* No snapshot has ever been published (e.g. maintenance at first boot).
+         * Answer truthfully rather than block: name the maintenance state and
+         * do NOT invent a review gate — the caller's db_maintenance field and
+         * the typed blocker carry the maintenance signal. */
+        out->node_db_available = false;
+        out->served_from_cache = true;
+        out->cache_age_ms = -1;
+        posture_str(out->status, sizeof(out->status),
+                    "db_maintenance_in_progress");
+        posture_str(out->next_action, sizeof(out->next_action),
+                    "wait_db_maintenance");
+        posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
+                    "unknown_db_busy");
+        posture_str(out->full_history_validation_state,
+                    sizeof(out->full_history_validation_state),
+                    "unknown_db_busy");
+        return;
+    }
+
     posture_collect_bootstrap(out, ndb);
     progress_reader = progress_store_open_reader();
     out->progress_store_available = progress_reader != NULL;
@@ -254,6 +326,7 @@ void agent_security_posture_collect(struct agent_security_posture *out,
     if (progress_reader)
         sqlite3_close(progress_reader);
     posture_finalize(out);
+    posture_cache_store(out);
 #ifdef ZCL_TESTING
     int override = atomic_load(&g_test_review_required);
     if (override >= 0) {
