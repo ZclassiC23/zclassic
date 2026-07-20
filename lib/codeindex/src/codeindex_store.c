@@ -131,7 +131,8 @@ static bool ensure_schema(sqlite3 *db)
         "CREATE TABLE IF NOT EXISTS refs ("
         "  callee_name TEXT NOT NULL,"
         "  ref_file TEXT NOT NULL,"
-        "  ref_line INTEGER NOT NULL);"
+        "  ref_line INTEGER NOT NULL,"
+        "  enclosing TEXT NOT NULL DEFAULT '');"
         "CREATE TABLE IF NOT EXISTS groups ("
         "  path TEXT PRIMARY KEY,"
         "  kind TEXT NOT NULL,"
@@ -142,6 +143,7 @@ static bool ensure_schema(sqlite3 *db)
         "  v BLOB NOT NULL);"
         "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);"
         "CREATE INDEX IF NOT EXISTS idx_refs_callee ON refs(callee_name);"
+        "CREATE INDEX IF NOT EXISTS idx_refs_enclosing ON refs(enclosing);"
         "CREATE INDEX IF NOT EXISTS idx_files_group ON files(\"group\");";
     char *err = NULL;
     if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
@@ -443,18 +445,21 @@ bool ci_store_put_include(struct ci_store *s, int64_t file_id,
 }
 
 bool ci_store_put_ref(struct ci_store *s, const char *callee,
-                      const char *ref_file, int ref_line)
+                      const char *ref_file, int ref_line,
+                      const char *enclosing)
 {
     if (!s || !callee || !ref_file)
         LOG_FAIL("codeindex", "null arg to put_ref");
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db,
-        "INSERT INTO refs(callee_name,ref_file,ref_line) VALUES(?,?,?)",
+        "INSERT INTO refs(callee_name,ref_file,ref_line,enclosing)"
+        " VALUES(?,?,?,?)",
         -1, &stmt, NULL) != SQLITE_OK)
         LOG_FAIL("codeindex", "prepare put_ref: %s", sqlite3_errmsg(s->db));
     sqlite3_bind_text(stmt, 1, callee, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, ref_file, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 3, ref_line);
+    sqlite3_bind_text(stmt, 4, enclosing ? enclosing : "", -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE)
@@ -646,8 +651,8 @@ int ci_store_refs_by_callee(struct ci_store *s, const char *callee,
     pthread_mutex_lock(&s->lock);
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db,
-        "SELECT callee_name,ref_file,ref_line FROM refs WHERE callee_name=?"
-        " ORDER BY ref_file ASC, ref_line ASC",
+        "SELECT callee_name,ref_file,ref_line,enclosing FROM refs"
+        " WHERE callee_name=? ORDER BY ref_file ASC, ref_line ASC",
         -1, &stmt, NULL) != SQLITE_OK) {
         pthread_mutex_unlock(&s->lock);
         LOG_ERR("codeindex", "prepare refs_by_callee");
@@ -662,6 +667,41 @@ int ci_store_refs_by_callee(struct ci_store *s, const char *callee,
         cpy(out[n].ref_file, sizeof(out[n].ref_file),
             (const char *)sqlite3_column_text(stmt, 1));
         out[n].ref_line = sqlite3_column_int(stmt, 2);
+        cpy(out[n].enclosing, sizeof(out[n].enclosing),
+            (const char *)sqlite3_column_text(stmt, 3));
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+int ci_store_refs_by_enclosing(struct ci_store *s, const char *enclosing,
+                               struct ci_ref *out, int cap)
+{
+    if (!s || !enclosing || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to refs_by_enclosing");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT callee_name,ref_file,ref_line,enclosing FROM refs"
+        " WHERE enclosing=? ORDER BY ref_file ASC, ref_line ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare refs_by_enclosing");
+    }
+    sqlite3_bind_text(stmt, 1, enclosing, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        memset(&out[n], 0, sizeof(out[n]));
+        cpy(out[n].callee, sizeof(out[n].callee),
+            (const char *)sqlite3_column_text(stmt, 0));
+        cpy(out[n].ref_file, sizeof(out[n].ref_file),
+            (const char *)sqlite3_column_text(stmt, 1));
+        out[n].ref_line = sqlite3_column_int(stmt, 2);
+        cpy(out[n].enclosing, sizeof(out[n].enclosing),
+            (const char *)sqlite3_column_text(stmt, 3));
         n++;
     }
     sqlite3_finalize(stmt);

@@ -101,7 +101,55 @@ struct scan_ctx {
     struct { size_t start_off; size_t end_off; char firstline[256]; } *comments;
     size_t      ncomments;
     size_t      cap_comments;
+
+    /* function definitions in this file, in emit order: (def_line, name). Used
+     * to attribute each call site's enclosing function (greatest def_line <=
+     * ref_line). C functions do not nest, so this is exact for well-formed
+     * source and best-effort otherwise. */
+    struct { int def_line; char name[128]; } *funcs;
+    size_t      nfuncs;
+    size_t      cap_funcs;
 };
+
+/* Record a function definition for later enclosing-attribution. Best-effort:
+ * silently drops the record on OOM (the ref simply stays unattributed). */
+static void note_func_def(struct scan_ctx *c, const char *name, int def_line)
+{
+    if (!name || !name[0]) return;
+    if (c->nfuncs == c->cap_funcs) {
+        size_t ncap = c->cap_funcs ? c->cap_funcs * 2 : 64;
+        void *nb = zcl_realloc(c->funcs, ncap * sizeof(*c->funcs), "ci_funcs");
+        if (!nb) return;
+        c->funcs = nb;
+        c->cap_funcs = ncap;
+    }
+    c->funcs[c->nfuncs].def_line = def_line;
+    snprintf(c->funcs[c->nfuncs].name, sizeof(c->funcs[c->nfuncs].name),
+             "%s", name);
+    c->nfuncs++;
+}
+
+/* Enclosing function name for a call site on ref_line: the function definition
+ * with the greatest def_line <= ref_line. "" when none precedes it. `c->funcs`
+ * is sorted ascending by def_line before this is called. */
+static const char *enclosing_for_line(const struct scan_ctx *c, int ref_line)
+{
+    const char *best = "";
+    for (size_t i = 0; i < c->nfuncs; i++) {
+        if (c->funcs[i].def_line <= ref_line)
+            best = c->funcs[i].name;
+        else
+            break;  /* sorted ascending: no later entry can qualify */
+    }
+    return best;
+}
+
+static int func_def_cmp(const void *a, const void *b)
+{
+    int la = ((const int *)a)[0];  /* def_line is the first member */
+    int lb = ((const int *)b)[0];
+    return (la > lb) - (la < lb);
+}
 
 /* 1-based line number containing offset off. */
 static int line_of(const struct scan_ctx *c, size_t off)
@@ -449,6 +497,9 @@ static void emit_sym(struct scan_ctx *c, const char *name, char kind,
     snprintf(s.guard, sizeof(s.guard), "%s", guard_of_line(c, line));
     snprintf(s.group, sizeof(s.group), "%s", c->group ? c->group : "");
     s.partial = partial;
+    /* Track function definitions for call-site enclosing attribution. */
+    if (is_def && (kind == 'T' || kind == 't'))
+        note_func_def(c, name, line);
     c->on_sym(&s, c->user);
     c->syms_emitted++;
 }
@@ -643,6 +694,10 @@ static void classify_semicolon(struct scan_ctx *c, size_t a, size_t b,
 
 static void scan_refs(struct scan_ctx *c)
 {
+    /* Sort function defs ascending by def_line so enclosing_for_line can stop
+     * at the first entry past the ref line. */
+    if (c->nfuncs > 1)
+        qsort(c->funcs, c->nfuncs, sizeof(*c->funcs), func_def_cmp);
     int brace = 0;
     int line = 0;  /* 0-based */
     for (size_t i = 0; i < c->len; i++) {
@@ -667,7 +722,9 @@ static void scan_refs(struct scan_ctx *c)
                     nm[n] = '\0';
                     if (!is_keyword(nm) &&
                         c->refs_emitted < CI_MAX_REFS_PER_FILE) {
-                        c->on_ref(nm, c->relpath, line_of(c, s), c->user);
+                        int rl = line_of(c, s);
+                        c->on_ref(nm, c->relpath, rl,
+                                  enclosing_for_line(c, rl), c->user);
                         c->refs_emitted++;
                     }
                 }
@@ -914,6 +971,7 @@ done:
     free(c.line_guard);
     free(c.pp_line);
     free(c.comments);
+    free(c.funcs);
 }
 
 /* ── file front-end ─────────────────────────────────────────────────── */

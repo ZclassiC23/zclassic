@@ -213,7 +213,10 @@ struct stamp_ctx {
 
 static void source_root_init(struct sha3_256_ctx *sha)
 {
-    static const char domain[] = "zcl.codeindex.source_root.v2";
+    /* v3: bumped alongside CI_SCHEMA_VERSION="cg1" (refs.enclosing) so the
+     * content stamp of any pre-call-graph generation misses — the second half
+     * of the dual recompute-never-repair trigger. */
+    static const char domain[] = "zcl.codeindex.source_root.v3";
     sha3_256_init(sha);
     sha3_256_write(sha, (const unsigned char *)domain, sizeof(domain));
 }
@@ -390,8 +393,10 @@ static bool store_is_stale(const char *root, struct ci_store *store,
         LOG_FAIL("codeindex", "compute dep_stat_root_sha3");
     uint8_t stored_stats[32], stored_dep_stats[32];
     char stored_format[64];
-    size_t stat_len = 0, dep_stat_len = 0, format_len = 0;
+    char stored_schema[64];
+    size_t stat_len = 0, dep_stat_len = 0, format_len = 0, schema_len = 0;
     bool stat_found = false, dep_stat_found = false, format_found = false;
+    bool schema_found = false;
     if (!ci_store_meta_get(store, "source_stat_root_sha3", stored_stats,
                            sizeof(stored_stats), &stat_len, &stat_found))
         LOG_FAIL("codeindex", "meta_get source_stat_root_sha3");
@@ -402,6 +407,12 @@ static bool store_is_stale(const char *root, struct ci_store *store,
     if (!ci_store_meta_get(store, "store_format", stored_format,
                            sizeof(stored_format), &format_len, &format_found))
         LOG_FAIL("codeindex", "meta_get store_format");
+    /* The derived-schema generation gate. A store whose ci_schema_version is
+     * absent (an older generation, or a hand-cleared key) or mismatched is
+     * stale and gets a full recompute on open — never an in-place repair. */
+    if (!ci_store_meta_get(store, "ci_schema_version", stored_schema,
+                           sizeof(stored_schema), &schema_len, &schema_found))
+        LOG_FAIL("codeindex", "meta_get ci_schema_version");
     if (stale)
         *stale = !(stat_found && stat_len == 32 &&
                    memcmp(cur_stats, stored_stats, 32) == 0 &&
@@ -410,7 +421,11 @@ static bool store_is_stale(const char *root, struct ci_store *store,
                    format_found &&
                    format_len == sizeof(ci_store_format) - 1 &&
                    memcmp(stored_format, ci_store_format,
-                          sizeof(ci_store_format) - 1) == 0);
+                          sizeof(ci_store_format) - 1) == 0 &&
+                   schema_found &&
+                   schema_len == sizeof(CI_SCHEMA_VERSION) - 1 &&
+                   memcmp(stored_schema, CI_SCHEMA_VERSION,
+                          sizeof(CI_SCHEMA_VERSION) - 1) == 0);
     return true;
 }
 
@@ -440,11 +455,12 @@ static void on_sym_cb(const struct ci_symbol *sym, void *user)
 }
 
 static void on_ref_cb(const char *callee, const char *ref_file, int ref_line,
-                      void *user)
+                      const char *enclosing, void *user)
 {
     struct build_ctx *b = user;
     if (b->err) return;
-    if (!ci_store_put_ref(b->store, callee, ref_file, ref_line)) b->err = true;
+    if (!ci_store_put_ref(b->store, callee, ref_file, ref_line, enclosing))
+        b->err = true;
 }
 
 static bool idmap_push(struct build_ctx *b, const char *path, int64_t id)
@@ -860,6 +876,10 @@ static bool codeindex_rebuild_internal(struct codeindex *ci,
     if (build_ok &&
         !ci_store_meta_set(st, "store_format", ci_store_format,
                            sizeof(ci_store_format) - 1))
+        build_ok = false;
+    if (build_ok &&
+        !ci_store_meta_set(st, "ci_schema_version", CI_SCHEMA_VERSION,
+                           sizeof(CI_SCHEMA_VERSION) - 1))
         build_ok = false;
     if (!build_ok) {
         (void)ci_store_rollback(st);

@@ -182,6 +182,49 @@ static const char *TEST_SOURCE_C =
     " */\n"
     "int test_fixture_indexed(void) { return 0; }\n";
 
+/* ── call-graph fixture (WF4 lane 4A) ──────────────────────────────────
+ * A self-contained module with two callers of one static helper and a call to
+ * an external leaf, so callers/callees/enclosing are all exercised. */
+#define CG_FIX "test-tmp/ci_cg"
+
+static const char *CG_C =
+    "/* lib/net/src/cg.c — call-graph fixture translation unit. */\n"
+    "#include \"net/cg.h\"\n"
+    "\n"
+    "static int cg_helper(int a)\n"
+    "{\n"
+    "    return a + 1;\n"
+    "}\n"
+    "\n"
+    "int cg_main(int x)\n"
+    "{\n"
+    "    int y = cg_helper(x);\n"
+    "    return cg_leaf(y);\n"
+    "}\n"
+    "\n"
+    "int cg_other(void)\n"
+    "{\n"
+    "    return cg_helper(0);\n"
+    "}\n";
+
+static const char *CG_H =
+    "/* lib/net/src/cg.h — call-graph fixture header. */\n"
+    "#ifndef NET_CG_H\n"
+    "#define NET_CG_H\n"
+    "int cg_main(int x);\n"
+    "int cg_other(void);\n"
+    "int cg_leaf(int y);\n"
+    "#endif\n";
+
+static bool write_cg_fixture(void)
+{
+    return mk_write(CG_FIX, "lib/net/src/cg.c", CG_C) &&
+           mk_write(CG_FIX, "lib/net/include/net/cg.h", CG_H) &&
+           mk_write(CG_FIX, "build/obj/cg.d",
+                    "build/obj/cg.o: lib/net/src/cg.c "
+                    "lib/net/include/net/cg.h\n");
+}
+
 static bool write_fixture(void)
 {
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
@@ -249,6 +292,55 @@ static bool corrupt_symbol(const char *name)
     int rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
     sqlite3_close(db);
     return rc == SQLITE_OK;
+}
+
+/* Delete one meta key from the published index without going through a rebuild,
+ * to exercise the ci_schema_version migration trigger. Returns true on success. */
+static bool delete_meta_key(const char *index_path, const char *key)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open(index_path, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    char sql[256];
+    snprintf(sql, sizeof(sql), "DELETE FROM meta WHERE k='%s'", key);
+    int rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_close(db);
+    return rc == SQLITE_OK;
+}
+
+/* Read a meta key directly from the published index (no lazy rebuild). Copies
+ * the value text into buf and returns true when the key exists. */
+static bool published_meta_get(const char *index_path, const char *key,
+                               char *buf, size_t cap)
+{
+    if (buf && cap) buf[0] = '\0';
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(index_path, &db, SQLITE_OPEN_READONLY, NULL) !=
+        SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    sqlite3_stmt *st = NULL;
+    bool found = false;
+    if (sqlite3_prepare_v2(db, "SELECT v FROM meta WHERE k=? LIMIT 1", -1, &st,
+                           NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            found = true;
+            if (buf && cap) {
+                const void *b = sqlite3_column_blob(st, 0);
+                int n = sqlite3_column_bytes(st, 0);
+                size_t copy = (size_t)n < cap - 1 ? (size_t)n : cap - 1;
+                if (b && copy) memcpy(buf, b, copy);
+                buf[copy] = '\0';
+            }
+        }
+    }
+    if (st) sqlite3_finalize(st);
+    sqlite3_close(db);
+    return found;
 }
 
 /* Inspect the published generation directly, without triggering a lazy
@@ -914,6 +1006,101 @@ int test_codeindex(void)
             if (!hit) shapes_ok = false;
         }
         CI_CHECK("app shape list is the seven physical shape folders", shapes_ok);
+    }
+
+    /* ── 10: call graph (enclosing attribution, callers/callees, ids) ──
+     * A dedicated clean fixture: the shared FIX foo.c has been mutated by the
+     * staleness/crash cases above, so use CG_FIX for deterministic joins. */
+    {
+        system("rm -rf " CG_FIX);
+        CI_CHECK("call-graph fixture writes", write_cg_fixture());
+        struct codeindex *cg = codeindex_open(CG_FIX);
+        CI_CHECK("call-graph fixture opens", cg != NULL);
+
+        if (cg) {
+            struct ci_ref refs[16];
+
+            /* enclosing is populated on the reverse-ref path too. */
+            int nr = codeindex_refs(cg, "cg_helper", refs, 16);
+            CI_CHECK("cg_helper refs carry enclosing attribution",
+                     nr == 2 &&
+                     strcmp(refs[0].enclosing, "cg_main") == 0 &&
+                     strcmp(refs[1].enclosing, "cg_other") == 0);
+
+            /* callers(X): who references X, ordered (ref_file, ref_line). */
+            int nc = codeindex_callers(cg, "cg_helper", refs, 16);
+            CI_CHECK("callers(cg_helper) = its two call sites, in order",
+                     nc == 2 &&
+                     strcmp(refs[0].callee, "cg_helper") == 0 &&
+                     strcmp(refs[0].enclosing, "cg_main") == 0 &&
+                     strcmp(refs[1].enclosing, "cg_other") == 0 &&
+                     refs[0].ref_line < refs[1].ref_line);
+
+            /* callees(X): what X's body references, ordered (ref_file,line). */
+            int ne = codeindex_callees(cg, "cg_main", refs, 16);
+            CI_CHECK("callees(cg_main) = cg_helper then cg_leaf",
+                     ne == 2 &&
+                     strcmp(refs[0].callee, "cg_helper") == 0 &&
+                     strcmp(refs[1].callee, "cg_leaf") == 0 &&
+                     strcmp(refs[0].enclosing, "cg_main") == 0 &&
+                     refs[0].ref_line < refs[1].ref_line);
+
+            int ne2 = codeindex_callees(cg, "cg_other", refs, 16);
+            CI_CHECK("callees(cg_other) = the single cg_helper call",
+                     ne2 == 1 && strcmp(refs[0].callee, "cg_helper") == 0);
+
+            /* A symbol nobody calls has no callers; a leaf body has no callees. */
+            int nc0 = codeindex_callers(cg, "cg_main", refs, 16);
+            int ne0 = codeindex_callees(cg, "cg_helper", refs, 16);
+            CI_CHECK("cg_main has no callers, cg_helper has no callees",
+                     nc0 == 0 && ne0 == 0);
+
+            /* Linkage-aware ids: static functions are path-scoped, external
+             * functions name-scoped, other kinds namespaced by kind. */
+            char id[512];
+            int il = codeindex_symbol_id(cg, "cg_helper", id, sizeof(id));
+            CI_CHECK("symbol_id(static fn) is path-scoped",
+                     il > 0 &&
+                     strcmp(id, "fn:static:lib/net/src/cg.c:cg_helper") == 0);
+            il = codeindex_symbol_id(cg, "cg_main", id, sizeof(id));
+            CI_CHECK("symbol_id(external fn) is name-scoped",
+                     il > 0 && strcmp(id, "fn:external:cg_main") == 0);
+            il = codeindex_symbol_id(cg, "no_such_symbol_xyz", id, sizeof(id));
+            CI_CHECK("symbol_id(missing) reports not-found", il == -1);
+
+            codeindex_close(cg);
+            cg = NULL;
+        }
+
+        /* ── 11: schema-version migration — a store missing ci_schema_version
+         * is stale and fully rebuilds on the next open (recompute never repair). */
+        char meta_val[64];
+        CI_CHECK("fresh index stamps ci_schema_version",
+                 published_meta_get(CG_FIX "/.codeindex/index.kv",
+                                    "ci_schema_version", meta_val,
+                                    sizeof(meta_val)) &&
+                 strcmp(meta_val, "cg1") == 0);
+        CI_CHECK("drop the ci_schema_version key from the published index",
+                 delete_meta_key(CG_FIX "/.codeindex/index.kv",
+                                 "ci_schema_version"));
+        CI_CHECK("key is genuinely absent after delete",
+                 !published_meta_get(CG_FIX "/.codeindex/index.kv",
+                                     "ci_schema_version", meta_val,
+                                     sizeof(meta_val)));
+        struct codeindex *migr = codeindex_open(CG_FIX);
+        CI_CHECK("open with absent ci_schema_version rebuilds", migr != NULL);
+        CI_CHECK("rebuild restamps ci_schema_version",
+                 published_meta_get(CG_FIX "/.codeindex/index.kv",
+                                    "ci_schema_version", meta_val,
+                                    sizeof(meta_val)) &&
+                 strcmp(meta_val, "cg1") == 0);
+        if (migr) {
+            struct ci_ref refs[16];
+            int ne = codeindex_callees(migr, "cg_main", refs, 16);
+            CI_CHECK("call graph intact after migration rebuild", ne == 2);
+            codeindex_close(migr);
+        }
+        system("rm -rf " CG_FIX);
     }
 
     return failures;

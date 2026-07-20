@@ -24,6 +24,14 @@
 
 #define CI_PATH_MAX 4096
 
+/* Derived-schema generation tag. Bump on ANY change to the derived table
+ * layout or the meaning of a derived column (recompute, never repair). It is
+ * written to meta as "ci_schema_version" during rebuild and gated in the
+ * staleness check: a store whose key is absent or mismatched is stale and gets
+ * a full deterministic rebuild on open. "cg1" = the call-graph generation that
+ * added refs.enclosing. */
+#define CI_SCHEMA_VERSION "cg1"
+
 /* ── the public handle (defined here so every TU can reach the store) ── */
 struct ci_store;
 struct codeindex {
@@ -57,7 +65,8 @@ bool ci_store_put_symbol(struct ci_store *s, const struct ci_symbol *sym);
 bool ci_store_put_include(struct ci_store *s, int64_t file_id,
                           const char *dep_path);
 bool ci_store_put_ref(struct ci_store *s, const char *callee,
-                      const char *ref_file, int ref_line);
+                      const char *ref_file, int ref_line,
+                      const char *enclosing);
 bool ci_store_put_group(struct ci_store *s, const struct ci_group *g);
 bool ci_store_meta_set(struct ci_store *s, const char *k, const void *v,
                        size_t vlen);
@@ -74,6 +83,10 @@ int  ci_store_find_symbols(struct ci_store *s, const char *q,
                            struct ci_symbol *out, int cap);
 int  ci_store_refs_by_callee(struct ci_store *s, const char *callee,
                              struct ci_ref *out, int cap);
+/* Refs whose enclosing function is `enclosing` (the callee side of the call
+ * graph), ordered by (ref_file, ref_line). Fills up to `cap`, returns count. */
+int  ci_store_refs_by_enclosing(struct ci_store *s, const char *enclosing,
+                                struct ci_ref *out, int cap);
 bool ci_store_file_by_path(struct ci_store *s, const char *path,
                            struct ci_file *out, bool *found);
 int  ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap);
@@ -113,8 +126,11 @@ bool ci_source_roots_sha3(const char *root, uint8_t exact_out[32],
  * derived from its leading block comment (§1.1 of docs/work/palace-design.md);
  * "" when no leading comment precedes the first code token. */
 typedef void (*ci_sym_cb)(const struct ci_symbol *sym, void *user);
+/* `enclosing` is the name of the function the call site sits inside — the
+ * greatest function definition whose def_line <= ref_line in the same file (C
+ * does not nest functions; best-effort). Empty string when unattributed. */
 typedef void (*ci_ref_cb)(const char *callee, const char *ref_file,
-                          int ref_line, void *user);
+                          int ref_line, const char *enclosing, void *user);
 bool ci_scan_file(const char *root, const char *relpath,
                   ci_sym_cb on_sym, ci_ref_cb on_ref, void *user,
                   uint8_t out_sha3[32], char purpose_out[160]);
