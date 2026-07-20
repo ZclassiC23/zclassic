@@ -14,11 +14,109 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <time.h>
+#include <sys/time.h>
 #include <sys/socket.h>
+
+#include "platform/time_compat.h"
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "util/safe_alloc.h"
+
+/* Hard wall-clock deadlines so a dead-but-listening RPC port (a wedged node
+ * that accepts the TCP connection but never answers, a firewalled listener,
+ * a livelocked reducer) can never hang a native command indefinitely — the
+ * class that once spun a flagless `status` for days. Every native command
+ * routes its one loopback RPC through node_rpc_call_http, so bounding it here
+ * bounds the whole typed CLI surface, not just `status`.
+ *
+ * connect: a healthy loopback node either accepts immediately or the kernel
+ * refuses instantly; anything slower is not a node we should wait on.
+ * total: an outer cap on connect + send + receive, so even a peer that dribbles
+ * one byte at a time under SO_RCVTIMEO cannot outlast the budget.
+ * Both are overridable for tests; bounded to sane floors/ceilings. */
+#define RPC_CONNECT_MS_DEFAULT 2000
+#define RPC_TOTAL_MS_DEFAULT   10000
+
+static long rpc_env_ms(const char *name, long def, long lo, long hi)
+{
+    const char *v = getenv(name);
+    if (v && v[0]) {
+        char *end = NULL;
+        long parsed = strtol(v, &end, 10);
+        if (end && *end == 0 && parsed >= lo && parsed <= hi)
+            return parsed;
+    }
+    return def;
+}
+
+static long rpc_connect_ms(void)
+{
+    return rpc_env_ms("ZCL_RPC_CONNECT_MS", RPC_CONNECT_MS_DEFAULT, 1, 60000);
+}
+
+static long rpc_total_ms(void)
+{
+    return rpc_env_ms("ZCL_RPC_DEADLINE_MS", RPC_TOTAL_MS_DEFAULT, 1, 600000);
+}
+
+static int64_t rpc_now_ms(void)
+{
+    return platform_time_monotonic_ms();
+}
+
+/* Non-blocking connect bounded by `budget_ms`. Returns 0 on success, or a
+ * negative code the caller maps to a typed error body: -1 refused, -2 timed
+ * out, -3 other. The socket is left blocking on success. */
+static int rpc_connect_deadline(int sock, const struct sockaddr_in *addr,
+                                long budget_ms)
+{
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -3;
+
+    int rc = connect(sock, (const struct sockaddr *)addr, sizeof(*addr));
+    if (rc == 0) {
+        (void)fcntl(sock, F_SETFL, flags);
+        return 0;
+    }
+    if (errno != EINPROGRESS)
+        return errno == ECONNREFUSED ? -1 : -3;
+
+    struct pollfd pfd = { .fd = sock, .events = POLLOUT };
+    int pr;
+    do {
+        pr = poll(&pfd, 1, (int)budget_ms);
+    } while (pr < 0 && errno == EINTR);
+    if (pr == 0)
+        return -2; /* connect timed out */
+    if (pr < 0)
+        return -3;
+
+    int soerr = 0;
+    socklen_t slen = sizeof(soerr);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &slen) < 0)
+        return -3;
+    if (soerr != 0)
+        return soerr == ECONNREFUSED ? -1 : -3;
+
+    (void)fcntl(sock, F_SETFL, flags);
+    return 0;
+}
+
+static char *rpc_transport_error(const char *reason)
+{
+    char *out = zcl_malloc(512, "rpc transport error json");
+    if (!out)
+        return NULL;
+    snprintf(out, 512,
+        "{\"error\":{\"code\":-32603,\"message\":\"%s\"}}", reason);
+    return out;
+}
 
 static char g_cookie[256];
 static int g_port = 18232;
@@ -136,10 +234,11 @@ char *node_rpc_call_http(const char *method, const char *params_json)
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}",
             method);
 
+    const int64_t deadline_ms = rpc_now_ms() + rpc_total_ms();
+
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
-        return strdup("{\"error\":{\"code\":-32603,"
-                      "\"message\":\"socket failed\"}}");
+        return rpc_transport_error("socket failed");
 
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
@@ -147,10 +246,41 @@ char *node_rpc_call_http(const char *method, const char *params_json)
     };
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    /* Bound the connect so a firewalled/hung local port cannot block the whole
+     * command. Never wait past the overall deadline. */
+    long connect_budget = rpc_connect_ms();
+    long remaining = (long)(deadline_ms - rpc_now_ms());
+    if (remaining < 1)
+        remaining = 1;
+    if (connect_budget > remaining)
+        connect_budget = remaining;
+    int crc = rpc_connect_deadline(sock, &addr, connect_budget);
+    if (crc != 0) {
         close(sock);
-        return strdup("{\"error\":{\"code\":-32603,"
-                      "\"message\":\"cannot connect to node\"}}");
+        if (crc == -1)
+            return rpc_transport_error(
+                "cannot connect to node (connection refused) — is the node "
+                "running and is -rpcport correct?");
+        if (crc == -2)
+            return rpc_transport_error(
+                "cannot connect to node (connect timed out) — the RPC port "
+                "is not accepting connections; check -rpcport and the node");
+        return rpc_transport_error("cannot connect to node");
+    }
+
+    /* Past connect, a hang means "accepted but not answering" (busy/wedged).
+     * SO_RCVTIMEO/SO_SNDTIMEO bound each syscall; the outer deadline below
+     * bounds the total so slow trickles cannot outlast the budget either. */
+    {
+        long rem = (long)(deadline_ms - rpc_now_ms());
+        if (rem < 1)
+            rem = 1;
+        struct timeval tv = {
+            .tv_sec = rem / 1000,
+            .tv_usec = (rem % 1000) * 1000,
+        };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
     char auth_b64[512];
@@ -178,7 +308,12 @@ char *node_rpc_call_http(const char *method, const char *params_json)
     size_t cap = 65536, len = 0;
     char *buf = zcl_malloc(cap, "rpc response buf");
     if (!buf) { close(sock); return NULL; }
+    bool timed_out = false;
     for (;;) {
+        if (rpc_now_ms() >= deadline_ms) {
+            timed_out = true;
+            break;
+        }
         if (len + 4096 > cap) {
             size_t newcap = cap * 2;
             char *tmp = zcl_realloc(buf, newcap, "rpc response buf");
@@ -187,10 +322,26 @@ char *node_rpc_call_http(const char *method, const char *params_json)
             cap = newcap;
         }
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
-        if (n <= 0) break;
+        if (n < 0) {
+            /* SO_RCVTIMEO fired (EAGAIN/EWOULDBLOCK) or a real read error —
+             * either way this request is done; a partial read yields a bogus
+             * reply, so surface a timeout rather than parse garbage. */
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                timed_out = true;
+            break;
+        }
+        if (n == 0) break;
         len += (size_t)n;
     }
     close(sock);
+
+    if (timed_out && len == 0) {
+        free(buf);
+        return rpc_transport_error(
+            "node accepted the connection but did not answer within the "
+            "deadline — the node is busy or wedged; retry, or inspect "
+            "`ops state --subsystem=supervisor`");
+    }
     buf[len] = 0;
 
     /* Skip HTTP headers */

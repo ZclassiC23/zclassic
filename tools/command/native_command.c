@@ -2460,6 +2460,23 @@ void zcl_native_status_brief_render(const struct json_value *d, char *buf,
                 (blocker && blocker[0]) ? blocker : "unknown");
     if (n > 0 && (size_t)n < cap - len) len += (size_t)n;
 
+    /* Typed-blocker-registry count + head, from the same authority as
+     * `dumpstate blocker`, shown beside the headline `blocker=` so the two
+     * operator surfaces can never name disjoint truths. Rendered only when the
+     * node exports them (older nodes omit the fields; a missing field must not
+     * fabricate a zero — see the sparse-body contract test). */
+    const struct json_value *nblk = json_get(d, "active_blockers");
+    if (nblk && nblk->type == JSON_INT) {
+        n = snprintf(buf + len, cap - len, "blockers=%lld ",
+                     (long long)json_get_int(nblk));
+        if (n > 0 && (size_t)n < cap - len) len += (size_t)n;
+    }
+    const char *bhead = json_get_str(json_get(d, "blocker_head"));
+    if (bhead && bhead[0]) {
+        n = snprintf(buf + len, cap - len, "blocker_head=%s ", bhead);
+        if (n > 0 && (size_t)n < cap - len) len += (size_t)n;
+    }
+
     const struct json_value *bage = json_get(d, "blocker_age_s");
     if (bage && bage->type == JSON_INT)
         n = snprintf(buf + len, cap - len, "blocker_age=%llds ",

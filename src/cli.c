@@ -10,10 +10,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+
+/* Wall-clock bounds so a dead-but-listening or firewalled RPC port cannot hang
+ * the client indefinitely. Both overridable for tests. */
+#define CLI_CONNECT_MS 2000
+#define CLI_RECV_SEC   10
+
+/* Non-blocking connect bounded by CLI_CONNECT_MS. Returns 0 on success. */
+static int cli_connect_deadline(int sock, const struct sockaddr *addr,
+                                socklen_t alen, int budget_ms)
+{
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -1;
+    int rc = connect(sock, addr, alen);
+    if (rc == 0) { (void)fcntl(sock, F_SETFL, flags); return 0; }
+    if (errno != EINPROGRESS)
+        return -1;
+    struct pollfd pfd = { .fd = sock, .events = POLLOUT };
+    int pr;
+    do { pr = poll(&pfd, 1, budget_ms); } while (pr < 0 && errno == EINTR);
+    if (pr <= 0)
+        return -1;
+    int soerr = 0; socklen_t slen = sizeof(soerr);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &slen) < 0 || soerr != 0)
+        return -1;
+    (void)fcntl(sock, F_SETFL, flags);
+    return 0;
+}
 
 static char g_cookie[256];
 static int g_port = 18232;
@@ -77,11 +109,19 @@ static char *rpc_call(const char *body, size_t body_len)
     addr.sin_port = htons((uint16_t)g_port);
     inet_pton(AF_INET, g_host, &addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (cli_connect_deadline(sock, (struct sockaddr *)&addr, sizeof(addr),
+                             CLI_CONNECT_MS) < 0) {
         fprintf(stderr, "Cannot connect to %s:%d\n", g_host, g_port);
         close(sock);
         return NULL;
     }
+
+    /* Past connect, a hang means the node accepted the socket but never
+     * answered (busy/wedged). Bound each recv so the client cannot block
+     * forever waiting on a reply that will not come. */
+    struct timeval tv = { .tv_sec = CLI_RECV_SEC, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     /* Build HTTP request */
     char auth_b64[512];

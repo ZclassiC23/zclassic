@@ -284,14 +284,17 @@ char *zcl_native_status_brief_body(const struct json_value *args,
               status_key_missing(first_call, "budget_exceeded"),
               status_read_bool(first_call, "budget_exceeded",
                                &budget_exceeded)) &&
-        /* A budget-exceeded first call is a valid, truthful degraded
-         * result, NOT a malformed document -- the operator needs this
-         * envelope most exactly when the node is busiest and overran its
-         * own budget. Reject only self-contradiction: overrunning the
-         * budget without admitting partial_result would mean the node
-         * silently dropped optional detail without saying so. */
-        SCHECK(&v, "first_call.budget_exceeded", false,
-              !budget_exceeded || partial_result) &&
+        /* budget_exceeded is a pure timing fact (elapsed > budget_ms) and is
+         * ORTHOGONAL to completeness: a busy node whose cached-field collect
+         * contends cs_main can overrun 250ms while still gathering every
+         * field, so budget_exceeded=true with partial_result=false is a
+         * truthful slow-but-complete result, not self-contradiction. (This
+         * false coupling made the flagless status of a folding node fail with
+         * a cryptic "missing/invalid field first_call.budget_exceeded" after
+         * several seconds instead of returning the real, complete brief.)
+         * Data completeness is enforced independently by the resources check
+         * below (`resources` must be present unless partial_result), so no
+         * budget-vs-partial cross-check is needed or correct here. */
         SCHECK(&v, "first_call.partial_result", false,
               first_call_partial == partial_result) &&
         SCHECK(&v, "resources", status_key_missing(&agent, "resources"),
@@ -321,13 +324,28 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     }
 
     if (!valid) {
-        json_free(&agent);
-        free(raw);
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         if (!parsed) {
-            (void)snprintf(err->message, sizeof(err->message),
-                          "RPC agent returned an error or invalid "
-                          "zcl.public_status.v2 (unparsable JSON response)");
+            /* `parsed` is false for two very different situations that must
+             * not both read as a schema fault: an unparsable byte stream, or
+             * a well-formed transport/RPC error object (node not running,
+             * connect refused/timed out, response deadline exceeded, cookie
+             * unreadable). Surface the transport reason verbatim when we have
+             * one -- that is the honest "no live node / node busy" answer the
+             * operator needs, not "invalid zcl.public_status.v2". */
+            const char *rpc_err = NULL;
+            if (agent.type == JSON_OBJ) {
+                const struct json_value *e = json_get(&agent, "error");
+                rpc_err = json_get_str(json_get(
+                    e && e->type == JSON_OBJ ? e : &agent, "message"));
+            }
+            if (rpc_err && rpc_err[0])
+                (void)snprintf(err->message, sizeof(err->message),
+                              "node status unavailable: %s", rpc_err);
+            else
+                (void)snprintf(err->message, sizeof(err->message),
+                              "node status unavailable: RPC agent returned an "
+                              "unparsable response");
         } else if (v.version_skew) {
             (void)snprintf(err->message, sizeof(err->message),
                           "invalid zcl.public_status.v2: node binary "
@@ -338,6 +356,10 @@ char *zcl_native_status_brief_body(const struct json_value *args,
                           "invalid zcl.public_status.v2: missing/invalid "
                           "field %s", v.field);
         }
+        /* err->message now owns a copy of any rpc_err text, so the source
+         * document is safe to release before LOG_NULL returns NULL. */
+        json_free(&agent);
+        free(raw);
         LOG_NULL("native.status", "%s", err->message);
     }
 
@@ -348,6 +370,27 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         ? "utxo_apply.anchor_backfill_gap"
         : nullifier_gap ? "utxo_apply.nullifier_backfill_gap"
         : reported_blocker;
+
+    /* Typed-blocker-registry head + count, from the same authority as
+     * `dumpstate blocker`. Read OPTIONALLY (an older node predating this
+     * contract simply omits the sub-object) so the two operator surfaces
+     * always agree on the registry head instead of naming disjoint truths.
+     * `active_blockers`/`blocker_head` are emitted only when the node exports
+     * them; `blocker_head` still points into `agent`, which stays alive until
+     * after `root` is serialized below (json_push_kv_str copies the string). */
+    int64_t active_blockers = 0;
+    bool blocker_registry_known = false;
+    const char *blocker_head = NULL;
+    const struct json_value *blocker_registry =
+        json_get(&agent, "blocker_registry");
+    if (blocker_registry && blocker_registry->type == JSON_OBJ) {
+        blocker_registry_known = status_read_nonnegative_int(
+            blocker_registry, "active_count", &active_blockers);
+        const char *head = json_get_str(
+            json_get(blocker_registry, "dominant_id"));
+        if (head && head[0])
+            blocker_head = head;
+    }
 
     struct json_value root;
     json_init(&root);
@@ -366,6 +409,12 @@ char *zcl_native_status_brief_body(const struct json_value *args,
      * capture age. Tip-stall age is a different fact and must not be passed
      * off as blocker age. */
     status_push_int_if_known(&root, "blocker_age_s", false, 0);
+    /* Registry head shown beside primary_blocker so the brief and
+     * `dumpstate blocker` never present disjoint truths. */
+    status_push_int_if_known(&root, "active_blockers", blocker_registry_known,
+                             active_blockers);
+    if (blocker_head)
+        json_push_kv_str(&root, "blocker_head", blocker_head);
     json_push_kv_int(&root, "active_conditions", active_conditions);
     status_push_int_if_known(&root, "rss_mb", rss_known, rss_mb);
     status_push_int_if_known(&root, "tip_advance_age_seconds", tip_age_known,
