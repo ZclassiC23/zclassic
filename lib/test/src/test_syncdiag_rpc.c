@@ -752,6 +752,20 @@ static void syncdiag_reset_rpc_globals_for_test(void)
     peer_lifecycle_reset_for_test();
 }
 
+/* Fetch a criterion object by its "id" from an mvp criteria array (or NULL). */
+static const struct json_value *mvp_find_criterion(const struct json_value *arr,
+                                                   const char *id)
+{
+    if (!arr || arr->type != JSON_ARR)
+        return NULL;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *c = json_at(arr, i);
+        if (c && strcmp(json_get_str(json_get(c, "id")), id) == 0)
+            return c;
+    }
+    return NULL;
+}
+
 int test_syncdiag_rpc(void)
 {
     int failures = 0;
@@ -8752,6 +8766,191 @@ syncdiag_net_split_done:
         else    { printf("FAIL\n"); failures++; }
         rpc_net_set_connman(NULL);
         connman_free(&cm);
+    }
+
+    /* ── mvp scoreboard (schema zcl.mvp_status.v1) ──────────────────────
+     * The reporter's classifier is a PURE function over struct mvp_evidence,
+     * so seed known evidence and assert the eight criteria classify as
+     * expected (incl. an "unknown" for a missing source) and the met_count
+     * math. It must flip nothing true on its own: with all-absent evidence
+     * every criterion is unknown and met_count is 0. */
+    printf("mvp scoreboard classifier (zcl.mvp_status.v1)... ");
+    {
+        bool ok = true;
+        #define MVP_FIND(arr_, id_) mvp_find_criterion((arr_), (id_))
+
+        /* (1) All-absent evidence → 8x unknown, met_count 0, not ready. */
+        {
+            struct mvp_evidence ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.c3_cold_sync_secs = -1;
+            ev.c6_soak_window_hours = -1;
+            ev.c6_slo_success_rate = -1.0;
+            ev.c7_recovery_secs = -1;
+            ev.c8_parity_mismatches = -1;
+
+            struct json_value out = {0};
+            ok = ok && mvp_build_status_json(&ev, &out);
+            ok = ok && strcmp(json_get_str(json_get(&out, "schema")),
+                              "zcl.mvp_status.v1") == 0;
+            ok = ok && json_get_bool(json_get(&out, "reporter_only"));
+            ok = ok && json_get_int(json_get(&out, "total")) == 8;
+            ok = ok && json_get_int(json_get(&out, "met_count")) == 0;
+            ok = ok && json_get_bool(json_get(&out, "ready_for_v1")) == false;
+
+            const struct json_value *arr = json_get(&out, "criteria");
+            ok = ok && arr && arr->type == JSON_ARR && json_size(arr) == 8;
+
+            const char *ids[8] = {"C1","C2","C3","C4","C5","C6","C7","C8"};
+            for (size_t i = 0; i < 8 && ok; i++) {
+                const struct json_value *c = MVP_FIND(arr, ids[i]);
+                ok = ok && c != NULL;
+                /* met tri-state: unknown encodes as JSON null. */
+                ok = ok && json_is_null(json_get(c, "met"));
+                ok = ok && strcmp(json_get_str(json_get(c, "met_state")),
+                                  "unknown") == 0;
+                /* every unknown carries a named (non-empty) reason. */
+                ok = ok && json_get_str(json_get(c, "reason"))[0] != '\0';
+                /* evidence object with a named source is always present. */
+                const struct json_value *e = json_get(c, "evidence");
+                ok = ok && e && e->type == JSON_OBJ;
+                ok = ok && json_get_str(json_get(e, "evidence_source"))[0]
+                           != '\0';
+            }
+            /* C6 unknown reason must name the missing soak source. */
+            {
+                const struct json_value *c6 = MVP_FIND(arr, "C6");
+                ok = ok && c6 &&
+                     strstr(json_get_str(json_get(c6, "reason")),
+                            "soak attestation service not initialized") != NULL;
+            }
+            json_free(&out);
+        }
+
+        /* (2) The four runtime-derivable criteria all MET; the four offline
+         * operator-proof criteria stay unknown → met_count == 4. */
+        {
+            struct mvp_evidence ev;
+            memset(&ev, 0, sizeof(ev));
+            /* C3: a passing cold-start receipt within budget. */
+            ev.c3_health_present = true;
+            ev.c3_sync_state = SYNC_AT_TIP;
+            ev.c3_log_head_gap = 0;
+            ev.c3_sync_benchmark_receipt_present = true;
+            ev.c3_cold_sync_secs = 120;
+            /* C6: 168h+ clean healthy eligible window, no SLO probe. */
+            ev.c6_soak_present = true;
+            ev.c6_soak_last_healthy = true;
+            ev.c6_soak_window_eligible = true;
+            ev.c6_soak_window_hours = 200;
+            ev.c6_slo_probe_present = false;
+            ev.c6_slo_success_rate = -1.0;
+            /* C7: a recovery drill within the 2min budget. */
+            ev.c7_recovery_drill_present = true;
+            ev.c7_recovery_secs = 30;
+            /* C8: standing oracle at 0 mismatches, canary present not failing. */
+            ev.c8_parity_present = true;
+            ev.c8_parity_mismatches = 0;
+            ev.c8_canary_present = true;
+            ev.c8_canary_fail_active = false;
+
+            struct json_value out = {0};
+            ok = ok && mvp_build_status_json(&ev, &out);
+            ok = ok && json_get_int(json_get(&out, "met_count")) == 4;
+            ok = ok && json_get_bool(json_get(&out, "ready_for_v1")) == false;
+
+            const struct json_value *arr = json_get(&out, "criteria");
+            const char *met_ids[4] = {"C3","C6","C7","C8"};
+            for (size_t i = 0; i < 4 && ok; i++) {
+                const struct json_value *c = MVP_FIND(arr, met_ids[i]);
+                ok = ok && c != NULL;
+                /* met encodes as JSON true. */
+                ok = ok && !json_is_null(json_get(c, "met")) &&
+                     json_get_bool(json_get(c, "met")) == true;
+                ok = ok && strcmp(json_get_str(json_get(c, "met_state")),
+                                  "met") == 0;
+                ok = ok && json_is_null(json_get(c, "blocker"));
+            }
+            /* The offline-proof criteria remain unknown (never silently met). */
+            const char *unk_ids[4] = {"C1","C2","C4","C5"};
+            for (size_t i = 0; i < 4 && ok; i++) {
+                const struct json_value *c = MVP_FIND(arr, unk_ids[i]);
+                ok = ok && c != NULL && json_is_null(json_get(c, "met")) &&
+                     strcmp(json_get_str(json_get(c, "met_state")),
+                            "unknown") == 0;
+            }
+            json_free(&out);
+        }
+
+        /* (3) Unmet-with-blocker branches: incomplete soak window, slow
+         * recovery, latched canary FAIL. Each is met=false + named blocker. */
+        {
+            struct mvp_evidence ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.c3_cold_sync_secs = -1;
+            /* C6: healthy+eligible but only a 10h window → incomplete. */
+            ev.c6_soak_present = true;
+            ev.c6_soak_last_healthy = true;
+            ev.c6_soak_window_eligible = true;
+            ev.c6_soak_window_hours = 10;
+            ev.c6_slo_success_rate = -1.0;
+            /* C7: a recovery drill over the 2min budget. */
+            ev.c7_recovery_drill_present = true;
+            ev.c7_recovery_secs = 200;
+            /* C8: canary latched FAIL. */
+            ev.c8_parity_present = true;
+            ev.c8_parity_mismatches = 0;
+            ev.c8_canary_present = true;
+            ev.c8_canary_fail_active = true;
+
+            struct json_value out = {0};
+            ok = ok && mvp_build_status_json(&ev, &out);
+            ok = ok && json_get_int(json_get(&out, "met_count")) == 0;
+            const struct json_value *arr = json_get(&out, "criteria");
+
+            const struct json_value *c6 = MVP_FIND(arr, "C6");
+            ok = ok && c6 && !json_is_null(json_get(c6, "met")) &&
+                 json_get_bool(json_get(c6, "met")) == false;
+            ok = ok && c6 && strcmp(json_get_str(json_get(c6, "met_state")),
+                                    "unmet") == 0;
+            ok = ok && c6 && strcmp(json_get_str(json_get(c6, "blocker")),
+                                    "soak.window_incomplete") == 0;
+
+            const struct json_value *c7 = MVP_FIND(arr, "C7");
+            ok = ok && c7 && json_get_bool(json_get(c7, "met")) == false &&
+                 strcmp(json_get_str(json_get(c7, "blocker")),
+                        "recovery.too_slow") == 0;
+
+            const struct json_value *c8 = MVP_FIND(arr, "C8");
+            ok = ok && c8 && json_get_bool(json_get(c8, "met")) == false &&
+                 strcmp(json_get_str(json_get(c8, "blocker")),
+                        "consensus.replay_canary_failed") == 0;
+            json_free(&out);
+        }
+
+        /* (4) NULL evidence is treated as all-absent (no crash, 8x unknown). */
+        {
+            struct json_value out = {0};
+            ok = ok && mvp_build_status_json(NULL, &out);
+            ok = ok && json_get_int(json_get(&out, "met_count")) == 0;
+            ok = ok && json_size(json_get(&out, "criteria")) == 8;
+            json_free(&out);
+        }
+
+        /* (5) The live dumper runs NULL-safe on an uninitialized node and
+         * yields a well-formed schema object. */
+        {
+            struct json_value out = {0};
+            ok = ok && mvp_dump_state_json(&out, NULL);
+            ok = ok && strcmp(json_get_str(json_get(&out, "schema")),
+                              "zcl.mvp_status.v1") == 0;
+            ok = ok && json_size(json_get(&out, "criteria")) == 8;
+            json_free(&out);
+        }
+
+        #undef MVP_FIND
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
     }
 
     syncdiag_reset_rpc_globals_for_test();
