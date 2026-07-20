@@ -117,6 +117,14 @@ hide.
   changes. Distinguish lag at different heights from an exact same-height hash
   disagreement.
 - Keep standing docs and command output aligned with live truth.
+- Trust-capability centralization exists: `app/services/include/services/sync_trust_policy.h`
+  derives one `sync_trust_state` from the same provenance bits every gate
+  above already reads (self-derived, proven authority, refold marker) and
+  maps it to a capability mask; export, offer-advertisement, and guard call
+  sites route the provenance-bit portion of their decision through this one
+  table instead of re-reading the raw bits separately, while every other
+  local AND (cursors, payload authority, `SNAPSYNC_ACTIVATION_CONTAINED`)
+  stays exactly where it was.
 
 Promotion gate: there is no autonomous runtime publication; an explicit apply
 refuses omitted dirty or sealed paths; no shielded transaction can cross an

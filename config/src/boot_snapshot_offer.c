@@ -32,6 +32,7 @@
 #include "jobs/reducer_frontier.h"
 #include "net/file_service.h"
 #include "net/fast_sync.h"
+#include "services/sync_trust_policy.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
@@ -209,9 +210,25 @@ static bool snapshot_offer_state_is_sovereign_at(int32_t *out_hstar,
     progress_store_tx_lock();
     bool hstar_known = reducer_frontier_compute_hstar(
         db, &hstar, &served_floor);
-    bool transparent_self_derived = hstar_known &&
+    /* Offer-advertisement trust bit: centralized through
+     * services/sync_trust_policy.h rather than reading the raw
+     * self-derived predicate directly. S = self_derived is unchanged;
+     * X = proven_authority && refold_marker mirrors bx_qualified's
+     * reading (config/src/bundle_exporter.c). By construction,
+     * SYNC_CAP_SEED_BUNDLE is granted iff S holds (ARTIFACT_VERIFIED
+     * and SOVEREIGN both carry it, no other state does), so this is
+     * behavior-preserving: the resulting bit equals the raw S value in
+     * every case, just resolved through the single policy table. */
+    bool transparent_self_derived_raw = hstar_known &&
         coins_kv_tip_is_self_derived(db, hstar, transparent_reason,
                                      sizeof(transparent_reason));
+    bool offer_proven = coins_kv_is_proven_authority(db, NULL);
+    bool offer_refold =
+        offer_proven && coins_kv_contains_refold_marker(db);
+    enum sync_trust_state offer_trust_state = sync_trust_derive(
+        offer_proven, offer_refold, transparent_self_derived_raw);
+    bool transparent_self_derived = sync_trust_cap_allowed(
+        offer_trust_state, SYNC_CAP_SEED_BUNDLE);
     bool cursors_read =
         anchor_kv_activation_cursor(db, ANCHOR_POOL_SPROUT,
                                     &sprout_cursor, &sprout_found) &&

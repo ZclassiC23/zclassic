@@ -9,6 +9,7 @@
 #include "test/test_helpers.h"
 
 #include "config/command_catalog.h"
+#include "config/command_handler_index.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "json/json.h"
@@ -1900,10 +1901,55 @@ static int test_ops_dash_dashboards_ported(void)
     return failures;
 }
 
+/* config/src/command_catalog.c also builds a SECOND, parallel stringizing
+ * expansion of the same .def catalogs — zcl_command_handler_index()
+ * (config/command_handler_index.h). Its size must match the number of
+ * catalog leaves that actually bind a handler (every such leaf produces
+ * exactly one index entry, by construction), and a known handler name must
+ * resolve to its command path. */
+static int test_handler_index_matches_catalog(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_handler_index *idx = zcl_command_handler_index();
+    TEST("handler index size matches bound-handler leaf count") {
+        ASSERT(idx != NULL);
+        ASSERT(idx->entries != NULL || idx->count == 0);
+        size_t bound = 0;
+        for (size_t i = 0; i < reg->count; i++)
+            if (reg->commands[i].handler != NULL)
+                bound++;
+        ASSERT(idx->count == bound);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_handler_index_known_symbol_maps_to_path(void)
+{
+    int failures = 0;
+    const struct zcl_command_handler_index *idx = zcl_command_handler_index();
+    TEST("a known handler name maps to its command path") {
+        bool found = false;
+        for (size_t i = 0; i < idx->count; i++) {
+            if (strcmp(idx->entries[i].handler_name,
+                      "zcl_native_handle_code_sym") != 0)
+                continue;
+            ASSERT_STR_EQ(idx->entries[i].path, "code.sym");
+            found = true;
+        }
+        ASSERT(found);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
     failures += test_catalog_wellformed();
+    failures += test_handler_index_matches_catalog();
+    failures += test_handler_index_known_symbol_maps_to_path();
     failures += test_app_features_leaves();
     failures += test_ops_dash_dashboards_ported();
     failures += test_semantics_contract_negative();
