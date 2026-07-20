@@ -34,6 +34,7 @@ static void push_block_status_flags(struct json_value *arr, unsigned nStatus)
         { BLOCK_HAVE_UNDO,    "BLOCK_HAVE_UNDO" },
         { BLOCK_FAILED_VALID, "BLOCK_FAILED_VALID" },
         { BLOCK_FAILED_CHILD, "BLOCK_FAILED_CHILD" },
+        { BLOCK_REVALIDATE_PENDING, "BLOCK_REVALIDATE_PENDING" },
     };
     for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
         if (nStatus & flags[i].mask) {
@@ -217,6 +218,15 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
      * block_index entry. */
     json_push_kv_int(out, "blocks_hydrate_quarantined",
                      block_index_blocks_hydrate_quarantined());
+
+    /* Persisted-FAILED-bit trust reconcile tallies (process-monotonic): FAILED
+     * bits stripped below the baked ROM checkpoint, and demoted to lazy
+     * revalidation candidates above it (the "stale BLOCK_FAILED_VALID wedges
+     * tip" defense). Global, not per-block. */
+    json_push_kv_int(out, "failed_bits_stripped_below_checkpoint",
+                     block_index_failed_bits_stripped());
+    json_push_kv_int(out, "failed_bits_demoted_above_checkpoint",
+                     block_index_failed_bits_demoted());
 
     if (!bi) {
         json_push_kv_bool(out, "found", false);

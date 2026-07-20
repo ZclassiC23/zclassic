@@ -13,6 +13,8 @@
 #include "storage/coins_kv.h"
 #include "jobs/tip_finalize_stage.h"
 #include "validation/main_state.h"
+#include "validation/chainstate.h"
+#include "chain/checkpoints.h"
 #include "primitives/block.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -1333,6 +1335,238 @@ int test_block_index_loader(void)
         rmdir(tmpdir);
         block_map_free(&ms.map_block_index);
         block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── Persisted-FAILED-bit trust policy (C2) ─────────────────────────
+     * A stale persisted BLOCK_FAILED_VALID bit on the true best-chain tip must
+     * NEVER wedge the node ("stale BLOCK_FAILED_VALID wedges tip" class). The
+     * flat + SQLite loaders reconcile the bit against the baked ROM checkpoint:
+     *   - below the checkpoint: STRIP it (re-derive, never trust);
+     *   - above it:            DEMOTE it to a lazy revalidation candidate
+     *                          (clear the FAILED bit, set BLOCK_REVALIDATE_PENDING).
+     * Either way the demoted/stripped block is failure-free, so
+     * select_most_work_eligible() promotes it again. Genuinely-failed behavior
+     * is unchanged — the marker DEMANDS revalidation; the loader never blesses
+     * the block (no HAVE bit added, validity level not raised). */
+
+    /* ── T1: pure unit test of the policy helper (deterministic). ──────── */
+    {
+        /* Below checkpoint (h=100, ckpt=1000): STRIP, no marker. */
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nHeight = 100;
+        bi.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA | BLOCK_FAILED_VALID;
+        int64_t before_strip = block_index_failed_bits_stripped();
+        enum block_index_failure_trust_action a1 =
+            block_index_apply_persisted_failure_trust(&bi, 1000);
+        bool strip_ok = (a1 == BLOCK_FAILURE_TRUST_STRIPPED) &&
+                        !(bi.nStatus & BLOCK_FAILED_MASK) &&
+                        !(bi.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                        /* validity level + HAVE bit preserved (no weakening) */
+                        (bi.nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_SCRIPTS &&
+                        (bi.nStatus & BLOCK_HAVE_DATA) &&
+                        block_index_failed_bits_stripped() == before_strip + 1;
+        BIL_CHECK("bil: policy strips FAILED below the ROM checkpoint", strip_ok);
+
+        /* Above checkpoint (h=2000, ckpt=1000): DEMOTE to a candidate. */
+        struct block_index bi2;
+        block_index_init(&bi2);
+        bi2.nHeight = 2000;
+        bi2.nStatus = BLOCK_VALID_TREE | BLOCK_FAILED_CHILD;
+        int64_t before_demote = block_index_failed_bits_demoted();
+        enum block_index_failure_trust_action a2 =
+            block_index_apply_persisted_failure_trust(&bi2, 1000);
+        bool demote_ok = (a2 == BLOCK_FAILURE_TRUST_DEMOTED) &&
+                         !(bi2.nStatus & BLOCK_FAILED_MASK) &&
+                         (bi2.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                         !block_has_any_failure(&bi2) &&      /* selectable */
+                         block_is_revalidation_pending(&bi2) &&
+                         (bi2.nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_TREE &&
+                         block_index_failed_bits_demoted() == before_demote + 1;
+        BIL_CHECK("bil: policy demotes FAILED above the checkpoint to a "
+                  "revalidation candidate", demote_ok);
+
+        /* No persisted verdict + a stale round-tripped marker → NONE, marker
+         * self-clears, no counter movement, other bits untouched. */
+        struct block_index bi3;
+        block_index_init(&bi3);
+        bi3.nHeight = 2000;
+        bi3.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA |
+                      BLOCK_REVALIDATE_PENDING;
+        enum block_index_failure_trust_action a3 =
+            block_index_apply_persisted_failure_trust(&bi3, 1000);
+        bool none_ok = (a3 == BLOCK_FAILURE_TRUST_NONE) &&
+                       !(bi3.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                       bi3.nStatus == (unsigned)(BLOCK_VALID_SCRIPTS |
+                                                 BLOCK_HAVE_DATA);
+        BIL_CHECK("bil: policy clears a stale round-tripped marker when no "
+                  "FAILED bit is present", none_ok);
+    }
+
+    /* ── T2: end-to-end via the FLAT loader with a low override checkpoint,
+     * proving the demote cures the wedge at the selection layer. A synthetic
+     * chain h=0..49 with a FAILED_VALID stamped on the tip is saved and
+     * reloaded; the override checkpoint at h=10 puts the tip ABOVE it, so the
+     * reloaded tip must be demoted (FAILED cleared + marker set) and
+     * select_most_work_eligible() must return it. */
+    {
+        struct rom_state_checkpoint ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.height = 10;   /* tip h=49 sits ABOVE this */
+        checkpoints_set_rom_state_override_for_test(&ov);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 50);
+
+        /* Stamp a STALE FAILED_VALID on the best-chain tip (h=49). */
+        struct uint256 tip_hash = make_test_hash(49);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_demote", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (ok) save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct block_index *loaded =
+            ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+        bool demoted = loaded &&
+            !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+            block_is_revalidation_pending(loaded) &&
+            !block_has_any_failure(loaded);
+
+        /* The cured tip must now be the most-work selection (was excluded by
+         * the stale FAILED bit before the reconcile). */
+        struct block_index *sel =
+            ok ? select_most_work_eligible(&ms2.chain_active,
+                                           &ms2.map_block_index, NULL) : NULL;
+        bool selected = (sel == loaded);
+
+        BIL_CHECK("bil: flat loader demotes a stale FAILED tip above the "
+                  "checkpoint and it becomes selectable", demoted && selected);
+
+        checkpoints_reset_rom_state_override_for_test();
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── T3: FLAT loader with the DEFAULT (high) checkpoint — the whole
+     * synthetic chain is BELOW it, so a stale FAILED tip is STRIPPED (no
+     * marker) and still becomes selectable. */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 40);
+
+        struct uint256 tip_hash = make_test_hash(39);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_strip", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (ok) save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct block_index *loaded =
+            ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+        bool stripped = loaded &&
+            !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+            !block_is_revalidation_pending(loaded) &&   /* below ckpt = no marker */
+            !block_has_any_failure(loaded);
+        struct block_index *sel =
+            ok ? select_most_work_eligible(&ms2.chain_active,
+                                           &ms2.map_block_index, NULL) : NULL;
+        bool selected = (sel == loaded);
+        BIL_CHECK("bil: flat loader strips a stale FAILED tip below the default "
+                  "checkpoint and it becomes selectable", stripped && selected);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── T4: SQLite loader applies the SAME reconcile. A FAILED_VALID tip
+     * above a low override checkpoint is demoted on load_block_index_sqlite. */
+    {
+        struct rom_state_checkpoint ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.height = 10;
+        checkpoints_set_rom_state_override_for_test(&ov);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 1200);
+
+        struct uint256 tip_hash = make_test_hash(1199);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        if (ok) {
+            sqlite3_exec(ndb.db,
+                "CREATE TABLE block_index_cache ("
+                "hash BLOB PRIMARY KEY,prev_hash BLOB,height INTEGER,"
+                "n_bits INTEGER,n_time INTEGER,n_version INTEGER,"
+                "n_status INTEGER,n_file INTEGER,n_data_pos INTEGER,"
+                "n_undo_pos INTEGER,n_tx INTEGER,chain_work BLOB,"
+                "n_cached_branch_id INTEGER,n_chain_tx INTEGER)",
+                NULL, NULL, NULL);
+            save_block_index_recent(&ndb, &ms);
+
+            struct main_state ms2;
+            memset(&ms2, 0, sizeof(ms2));
+            block_map_init(&ms2.map_block_index);
+            active_chain_init(&ms2.chain_active);
+            ok = load_block_index_sqlite(&ndb, &ms2).ok;
+
+            struct block_index *loaded =
+                ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+            bool demoted = loaded &&
+                !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+                block_is_revalidation_pending(loaded) &&
+                !block_has_any_failure(loaded);
+            BIL_CHECK("bil: SQLite loader demotes a stale FAILED tip above the "
+                      "checkpoint", ok && demoted);
+
+            block_map_free(&ms2.map_block_index);
+            sqlite3_close(ndb.db);
+        }
+        checkpoints_reset_rom_state_override_for_test();
+        block_map_free(&ms.map_block_index);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

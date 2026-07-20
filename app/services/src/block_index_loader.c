@@ -11,6 +11,7 @@
 #include "services/chain_tip.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/checkpoints.h"
 #include "chain/pow.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -26,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -62,6 +64,64 @@ struct __attribute__((packed)) block_index_flat {
     uint32_t n_cached_branch_id;
     uint8_t  sapling_root[32];
 };
+
+/* ── Persisted-FAILED-bit trust policy ───────────────────── */
+
+/* Process-monotonic tallies (see block_index_loader.h). The loaders run
+ * single-threaded, but the dumpstate reader is a separate thread, so keep the
+ * counters atomic. */
+static _Atomic int64_t g_failed_bits_stripped = 0;
+static _Atomic int64_t g_failed_bits_demoted = 0;
+
+int64_t block_index_failed_bits_stripped(void)
+{
+    return atomic_load_explicit(&g_failed_bits_stripped, memory_order_relaxed);
+}
+
+int64_t block_index_failed_bits_demoted(void)
+{
+    return atomic_load_explicit(&g_failed_bits_demoted, memory_order_relaxed);
+}
+
+enum block_index_failure_trust_action
+block_index_apply_persisted_failure_trust(struct block_index *pindex,
+                                           int32_t checkpoint_height)
+{
+    if (!pindex)
+        return BLOCK_FAILURE_TRUST_NONE;
+
+    /* The revalidation-pending marker is runtime-derived, never trusted from
+     * disk: clear any bit a prior save round-tripped so nStatus reflects only
+     * THIS load's verdict. */
+    unsigned int status = pindex->nStatus & ~(unsigned int)BLOCK_REVALIDATE_PENDING;
+
+    if (!(status & (unsigned int)BLOCK_FAILED_MASK)) {
+        pindex->nStatus = status; /* no persisted verdict; stale marker cleared */
+        return BLOCK_FAILURE_TRUST_NONE;
+    }
+
+    /* A persisted BLOCK_FAILED_VALID/FAILED_CHILD is present. Clear the real
+     * FAILED bits so a stale bit can never exclude this candidate from chain
+     * selection before revalidation re-confirms it. */
+    status &= ~(unsigned int)BLOCK_FAILED_MASK;
+
+    if (pindex->nHeight <= checkpoint_height) {
+        /* Below the baked ROM checkpoint: state is checkpoint-trusted and
+         * re-derived from the baked keystone — never honor a persisted verdict,
+         * and do not flag revalidation. */
+        pindex->nStatus = status;
+        atomic_fetch_add_explicit(&g_failed_bits_stripped, 1,
+                                  memory_order_relaxed);
+        return BLOCK_FAILURE_TRUST_STRIPPED;
+    }
+
+    /* Above the checkpoint: demote to a lazy revalidation candidate. The stages
+     * re-run full validation when the fold reaches the block; a genuine failure
+     * is re-set fresh by the connect path (genuinely-failed behavior unchanged). */
+    pindex->nStatus = status | (unsigned int)BLOCK_REVALIDATE_PENDING;
+    atomic_fetch_add_explicit(&g_failed_bits_demoted, 1, memory_order_relaxed);
+    return BLOCK_FAILURE_TRUST_DEMOTED;
+}
 
 static int cmp_height(const void *a, const void *b)
 {
@@ -449,6 +509,10 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
 
     /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
+    /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. Fetched
+     * once; the per-entry reconcile below is O(1) and adds no extra scan. */
+    int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    int64_t stripped_failed = 0, demoted_failed = 0;
     for (uint32_t i = 0; i < count; i++) {
         /* Feed the supervisor_backstop liveness marker every 64K entries so
          * this single-threaded pre-serving loop over ~3.1M entries is not
@@ -497,9 +561,24 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
         pindex->nCachedBranchId = entries[i].n_cached_branch_id;
         memcpy(pindex->hashFinalSaplingRoot.data, entries[i].sapling_root, 32);
 
+        /* Reconcile the persisted FAILED verdict against the ROM checkpoint
+         * before the forward pass runs (so a stripped/demoted entry does not
+         * re-propagate BLOCK_FAILED_CHILD to its descendants). */
+        switch (block_index_apply_persisted_failure_trust(pindex, ckpt_h)) {
+            case BLOCK_FAILURE_TRUST_STRIPPED: stripped_failed++; break;
+            case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
+            case BLOCK_FAILURE_TRUST_NONE:     break;
+        }
+
         if (by_height && pindex->nHeight >= 0 && pindex->nHeight <= max_h)
             by_height[pindex->nHeight] = pindex;
     }
+    if (stripped_failed || demoted_failed)
+        LOG_INFO("block_index_flat",
+                 "block_index_flat: persisted-FAILED trust reconcile: "
+                 "%lld stripped (<=ckpt h=%d), %lld demoted to revalidation "
+                 "candidates (>ckpt)",
+                 (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
     /* Link pprev via prev_hash lookup (handles orphans correctly).
      * Height-based linking breaks when orphan blocks at the same height
@@ -735,6 +814,9 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
             -1, &sel, NULL) != SQLITE_OK || !sel)
         return ZCL_ERR(-3, "load_block_index_sqlite: failed to prepare SQLite SELECT for block_index_cache");
 
+    /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. */
+    int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    int64_t stripped_failed = 0, demoted_failed = 0;
     size_t loaded = 0;
     while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
         const void *hash_blob = sqlite3_column_blob(sel, 0);
@@ -762,9 +844,24 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
 
         pindex->nCachedBranchId = (uint32_t)sqlite3_column_int(sel, 12);
         pindex->nChainTx        = (uint32_t)sqlite3_column_int(sel, 13);
+
+        /* Same persisted-FAILED trust reconcile as the flat loader: strip
+         * below the ROM checkpoint, demote to a revalidation candidate above
+         * it (a stale FAILED bit can no longer wedge the tip). */
+        switch (block_index_apply_persisted_failure_trust(pindex, ckpt_h)) {
+            case BLOCK_FAILURE_TRUST_STRIPPED: stripped_failed++; break;
+            case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
+            case BLOCK_FAILURE_TRUST_NONE:     break;
+        }
         loaded++;
     }
     sqlite3_finalize(sel);
+    if (stripped_failed || demoted_failed)
+        LOG_INFO("block_index",
+                 "load_block_index_sqlite: persisted-FAILED trust reconcile: "
+                 "%lld stripped (<=ckpt h=%d), %lld demoted to revalidation "
+                 "candidates (>ckpt)",
+                 (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
     /* Link pprev pointers after every cached index entry is loaded. */
     sel = NULL;

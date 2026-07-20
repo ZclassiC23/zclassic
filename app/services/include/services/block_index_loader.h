@@ -129,6 +129,46 @@ struct zcl_result load_block_index(struct main_state *ms,
 
 struct block_index;
 
+/* Persisted-FAILED-bit trust policy verdict for one just-loaded entry
+ * (block_index_apply_persisted_failure_trust). */
+enum block_index_failure_trust_action {
+    BLOCK_FAILURE_TRUST_NONE = 0, /* no persisted FAILED bit — left untouched */
+    BLOCK_FAILURE_TRUST_STRIPPED, /* below the ROM checkpoint — bits stripped */
+    BLOCK_FAILURE_TRUST_DEMOTED,  /* above — demoted to a revalidation candidate */
+};
+
+/* Reconcile a just-loaded block_index entry's PERSISTED negative verdict against
+ * the baked ROM checkpoint trust boundary. Called per entry by the flat and
+ * SQLite loaders (single-threaded, right after nHeight + nStatus are seated),
+ * so it is O(1) per entry and adds NO extra boot-time scan.
+ *
+ *   Below the baked ROM checkpoint height (get_rom_state_checkpoint()->height):
+ *     the state is checkpoint-trusted and re-derived from the baked keystone —
+ *     STRIP any persisted BLOCK_FAILED_VALID/FAILED_CHILD (never trust a
+ *     persisted verdict below the ROM), and do not flag revalidation.
+ *
+ *   Above it: a persisted FAILED verdict is a revalidation CANDIDATE, never
+ *     final — clear the real FAILED bits (so a STALE bit can never exclude this
+ *     block from find_most_work_chain / promote_best_header before revalidation
+ *     re-confirms it — the "stale BLOCK_FAILED_VALID wedges tip" class) and set
+ *     the node-local BLOCK_REVALIDATE_PENDING marker. The stages re-run full
+ *     validation when the fold reaches the block; a GENUINE failure is re-set
+ *     fresh by the connect path, so behavior for genuinely-failed blocks is
+ *     unchanged (no weakening).
+ *
+ * The BLOCK_REVALIDATE_PENDING marker is runtime-derived: any bit a prior save
+ * round-tripped to disk is cleared first, so it reflects only THIS load. Returns
+ * the action taken (for the caller's per-load summary + the process counters). */
+enum block_index_failure_trust_action
+block_index_apply_persisted_failure_trust(struct block_index *pindex,
+                                           int32_t checkpoint_height);
+
+/* Process-monotonic tallies of persisted FAILED bits the loaders reconciled:
+ * stripped below the ROM checkpoint, or demoted to revalidation candidates above
+ * it. Surfaced by diag_block_index_dump_state_json. Reentrant/lock-free. */
+int64_t block_index_failed_bits_stripped(void);
+int64_t block_index_failed_bits_demoted(void);
+
 /* Forward pass over a height-sorted block_index array: recompute
  * nChainWork, nChainTx, skip links, cached branch id, and failed-child
  * propagation from each entry's (already-linked) pprev. Shared by the

@@ -59,6 +59,18 @@ enum block_status {
     BLOCK_PARKED_MASK        = 768,
     BLOCK_FAILED_TRANSIENT   = 1024,
     BLOCK_FAILED_ANY_MASK    = 1120, /* VALID | CHILD | TRANSIENT */
+    /* NODE-LOCAL revalidation-candidate marker — NOT a failure and NOT part of
+     * any FAILED/VALID mask, so it never excludes a block from chain selection,
+     * validity checks, or failed-child propagation. The block-index loaders set
+     * it when they DEMOTE a persisted BLOCK_FAILED_VALID/FAILED_CHILD verdict
+     * recorded ABOVE the baked ROM checkpoint (see block_index_loader.c): the
+     * persisted negative verdict is a revalidation CANDIDATE, never final, so
+     * the real FAILED bits are cleared (a stale bit can no longer wedge the tip)
+     * and this marker records "the stages must re-confirm this on demand." It is
+     * a runtime-derived provenance flag, recomputed fresh on every load — never
+     * consensus state, never trusted from disk. Pure observability + diagnostics;
+     * no code branches on it for validity. */
+    BLOCK_REVALIDATE_PENDING = 2048,
 };
 
 #define BLOCK_VALID_CONSENSUS BLOCK_VALID_SCRIPTS
@@ -277,6 +289,14 @@ static inline bool block_is_transiently_failed(const struct block_index *bi)
 static inline bool block_has_any_failure(const struct block_index *bi)
 {
     return (block_index_status_load(bi) & BLOCK_FAILED_ANY_MASK) != 0;
+}
+/* True when a loader demoted a persisted FAILED verdict above the ROM
+ * checkpoint to a revalidation candidate (see BLOCK_REVALIDATE_PENDING). This
+ * is NOT a failure — block_has_any_failure() is false — so the block stays
+ * eligible for chain selection until the stages re-confirm it on demand. */
+static inline bool block_is_revalidation_pending(const struct block_index *bi)
+{
+    return (block_index_status_load(bi) & BLOCK_REVALIDATE_PENDING) != 0;
 }
 
 static inline bool block_index_is_valid(const struct block_index *bi,
