@@ -111,7 +111,7 @@ AGENT_IMPACT_RULE("app/jobs/src/tip_finalize_stage*.c|app/jobs/include/jobs/tip_
 /* Generic "nearest self-verified base -> rewind -> O(delta) re-derive" recovery
  * driver + the sovereign base selector it consumes. Ties the reducer frontier,
  * the stage re-derive primitive, and the tip-label validation pack together. */
-AGENT_IMPACT_RULE("app/jobs/src/rewind_driver.c|app/jobs/include/jobs/rewind_driver.h|app/jobs/src/reducer_frontier_rewind_bases.h", "reducer_frontier stage_rederive_range validation_pack_conditions make_lint_gates")
+AGENT_IMPACT_RULE("app/jobs/src/rewind_driver.c|app/jobs/include/jobs/rewind_driver.h|app/jobs/src/reducer_frontier_rewind_bases.h|lib/test/src/test_rewind_driver.c", "rewind_driver reducer_frontier stage_rederive_range validation_pack_conditions make_lint_gates")
 /* Consensus-state serving evidence: keep every extracted helper/header and its
  * regression fixture owned by the smallest directly relevant lane. */
 AGENT_IMPACT_RULE("app/jobs/src/reducer_frontier_evidence.h", "reducer_frontier make_lint_gates")
