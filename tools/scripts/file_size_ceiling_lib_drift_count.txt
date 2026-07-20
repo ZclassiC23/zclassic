@@ -80,4 +80,13 @@
 # its first real caller; one-line fix matching every other *_dump_state_json
 # in the codebase. Both re-baselined in file_size_ceiling_lib_baseline.txt
 # (1427, 892); count stays at 13.
+#
+# 2026-07-20 (lane wf/h3-groth16-spend-port): sapling.c grew 1200 -> 1214 for
+# two exposed fixed-generator accessors (sapling_spend_auth_generator /
+# sapling_proof_gen_key_generator) — the spend circuit's in-circuit
+# fixed-base multiplication must use the identical find_group_hash-derived
+# generators as the out-of-circuit key derivation, so these expose the two
+# canonical generators the ported spend sections 3/7 multiply by. Reviewed
+# and re-baselined at 1214 in file_size_ceiling_lib_baseline.txt; count
+# stays at 13.
 13

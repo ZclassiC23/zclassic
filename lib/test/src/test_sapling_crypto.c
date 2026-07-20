@@ -1481,17 +1481,24 @@ int test_sapling_crypto(void)
 
         struct constraint_system cs;
         cs_init(&cs);
-        bool synth_ok = sapling_spend_synthesize(&cs, &wit, &pub);
+        /* The faithful section-by-section port (H3) computes nk IN-circuit
+         * via [nsk] ProofGenerationKeyGenerator (a fixed-base multiplication),
+         * so its witness index is no longer a fixed offset. Use the traced
+         * entry point's wire probe to locate the nk.x / nk.y variables and
+         * assert their witness values equal the documented nsk * G_proof
+         * derivation (the original UB was reading an uninitialized base point;
+         * the in-circuit derivation is now the strongest form of the same
+         * binding). */
+        struct spend_wire_probe probe;
+        bool synth_ok = sapling_spend_synthesize_traced(
+            &cs, &wit, &pub, NULL, 0, NULL, &probe);
 
-        /* Witness layout: index 0 is CS_ONE; inputs 1..7 are
-         * rk.x, rk.y, cv.x, cv.y, anchor, nf[0], nf[1]. Then the first
-         * four aux (ak.x, ak.y, ar, nsk) occupy 8..11, so the two
-         * allocations for nk.x / nk.y land at 12 / 13 — these are the
-         * witness slots whose values the placeholder corrupted. */
-        bool nk_x_ok = cs.num_vars > 13
-                    && fr_eq(&cs.witness[12], &expected_nk_x);
-        bool nk_y_ok = cs.num_vars > 13
-                    && fr_eq(&cs.witness[13], &expected_nk_y);
+        bool nk_x_ok = synth_ok && probe.nk_x != SIZE_MAX
+                    && probe.nk_x < cs.num_vars
+                    && fr_eq(&cs.witness[probe.nk_x], &expected_nk_x);
+        bool nk_y_ok = synth_ok && probe.nk_y != SIZE_MAX
+                    && probe.nk_y < cs.num_vars
+                    && fr_eq(&cs.witness[probe.nk_y], &expected_nk_y);
 
         bool ok = decode_ok && synth_ok && nk_x_ok && nk_y_ok;
 

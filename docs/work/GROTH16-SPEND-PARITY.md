@@ -1,0 +1,121 @@
+# Groth16 SPEND-circuit differential parity — scoreboard (present tense)
+
+The native pure-C23 Sapling **spend** circuit is being ported gadget-by-gadget
+to match bellman's `Spend::synthesize` (pinned librustzcash commit
+`06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5`). Pairing is all-or-nothing, so a
+partial port yields **no** green Groth16 spend round-trip yet — the value landed
+so far is a *proven-at-parity prefix*, guarded by a standing differential oracle.
+
+This doc is the honest scoreboard: what is proven at parity vs the reference,
+and what is pending.
+
+## The gates (all under the `groth16_selfverify` test group)
+
+| Lane | File | What it proves |
+|------|------|----------------|
+| H2 | `lib/test/src/groth16_spend_oracle.c` | Native `nsk_to_nk` / `crh_ivk` / `ivk_to_pkd` / `compute_cm` / `compute_nf` == librustzcash, byte-for-byte, for one pinned KAT witness. |
+| H3 | `lib/sapling/src/sapling_circuit.c` + shape gate in `test_groth16_selfverify.c` | Ported spend sections **1..7** synthesize with per-section cumulative constraint counts equal to the reference trace; in-circuit `nk`/`rk` wires carry reference-correct points; synthesis deterministic. Single witness. |
+| H4 | `lib/test/src/groth16_spend_parity.c` | **Standing** differential parity oracle over a **corpus** of witnesses — generalizes H2+H3 and auto-tightens as H3 ports more sections. |
+| **H5** | `lib/test/src/groth16_spend_adversarial.c` | Adversarial + negative-control gate over the **active production proving path** (reference-oracle prover -> native C23 verifier) — the only lane that runs a real prove/verify round-trip and tries to break it. Requires `~/.zcash-params` (SKIPs cleanly when absent, same convention as the rest of the self-test block). |
+
+Run: `make t-fast ONLY=groth16_selfverify` (H2/H3/H4 are params-free; no
+`~/.zcash-params`, no proving key required — H5 needs real params and SKIPs
+without them). `make t-fast ONLY=snark_kat` is the sibling KAT gate.
+
+## H5 — acceptance bar per check category
+
+H5 (`lib/test/src/groth16_spend_adversarial.c`) is the only lane that drives
+the ACTIVE production proving path end to end: the reference-oracle prover
+(librustzcash) generates a real spend proof, the independent native C23
+verifier (`sapling_check_spend`) accepts or rejects it, using real
+`~/.zcash-params` proving/verifying keys. Every check below states the
+acceptance bar it enforces — a differential vector without a stated bar is
+not a gate, so this table is authoritative, not decorative:
+
+| # | Category | Vector | Acceptance bar |
+|---|----------|--------|-----------------|
+| 1 | Self-test end-to-end | prove(reference oracle) for a freshly-built note/Merkle-witness/nullifier/signature bundle | `sapling_check_spend` MUST **accept** |
+| 2 | Differential | native `sapling_compute_rk(ak,ar)` vs the `rk` the reference-oracle prover returned for the identical `(ak,ar)` | MUST be **byte-identical** (no FFI export for `rk` exists, see H2's doc comment, so this is the closest available cross-check of a public-input wire against ground truth) |
+| 3 | Corrupted proof bytes | single-bit flip at 3 offsets across the 192-byte proof (A's flag byte, C's tail byte, inside B) | MUST be **rejected** |
+| 4 | Corrupted witness | a valid proof from a *different* witness, replayed against the original statement's public inputs | MUST be **rejected** — this is exactly the attack the Groth16 pairing check exists to stop |
+| 5 | Wrong public inputs | single-bit flip in `cv` / `anchor` / `nullifier` / `rk`, real proof held fixed | MUST be **rejected** |
+| 6 | Corrupted signature/sighash | single-bit flip in `spend_auth_sig` or `sighash` | MUST be **rejected** (the RedJubjub gate, independent of the Groth16 check) |
+| 7 | Truncated/bit-flipped proving key | `groth16_pk_read` (native C23 parser) on truncated (5 cut points, 0%..90%) or bit-flipped real `sapling-output.params` bytes, plus 0-byte/1-byte buffers | MUST return **false** (typed refusal) and MUST NOT crash |
+| 8 | Determinism | `rk` / nullifier across two independent re-provings of the byte-identical witness | MUST be **byte-identical** (double-spend protection depends on the nullifier being reproducible) |
+| 8 | Documented non-determinism | `cv` / the 192-byte proof across the same two re-provings | MUST **differ** (Groth16 ZK blinding + value-commitment re-randomization are intentional, OsRng-backed on this path) — asserted explicitly so a silent change either direction is caught; both independently-blinded proofs must still independently verify |
+| 8 | Determinism | `groth16_pk_read` parsed twice from identical bytes; `sapling_spend_prover_native_status()` called twice | MUST be **structurally/byte-identical** (pure functions, no hidden state) |
+| 9 | Zeroization | `memory_cleanse(cs.witness, cap_vars*sizeof(fr))` — the exact call `sapling_create_spend_proof` makes before `cs_free` | MUST leave the buffer **all-zero** (this is where the secret `ar`/`nsk` bit-decomposition wires live until this line runs) |
+| 9 | Zeroization | `memory_cleanse(&wit, sizeof(wit))` over a `struct sapling_spend_witness` populated by `sapling_spend_parse_witness` | MUST leave the struct **all-zero** |
+
+## What the H4 parity oracle proves (per witness, whole corpus)
+
+For every witness in a deterministic corpus (index 0 = the pinned H2 KAT
+witness; 1..N distinct canonical scalars):
+
+- **(A) Section-boundary parity, auto-tightening.** Each recorded section's
+  cumulative constraint count equals the pinned 28-entry reference trace table
+  (`REF_SECTIONS[]` in `groth16_spend_parity.c`). The oracle diffs only the
+  sections the native circuit *actually records* (`n_sections` from the traced
+  synthesis), so when the H3 port advances from 7 sections to 8, 9, … the new
+  section's boundary is validated against `REF_SECTIONS[i]` **with no edit to
+  the oracle** — it tightens itself off the reference boundaries.
+- **(B) Structural invariance.** An R1CS circuit's shape must not depend on the
+  witness. Every corpus witness must produce a byte-identical section shape
+  (constraints/vars/inputs per section) to witness 0 — a class of unsoundness
+  the single-witness H2/H3 gates cannot see.
+- **(C) Per-wire value parity vs the reference archive.** The in-circuit `nk`
+  wire (`[nsk] ProofGenerationKeyGenerator`, section 7) is compared
+  byte-for-byte to `librustzcash_nsk_to_nk` **for every witness** — the
+  differential against ground truth, not just the KAT. The `ak` (section 1) and
+  `rk` (section 4) wires are cross-checked against the native scalar derivations
+  (the reference archive exports no `ak`/`rk` FFI: `ak` is a private circuit
+  input, `rk = ak + [ar]G` is internal).
+- **(D) Determinism.** Re-synthesizing an identical witness yields a
+  byte-identical witness vector.
+
+On the first divergence in any category the oracle prints the offending
+`(witness index, section name, expected vs actual)` — it flags, never hides.
+A negative-control (corrupting a reference boundary) turns the gate RED with a
+`FIRST DIVERGENCE` line, so the gate is not hollow.
+
+## Coverage — PROVEN vs PENDING
+
+- **PROVEN at parity:** reference sections **1..7** — cumulative **2032 / 98777**
+  constraints (~2.1%). ak on-curve/not-small-order, ar/nsk bit decompositions,
+  the two fixed-base multiplications (`[ar]SpendAuthGenerator`,
+  `[nsk]ProofGenerationKeyGenerator`), `rk = ak + [ar]G`, and rk inputize — all
+  byte-identical to the reference trace across the whole corpus, with the `nk`
+  wire pinned to librustzcash.
+- **PENDING (H3 port):** sections **8..28** — EdwardsPoint::repr helpers, the two
+  blake2s hashes (`ivk` §10 and `nf` §27, ~21006 constraints each), variable-base
+  `pk_d` (§13), value commitment (§14), note-commitment Pedersen hash (§17), the
+  32-level Merkle path (§21, 44224 constraints), and nullifier packing (§28).
+  Target: **98777** constraints, **98638** aux, **8** inputs (7 public + ONE).
+
+The oracle re-reports this scoreboard (`parity coverage: N/28 sections,
+C/98777 constraints`) on every run, so the number moves the moment H3 lands the
+next section — no edit to H4 required. It also prints the **named** next
+unimplemented section as a typed blocker line (currently
+`8:representation of ak`), so the seam is legible, never a silent gap.
+
+## Honest self-test surface — the native prover names its own blocker
+
+`sapling_spend_prover_native_status()` (lib/sapling/src/sapling_circuit.c) is the
+production, params-free coverage probe: it runs a canonical (non-secret)
+synthesis, reports `sections_ported / sections_total`,
+`constraints_ported / constraints_total`, and `next_blocker` (the NAME of the
+first unported section), with `roundtrip_ready = false` while the port is a
+partial prefix. The production prover self-test (`self_test_bundle` in
+`sapling_prover_c23.c`) reads it and emits a **non-gating** honest line:
+
+> native C23 spend prover NOT yet sovereign: 7/28 sections, 2032/98777
+> constraints ported; next blocker: 8:representation of ak; this self-test's
+> spend proof uses the reference oracle (librustzcash), the verifier is native C23
+
+This makes the sovereignty gap first-class and typed at the self-test surface —
+never a stubbed pass. The operational gate that controls `msg_send_onchain`
+(Sapling params loaded + a passing self-test) is **unchanged**: today it still
+produces the spend proof via the reference oracle and checks it with the
+unmodified native C23 consensus verifier. `roundtrip_ready` flips to `true` only
+once every section is ported AND a native-generated proof is accepted by that
+verifier — the honest acceptance bar, not section coverage alone.
