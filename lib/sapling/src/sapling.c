@@ -190,6 +190,20 @@ bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
     return true;
 }
 
+void sapling_spend_auth_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_SPENDING_KEY]);
+    jub_get_y(y, &fixed_generators[GEN_SPENDING_KEY]);
+}
+
+void sapling_proof_gen_key_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_PROOF_GENERATION_KEY]);
+    jub_get_y(y, &fixed_generators[GEN_PROOF_GENERATION_KEY]);
+}
+
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32])
 {
     struct blake2s_ctx ctx;

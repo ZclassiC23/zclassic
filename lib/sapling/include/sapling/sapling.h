@@ -34,6 +34,17 @@ void sapling_nsk_to_nk(const uint8_t nsk[32], uint8_t nk[32]);
 bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
                           uint8_t rk[32]);
 
+/* Expose the two fixed Jubjub generators the spend circuit multiplies by,
+ * as (x, y) field coordinates, so an in-circuit fixed-base multiplication
+ * uses the IDENTICAL generator as the out-of-circuit key derivation
+ * (sapling_ask_to_ak / sapling_nsk_to_nk / sapling_compute_rk). These are the
+ * canonical find_group_hash-derived generators (URS-counter iterated), NOT the
+ * single-shot group_hash() the output-circuit value-commitment path uses.
+ *   sapling_spend_auth_generator      -> GEN_SPENDING_KEY (SpendAuthSig.G)
+ *   sapling_proof_gen_key_generator   -> GEN_PROOF_GENERATION_KEY */
+void sapling_spend_auth_generator(struct fr *x, struct fr *y);
+void sapling_proof_gen_key_generator(struct fr *x, struct fr *y);
+
 /* CRH^ivk(ak, nk) = BLAKE2s("Zcashivk", ak || nk) with top 5 bits dropped */
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]);
 

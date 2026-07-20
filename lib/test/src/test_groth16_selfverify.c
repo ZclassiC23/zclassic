@@ -15,7 +15,9 @@
 #include "sapling/sapling_circuit.h"
 #include "sapling/sapling_prover.h"
 #include "sapling/groth16_prover.h"
+#include "test/groth16_spend_oracle_kat.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -166,6 +168,121 @@ static void native_circuit_baseline(void)
     printf("--- end H1 baseline (informational) ---\n");
 }
 
+/* H3 lane: Sapling SPEND circuit port — shape + value + determinism gate.
+ *
+ * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
+ * order. This gate is params-free (pure R1CS synthesis, no proving key) and
+ * pins the ported prefix (sections 1..7) against ground truth:
+ *   (1) cumulative constraint counts per section == the reference trace's
+ *       cumulative boundaries (exact, verified by the salvage-plan legs);
+ *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
+ *       with nk additionally pinned to the librustzcash reference vector (the
+ *       H2 KAT) — validating the in-circuit fixed-base multiplication against
+ *       ground truth end to end;
+ *   (3) synthesis is deterministic (identical inputs => byte-identical witness).
+ * Sections 8..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
+ * spend round-trip. Returns the number of failures (0 == green). */
+static int spend_circuit_shape_gate(void)
+{
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-7) ---\n");
+    int failures = 0;
+
+    /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
+     * pinned librustzcash reference vector. */
+    uint8_t ak[32];
+    sapling_ask_to_ak(SPEND_ORACLE_KAT_ASK, ak);
+
+    struct sapling_spend_witness wit;
+    memset(&wit, 0, sizeof wit);
+    memcpy(wit.ak, ak, 32);
+    memcpy(wit.nsk, SPEND_ORACLE_KAT_NSK, 32);
+    wit.ar[0] = 0x03;               /* small fixed re-randomization scalar */
+    memcpy(wit.pk_d, ak, 32);
+    wit.value = UINT64_C(54321);
+
+    uint8_t rk_bytes[32];
+    bool rk_ok = sapling_compute_rk(ak, wit.ar, rk_bytes);
+    PROVER_CHECK("compute_rk produced rk for the fixed witness", rk_ok);
+
+    struct sapling_spend_inputs pub;
+    memset(&pub, 0, sizeof pub);
+    memcpy(pub.rk, rk_bytes, 32);
+    memcpy(pub.cv, ak, 32);         /* any valid Jubjub point (bound later) */
+
+    struct spend_section_shape sections[8];
+    size_t nsec = 0;
+    struct spend_wire_probe probe;
+    struct constraint_system cs;
+    cs_init(&cs);
+    bool synth_ok = sapling_spend_synthesize_traced(
+        &cs, &wit, &pub, sections, 8, &nsec, &probe);
+    PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
+
+    /* (1) Per-section cumulative constraint counts vs the reference trace. */
+    static const size_t REF_CUM[7] = {20, 272, 1022, 1028, 1030, 1282, 2032};
+    static const char *REF_NAME[7] = {
+        "S1 ak witness/on-curve/not-small-order (cum 20)",
+        "S2 ar bits (cum 272)",
+        "S3 randomization of signing key (cum 1022)",
+        "S4 rk = ak + [ar]G (cum 1028)",
+        "S5 rk inputize (cum 1030)",
+        "S6 nsk bits (cum 1282)",
+        "S7 nk = [nsk] ProofGenerationKey (cum 2032)",
+    };
+    PROVER_CHECK("synthesized all 7 ported sections", nsec == 7);
+    for (size_t i = 0; i < 7 && i < nsec; i++)
+        PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
+    PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
+                 cs.num_inputs == 7);
+    PROVER_CHECK("ported-prefix constraint count == 2032",
+                 cs.num_constraints == 2032);
+
+    /* (2) Value gate: in-circuit wires carry reference-correct points; nk is
+     *     pinned to the librustzcash reference (H2 KAT). */
+    uint8_t nk_bytes[32];
+    sapling_nsk_to_nk(wit.nsk, nk_bytes);
+    PROVER_CHECK("out-of-circuit nk == pinned librustzcash reference (H2 KAT)",
+                 memcmp(nk_bytes, SPEND_ORACLE_KAT_NK, 32) == 0);
+
+    struct jub_point nk_pt, rk_pt;
+    struct fr nk_x, nk_y, rk_x, rk_y;
+    bool nk_dec = jub_from_bytes(&nk_pt, nk_bytes);
+    bool rk_dec = rk_ok && jub_from_bytes(&rk_pt, rk_bytes);
+    if (nk_dec) { jub_get_x(&nk_x, &nk_pt); jub_get_y(&nk_y, &nk_pt); }
+    if (rk_dec) { jub_get_x(&rk_x, &rk_pt); jub_get_y(&rk_y, &rk_pt); }
+
+    bool nk_wire_ok = synth_ok && nk_dec
+        && probe.nk_x < cs.num_vars && probe.nk_y < cs.num_vars
+        && fr_eq(&cs.witness[probe.nk_x], &nk_x)
+        && fr_eq(&cs.witness[probe.nk_y], &nk_y);
+    PROVER_CHECK("in-circuit nk wire == [nsk] ProofGenerationKeyGenerator",
+                 nk_wire_ok);
+
+    bool rk_wire_ok = synth_ok && rk_dec
+        && probe.rk_x < cs.num_vars && probe.rk_y < cs.num_vars
+        && fr_eq(&cs.witness[probe.rk_x], &rk_x)
+        && fr_eq(&cs.witness[probe.rk_y], &rk_y);
+    PROVER_CHECK("in-circuit rk wire == ak + [ar] SpendAuthGenerator",
+                 rk_wire_ok);
+
+    /* (3) Determinism: identical inputs => byte-identical witness. */
+    struct constraint_system cs2;
+    cs_init(&cs2);
+    bool synth2 = sapling_spend_synthesize_traced(
+        &cs2, &wit, &pub, NULL, 0, NULL, NULL);
+    bool det_ok = synth2 && cs.num_vars == cs2.num_vars
+        && cs.num_constraints == cs2.num_constraints
+        && memcmp(cs.witness, cs2.witness,
+                  cs.num_vars * sizeof(struct fr)) == 0;
+    PROVER_CHECK("synthesis is deterministic (byte-identical witness)", det_ok);
+
+    cs_free(&cs);
+    cs_free(&cs2);
+
+    printf("--- end H3 shape gate (%d failure[s]) ---\n", failures);
+    return failures;
+}
+
 /* H2 lane: reference differential oracle (test-only librustzcash bridge).
  * Runs FIRST and unconditionally — it is params-free, so it gates even when
  * ~/.zcash-params is absent and the prover self-test below SKIPs. */
@@ -178,6 +295,7 @@ int test_groth16_selfverify(void)
     int failures = 0;
 
     failures += groth16_spend_reference_oracle();
+    failures += spend_circuit_shape_gate();
 
     const char *home = getenv("HOME");
     char params_dir[512];

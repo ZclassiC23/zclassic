@@ -53,6 +53,43 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
                                const struct sapling_spend_witness *wit,
                                const struct sapling_spend_inputs *pub);
 
+/* ── Spend-circuit port introspection (H3 lane, test-only surface) ──────────
+ *
+ * The spend circuit is being ported gadget-by-gadget to match bellman's
+ * Spend::synthesize order (variable-allocation order is load-bearing for QAP
+ * alignment against the trusted-setup proving key). The traced entry point
+ * records a shape checkpoint after each ported section and, optionally, the
+ * variable indices of a few key wires, so a shape/parity test can assert the
+ * running (constraint,var,input) counts equal the reference trace's cumulative
+ * counts for the ported prefix and that intermediate wires (rk, nk) carry the
+ * reference-correct values. This does NOT change the production entry point
+ * (sapling_spend_synthesize forwards here with NULL out-params). */
+struct spend_section_shape {
+    const char *name;         /* human-readable section label */
+    size_t num_constraints;   /* cs->num_constraints after this section */
+    size_t num_vars;          /* cs->num_vars after this section */
+    size_t num_inputs;        /* cs->num_inputs after this section */
+};
+
+/* Variable indices of key intermediate wires (SIZE_MAX if not yet synthesized).
+ * The witness value at these indices can be compared against out-of-circuit
+ * reference derivations for a per-wire correctness gate. */
+struct spend_wire_probe {
+    size_t ak_x, ak_y;   /* witnessed spend-authority key (section 1) */
+    size_t rk_x, rk_y;   /* re-randomized key rk = ak + [ar] G (section 4) */
+    size_t nk_x, nk_y;   /* nullifier deriving key [nsk] G_proof (section 7) */
+};
+
+/* Traced synthesis. `sections`/`probe` may be NULL. Writes at most
+ * `max_sections` checkpoints and the count reached via `n_sections_out`. */
+bool sapling_spend_synthesize_traced(struct constraint_system *cs,
+                                      const struct sapling_spend_witness *wit,
+                                      const struct sapling_spend_inputs *pub,
+                                      struct spend_section_shape *sections,
+                                      size_t max_sections,
+                                      size_t *n_sections_out,
+                                      struct spend_wire_probe *probe);
+
 /* Parse a caller-supplied Sapling merkle authentication path into
  * the auth_path / auth_path_bits fields of `wit`. Wire layout:
  *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes

@@ -21,6 +21,9 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
+/* Index of the constant-ONE variable in every constraint system. */
+#define CS_ONE 0
+
 /* ── Helper: convert bytes to Fr ────────────────────────────────── */
 
 static void bytes_to_fr(struct fr *out, const uint8_t bytes[32])
@@ -41,212 +44,190 @@ static bool point_to_xy(struct fr *x, struct fr *y, const uint8_t compressed[32]
     return true;
 }
 
-/* ── Helper: compute note commitment outside circuit ────────────── */
-
-static void compute_note_commitment(uint8_t cm_out[32],
-                                      uint64_t value,
-                                      const uint8_t diversifier[11],
-                                      const uint8_t pk_d[32],
-                                      const uint8_t rcm[32])
-{
-    /* note_contents = diversifier(11) || pk_d(32) || value(8 LE) */
-    uint8_t contents[51];
-    memcpy(contents, diversifier, 11);
-    memcpy(contents + 11, pk_d, 32);
-    for (int i = 0; i < 8; i++)
-        contents[43 + i] = (uint8_t)(value >> (i * 8));
-
-    /* Pedersen hash of note contents */
-    struct jub_point hash_point;
-    pedersen_hash_bits(contents, 51 * 8, &hash_point);
-
-    /* The randomized commitment cm_full = hash + rcm * G_rcm is applied
-     * in-circuit (see sapling_output_synthesize step 6). Here we expose
-     * only the hash x-coordinate to downstream witness computation. */
-    (void)rcm;
-
-    struct fr cm_x;
-    jub_get_x(&cm_x, &hash_point);
-    fr_to_bytes(cm_out, &cm_x);
-}
-
-/* ── Helper: compute nullifier outside circuit ──────────────────── */
-
 /* ── Spend Circuit Synthesis ────────────────────────────────────── */
 
-bool sapling_spend_synthesize(struct constraint_system *cs,
-                               const struct sapling_spend_witness *wit,
-                               const struct sapling_spend_inputs *pub)
-{
-    /* === Public Inputs (indices 1..7) === */
+/* Port status (H3 lane): sections 1..7 of bellman's Spend::synthesize are
+ * ported faithfully in the exact synthesis order (variable-allocation order is
+ * load-bearing for QAP alignment). Cumulative constraint counts match the
+ * reference trace's per-section boundaries (verified by the shape gate in
+ * test_groth16_selfverify.c). Sections 8..28 (EdwardsPoint::repr helpers, the
+ * two blake2s hashes ivk/nf at ~21006 constraints each, variable-base pk_d,
+ * value commitment, note commitment, the 32-level Merkle path, and the
+ * nullifier packing) remain to be ported — the circuit below is therefore a
+ * faithful PARTIAL prefix (~2032/98777 constraints) and does not yet round-trip
+ * against the trusted-setup proving key.
+ *
+ * The seven public inputs are allocated up front (indices 1..7) in bellman's
+ * input order (rk.x, rk.y, cv.x, cv.y, anchor, nf[0], nf[1]). Under this
+ * constraint system's shared variable counter, allocating all inputs first is
+ * what places them at the low indices bellman reserves for its separate input
+ * namespace, so this is the QAP-faithful placement — inline inputize() would
+ * scatter inputs among aux and permanently misalign the QAP. Wires computed
+ * later are bound to their input slot by a copy constraint (see rk below);
+ * cv/anchor/nf are bound in the not-yet-ported sections. */
 
-    /* rk = ak + ar * G (randomized verification key) */
+/* Local: boolean-only little-endian decomposition (bellman
+ * boolean::field_into_boolean_vec_le) — n_bits boolean aux + n_bits boolean
+ * constraints, NO packing constraint back to a field element (the scalar is
+ * consumed only as bits by a fixed-base multiplication). */
+static void field_into_boolean_vec_le(struct constraint_system *cs,
+                                       size_t *bits_out, size_t n_bits,
+                                       const struct fr *value)
+{
+    uint8_t bytes[32];
+    fr_to_bytes(bytes, value);
+    for (size_t i = 0; i < n_bits; i++) {
+        size_t byte_idx = i / 8, bit_idx = i % 8;
+        bool bit = byte_idx < 32 && ((bytes[byte_idx] >> bit_idx) & 1);
+        bits_out[i] = gadget_alloc_boolean(cs, bit);
+    }
+}
+
+/* Local: copy constraint `src * 1 = dst` (bellman inputize's equality
+ * enforcement, applied against a pre-allocated input slot). One constraint. */
+static void enforce_equal(struct constraint_system *cs, size_t src, size_t dst)
+{
+    struct linear_combination la, lb, lc;
+    struct fr one_val;
+    fr_one(&one_val);
+    lc_init(&la); lc_add_term(&la, src, &one_val);
+    lc_init(&lb); lc_add_term(&lb, CS_ONE, &one_val);
+    lc_init(&lc); lc_add_term(&lc, dst, &one_val);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+}
+
+/* Local: record a per-section shape checkpoint (no-op when sections==NULL). */
+static void section_record(struct constraint_system *cs,
+                           struct spend_section_shape *sections,
+                           size_t max_sections, size_t *n, const char *name)
+{
+    if (!sections || *n >= max_sections)
+        return;
+    sections[*n].name = name;
+    sections[*n].num_constraints = cs->num_constraints;
+    sections[*n].num_vars = cs->num_vars;
+    sections[*n].num_inputs = cs->num_inputs;
+    (*n)++;
+}
+
+bool sapling_spend_synthesize_traced(struct constraint_system *cs,
+                                     const struct sapling_spend_witness *wit,
+                                     const struct sapling_spend_inputs *pub,
+                                     struct spend_section_shape *sections,
+                                     size_t max_sections,
+                                     size_t *n_sections_out,
+                                     struct spend_wire_probe *probe)
+{
+    size_t nsec = 0;
+    if (n_sections_out)
+        *n_sections_out = 0;
+    if (probe) {
+        probe->ak_x = probe->ak_y = SIZE_MAX;
+        probe->rk_x = probe->rk_y = SIZE_MAX;
+        probe->nk_x = probe->nk_y = SIZE_MAX;
+    }
+
+    /* ── Public inputs 1..7 (allocated up front — see header note) ── */
     struct fr rk_x, rk_y;
     if (!point_to_xy(&rk_x, &rk_y, pub->rk))
         LOG_FAIL("sapling_circuit", "spend: point_to_xy(rk) failed");
-    cs_alloc_input(cs, &rk_x);  /* input 1: rk.x */
-    cs_alloc_input(cs, &rk_y);  /* input 2: rk.y */
-
-    /* cv (value commitment) */
     struct fr cv_x, cv_y;
     if (!point_to_xy(&cv_x, &cv_y, pub->cv))
         LOG_FAIL("sapling_circuit", "spend: point_to_xy(cv) failed");
-    cs_alloc_input(cs, &cv_x);  /* input 3: cv.x */
-    cs_alloc_input(cs, &cv_y);  /* input 4: cv.y */
-
-    /* anchor (Merkle root) */
     struct fr anchor_fr;
     bytes_to_fr(&anchor_fr, pub->anchor);
-    cs_alloc_input(cs, &anchor_fr); /* input 5: anchor */
 
-    /* nullifier packed into 2 Fr scalars */
     uint64_t nf_packed[2][4];
     size_t nf_count = 0;
     multipack_bytes_to_fr(nf_packed, &nf_count, pub->nullifier, 32);
-
     struct fr nf0, nf1;
     memcpy(nf0.d, nf_packed[0], 32);
     if (nf_count > 1)
         memcpy(nf1.d, nf_packed[1], 32);
     else
         fr_zero(&nf1);
-    cs_alloc_input(cs, &nf0);  /* input 6: nullifier[0] */
-    cs_alloc_input(cs, &nf1);  /* input 7: nullifier[1] */
 
-    /* === Private Witness === */
+    size_t in_rk_x = cs_alloc_input(cs, &rk_x);  /* input 1: rk.x */
+    size_t in_rk_y = cs_alloc_input(cs, &rk_y);  /* input 2: rk.y */
+    cs_alloc_input(cs, &cv_x);      /* input 3: cv.x   (bound in section 14) */
+    cs_alloc_input(cs, &cv_y);      /* input 4: cv.y   (bound in section 14) */
+    cs_alloc_input(cs, &anchor_fr); /* input 5: anchor (bound in section 23) */
+    cs_alloc_input(cs, &nf0);       /* input 6: nf[0]  (bound in section 28) */
+    cs_alloc_input(cs, &nf1);       /* input 7: nf[1]  (bound in section 28) */
 
-    /* Spending key: ak (Jubjub point) */
+    /* ════ Section 1: witness ak, on-curve + not-small-order (20) ════ */
     struct fr ak_x, ak_y;
     if (!point_to_xy(&ak_x, &ak_y, wit->ak))
         LOG_FAIL("sapling_circuit", "spend: point_to_xy(ak) failed");
     size_t ak_x_var = cs_alloc_aux(cs, &ak_x);
     size_t ak_y_var = cs_alloc_aux(cs, &ak_y);
+    gadget_point_interpret(cs, ak_x_var, ak_y_var);         /* on-curve (4) */
+    gadget_assert_not_small_order(cs, ak_x_var, ak_y_var);  /* (16) */
+    if (probe) { probe->ak_x = ak_x_var; probe->ak_y = ak_y_var; }
+    section_record(cs, sections, max_sections, &nsec,
+                   "1:ak witness+on-curve+not-small-order");
 
-    /* Re-randomization scalar ar */
+    /* ════ Section 2: ar into 252 boolean bits (252) ════ */
     struct fr ar_fr;
     bytes_to_fr(&ar_fr, wit->ar);
-    cs_alloc_aux(cs, &ar_fr);
-    /* ar is a secret re-randomization scalar; its value has now been
-     * copied into the witness vector — wipe the stack copy after this
-     * last read (output-neutral: the constraint already holds it). */
+    size_t ar_bits[252];
+    field_into_boolean_vec_le(cs, ar_bits, 252, &ar_fr);
     memory_cleanse(&ar_fr, sizeof(ar_fr));
+    section_record(cs, sections, max_sections, &nsec, "2:ar bits");
 
-    /* Nullifier private key nsk */
+    /* ════ Section 3: ar_g = [ar] SpendAuthGenerator (750) ════ */
+    struct fr sag_x, sag_y;
+    sapling_spend_auth_generator(&sag_x, &sag_y);
+    size_t arg_x, arg_y;
+    gadget_fixed_base_mul(cs, ar_bits, 252, &sag_x, &sag_y, &arg_x, &arg_y);
+    section_record(cs, sections, max_sections, &nsec,
+                   "3:randomization of signing key");
+
+    /* ════ Section 4: rk = ak + ar_g (6) ════ */
+    size_t rk_var_x, rk_var_y;
+    gadget_edwards_add(cs, ak_x_var, ak_y_var, arg_x, arg_y,
+                       &rk_var_x, &rk_var_y);
+    if (probe) { probe->rk_x = rk_var_x; probe->rk_y = rk_var_y; }
+    section_record(cs, sections, max_sections, &nsec, "4:computation of rk");
+
+    /* ════ Section 5: rk inputize — bind to input slots 1,2 (2) ════ */
+    enforce_equal(cs, rk_var_x, in_rk_x);
+    enforce_equal(cs, rk_var_y, in_rk_y);
+    section_record(cs, sections, max_sections, &nsec, "5:rk inputize");
+
+    /* ════ Section 6: nsk into 252 boolean bits (252) ════ */
     struct fr nsk_fr;
     bytes_to_fr(&nsk_fr, wit->nsk);
-    cs_alloc_aux(cs, &nsk_fr);
+    size_t nsk_bits[252];
+    field_into_boolean_vec_le(cs, nsk_bits, 252, &nsk_fr);
+    memory_cleanse(&nsk_fr, sizeof(nsk_fr));
+    section_record(cs, sections, max_sections, &nsec, "6:nsk bits");
 
-    /* nk = nsk * G_proof (compute outside circuit).
-     * Derive via the exposed helper so nk_point is a documented function
-     * of nsk, not uninitialized stack. */
-    uint8_t nk_bytes[32];
-    sapling_nsk_to_nk(wit->nsk, nk_bytes);
-    struct jub_point nk_point;
-    if (!jub_from_bytes(&nk_point, nk_bytes))
-        LOG_FAIL("sapling_circuit",
-                 "spend: jub_from_bytes(nk) failed (nsk*G_proof off-curve)");
-    struct fr nk_x, nk_y;
-    jub_get_x(&nk_x, &nk_point);
-    jub_get_y(&nk_y, &nk_point);
-    cs_alloc_aux(cs, &nk_x);
-    cs_alloc_aux(cs, &nk_y);
+    /* ════ Section 7: nk = [nsk] ProofGenerationKeyGenerator (750) ════ */
+    struct fr pgg_x, pgg_y;
+    sapling_proof_gen_key_generator(&pgg_x, &pgg_y);
+    size_t nk_var_x, nk_var_y;
+    gadget_fixed_base_mul(cs, nsk_bits, 252, &pgg_x, &pgg_y,
+                          &nk_var_x, &nk_var_y);
+    if (probe) { probe->nk_x = nk_var_x; probe->nk_y = nk_var_y; }
+    section_record(cs, sections, max_sections, &nsec,
+                   "7:computation of nk");
 
-    /* Value */
-    struct fr value_fr;
-    {
-        uint8_t vbytes[32] = {0};
-        for (int i = 0; i < 8; i++)
-            vbytes[i] = (uint8_t)(wit->value >> (i * 8));
-        bytes_to_fr(&value_fr, vbytes);
-    }
-    cs_alloc_aux(cs, &value_fr);
+    /* Sections 8..28 remain to be ported (see the port-status note above).
+     * The prefix synthesized here is deterministic and shape-matched to the
+     * reference for sections 1..7. */
 
-    /* Diversifier and pk_d */
-    struct fr pkd_x, pkd_y;
-    if (!point_to_xy(&pkd_x, &pkd_y, wit->pk_d))
-        LOG_FAIL("sapling_circuit", "output: point_to_xy(pk_d) failed");
-    cs_alloc_aux(cs, &pkd_x);
-    cs_alloc_aux(cs, &pkd_y);
-
-    /* Note commitment randomness rcm */
-    struct fr rcm_fr;
-    bytes_to_fr(&rcm_fr, wit->rcm);
-    cs_alloc_aux(cs, &rcm_fr);
-
-    /* Value commitment randomness rcv */
-    struct fr rcv_fr;
-    bytes_to_fr(&rcv_fr, wit->rcv);
-    cs_alloc_aux(cs, &rcv_fr);
-
-    /* Merkle authentication path (32 siblings + 32 direction bits) */
-    size_t sibling_vars[SAPLING_MERKLE_DEPTH];
-    size_t path_bit_vars[SAPLING_MERKLE_DEPTH];
-
-    for (int i = 0; i < SAPLING_MERKLE_DEPTH; i++) {
-        struct fr sib_fr;
-        bytes_to_fr(&sib_fr, wit->auth_path[i]);
-        sibling_vars[i] = cs_alloc_aux(cs, &sib_fr);
-        path_bit_vars[i] = gadget_alloc_boolean(cs, wit->auth_path_bits[i]);
-    }
-
-    /* === Constraints === */
-
-    /* 1. Verify rk derivation: rk = ak + ar * G
-     * For now, constrain ak is on curve via Edwards equation:
-     * -ak_x^2 + ak_y^2 = 1 + d * ak_x^2 * ak_y^2 */
-    {
-        size_t ak_x2 = gadget_alloc_mul(cs, ak_x_var, ak_x_var);
-        size_t ak_y2 = gadget_alloc_mul(cs, ak_y_var, ak_y_var);
-        (void)ak_x2;
-        (void)ak_y2;
-        /* Full curve check constraint would go here */
-    }
-
-    /* 2. Note commitment: cm = PedersenHash(note_contents) + rcm * G_rcm
-     * Compute the expected cm from the witness values */
-    uint8_t cm_computed[32];
-    compute_note_commitment(cm_computed, wit->value, wit->diversifier,
-                             wit->pk_d, wit->rcm);
-    struct fr cm_fr;
-    bytes_to_fr(&cm_fr, cm_computed);
-    size_t cm_var = cs_alloc_aux(cs, &cm_fr);
-
-    /* 3. Merkle tree verification: traverse from cm to anchor */
-    size_t root_var = gadget_merkle_path(cs, cm_var, path_bit_vars,
-                                          sibling_vars, SAPLING_MERKLE_DEPTH);
-
-    /* Constrain computed root equals public anchor */
-    {
-        struct linear_combination la, lb, lc;
-        struct fr one_val;
-        fr_one(&one_val);
-
-        /* root_var * ONE = anchor_input_var */
-        lc_init(&la);
-        lc_add_term(&la, root_var, &one_val);
-        lc_init(&lb);
-        lc_add_term(&lb, 0, &one_val); /* CS_ONE */
-        lc_init(&lc);
-        lc_add_term(&lc, 5, &one_val); /* input 5 = anchor */
-        cs_enforce(cs, &la, &lb, &lc);
-        lc_free(&la); lc_free(&lb); lc_free(&lc);
-    }
-
-    /* 4. Nullifier: nf = Blake2s("Zcash_nf", nk || rho)
-     * (computed outside circuit, verified via public input packing) */
-
-    /* 5. Value commitment range check: value fits in 64 bits */
-    {
-        size_t value_bits[64];
-        gadget_unpack_bits(cs, value_bits, 64, &value_fr);
-        (void)value_bits;
-    }
-
-    printf("Spend circuit synthesized: %zu vars, %zu constraints, "
-           "%zu inputs\n", cs->num_vars, cs->num_constraints,
-           cs->num_inputs);
-
+    if (n_sections_out)
+        *n_sections_out = nsec;
     return true;
+}
+
+bool sapling_spend_synthesize(struct constraint_system *cs,
+                               const struct sapling_spend_witness *wit,
+                               const struct sapling_spend_inputs *pub)
+{
+    return sapling_spend_synthesize_traced(cs, wit, pub, NULL, 0, NULL, NULL);
 }
 
 /* ── Output Circuit Synthesis ───────────────────────────────────── */
