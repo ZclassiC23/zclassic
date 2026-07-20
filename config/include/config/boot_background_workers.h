@@ -77,6 +77,13 @@ void boot_register_worker_supervisor(
     int64_t deadline_secs,
     int64_t progress_max_quiet_us);
 
+/* Retire the "worker.stall.<name>" TRANSIENT blocker that worker_on_stall may
+ * have raised, once the worker is proven alive again. A looping worker calls
+ * this each iteration after publishing progress so a recovered worker clears its
+ * own stale blocker (the supervisor is observe-only and never re-arms or clears
+ * it); a still-wedged worker never reaches the call and leaves the blocker up. */
+void boot_worker_clear_stall_blocker(const struct liveness_contract *c);
+
 /* Mark a registered worker complete after its thread exits. This does not clear
  * the slot or unregister the child, so sibling cached child ids remain stable
  * and the register helper remains idempotent. */

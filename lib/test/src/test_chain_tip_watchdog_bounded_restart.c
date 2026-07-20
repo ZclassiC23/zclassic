@@ -144,6 +144,25 @@ int test_chain_tip_watchdog_bounded_restart(void)
         WD_CHECK("worker stall does NOT arm sticky escalator",
                  !sticky_escalator_test_armed());
 
+        /* A recovered worker retires its own stall blocker when it resumes
+         * ticking — the supervisor is observe-only and never clears it, so
+         * without this the blocker sits overdue for hours (live symptom:
+         * worker.stall.op.projection_backfill, deadline ~ -3.6 h). */
+        boot_worker_clear_stall_blocker(&c);
+        WD_CHECK("recovered worker clears its stall blocker",
+                 !blocker_exists("worker.stall.op.test_worker"));
+        /* Idempotent + safe on an empty-name contract (no crash, no spurious
+         * "worker.stall." id). */
+        boot_worker_clear_stall_blocker(&c);
+        {
+            struct liveness_contract empty;
+            liveness_contract_init(&empty, "");
+            boot_worker_clear_stall_blocker(&empty);
+            boot_worker_clear_stall_blocker(NULL);
+        }
+        WD_CHECK("clear on empty/NULL contract raises no blocker",
+                 !blocker_exists("worker.stall."));
+
         blocker_reset_for_testing();
         sticky_escalator_test_reset();
     }
