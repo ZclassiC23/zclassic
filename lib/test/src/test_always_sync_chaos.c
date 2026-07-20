@@ -50,6 +50,13 @@ static bool asc_never_pages(const struct chaos_fault_result *r)
     return r->ok && !r->operator_paged;
 }
 
+/* Same assertion, for the (g)-(l) sync/ROM-artifact fault matrix's richer
+ * `sync_fault_capsule` (base chaos_fault_result + replay/seed fields). */
+static bool asc_never_pages_capsule(const struct sync_fault_capsule *c)
+{
+    return c->base.ok && !c->base.operator_paged;
+}
+
 int test_always_sync_chaos(void)
 {
     printf("\n=== always_sync_chaos (G-TIP fault-injection harness) ===\n");
@@ -150,6 +157,96 @@ int test_always_sync_chaos(void)
                   asc_never_pages(&r));
         ASC_CHECK("kill mid-recovery: H* + coins frontier survive the kill "
                   "identically, next pass converges", r.recovered);
+    }
+
+    /* ── (g)-(l): the sync/ROM-artifact fault matrix (lane G3) ──────────
+     * Six more named injectors over lib/net/rom_fetch.c, rom_journal.c and
+     * the pure lib/sync/src/sync_reduce.c kernel — see
+     * sim/simnet_chaos_faults.h for each fault's exact contract. Every
+     * fixed seed below is chosen once so a failure replays deterministically
+     * via the printed replay_command. */
+    struct sync_fault_capsule sc;
+
+    /* ── (g) two peers, same chunk index, different bytes ────────────── */
+    {
+        bool harness_ok = chaos_fault_conflicting_chunk_peers(0xC11C0DE1ull,
+                                                               &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("conflicting chunk peers: harness fixture built",
+                  harness_ok);
+        ASC_CHECK("conflicting chunk peers: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("conflicting chunk peers: bad peer named+rejected, good "
+                  "chunk kept", sc.base.recovered);
+    }
+
+    /* ── (h) ENOSPC (write failure) during a journal bitmap commit ───── */
+    {
+        bool harness_ok = chaos_fault_journal_commit_enospc(0xE7057Aull, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("journal commit ENOSPC: harness fixture built", harness_ok);
+        ASC_CHECK("journal commit ENOSPC: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("journal commit ENOSPC: failed mark rolls back cleanly, "
+                  "retry converges", sc.base.recovered);
+    }
+
+    /* ── (i) kill at the two documented resume boundaries ────────────── */
+    {
+        bool harness_ok = chaos_fault_kill_resume_boundary(0xB0117A1ull,
+                                                            false, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("kill before bitmap commit: harness fixture built",
+                  harness_ok);
+        ASC_CHECK("kill before bitmap commit: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("kill before bitmap commit: <=1 chunk redone, resume "
+                  "converges", sc.base.recovered);
+    }
+    {
+        bool harness_ok = chaos_fault_kill_resume_boundary(0xB0117A2ull,
+                                                            true, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("kill after bitmap commit: harness fixture built",
+                  harness_ok);
+        ASC_CHECK("kill after bitmap commit: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("kill after bitmap commit: 0 chunks redone, rename "
+                  "converges", sc.base.recovered);
+    }
+
+    /* ── (j) header reorg during an artifact download — pure kernel ──── */
+    {
+        bool harness_ok = chaos_fault_reorg_during_artifact_download(
+            0x8EAD0000ull, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("reorg during download: harness fixture built", harness_ok);
+        ASC_CHECK("reorg during download: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("reorg during download: FAILED+named, never installs",
+                  sc.base.recovered);
+    }
+
+    /* ── (k) slow-loris seeder: bounded stall, never a silent hang ───── */
+    {
+        bool harness_ok = chaos_fault_slow_loris_seeder(0x510C0Full, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("slow-loris seeder: harness fixture built", harness_ok);
+        ASC_CHECK("slow-loris seeder: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("slow-loris seeder: named stall, then resumes ticking",
+                  sc.base.recovered);
+    }
+
+    /* ── (l) valid bundle prefix + one invalid TAIL block ─────────────── */
+    {
+        bool harness_ok = chaos_fault_invalid_tail_block(0x7A11B10Cull, &sc);
+        printf("  note: %s\n", sc.base.note);
+        ASC_CHECK("invalid tail block: harness fixture built", harness_ok);
+        ASC_CHECK("invalid tail block: never pages operator",
+                  asc_never_pages_capsule(&sc));
+        ASC_CHECK("invalid tail block: rejected independently, chain never "
+                  "wedged", sc.base.recovered);
     }
 
     if (failures == 0)
