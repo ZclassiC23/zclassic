@@ -140,6 +140,13 @@ struct agent_fast_snapshot {
     char dominant_blocker_id[BLOCKER_ID_MAX];
     int active_blocker_count;
     char dominant_blocker_class[24];
+    /* TRANSIENT/DEPENDENCY blockers that have gone stale or overdue (see
+     * agent_blocker_is_overdue_transient in event_agent_summary.c) — a
+     * TRANSIENT never becomes the hard headline (api_blocker_hard_gates_
+     * public_serving is PERMANENT/RESOURCE-only, by design), so a stuck one
+     * can otherwise sit invisible while the headline reads "healthy". */
+    int overdue_transient_count;
+    char overdue_transient_dominant_id[BLOCKER_ID_MAX];
     char operator_needed_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
     char last_error_type[64];
     char projection_state[32];
