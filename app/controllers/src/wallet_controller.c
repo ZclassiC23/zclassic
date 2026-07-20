@@ -510,6 +510,18 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         snprintf(error_out, error_out_size, "Wallet not loaded");
         LOG_FAIL("wallet", "direct_sendtoaddress: wallet not loaded");
     }
+    /* At-rest lock gate, same as both RPC send paths: the explorer/web-UI
+     * send form must honor walletlock identically. */
+    {
+        struct zcl_result lk = wallet_lock_spend_guard();
+        if (!lk.ok) {
+            snprintf(error_out, error_out_size,
+                     "Wallet is locked — run walletunlock before spending");
+            LOG_FAIL("wallet",
+                     "direct_sendtoaddress: refused — wallet locked (code=%d)",
+                     lk.code);
+        }
+    }
     if (amount_sat <= 0) {
         snprintf(error_out, error_out_size, "Invalid amount");
         LOG_FAIL("wallet", "direct_sendtoaddress: invalid amount %lld", (long long)amount_sat);
