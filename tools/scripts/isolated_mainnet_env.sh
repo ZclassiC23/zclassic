@@ -82,7 +82,23 @@ ISO_CLEANED=0
 ISO_NODE_BIN="${ISO_NODE_BIN:-./build/bin/zclassic23}"
 ISO_RPC_BIN="${ISO_RPC_BIN:-./build/bin/zcl-rpc}"
 
-iso_die() { echo "isolated_mainnet_env: FATAL: $*" >&2; exit 1; }
+# iso_die: a fatal isolation-setup problem (missing tooling, port collision,
+# an unsafe datadir path, ...). Full detail always goes to stderr (captured
+# by the journal same as before). When the sourcing script defines `blocked`
+# (replay_canary.sh's typed-verdict function — see its doc comment), route
+# through it so the failure ALSO leaves a durable BLOCKED sentinel instead of
+# a bare non-zero exit: these are exactly the "cannot even attempt a replay"
+# conditions blocked() exists for, never a replay finding. Falls back to a
+# plain exit 1 for any other/older sourcer that doesn't define blocked (this
+# file is a general isolation helper, not exclusively replay_canary.sh's).
+iso_die() {
+    echo "isolated_mainnet_env: FATAL: $*" >&2
+    if command -v blocked >/dev/null 2>&1; then
+        ELAPSED=$(( $(date +%s) - ${START_TS:-$(date +%s)} ))
+        blocked "isolation_setup_failed"
+    fi
+    exit 1
+}
 
 # Abort if a chosen port collides with the static live set.
 # NOTE: the trailing `return 0` is load-bearing — without it the
@@ -236,9 +252,18 @@ iso_import_blockindex() {
 #   - anchor: -connect=127.0.0.1:39999 — a dead sink that sets
 #     g_connect_only, skipping DNS/fixed seeds AND the auto-addnode-to-
 #     127.0.0.1:8034 path, so peer_count stays 0.
-#   - genesis: -addnode=127.0.0.1:8034 (the co-located zclassicd P2P)
+#   - genesis: -connect=127.0.0.1:8034 (the co-located zclassicd P2P)
 #     because it must fetch bodies; the ONE place a real peer is dialed,
 #     and it is the read-only co-located zclassicd, never a public peer.
+#     MUST be -connect=, not -addnode=: -addnode= only adds a candidate
+#     peer, it does NOT set g_connect_only, so the node's normal DNS-seed
+#     + addrman outbound discovery stays live and dials the real public
+#     network alongside zclassicd — an isolation-invariant violation
+#     confirmed live 2026-07-19 (a weekly run reached four real mainnet
+#     IPs). -connect= still adds its argument as a peer exactly like
+#     -addnode= does (src/main.c applies app_add_node() to both
+#     identically), so this keeps fetching bodies from zclassicd while
+#     actually enforcing "never a public peer".
 #
 # -fsport is REQUIRED or the node binds the hardcoded live FS port 18034.
 # setsid puts the node in its own group so cleanup kills the whole group.

@@ -38,8 +38,10 @@
 #                    combo FATALs at HEAD — see iso_spawn_mainnet_node.)
 #   --from=genesis : -nolegacyimport (no anchor seed); replay genesis->tip
 #                    with bg-validation ON (~6 h). Dials the co-located
-#                    zclassicd P2P (8034) via -addnode for bodies — the one
-#                    real peer, read-only.
+#                    zclassicd P2P (8034) via -connect (NOT -addnode — see
+#                    2026-07-20 fix note at the iso_spawn_mainnet_node call
+#                    below) for bodies — the one real peer, read-only, and
+#                    the ONLY outbound peer this run can ever reach.
 #
 # Usage:
 #   replay_canary.sh --from=anchor|genesis [--src-datadir=DIR]
@@ -221,16 +223,45 @@ write_verdict() {
 }
 
 # ── Single-line operator-greppable verdict + page ──────────────────
+# Three verdict values, mirroring the sibling evidence lane's vocabulary
+# (tools/scripts/sticky_matrix.sh's PASS/FAIL/BLOCKED VERDICT= convention):
+#   PASS    — the replay ran to completion and every assertion held.
+#   FAIL    — the replay ran and something about the CHAIN/BUILD under test
+#             is wrong (consensus reject, sha3 mismatch, cross-node
+#             disagreement, a crash mid-replay, ...) — a consensus-grade
+#             alarm. This is the only value the in-node
+#             `replay_canary_failed` Condition pages on (see
+#             app/services/include/services/canary_sentinel_watch.h:
+#             "only an explicit verdict==\"FAIL\" field pages").
+#   BLOCKED — the harness could not even ATTEMPT a replay (missing binary,
+#             an unusable source datadir, insufficient disk, ...) — an
+#             operational/environmental alarm, distinct from a replay
+#             mismatch. The node-side watcher already treats any verdict
+#             other than the exact strings "FAIL"/"PASS" as an untrusted
+#             unknown verdict that never crashes, never pages, and never
+#             clears a real FAIL latch (see canary_sentinel_watch.c
+#             `is_fail`/`is_pass`) — so BLOCKED is safely inert there by
+#             construction, no node-side change required.
 emit_verdict_line() {
     local verdict="$1" reason="$2"
-    if [ "$verdict" = "FAIL" ]; then
-        echo "replay-canary: VERDICT=FAIL from=$FROM reason=$reason tip=${R_TIP:-?} bg=${R_BGSTATE:-?} elapsed=${ELAPSED:-?}s"
-        # OnFailure systemd notification (File 7) is the page channel; we
-        # also log to the journal here so `journalctl` greps VERDICT=FAIL.
-        logger -t replay-canary "VERDICT=FAIL from=$FROM reason=$reason" 2>/dev/null || true
-    else
-        echo "replay-canary: VERDICT=PASS from=$FROM tip=${R_TIP:-?} verified=${R_VERIFIED:-?} elapsed=${ELAPSED:-?}s"
-    fi
+    case "$verdict" in
+        FAIL)
+            echo "replay-canary: VERDICT=FAIL from=$FROM reason=$reason tip=${R_TIP:-?} bg=${R_BGSTATE:-?} elapsed=${ELAPSED:-?}s"
+            # OnFailure systemd notification (File 7) is the page channel; we
+            # also log to the journal here so `journalctl` greps VERDICT=FAIL.
+            logger -t replay-canary "VERDICT=FAIL from=$FROM reason=$reason" 2>/dev/null || true
+            ;;
+        BLOCKED)
+            echo "replay-canary: VERDICT=BLOCKED from=$FROM reason=$reason elapsed=${ELAPSED:-?}s"
+            # Loud but NOT a page channel — `journalctl -t replay-canary` still
+            # surfaces it, and the sentinel keeps it distinct from a FAIL an
+            # operator would otherwise have to triage as a consensus alarm.
+            logger -t replay-canary "VERDICT=BLOCKED from=$FROM reason=$reason — canary could not attempt a replay (not a consensus alarm)" 2>/dev/null || true
+            ;;
+        *)
+            echo "replay-canary: VERDICT=PASS from=$FROM tip=${R_TIP:-?} verified=${R_VERIFIED:-?} elapsed=${ELAPSED:-?}s"
+            ;;
+    esac
 }
 
 # fail <reason>: write FAIL sentinel + line, exit non-zero. The sentinel
@@ -251,6 +282,21 @@ fail() {
             && mv -f "${flog}.tmp" "$flog" 2>/dev/null || true
     fi
     exit 1
+}
+
+# blocked <reason>: write a BLOCKED sentinel + line, exit non-zero (distinct
+# exit code from fail's, though the durable signal is the sentinel's
+# "verdict" field, not the exit code). Use this for "could not attempt a
+# replay at all" conditions caught BEFORE any node/RPC evidence exists —
+# missing binary, unusable source datadir, no disk, isolation-setup refusal.
+# Never use it once the isolated node has been probed for real evidence
+# (bg_validation state, consensus rejects, sha3, cross-node stats) — those
+# paths stay on fail() because they ARE consensus-grade findings.
+blocked() {
+    local reason="$1"
+    write_verdict "BLOCKED" "$reason"
+    emit_verdict_line "BLOCKED" "$reason"
+    exit 2
 }
 
 # pass: write PASS sentinel + line, exit 0.
@@ -289,6 +335,23 @@ json_amount() {  # $1=json $2=key
 # helpers) so reset_verdict and the elapsed band share the same run-start.
 R_TIP=0; R_VERIFIED=0; R_BGSTATE="unknown"; R_REJECTS=0
 R_LOCAL_SHA3=""; R_TXOUTS=0; R_ZD_TXOUTS=0; R_SUPPLY=""; R_ZD_SUPPLY=""
+
+# ── Raw RPC blobs consumed by evaluate_verdict ─────────────────────
+# Defaulted to "" here (not left to first-assignment in run_live/run_self_test)
+# so `set -u` can NEVER trip an "unbound variable" on one of these under ANY
+# code path — including one a future edit adds and forgets to populate on
+# every branch. A real defect: run_live's budget-timeout branch (the "record
+# a synthetic timeout bg_state" block) populated SD/DIAG/TX/ZD but not UC,
+# so a from-anchor run that ran past its budget crashed with
+# "replay_canary.sh: line NNN: UC: unbound variable" INSIDE evaluate_verdict,
+# before write_verdict/fail() ever ran — leaving no sentinel at all (silently
+# indistinguishable, to an operator reading the journal, from any other
+# uncaught crash). evaluate_verdict's own `[ -n "$UC" ] || fail ...` check
+# was written to turn a missing blob into a clean, sentinel-backed FAIL; an
+# unbound reference defeats that check before it can run. This default is
+# the general fix; the timeout branch also now populates UC explicitly (see
+# run_live) for defense in depth.
+SD=""; DIAG=""; UC=""; TX=""; ZD=""
 
 # ── Verdict logic: evaluate already-collected RPC blobs ────────────
 # Inputs (set by run_live or run_self_test): SD (getsyncdetail),
@@ -391,7 +454,7 @@ run_self_test() {
     local selftest_binary="${ZCL_CANARY_SELFTEST_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
     if ! capture_binary_identity "$selftest_binary"; then
         ELAPSED=0
-        fail "source_identity_capture_failed"
+        blocked "source_identity_capture_failed"
     fi
     # Test-only mid-run pause: if ZCL_CANARY_SELFTEST_BLOCK_FIFO is set, block
     # on a read of that FIFO AFTER reset_verdict (so the stale sentinel is
@@ -430,8 +493,19 @@ run_live() {
 
     cd "$REPO_ROOT"
 
-    [ -x build/bin/zclassic23 ] || { echo "replay-canary: build/bin/zclassic23 missing — run make" >&2; exit 2; }
-    [ -x build/bin/zcl-rpc ]    || { echo "replay-canary: build/bin/zcl-rpc missing — run make zcl-rpc" >&2; exit 2; }
+    # Missing-prerequisite checks below are self-describing (name the exact
+    # missing thing AND the fix) and durable (BLOCKED sentinel, not just a
+    # stderr line + bare exit) — a canary that cannot run must leave a
+    # verdict an operator/ops-surface reader can distinguish from a replay
+    # MISMATCH (see blocked()'s doc comment).
+    if [ ! -x build/bin/zclassic23 ]; then
+        echo "replay-canary: build/bin/zclassic23 missing — run 'make' in $REPO_ROOT" >&2
+        ELAPSED=0; blocked "binary_missing_zclassic23"
+    fi
+    if [ ! -x build/bin/zcl-rpc ]; then
+        echo "replay-canary: build/bin/zcl-rpc missing — run 'make zcl-rpc' in $REPO_ROOT" >&2
+        ELAPSED=0; blocked "binary_missing_zcl_rpc"
+    fi
 
     # Default budgets: anchor 5400 s (90 min, 2x the ~45-min expectation);
     # genesis 28800 s (8 h, ~1.3x the ~6-h expectation).
@@ -451,7 +525,7 @@ run_live() {
     iso_init
     if ! freeze_live_binaries; then
         ELAPSED=$(( $(date +%s) - START_TS ))
-        fail "source_identity_capture_failed"
+        blocked "source_identity_capture_failed"
     fi
 
     # Disk preflight follows the tiny immutable executable capture so every
@@ -459,13 +533,17 @@ run_live() {
     local avail_kb; avail_kb="$(df -Pk /tmp | awk 'NR==2{print $4}')"
     if [ "${avail_kb:-0}" -lt 83886080 ]; then   # < 80 GiB
         echo "replay-canary: REFUSE — /tmp has $((avail_kb/1024/1024)) GiB free, need >= 80 GiB" >&2
-        ELAPSED=0; fail "insufficient_disk"
+        ELAPSED=0; blocked "insufficient_disk"
     fi
 
     if [ "$FROM" = "anchor" ]; then
+        if [ ! -d "$SRC_DATADIR/blocks/index" ]; then
+            echo "replay-canary: --src-datadir=$SRC_DATADIR has no blocks/index — not a node datadir (expected the zclassicd datadir, default \$HOME/.zclassic)" >&2
+            ELAPSED=$(( $(date +%s) - START_TS )); blocked "src_datadir_missing"
+        fi
         echo "replay-canary: importing headers from $SRC_DATADIR (read-only)"
         if ! iso_import_blockindex "$SRC_DATADIR"; then
-            ELAPSED=$(( $(date +%s) - START_TS )); fail "blockindex_import_failed"
+            ELAPSED=$(( $(date +%s) - START_TS )); blocked "blockindex_import_failed"
         fi
         # PROVEN cold recipe (empirically verified at HEAD 2026-06-12):
         # NORMAL boot with legacy auto-import ON (NO -nolegacyimport, NO
@@ -482,7 +560,21 @@ run_live() {
         # from=genesis: -nolegacyimport so boot does NOT seed to the anchor;
         # dial the co-located zclassicd for bodies. This is the ONE place a
         # real peer is dialed — the read-only co-located zclassicd.
-        iso_spawn_mainnet_node "-nolegacyimport -addnode=127.0.0.1:8034"
+        #
+        # 2026-07-20 fix: this used to pass -addnode=127.0.0.1:8034, which
+        # only ADDS zclassicd as a candidate — it does NOT disable the
+        # node's normal DNS-seed/addrman outbound discovery (that requires
+        # -connect=, which sets g_connect_only, the exact mechanism the
+        # from-anchor variant already relies on for its dead sink — see
+        # iso_spawn_mainnet_node's Peer-policy doc comment below). The "ONE
+        # place a real peer is dialed" invariant above was therefore
+        # violated in practice: a live weekly run (2026-07-19) dialed four
+        # real mainnet IPs alongside zclassicd. -connect= (like -addnode=)
+        # still adds the given host as a peer (src/main.c's argv loop
+        # applies app_add_node() to BOTH flags identically), so switching
+        # to -connect= keeps fetching bodies from zclassicd while actually
+        # enforcing the "no public peer" contract.
+        iso_spawn_mainnet_node "-nolegacyimport -connect=127.0.0.1:8034"
     fi
 
     # 600 s: a fresh-import boot walks 3.1M-header restore phases before the
@@ -523,9 +615,19 @@ run_live() {
         if [ "$(date +%s)" -ge "$deadline" ]; then
             # Record a synthetic timeout bg_state so evaluate_verdict pages
             # budget_exceeded — never silently pass on a stuck RUNNING.
+            # evaluate_verdict's leading "every blob present" gate checks ALL
+            # FIVE of SD/DIAG/UC/TX/ZD unconditionally (it runs before the
+            # bg_state case statement gets a chance to short-circuit on
+            # "timeout"), so every one of them must be populated here even
+            # though only SD/DIAG/TX/ZD are otherwise meaningful for a
+            # timeout verdict — UC was missing here (a real defect: it
+            # crashed the harness with an unbound-variable error instead of
+            # reaching fail("budget_exceeded"); see the SD="" ... default
+            # block above for the general-case fix).
             R_BGSTATE="timeout"
             SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
-            DIAG="$(iso_rpc getsyncdiag)"; TX="$(iso_rpc gettxoutsetinfo)"
+            DIAG="$(iso_rpc getsyncdiag)"; UC="$(iso_rpc getutxocommitment)"
+            TX="$(iso_rpc gettxoutsetinfo)"
             ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
             evaluate_verdict
         fi
