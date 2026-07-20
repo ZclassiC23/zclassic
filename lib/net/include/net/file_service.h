@@ -188,4 +188,14 @@ bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_time, int64_t now);
 bool fs_parse_rom_request(const uint8_t *payload, uint32_t plen,
                           uint8_t root_out[32], uint32_t *idx_out);
 
+/* Per-chunk manifest request (WF2 artifact-protocol): a sibling of the "ROM"
+ * chunk request that rides the same fs_session transport —
+ *   body = ["RMF"(3)][chunk_root(32)]  (35 bytes)
+ * — and asks the seeder for the artifact's per-chunk SHA3 manifest. Recognized
+ * independently of the ROM/ALL/RNG paths. Parsing is pure/testable; returns
+ * true on a well-formed manifest request. */
+#define FS_ROM_MANIFEST_REQUEST_SIZE 35
+bool fs_parse_rom_manifest_request(const uint8_t *payload, uint32_t plen,
+                                   uint8_t root_out[32]);
+
 #endif

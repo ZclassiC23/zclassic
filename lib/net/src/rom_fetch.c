@@ -890,3 +890,44 @@ bool rom_fetch_dump_state_json(struct json_value *out, const char *key)
                                    : "fetch engine idle");
     return true;
 }
+
+/* ── WF2 artifact-protocol: per-chunk manifest fetch + verified download ──
+ *
+ * STEP-0 STATUS: contracts-commit stubs. Honest refusals (false, logged) until
+ * lanes 2A/2B land the real serve/verify/resume. No caller invokes these yet. */
+
+bool rom_fetch_get_manifest(const char *peer_addr, uint16_t port,
+                            const uint8_t chunk_root[32],
+                            uint8_t (*out_chunk_sha3)[32], uint32_t out_cap,
+                            uint32_t *out_num_chunks)
+{
+    (void)port; (void)chunk_root; (void)out_chunk_sha3;
+    (void)out_cap; (void)out_num_chunks;
+    if (!peer_addr || !peer_addr[0])
+        LOG_FAIL("rom_fetch", "NULL/empty peer_addr");
+    /* Not implemented (lane 2B). A false return means "no manifest" — the
+     * caller falls back to whole-file verification, not an offence. */
+    LOG_FAIL("rom_fetch", "rom_fetch_get_manifest not implemented yet (step-0 stub)");
+}
+
+bool rom_fetch_verify_chunk(const uint8_t *data, uint32_t len,
+                            const uint8_t expected_chunk_sha3[32])
+{
+    (void)data; (void)len; (void)expected_chunk_sha3;
+    /* Not implemented (lane 2B): fail closed so no unverified chunk is
+     * mistaken for verified. raw-return-ok: content proof lands in lane 2B. */
+    return false;
+}
+
+bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
+                                 const struct rom_fetch_manifest *m,
+                                 const uint8_t (*chunk_sha3)[32],
+                                 uint32_t num_chunks, const char *out_dir,
+                                 rom_fetch_progress_cb cb, void *cb_ctx)
+{
+    (void)port; (void)m; (void)chunk_sha3; (void)num_chunks;
+    (void)out_dir; (void)cb; (void)cb_ctx;
+    if (!peer_addr || !peer_addr[0])
+        LOG_FAIL("rom_fetch", "NULL/empty peer_addr");
+    LOG_FAIL("rom_fetch", "rom_fetch_download_verified not implemented yet (step-0 stub)");
+}

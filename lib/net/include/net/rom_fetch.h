@@ -184,4 +184,42 @@ void rom_fetch_status_snapshot(struct rom_fetch_status *out);
 struct json_value;
 bool rom_fetch_dump_state_json(struct json_value *out, const char *key);
 
+/* ── Per-chunk manifest fetch + verified download (WF2 artifact-protocol) ──
+ *
+ * These upgrade the whole-file-only content check above to per-chunk
+ * verification, so a resume can trust individual chunks. Back-compat is the
+ * refusal: a legacy seeder that does not understand the "RMF" manifest request
+ * replies FS_DONE, rom_fetch_get_manifest returns false, and the caller falls
+ * back to the whole-file path — never an offence. STEP-0 STATUS: contract +
+ * stub bodies; lanes 2A/2B land the real serve/verify/resume. */
+
+/* Fetch the per-chunk SHA3 manifest for the artifact keyed by `chunk_root`
+ * from peer_addr:port (the "RMF" request, FS_ROM_MANIFEST_REQUEST_SIZE). Fills
+ * out_chunk_sha3[0..*out_num_chunks) (capacity out_cap rows of 32 bytes).
+ * Returns false on refusal (legacy seeder), transport/MAC failure, or if the
+ * reply's num_chunks exceeds out_cap. A false return is the signal to fall
+ * back to whole-file verification, not a peer offence. */
+bool rom_fetch_get_manifest(const char *peer_addr, uint16_t port,
+                            const uint8_t chunk_root[32],
+                            uint8_t (*out_chunk_sha3)[32], uint32_t out_cap,
+                            uint32_t *out_num_chunks);
+
+/* Pure per-chunk content check: SHA3-256(data[0..len)) == expected. No IO. */
+bool rom_fetch_verify_chunk(const uint8_t *data, uint32_t len,
+                            const uint8_t expected_chunk_sha3[32]);
+
+/* Per-chunk-verified sequential download with durable resume. `chunk_sha3`
+ * holds the manifest's num_chunks per-chunk digests (from
+ * rom_fetch_get_manifest). Writes <out_dir>/<filename>.part with a
+ * <...>.part.journal sidecar; on restart, chunks the journal marks done (and
+ * that pass a random spot-check re-hash) are skipped. Each freshly received
+ * chunk is rom_fetch_verify_chunk'd BEFORE its journal bit is set, and the
+ * whole-file SHA3 is still checked before the atomic rename. Returns false
+ * (leaving .part + journal for a later resume) on any failure. */
+bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
+                                 const struct rom_fetch_manifest *m,
+                                 const uint8_t (*chunk_sha3)[32],
+                                 uint32_t num_chunks, const char *out_dir,
+                                 rom_fetch_progress_cb cb, void *cb_ctx);
+
 #endif /* ZCL_NET_ROM_FETCH_H */

@@ -71,11 +71,17 @@ struct ci_group {
     char purpose[160];
 };
 
-/* A recorded call site. */
+/* A recorded call site. `enclosing` is the name of the function the call site
+ * sits inside — the greatest function whose def_line <= ref_line in the same
+ * file (C does not nest functions; documented best-effort). Empty string when
+ * unattributed (e.g. a reference at file scope). This is the column that turns
+ * the flat refs table into a call graph: callees of X are the refs WHERE
+ * enclosing == X. STEP-0: the field exists; lane 4A populates it. */
 struct ci_ref {
     char callee[128];
     char ref_file[256];
     int  ref_line;
+    char enclosing[128];
 };
 
 /* ── Lifecycle ── */
@@ -140,5 +146,32 @@ int codeindex_includes_of_file(struct codeindex *ci, const char *path,
  * or -1 on error / not found. */
 int codeindex_render_card(struct codeindex *ci, const char *name,
                           char *buf, size_t cap);
+
+/* ── Call-graph queries (WF4 code-capsule) ──────────────────────────────
+ *
+ * Built on the `enclosing` column above. STEP-0 STATUS: contract + stub
+ * bodies; lane 4A lands the real joins once the scan pass populates
+ * enclosing. */
+
+/* Callers of `name`: the call sites referencing it, each with `enclosing`
+ * filled (the function the call sits in). Ordered by (ref_file, ref_line).
+ * Fills up to `cap` rows, returns count (>=0), -1 on error. Equivalent to
+ * codeindex_refs but with the enclosing attribution guaranteed populated. */
+int codeindex_callers(struct codeindex *ci, const char *name,
+                      struct ci_ref *out, int cap);
+
+/* Callees of `enclosing_name`: the distinct symbols referenced from inside it
+ * (refs WHERE enclosing == enclosing_name). Ordered by (ref_file, ref_line).
+ * Fills up to `cap` rows, returns count (>=0), -1 on error. */
+int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
+                      struct ci_ref *out, int cap);
+
+/* Linkage-aware stable identity for `name`, computed from existing fields:
+ * "fn:static:<path>:<name>" for a static function, "fn:external:<name>" for an
+ * external one (name-based lookup is untouched). Writes a NUL-terminated id
+ * into `buf` (capacity `cap`). Returns the length written (excluding NUL), or
+ * -1 on error / not found. */
+int codeindex_symbol_id(struct codeindex *ci, const char *name,
+                        char *buf, size_t cap);
 
 #endif /* ZCL_CODEINDEX_H */

@@ -1578,6 +1578,17 @@ int main(int argc, char **argv)
     failures += test_atomic_commit_ordering();
     failures += test_coldimport_restart_fragility();
 
+    /* Step-0 contracts commit — agent-oriented sync architecture (tidy-fog). */
+    { extern int test_sync_reduce(void); failures += test_sync_reduce(); }
+    { extern int test_sync_reduce_invariants(void); failures += test_sync_reduce_invariants(); }
+    { extern int test_sync_reduce_fuzz(void); failures += test_sync_reduce_fuzz(); }
+    { extern int test_sync_reduce_adapter(void); failures += test_sync_reduce_adapter(); }
+    { extern int test_zcl_ids(void); failures += test_zcl_ids(); }
+    { extern int test_rom_manifest(void); failures += test_rom_manifest(); }
+    { extern int test_rom_journal_resume(void); failures += test_rom_journal_resume(); }
+    { extern int test_sync_trust_policy(void); failures += test_sync_trust_policy(); }
+    { extern int test_code_capsule(void); failures += test_code_capsule(); }
+
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
     failures += spec_wallet_send();

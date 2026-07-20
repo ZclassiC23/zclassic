@@ -143,3 +143,38 @@ int codeindex_render_card(struct codeindex *ci, const char *name,
         app(buf, cap, &len, "  group: %s\n", s.group);
     return (int)len;
 }
+
+/* ── WF4 code-capsule: call-graph queries + linkage-aware ids ──────────
+ *
+ * STEP-0 STATUS: contracts-commit stubs. NULL-guarded and honest (they report
+ * "not implemented" and return the documented error/empty sentinel) until lane
+ * 4A lands the `enclosing`-column joins. No caller invokes these yet. */
+
+int codeindex_callers(struct codeindex *ci, const char *name,
+                      struct ci_ref *out, int cap)
+{
+    if (!ci || !name || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad args to codeindex_callers");
+    /* Not implemented (lane 4A). 0 == no callers known yet. */
+    return 0;
+}
+
+int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
+                      struct ci_ref *out, int cap)
+{
+    if (!ci || !enclosing_name || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad args to codeindex_callees");
+    /* Not implemented (lane 4A). 0 == no callees known yet. */
+    return 0;
+}
+
+int codeindex_symbol_id(struct codeindex *ci, const char *name,
+                        char *buf, size_t cap)
+{
+    if (!ci || !name || !buf || cap == 0)
+        LOG_ERR("codeindex", "bad args to codeindex_symbol_id");
+    /* Not implemented (lane 4A): emit an empty NUL-terminated id and report
+     * "not found" so callers do not treat a stub value as an identity. */
+    buf[0] = '\0';
+    return -1;
+}

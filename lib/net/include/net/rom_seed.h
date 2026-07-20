@@ -198,4 +198,21 @@ size_t rom_seed_directory_json(char *buf, size_t max);
 struct json_value;
 bool rom_seed_dump_state_json(struct json_value *out, const char *key);
 
+/* ── Per-chunk manifest serialization (WF2 artifact-protocol, serve side) ──
+ *
+ * The seeder already holds every per-chunk SHA3 in RAM (rom_artifact.chunk_sha3);
+ * this serializes them for the "RMF" manifest reply:
+ *   [u32 version][u32 num_chunks][num_chunks × 32B chunk_sha3]
+ * under the existing file-service MAC scheme. STEP-0 STATUS: contract + stub;
+ * lane 2A lands the real serializer. */
+
+/* Max serialized manifest-blob size: header (8) + one 32-byte digest per
+ * chunk, bounded by ROM_SEED_MAX_CHUNKS. */
+#define ROM_SEED_MANIFEST_BLOB_MAX (8u + ROM_SEED_MAX_CHUNKS * 32u)
+
+/* Serialize `a`'s per-chunk digest manifest into `buf` (capacity `cap`).
+ * Returns the number of bytes written, or 0 on NULL args / overflow. Pure. */
+size_t rom_seed_manifest_blob(const struct rom_artifact *a,
+                              uint8_t *buf, size_t cap);
+
 #endif /* ZCL_NET_ROM_SEED_H */

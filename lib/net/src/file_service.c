@@ -688,6 +688,21 @@ bool fs_parse_rom_request(const uint8_t *payload, uint32_t plen,
     return true;
 }
 
+/* WF2 artifact-protocol: parse the per-chunk manifest request. Sibling of
+ * fs_parse_rom_request — pure/testable, wired into the serve dispatch by
+ * lane 2A. body = ["RMF"(3)][chunk_root(32)]. */
+bool fs_parse_rom_manifest_request(const uint8_t *payload, uint32_t plen,
+                                   uint8_t root_out[32])
+{
+    if (!payload || plen < FS_ROM_MANIFEST_REQUEST_SIZE)
+        return false;
+    if (memcmp(payload, "RMF", 3) != 0)
+        return false;
+    if (root_out)
+        memcpy(root_out, payload + 3, 32);
+    return true;
+}
+
 enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
                                         const uint8_t peer_token[32],
                                         uint8_t out_seed[32], int *out_bits,

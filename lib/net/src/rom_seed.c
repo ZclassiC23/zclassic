@@ -854,3 +854,17 @@ bool rom_seed_dump_state_json(struct json_value *out, const char *key)
                      ok ? "seeding enabled" : "seeding disabled by config");
     return true;
 }
+
+/* ── WF2 artifact-protocol: per-chunk manifest serialization ──────────
+ *
+ * STEP-0 STATUS: contracts-commit stub. Returns 0 (nothing serialized) until
+ * lane 2A lands the real [u32 version][u32 num_chunks][num_chunks × 32B]
+ * serializer over a's chunk_sha3[]. No caller invokes this yet. */
+size_t rom_seed_manifest_blob(const struct rom_artifact *a,
+                              uint8_t *buf, size_t cap)
+{
+    if (!a || !buf || cap == 0)
+        return 0;
+    /* Not yet implemented (lane 2A). Fail closed: 0 == "no manifest". */
+    return 0;
+}

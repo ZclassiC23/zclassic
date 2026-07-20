@@ -15,6 +15,7 @@
  */
 
 #include "config/command_catalog.h"
+#include "config/command_handler_index.h"
 
 #include "command/native_command.h"
 #include "kernel/command_registry.h"
@@ -283,4 +284,21 @@ _Static_assert(sizeof(g_catalog_commands) / sizeof(g_catalog_commands[0]) <=
 const struct zcl_command_registry *zcl_command_catalog(void)
 {
     return &g_catalog_registry;
+}
+
+/* WF4 code-capsule dispatch join — see config/command_handler_index.h.
+ * STEP-0 STATUS: empty table; lane 4C replaces g_handler_index_entries with a
+ * parallel stringizing expansion of the command .def files. */
+static const struct zcl_command_handler_entry g_handler_index_entries[] = {
+    { 0 } /* placeholder terminator; count below is 0 until lane 4C lands */
+};
+
+static const struct zcl_command_handler_index g_handler_index = {
+    .entries = g_handler_index_entries,
+    .count = 0,
+};
+
+const struct zcl_command_handler_index *zcl_command_handler_index(void)
+{
+    return &g_handler_index;
 }
