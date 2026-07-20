@@ -69,19 +69,23 @@ critical path**, and its write must land in the *same durable transaction* as
 the cursor advance, or the two-store ordering hazard we are killing comes back.
 State this precisely or the model misleads.
 
-A second honesty: the node does not yet stand on its own proof end-to-end. Above
-genesis, its state trust root is *borrowed* — a near-tip snapshot whose
-`anchor_block_hash` matches a validated in-binary PoW header
-(`lib/chain/src/checkpoints.c`), but whose UTXO and shielded contents are not
-committed by that header. It was seeded into `coins_kv` rather than folded from
-our own checkpoint. The fold is genuinely pure *above* a complete anchor; making
-the anchor self-derived (the `-refold-from-anchor` sovereign cure — fold from the
-verified checkpoint, then delete the borrowed seed) is the destination in flight,
-not the proven present. Posture: `docs/HANDOFF.md`.
+A second honesty, and this one is a standing architectural fact rather than a
+live status (live status lives only in `docs/HANDOFF.md` §0-LATEST — never
+here): above genesis, ZClassic headers commit none of the UTXO, Sapling/Sprout
+frontier, or nullifier contents. A state artifact whose `anchor_block_hash`
+matches a validated in-binary PoW header (`lib/chain/src/checkpoints.c`) is
+therefore not thereby proof- or consensus-bound for its UTXO/shielded payload
+— that requires independently validating the transparent and shielded
+contents and passing copy proof; matching a header alone is not enough. The
+fold is genuinely pure *above* a complete, self-derived anchor; the
+`-refold-from-anchor` sovereign cure folds from the verified checkpoint
+forward and then deletes any borrowed seed. Whether this node is currently
+running on self-derived vs. borrowed state is a live fact: see
+`docs/HANDOFF.md` §0-LATEST.
 
 The four promises this buys the operator:
 
-- **⚡ Fast** — cold-sync to tip in seconds (FlyClient + SHA3 snapshot) is the *design target*; the FlyClient/snapshot stack is built but inert today. The assisted loader has reached tip from borrowed state, but canonical is currently wedged on incomplete shielded history. The legacy `--importblockindex` + boot path still works. Then stay current.
+- **⚡ Fast** — cold-sync to tip in seconds (FlyClient + SHA3 snapshot) is the *design target*; the FlyClient/snapshot stack is built but inert today. The legacy `--importblockindex` + boot path still works. Then stay current. Current sync/cure status is a live fact, not an architecture fact — see `docs/HANDOFF.md` §0-LATEST, not this file.
 - **🪶 Lean** — one static binary, bounded RAM, no runtime it doesn't ship itself.
 - **💪 Unbreakable** — cannot halt *silently*; a stall is always a named blocker or a growing `log_head` gap, and it pages a human before it gives up.
 - **🔬 Honest** — forward progress on the live tip is the only acceptance bar. Green tests are not a healthy node.

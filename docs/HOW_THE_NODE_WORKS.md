@@ -135,12 +135,12 @@ the internal boot path is `-refold-from-anchor`
 rebuilds the coin set from that compiled checkpoint forward, then deletes the
 borrowed-seed path and the older recovery-import code that fed it (≈3330 LOC
 production fully deletable, plus PRUNE-not-delete tear paths that keep their
-crash-recovery slice). Canonical is currently wedged below tip because
-its historical shielded anchors/nullifiers are incomplete; a complete atomic
-state install and copy proof must precede live cutover. (Verify the live H\*
-and whether the cure has shipped via `zclassic23 status` / `zclassic23
-dumpstate reducer_frontier`, `docs/HANDOFF.md`, and the live node—do not assume from
-this page.)
+crash-recovery slice). A complete atomic state install and copy proof must
+precede live cutover on any borrowed-state node. Whether canonical is
+currently wedged, cured, or holding tip on self-verified state is a live
+fact this page does not carry — verify the live H\* and cure status via
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier` and
+`docs/HANDOFF.md` §0-LATEST; do not assume from this page.
 
 ## 5. START HERE — fresh agent
 
