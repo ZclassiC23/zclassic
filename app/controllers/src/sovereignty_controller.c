@@ -384,6 +384,10 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
         sov_stamp_transitions(pdb, trust_st);
     uint32_t cap_mask = sync_trust_caps(trust_st);
     json_push_kv_str(out, "trust_state", sync_trust_state_name(trust_st));
+    /* Display-only posture: a coarse status label that authorizes NOTHING —
+     * every capability above/below comes from the mask, never this string. */
+    json_push_kv_str(out, "posture",
+                     sync_posture_name(sync_posture_from_state(trust_st)));
     json_push_kv_int(out, "capability_mask", (int64_t)cap_mask);
 
     struct json_value caps = {0};

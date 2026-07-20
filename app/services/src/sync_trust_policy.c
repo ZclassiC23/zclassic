@@ -15,6 +15,8 @@
 // state->capability lookups; a zcl_result would be noise (fail closed).
 #include "services/sync_trust_policy.h"
 
+#include <stddef.h>  /* NULL, size_t */
+
 enum sync_trust_state sync_trust_derive(bool proven, bool refold,
                                         bool self_derived)
 {
@@ -26,7 +28,7 @@ enum sync_trust_state sync_trust_derive(bool proven, bool refold,
     if (S && !X)
         return SYNC_TRUST_ARTIFACT_VERIFIED;    /* self-derived, no export */
     if (!S && X)
-        return SYNC_TRUST_HEADERS_VERIFIED;     /* export only */
+        return SYNC_TRUST_EXPORT_ROOT_REDERIVED; /* export only */
     if (!S && !X && proven)
         return SYNC_TRUST_RELEASE_ASSISTED_READY;
     return SYNC_TRUST_EMPTY;                     /* fail closed */
@@ -37,7 +39,7 @@ uint32_t sync_trust_caps(enum sync_trust_state st)
     switch (st) {
     case SYNC_TRUST_EMPTY:
         return SYNC_CAP_NONE;
-    case SYNC_TRUST_HEADERS_VERIFIED:
+    case SYNC_TRUST_EXPORT_ROOT_REDERIVED:
         /* ¬S ∧ X: export authority only. */
         return SYNC_CAP_EXPORT_BUNDLE;
     case SYNC_TRUST_ARTIFACT_VERIFIED:
@@ -68,12 +70,201 @@ const char *sync_trust_state_name(enum sync_trust_state st)
 {
     switch (st) {
     case SYNC_TRUST_EMPTY:                return "empty";
-    case SYNC_TRUST_HEADERS_VERIFIED:     return "headers_verified";
+    case SYNC_TRUST_EXPORT_ROOT_REDERIVED: return "export_root_rederived";
     case SYNC_TRUST_ARTIFACT_VERIFIED:    return "artifact_verified";
     case SYNC_TRUST_RELEASE_ASSISTED_READY: return "release_assisted_ready";
     case SYNC_TRUST_PEER_ASSISTED_READY:  return "peer_assisted_ready";
     case SYNC_TRUST_SOVEREIGN:            return "sovereign";
     case SYNC_TRUST_STATE_COUNT:          break;
+    }
+    return "?";
+}
+
+/* ── Evidence lattice → capability mask (the single authorization formula) ──
+ *
+ * Three composite facts, each a pure conjunction of the twelve named evidence
+ * bits, reproduce the two orthogonal provenance bits plus the assisted base:
+ *
+ *   proven = header_chain_verified && competitive_chainwork &&
+ *            bundle_bytes_verified && checkpoint_content_rederived &&
+ *            active_tip_locally_validated       (assisted operational base)
+ *   X      = checkpoint_content_rederived && export_root_rederived   (export)
+ *   S      = proven && state_self_derived && transparent_state_complete &&
+ *            sapling_history_complete && sprout_history_complete &&
+ *            nullifier_history_complete && full_history_replayed  (sovereignty)
+ *
+ * Capability formula (byte-identical to the sync_trust_caps() table for every
+ * state's canonical evidence tuple — proven in test_sync_trust_policy):
+ *   SERVE/RECEIVE = S || (proven && !X)   SPEND/MINE/SEED = S   EXPORT = X
+ */
+
+/* First-missing proven-base fact, as a stable reason token; NULL if proven. */
+static const char *proven_denial(const struct sync_evidence *e)
+{
+    if (!e->checkpoint_content_rederived) return "missing_checkpoint_binding";
+    if (!e->header_chain_verified)        return "header_chain_unverified";
+    if (!e->competitive_chainwork)        return "insufficient_chainwork";
+    if (!e->bundle_bytes_verified)        return "bundle_bytes_unverified";
+    if (!e->active_tip_locally_validated) return "active_tip_not_locally_validated";
+    return NULL;
+}
+
+/* First-missing self-derivation fact past the proven base; NULL if S. */
+static const char *self_derived_denial(const struct sync_evidence *e)
+{
+    const char *p = proven_denial(e);
+    if (p) return p;
+    if (!e->state_self_derived)      return "state_not_self_derived";
+    if (!e->transparent_state_complete) return "transparent_state_incomplete";
+    if (!e->sapling_history_complete || !e->sprout_history_complete ||
+        !e->nullifier_history_complete)
+        return "shielded_history_incomplete";
+    if (!e->full_history_replayed)   return "full_history_not_replayed";
+    return NULL;
+}
+
+/* Reason EXPORT is withheld; NULL if X holds. */
+static const char *export_denial(const struct sync_evidence *e)
+{
+    if (!e->checkpoint_content_rederived) return "missing_checkpoint_binding";
+    if (!e->export_root_rederived)        return "export_root_not_rederived";
+    return NULL;
+}
+
+uint32_t sync_capabilities_from_evidence(const struct sync_evidence *e,
+                                         struct sync_capability_denials *why)
+{
+    if (why)
+        for (int i = 0; i < SYNC_CAP_BIT_COUNT; i++)
+            why->reason[i] = NULL;
+
+    if (!e) {
+        /* Fail closed: every capability denied for a stable, named reason. */
+        if (why)
+            for (int i = 0; i < SYNC_CAP_BIT_COUNT; i++)
+                why->reason[i] = "no_evidence";
+        return SYNC_CAP_NONE;
+    }
+
+    const char *proven_why = proven_denial(e);
+    const char *self_why = self_derived_denial(e);
+    const char *export_why = export_denial(e);
+    const bool proven = proven_why == NULL;
+    const bool S = self_why == NULL;
+    const bool X = export_why == NULL;
+
+    const bool serve = S || (proven && !X);
+    const char *serve_why = NULL;
+    if (!serve) {
+        /* Serve is withheld either because the proven base is incomplete or —
+         * in the export-only posture (proven && X && !S) — because the tip is
+         * not self-derived. */
+        serve_why = proven ? "state_not_self_derived" : proven_why;
+    }
+
+    uint32_t mask = SYNC_CAP_NONE;
+    struct {
+        enum sync_capability cap;
+        bool granted;
+        const char *deny;
+    } bits[] = {
+        { SYNC_CAP_SERVE_VALIDATED_TIP, serve, serve_why },
+        { SYNC_CAP_WALLET_RECEIVE,      serve, serve_why },
+        { SYNC_CAP_WALLET_SPEND,        S,     self_why },
+        { SYNC_CAP_MINE,                S,     self_why },
+        { SYNC_CAP_EXPORT_BUNDLE,       X,     export_why },
+        { SYNC_CAP_SEED_BUNDLE,         S,     self_why },
+    };
+
+    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++) {
+        /* Bit index = trailing-zero position of the single-bit cap. */
+        int idx = 0;
+        for (uint32_t v = (uint32_t)bits[i].cap; v > 1u; v >>= 1)
+            idx++;
+        if (bits[i].granted) {
+            mask |= (uint32_t)bits[i].cap;
+            if (why && idx < SYNC_CAP_BIT_COUNT)
+                why->reason[idx] = NULL;
+        } else if (why && idx < SYNC_CAP_BIT_COUNT) {
+            why->reason[idx] = bits[i].deny ? bits[i].deny : "denied";
+        }
+    }
+    return mask;
+}
+
+struct sync_evidence sync_evidence_for_state(enum sync_trust_state st)
+{
+    /* The proven operational base (assisted readiness) as a reusable tuple. */
+    const struct sync_evidence proven_base = {
+        .header_chain_verified = true,
+        .competitive_chainwork = true,
+        .bundle_bytes_verified = true,
+        .checkpoint_content_rederived = true,
+        .active_tip_locally_validated = true,
+    };
+    struct sync_evidence e = {0};
+
+    switch (st) {
+    case SYNC_TRUST_EMPTY:
+        return e;                              /* all false: no evidence */
+    case SYNC_TRUST_EXPORT_ROOT_REDERIVED:
+        /* ¬S ∧ X: header-chain + re-derived export root, tip not self-derived. */
+        e = proven_base;
+        e.export_root_rederived = true;
+        return e;
+    case SYNC_TRUST_ARTIFACT_VERIFIED:
+        /* S ∧ ¬X: fully self-derived, export root NOT re-derived. */
+        e = proven_base;
+        e.state_self_derived = true;
+        e.transparent_state_complete = true;
+        e.sapling_history_complete = true;
+        e.sprout_history_complete = true;
+        e.nullifier_history_complete = true;
+        e.full_history_replayed = true;
+        return e;                              /* export_root_rederived stays false */
+    case SYNC_TRUST_RELEASE_ASSISTED_READY:
+    case SYNC_TRUST_PEER_ASSISTED_READY:
+        /* ¬S ∧ ¬X ∧ proven: assisted operational, borrowed shielded history. */
+        return proven_base;
+    case SYNC_TRUST_SOVEREIGN:
+        /* S ∧ X: every fact established. */
+        e = proven_base;
+        e.transparent_state_complete = true;
+        e.sapling_history_complete = true;
+        e.sprout_history_complete = true;
+        e.nullifier_history_complete = true;
+        e.state_self_derived = true;
+        e.full_history_replayed = true;
+        e.export_root_rederived = true;
+        return e;
+    case SYNC_TRUST_STATE_COUNT:
+        break;
+    }
+    return (struct sync_evidence){0};          /* unknown: least privilege */
+}
+
+enum sync_posture sync_posture_from_state(enum sync_trust_state st)
+{
+    switch (st) {
+    case SYNC_TRUST_EMPTY:                 return SYNC_POSTURE_EMPTY;
+    case SYNC_TRUST_EXPORT_ROOT_REDERIVED: return SYNC_POSTURE_HEADERS_ONLY;
+    case SYNC_TRUST_RELEASE_ASSISTED_READY:
+    case SYNC_TRUST_PEER_ASSISTED_READY:  return SYNC_POSTURE_ASSISTED_READY;
+    case SYNC_TRUST_ARTIFACT_VERIFIED:    return SYNC_POSTURE_SELF_DERIVED_READY;
+    case SYNC_TRUST_SOVEREIGN:            return SYNC_POSTURE_SOVEREIGN;
+    case SYNC_TRUST_STATE_COUNT:          break;
+    }
+    return SYNC_POSTURE_EMPTY;                  /* fail closed (display only) */
+}
+
+const char *sync_posture_name(enum sync_posture p)
+{
+    switch (p) {
+    case SYNC_POSTURE_EMPTY:            return "empty";
+    case SYNC_POSTURE_HEADERS_ONLY:    return "headers_only";
+    case SYNC_POSTURE_ASSISTED_READY:  return "assisted_ready";
+    case SYNC_POSTURE_SELF_DERIVED_READY: return "self_derived_ready";
+    case SYNC_POSTURE_SOVEREIGN:       return "sovereign";
     }
     return "?";
 }

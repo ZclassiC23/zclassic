@@ -146,6 +146,7 @@ gate_command() {
         check-vendor-provenance)           echo 'tools/scripts/test_vendor_provenance.sh' ;;
         check-command-contract)            echo './tools/lint/check_command_contract.sh' ;;
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
+        check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;
         *) return 1 ;;
     esac
 }

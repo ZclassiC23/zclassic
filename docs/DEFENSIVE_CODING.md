@@ -605,6 +605,7 @@ add/remove a gate.
 - `check-vcs-no-sha1`
 - `check-command-contract`
 - `check-privileged-transition-receipt`
+- `check-no-trust-state-ordering`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
