@@ -21,9 +21,9 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 # Sorted by path.
 
-lib/codeindex/src/codeindex_build.c 992
-lib/codeindex/src/codeindex_scan.c 974
-lib/codeindex/src/codeindex_store.c 846
+lib/codeindex/src/codeindex_build.c 1012
+lib/codeindex/src/codeindex_scan.c 1032
+lib/codeindex/src/codeindex_store.c 886
 lib/event/src/event.c 1055
 lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761

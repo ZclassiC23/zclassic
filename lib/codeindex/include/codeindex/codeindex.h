@@ -76,7 +76,7 @@ struct ci_group {
  * file (C does not nest functions; documented best-effort). Empty string when
  * unattributed (e.g. a reference at file scope). This is the column that turns
  * the flat refs table into a call graph: callees of X are the refs WHERE
- * enclosing == X. STEP-0: the field exists; lane 4A populates it. */
+ * enclosing == X. Populated by the scan pass (codeindex_scan.c). */
 struct ci_ref {
     char callee[128];
     char ref_file[256];
@@ -149,9 +149,7 @@ int codeindex_render_card(struct codeindex *ci, const char *name,
 
 /* ── Call-graph queries (WF4 code-capsule) ──────────────────────────────
  *
- * Built on the `enclosing` column above. STEP-0 STATUS: contract + stub
- * bodies; lane 4A lands the real joins once the scan pass populates
- * enclosing. */
+ * Built on the `enclosing` column above (populated by the scan pass). */
 
 /* Callers of `name`: the call sites referencing it, each with `enclosing`
  * filled (the function the call sits in). Ordered by (ref_file, ref_line).

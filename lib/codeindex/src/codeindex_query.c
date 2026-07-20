@@ -146,35 +146,69 @@ int codeindex_render_card(struct codeindex *ci, const char *name,
 
 /* ── WF4 code-capsule: call-graph queries + linkage-aware ids ──────────
  *
- * STEP-0 STATUS: contracts-commit stubs. NULL-guarded and honest (they report
- * "not implemented" and return the documented error/empty sentinel) until lane
- * 4A lands the `enclosing`-column joins. No caller invokes these yet. */
+ * Built on the refs.enclosing column populated by the scan pass. Callers of X
+ * are the refs WHERE callee_name = X (who references X); callees of X are the
+ * refs WHERE enclosing = X (what X's body references). Both are deterministic
+ * (ORDER BY ref_file, ref_line) and bounded by `cap`. */
 
 int codeindex_callers(struct codeindex *ci, const char *name,
                       struct ci_ref *out, int cap)
 {
-    if (!ci || !name || !out || cap <= 0)
+    if (!ci || !ci->store || !name || !out || cap <= 0)
         LOG_ERR("codeindex", "bad args to codeindex_callers");
-    /* Not implemented (lane 4A). 0 == no callers known yet. */
-    return 0;
+    return ci_store_refs_by_callee(ci->store, name, out, cap);
 }
 
 int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
                       struct ci_ref *out, int cap)
 {
-    if (!ci || !enclosing_name || !out || cap <= 0)
+    if (!ci || !ci->store || !enclosing_name || !out || cap <= 0)
         LOG_ERR("codeindex", "bad args to codeindex_callees");
-    /* Not implemented (lane 4A). 0 == no callees known yet. */
-    return 0;
+    return ci_store_refs_by_enclosing(ci->store, enclosing_name, out, cap);
+}
+
+/* Kind → id namespace word. Functions carry linkage in a second component
+ * (static/external); other kinds are named directly under their namespace. */
+static const char *kind_id_ns(char k)
+{
+    switch (k) {
+    case 'T': case 't': return "fn";
+    case 'S': return "struct";
+    case 'Y': return "type";
+    case 'E': return "enum";
+    case 'M': return "macro";
+    default:  return "data";  /* 'D' and any unknown kind */
+    }
 }
 
 int codeindex_symbol_id(struct codeindex *ci, const char *name,
                         char *buf, size_t cap)
 {
-    if (!ci || !name || !buf || cap == 0)
+    if (!ci || !ci->store || !name || !buf || cap == 0)
         LOG_ERR("codeindex", "bad args to codeindex_symbol_id");
-    /* Not implemented (lane 4A): emit an empty NUL-terminated id and report
-     * "not found" so callers do not treat a stub value as an identity. */
     buf[0] = '\0';
-    return -1;
+
+    struct ci_symbol s;
+    bool found = false;
+    if (!ci_store_symbol_by_name(ci->store, name, &s, &found))
+        LOG_ERR("codeindex", "symbol lookup failed in symbol_id");
+    if (!found)
+        return -1;
+
+    const char *ns = kind_id_ns(s.kind);
+    int n;
+    if (s.kind == 't' && s.def_path[0]) {
+        /* A file-local (static) function is identified by its definition site
+         * so two same-named statics in different files never collide. */
+        n = snprintf(buf, cap, "%s:static:%s:%s", ns, s.def_path, s.name);
+    } else if (s.kind == 'T' || s.kind == 't') {
+        n = snprintf(buf, cap, "%s:external:%s", ns, s.name);
+    } else {
+        n = snprintf(buf, cap, "%s:%s", ns, s.name);
+    }
+    if (n < 0 || (size_t)n >= cap) {
+        buf[0] = '\0';
+        LOG_ERR("codeindex", "symbol id overflow for %s", name);
+    }
+    return n;
 }
