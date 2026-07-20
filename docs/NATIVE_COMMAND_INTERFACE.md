@@ -698,8 +698,8 @@ without renaming the grammar.
 
 ### Phase B — Native registry and discovery
 
-**Status (verified 2026-07-11, read `config/commands/*.def` and
-`config/src/command_catalog.c` directly): partially landed.**
+**Status (read `config/commands/*.def` and `config/src/command_catalog.c`
+directly): partially landed.**
 
 - **Done:** the split `config/commands/*.def` registry exists —
   `root.def`, `core.def`, `apps.def`, `ops.def`, and `dev.def`.
@@ -712,7 +712,7 @@ without renaming the grammar.
   method `zcl_native_command_is_root()` recognizes. `status` and the
   read-only Core/operator commands in `core.def` are among the first
   mapped leaves.
-- **Done (2026-07-11):** `dev.def`'s leaves are bound in
+- **Done:** `dev.def`'s leaves are bound in
   `command_catalog.c` through `ZCL_COMMAND_DEV_READ` /
   `ZCL_COMMAND_DEV_COMMAND` — each declarative leaf maps to a real handler
   in the dev build (`tools/command/native_dev_command.c`, `ZCL_DEV_BUILD`)
@@ -850,11 +850,11 @@ Known gaps before calling the interface production-ready:
 
 ## 22. Migration inventory baseline
 
-As of 2026-07-10, the interface vocabulary is split across 33 native agent
-contracts, roughly 201 full-profile RPC methods (plus two exact-dev methods),
-nine service entries, 24 service operations, and numerous Make
-or script development targets. Those counts are an inventory baseline, not the
-future public shape.
+The interface vocabulary is split across native agent contracts, full-profile
+RPC methods, service entries, service operations, and numerous Make or script
+development targets. Enumerate the live counts with `zclassic23 discover
+help`/`discover search` rather than trusting a pinned number here — this
+baseline describes the inventory shape, not the future public shape.
 
 Canonical migration mapping:
 
