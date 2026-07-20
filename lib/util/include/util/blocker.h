@@ -54,7 +54,27 @@
  * stack-allocate. Reads always go through `blocker_snapshot_all`
  * (copies under lock, releases before return). The supervisor child
  * snapshot-and-dispatches outside the lock; escape callbacks may
- * freely call any blocker_* function. */
+ * freely call any blocker_* function.
+ *
+ * Root-cause chaining (additive, 2026-07-20)
+ * -------------------------------------------
+ * Live triage repeatedly surfaces two "unrelated" blockers that are
+ * actually one root cause + one downstream symptom — e.g. an earlier
+ * stage's body-read failure at height H means the coin that height
+ * creates never enters coins_kv, so a much-later height's
+ * script_validate.prevout_unresolved is not an independent fault, it is
+ * the same fault observed one hop downstream. Every blocker record now
+ * carries an optional `caused_by` (the id of the blocker judged to be
+ * the root cause, empty = unknown/none) and a small `cause_detail`
+ * string. Both are zero-filled by `blocker_init`, so every pre-existing
+ * `blocker_set(&r)` call site is unaffected — the fields stay empty
+ * unless a caller opts in via `blocker_set_with_cause`. A producer that
+ * wants to wire an edge first calls the read-only
+ * `blocker_find_by_id_prefix` to discover whether a plausible root
+ * blocker is currently active, then calls `blocker_set_with_cause` if
+ * so. The JSON dumper renders the chain and classifies each active
+ * blocker as root / symptom / orphaned-symptom (root cleared while the
+ * symptom, which clears on its own remedy, is still active). */
 
 #ifndef ZCL_UTIL_BLOCKER_H
 #define ZCL_UTIL_BLOCKER_H
@@ -69,6 +89,7 @@
 #define BLOCKER_ACTION_MAX    64
 #define BLOCKER_CAP           128
 #define BLOCKER_ESCAPE_CAP    32
+#define BLOCKER_CAUSE_DETAIL_MAX 64
 
 /* Default rate limit: a blocker_set with the same `id` more frequently
  * than this is suppressed (fire_count still increments). Tunable via
@@ -121,6 +142,11 @@ struct blocker_record {
     int64_t  transient_ttl_secs;      /* TRANSIENT-only; 0 = default
                                         * (BLOCKER_DEFAULT_TRANSIENT_TTL_SECS).
                                         * Ignored for other classes. */
+    /* ADDITIVE (see "Root-cause chaining" above). `blocker_init` zeroes
+     * both to empty; existing callers that only ever call `blocker_set`
+     * are unaffected. Set via `blocker_set_with_cause`. */
+    char     caused_by[BLOCKER_ID_MAX];              /* root-cause blocker id, or "" */
+    char     cause_detail[BLOCKER_CAUSE_DETAIL_MAX]; /* small stable detail, or "" */
 };
 
 /* Convenience initializer; zeroes the struct and fills required fields,
@@ -148,6 +174,21 @@ bool blocker_init(struct blocker_record *out,
  *   1  — rate-limited dup (caller SHOULD suppress event emission)
  *  -1  — error (bad input, cap exhausted) */
 int blocker_set(const struct blocker_record *r);
+
+/* Additive variant of blocker_set: same storage/rate-limit/return contract,
+ * plus records a root-cause edge. `caused_by` is the id of the blocker
+ * judged to be the root cause; NULL or "" means no known cause (identical
+ * behavior to plain blocker_set). `cause_detail` is optional small stable
+ * text describing the edge (e.g. the downstream height); NULL leaves it
+ * empty. No existence check is performed on `caused_by` here — the caller
+ * is expected to have looked it up first (see blocker_find_by_id_prefix);
+ * the dumper flags an edge whose target is no longer active as an
+ * "orphaned symptom" rather than silently clearing the symptom.
+ * Return contract identical to blocker_set; -1 also on caused_by too long
+ * (>= BLOCKER_ID_MAX). */
+int blocker_set_with_cause(const struct blocker_record *r,
+                           const char *caused_by,
+                           const char *cause_detail);
 
 /* Mark a retry attempt against a blocker. Increments retry_count.
  * If retry_count >= retry_budget (and budget > 0), emits EV_
@@ -180,10 +221,23 @@ struct blocker_snapshot {
                                          * re-arm budget exhausted; needs an
                                          * owner look, never auto-cleared. */
     int32_t  deadline_rearm_count;
+    char     caused_by[BLOCKER_ID_MAX];              /* root-cause blocker id, or "" */
+    char     cause_detail[BLOCKER_CAUSE_DETAIL_MAX]; /* small stable detail, or "" */
 };
 
 /* Copy up to `max` snapshots into `out`. Returns count actually written. */
 int blocker_snapshot_all(struct blocker_snapshot *out, int max);
+
+/* Read-only lookup: the first active blocker whose id starts with
+ * `id_prefix` (registry scan order — stable within a generation, not
+ * insertion-order guaranteed across clears/re-inserts). Copies into `out`.
+ * Returns false (out untouched) when id_prefix is NULL/empty, out is NULL,
+ * or no active blocker matches. Intended for producers that want to
+ * discover a live root-cause blocker before calling
+ * blocker_set_with_cause — e.g. a defer path checking whether an upstream
+ * stage is currently held on a body-read failure. */
+bool blocker_find_by_id_prefix(const char *id_prefix,
+                               struct blocker_snapshot *out);
 
 /* Same locked registry copy with the metadata that belongs to that exact
  * snapshot.  `generation_out` advances on every observable registry change;

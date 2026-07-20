@@ -133,6 +133,11 @@ ZCL_BLOCKER_REMEDY(proof_validate.invalid_upstream_verdict,    OWNER)
 ZCL_BLOCKER_REMEDY(proof_validate.upstream_evidence_mode,      OWNER)
 ZCL_BLOCKER_REMEDY(header_admit,                               OWNER)
 ZCL_BLOCKER_REMEDY(reducer_frontier.script_undetermined,       OWNER)
+/* Lane E3: raised when stage_repair_read_active_block_checked cannot read a
+ * torn/wrong canonical body (quarantine). have_data_unreadable detects the
+ * noted height (candidate 3), drops BLOCK_HAVE_DATA for a body_fetch refetch,
+ * and its witness clears this blocker (reducer_frontier_body_read_note_clear_at). */
+ZCL_BLOCKER_REMEDY(reducer_frontier.body_read_torn,            have_data_unreadable)
 ZCL_BLOCKER_REMEDY(body_fetch.header_solution_missing,         OWNER)
 ZCL_BLOCKER_REMEDY(validate_headers.window_resolve_miss,       OWNER)
 /* J5 blocks-hydrate per-row quarantine: a poisoned `blocks` header row was
@@ -268,3 +273,16 @@ ZCL_BLOCKER_REMEDY(checkpoint_ladder.mismatch,                  OWNER)
  * binary.fallback_active. ─────────────────────────────────────────────── */
 ZCL_BLOCKER_REMEDY(block_index_cache.integrity_demoted,         OWNER)
 ZCL_BLOCKER_REMEDY(sapling_checkpoint_hook.anchor_read_error,   OWNER)
+/* ── OWNER — a long node.db maintenance op (PRAGMA quick_check / staging
+ * cleanup) that outran ZCL_DB_LONG_OP_DEADLINE_MS (15 min) on the shared
+ * connection (app/models/src/database_long_op.c, raised from the SQLite
+ * progress callback in database.c). BLOCKER_TRANSIENT, fail-LOUD not
+ * fail-stop: the node stays servable from the in-memory status snapshot
+ * while it fires. It SELF-CLEARS the moment the op completes
+ * (db_long_op_unpublish → blocker_clear), so no condition-engine healer
+ * drives it; a run past 15 min is a genuinely stuck op (the legitimately
+ * slowest observed op is ~11 min) that an operator investigates. This
+ * closes the "healthy node's status goes silently dark for ~11 minutes"
+ * incident class — the maintenance is now a named blocker, never a quiet
+ * hang. ──────────────────────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(db.maintenance_slow,                         OWNER)

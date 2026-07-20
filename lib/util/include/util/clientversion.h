@@ -43,11 +43,6 @@ const char *zcl_build_commit_full(void);
  * part of that receipt's digests. */
 const char *zcl_build_source_id_sha256(void);
 
-/* Legacy-named v2 capture-completeness bit. True after an exact successful
- * source inventory capture; it is not Git HEAD cleanliness. Dirty worktree
- * bytes are bound directly by zcl_build_source_id_sha256(). */
-bool zcl_build_source_clean(void);
-
 void FormatVersion(int nVersion, char *out, size_t out_size);
 
 #endif /* WINDRES_PREPROC */

@@ -180,9 +180,6 @@ bool hotswap_activation_authorized(const char *resolved_datadir,
  * never a reducer/consensus/storage/supervisor path. */
 bool hotswap_handler_is_swappable(const char *handler_name);
 
-/* Number of successful live activations this process (monotone). */
-uint64_t hotswap_activation_count(void);
-
 /* Append the activation subsystem's telemetry into an already-open object.
  * Called by hotswap_dump_state_json() so `zclassic23 dumpstate hotswap` shows
  * both the generation loader and activation

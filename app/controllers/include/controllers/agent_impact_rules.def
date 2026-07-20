@@ -82,6 +82,10 @@ AGENT_IMPACT_RULE("app/models/src/db_txn.c|app/models/include/models/db_txn.h|li
 AGENT_IMPACT_RULE("app/controllers/src/network_controller.c|app/controllers/include/controllers/network_controller.h|app/controllers/src/sync_controller.c|app/controllers/include/controllers/sync_controller.h|lib/test/src/test_syncdiag_rpc.c", "syncdiag_rpc")
 AGENT_IMPACT_RULE("app/controllers/src/event_operator_snapshot_controller.c|app/controllers/include/controllers/event_operator_snapshot_controller.h|app/services/src/operator_snapshot_service.c|app/services/include/services/operator_snapshot_service.h|app/services/src/chain_frontier_snapshot_service.c|app/services/include/services/chain_frontier_snapshot_service.h|app/services/src/runtime_identity_service.c|app/services/include/services/runtime_identity_service.h|app/services/include/services/operator_peer_snapshot_service.h|lib/test/src/test_chain_frontier_snapshot_service.c", "syncdiag_rpc chain_state_repo chain_frontier_snapshot_service make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/soak_attestation_service.c|app/services/include/services/soak_attestation_service.h|lib/test/src/test_soak_attestation.c|tools/scripts/soak_evidence.sh|tools/scripts/mvp_scoreboard.sh|tools/mvp_gate.sh", "soak_attestation make_lint_gates")
+/* sync_benchmark (zcl.sync_benchmark.v1 phase-timed receipt) — its unit tests
+ * live in the existing test_soak_attestation.c file (same datadir-receipt
+ * evidence pattern), so both map to the soak_attestation group. */
+AGENT_IMPACT_RULE("app/services/src/sync_benchmark_service.c|app/services/include/services/sync_benchmark_service.h", "soak_attestation make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/chain_state_*.c|app/services/src/chain_state_internal.h|app/services/include/services/chain_state_service.h|lib/test/src/test_chain_state_repo.c", "chain_state_repo syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/network_*_contract.c", "syncdiag_rpc api make_lint_gates")
 AGENT_IMPACT_RULE("core/consensus/*|core/params/*|core/chainparams/*|lib/chain/*|lib/validation/*|lib/script/*|lib/primitives/*|lib/test/src/test_consensus_parity.c|lib/test/src/test_domain_consensus_tx_structural.c", "consensus_parity domain_consensus_tx_structural chain")
@@ -304,6 +308,14 @@ AGENT_IMPACT_RULE("app/controllers/src/transaction_controller.c", "transaction r
 AGENT_IMPACT_RULE("lib/wallet/src/wallet.c|lib/wallet/include/wallet/wallet.h|lib/test/src/test_wallet.c|lib/test/src/test_wallet_funds_safety.c", "wallet wallet_funds_safety coin_selection make_lint_gates")
 AGENT_IMPACT_RULE("lib/wallet/src/sapling_keys.c|lib/wallet/include/wallet/sapling_keys.h", "wallet_keystore sapling make_lint_gates")
 AGENT_IMPACT_RULE("lib/wallet/src/wallet_keystore.c|lib/wallet/include/wallet/wallet_keystore.h|lib/test/src/test_wallet_keystore.c", "wallet_keystore wallet_sqlite_enc make_lint_gates")
+/* Wallet at-rest lock/unlock surface: the runtime passphrase register + spend
+ * gate (lib/wallet) and the keystore private-key wipe it uses. Unit-tested in
+ * the wallet_keystore group; the on-disk runtime-passphrase round-trip in
+ * wallet_sqlite_enc. The lock/unlock/status agent surface is wired in
+ * wallet_controller.c (walletlock/walletunlock/walletlockstatus RPCs +
+ * getwalletinfo.lock), covered by the wallet group. */
+AGENT_IMPACT_RULE("lib/wallet/src/wallet_lock.c|lib/wallet/include/wallet/wallet_lock.h", "wallet_keystore wallet_sqlite_enc make_lint_gates")
+AGENT_IMPACT_RULE("lib/wallet/src/keystore.c|lib/wallet/include/wallet/keystore.h", "wallet_keystore wallet make_lint_gates")
 
 /* Sync controller persistence/writer split + services. */
 AGENT_IMPACT_RULE("app/controllers/src/sync_controller_persistence.c|app/controllers/src/sync_controller_writers.c", "syncdiag_rpc sync_service make_lint_gates")

@@ -8,6 +8,7 @@
  * transparent-spend handling stays inline with the RPC validation flow. */
 
 #include "controllers/wallet_shielded_internal.h"
+#include "wallet/wallet_lock.h"
 
 
 bool rpc_z_sendmany(const struct json_value *params, bool help,
@@ -33,6 +34,20 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
                                  "history, not self-folded)");
             LOG_FAIL("wallet_shielded", "z_sendmany: refused — %s",
                      sov_reason);
+        }
+    }
+
+    /* At-rest lock gate (wallet_lock): an encrypted wallet with no passphrase
+     * loaded cannot spend — its spending keys are not decryptable/resident.
+     * Covers all four flows (t->t, t->z, z->t, z->z) this handler serves.
+     * Wallet-local key handling: no tx bytes / proof / consensus effect. */
+    {
+        struct zcl_result lk = wallet_lock_spend_guard();
+        if (!lk.ok) {
+            json_set_str(result, "Error: wallet is locked — run "
+                                 "walletunlock before spending");
+            LOG_FAIL("wallet_shielded", "z_sendmany: refused — wallet locked "
+                     "(code=%d)", lk.code);
         }
     }
 

@@ -295,6 +295,124 @@ int test_blocker(void)
         json_free(&v);
     }
 
+    /* ── root-cause chaining: caused_by / cause_detail plumbing ──── */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(2500000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        struct blocker_record r;
+        blocker_init(&r, "prefix-target.alpha", "owner1", BLOCKER_TRANSIENT, "x");
+        int rc = blocker_set(&r);
+        BCK_CHECK("prefix target set", rc == 0);
+        {
+            struct blocker_snapshot s;
+            blocker_snapshot_all(&s, 1);
+            BCK_CHECK("caused_by defaults empty (plain blocker_set unaffected)",
+                      s.caused_by[0] == '\0');
+        }
+
+        /* blocker_find_by_id_prefix */
+        struct blocker_snapshot found;
+        bool hit = blocker_find_by_id_prefix("prefix-target.", &found);
+        BCK_CHECK("find_by_id_prefix matches", hit &&
+                  strcmp(found.id, "prefix-target.alpha") == 0);
+        BCK_CHECK("find_by_id_prefix no match",
+                  !blocker_find_by_id_prefix("no-such-prefix.", &found));
+        BCK_CHECK("find_by_id_prefix NULL prefix -> false",
+                  !blocker_find_by_id_prefix(NULL, &found));
+        BCK_CHECK("find_by_id_prefix empty prefix -> false",
+                  !blocker_find_by_id_prefix("", &found));
+        BCK_CHECK("find_by_id_prefix NULL out -> false",
+                  !blocker_find_by_id_prefix("prefix-target.", NULL));
+
+        /* blocker_set_with_cause */
+        blocker_init(&r, "symptom-b", "owner2", BLOCKER_PERMANENT, "y");
+        rc = blocker_set_with_cause(&r, "prefix-target.alpha", "h=123");
+        BCK_CHECK("set_with_cause new -> 0", rc == 0);
+
+        struct blocker_snapshot snaps[8];
+        int n = blocker_snapshot_all(snaps, 8);
+        BCK_CHECK("2 active after cause edge", n == 2);
+        const struct blocker_snapshot *sym = NULL;
+        for (int i = 0; i < n; i++)
+            if (strcmp(snaps[i].id, "symptom-b") == 0) sym = &snaps[i];
+        BCK_CHECK("symptom found", sym != NULL);
+        BCK_CHECK("symptom caused_by set", sym &&
+                  strcmp(sym->caused_by, "prefix-target.alpha") == 0);
+        BCK_CHECK("symptom cause_detail set", sym &&
+                  strcmp(sym->cause_detail, "h=123") == 0);
+
+        /* set_with_cause with NULL caused_by == plain blocker_set */
+        blocker_init(&r, "no-cause", "owner3", BLOCKER_TRANSIENT, "z");
+        rc = blocker_set_with_cause(&r, NULL, NULL);
+        BCK_CHECK("set_with_cause NULL cause -> 0", rc == 0);
+        n = blocker_snapshot_all(snaps, 8);
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "no-cause") == 0) {
+                BCK_CHECK("NULL caused_by stays empty",
+                          snaps[i].caused_by[0] == '\0');
+            }
+        }
+
+        /* JSON dump: chain rendering + root/symptom classification */
+        struct json_value v;
+        json_init(&v);
+        blocker_dump_state_json(&v, NULL);
+        const struct json_value *barr = json_get(&v, "blockers");
+        BCK_CHECK("dump: blockers array present", barr != NULL);
+        bool saw_caused_by = false;
+        for (size_t i = 0; barr && i < json_size(barr); i++) {
+            const struct json_value *e = json_at(barr, i);
+            const char *id = json_get_str(json_get(e, "id"));
+            if (id && strcmp(id, "symptom-b") == 0) {
+                const char *cb = json_get_str(json_get(e, "caused_by"));
+                const char *cd = json_get_str(json_get(e, "cause_detail"));
+                saw_caused_by = cb && strcmp(cb, "prefix-target.alpha") == 0 &&
+                                cd && strcmp(cd, "h=123") == 0;
+            }
+        }
+        BCK_CHECK("dump: symptom entry carries caused_by/cause_detail",
+                  saw_caused_by);
+
+        const struct json_value *roots = json_get(&v, "root_blocker_ids");
+        const struct json_value *orphans = json_get(&v, "orphaned_symptom_ids");
+        BCK_CHECK("dump: roots array present", roots != NULL);
+        bool root_has_alpha = false;
+        for (size_t i = 0; roots && i < json_size(roots); i++) {
+            const char *rid = json_get_str(json_at(roots, i));
+            if (rid && strcmp(rid, "prefix-target.alpha") == 0) root_has_alpha = true;
+        }
+        BCK_CHECK("dump: prefix-target.alpha classified as root", root_has_alpha);
+        BCK_CHECK("dump: no orphaned symptoms while root active",
+                  orphans && json_size(orphans) == 0);
+        json_free(&v);
+
+        /* Clearing the root does NOT silently clear the symptom — each
+         * blocker clears on its own remedy — and the dumper flags the
+         * now-dangling edge as an orphaned symptom. */
+        blocker_clear("prefix-target.alpha");
+        BCK_CHECK("root cleared", !blocker_exists("prefix-target.alpha"));
+        BCK_CHECK("symptom NOT silently cleared", blocker_exists("symptom-b"));
+
+        json_init(&v);
+        blocker_dump_state_json(&v, NULL);
+        roots = json_get(&v, "root_blocker_ids");
+        orphans = json_get(&v, "orphaned_symptom_ids");
+        BCK_CHECK("dump: roots empty after root cleared",
+                  roots && json_size(roots) == 0);
+        bool orphan_has_symptom = false;
+        for (size_t i = 0; orphans && i < json_size(orphans); i++) {
+            const char *oid = json_get_str(json_at(orphans, i));
+            if (oid && strcmp(oid, "symptom-b") == 0) orphan_has_symptom = true;
+        }
+        BCK_CHECK("dump: symptom-b flagged as orphaned symptom",
+                  orphan_has_symptom);
+        json_free(&v);
+
+        blocker_reset_for_testing();
+    }
+
     /* ── escape registry + dispatch ────────────────────────────── */
     {
         blocker_reset_for_testing();

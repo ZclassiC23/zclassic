@@ -81,12 +81,11 @@
 # in the codebase. Both re-baselined in file_size_ceiling_lib_baseline.txt
 # (1427, 892); count stays at 13.
 #
-# 2026-07-20 (lane wf/h3-groth16-spend-port): sapling.c grew 1200 -> 1214 for
-# two exposed fixed-generator accessors (sapling_spend_auth_generator /
-# sapling_proof_gen_key_generator) — the spend circuit's in-circuit
-# fixed-base multiplication must use the identical find_group_hash-derived
-# generators as the out-of-circuit key derivation, so these expose the two
-# canonical generators the ported spend sections 3/7 multiply by. Reviewed
-# and re-baselined at 1214 in file_size_ceiling_lib_baseline.txt; count
-# stays at 13.
+# Paydown 2026-07-20 (lane G3, sync fault matrix): simnet_chaos_faults.c grew
+# 1092 -> 2038 lines adding six new named fault injectors (g)-(l) over the
+# ROM-artifact delivery path (rom_fetch.c/rom_journal.c/rom_seed.c) and the
+# pure sync_reduce kernel, mirroring the file's existing (a)-(f) shape — real
+# growth, not incidental. Re-baselined in file_size_ceiling_lib_baseline.txt
+# (2038), which removes its grown-past-baseline entry from the live count
+# (nothing else changed). Live drift measured at 12. Ratchet lowered 13 -> 12.
 13

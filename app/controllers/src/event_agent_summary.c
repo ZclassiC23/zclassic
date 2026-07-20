@@ -22,6 +22,7 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
+#include "models/database.h"
 #include "net/connman.h"
 #include "net/download.h"
 #include "net/msgprocessor.h"
@@ -591,8 +592,14 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     };
     struct agent_fast_snapshot health;
     agent_fast_collect(&health, &first_call_budget);
+    /* posture is the ONLY DB-touching input to this otherwise in-memory summary;
+     * collect() itself routes around a busy connection and reports whether it
+     * served from its in-memory snapshot. */
     struct agent_security_posture posture;
     agent_security_posture_collect(&posture, NULL);
+    const char *db_maint_op = NULL;
+    int64_t db_maint_elapsed_ms = 0;
+    bool db_busy = node_db_long_op_active(&db_maint_op, &db_maint_elapsed_ms);
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
     bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
@@ -675,6 +682,26 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "schema", "zcl.public_status.v2");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "result_completeness", "bounded");
+    /* Never serve stale posture silently: when the DB was busy and the
+     * DB-derived slice came from the in-memory snapshot, say so and carry its
+     * age. A live collection is source="live". */
+    if (posture.served_from_cache) {
+        json_push_kv_str(result, "source", "snapshot");
+        json_push_kv_int(result, "age_ms", posture.cache_age_ms);
+    } else {
+        json_push_kv_str(result, "source", "live");
+    }
+    /* A long-running node.db maintenance op is a named status fact, not a
+     * silent hang, sourced from the db_long_op progress registry. */
+    if (db_busy) {
+        struct json_value maint;
+        json_init(&maint);
+        json_set_object(&maint);
+        json_push_kv_str(&maint, "op", db_maint_op ? db_maint_op : "long_op");
+        json_push_kv_int(&maint, "elapsed_ms", db_maint_elapsed_ms);
+        json_push_kv(result, "db_maintenance", &maint);
+        json_free(&maint);
+    }
     json_push_kv_bool(result, "partial_result",
                       first_call_budget.partial_result);
     if (first_call_budget.partial_result) {

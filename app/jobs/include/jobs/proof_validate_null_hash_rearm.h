@@ -63,9 +63,6 @@ struct proof_validate_rearm_report {
     int64_t  deleted_rows;       /* NULL-block_hash rows deleted */
 };
 
-const char *proof_validate_rearm_outcome_name(
-    enum proof_validate_rearm_outcome o);
-
 /* Detect and (if the recovery policy allows) re-arm the pre-stamping
  * NULL-block_hash artifact. `policy` may be NULL — it is then loaded from the
  * environment (default-refuse for a rewind beyond the cap). `report` is

@@ -37,6 +37,13 @@ struct agent_security_posture {
     char anchor_history_state[64];
     char nullifier_history_state[64];
     char next_action[96];
+    /* Non-blocking-serve provenance. When the shared node.db connection is busy
+     * with a long maintenance op, collect() skips the DB reads entirely and
+     * fills this struct from the last live snapshot instead: served_from_cache
+     * is true and cache_age_ms is the snapshot's age (or -1 if no snapshot has
+     * ever been published). Live collections leave served_from_cache false. */
+    bool served_from_cache;
+    int64_t cache_age_ms;
 };
 
 void agent_security_posture_collect(struct agent_security_posture *out,

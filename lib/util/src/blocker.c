@@ -42,6 +42,8 @@ struct blocker_slot {
     int32_t                 rearm_count;         /* deadline re-arm attempts
                                                    * (rule 2), bounded. */
     bool                    escalated;           /* rule-2 budget exhausted */
+    char                    caused_by[BLOCKER_ID_MAX];              /* see blocker.h */
+    char                    cause_detail[BLOCKER_CAUSE_DETAIL_MAX];
 };
 
 struct escape_entry {
@@ -49,6 +51,12 @@ struct escape_entry {
     const char        *name;       /* interned, static-lifetime */
     blocker_escape_fn  fn;
 };
+
+/* Forward decl — defined in the Snapshot section below, used by
+ * blocker_find_by_id_prefix which sits with the other registry mutators. */
+static void fill_snapshot(struct blocker_snapshot *out,
+                          const struct blocker_slot *s,
+                          int64_t now);
 
 /* ── Module state ──────────────────────────────────────────────────── */
 
@@ -167,6 +175,8 @@ int blocker_set(const struct blocker_record *r)
         snprintf(s->owner_subsystem, BLOCKER_OWNER_MAX, "%s", r->owner_subsystem);
         snprintf(s->escape_action, BLOCKER_ACTION_MAX, "%s", r->escape_action);
         snprintf(s->reason, BLOCKER_REASON_MAX, "%s", r->reason);
+        snprintf(s->caused_by, BLOCKER_ID_MAX, "%s", r->caused_by);
+        snprintf(s->cause_detail, BLOCKER_CAUSE_DETAIL_MAX, "%s", r->cause_detail);
         if (r->escape_deadline_secs > 0) {
             s->escape_deadline_us = s->since_us + r->escape_deadline_secs * 1000000;
             s->escape_span_us = r->escape_deadline_secs * 1000000;
@@ -196,6 +206,8 @@ int blocker_set(const struct blocker_record *r)
     snprintf(s->owner_subsystem, BLOCKER_OWNER_MAX, "%s", r->owner_subsystem);
     snprintf(s->escape_action, BLOCKER_ACTION_MAX, "%s", r->escape_action);
     snprintf(s->reason, BLOCKER_REASON_MAX, "%s", r->reason);
+    snprintf(s->caused_by, BLOCKER_ID_MAX, "%s", r->caused_by);
+    snprintf(s->cause_detail, BLOCKER_CAUSE_DETAIL_MAX, "%s", r->cause_detail);
     s->class = r->class;
     s->retry_budget = r->retry_budget;
     s->since_us = now;
@@ -215,6 +227,49 @@ int blocker_set(const struct blocker_record *r)
     atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
     return 0;
+}
+
+int blocker_set_with_cause(const struct blocker_record *r,
+                           const char *caused_by,
+                           const char *cause_detail)
+{
+    if (!r) LOG_ERR("blocker", "set_with_cause: null record");
+    if (caused_by && strlen(caused_by) >= BLOCKER_ID_MAX)
+        LOG_ERR("blocker", "set_with_cause: caused_by too long: %s", caused_by);
+
+    struct blocker_record local = *r;
+    if (caused_by && caused_by[0]) {
+        snprintf(local.caused_by, sizeof(local.caused_by), "%s", caused_by);
+    } else {
+        local.caused_by[0] = '\0';
+    }
+    if (cause_detail) {
+        snprintf(local.cause_detail, sizeof(local.cause_detail), "%s", cause_detail);
+    } else {
+        local.cause_detail[0] = '\0';
+    }
+    return blocker_set(&local);
+}
+
+/* Read-only registry scan by id prefix. See blocker.h. */
+bool blocker_find_by_id_prefix(const char *id_prefix, struct blocker_snapshot *out)
+{
+    if (!id_prefix || !id_prefix[0] || !out) return false;
+    size_t plen = strlen(id_prefix);
+
+    pthread_mutex_lock(&g_lock);
+    int64_t now = mono_us();
+    bool found = false;
+    for (int i = 0; i < BLOCKER_CAP; i++) {
+        if (!g_slots[i].in_use) continue;
+        if (strncmp(g_slots[i].id, id_prefix, plen) == 0) {
+            fill_snapshot(out, &g_slots[i], now);
+            found = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+    return found;
 }
 
 void blocker_record_retry(const char *id)
@@ -282,6 +337,8 @@ static void fill_snapshot(struct blocker_snapshot *out,
     memcpy(out->reason, s->reason, BLOCKER_REASON_MAX);
     out->escalated = s->escalated;
     out->deadline_rearm_count = s->rearm_count;
+    memcpy(out->caused_by, s->caused_by, BLOCKER_ID_MAX);
+    memcpy(out->cause_detail, s->cause_detail, BLOCKER_CAUSE_DETAIL_MAX);
 }
 
 int blocker_snapshot_all_with_meta(struct blocker_snapshot *out, int max,
@@ -456,11 +513,82 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_bool(&child, "escalated", snaps[i].escalated);
         json_push_kv_int(&child, "deadline_rearm_count",
                          snaps[i].deadline_rearm_count);
+        json_push_kv_str(&child, "caused_by", snaps[i].caused_by);
+        json_push_kv_str(&child, "cause_detail", snaps[i].cause_detail);
         json_push_back(&arr, &child);
         json_free(&child);
     }
     json_push_kv(out, "blockers", &arr);
     json_free(&arr);
+
+    /* Root-cause chaining classification (see blocker.h "Root-cause
+     * chaining"). Only meaningful when at least one active blocker carries
+     * a non-empty caused_by — the common case (no edges wired) renders
+     * three empty arrays, cheap and harmless.
+     *   root    — caused_by empty AND at least one other active blocker's
+     *             caused_by names it (an isolated blocker with no known
+     *             cause and no known symptoms is neither).
+     *   symptom — caused_by non-empty.
+     *   orphaned symptom — caused_by non-empty but does not match any
+     *             currently active blocker id (its root already cleared;
+     *             clearing a root never silently clears its symptoms, so
+     *             this is the surfaced signal instead). */
+    {
+        struct json_value roots, symptoms, orphans;
+        json_init(&roots);    json_set_array(&roots);
+        json_init(&symptoms); json_set_array(&symptoms);
+        json_init(&orphans);  json_set_array(&orphans);
+
+        for (int i = 0; i < n; i++) {
+            if (snaps[i].caused_by[0] == '\0') continue;
+            struct json_value id_v;
+            json_init(&id_v);
+            json_set_str(&id_v, snaps[i].id);
+            json_push_back(&symptoms, &id_v);
+            json_free(&id_v);
+
+            bool root_active = false;
+            for (int j = 0; j < n; j++) {
+                if (strcmp(snaps[j].id, snaps[i].caused_by) == 0) {
+                    root_active = true;
+                    break;
+                }
+            }
+            if (!root_active) {
+                struct json_value o;
+                json_init(&o);
+                json_set_str(&o, snaps[i].id);
+                json_push_back(&orphans, &o);
+                json_free(&o);
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            if (snaps[i].caused_by[0] != '\0') continue; /* symptoms aren't roots */
+            bool referenced = false;
+            for (int j = 0; j < n; j++) {
+                if (j == i) continue;
+                if (snaps[j].caused_by[0] != '\0' &&
+                    strcmp(snaps[j].caused_by, snaps[i].id) == 0) {
+                    referenced = true;
+                    break;
+                }
+            }
+            if (referenced) {
+                struct json_value r_v;
+                json_init(&r_v);
+                json_set_str(&r_v, snaps[i].id);
+                json_push_back(&roots, &r_v);
+                json_free(&r_v);
+            }
+        }
+
+        json_push_kv(out, "root_blocker_ids", &roots);
+        json_push_kv(out, "symptom_blocker_ids", &symptoms);
+        json_push_kv(out, "orphaned_symptom_ids", &orphans);
+        json_free(&roots);
+        json_free(&symptoms);
+        json_free(&orphans);
+    }
 
     /* Reserved `_health` key (see docs/work "Adding state introspection" +
      * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.

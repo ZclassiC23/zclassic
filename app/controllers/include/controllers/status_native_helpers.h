@@ -65,8 +65,6 @@ void status_push_int_if_known(struct json_value *obj, const char *key,
                               bool known, int64_t value);
 void status_push_bool_if_known(struct json_value *obj, const char *key,
                                bool known, bool value);
-void status_format_int_if_known(char *buf, size_t buf_size, bool known,
-                                int64_t value);
 void status_push_rpc_parse_error(struct json_value *obj, const char *key,
                                  const char *raw, const char *message);
 long long status_json_int(const struct json_value *obj, const char *key,
@@ -81,12 +79,6 @@ bool status_peer_is_magicbean(const struct json_value *peer);
 bool status_peer_array_is_valid(const struct json_value *peers);
 void status_peer_survey(const struct json_value *peers,
                         struct peer_survey *out);
-long long status_max_ll(long long a, long long b);
-void status_push_string_array(struct json_value *obj, const char *key,
-                              const char *a, const char *b);
-void status_push_lane_safety_fields(struct json_value *root,
-                                    const struct json_value *lane);
-int blocker_status_priority(const char *class_name);
 bool status_json_equal(const struct json_value *a, const struct json_value *b);
 bool status_push_kv_verified(struct json_value *obj, const char *key,
                              const struct json_value *value);

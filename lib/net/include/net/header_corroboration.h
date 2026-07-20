@@ -101,9 +101,6 @@ bool header_corroboration_hold_get(struct header_corroboration_hold *out);
 /* True iff a switch is currently held (cheap; no copy). */
 bool header_corroboration_hold_active(void);
 
-/* Force-clear the hold (e.g. the condition witness). Idempotent. */
-void header_corroboration_hold_clear(void);
-
 #ifdef ZCL_TESTING
 /* Full reset of the corroboration store + hold state + enable flag (ON). */
 void header_corroboration_test_reset(void);

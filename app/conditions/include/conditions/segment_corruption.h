@@ -52,10 +52,4 @@ enum cseg_status segment_corruption_repair(const char *dir, uint32_t first,
                                            uint32_t count,
                                            char *err, size_t errlen);
 
-#ifdef ZCL_TESTING
-void segment_corruption_test_reset(void);
-int  segment_corruption_test_remedy_calls(void);
-int  segment_corruption_test_refetch_calls(void);
-#endif
-
 #endif /* ZCL_CONDITIONS_SEGMENT_CORRUPTION_H */

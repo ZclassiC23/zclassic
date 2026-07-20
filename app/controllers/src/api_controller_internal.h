@@ -192,7 +192,6 @@ bool api_service_runtime_probe_json_for_service(const char *name,
 void api_service_catalog_error_json(const char *name, struct json_value *out);
 void api_service_operations_json(struct json_value *out,
                                  const char *service_name);
-bool api_service_operations_index_json(struct json_value *out);
 bool api_service_operations_filtered_index_json(
     struct json_value *out,
     const char *service,

@@ -318,9 +318,6 @@ static bool prepare_statements(struct node_db *ndb)
 #define ZCL_NODE_DB_CACHE_CEIL_KIB     (64 * 1024)            /* 64 MiB */
 #define ZCL_NODE_DB_MMAP_CEILING_BYTES (256LL * 1024 * 1024)  /* 256 MiB */
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
-#define ZCL_DB_LONG_OP_PROGRESS_OPS 50000
-#define ZCL_DB_LONG_OP_LOG_MS       15000
-#define ZCL_DB_LONG_OP_LOG_MIN_BYTES (64LL * 1024LL * 1024LL)
 
 static void db_set_pragmas(sqlite3 *db)
 {
@@ -346,102 +343,10 @@ static void db_set_pragmas(sqlite3 *db)
     sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
 }
 
-struct db_long_op_progress {
-    const char *op;
-    const char *path;
-    int64_t start_ms;
-    int64_t last_log_ms;
-    uint64_t callbacks;
-    bool log_enabled;
-};
-
-static bool db_long_op_log_enabled(const char *path)
-{
-    if (!path || !path[0] || strcmp(path, ":memory:") == 0)
-        return false;
-
-    const char *force = getenv("ZCL_DB_LONG_OP_LOG_ALL");
-    if (force && force[0] && strcmp(force, "0") != 0)
-        return true;
-
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return false;
-    return st.st_size >= ZCL_DB_LONG_OP_LOG_MIN_BYTES;
-}
-
-static int db_long_op_progress_cb(void *arg)
-{
-    struct db_long_op_progress *p = arg;
-    if (!p)
-        return 0;
-
-    p->callbacks++;
-    if (!p->log_enabled)
-        return 0;
-
-    int64_t now_ms = db_now_ms();
-    if (now_ms - p->last_log_ms < ZCL_DB_LONG_OP_LOG_MS)
-        return 0;
-
-    LOG_INFO("db",
-             "db: %s still running path=%s elapsed_ms=%lld callbacks=%llu",
-             p->op ? p->op : "long_op",
-             p->path ? p->path : "(unknown)",
-             (long long)(now_ms - p->start_ms),
-             (unsigned long long)p->callbacks);
-    p->last_log_ms = now_ms;
-    return 0;
-}
-
-static void db_long_op_start(sqlite3 *db, struct db_long_op_progress *progress,
-                             const char *op, const char *path)
-{
-    if (!progress)
-        return;
-
-    progress->op = op;
-    progress->path = path ? path : (db ? sqlite3_db_filename(db, "main") : NULL);
-    progress->start_ms = db_now_ms();
-    progress->last_log_ms = progress->start_ms;
-    progress->callbacks = 0;
-    progress->log_enabled = db_long_op_log_enabled(progress->path);
-
-    if (!db || !progress->log_enabled)
-        return;
-
-    LOG_INFO("db", "db: %s start path=%s",
-             progress->op ? progress->op : "long_op",
-             progress->path ? progress->path : "(unknown)");
-    sqlite3_progress_handler(db, ZCL_DB_LONG_OP_PROGRESS_OPS,
-                             db_long_op_progress_cb, progress);
-}
-
-static void db_long_op_finish(sqlite3 *db, struct db_long_op_progress *progress,
-                              bool ok, int rc)
-{
-    if (db)
-        sqlite3_progress_handler(db, 0, NULL, NULL);
-    if (!progress || !progress->log_enabled)
-        return;
-
-    int64_t elapsed_ms = db_now_ms() - progress->start_ms;
-    LOG_INFO("db",
-             "db: %s done path=%s ok=%d rc=%d elapsed_ms=%lld callbacks=%llu",
-             progress->op ? progress->op : "long_op",
-             progress->path ? progress->path : "(unknown)", ok ? 1 : 0, rc,
-             (long long)elapsed_ms, (unsigned long long)progress->callbacks);
-}
-
-static int db_exec_checked_progress(sqlite3 *db, const char *sql,
-                                    const char *where, const char *path)
-{
-    struct db_long_op_progress progress;
-    db_long_op_start(db, &progress, where, path);
-    int rc = db_exec_checked(db, sql, where);
-    db_long_op_finish(db, &progress, rc == SQLITE_OK, rc);
-    return rc;
-}
+/* The db_long_op_progress struct + the maintenance-op progress/registry
+ * machinery (db_long_op_start/finish, db_exec_checked_progress, and the
+ * busy-op publication that backs node_db_long_op_active) live in
+ * database_long_op.c; the shared declarations are in database_internal.h. */
 
 /* Tier-2 fast restart: optional quick_check-skip probe (see database.h). */
 static node_db_quick_check_skip_probe_fn g_quick_check_skip_probe;

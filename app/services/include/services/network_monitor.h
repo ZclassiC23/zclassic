@@ -101,9 +101,7 @@ bool network_monitor_dump_state_json(struct json_value *out, const char *key);
 #ifdef ZCL_TESTING
 /* Force a single sample+fold now (uses the live connman), for tests that have
  * a running connman. Returns false if the monitor is not started. */
-bool network_monitor_test_sample_once(void);
 /* Reset the in-RAM header-vote map and last view. */
-void network_monitor_test_reset(void);
 /* Inject a folded view (marks it ready) so condition detectors can be unit
  * tested without a live connman. */
 void network_monitor_test_set_view(const struct network_consensus_view *v);

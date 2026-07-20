@@ -529,7 +529,6 @@ bool block_prefetch_running(void)
 uint64_t block_prefetch_warm_hits(void)     { return atomic_load(&g_warm_hits); }
 uint64_t block_prefetch_warmed(void)        { return atomic_load(&g_warmed); }
 uint64_t block_prefetch_nowait_misses(void) { return atomic_load(&g_nowait_misses); }
-uint64_t block_prefetch_bytes(void)         { return atomic_load(&g_bytes); }
 
 size_t block_prefetch_lru_bytes(void)
 {

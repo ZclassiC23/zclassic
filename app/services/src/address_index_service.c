@@ -342,23 +342,3 @@ bool address_index_dump_state_json(struct json_value *out, const char *key)
     json_free(&arr);
     return true;
 }
-
-void address_index_service_reset_for_test(void)
-{
-    atomic_store(&g_ai_registered, false);
-    atomic_store(&g_ai_schema_ready, false);
-    atomic_store(&g_ai_cursor, -1);
-    atomic_store(&g_ai_hstar, -1);
-    atomic_store(&g_ai_rows, 0);
-    atomic_store(&g_ai_blocks_folded, 0);
-    atomic_store(&g_ai_ticks, 0);
-    atomic_store(&g_ai_last_batch_blocks, 0);
-    atomic_store(&g_ai_last_batch_us, 0);
-    atomic_store(&g_ai_resets, 0);
-    atomic_store(&g_ai_blocked, false);
-    atomic_store(&g_ai_blocked_height, -1);
-    atomic_store(&g_ai_id, SUPERVISOR_INVALID_ID);
-    pthread_mutex_lock(&g_ai_digest_lock);
-    g_ai_digest_hex[0] = '\0';
-    pthread_mutex_unlock(&g_ai_digest_lock);
-}

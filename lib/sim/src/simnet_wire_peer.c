@@ -361,17 +361,6 @@ bool simnet_wire_start_peer_kind(struct simnet_wire *wire, size_t peer_id,
     return wire_mark_not_implemented(wire, peer_id, kind);
 }
 
-bool simnet_wire_peer_stop_adversary(struct simnet_wire *wire,
-                                     size_t peer_id)
-{
-    if (!wire || peer_id >= wire->peer_count)
-        LOG_FAIL("simnet.wire.peer", "invalid stop peer=%zu", peer_id);
-    struct wire_peer *peer = &wire->peers[peer_id];
-    peer->flood_active = false;
-    peer->adversary_done = true;
-    return true;
-}
-
 static bool wire_make_flood_frame(struct simnet_wire *wire, uint64_t n,
                                   uint8_t **out, size_t *out_len)
 {

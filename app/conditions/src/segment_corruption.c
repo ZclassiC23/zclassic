@@ -226,17 +226,3 @@ void register_segment_corruption(void)
 {
     (void)condition_register(&c_segment_corruption);
 }
-
-#ifdef ZCL_TESTING
-void segment_corruption_test_reset(void)
-{
-    atomic_store(&g_sweep_cursor, 0);
-    atomic_store(&g_corrupt_first, -1);
-    atomic_store(&g_corrupt_count, 0);
-    atomic_store(&g_remedy_calls, 0);
-    atomic_store(&g_refetch_calls, 0);
-    condition_reset_state(&c_segment_corruption);
-}
-int segment_corruption_test_remedy_calls(void)  { return atomic_load(&g_remedy_calls); }
-int segment_corruption_test_refetch_calls(void) { return atomic_load(&g_refetch_calls); }
-#endif

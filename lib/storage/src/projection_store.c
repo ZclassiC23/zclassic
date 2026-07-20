@@ -241,17 +241,6 @@ sqlite3 *projection_store_db(void)
     return atomic_load_explicit(&g_db, memory_order_acquire);
 }
 
-bool projection_store_path(char *out, size_t cap)
-{
-    if (!out || cap == 0) return false;
-    pthread_mutex_lock(&g_lock);
-    bool ok = g_path[0] != '\0' && strlen(g_path) < cap;
-    if (ok) snprintf(out, cap, "%s", g_path);
-    else    out[0] = '\0';
-    pthread_mutex_unlock(&g_lock);
-    return ok;
-}
-
 void projection_store_tx_lock(void)
 {
     pthread_once(&g_tx_lock_once, projection_store_tx_lock_init);
@@ -267,41 +256,6 @@ bool projection_store_tx_trylock(void)
 void projection_store_tx_unlock(void)
 {
     pthread_mutex_unlock(&g_tx_lock);
-}
-
-bool projection_store_run_in_tx(bool (*op)(sqlite3 *db, void *arg), void *arg)
-{
-    if (!op) return false;
-    projection_store_tx_lock();
-    sqlite3 *db = projection_store_db();
-    if (!db) {
-        projection_store_tx_unlock();
-        return false;
-    }
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:projection-store-lifecycle
-                "[projection_store] BEGIN IMMEDIATE failed: %s\n",
-                err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        projection_store_tx_unlock();
-        return false;
-    }
-    bool ok = op(db, arg);
-    const char *fini = ok ? "COMMIT" : "ROLLBACK";
-    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:projection-store-lifecycle
-                "[projection_store] %s failed: %s\n",
-                fini, err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        /* A failed COMMIT leaves the tx open — force a rollback so the handle
-         * is usable for the next batch. */
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        projection_store_tx_unlock();
-        return false;
-    }
-    projection_store_tx_unlock();
-    return ok;
 }
 
 void projection_store_close(void)

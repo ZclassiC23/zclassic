@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
+#include "wallet/wallet_lock.h"
 #include "wallet/keystore.h"
 #include "keys/key.h"
 #include "core/serialize.h"
@@ -103,20 +104,28 @@ static void wallet_sqlite_reset_all_statements(struct wallet_sqlite *ws)
 
 /* ── Wallet-at-rest encryption helpers ────────────────────────── */
 
-/* Returns the wallet passphrase if set, NULL otherwise.  When the
- * env var is empty we treat it as "no encryption" — a conscious
- * operator decision must supply a non-empty string. */
+/* Returns the effective wallet passphrase, or NULL when the wallet is
+ * locked / no passphrase is set.  Resolution (force-lock, runtime unlock,
+ * then ZCL_WALLET_PASSPHRASE env) lives in the wallet_lock subsystem so the
+ * runtime lock/unlock surface and this persistence layer agree on exactly
+ * one source of truth.  An empty env value is treated as "no encryption". */
 static const char *wallet_passphrase(void)
 {
-    const char *p = getenv("ZCL_WALLET_PASSPHRASE");
-    return (p && *p) ? p : NULL;
+    return wallet_lock_effective_passphrase();
 }
 
-/* Detect a WKS1 envelope header in a blob.  Safe with NULL. */
+/* Detect a WKS1 envelope header in a blob.  Safe with NULL.  A hit means
+ * this wallet stores key material encrypted at rest — record that so the
+ * lock subsystem treats it as lockable even when booted without a passphrase
+ * (the encrypted rows fail to decrypt and are dropped, but we still saw the
+ * envelope and know the wallet is encrypted, not empty/plaintext). */
 static bool is_wks1_blob(const void *data, size_t len)
 {
-    return data && len >= WKS_HEADER_LEN &&
-           memcmp(data, WKS_MAGIC, WKS_MAGIC_LEN) == 0;
+    bool hit = data && len >= WKS_HEADER_LEN &&
+               memcmp(data, WKS_MAGIC, WKS_MAGIC_LEN) == 0;
+    if (hit)
+        wallet_lock_note_encrypted_at_rest();
+    return hit;
 }
 
 /* Encrypt `plain` (plen bytes) into a malloc'd envelope.  Sets
@@ -140,6 +149,9 @@ static bool wallet_encrypt_blob(const uint8_t *plain, size_t plen,
         free(buf);
         return false;
     }
+    /* This wallet wraps key material at rest — tell the lock subsystem so a
+     * runtime lock is meaningful (a plaintext wallet has nothing to lock). */
+    wallet_lock_note_encrypted_at_rest();
     *out = buf;
     *out_len = elen;
     return true;

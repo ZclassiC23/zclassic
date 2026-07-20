@@ -32,7 +32,6 @@ void register_state_auditor_mismatch(void);
 
 #ifdef ZCL_TESTING
 int state_auditor_mismatch_test_remedy(void);
-int state_auditor_mismatch_test_remedy_calls(void);
 bool state_auditor_mismatch_test_detect(void);
 bool state_auditor_mismatch_test_witness(void);
 void state_auditor_mismatch_test_reset(void);

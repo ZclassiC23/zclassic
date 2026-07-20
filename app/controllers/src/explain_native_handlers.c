@@ -315,14 +315,6 @@ size_t explain_topic_count(void)
 {
     return sizeof(g_explain_topics) / sizeof(g_explain_topics[0]);
 }
-const char *explain_topic_name(size_t i)
-{
-    return i < explain_topic_count() ? g_explain_topics[i].name : NULL;
-}
-const char *explain_topic_summary(size_t i)
-{
-    return i < explain_topic_count() ? g_explain_topics[i].summary : NULL;
-}
 size_t explain_topics_csv(char *out, size_t out_size)
 {
     if (!out || out_size == 0) return 0;

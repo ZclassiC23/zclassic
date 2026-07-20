@@ -17,6 +17,7 @@
 #include "test/test_helpers.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
+#include "wallet/wallet_lock.h"
 #include "wallet/wallet.h"
 #include "keys/key.h"
 #include "support/cleanse.h"
@@ -391,6 +392,84 @@ static int test_seed_ops_leave_no_open_txn(void)
     return failures;
 }
 
+/* Runtime unlock/lock drives at-rest encryption via the wallet_lock register
+ * (not just the env var): unlock encrypts writes, a full unlock into a wallet
+ * reloads decrypted keys, lock wipes them, and a wrong passphrase fails
+ * cleanly with no partial reload. */
+static int test_runtime_unlock_lock_reload(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: runtime unlock encrypts, reloads, locks, wrong-pass clean") {
+        wallet_lock_reset_for_test();
+        set_passphrase(NULL);   /* drive purely through the runtime register */
+
+        /* Unlock caches the passphrase; subsequent writes encrypt at rest. */
+        ASSERT(wallet_lock_unlock(NULL, NULL, "runtime-pass").ok);
+
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        struct privkey k1, k2;
+        struct pubkey p1, p2;
+        make_test_key(&k1, &p1, 0x11);
+        make_test_key(&k2, &p2, 0x22);
+        ASSERT(wallet_sqlite_write_key(&ws, &p1, &k1));
+        ASSERT(wallet_sqlite_write_key(&ws, &p2, &k2));
+
+        /* On-disk bytes are a WKS1 envelope, never the raw scalar. */
+        sqlite3_stmt *st = NULL;
+        ASSERT(sqlite3_prepare_v2(db, "SELECT privkey FROM wallet_keys LIMIT 1",
+                                  -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW);
+        const void *blob = sqlite3_column_blob(st, 0);
+        int blen = sqlite3_column_bytes(st, 0);
+        ASSERT(blob && blen >= 4 && memcmp(blob, "WKS1", 4) == 0);
+        /* Portable "raw key absent" scan (avoids glibc-specific memmem). */
+        bool raw_present = false;
+        if (blob && blen >= 32) {
+            const unsigned char *b = blob;
+            for (int i = 0; i + 32 <= blen; i++)
+                if (memcmp(b + i, k1.vch, 32) == 0) { raw_present = true; break; }
+        }
+        ASSERT(!raw_present);
+        sqlite3_finalize(st);
+
+        /* Full unlock into a wallet reloads the decrypted keys. */
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        ASSERT(wallet_lock_unlock(w, &ws, "runtime-pass").ok);
+        ASSERT(w->keystore.num_keys == 2);
+        ASSERT(wallet_lock_encrypted_at_rest());
+        ASSERT(wallet_lock_is_unlocked());
+
+        /* Lock wipes resident spending keys and re-locks the register. */
+        wallet_lock_lock(w);
+        ASSERT(w->keystore.num_keys == 0);
+        ASSERT(!wallet_lock_is_unlocked());
+
+        /* Wrong passphrase: typed failure, no partial reload, still locked. */
+        struct zcl_result bad = wallet_lock_unlock(w, &ws, "WRONG");
+        ASSERT(!bad.ok);
+        ASSERT(bad.code == WLK_WRONG_PASS);
+        ASSERT(w->keystore.num_keys == 0);
+        ASSERT(!wallet_lock_is_unlocked());
+
+        /* Correct passphrase reloads again. */
+        ASSERT(wallet_lock_unlock(w, &ws, "runtime-pass").ok);
+        ASSERT(w->keystore.num_keys == 2);
+
+        wallet_sqlite_close(&ws);
+        free_wallet(w);
+        sqlite3_close(db);
+        wallet_lock_reset_for_test();
+        set_passphrase(NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_wallet_sqlite_enc(void);
@@ -398,6 +477,10 @@ int test_wallet_sqlite_enc(void);
 int test_wallet_sqlite_enc(void)
 {
     int failures = 0;
+
+    /* Start from a clean lock state so the env-var-driven tests below see
+     * ZCL_WALLET_PASSPHRASE as their effective passphrase source. */
+    wallet_lock_reset_for_test();
 
     failures += test_plaintext_roundtrip();
     failures += test_encrypted_roundtrip();
@@ -407,8 +490,10 @@ int test_wallet_sqlite_enc(void)
     failures += test_seed_encrypted_roundtrip();
     failures += test_seed_plaintext_still_works();
     failures += test_seed_ops_leave_no_open_txn();
+    failures += test_runtime_unlock_lock_reload();
 
-    /* Cleanup: ensure passphrase env is unset. */
+    /* Cleanup: ensure passphrase env is unset and the lock register is clean. */
     set_passphrase(NULL);
+    wallet_lock_reset_for_test();
     return failures;
 }

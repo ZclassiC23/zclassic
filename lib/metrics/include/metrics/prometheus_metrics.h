@@ -58,41 +58,6 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap);
 void metrics_prometheus_record_peer_offence(const char *kind);
 void metrics_prometheus_record_peer_ban(void);
 
-/* Aggregate query helpers. */
-uint64_t metrics_prometheus_peer_offences_total(void);
-uint64_t metrics_prometheus_peer_offences_for_kind(const char *kind);
-uint64_t metrics_prometheus_peer_bans_total(void);
-
-/* Render the peer-scoring summary as a small JSON object. Includes the live config
- * (threshold / ban_hours / decay_per_min) and the per-kind counters.
- * Returns bytes written (excluding NUL); silently truncates on a
- * too-small buffer the same way the Prometheus dump does. */
-size_t metrics_prometheus_peer_report_json(char *buf, size_t cap);
-
-/* ── HTTP RPC middleware report ───────────────────────────────
- *
- * Snapshots the live RPC middleware stats (from the global handle
- * registered by httpserver.c via rpc_http_middleware_set_global) and
- * renders a small JSON object. Shape:
- *
- *   {
- *     "config": { global_rps, global_burst, per_ip_rps, per_ip_burst,
- *                 auth_fail_threshold, ban_seconds },
- *     "stats":  { allowed, rate_limited_global, rate_limited_per_ip,
- *                 banned_rejected, bans_issued, auth_failures },
- *     "tracked_ips": N,
- *     "active_bans": N
- *   }
- *
- * When the RPC server hasn't started (or is in the middle of shutdown),
- * the global pointer is NULL and the report returns an empty-stats
- * envelope with `"rpc_server":"inactive"` set so operators can tell
- * the difference between "no traffic yet" and "no server at all".
- *
- * The Prometheus dump (metrics_prometheus_render_prometheus) also emits a
- * `zcl_rpc_*` block derived from the same snapshot. */
-size_t metrics_prometheus_rpc_report_json(char *buf, size_t cap);
-
 /* ── Consensus reject counters ────────────────────────────────
  *
  * Subscribed to EV_CONSENSUS_REJECT_TX and EV_CONSENSUS_REJECT_BLOCK
@@ -117,8 +82,6 @@ void metrics_prometheus_record_consensus_reject(const char *kind, const char *re
 
 /* Query helpers. */
 uint64_t metrics_prometheus_consensus_rejects_total(void);
-uint64_t metrics_prometheus_consensus_rejects_for_kind(const char *kind);
-uint64_t metrics_prometheus_consensus_rejects_tracked_reasons(void);
 
 /* JSON snapshot for consensus diagnostics.
  *

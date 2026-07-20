@@ -63,12 +63,6 @@ struct boot_scan_row {
     uint64_t value;
 };
 
-/* Copy up to `max` {name,value} rows into `rows`; returns the number copied. */
-size_t boot_scan_snapshot(struct boot_scan_row *rows, size_t max);
-
-/* Number of registered counters. */
-size_t boot_scan_count(void);
-
 /* Emit every counter as a flat JSON object { name: value, ... } into `out`.
  * This function calls json_set_object(out) itself. */
 struct json_value;

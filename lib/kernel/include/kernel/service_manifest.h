@@ -183,9 +183,6 @@ enum zcl_service_manifest_result {
     ZCL_SERVICE_MANIFEST_CATALOG_CYCLE,
 };
 
-const char *zcl_service_manifest_result_name(
-    enum zcl_service_manifest_result result);
-
 enum zcl_service_manifest_result zcl_service_manifest_validate_v1(
     const struct zcl_service_manifest_v1 *manifest);
 

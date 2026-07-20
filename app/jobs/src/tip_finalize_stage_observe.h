@@ -65,7 +65,6 @@ uint64_t tip_finalize_observe_utxo_count_diverged_total(void);
 uint64_t tip_finalize_observe_precondition_failed_total(void);
 uint64_t tip_finalize_observe_successor_pending_total(void);
 uint64_t tip_finalize_observe_header_witness_total(void);
-uint64_t tip_finalize_observe_total_work_added_high(void);
 uint64_t tip_finalize_observe_total_work_added_low(void);
 const char *tip_finalize_observe_last_blocked_reason(void);
 

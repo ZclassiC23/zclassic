@@ -39,6 +39,18 @@ void keystore_free(struct basic_keystore *ks)
     zcl_mutex_destroy(&ks->cs);
 }
 
+void keystore_wipe_private_keys(struct basic_keystore *ks)
+{
+    if (!ks) return;
+    zcl_mutex_lock(&ks->cs);
+    /* memory_cleanse every private-key slot then drop the count so a
+     * subsequent unlock/reload repopulates from scratch. Scripts and
+     * watch-only entries hold no spend secrets and are left intact. */
+    memory_cleanse(ks->keys, sizeof(ks->keys));
+    ks->num_keys = 0;
+    zcl_mutex_unlock(&ks->cs);
+}
+
 bool keystore_add_key(struct basic_keystore *ks, const struct privkey *key)
 {
     struct pubkey pk;

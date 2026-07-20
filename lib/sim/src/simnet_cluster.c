@@ -775,14 +775,6 @@ bool simnet_cluster_set_role(struct simnet_cluster *cluster, size_t node_id,
     return true;
 }
 
-enum simnet_node_role simnet_cluster_node_role(
-    const struct simnet_cluster *cluster, size_t node_id)
-{
-    if (!cluster || node_id >= cluster->node_count || !cluster->roles)
-        return SIMNET_ROLE_HONEST;
-    return cluster->roles[node_id];
-}
-
 uint64_t simnet_cluster_byzantine_rejected(
     const struct simnet_cluster *cluster)
 {
