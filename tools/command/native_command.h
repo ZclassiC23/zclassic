@@ -137,6 +137,13 @@ void zcl_native_handle_code_file(
 void zcl_native_handle_code_sym(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* code.capsule — one bounded document composing a symbol's identity, direct
+ * callers/callees, in-tree includes of its def file, and the command paths
+ * whose registered handler is defined there (config/command_handler_index.h
+ * join). Budget-aware self-shrinking: see native_code_command.c. */
+void zcl_native_handle_code_capsule(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_code_refs(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
