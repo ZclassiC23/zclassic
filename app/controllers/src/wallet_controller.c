@@ -7,6 +7,7 @@
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
 #include "controllers/wallet_rescan_controller.h"
+#include "wallet/wallet_lock.h"
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_sqlite *wdb,
                           struct tx_mempool *mempool,
@@ -203,6 +204,75 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_push_kv_int (&persistence, "corrupt_rows",      h.corrupt_rows);
     json_push_kv_str (&persistence, "last_error",        h.last_error);
     json_push_kv(result, "persistence", &persistence);
+
+    /* Encryption-at-rest lock posture (wallet_lock). Surfaces whether the
+     * wallet wraps keys at rest and whether it is currently unlocked, so an
+     * operator sees at a glance that a spend will be refused until unlock. */
+    struct json_value lock = {0};
+    json_init(&lock);
+    json_set_object(&lock);
+    wallet_lock_status_json(&lock);
+    json_push_kv(result, "lock", &lock);
+    return true;
+}
+
+/* ── Encryption-at-rest lock/unlock surface ──────────────────────────── *
+ *
+ * A locked wallet cannot spend even when sync-trust permits WALLET_SPEND.
+ * The passphrase is NEVER logged or echoed. */
+
+static bool rpc_walletlockstatus(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result, "walletlockstatus\n"
+        "Report wallet encryption-at-rest lock state (no secrets).");
+    json_set_object(result);
+    wallet_lock_status_json(result);
+    return true;
+}
+
+static bool rpc_walletlock(const struct json_value *params, bool help,
+                           struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_ctx();
+    (void)params;
+    RPC_HELP(help, result, "walletlock\n"
+        "Lock the wallet: scrub the loaded passphrase and wipe decrypted "
+        "spending keys from RAM. Spending is refused until walletunlock.");
+    ENSURE_WALLET(result);
+    wallet_lock_lock(ctx->wallet);
+    json_set_object(result);
+    wallet_lock_status_json(result);
+    return true;
+}
+
+static bool rpc_walletunlock(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_ctx();
+    RPC_HELP(help, result, "walletunlock \"passphrase\"\n"
+        "Unlock the wallet: cache the passphrase and reload decrypted keys.");
+    ENSURE_WALLET(result);
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *pass = rpc_require_str(&p, 0, "passphrase");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        /* Never echo the passphrase — the error body names only the arg. */
+        LOG_FAIL("wallet", "walletunlock: invalid params");
+    }
+
+    struct zcl_result r = wallet_lock_unlock(ctx->wallet, ctx->wallet_db, pass);
+    if (!r.ok) {
+        json_set_str(result, "Error: wallet unlock failed "
+                             "(wrong passphrase or no encrypted keys)");
+        LOG_FAIL("wallet", "walletunlock: code=%d", r.code);
+    }
+    json_set_object(result);
+    wallet_lock_status_json(result);
     return true;
 }
 
@@ -346,6 +416,19 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "sendtoaddress: invalid params"); }
 
     ENSURE_WALLET(result);
+
+    /* At-rest lock gate: a locked wallet cannot spend even when sync-trust
+     * would permit WALLET_SPEND (the passphrase is not loaded, so its keys
+     * are not decryptable/resident). Wallet-local only — no consensus effect. */
+    {
+        struct zcl_result lk = wallet_lock_spend_guard();
+        if (!lk.ok) {
+            json_set_str(result, "Error: wallet is locked — run "
+                                 "walletunlock before spending");
+            LOG_FAIL("wallet", "sendtoaddress: refused — wallet locked (code=%d)",
+                     lk.code);
+        }
+    }
 
     if (amount <= 0) {
         json_set_str(result, "Invalid amount");
@@ -614,6 +697,9 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "sendmany",             rpc_sendmany,             false },
         { "wallet", "createmultisig",       rpc_createmultisig,       false },
         { "wallet", "addmultisigaddress",   rpc_addmultisigaddress,   false },
+        { "wallet", "walletlock",           rpc_walletlock,           false },
+        { "wallet", "walletunlock",         rpc_walletunlock,         false },
+        { "wallet", "walletlockstatus",     rpc_walletlockstatus,     false },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

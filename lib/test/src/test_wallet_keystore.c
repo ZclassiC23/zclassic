@@ -4,6 +4,8 @@
 
 #include "test/test_helpers.h"
 #include "wallet/wallet_keystore.h"
+#include "wallet/wallet_lock.h"
+#include "wallet/keystore.h"   /* basic_keystore + keystore_wipe_private_keys */
 #include "config/boot.h"   /* wallet_at_rest_boot_decision + operator lanes */
 
 #include <stdio.h>
@@ -421,6 +423,123 @@ static int test_at_rest_boot_decision(void)
     return failures;
 }
 
+/* ── Wallet lock/unlock (register-only surface) ──────────────── */
+
+static int test_wallet_lock_register(void)
+{
+    int failures = 0;
+
+    /* The lock state reads ZCL_WALLET_PASSPHRASE for its env fallback;
+     * snapshot + clear so the test is environment-independent. */
+    const char *saved_pass = getenv("ZCL_WALLET_PASSPHRASE");
+    char *pass_copy = saved_pass ? strdup(saved_pass) : NULL;
+    unsetenv("ZCL_WALLET_PASSPHRASE");
+
+    TEST("wallet_lock: register-only unlock/lock, guard, env fallback, bad input") {
+        /* Fresh: no at-rest encryption seen -> nothing to lock. */
+        wallet_lock_reset_for_test();
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+        ASSERT(!wallet_lock_encrypted_at_rest());
+        ASSERT(wallet_lock_is_unlocked());
+        ASSERT(wallet_lock_spend_guard().ok);
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+
+        /* Once the wallet is known encrypted, no passphrase => locked. */
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(wallet_lock_encrypted_at_rest());
+        ASSERT(!wallet_lock_is_unlocked());
+        ASSERT(!wallet_lock_spend_guard().ok);
+        ASSERT(wallet_lock_spend_guard().code == WLK_LOCKED);
+
+        /* Register-only unlock (no wallet/ws) accepts a non-empty pass. */
+        struct zcl_result u = wallet_lock_unlock(NULL, NULL, k_passphrase);
+        ASSERT(u.ok);
+        const char *eff = wallet_lock_effective_passphrase();
+        ASSERT(eff != NULL && strcmp(eff, k_passphrase) == 0);
+        ASSERT(wallet_lock_is_unlocked());
+        ASSERT(wallet_lock_spend_guard().ok);
+
+        /* Lock scrubs it: encrypted + no pass => locked again. */
+        wallet_lock_lock(NULL);
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_is_unlocked());
+        ASSERT(!wallet_lock_spend_guard().ok);
+
+        /* Env passphrase auto-unlocks (backward compat); explicit lock wins. */
+        wallet_lock_reset_for_test();
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(!wallet_lock_is_unlocked());
+        setenv("ZCL_WALLET_PASSPHRASE", "env-secret", 1);
+        eff = wallet_lock_effective_passphrase();
+        ASSERT(eff != NULL && strcmp(eff, "env-secret") == 0);
+        ASSERT(wallet_lock_is_unlocked());
+        wallet_lock_lock(NULL);
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_is_unlocked());
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+
+        /* Empty / NULL passphrase rejected cleanly with typed codes. */
+        wallet_lock_reset_for_test();
+        ASSERT(!wallet_lock_unlock(NULL, NULL, NULL).ok);
+        ASSERT(wallet_lock_unlock(NULL, NULL, NULL).code == WLK_NULL_ARG);
+        ASSERT(!wallet_lock_unlock(NULL, NULL, "").ok);
+        ASSERT(wallet_lock_unlock(NULL, NULL, "").code == WLK_EMPTY_PASS);
+        PASS();
+    } _test_next:;
+
+    wallet_lock_reset_for_test();
+    if (pass_copy) setenv("ZCL_WALLET_PASSPHRASE", pass_copy, 1);
+    else           unsetenv("ZCL_WALLET_PASSPHRASE");
+    free(pass_copy);
+    return failures;
+}
+
+/* ── Keystore secure-erase (deliverable 2/5) ─────────────────── */
+
+/* Portable byte-substring search (avoids the glibc-specific memmem). */
+static bool bytes_contain(const void *hay, size_t hlen,
+                          const void *needle, size_t nlen)
+{
+    if (nlen == 0 || hlen < nlen) return false;
+    const unsigned char *h = hay, *n = needle;
+    for (size_t i = 0; i + nlen <= hlen; i++)
+        if (memcmp(h + i, n, nlen) == 0) return true;
+    return false;
+}
+
+static int test_keystore_secure_erase(void)
+{
+    int failures = 0;
+    TEST("keystore: wipe leaves no key bytes in the slot array") {
+        struct basic_keystore ks;
+        keystore_init(&ks);
+
+        /* A deterministic valid privkey (the secp256k1 order is large; any
+         * 32-byte value with the high bit patterns below is a valid scalar). */
+        struct privkey pk;
+        privkey_init(&pk);
+        memcpy(pk.vch, k_secret_key, 32);
+        pk.fValid = true;
+        pk.fCompressed = true;
+
+        bool added = keystore_add_key(&ks, &pk);
+        ASSERT(added);
+        ASSERT(ks.num_keys == 1);
+        /* The secret is resident somewhere in the slot array. */
+        ASSERT(bytes_contain(&ks.keys, sizeof(ks.keys),
+                             k_secret_key, sizeof(k_secret_key)));
+
+        keystore_wipe_private_keys(&ks);
+        ASSERT(ks.num_keys == 0);
+        /* Best-effort: the raw key bytes are gone from the slot array. */
+        ASSERT(!bytes_contain(&ks.keys, sizeof(ks.keys),
+                              k_secret_key, sizeof(k_secret_key)));
+        keystore_free(&ks);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_wallet_keystore(void);
@@ -445,6 +564,8 @@ int test_wallet_keystore(void)
     failures += test_empty_plaintext();
     failures += test_long_plaintext();
     failures += test_null_passphrase();
+    failures += test_wallet_lock_register();
+    failures += test_keystore_secure_erase();
 
     return failures;
 }

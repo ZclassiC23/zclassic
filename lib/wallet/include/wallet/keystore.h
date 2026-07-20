@@ -69,6 +69,11 @@ bool keystore_add_key(struct basic_keystore *ks, const struct privkey *key);
  * rollback when persistence fails after keystore mutation. */
 bool keystore_remove_key(struct basic_keystore *ks,
                           const struct key_id *keyid);
+/* memory_cleanse every resident private key and reset the count to zero,
+ * keeping ks initialised (mutex intact). Used by the wallet lock surface
+ * (wallet_lock_lock) to make decrypted spend keys non-resident without
+ * tearing down the keystore. ks may be NULL (no-op). Takes ks->cs. */
+void keystore_wipe_private_keys(struct basic_keystore *ks);
 /* Return true if a live private-key entry matches keyid. Read-only,
  * does NOT take ks->cs. */
 bool keystore_have_key(const struct basic_keystore *ks,
