@@ -28,9 +28,7 @@ static int64_t mono_us(void)
 
 static int64_t now_unix(void)
 {
-    struct timespec ts;
-    platform_time_realtime_timespec(&ts);
-    return (int64_t)ts.tv_sec;
+    return platform_time_wall_unix();
 }
 
 /* Loopback check: 127.0.0.0/8 in network byte order.  ip_be is in

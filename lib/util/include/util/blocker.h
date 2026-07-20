@@ -175,6 +175,24 @@ bool blocker_init(struct blocker_record *out,
  *  -1  — error (bad input, cap exhausted) */
 int blocker_set(const struct blocker_record *r);
 
+/* Fire-and-forget naming helper for the common "no cheap rung applies —
+ * escalate to a named, retry-forever dependency" shape used by several
+ * recovery-fallback call sites (sticky_escalator, rewind_driver,
+ * recovery_coordinator). Builds a BLOCKER_DEPENDENCY record via
+ * `blocker_init`, forces `retry_budget = -1` (unbounded — never
+ * auto-expired), and calls `blocker_set`. Silently no-ops if `blocker_init`
+ * rejects the id/owner (already logged via LOG_FAIL there). Not for
+ * BLOCKER_PERMANENT page-once call sites — those have a different shape. */
+static inline void blocker_name_dependency(const char *id, const char *owner,
+                                           const char *reason)
+{
+    struct blocker_record b;
+    if (blocker_init(&b, id, owner, BLOCKER_DEPENDENCY, reason)) {
+        b.retry_budget = -1;
+        (void)blocker_set(&b);
+    }
+}
+
 /* Additive variant of blocker_set: same storage/rate-limit/return contract,
  * plus records a root-cause edge. `caused_by` is the id of the blocker
  * judged to be the root cause; NULL or "" means no known cause (identical

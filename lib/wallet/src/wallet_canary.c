@@ -23,7 +23,7 @@ static struct wallet_canary_status g_status = { 0 };
 
 static int64_t now_unix(void)
 {
-    return (int64_t)platform_time_wall_time_t();
+    return platform_time_wall_unix();
 }
 
 static void set_status(bool ok, int code, int64_t now, const char *msg)
