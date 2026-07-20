@@ -25,18 +25,12 @@
 
 #include "conditions/condition_registry.h"
 #include "framework/condition.h"
-#include "jobs/reducer_frontier.h"
-#include "jobs/stage_rederive_range.h"
-#include "services/sync_monitor.h"
-#include "storage/progress_store.h"
+#include "jobs/rewind_driver.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "validation/chain_linkage_check.h"
-#include "validation/chainstate.h"
-#include "validation/main_state.h"
 #include "event/event.h"
 
-#include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -48,8 +42,13 @@ static bool detect_tip_label_divergence(void)
 
 static enum condition_remedy_result remedy_tip_label_divergence(void)
 {
-    /* WINDOW_REBUILD TRIGGER SEAM: re-derive [refuse_from_h, tip] and
-     * release the linkage holds so the forward fold re-checks. */
+    /* WINDOW_REBUILD TRIGGER SEAM, routed through the ONE generic recovery
+     * driver: rewind to the NEAREST SELF-VERIFIED base at or below the linkage
+     * hold's refuse_from height, re-derive forward to H* (O(delta) from a
+     * sovereign rung, never a full-chain redo), then release the linkage holds
+     * so the forward fold re-runs the O(1) linkage/coinbase-label checks. The
+     * driver owns base selection, the LCC-safe rewind, and the escalate-once
+     * naming; this remedy owns only the trigger-specific hold release. */
     int refuse_from = chain_linkage_hold_refuse_from();
     if (refuse_from < 0) {
         /* The blocker is present but no hold latch carries a refuse_from height
@@ -65,72 +64,51 @@ static enum condition_remedy_result remedy_tip_label_divergence(void)
         return COND_REMEDY_FAILED;
     }
 
-    sqlite3 *db = progress_store_db();
-    struct main_state *ms = sync_monitor_main_state();
-    if (!db || !ms) {
-        /* NOT LOG_FAIL: that macro returns and would be read as a value; here
-         * we must return the typed FAILED so the engine escalates. */
+    struct rewind_driver_result rr = {0};
+    if (!rewind_to_nearest_self_verified_base(
+            (int32_t)refuse_from, "tip_label_divergence",
+            "tip_label_divergence.rewind_refused", &rr)) {
+        /* Hard store error (progress db / H* unavailable). NOT LOG_FAIL: that
+         * macro returns and would be read as a value; return the typed FAILED
+         * so the engine escalates. */
         LOG_WARN("tip_label_divergence",
-                 "[tip_label_divergence] window_rebuild: %s unavailable — "
-                 "cannot re-derive [%d, tip]",
-                 db ? "main_state" : "progress db", refuse_from);
+                 "[tip_label_divergence] window_rebuild: driver hit a store "
+                 "error re-deriving from refuse_from=%d — escalating",
+                 refuse_from);
+        return COND_REMEDY_FAILED;
+    }
+    if (rr.escalated) {
+        /* LCC refusal or no reachable self-verified base — the driver already
+         * named the typed blocker. This class needs a refold-from-anchor (or
+         * operator); the in-place re-derive cannot open the window. */
+        LOG_WARN("tip_label_divergence",
+                 "[tip_label_divergence] window_rebuild: driver escalated "
+                 "(refuse_from=%d base=%s@%d hstar=%d) — refold-from-anchor / "
+                 "operator", refuse_from, rr.base_kind, (int)rr.base_height,
+                 (int)rr.hstar);
         return COND_REMEDY_FAILED;
     }
 
-    int32_t tip = reducer_frontier_provable_tip_cached();
-    if (tip <= refuse_from)
-        tip = (int32_t)active_chain_height(&ms->chain_active);
-    if (tip < refuse_from) {
-        LOG_WARN("tip_label_divergence",
-                 "[tip_label_divergence] window_rebuild: tip=%d below "
-                 "refuse_from=%d — no range to re-derive, escalating",
-                 (int)tip, refuse_from);
-        return COND_REMEDY_FAILED;
-    }
-
-    struct stage_rederive_range_result rr = {0};
-    if (!stage_rederive_range(db, ms, refuse_from, (int)tip, &rr)) {
-        LOG_WARN("tip_label_divergence",
-                 "[tip_label_divergence] window_rebuild: stage_rederive_range "
-                 "[%d, %d] hit a store error — escalating", refuse_from,
-                 (int)tip);
-        return COND_REMEDY_FAILED;
-    }
-    if (rr.refused_no_inverse) {
-        /* LCC refusal: an applied height in the range has no crypto-vetted
-         * inverse delta to rewind coins. This class needs a refold-from-anchor
-         * (or operator); the in-place re-derive cannot open the window. */
-        LOG_WARN("tip_label_divergence",
-                 "[tip_label_divergence] window_rebuild: LCC refused re-derive "
-                 "[%d, %d] (applied height lacks inverse delta) — escalating to "
-                 "refold-from-anchor/operator", refuse_from, (int)tip);
-        return COND_REMEDY_FAILED;
-    }
-    if (!rr.ok) {
-        LOG_WARN("tip_label_divergence",
-                 "[tip_label_divergence] window_rebuild: re-derive [%d, %d] did "
-                 "not commit — escalating", refuse_from, (int)tip);
-        return COND_REMEDY_FAILED;
-    }
-
-    /* Rewind committed: the stale [refuse_from, tip] suffix is scheduled for
-     * re-derivation from PoW-verified on-disk bodies. Release the linkage holds
-     * so the forward fold re-connects those blocks and re-runs the O(1)
-     * linkage/coinbase-label checks. A genuinely repaired label stays clear; a
-     * persistent divergence re-raises the hold+blocker at the first offending
-     * connect, which the witness reads as still-present (UNWITNESSED) — the
-     * engine escalates. */
+    /* Rewind committed (or nothing to do — the self-verified base already sits
+     * at/above H*): release the linkage holds so the forward fold re-connects
+     * those blocks and re-runs the O(1) linkage/coinbase-label checks. A
+     * genuinely repaired label stays clear; a persistent divergence re-raises
+     * the hold+blocker at the first offending connect, which the witness reads
+     * as still-present (UNWITNESSED) — the engine escalates. */
     LOG_WARN("tip_label_divergence",
-             "[tip_label_divergence] window_rebuild: re-derived [%d, %d] "
-             "rewound=%d cursors=%d coins_rewound=%d — releasing linkage holds "
-             "for the forward re-fold re-check", refuse_from, (int)tip,
-             (int)rr.rewound, rr.cursors_rewound, (int)rr.coins_rewound);
+             "[tip_label_divergence] window_rebuild: re-derived from "
+             "self-verified base %s@%d to H*=%d (refuse_from=%d rewound=%d "
+             "coins_rewound=%d) — releasing linkage holds for the forward "
+             "re-fold re-check", rr.base_kind, (int)rr.base_height,
+             (int)rr.hstar, refuse_from, (int)rr.rewound,
+             (int)rr.coins_rewound);
     chain_linkage_hold_clear("linkage");
     chain_linkage_hold_clear("coinbase_label");
     event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=tip-label-window-rebuild from=%d to=%d rewound=%d "
-                "coins_rewound=%d", refuse_from, (int)tip, (int)rr.rewound,
-                (int)rr.coins_rewound);
+                "action=tip-label-window-rebuild base=%s base_h=%d hstar=%d "
+                "refuse_from=%d rewound=%d coins_rewound=%d", rr.base_kind,
+                (int)rr.base_height, (int)rr.hstar, refuse_from,
+                (int)rr.rewound, (int)rr.coins_rewound);
     return COND_REMEDY_OK;
 }
 
