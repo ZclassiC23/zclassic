@@ -23,10 +23,13 @@
 #include "command/native_command.h"
 #include "controllers/diagnostics_internal.h"
 #include "net/rom_fetch.h"
+#include "net/rom_journal.h"      /* pre-download reused-bytes accounting */
 #include "net/file_service.h"     /* FS_PORT default */
 #include "net/rom_seed.h"         /* ROM_SEED_* bounds */
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +62,70 @@ static const char *rfc_input(const struct zcl_command_request *request,
 static bool rfc_parse_hex32(const char *hex, uint8_t out[32])
 {
     return hex && strlen(hex) == 64 && ParseHex(hex, out, 32) == 32;
+}
+
+/* Mirrors the filename-from-digest fallback the download drivers apply
+ * internally (rom_fetch.c) when the operator gave no `filename` — needed
+ * here too so the pre-download journal accounting below looks at the exact
+ * same `.part.journal` path the driver will open. Idempotent: a no-op if
+ * `m->filename` is already set. */
+static void rfc_derive_filename(struct rom_fetch_manifest *m)
+{
+    if (m->filename[0])
+        return;
+    char hex[17];
+    HexStr(m->chunk_root, 8, false, hex, sizeof(hex));
+    snprintf(m->filename, sizeof(m->filename), "rom-artifact-%s", hex);
+}
+
+/* Best-effort pre-download accounting: how much of this artifact is already
+ * durable + digest-verified in a prior download's resume journal (a set
+ * journal bit always implies verified data — net/rom_journal.h). Opening the
+ * journal here is side-effect-free with respect to the download that follows:
+ * same (chunk_root, whole_sha3, chunk_size, num_chunks) identity, so the
+ * driver's own rom_journal_open() reads back exactly what this left behind
+ * (or, on a genuinely stale/mismatched journal, both calls independently
+ * discard-and-recreate the same way). Returns false (0/0) if there is no
+ * journal yet or it could not be opened — never fatal to the caller. */
+static void rfc_journal_reused(const char *out_dir,
+                               const struct rom_fetch_manifest *m,
+                               uint32_t *out_chunks, uint64_t *out_bytes)
+{
+    *out_chunks = 0;
+    *out_bytes = 0;
+
+    char part_path[1200];
+    int pn = snprintf(part_path, sizeof(part_path), "%s/%s%s",
+                      out_dir, m->filename, ROM_FETCH_PART_SUFFIX);
+    if (pn <= 0 || (size_t)pn >= sizeof(part_path))
+        return;
+    char jrnl_path[1264];
+    pn = snprintf(jrnl_path, sizeof(jrnl_path), "%s.journal", part_path);
+    if (pn <= 0 || (size_t)pn >= sizeof(jrnl_path))
+        return;
+
+    struct rom_journal *j = rom_journal_open(jrnl_path, m->chunk_root,
+                                             m->whole_sha3, m->chunk_size,
+                                             m->num_chunks);
+    if (!j)
+        return;
+
+    uint32_t done = 0;
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < m->num_chunks; i++) {
+        if (!rom_journal_is_done(j, i))
+            continue;
+        uint64_t offset = (uint64_t)i * m->chunk_size;
+        uint32_t want = m->chunk_size;
+        uint64_t remaining = m->size_bytes - offset;
+        if (remaining < want)
+            want = (uint32_t)remaining;
+        done++;
+        bytes += want;
+    }
+    rom_journal_close(j);
+    *out_chunks = done;
+    *out_bytes = bytes;
 }
 
 void zcl_native_handle_rom_fetch_bundle(
@@ -172,15 +239,24 @@ void zcl_native_handle_rom_fetch_bundle(
                                "manifest", RFC_SUBSYS);
         return;
     }
+    rfc_derive_filename(&m);
 
-    /* Synchronous download + whole-file content proof. Blocks this command
-     * worker for the duration (minutes for a full bundle over a slow peer);
-     * a background/scheduling engine is the follow-up lane.
+    /* Synchronous download + content proof. Blocks this command worker for
+     * the duration (minutes for a full bundle over a slow peer); a
+     * background/scheduling engine is the follow-up lane.
      * `peer` may be a comma-separated host list (all sharing `port`): a
-     * single peer uses the sequential driver, several peers use the
-     * parallel multi-seeder scheduler (chunks round-robin across peers,
-     * per-peer retry before a chunk is declared failed). */
+     * single peer prefers the per-chunk-verified manifest path (falling back
+     * to the whole-file-only driver if the seeder doesn't serve a manifest —
+     * a legacy seeder, never an offence); several peers use the parallel
+     * multi-seeder scheduler (round-robin chunk retry across peers), which
+     * has no per-chunk-verified multi-seeder variant yet so it always takes
+     * the whole-file path. */
     bool fetched = false;
+    bool fallback_used = false;
+    bool used_manifest_path = false;
+    uint32_t chunks_verified = 0;
+    uint32_t reused_chunks = 0;
+    uint64_t reused_bytes = 0;
     if (strchr(peer, ',')) {
         struct rom_fetch_peer peers[4];
         size_t npeers = 0;
@@ -213,8 +289,31 @@ void zcl_native_handle_rom_fetch_bundle(
             workers = ROM_FETCH_MAX_WORKERS;
         fetched = rom_fetch_download_parallel(peers, npeers, &m, out_dir,
                                               workers, NULL, NULL);
+        fallback_used = true; /* whole-file-only path, always */
     } else {
-        fetched = rom_fetch_download(peer, port, &m, out_dir, NULL, NULL);
+        uint8_t (*chunk_sha3)[32] = zcl_malloc(
+            (size_t)ROM_SEED_MAX_CHUNKS * 32, "rfc_manifest_chunk_sha3");
+        uint32_t manifest_chunks = 0;
+        bool have_manifest = chunk_sha3 &&
+            rom_fetch_get_manifest(peer, port, m.chunk_root, chunk_sha3,
+                                   ROM_SEED_MAX_CHUNKS, &manifest_chunks);
+        if (have_manifest && manifest_chunks == m.num_chunks) {
+            rfc_journal_reused(out_dir, &m, &reused_chunks, &reused_bytes);
+            fetched = rom_fetch_download_verified(peer, port, &m, chunk_sha3,
+                                                  manifest_chunks, out_dir,
+                                                  NULL, NULL);
+            used_manifest_path = true;
+            chunks_verified = manifest_chunks;
+        } else {
+            if (have_manifest)
+                LOG_WARN(RFC_SUBSYS, "manifest chunk count %u != committed "
+                         "num_chunks %u from %s:%u — falling back to "
+                         "whole-file verify", manifest_chunks, m.num_chunks,
+                         peer, (unsigned)port);
+            fallback_used = true;
+            fetched = rom_fetch_download(peer, port, &m, out_dir, NULL, NULL);
+        }
+        free(chunk_sha3);
     }
     if (!fetched) {
         struct rom_fetch_status st;
@@ -247,6 +346,20 @@ void zcl_native_handle_rom_fetch_bundle(
     char root_hex[65];
     HexStr(m.chunk_root, 32, false, root_hex, sizeof(root_hex));
     (void)json_push_kv_str(&reply->data, "chunk_root", root_hex);
+
+    /* Per-chunk protocol observability (lane 2C/2D, wf/artifact-protocol). */
+    (void)json_push_kv_bool(&reply->data, "used_manifest_path",
+                            used_manifest_path);
+    (void)json_push_kv_bool(&reply->data, "fallback_used", fallback_used);
+    if (used_manifest_path) {
+        (void)json_push_kv_int(&reply->data, "chunks_verified",
+                               (int64_t)chunks_verified);
+        (void)json_push_kv_int(&reply->data, "bytes_reused_from_journal",
+                               (int64_t)reused_bytes);
+        (void)json_push_kv_int(&reply->data, "chunks_reused_from_journal",
+                               (int64_t)reused_chunks);
+    }
+
     (void)json_push_kv_str(&reply->data, "next",
                            "reboot with -install-consensus-bundle=<path> to "
                            "activate through the unified installer");

@@ -802,6 +802,7 @@ bool rom_seed_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
+    json_set_object(out);
 
     json_push_kv_bool(out, "enabled", atomic_load(&g_enabled));
     json_push_kv_int(out, "max_inflight_per_peer",
@@ -857,14 +858,35 @@ bool rom_seed_dump_state_json(struct json_value *out, const char *key)
 
 /* ── WF2 artifact-protocol: per-chunk manifest serialization ──────────
  *
- * STEP-0 STATUS: contracts-commit stub. Returns 0 (nothing serialized) until
- * lane 2A lands the real [u32 version][u32 num_chunks][num_chunks × 32B]
- * serializer over a's chunk_sha3[]. No caller invokes this yet. */
+ * Pure serializer over a's per-chunk digests, which registration already
+ * derived from the bytes on disk (a->chunk_sha3). Layout, all little-endian:
+ *   [u32 version=1][u32 num_chunks][num_chunks × 32B chunk_sha3]
+ * bounded by ROM_SEED_MANIFEST_BLOB_MAX. Returns the byte length, or 0 on NULL
+ * args / an out-of-range chunk count / insufficient capacity (0 == "no
+ * manifest", the client's fall-back-to-whole-file signal). */
 size_t rom_seed_manifest_blob(const struct rom_artifact *a,
                               uint8_t *buf, size_t cap)
 {
     if (!a || !buf || cap == 0)
         return 0;
-    /* Not yet implemented (lane 2A). Fail closed: 0 == "no manifest". */
-    return 0;
+    if (a->num_chunks == 0 || a->num_chunks > ROM_SEED_MAX_CHUNKS)
+        return 0;
+
+    size_t need = 8u + (size_t)a->num_chunks * 32u;
+    if (need > cap || need > ROM_SEED_MANIFEST_BLOB_MAX)
+        return 0;
+
+    uint32_t version = 1u;
+    uint32_t nc = a->num_chunks;
+    buf[0] = (uint8_t)(version);
+    buf[1] = (uint8_t)(version >> 8);
+    buf[2] = (uint8_t)(version >> 16);
+    buf[3] = (uint8_t)(version >> 24);
+    buf[4] = (uint8_t)(nc);
+    buf[5] = (uint8_t)(nc >> 8);
+    buf[6] = (uint8_t)(nc >> 16);
+    buf[7] = (uint8_t)(nc >> 24);
+    for (uint32_t i = 0; i < nc; i++)
+        memcpy(buf + 8u + (size_t)i * 32u, a->chunk_sha3[i], 32);
+    return need;
 }

@@ -3229,7 +3229,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest
 FUZZ_CI_TIME ?= 60
 FUZZ_CI_WALL_TIME ?= 120
 
@@ -3248,7 +3248,7 @@ check-fuzz-ci-tools: check-fuzz-toolchain
 
 fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest
 fuzz_block: $(BIN_DIR)/fuzz_block
 fuzz_script: $(BIN_DIR)/fuzz_script
 fuzz_p2p: $(BIN_DIR)/fuzz_p2p
@@ -3256,6 +3256,7 @@ fuzz_http: $(BIN_DIR)/fuzz_http
 fuzz_compactblock: $(BIN_DIR)/fuzz_compactblock
 fuzz_snapshot: $(BIN_DIR)/fuzz_snapshot
 fuzz_tx_bundle: $(BIN_DIR)/fuzz_tx_bundle
+fuzz_rom_manifest: $(BIN_DIR)/fuzz_rom_manifest
 
 $(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
@@ -3325,6 +3326,16 @@ $(BIN_DIR)/fuzz_tx_bundle: tools/fuzz/fuzz_tx_bundle.c $(TMPL_GEN) $(ALL_SRCS)
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_tx_bundle.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+$(BIN_DIR)/fuzz_rom_manifest: tools/fuzz/fuzz_rom_manifest.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_rom_manifest: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_rom_manifest.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
@@ -4094,7 +4105,7 @@ clean:
 	    shadow_replay_proof wallet_check spec_zcl session bot wallet_dump \
 	    wallet_sim wallet-wireframes mock_rpc export_snapshot bench_fresh_sync \
 	    fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock \
-	    fuzz_snapshot fuzz_tx_bundle test_zcl_cov
+	    fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest test_zcl_cov
 	rm -f tools/gen_templates tools/inspect_html tools/wal_checkpoint \
 	    tools/check_observability_pairing tools/gen_sha3_windows \
 	    tools/gen_utxo_root_ladder tools/soak/soak_runner

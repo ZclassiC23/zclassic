@@ -990,6 +990,62 @@ static void fs_serve_rom_chunk(struct fs_session *session,
     rom_seed_peer_release(client_ip);
 }
 
+/* Domain-separation tag bound into a ROM manifest reply's MAC. Reusing
+ * fs_send_chunk_fast (which computes MAC = SHA3(key || counter || <32B> ||
+ * data)) with this constant in the 32-byte slot keeps the manifest reply on
+ * the EXACT same wire+MAC scheme as a chunk reply while making a manifest blob
+ * un-confusable with a chunk payload. The client re-derives the identical MAC
+ * with the same tag (rom_fetch_get_manifest). "RMF" + zero padding. */
+static const uint8_t FS_ROM_MANIFEST_MAC_TAG[32] = { 'R', 'M', 'F' };
+
+/* Serve one FREE ROM per-chunk manifest ("RMF" request). Rides the same
+ * fs_session transport and the same rom_seed per-peer concurrency + byte-rate
+ * caps as a chunk serve — never the PoW/ALL gate. Reply is
+ * [4-byte size LE][blob][32-byte MAC] with the blob =
+ * rom_seed_manifest_blob(). On any refusal (seeding disabled, unknown root,
+ * budget/cap tripped, serialize failure) it sends FS_DONE — identical offence
+ * handling to a malformed/unknown ROM chunk request (a legacy client reads the
+ * FS_DONE as "no manifest" and falls back to whole-file verification). */
+static void fs_serve_rom_manifest(struct fs_session *session,
+                                  const uint8_t client_ip[16],
+                                  const uint8_t root[32])
+{
+    struct rom_artifact art;
+    if (!rom_seed_enabled() || !rom_seed_find_by_root(root, &art)) {
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!fs_conn_budget_ok(session->bytes_sent, session->start_time,
+                           (int64_t)platform_time_wall_time_t())) {
+        fs_gate_log_throttled("rom_manifest_conn_budget_exceeded", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!rom_seed_peer_acquire(client_ip)) {
+        fs_gate_log_throttled("rom_manifest_concurrency_refused", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+
+    uint8_t blob[ROM_SEED_MANIFEST_BLOB_MAX];
+    size_t blen = rom_seed_manifest_blob(&art, blob, sizeof(blob));
+    if (blen == 0) {
+        rom_seed_peer_release(client_ip);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!rom_seed_rate_charge(client_ip, blen,
+                              (int64_t)platform_time_wall_time_t())) {
+        rom_seed_peer_release(client_ip);
+        fs_gate_log_throttled("rom_manifest_rate_exceeded", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    (void)fs_send_chunk_fast(session, blob, (uint32_t)blen,
+                             FS_ROM_MANIFEST_MAC_TAG);
+    rom_seed_peer_release(client_ip);
+}
+
 /* Per-client handler run on a bounded worker pool. */
 static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
 {
@@ -1039,6 +1095,13 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
             uint32_t rom_idx = 0;
             if (fs_parse_rom_request(payload, plen, rom_root, &rom_idx)) {
                 fs_serve_rom_chunk(&session, client_ip, rom_root, rom_idx);
+                continue;
+            }
+            /* Per-chunk manifest request (WF2 artifact-protocol) — sibling of
+             * the ROM chunk request; served free under the same rom_seed caps. */
+            uint8_t rmf_root[32];
+            if (fs_parse_rom_manifest_request(payload, plen, rmf_root)) {
+                fs_serve_rom_manifest(&session, client_ip, rmf_root);
                 continue;
             }
         }
