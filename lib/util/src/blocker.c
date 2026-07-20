@@ -31,6 +31,17 @@ struct blocker_slot {
     uint32_t                fire_count;
     char                    reason[BLOCKER_REASON_MAX];
     bool                    escape_fired;        /* edge-triggered guard */
+    int64_t                 last_fire_us;        /* every blocker_set touch,
+                                                   * incl. rate-limited dups;
+                                                   * TTL retirement clock. */
+    int64_t                 ttl_us;              /* TRANSIENT-only; 0 =
+                                                   * use the module default. */
+    int64_t                 escape_span_us;      /* original relative
+                                                   * escape_deadline_secs, in
+                                                   * us; used to re-arm. */
+    int32_t                 rearm_count;         /* deadline re-arm attempts
+                                                   * (rule 2), bounded. */
+    bool                    escalated;           /* rule-2 budget exhausted */
 };
 
 struct escape_entry {
@@ -50,6 +61,12 @@ static _Atomic bool      g_module_inited = false;
 static _Atomic int       g_dispatched_count = 0;  /* test diagnostic */
 static _Atomic int64_t   g_test_clock_us = 0;     /* 0 = use real clock */
 static _Atomic uint64_t  g_generation = 0;
+
+/* Lifecycle policy bookkeeping (rule 1: TTL retirement). Witnessed, never
+ * a silent delete: a monotonic total plus the most recent instance. Both
+ * guarded by g_lock (retirement always happens under lock, in the sweep). */
+static _Atomic uint32_t  g_transient_retired_total = 0;
+static struct blocker_retirement_info g_last_retired;
 
 /* ── Time ──────────────────────────────────────────────────────────── */
 
@@ -131,6 +148,9 @@ int blocker_set(const struct blocker_record *r)
     if (idx >= 0) {
         struct blocker_slot *s = &g_slots[idx];
         s->fire_count++;
+        /* Any touch — rate-limited or not — is a re-fire for TTL purposes
+         * (rule 1): the caller is telling us the condition is still live. */
+        s->last_fire_us = now;
         atomic_fetch_add(&g_generation, 1);
         /* Rate limit: same id within rate-limit window → suppress field
          * update (still counts the fire). */
@@ -143,14 +163,22 @@ int blocker_set(const struct blocker_record *r)
         /* Refresh fields except since_us (preserves age semantics). */
         s->class = r->class;
         s->retry_budget = r->retry_budget;
+        s->ttl_us = r->transient_ttl_secs * 1000000;
         snprintf(s->owner_subsystem, BLOCKER_OWNER_MAX, "%s", r->owner_subsystem);
         snprintf(s->escape_action, BLOCKER_ACTION_MAX, "%s", r->escape_action);
         snprintf(s->reason, BLOCKER_REASON_MAX, "%s", r->reason);
         if (r->escape_deadline_secs > 0) {
             s->escape_deadline_us = s->since_us + r->escape_deadline_secs * 1000000;
+            s->escape_span_us = r->escape_deadline_secs * 1000000;
         } else {
             s->escape_deadline_us = 0;
+            s->escape_span_us = 0;
         }
+        /* A genuine (non-rate-limited) refresh is a fresh occurrence of the
+         * condition — reset rule-2 escalation state so it re-evaluates the
+         * new deadline horizon rather than carrying a stale escalation. */
+        s->rearm_count = 0;
+        s->escalated = false;
         pthread_mutex_unlock(&g_lock);
         return 0;
     }
@@ -172,11 +200,18 @@ int blocker_set(const struct blocker_record *r)
     s->retry_budget = r->retry_budget;
     s->since_us = now;
     s->last_set_us = now;
+    s->last_fire_us = now;
+    s->ttl_us = r->transient_ttl_secs * 1000000;
     s->fire_count = 1;
     s->escape_fired = false;
     s->escape_deadline_us = (r->escape_deadline_secs > 0)
         ? now + r->escape_deadline_secs * 1000000
         : 0;
+    s->escape_span_us = (r->escape_deadline_secs > 0)
+        ? r->escape_deadline_secs * 1000000
+        : 0;
+    s->rearm_count = 0;
+    s->escalated = false;
     atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
     return 0;
@@ -245,6 +280,8 @@ static void fill_snapshot(struct blocker_snapshot *out,
     out->retry_budget = s->retry_budget;
     out->fire_count = s->fire_count;
     memcpy(out->reason, s->reason, BLOCKER_REASON_MAX);
+    out->escalated = s->escalated;
+    out->deadline_rearm_count = s->rearm_count;
 }
 
 int blocker_snapshot_all_with_meta(struct blocker_snapshot *out, int max,
@@ -359,9 +396,12 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
         snaps, BLOCKER_CAP, &generation, &escape_dispatched, &rate_limit_ms);
 
     int counts[4] = {0, 0, 0, 0};
+    int escalated_count = 0;
     for (int i = 0; i < n; i++) {
         if (snaps[i].class >= 0 && snaps[i].class < 4)
             counts[snaps[i].class]++;
+        if (snaps[i].escalated)
+            escalated_count++;
     }
 
     json_push_kv_int(out, "active_count", n);
@@ -372,6 +412,27 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "generation", (int64_t)generation);
     json_push_kv_int(out, "escape_dispatched_total", escape_dispatched);
     json_push_kv_int(out, "rate_limit_ms", rate_limit_ms);
+    /* Lifecycle policy (rule 1 + rule 2): witnessed retirement + escalation
+     * counters — see "Lifecycle policy" in util/blocker.h. */
+    json_push_kv_int(out, "escalated_count", escalated_count);
+    json_push_kv_int(out, "transient_retired_total",
+                     (int64_t)blocker_retired_transient_count());
+    {
+        struct blocker_retirement_info last;
+        struct json_value lr;
+        json_init(&lr);
+        json_set_object(&lr);
+        if (blocker_last_retired(&last)) {
+            json_push_kv_str(&lr, "id", last.id);
+            json_push_kv_str(&lr, "owner", last.owner_subsystem);
+            json_push_kv_int(&lr, "retired_at_us", last.retired_at_us);
+            json_push_kv_int(&lr, "fire_count_at_retirement",
+                             (int64_t)last.fire_count_at_retirement);
+            json_push_kv_str(&lr, "reason", last.reason);
+        }
+        json_push_kv(out, "last_retired", &lr);
+        json_free(&lr);
+    }
 
     struct json_value arr;
     json_init(&arr);
@@ -392,6 +453,9 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_int(&child, "retry_budget", snaps[i].retry_budget);
         json_push_kv_int(&child, "fire_count", snaps[i].fire_count);
         json_push_kv_str(&child, "reason", snaps[i].reason);
+        json_push_kv_bool(&child, "escalated", snaps[i].escalated);
+        json_push_kv_int(&child, "deadline_rearm_count",
+                         snaps[i].deadline_rearm_count);
         json_push_back(&arr, &child);
         json_free(&child);
     }
@@ -458,6 +522,41 @@ blocker_escape_fn blocker_lookup_escape(const char *action_name)
     return NULL;
 }
 
+/* ── Lifecycle policy helpers (rule 1: TTL retirement) ────────────────
+ * Caller holds g_lock. Records a witnessed retirement (counter + last
+ * instance) — see "Lifecycle policy" in util/blocker.h. Does not clear
+ * the slot; caller does that immediately after. */
+static void record_retirement_locked(const struct blocker_slot *s, int64_t now)
+{
+    g_last_retired.valid = true;
+    memcpy(g_last_retired.id, s->id, BLOCKER_ID_MAX);
+    memcpy(g_last_retired.owner_subsystem, s->owner_subsystem, BLOCKER_OWNER_MAX);
+    g_last_retired.retired_at_us = now;
+    g_last_retired.fire_count_at_retirement = s->fire_count;
+    memcpy(g_last_retired.reason, s->reason, BLOCKER_REASON_MAX);
+    atomic_fetch_add(&g_transient_retired_total, 1);
+    atomic_fetch_add(&g_generation, 1);
+}
+
+uint32_t blocker_retired_transient_count(void)
+{
+    return atomic_load(&g_transient_retired_total);
+}
+
+bool blocker_last_retired(struct blocker_retirement_info *out)
+{
+    if (!out) return false;
+    pthread_mutex_lock(&g_lock);
+    bool valid = g_last_retired.valid;
+    if (valid) {
+        *out = g_last_retired;
+    } else {
+        memset(out, 0, sizeof(*out));
+    }
+    pthread_mutex_unlock(&g_lock);
+    return valid;
+}
+
 /* ── Sweep ─────────────────────────────────────────────────────────── */
 
 int blocker_supervisor_sweep(void)
@@ -476,6 +575,52 @@ int blocker_supervisor_sweep(void)
     for (int i = 0; i < BLOCKER_CAP; i++) {
         struct blocker_slot *s = &g_slots[i];
         if (!s->in_use) continue;
+
+        /* Rule 1 (TTL retirement, TRANSIENT only): a blocker is a live
+         * claim, not a log line. One that has not re-fired within its TTL
+         * window is stale evidence — retire it, witnessed via the counter
+         * + last-retired record above, never a silent delete. Applies
+         * uniformly whether or not the blocker also carries an
+         * escape_deadline_us / is currently escalated (rule 2 below);
+         * inactivity outranks escalation. */
+        if (s->class == BLOCKER_TRANSIENT) {
+            int64_t ttl_us = (s->ttl_us > 0)
+                ? s->ttl_us
+                : (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000;
+            if (now - s->last_fire_us >= ttl_us) {
+                record_retirement_locked(s, now);
+                memset(s, 0, sizeof(*s));
+                continue;
+            }
+        }
+
+        /* Rule 2 (overdue deadline, TRANSIENT only, no actionable escape):
+         * an escape_deadline_us with an empty escape_action has nothing to
+         * dispatch and would otherwise sit with a growing-negative
+         * deadline_remaining_us forever (this was the live
+         * worker.stall.op.projection_backfill defect). Re-arm a bounded
+         * number of times, then escalate visibly instead. Blockers with a
+         * real escape_action are untouched here — they fall through to the
+         * dispatch pass below exactly as before. */
+        if (s->class == BLOCKER_TRANSIENT && s->escape_deadline_us > 0 &&
+            now >= s->escape_deadline_us && s->escape_action[0] == '\0') {
+            if (s->rearm_count < BLOCKER_MAX_DEADLINE_REARMS) {
+                int64_t span = (s->escape_span_us > 0)
+                    ? s->escape_span_us
+                    : (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000;
+                s->escape_deadline_us = now + span;
+                s->rearm_count++;
+            } else if (!s->escalated) {
+                s->escalated = true;
+                atomic_fetch_add(&g_generation, 1);
+                fprintf(stderr,
+                        "[blocker] %s escalated: deadline overdue after %d "
+                        "re-arm(s) with no escape action (id=%s owner=%s)\n",
+                        blocker_class_name(s->class), s->rearm_count,
+                        s->id, s->owner_subsystem);  // obs-ok:blocker-deadline-escalated
+            }
+        }
+
         if (s->escape_fired) continue;
         if (s->escape_deadline_us <= 0) continue;
         if (now < s->escape_deadline_us) continue;
@@ -535,9 +680,11 @@ bool blocker_module_init(void)
     pthread_mutex_lock(&g_lock);
     memset(g_slots, 0, sizeof(g_slots));
     memset(g_escapes, 0, sizeof(g_escapes));
+    memset(&g_last_retired, 0, sizeof(g_last_retired));
     g_rate_limit_ms = configured_rate_limit_ms;
     atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
+    atomic_store(&g_transient_retired_total, 0);
     return true;
 }
 
@@ -547,8 +694,10 @@ void blocker_module_shutdown(void)
     pthread_mutex_lock(&g_lock);
     memset(g_slots, 0, sizeof(g_slots));
     memset(g_escapes, 0, sizeof(g_escapes));
+    memset(&g_last_retired, 0, sizeof(g_last_retired));
     atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
+    atomic_store(&g_transient_retired_total, 0);
 }
 
 /* ── Test hooks ────────────────────────────────────────────────────── */
@@ -558,11 +707,13 @@ void blocker_reset_for_testing(void)
     pthread_mutex_lock(&g_lock);
     memset(g_slots, 0, sizeof(g_slots));
     memset(g_escapes, 0, sizeof(g_escapes));
+    memset(&g_last_retired, 0, sizeof(g_last_retired));
     g_rate_limit_ms = BLOCKER_DEFAULT_RATE_LIMIT_MS;
     pthread_mutex_unlock(&g_lock);
     atomic_store(&g_dispatched_count, 0);
     atomic_store(&g_test_clock_us, 0);
     atomic_store(&g_module_inited, true);
+    atomic_store(&g_transient_retired_total, 0);
 }
 
 void blocker_set_clock_for_testing(int64_t now_us)
