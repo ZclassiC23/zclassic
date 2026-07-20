@@ -159,15 +159,6 @@ static void sb_note(int64_t *counter, uint64_t bytes)
 void sync_benchmark_note_downloaded(uint64_t bytes)   { sb_note(&g_sb.bytes_downloaded, bytes); }
 void sync_benchmark_note_reused(uint64_t bytes)       { sb_note(&g_sb.bytes_reused, bytes); }
 void sync_benchmark_note_redownloaded(uint64_t bytes) { sb_note(&g_sb.bytes_redownloaded, bytes); }
-void sync_benchmark_note_disk_write(uint64_t bytes)   { sb_note(&g_sb.disk_write_bytes, bytes); }
-
-void sync_benchmark_set_network(double estimated_mbps, int peer_count)
-{
-    pthread_mutex_lock(&g_sb.lock);
-    g_sb.est_mbps   = estimated_mbps;
-    g_sb.peer_count = peer_count;
-    pthread_mutex_unlock(&g_sb.lock);
-}
 
 void sync_benchmark_set_artifact(const char *artifact_id)
 {

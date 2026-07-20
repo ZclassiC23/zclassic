@@ -32,11 +32,6 @@ bool codeindex_rebuild(struct codeindex *ci);
  * making every query O(total source bytes). Returns false on a hard error. */
 bool codeindex_is_stale(struct codeindex *ci, bool *stale);
 
-/* Compute the exact content-bound tree digest over the enumerated source set:
- * SHA3-256 over sorted (relpath || file_sha3) tuples. Metadata-preserving and
- * same-size edits therefore cannot reuse a stale index. Returns false on a
- * hard error. */
-bool codeindex_source_root_sha3(const char *root, uint8_t out[32]);
 
 #ifdef ZCL_TESTING
 /* Deterministic process-death boundaries for the crash-publication proof.

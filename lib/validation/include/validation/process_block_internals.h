@@ -19,7 +19,6 @@ struct block_tree_db;
 
 /* Accessors for file-static globals/handles. */
 struct coins_view_sqlite *process_block_get_coins_sqlite(void);
-struct block_tree_db *process_block_get_block_tree(void);
 
 /* csr_commit_tip wrapper used internally by update_tip + the
  * chain-advance protocol. Returns true on CSR_OK or the test-harness
