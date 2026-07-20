@@ -48,7 +48,7 @@ struct fc_challenge {
     uint8_t  mmb_root[32];      /* claimed MMB root to verify */
 };
 
-/* zcl_ids.h adoption (WF1 lane 1B, additive-only): a strongly-typed reader
+/* zcl_ids.h adoption (additive-only): a strongly-typed reader
  * for the raw `mmb_root[32]` field above. Wire layout is UNCHANGED — the
  * struct still carries a bare uint8_t[32] a wire memcpy writes directly;
  * this is a read-side alias so a caller that wants a `struct zcl_mmb_root`

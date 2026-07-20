@@ -186,7 +186,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_reducer_step_drain_harness.c|config/src/boo
  * the SAME reducer_kick_unbudgeted / frontier-walled harness as
  * test_mint_fold_livelock above — never a silent timeout/stall terminal. */
 AGENT_IMPACT_RULE("lib/test/src/test_mint_anchor_fresh_datadir.c|config/src/boot_mint_anchor_preflight.c|config/src/boot_mint_anchor.c|app/services/src/reducer_ingest_service.c|app/services/src/reducer_drain.c", "mint_anchor_fresh_datadir mint_skip_crypto mint_anchor_preflight make_lint_gates")
-/* Boot (flag x datadir-state) matrix (plan lane 2.2): every cell must end in
+/* Boot (flag x datadir-state) matrix: every cell must end in
  * a NAMED terminal (preflight refusal / typed blocker / anchor reached)
  * under a wall-clock budget — a timeout is a FAILURE. Drives the same
  * preflight + reducer_kick_unbudgeted entry points as the fresh-datadir
@@ -608,7 +608,7 @@ AGENT_IMPACT_RULE("app/services/src/binary_ab_fallback.c|app/services/include/se
 /* WF1 — pure sync kernel + strong types. */
 AGENT_IMPACT_RULE("lib/sync/src/sync_reduce.c|lib/sync/include/sync/sync_reduce.h|lib/sync/include/sync/sync_kernel_catalog.def|lib/test/src/test_sync_reduce.c|lib/test/src/test_sync_reduce_invariants.c|lib/test/src/test_sync_reduce_fuzz.c|lib/test/src/test_sync_reduce_adapter.c", "sync_reduce sync_reduce_invariants sync_reduce_fuzz sync_reduce_adapter make_lint_gates")
 AGENT_IMPACT_RULE("lib/core/include/core/zcl_ids.h|lib/test/src/test_zcl_ids.c", "zcl_ids sync_reduce make_lint_gates")
-/* WF1 lane 1D — the shadow adapter itself (builds+compares; called from the
+/* The shadow adapter itself (builds+compares; called from the
  * live offer path in msgprocessor_snapshot.c, which keeps its own existing
  * rule below). */
 AGENT_IMPACT_RULE("lib/net/src/sync_reduce_adapter.c|lib/net/include/net/sync_reduce_adapter.h", "sync_reduce_adapter sync_reduce snapshot_sync_service make_lint_gates")

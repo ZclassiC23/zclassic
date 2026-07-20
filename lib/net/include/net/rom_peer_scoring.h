@@ -3,7 +3,7 @@
  * ROM-fetch peer scoring — records a bad-chunk offence against the seeder that
  * served a chunk whose per-chunk SHA3 digest or transport MAC failed.
  *
- * Routing (lane 2C, wf/artifact-protocol): when the offending endpoint maps to
+ * Routing: when the offending endpoint maps to
  * a connected `p2p_node`, the offence is charged through the shared
  * peer_scoring_record() ban logic; otherwise it lands in a small bounded
  * local deprioritize list (same shape as the snapsync blacklist[16] —

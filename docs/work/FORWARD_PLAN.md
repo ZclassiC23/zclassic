@@ -43,12 +43,15 @@
    datadirs once the deploy is confirmed durable.
 3. **Fresh-machine-to-tip gap (C3)** — the at-tip proof so far is on the ONE
    node that ran the cure; C3's actual claim is a genuinely FRESH zclassic23
-   node reaching tip from a serving zclassic23 peer in <10 min. That path
-   (FlyClient + ROM/SHA3 snapshot serve+fetch) is not proven end-to-end: the
-   **seed** side (`rom_seed`) is on `main`; the **fetch** side
-   (`lane/rom-fetch2` — multi-seeder verify-by-content download + resume) is
-   NOT done. Prove C3 by syncing a second, genuinely fresh zclassic23 node
-   against the serve node, not against `zclassicd`.
+   node reaching tip from a serving zclassic23 peer in <10 min. Both halves of
+   that path have landed on `main`: the **seed** side (`rom_seed`) serves
+   content-verified chunks, and the **fetch** side (`lib/net/src/rom_fetch.c` +
+   `app/controllers/src/rom_fetch_controller.c`, operator-invocable via
+   `ops.debug.rom_fetch.bundle`) does multi-seeder verify-by-content download
+   with durable resume (`rom_fetch_download_verified_parallel`). What remains
+   for C3 is the end-to-end timed proof itself: sync a second, genuinely fresh
+   zclassic23 node against the serve node (not `zclassicd`) and confirm the
+   <10 min bar.
 4. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
    parallel read-only auditors covering integrity/trust/repair-consolidation/
    pipeline-simplification, memory

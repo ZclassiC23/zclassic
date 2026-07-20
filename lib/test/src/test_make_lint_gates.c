@@ -81,6 +81,12 @@
 #define GIT_HOOKS_PRECOMMIT_REL "tools/githooks/pre-commit"
 #define GIT_HOOKS_PRECOMMIT_FIXTURE_REL \
     "test-tmp/_pre_commit_hook_fixture_tmp"
+#define NO_DEV_HISTORY_SCRIPT_REL \
+    "tools/scripts/check_no_dev_history_in_contracts.sh"
+#define NO_DEV_HISTORY_FIXTURE_DST \
+    "lib/util/include/util/_dev_history_lint_fixture_tmp.h"
+#define NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST \
+    "lib/util/include/util/_dev_history_lint_fixture_test.h"
 
 static int run_gate_script(const char *script_rel, const char *mode);
 
@@ -8238,6 +8244,80 @@ static int t_msg_process_yields_to_send_phase_contract(void)
     return failures;
 }
 
+/* check-no-dev-history-in-contracts — rejects dev-history phrasing ("STEP-0
+ * STATUS", "stub bodies"/"stub body", "lane <N><letter>", "future slice")
+ * from production contract surfaces (any *.h under an include/ dir, any
+ * *.def table). Proof:
+ * (1) the clean tree passes; (2) a fixture named with the *_test.* allowlist
+ * suffix is IGNORED even though it lives under a real include/ dir and
+ * carries every banned phrase; (3) the SAME violating content under a
+ * non-allowlisted fixture name trips the gate; (4) removing it recovers
+ * green; (5) the gate is actually wired into the Makefile LINT_GATES list
+ * and documented in DEFENSIVE_CODING.md's canonical block. */
+static int t_no_dev_history_in_contracts(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    char *makefile_buf = NULL;
+    char *doc_buf = NULL;
+
+    unlink_rel(NO_DEV_HISTORY_FIXTURE_DST);
+    unlink_rel(NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST);
+
+    int baseline_rc = run_gate_script(NO_DEV_HISTORY_SCRIPT_REL, NULL);
+
+    const char *violating_body =
+        "#ifndef ZCL_DEV_HISTORY_LINT_FIXTURE_TMP_H\n"
+        "#define ZCL_DEV_HISTORY_LINT_FIXTURE_TMP_H\n"
+        "/* STEP-0 STATUS: contract + stub bodies; lane 2A lands the real\n"
+        " * thing. Also a stub body and a future slice. */\n"
+        "#endif\n";
+
+    int allow_planted =
+        (repo_path(path, sizeof(path), NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST) == 0 &&
+         write_file(path, violating_body) == 0) ? 0 : -1;
+    int allow_rc =
+        allow_planted == 0 ? run_gate_script(NO_DEV_HISTORY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST);
+
+    int planted =
+        (repo_path(path, sizeof(path), NO_DEV_HISTORY_FIXTURE_DST) == 0 &&
+         write_file(path, violating_body) == 0) ? 0 : -1;
+    int trip_rc =
+        planted == 0 ? run_gate_script(NO_DEV_HISTORY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(NO_DEV_HISTORY_FIXTURE_DST);
+    int recover_rc = run_gate_script(NO_DEV_HISTORY_SCRIPT_REL, NULL);
+
+    int makefile_wired = 0;
+    if (repo_path(path, sizeof(path), "Makefile") == 0 &&
+        read_entire_file(path, &makefile_buf) == 0) {
+        makefile_wired =
+            strstr(makefile_buf, "check-no-dev-history-in-contracts:") != NULL &&
+            strstr(makefile_buf, "check-no-dev-history-in-contracts \\") != NULL;
+    }
+    int doc_wired = 0;
+    if (repo_path(path, sizeof(path), "docs/DEFENSIVE_CODING.md") == 0 &&
+        read_entire_file(path, &doc_buf) == 0) {
+        doc_wired = strstr(doc_buf, "check-no-dev-history-in-contracts") != NULL;
+    }
+
+    TEST("[lint-gate] check-no-dev-history-in-contracts: clean, allowlists "
+         "*_test.* fixture, trips real fixture, recovers, wired") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(allow_planted == 0);
+        ASSERT(allow_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        ASSERT(makefile_wired);
+        ASSERT(doc_wired);
+        PASS();
+    } _test_next:;
+    free(makefile_buf);
+    free(doc_buf);
+    return failures;
+}
+
 int test_make_lint_gates(void)
 {
     printf("\n=== make_lint_gates tests ===\n");
@@ -8359,6 +8439,7 @@ int test_make_lint_gates(void)
     failures += t_privileged_transition_receipt_gate();
     failures += t_blocker_escape_registered_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
+    failures += t_no_dev_history_in_contracts();
     return failures;
 }
 

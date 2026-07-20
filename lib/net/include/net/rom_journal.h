@@ -6,8 +6,8 @@
  * digest-verified, so a restart re-fetches only the missing tail instead of
  * the whole file.
  *
- * Durability ordering (owned by rom_fetch.c, lane 2B): pwrite the chunk data
- * → fdatasync(.part) → set the chunk's journal bit → fdatasync(journal). A set
+ * Durability ordering (owned by rom_fetch.c): pwrite the chunk data →
+ * fdatasync(.part) → set the chunk's journal bit → fdatasync(journal). A set
  * bit therefore ALWAYS implies durable, digest-verified data for that chunk.
  *
  * Trust: the journal header pins the manifest identity (chunk_root, whole_sha3,
@@ -16,8 +16,7 @@
  * "recompute, never repair" rule.
  *
  * This module owns one open file descriptor per journal and an in-memory
- * bitmap; no threads, no sockets. STEP-0 STATUS: contract + stub bodies; lane
- * 2B implements the real open/mark/resume. */
+ * bitmap; no threads, no sockets. */
 
 #ifndef ZCL_NET_ROM_JOURNAL_H
 #define ZCL_NET_ROM_JOURNAL_H
