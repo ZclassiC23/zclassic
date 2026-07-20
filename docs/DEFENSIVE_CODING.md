@@ -15,8 +15,8 @@ paths are still load-bearing.
 ## 1. Every write goes through the AR lifecycle — no exceptions
 
 **Problem:** `coins_view_sqlite.c` / `wallet_sqlite.c` once called
-`sqlite3_step()` directly with no validation. That is how we lost 1.3M UTXOs
-on 2026-04-10.
+`sqlite3_step()` directly with no validation — an unvalidated raw write is how
+a UTXO set gets silently corrupted at scale.
 
 **Enforcement:** `activerecord.h` poisons raw `sqlite3_step` in app code at
 compile time (a `_Pragma("GCC error …")` macro, guarded by `ZCL_AR_ENFORCE` /
@@ -218,8 +218,8 @@ Gates fall into three modes:
   gates carry a WARN sub-tier for `lib/` (excl. `lib/test/`) + `domain/`
   (+ `src/` for E1), alongside their own ENFORCED tier for the app-shape
   surfaces: **E1** (`check-file-size-ceiling`) and **#12**
-  (`check-long-functions`). #18 and #20 graduated WARN → RATCHET as **E10**,
-  2026-05-26; #19 ratcheted WARN → FAIL in Phase 1. E1's WARN tier additionally
+  (`check-long-functions`). #18 and #20 graduated WARN → RATCHET as **E10**;
+  #19 ratcheted WARN → FAIL. E1's WARN tier additionally
   ratchets the *aggregate* (new + grown) violation COUNT via
   `tools/scripts/file_size_ceiling_lib_drift_count.txt` — no single file ever
   fails the build, but silently accumulating drift past the reviewed count
@@ -347,18 +347,17 @@ assert green).
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
   `supervisor_register(`, is not baselined, and has no `// supervisor-ok:<tag>`.
-  Round 5 (2026-05-21) added the time-driven supervisor in
-  `lib/util/supervisor.{c,h}` after the lib/health sweeper wedged 8.6 h leaving
-  every periodic check silently dead; registered children fire `on_tick` /
-  edge-trigger `on_stall` independently. Round-5 children:
-  `sync.watchdog`, `net.outbound_floor`, `chain.coord_escalation`. Baseline
-  `tools/scripts/supervisor_baseline.txt` (drained to 0 entries; Track C-3
-  complete). Impl:
+  The time-driven supervisor in `lib/util/supervisor.{c,h}` exists because an
+  untracked periodic sweeper can wedge and leave every check it owns silently
+  dead; registered children fire `on_tick` / edge-trigger `on_stall`
+  independently. Standing children include `sync.watchdog`,
+  `net.outbound_floor`, `chain.coord_escalation`. Baseline
+  `tools/scripts/supervisor_baseline.txt` (drained to 0 entries). Impl:
   `tools/scripts/check_supervisor_registration.sh`.
 
 - **Gate #17: `check-typed-blocker`** — any code raising a `block_id` must use a
-  typed kind from `enum blocker_kind` (`lib/util/src/blocker.c`, Round 6
-  2026-05-21); raw string blockers fall in a baseline.
+  typed kind from `enum blocker_kind` (`lib/util/src/blocker.c`); raw string
+  blockers fall in a baseline.
 
 ### Framework refactor gates (#18–#22)
 
@@ -369,8 +368,8 @@ assert green).
   `tools/lint/framework_shape_allowlist.txt` (empty). Fix: move the file or
   split mixed responsibilities.
 
-- **Gate #19: `check-no-raw-clock-outside-platform`** (FAIL, Phase 1
-  2026-05-23) — `tools/lint/check_no_raw_clock_outside_platform.sh`. Bans direct
+- **Gate #19: `check-no-raw-clock-outside-platform`** (FAIL) —
+  `tools/lint/check_no_raw_clock_outside_platform.sh`. Bans direct
   `clock_gettime(`, `time(NULL)`, `getrandom(` outside `lib/platform/`. Route
   wall-clock/monotonic through the platform clock and entropy through platform
   RNG. Override `// platform-ok` on the line.
@@ -486,7 +485,7 @@ intensity cap (`lib/util/include/util/supervisor.h` +
 `ZCL_LINT_MODE` (`WARN` | `RATCHET` | `FAIL`) selects mode for #18/#20; `make
 lint` runs them in `RATCHET`.
 
-### Build-checklist gates (E-series, 2026-05-26)
+### Build-checklist gates (E-series)
 
 Tooling-only: each turns the build red on a *regression* without breaking the
 current green tree.
@@ -500,14 +499,14 @@ current green tree.
 | **E4: `check-projections-pure`** | HARD | A projection (`lib/storage/src/*_projection.c`) is a pure fold: no `#include` from `app/services/`-`app/controllers/`, and no AR save path (`AR_*_SAVE`, which would fire another model's hooks). Override `// projection-cache-ok:<tag>` (memoize a derived value into the projection's own table). |
 | **E6: `check-one-write-path`** | RATCHET | New chain-state write surfaces forbidden unless they route through the reducer/log authority. Scans for legacy writers (`active_chain_set_tip`, `coins_view_*` flush/write, `process_new_block`, `connect_tip`, `disconnect_tip`, `utxo_projection_set_author`) vs `one_write_path_baseline.txt`. Override `// one-write-path-ok:<tag>` (compat wrapper, not a second consensus writer). |
 | **E7: `check-no-authoritative-ram-state`** | RATCHET | No direct `active_chain` internals access / new global-static `struct active_chain`. Derived RAM indexes only via accessors; consensus authority is the log/projection/cursor surface. Baseline `no_authoritative_ram_state_baseline.txt` (empty). Override `// ram-state-ok:<tag>` (documented derived cache). |
-| **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the 2026-05-26 silent-ready hole (READY "behind_peers" while +950 behind). Override `// no-silent-ready-ok:<tag>`. |
+| **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the silent-ready hole class (e.g. READY reported as "behind_peers" while hundreds of blocks behind). Override `// no-silent-ready-ok:<tag>`. |
 | **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/util/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
 | **P1-3: `check-systemd-memory-budget`** | HARD | Systemd service hard caps (`MemoryMax` plus finite `MemorySwapMax`) must stay below the host budget (default 70% of MemTotal); explicit `MemoryMax=infinity` fails. Prevents host-level OOM from cap drift. |
 | **E11: `check-doc-accuracy`** | HARD | The canonical gate block below matches the `check-*` prerequisites of the Makefile `lint:` target by count AND name set. On mismatch, fix the doc block — the Makefile is authoritative. No override. |
 | **`check-markdown-links`** | HARD | Every local file/directory target in tracked Markdown resolves inside the repository. Network/mail/app URIs, page anchors, images, code examples, and explicit generated placeholders are outside this filesystem-only contract. The gate fails loud on an empty scan/parser result and carries isolated positive/negative self-tests. No baseline or override. |
-| **`check-no-stale-pinned-facts`** | HARD (binary size) / RATCHET (height pin) | Owner directive 2026-07-17 "make staleness impossible": docs (CLAUDE.md + README.md + docs/\*\*/\*.md) must not hand-pin a fact with a live source. (A) A "\<N\> MB" size ADJACENT to "binary" fails HARD — de-pin to size-agnostic prose or quote `tools/scripts/binary_size.sh`; never baseline-exemptible (the stale "~15 MB" survived because it was hand-pinned). (B) A live-state HEIGHT PIN (`H*=`, "wedged at", "held at", "currently …at", "live tip", "stuck/pinned at" next to a height-shaped number) outside the one live-state page `docs/HANDOFF.md` fails RATCHET against the shrink-only `tools/lint/stale_pinned_facts_baseline.txt`. `docs/work/archive/**` (frozen narratives) is exempt. Per-line override `<!-- stale-ok: <reason> -->`. |
+| **`check-no-stale-pinned-facts`** | HARD (binary size) / RATCHET (height pin) | "Make staleness impossible": docs (CLAUDE.md + README.md + docs/\*\*/\*.md) must not hand-pin a fact with a live source. (A) A "\<N\> MB" size ADJACENT to "binary" fails HARD — de-pin to size-agnostic prose or quote `tools/scripts/binary_size.sh`; never baseline-exemptible (the stale "~15 MB" survived because it was hand-pinned). (B) A live-state HEIGHT PIN (`H*=`, "wedged at", "held at", "currently …at", "live tip", "stuck/pinned at" next to a height-shaped number) outside the one live-state page `docs/HANDOFF.md` fails RATCHET against the shrink-only `tools/lint/stale_pinned_facts_baseline.txt`. `docs/work/archive/**` (frozen narratives) is exempt. Per-line override `<!-- stale-ok: <reason> -->`. |
 | **E12: `check-honest-witness`** | FAIL | Law 7 ("heal in the open, page when stuck"): a Condition's `witness_<name>()` must observe the symptom MOVE, not a constant, the pure inverse of `detect`, or an FSM/poison-flag the remedy itself set. Fails if TRIVIAL (every return a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`), or NO-OBSERVABLE (references none of `active_chain_height`, reducer-frontier H\*, block_map iteration, a durable `SELECT`, a peer/inflight/staged/received progress counter). Exemplar: `app/conditions/src/block_failed_mask_at_tip.c`. Baseline `tools/lint/honest_witness_baseline.txt` (empty). Override `// honest-witness-ok:<reason>` (witness whose remedy returns `COND_REMEDY_FAILED` or re-verifies real structural state). |
-| **E14: `check-condition-cooldown`** | HARD | The 2026-07-13 27h-page bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
+| **E14: `check-condition-cooldown`** | HARD | Closes the multi-hour page-storm bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
 
 E10 = the WARN→RATCHET graduation of #18 and #20 (above).
 

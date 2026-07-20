@@ -17,9 +17,8 @@ properties auditable.
 - Known gaps are documented instead of hidden. Examples include the current
   live forward-progress blocker, off-chain ZMSG plaintext transport, and
   incomplete marketplace/swap settlement paths.
-- The June 2026 third-party security-audit disposition (fixed findings,
-  refuted findings with citations, and deferred items) is folded into
-  "Concrete safeguards" below.
+- Findings from external security review (fixed, refuted-with-citations, or
+  deferred) are folded into "Concrete safeguards" below.
 
 ## Operator-owned scope
 
@@ -124,25 +123,29 @@ item, not a claimed property.
   clearnet listener (no CORS header); public chain-data routes are unaffected,
   the onion listener exposes no `/api`, and the in-process `wallet_gui`
   consumer bypasses the listener entirely.
-- **Landed fixes (2026-06-09 audit response, re-verified against HEAD):**
-  destination-capacity guard in `script_get_op` before the opcode-data memcpy
-  (was an up-to-~9994-byte copy into 520-byte caller buffers — remote
-  DoS/corruption on the validation path), paired with a `script_get_sig_op_count`
-  fix so sigops after an oversized push are never undercounted; a coinbase
-  subsidy ceiling on the live reducer path (`app/jobs/src/utxo_apply_delta.c`,
-  status `bad_cb_amount` — deliberately distinct from `value_overflow` so
-  repair machinery never treats inflation as repairable); a consensus
-  nullifier set (`nullifier_kv`, Sprout/Sapling separate namespaces, checked
-  + inserted atomically with the coins commit inside the `utxo_apply` stage
-  txn); wallet-backup encryption (`WALLET_BACKUP_PASSWORD` → ChaCha20-Poly1305
-  via `wallet_backup_encrypt_file`; no password means plaintext continues with
-  a loud boot warning, since refusing would silently kill the fleet-wide
-  key-loss safety net); the operator-private HTTP routes above.
+- **Script opcode parsing is guarded against buffer overflow:** `script_get_op`
+  enforces a destination-capacity guard before the opcode-data memcpy (an
+  unguarded copy could write up to ~9994 bytes into 520-byte caller buffers —
+  remote DoS/corruption on the validation path), paired with a
+  `script_get_sig_op_count` fix so sigops after an oversized push are never
+  undercounted.
+- **Coinbase subsidy is capped** on the live reducer path
+  (`app/jobs/src/utxo_apply_delta.c`, status `bad_cb_amount` — deliberately
+  distinct from `value_overflow` so repair machinery never treats inflation as
+  repairable).
+- **Nullifier double-spend is enforced by a consensus nullifier set**
+  (`nullifier_kv`, Sprout/Sapling separate namespaces, checked + inserted
+  atomically with the coins commit inside the `utxo_apply` stage txn).
   **Known limit:** nullifier enforcement is activation-forward on
   snapshot-seeded datadirs (a from-genesis replay/reindex gets the complete
   set automatically); the pre-activation backfill gap is a permanent typed
   blocker (`utxo_apply.nullifier_backfill_gap`), remediated by the owner-gated
   `app/services/src/nullifier_backfill_service.c` populate-only walker.
+- **Wallet backups are encrypted** when `WALLET_BACKUP_PASSWORD` is set
+  (ChaCha20-Poly1305 via `wallet_backup_encrypt_file`); no password means
+  plaintext continues with a loud boot warning, since refusing would silently
+  kill the fleet-wide key-loss safety net.
+- **Operator-private HTTP routes** are guarded as described above.
 - **Refuted findings (pinned so they are not "fixed" again):** the retarget
   half of "difficulty retarget not enforced on live ingest" is false — every
   P2P header runs `accept_block_header → contextual_check_block_header →

@@ -86,12 +86,12 @@ legal when mined (the original Zcash-Sapling rule capped a tx at `MAX_BLOCK_SIZE
 = 2 MB); zclassicd later tightened the constant **without grandfathering**, so
 running nodes accept that history only because validated blocks are never
 re-checked — a from-genesis replay of zclassicd's own text false-rejects its own
-chain. Proven live 2026-06-11: our reindex replay FATALed at block 478,544 on
-tx `e3eeb123…` (125,811 bytes, `bad-txns-oversize`), breaking every
-full-validation path (reindex, background validation, trustless genesis sync).
-Found EMPIRICALLY (never guessed) by a complete frame-walk + per-height hash
-scan of the canonical chain (heights 0..3,143,532), `getblockhash`-compared and
-per-tx-drilled against live zclassicd; H_LAST = 1,968,856.
+chain: it FATALs at block 478,544 on tx `e3eeb123…` (125,811 bytes,
+`bad-txns-oversize`), breaking every full-validation path (reindex, background
+validation, trustless genesis sync). The 413-tx list is derived from a
+complete frame-walk + per-height hash scan of the canonical chain (heights
+0..3,143,532), `getblockhash`-compared and per-tx-drilled against live
+zclassicd; H_LAST = 1,968,856.
 
 The rule that is bit-for-bit equal to running-zclassicd behavior on every block
 either node will ever **newly** validate:
@@ -133,12 +133,12 @@ This is **not** a consensus change ahead of zclassicd — it *restores* parity
 with what every running zclassicd node actually does, and is exactly the static,
 non-signaled, non-dynamic mechanism class gate E13 permits.
 
-## Landed parity fixes (2026-06-08 audit — historical record)
+## Parity guards on the connect path
 
-An 8-surface adversarial audit (2026-06-08) found `contextual_check_block()`
-had **zero production callers** — the connect path ran only context-free
-structural checks + the staged proof gate — as the root cause behind 4 of 5
-confirmed divergences. All 5 are landed:
+`contextual_check_block()` is wired into the connect path (it previously had
+zero production callers, which left only context-free structural checks + the
+staged proof gate — the root cause behind 4 of the 5 divergences below). All
+5 are closed:
 
 | # | Divergence | Landed at |
 |---|---|---|

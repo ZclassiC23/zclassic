@@ -10,72 +10,46 @@
 
 # HANDOFF — current state (2026-07-19)
 
-## 0-LATEST. Current state (2026-07-19 night) — **AT TIP on sovereign state.** The serve node is fully synced; soak window running; canonical deploy is the owner's lever
+## 0-LATEST. Current state — **AT TIP on sovereign state**
 
-**The serve node is AT NETWORK TIP** (H\* 3,187,17x = peer max), 4 peers,
-entirely on self-verified state: past the historical 3,176,325
-shielded-anchor wedge AND past the post-wedge poisoned-solution-row stall at
-3,179,242. Binary: candidate `vhrepair-7d10e581d` (= main `7d10e581d`).
-Live H\* via `zclassic23 -rpcport=39072 dumpstate reducer_frontier`
-(**flagless CLI answers from the DEFAULT datadir — always pass
--rpcport=39072 for the serve node**). The persistent monitor announces
-milestones and blocker-set changes; the always-synced soak window runs from
-the at-tip timestamp. Canonical deploy after a clean soak is the owner's
-lever.
-
-The post-wedge stall class is cured in code, not worked around: the
-getheaders serve path had poisoned a canonical block's index entry with a
-permanent FAILED mask over a torn local Equihash-solution copy, and nothing
-could clear it (the storm was 18k WARN lines/5min instead of one blocker).
-Now: mark failures raise ONE typed blocker and back off; a FAILED mask
-clears if and only if the unchanged PoW+Equihash validator passes with
-repairable-class evidence. Remaining named follow-up: quarantine/refetch of
-a poisoned `blocks`-table row itself (`db_block_delete` is built and
-unwired; needs copy-proof) — see the Wave N backlog memory.
-
-The final pin before the pass — H\* stuck at 3,140,115 on ~1,015
-`tip_finalize_log` rowless holes — was cured by `3b512149f`: the boundary
-utxo_root persist ran an own-BEGIN inside the stage batch transaction
-(nested-BEGIN, failed at 100% of 100-height boundaries post-flip = the WARN
-storm) and the hash-bound hole backfill was reachable only for coin tears.
-The in-tx persist + the no-tear backfill gate (bounded by the coins frontier)
-deployed, self-healed the live datadir on first boot with zero persist
-failures, and H\* leapt to the frontier. `tip_finalize.rewind_churn`,
-`recovery_coordinator.no_applicable_rung`, and the sticky_escalator family all
-cleared themselves.
-
-What is true now (each copy-proven before live):
-- **Consensus-bundle install: TERMINAL ADMITTED-AND-ACTIVATED** on this datadir
-  (checkpoint-content authority). The 2026-07-17 chain-binding refusals are
-  historical; recover via git if needed.
-- **Kernel store = `consensus.db`** (A3+A4 flip, merged + deployed): the
-  reducer kernel owns its own SQLite file; `progress.kv` holds only the
-  address_index/txindex projections via `projection_store`. Migration is
-  idempotent/crash-safe at boot; fold verified climbing on consensus.db live.
-  Pre-flip cold backup: `~/.zclassic-c23-serve1-BACKUP-preflip` (delete after
-  soak). Revert = old candidate binary + that backup.
-- **Headers**: full 3.19M-header chain imported (`--importblockindex
-  ~/.zclassic <datadir>/node.db` — 2nd arg is the node.db PATH). The P2P
-  continuation wedge that starved headers is fixed (loud counted suppression in
-  `push_getheaders_from`, `health.headers` counters) — see
-  memory `header-continuation-wedge-2026-07-19`.
-- **Crash loop CURED**: supervisor tick-runner (no child tick on the sweep
-  thread) + E3 sapling-persist deferral (no nested BEGIN abort-loop) both
-  live; backstop restarts stopped. Remaining transient wedge blockers
-  (`supervisor.tick_runner_wedged`, `worker.stall.op.projection_backfill`)
-  are contained signals, largely retired by the consensus.db flip.
-- **Landed since (same day):** fast-restart trust-flat skip REMOVED (the
-  silent best-header cap class is dead; the forward pass costs ~861ms),
-  projection-store corruption quarantine gate + consensus.db downgrade boot
-  refusal, loud counted suppression on every remaining silent header/net drop
-  path, store-location truth sweep across docs/tools, lint critical path
-  cached (17s → <1s warm), janitor timers installed (22GB reclaimed).
-- Remaining follow-ups: spurious per-boot txn in `consensus_db_finalize_flip`;
-  CLI wall-clock deadlines (a flagless `status` against a dead RPC port spun
-  3 days at 100% CPU); graceful stop of a folding node measured ~11 min
-  (restart flows must verify MainPID changed); post-soak cleanup of
-  `~/.zclassic-c23-serve1-BACKUP-preflip` + `-COPY-headerfix` (28GB) and old
+- **Height:** serve node is at network tip (H\* = peer max), 4 peers. Live
+  H\*: `zclassic23 -rpcport=39072 dumpstate reducer_frontier` (**flagless CLI
+  answers from the DEFAULT datadir — always pass `-rpcport=39072` for the
+  serve node**).
+- **Binary:** candidate `vhrepair-7d10e581d` (= main `7d10e581d`).
+- **State provenance:** entirely self-verified — past the historical
+  shielded-anchor wedge and the post-wedge poisoned-solution-row stall.
+- **Soak:** window running from the at-tip timestamp; canonical deploy to the
+  public lane is the owner's lever.
+- **Kernel store:** `consensus.db` (the reducer kernel owns its own SQLite
+  file; `progress.kv` holds only the address_index/txindex projections via
+  `projection_store`). Migration is idempotent/crash-safe at boot. Pre-flip
+  cold backup: `~/.zclassic-c23-serve1-BACKUP-preflip` (revert = old candidate
+  binary + that backup; delete once soak completes).
+- **Headers:** full 3.19M-header chain imported (`--importblockindex
+  ~/.zclassic <datadir>/node.db` — 2nd arg is the node.db PATH).
+- **Crash loop:** cured — supervisor tick-runner (no child tick on the sweep
+  thread) + Sapling-persist deferral (no nested-BEGIN abort loop); backstop
+  restarts stopped.
+- **Consensus-bundle install:** terminal admitted-and-activated on this
+  datadir (checkpoint-content authority).
+- **Blockers:** the post-wedge poisoned-solution-row stall class is cured in
+  code — mark failures raise ONE typed blocker and back off; a FAILED mask
+  clears only if the unchanged PoW+Equihash validator passes with
+  repairable-class evidence. Open follow-up: quarantine/refetch of a poisoned
+  `blocks`-table row itself (`db_block_delete` is built and unwired — needs
+  copy-proof); see the Wave N backlog memory.
+- **Other open follow-ups:** spurious per-boot txn in
+  `consensus_db_finalize_flip`; CLI wall-clock deadlines against a dead RPC
+  port; graceful-stop timing for a folding node (restart flows must verify
+  MainPID changed); post-soak cleanup of
+  `~/.zclassic-c23-serve1-BACKUP-preflip` + `-COPY-headerfix` and old
   candidate dirs.
+
+Mechanism detail for the cured wedge classes (the poisoned-row stall, the
+tip_finalize boundary-persist pin, the header-continuation wedge) lives in
+[`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) and
+the Wave N backlog memory — not narrated here.
 
 ---
 

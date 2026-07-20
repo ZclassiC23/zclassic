@@ -1,34 +1,26 @@
 # TENACITY — Standing Engineering Doctrine for a Tenacious Binary
 
-*Adopted 2026-06-11 from the information-theory diagnosis. This is the
-**doctrine** (timeless rules). The dated status board this doctrine was
-distilled from — the divergence-surface audit, the failure-rate budget
-(F1–F11), the verification gates (G1–G5), and the merged rock-solid
-recovery-program L1/L2 items — is [`docs/work/tenacity-roadmap.md`](work/tenacity-roadmap.md),
-superseded as a roadmap (see `docs/work/ROADMAPS.md`) but retained on disk
-because reindex/replay-canary/seal_kv code still cites its numbered items by
-name. Near-term hardening sequencing (including the hold-class doctrine and
-the stability-hardening backlog) is in that same file's "Hold-class doctrine"
-and "Stability hardening backlog" sections.*
+*This is the **doctrine** (timeless rules), distilled from an
+information-theory diagnosis of the project's failure modes. The dated status
+board this doctrine was distilled from — the divergence-surface audit, the
+failure-rate budget (F1–F11), the verification gates (G1–G5), and the merged
+rock-solid recovery-program L1/L2 items — is
+[`docs/work/tenacity-roadmap.md`](work/tenacity-roadmap.md), superseded as a
+roadmap (see `docs/work/ROADMAPS.md`) but retained on disk because
+reindex/replay-canary/seal_kv code still cites its numbered items by name.
+Near-term hardening sequencing (including the hold-class doctrine and the
+stability-hardening backlog) is in that same file's "Hold-class doctrine" and
+"Stability hardening backlog" sections.*
 
 Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
-Commit `ab512d577` fixed the earlier transparent coins-above-seed loader failure,
-but it did **not** close the wedge class. Canonical is held below tip because
-historical shielded anchors and nullifiers are incomplete (verify the live H\*
-via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
-state). The borrowed h=3,156,809 artifact's payload SHA3 proves file integrity and its
-anchor hash identifies a validated local header; neither proves that its UTXO,
-Sapling/Sprout, or nullifier contents were derived from the chain because
-ZClassic headers commit none of those state roots. The **sovereign cure** is a
-complete state rebuild/install with independent component checks, atomic
-promotion, and copy proof. A v3 snapshot carrying shielded sections must not be
-sent through the current v1-oriented refold reset that can discard them. Current
-posture: `docs/HANDOFF.md`; design: `docs/work/self-verified-tip-plan.md`. Verify
-live state from `zclassic23 status`, never from this doctrine document. The six
-principles below are timeless, independent of that status.
+Live bootstrap/cure status: [`docs/HANDOFF.md`](HANDOFF.md); design:
+`docs/work/self-verified-tip-plan.md`. Verify live state from
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`, never from this
+doctrine document. The six principles below are timeless, independent of that
+status.
 
 ---
 
@@ -43,10 +35,10 @@ cells tells you which one is right. You never fix it by editing the cell.
 
 1. **The chain is the only truth — everything else is derived.** The block
    chain is the one immutable input; cursors, coins, verdicts, and commitments
-   are recomputable views of it. The 2026-06-11 boot crash-loop was a tip
-   *installed* (3143175) above what the validated evidence supported (frontier
-   3141533) — a typed-in number, not a derived one. Both live wedge classes
-   that day were the same defect: state installed instead of derived.
+   are recomputable views of it. A tip *installed* above what the validated
+   evidence supports — a typed-in number, not a derived one — is the standing
+   defect class behind every boot crash-loop this doctrine guards against:
+   state installed instead of derived.
 
 2. **One writer per fact; everything else is a formula.** Each fact has exactly
    one authoritative writer inside one transaction; every other encoding is
@@ -66,10 +58,10 @@ cells tells you which one is right. You never fix it by editing the cell.
    anomaly — coin tear, height splice, stale verdict, integrity mismatch — gets
    one remedy: discard the window, reset to the last seal, replay forward (a
    ≤~2,100-block span, seconds at measured replay throughput), recompute the
-   commitment, resume. The 2026-06-11 record proves it: every recovery that
-   worked was a recompute (crash-only auto-reindex, cold-import); every one that
-   failed was a repair (the anti-rewind floor refusing a consistent rollback
-   target → 6 h crash-loop; depth-3 poison-rewinds oscillating 8×).
+   commitment, resume. Every recovery that works is a recompute (crash-only
+   auto-reindex, cold-import); every one that fails is a repair — an
+   anti-rewind floor refusing a consistent rollback target compounds into a
+   crash-loop, and depth-3 poison-rewinds oscillate instead of converging.
    `window_rebuild` is the verb that makes each ladder deletion safe;
    auto-reindex-from-anchor is its landed degenerate form.
 
@@ -82,9 +74,9 @@ cells tells you which one is right. You never fix it by editing the cell.
 6. **Verify against the chain, not against text or mirrors.** Ground truth is
    the canonical chain's own bytes; reference source text and sibling copies are
    lossy proxies. Text said 102,000 bytes was the tx maximum; the chain holds a
-   125,811-byte tx at h=478544, and trusting the text FATALed genesis replay
-   (see I4). Trusting a lagging mirror manufactured a false coin-tear the same
-   day — both cured by checking the derivation, not the copy.
+   125,811-byte tx at h=478544, and trusting the text FATALs genesis replay
+   (see I4). Trusting a lagging mirror can manufacture a false coin-tear —
+   both classes cure by checking the derivation, not the copy.
 
 ---
 
@@ -108,8 +100,9 @@ Invariant B applied this to the coin-tear — derived from utxo_apply's OWN
 co-committed log, not the lagging frontier (`c8018a388`).
 
 **I3 — Divergence unrepresentable.** When copies CAN diverge, repair code that
-guesses between them becomes the bug (the anti-rewind floor refused a consistent
-rollback target → 6 h systemd-FAILED crash-loop). The cure is a write-time
+guesses between them becomes the bug (an anti-rewind floor that refuses a
+consistent rollback target compounds into a systemd-FAILED crash-loop). The
+cure is a write-time
 invariant at a chokepoint, never a new repair module. **Standing rule: new wedge
 = new write-time invariant, never a new repair rung.** A PR adding
 `*repair*|*recover*|*heal*|*reconcile*` code must cite the invariant that makes
@@ -128,10 +121,10 @@ crash-only auto-reindex instead of FATAL crash-loop (`706a7c00a`); never-give-up
 unit (`StartLimitIntervalSec=0`, stepped backoff, `0b45e93a5`).
 
 **I6 — Measure the real distribution.** test_parallel green is a regression
-floor, not a liveness proof. 0 of the 2026-06-11 session's 4 live failures were
-catchable by any gate as configured (`0/430 green` coexisted with `node down
-6+ hours`). Gates must sample real crash/import/repair histories and real chain
-content — see the G1–G5 gate program in [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
+floor, not a liveness proof: a fully green hermetic suite can coexist with the
+node down for hours in production, because no gate as configured samples that
+failure class. Gates must sample real crash/import/repair histories and real
+chain content — see the G1–G5 gate program in [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
 ---
 

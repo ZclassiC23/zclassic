@@ -19,31 +19,21 @@ registries anywhere in the path.
 
 ## Status
 
-**Pre-v1 — not yet production-ready.** Of the eight v1 acceptance criteria in
-[`docs/MVP.md`](docs/MVP.md), four pass their local operator proof (MRS 4/8);
-none are yet end-to-end CI-verified across a live soak. Don't rely on it as your
-only mainnet node yet.
+**Pre-v1 — not yet production-ready.** The v1 bar is the eight acceptance
+criteria in [`docs/MVP.md`](docs/MVP.md) (v1 = MRS 8/8). Don't rely on it as
+your only mainnet node yet.
 
-It runs on ZClassic mainnet on the `zclassicd` consensus floor, but the public
-canonical node is currently **wedged below tip** (verify the live H\* via
-`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`;
-[`docs/HANDOFF.md`](docs/HANDOFF.md)
-holds current state) by incomplete historical
-shielded anchors/nullifiers. A borrowed snapshot previously brought its
-transparent state to tip. Its anchor hash is checked against a validated local
-header, but ZClassic headers do not commit the snapshot's UTXO or shielded-state
-contents; do not call those contents consensus- or PoW-bound. The **sovereign
-cold-start cure** folds real block bodies forward from the in-binary SHA3/PoW
-checkpoint (`core/chainparams/src/checkpoints.c`, h=3,056,758) to independently
-derive complete transparent, Sapling, Sprout, and nullifier state, then installs
-it atomically and passes copy proof before canonical deployment. A full-history
-fold producer is running toward that checkpoint now; the cure is **in flight,
-not complete** — do not treat any current soak time as clean evidence. Its
-design is in
-[`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md). For
-current live state, ask the running node (`zclassic23 status`) or read
-[`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The other known
-soft spot: **off-chain ZMSG is plaintext on the wire**.
+It runs on ZClassic mainnet on the `zclassicd` consensus floor. The node's
+UTXO/anchor/nullifier state is either self-derived by folding real block
+bodies forward from the in-binary SHA3/PoW checkpoint
+(`core/chainparams/src/checkpoints.c`) — the **sovereign cure** — or, where a
+borrowed snapshot was used to seed transparent state, checked against a
+validated local header; ZClassic headers do not commit a snapshot's UTXO or
+shielded-state contents, so a header match alone does not make borrowed
+contents consensus- or PoW-bound. Design: [`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md).
+The other known soft spot: **off-chain ZMSG is plaintext on the wire**.
+
+Live state: `zclassic23 status` / [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 It is operator-owned full-node infrastructure: embedded Tor publishes *your* onion
 service, wallet state stays in your datadir, and native commands are a typed
@@ -88,9 +78,9 @@ blocker, never a silent failure:
 
 Every trust claim reduces to two things: the compiled binary and the
 PoW-heaviest header chain — no DNS, CAs, or registries in the path. The
-**sovereign cure** (see [Status](#status)) is the work item that makes the
-sealed-state layer complete and independently derived rather than borrowed
-from an external `zclassicd` snapshot.
+**sovereign cure** (see [Status](#status)) makes the sealed-state layer
+independently derived rather than borrowed from an external `zclassicd`
+snapshot.
 
 ## Quick start
 
