@@ -33,14 +33,12 @@ void rfrl_snapshot_reducer_cursors(struct sqlite3 *db);
 bool rfrl_read_coin_backfill_scan_cursor(struct sqlite3 *db, bool *present,
                                          int *next_height);
 void rfrl_snapshot_coin_backfill_scan(struct sqlite3 *db);
-int rfrl_coin_backfill_scan_present_at_detect(void);
 int rfrl_coin_backfill_scan_next_at_detect(void);
 void rfrl_set_coin_backfill_scan_snapshot(bool present, int next_height);
 
 bool rfrl_read_tipfin_backfill_progress(struct sqlite3 *db, bool *present,
                                         int *progress);
 void rfrl_snapshot_tipfin_backfill(struct sqlite3 *db);
-int rfrl_tipfin_backfill_present_at_detect(void);
 int rfrl_tipfin_backfill_progress_at_detect(void);
 void rfrl_set_tipfin_backfill_snapshot(bool present, int progress);
 

@@ -385,12 +385,6 @@ bool api_service_operations_filtered_index_json(
     return api_service_operations_index_for_filter(out, &filter);
 }
 
-bool api_service_operations_index_json(struct json_value *out)
-{
-    return api_service_operations_filtered_index_json(out, NULL, NULL, NULL,
-                                                     NULL, NULL, NULL, 0);
-}
-
 bool api_service_operations_index_path_json(const char *path,
                                             struct json_value *out,
                                             char *err,

@@ -52,12 +52,6 @@ void rpc_arg_builder_free(struct rpc_arg_builder *p);
 /* Append a typed value. NULL strings are treated as the empty string. */
 void rpc_arg_builder_push_str(struct rpc_arg_builder *p, const char *s);
 void rpc_arg_builder_push_int(struct rpc_arg_builder *p, int64_t i);
-void rpc_arg_builder_push_real(struct rpc_arg_builder *p, double d);
-void rpc_arg_builder_push_bool(struct rpc_arg_builder *p, bool b);
-
-/* Append a pre-built json_value (object, array, nested — anything).
- * Copies v; caller retains ownership and must json_free() it. */
-void rpc_arg_builder_push_value(struct rpc_arg_builder *p, const struct json_value *v);
 
 /* Serialize to a malloc'd, NUL-terminated JSON array string ready to
  * pass as the params_json argument to node_rpc_call(). Also frees the

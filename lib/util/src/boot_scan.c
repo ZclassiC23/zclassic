@@ -92,29 +92,6 @@ uint64_t boot_scan_value(const char *name)
     return c ? (uint64_t)atomic_load_explicit(c, memory_order_relaxed) : 0;
 }
 
-size_t boot_scan_count(void)
-{
-    return atomic_load_explicit(&g_count, memory_order_acquire);
-}
-
-size_t boot_scan_snapshot(struct boot_scan_row *rows, size_t max)
-{
-    if (!rows || max == 0)
-        return 0;
-    size_t n = atomic_load_explicit(&g_count, memory_order_acquire);
-    if (n > max)
-        n = max;
-    for (size_t i = 0; i < n; i++) {
-        size_t len = strnlen(g_slots[i].name, BOOT_SCAN_NAME_MAX - 1);
-        memcpy(rows[i].name, g_slots[i].name, len);
-        rows[i].name[len] = '\0';
-        rows[i].value =
-            (uint64_t)atomic_load_explicit(&g_slots[i].value,
-                                           memory_order_relaxed);
-    }
-    return n;
-}
-
 void boot_scan_dump_json(struct json_value *out)
 {
     if (!out)

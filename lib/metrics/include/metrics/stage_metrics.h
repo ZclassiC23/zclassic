@@ -57,17 +57,6 @@ const char *metrics_stage_name(int index);
 void metrics_stage_set_samples(const int64_t cursor[METRICS_STAGE_COUNT],
                                 const int64_t step_us_ewma[METRICS_STAGE_COUNT]);
 
-/* Introspection (tests + callers that want a single value without
- * rendering the whole Prometheus block). Returns 0 for an out-of-range
- * index rather than asserting — this is a read-only observability path. */
-int64_t metrics_stage_get_cursor(int index);
-int64_t metrics_stage_get_step_us_ewma(int index);
-
-/* Reset to the pre-tick zero state. Tests call this to isolate; folded
- * into metrics_prometheus_reset() would be a scope creep here since this
- * module has no per-request counters to clear — call directly. */
-void metrics_stage_reset(void);
-
 /* Append this module's Prometheus series at `pos` in `buf` (capacity
  * `cap`), following the same `pos = append(buf, cap, pos, fmt, ...)`
  * accumulation convention lib/metrics/src/prometheus_metrics.c uses for

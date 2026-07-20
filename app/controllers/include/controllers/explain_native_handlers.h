@@ -53,8 +53,6 @@ void explain_compose_health(const struct explain_inputs *in,
 
 /* Topic registry (for help/enumeration and the unknown-topic error). */
 size_t explain_topic_count(void);
-const char *explain_topic_name(size_t i);
-const char *explain_topic_summary(size_t i);
 /* Comma-joined topic names into `out`; returns strlen written. */
 size_t explain_topics_csv(char *out, size_t out_size);
 

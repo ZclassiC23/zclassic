@@ -213,13 +213,6 @@ static void hold_clear_locked(void)
     memset(&g_hold, 0, sizeof(g_hold));
 }
 
-void header_corroboration_hold_clear(void)
-{
-    pthread_mutex_lock(&g_lock);
-    hold_clear_locked();
-    pthread_mutex_unlock(&g_lock);
-}
-
 bool header_corroboration_hold_active(void)
 {
     pthread_mutex_lock(&g_lock);

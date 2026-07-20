@@ -571,11 +571,6 @@ int simnet_tip_height(const struct simnet *s)
     return (s && s->initialized) ? s->tip_height : -1;
 }
 
-uint32_t simnet_tip_time(const struct simnet *s)
-{
-    return (s && s->initialized) ? s->last_block_time : 0;
-}
-
 uint32_t simnet_next_block_time(const struct simnet *s)
 {
     return (s && s->initialized) ? s->next_block_time : 0;

@@ -655,26 +655,6 @@ uint64_t block_index_projection_count(block_index_projection_t *p)
     return n;
 }
 
-/* ── one-time historical-backfill flag ─────────────────────────────── */
-
-bool block_index_projection_backfill_done(block_index_projection_t *p)
-{
-    if (!p || !p->db) return false;
-    pthread_mutex_lock(&p->mu);
-    uint64_t v = meta_get_u64(p->db, "block_index_backfilled", 0);
-    pthread_mutex_unlock(&p->mu);
-    return v != 0;
-}
-
-bool block_index_projection_mark_backfilled(block_index_projection_t *p)
-{
-    if (!p || !p->db) return false;
-    pthread_mutex_lock(&p->mu);
-    bool ok = meta_set_u64(p->db, "block_index_backfilled", 1);
-    pthread_mutex_unlock(&p->mu);
-    return ok;
-}
-
 /* SHA3-256 over (height, hash) canonical order, absorbing for each
  * entry the same load-bearing fields the diff tool checks. */
 int block_index_projection_commitment(block_index_projection_t *p,

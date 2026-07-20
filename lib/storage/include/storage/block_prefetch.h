@@ -103,7 +103,6 @@ bool block_prefetch_running(void);
 uint64_t block_prefetch_warm_hits(void);     /* probe found pages resident */
 uint64_t block_prefetch_warmed(void);        /* blocking pread issued to warm */
 uint64_t block_prefetch_nowait_misses(void); /* RWF_NOWAIT reported not-resident */
-uint64_t block_prefetch_bytes(void);         /* bytes read by warming preads */
 size_t   block_prefetch_lru_bytes(void);     /* raw bytes currently retained */
 size_t   block_prefetch_lru_count(void);     /* entries currently retained */
 

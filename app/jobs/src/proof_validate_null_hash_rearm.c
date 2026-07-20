@@ -28,18 +28,6 @@
 #define TIP_FINALIZE_STAGE_NAME "tip_finalize"
 #define REARM_REASON "proof_validate.null_hash_rearm"
 
-const char *proof_validate_rearm_outcome_name(
-    enum proof_validate_rearm_outcome o)
-{
-    switch (o) {
-    case PV_REARM_NOT_NEEDED: return "not_needed";
-    case PV_REARM_REFUSED:    return "refused";
-    case PV_REARM_ERROR:      return "error";
-    case PV_REARM_REARMED:    return "rearmed";
-    }
-    return "unknown";
-}
-
 static enum proof_validate_rearm_outcome
 finish(struct proof_validate_rearm_report *report,
        enum proof_validate_rearm_outcome outcome)

@@ -72,15 +72,6 @@ enum txindex_read_status txindex_projection_read_locate(
  *                       yet folded far enough. */
 bool txindex_dump_state_json(struct json_value *out, const char *key);
 
-/* Drop-and-rederive the whole projection (single entry point). Grabs the store
- * trylock, drops both tables, re-ensures the schema, and clears the in-memory
- * counters/cursor/digest so the backfill restarts from height 0. Returns false
- * when disabled, unwired, busy, or on a real DB error. */
-bool txindex_projection_service_rederive(void);
-
-/* Test hook: clear counters and the registration latch. */
-void txindex_projection_service_reset_for_test(void);
-
 /* Bounded per-tick work (mirrors address_index's pacing exactly). */
 #define TXINDEX_BATCH_BLOCKS   128
 #define TXINDEX_BATCH_US       15000   /* 15 ms wall budget per tick */

@@ -145,15 +145,6 @@ size_t net_send_total_bytes_cap(void);
 size_t net_send_peer_bytes_cap(void);
 bool net_send_over_budget(const struct p2p_node *node);
 
-/* Realloc-failure counters for the growth-buffer silent-drop sites in
- * net.c: p2p_node_push_address()'s addr_to_send buffer and
- * ban_addr_ex()'s ban list. Both log (LOG_ERROR) and count instead of a
- * bare `return;` on OOM — a non-zero, growing value names memory
- * pressure that is silently dropping gossip addresses or (worse) failing
- * to record a ban. */
-uint64_t net_addr_push_alloc_fail_count(void);
-uint64_t net_ban_alloc_fail_count(void);
-
 /* reason is a short human-readable label ("threshold reached: <offence>"
  * etc, truncated) captured at ban time purely for operator diagnosis
  * (`zclassic23 core network peers incidents` / node.log) — it is never matched

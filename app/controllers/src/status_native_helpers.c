@@ -224,17 +224,6 @@ void status_push_bool_if_known(struct json_value *obj, const char *key,
     json_free(&unknown);
 }
 
-void status_format_int_if_known(char *buf, size_t buf_size,
-                                       bool known, int64_t value)
-{
-    if (!buf || buf_size == 0)
-        return;
-    if (known)
-        snprintf(buf, buf_size, "%lld", (long long)value);
-    else
-        snprintf(buf, buf_size, "unknown");
-}
-
 void status_push_rpc_parse_error(struct json_value *obj,
                                         const char *key,
                                         const char *raw,
@@ -303,7 +292,6 @@ bool status_peer_is_magicbean(const struct json_value *peer)
            status_peer_subver_has(peer, "MagicBean");
 }
 
-
 bool status_peer_array_is_valid(const struct json_value *peers)
 {
     if (!peers || peers->type != JSON_ARR)
@@ -362,80 +350,6 @@ void status_peer_survey(const struct json_value *peers,
     }
 
     if (out) *out = s;
-}
-
-long long status_max_ll(long long a, long long b)
-{
-    return a > b ? a : b;
-}
-
-void status_push_string_array(struct json_value *obj,
-                                     const char *key,
-                                     const char *a,
-                                     const char *b)
-{
-    struct json_value arr;
-    json_init(&arr);
-    json_set_array(&arr);
-    if (a && a[0]) {
-        struct json_value item;
-        json_init(&item);
-        json_set_str(&item, a);
-        json_push_back(&arr, &item);
-        json_free(&item);
-    }
-    if (b && b[0] && (!a || strcmp(a, b) != 0)) {
-        struct json_value item;
-        json_init(&item);
-        json_set_str(&item, b);
-        json_push_back(&arr, &item);
-        json_free(&item);
-    }
-    json_push_kv(obj, key, &arr);
-    json_free(&arr);
-}
-
-void status_push_lane_safety_fields(
-    struct json_value *root, const struct json_value *lane)
-{
-    if (!root || !lane || lane->type != JSON_OBJ)
-        return;
-
-    const struct json_value *safety = json_get(lane, "deployment_safety");
-    json_push_kv_str(root, "operator_lane_name",
-                     status_json_str(lane, "lane", "unknown"));
-    json_push_kv_bool(root, "automation_restart_ok",
-                      status_json_bool(lane, "automation_restart_ok", false));
-    json_push_kv_bool(root, "automation_deploy_ok",
-                      status_json_bool(lane, "automation_deploy_ok", false));
-    json_push_kv_bool(root, "requires_operator_confirmation",
-                      status_json_bool(lane,
-                                       "requires_operator_confirmation",
-                                       true));
-    json_push_kv_str(root, "preferred_deploy_target",
-                     safety ? status_json_str(safety,
-                                              "preferred_deploy_target",
-                                              "unknown") : "unknown");
-    json_push_kv_str(root, "safe_default_action",
-                     safety ? status_json_str(safety,
-                                              "safe_default_action",
-                                              "inspect_operator_lane")
-                            : "inspect_operator_lane");
-}
-
-int blocker_status_priority(const char *class_name)
-{
-    if (!class_name)
-        return 0;
-    if (strcmp(class_name, "resource") == 0)
-        return blocker_causal_priority(BLOCKER_RESOURCE, NULL);
-    if (strcmp(class_name, "permanent") == 0)
-        return blocker_causal_priority(BLOCKER_PERMANENT, NULL);
-    if (strcmp(class_name, "dependency") == 0)
-        return blocker_causal_priority(BLOCKER_DEPENDENCY, NULL);
-    if (strcmp(class_name, "transient") == 0)
-        return blocker_causal_priority(BLOCKER_TRANSIENT, NULL);
-    return 0;
 }
 
 static int status_blocker_causal_priority(const struct json_value *candidate)

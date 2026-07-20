@@ -603,30 +603,6 @@ void metrics_prometheus_record_peer_ban(void)
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t metrics_prometheus_peer_offences_total(void)
-{
-    pthread_mutex_lock(&g_lock);
-    uint64_t v = g_peer_offences_total;
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
-uint64_t metrics_prometheus_peer_offences_for_kind(const char *kind)
-{
-    pthread_mutex_lock(&g_lock);
-    uint64_t v = g_peer_offences[peer_kind_slot(kind)];
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
-uint64_t metrics_prometheus_peer_bans_total(void)
-{
-    pthread_mutex_lock(&g_lock);
-    uint64_t v = g_peer_bans_total;
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
 /* ── Consensus reject counters ──────────────────────────────── */
 
 /* Find an existing (kind, reason) slot or create a new one.  Returns
@@ -676,23 +652,6 @@ uint64_t metrics_prometheus_consensus_rejects_total(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_reject_total_tx + g_reject_total_block;
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
-uint64_t metrics_prometheus_consensus_rejects_for_kind(const char *kind)
-{
-    pthread_mutex_lock(&g_lock);
-    uint64_t v = (kind && strcmp(kind, "block") == 0)
-                   ? g_reject_total_block : g_reject_total_tx;
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
-uint64_t metrics_prometheus_consensus_rejects_tracked_reasons(void)
-{
-    pthread_mutex_lock(&g_lock);
-    uint64_t v = (uint64_t)g_reject_slot_count;
     pthread_mutex_unlock(&g_lock);
     return v;
 }
@@ -1083,85 +1042,6 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);
-    return pos;
-}
-
-size_t metrics_prometheus_peer_report_json(char *buf, size_t cap)
-{
-    if (!buf || cap == 0) return 0;
-    pthread_mutex_lock(&g_lock);
-
-    size_t pos = 0;
-    pos = append(buf, cap, pos,
-        "{\"config\":{"
-            "\"ban_threshold\":%d,"
-            "\"ban_hours\":%d,"
-            "\"decay_per_min\":%d"
-        "},\"offences\":{",
-        peer_scoring_ban_threshold(),
-        peer_scoring_ban_hours(),
-        peer_scoring_decay_rate());
-
-    for (int i = 0; i < METRICS_PROMETHEUS_PEER_KINDS; i++) {
-        pos = append(buf, cap, pos,
-            "%s\"%s\":%llu",
-            i == 0 ? "" : ",",
-            k_peer_kind_names[i],
-            (unsigned long long)g_peer_offences[i]);
-    }
-
-    pos = append(buf, cap, pos,
-        "},\"offences_total\":%llu,\"bans_total\":%llu}",
-        (unsigned long long)g_peer_offences_total,
-        (unsigned long long)g_peer_bans_total);
-
-    if (pos < cap) buf[pos] = '\0';
-    pthread_mutex_unlock(&g_lock);
-    return pos;
-}
-
-size_t metrics_prometheus_rpc_report_json(char *buf, size_t cap)
-{
-    if (!buf || cap == 0) return 0;
-
-    /* Do not hold g_lock here: the RPC middleware has its own mutex, and its
-     * snapshot should be internally consistent. */
-    struct rpc_http_middleware *mw = rpc_http_middleware_get_global();
-    struct rpc_http_stats_snapshot snap;
-    rpc_http_middleware_stats_snapshot(mw, &snap);
-    const char *server_state = mw ? "active" : "inactive";
-
-    size_t pos = 0;
-    pos = append(buf, cap, pos,
-        "{\"rpc_server\":\"%s\","
-         "\"config\":{"
-            "\"global_rps\":%d,"
-            "\"global_burst\":%d,"
-            "\"per_ip_rps\":%d,"
-            "\"per_ip_burst\":%d,"
-            "\"auth_fail_threshold\":%d,"
-            "\"ban_seconds\":%d"
-         "},\"stats\":{"
-            "\"allowed\":%llu,"
-            "\"rate_limited_global\":%llu,"
-            "\"rate_limited_per_ip\":%llu,"
-            "\"banned_rejected\":%llu,"
-            "\"bans_issued\":%llu,"
-            "\"auth_failures\":%llu"
-         "},\"tracked_ips\":%zu,\"active_bans\":%zu}",
-        server_state,
-        snap.global_rps, snap.global_burst,
-        snap.per_ip_rps, snap.per_ip_burst,
-        snap.auth_fail_threshold, snap.ban_seconds,
-        (unsigned long long)snap.allowed,
-        (unsigned long long)snap.rate_limited_global,
-        (unsigned long long)snap.rate_limited_per_ip,
-        (unsigned long long)snap.banned_rejected,
-        (unsigned long long)snap.bans_issued,
-        (unsigned long long)snap.auth_failures,
-        snap.tracked_ips, snap.active_bans);
-
-    if (pos < cap) buf[pos] = '\0';
     return pos;
 }
 

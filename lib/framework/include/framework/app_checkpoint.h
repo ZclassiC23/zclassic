@@ -269,9 +269,6 @@ enum zcl_app_checkpoint_result {
     ZCL_APP_CHECKPOINT_ACCEPTANCE,
 };
 
-const char *zcl_app_checkpoint_result_name(
-    enum zcl_app_checkpoint_result result);
-
 bool zcl_app_state_chunk_digest_v1(const uint8_t *bytes, uint32_t length,
                                    uint8_t out[32]);
 

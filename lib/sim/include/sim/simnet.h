@@ -173,7 +173,6 @@ int simnet_tip_height(const struct simnet *s);
 /* Deterministic virtual block clock. `tip_time` is 0 before the first mint;
  * `next_block_time` advances by ZClassic's 150-second target spacing after
  * every minted block. */
-uint32_t simnet_tip_time(const struct simnet *s);
 uint32_t simnet_next_block_time(const struct simnet *s);
 
 /* Copy the current tip hash into `out`. */

@@ -47,32 +47,6 @@ static void digest_text(struct sha3_256_ctx *ctx, const char *text,
     sha3_256_write(ctx, (const uint8_t *)text, length);
 }
 
-const char *zcl_app_checkpoint_result_name(
-    enum zcl_app_checkpoint_result result)
-{
-    switch (result) {
-    case ZCL_APP_CHECKPOINT_OK: return "ok";
-    case ZCL_APP_CHECKPOINT_NULL: return "null";
-    case ZCL_APP_CHECKPOINT_SCHEMA: return "schema";
-    case ZCL_APP_CHECKPOINT_APP_ID: return "app_id";
-    case ZCL_APP_CHECKPOINT_IDENTITY: return "identity";
-    case ZCL_APP_CHECKPOINT_GENERATION: return "generation";
-    case ZCL_APP_CHECKPOINT_GRANT: return "grant";
-    case ZCL_APP_CHECKPOINT_STATE_SCHEMA: return "state_schema";
-    case ZCL_APP_CHECKPOINT_STORAGE_CLASS: return "storage_class";
-    case ZCL_APP_CHECKPOINT_ROOT: return "root";
-    case ZCL_APP_CHECKPOINT_CURSOR: return "cursor";
-    case ZCL_APP_CHECKPOINT_CHUNK_LAYOUT: return "chunk_layout";
-    case ZCL_APP_CHECKPOINT_IMAGE_ROOT: return "image_root";
-    case ZCL_APP_CHECKPOINT_CAUSALITY: return "causality";
-    case ZCL_APP_CHECKPOINT_SIDE_EFFECT: return "side_effect";
-    case ZCL_APP_CHECKPOINT_EXPECTED_BINDING: return "expected_binding";
-    case ZCL_APP_CHECKPOINT_ADMISSION: return "admission";
-    case ZCL_APP_CHECKPOINT_ACCEPTANCE: return "acceptance";
-    }
-    return "invalid";
-}
-
 bool zcl_app_state_chunk_digest_v1(const uint8_t *bytes, uint32_t length,
                                    uint8_t out[32])
 {

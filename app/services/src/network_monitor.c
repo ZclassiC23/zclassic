@@ -57,7 +57,6 @@ static struct {
     zcl_mutex_t lock;
     bool started;
 
-
     struct node_db *db;
     int sample_interval_secs;
     int retain_rows;
@@ -558,24 +557,6 @@ bool network_monitor_dump_state_json(struct json_value *out, const char *key)
 }
 
 #ifdef ZCL_TESTING
-bool network_monitor_test_sample_once(void)
-{
-    if (!g_nm.started)
-        return false;
-    nm_sample_once();
-    return true;
-}
-
-void network_monitor_test_reset(void)
-{
-    zcl_mutex_lock(&g_nm.lock);
-    memset(g_nm.votes, 0, sizeof(g_nm.votes));
-    memset(&g_nm.view, 0, sizeof(g_nm.view));
-    g_nm.last_fork_height = -1;
-    g_nm.last_fork_hash_a[0] = '\0';
-    g_nm.last_fork_hash_b[0] = '\0';
-    zcl_mutex_unlock(&g_nm.lock);
-}
 
 void network_monitor_test_set_view(const struct network_consensus_view *v)
 {

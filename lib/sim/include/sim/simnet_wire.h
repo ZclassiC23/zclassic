@@ -154,8 +154,6 @@ struct simnet_wire *simnet_wire_create_scenario(
     const struct wire_scenario *scenario);
 bool simnet_wire_peer_send_ping(struct simnet_wire *wire, size_t peer_id,
                                 uint64_t nonce);
-bool simnet_wire_peer_stop_adversary(struct simnet_wire *wire,
-                                     size_t peer_id);
 
 /* Per-link partition/recovery (Step D1). Enqueues WIRE_EVENT_CLOSE
  * (closed=true) or WIRE_EVENT_OPEN (closed=false) for peer_id — models
@@ -198,7 +196,6 @@ bool simnet_wire_peer_handshake_complete(const struct simnet_wire *wire,
                                          size_t peer_id);
 bool simnet_wire_peer_pong_received(const struct simnet_wire *wire,
                                     size_t peer_id, uint64_t nonce);
-uint64_t simnet_wire_fingerprint(const struct simnet_wire *wire);
 bool simnet_wire_get_stats(const struct simnet_wire *wire,
                            struct simnet_wire_stats *out);
 bool simnet_wire_tip_hash(const struct simnet_wire *wire,

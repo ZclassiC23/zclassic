@@ -36,8 +36,6 @@ void simnet_cluster_free(struct simnet_cluster *cluster);
  * delivery fingerprint is unchanged. Returns false (and logs) on a bad node. */
 bool simnet_cluster_set_role(struct simnet_cluster *cluster, size_t node_id,
                              enum simnet_node_role role);
-enum simnet_node_role simnet_cluster_node_role(
-    const struct simnet_cluster *cluster, size_t node_id);
 
 /* A byzantine node forges an INVALID block (adversarial class chosen from
  * byz_seed via a splitmix64 draw) that links to the shared cluster base as a

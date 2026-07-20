@@ -60,20 +60,6 @@ static _Atomic int_least64_t g_shi_nullifiers    = 0;
 static _Atomic int_least64_t g_shi_start_ms      = 0;
 static _Atomic int_least64_t g_shi_last_elapsed  = 0;
 
-const char *shielded_history_import_phase_name(int phase)
-{
-    switch (phase) {
-    case SHI_PHASE_IDLE:            return "idle";
-    case SHI_PHASE_SNAPSHOT:        return "snapshot";
-    case SHI_PHASE_SCAN_ANCHORS:    return "scan_anchors";
-    case SHI_PHASE_SCAN_NULLIFIERS: return "scan_nullifiers";
-    case SHI_PHASE_BIND:            return "bind";
-    case SHI_PHASE_COMMIT:          return "commit";
-    case SHI_PHASE_DONE:            return "done";
-    default:                        return "unknown";
-    }
-}
-
 bool shielded_history_import_progress_snapshot(struct shi_progress *out)
 {
     if (!out)

@@ -44,26 +44,6 @@ void metrics_stage_set_samples(const int64_t cursor[METRICS_STAGE_COUNT],
     }
 }
 
-int64_t metrics_stage_get_cursor(int index)
-{
-    if (index < 0 || index >= METRICS_STAGE_COUNT) return 0;
-    return atomic_load(&g_stage_cursor[index]);
-}
-
-int64_t metrics_stage_get_step_us_ewma(int index)
-{
-    if (index < 0 || index >= METRICS_STAGE_COUNT) return 0;
-    return atomic_load(&g_stage_step_us_ewma[index]);
-}
-
-void metrics_stage_reset(void)
-{
-    for (int i = 0; i < METRICS_STAGE_COUNT; i++) {
-        atomic_store(&g_stage_cursor[i], 0);
-        atomic_store(&g_stage_step_us_ewma[i], 0);
-    }
-}
-
 /* Same bounded vsnprintf-append convention as prometheus_metrics.c's
  * file-local `append()` — duplicated rather than shared because both are
  * small, file-scoped helpers with no other consumer. */

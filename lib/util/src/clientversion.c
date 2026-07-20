@@ -34,11 +34,6 @@ const char *zcl_build_source_id_sha256(void)
     return ZCL_BUILD_SOURCE_ID;
 }
 
-bool zcl_build_source_clean(void)
-{
-    return ZCL_BUILD_CLEAN != 0;
-}
-
 void FormatVersion(int nVersion, char *out, size_t out_size)
 {
     int major = nVersion / 1000000;

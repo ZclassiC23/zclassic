@@ -102,18 +102,5 @@ void register_chain_reorg_uncorroborated(void)
 }
 
 #ifdef ZCL_TESTING
-void chain_reorg_uncorroborated_test_reset(void)
-{
-    blocker_clear(CHAIN_REORG_UNCORROBORATED_BLOCKER_ID);
-}
 
-bool chain_reorg_uncorroborated_test_detect(void)
-{
-    return detect_chain_reorg_uncorroborated();
-}
-
-int chain_reorg_uncorroborated_test_remedy(void)
-{
-    return (int)remedy_chain_reorg_uncorroborated();
-}
 #endif

@@ -134,32 +134,6 @@ static bool descriptors_sorted(
     return true;
 }
 
-const char *zcl_service_manifest_result_name(
-    enum zcl_service_manifest_result result)
-{
-    switch (result) {
-    case ZCL_SERVICE_MANIFEST_OK: return "ok";
-    case ZCL_SERVICE_MANIFEST_NULL: return "null";
-    case ZCL_SERVICE_MANIFEST_SCHEMA: return "schema";
-    case ZCL_SERVICE_MANIFEST_IDENTITY: return "identity";
-    case ZCL_SERVICE_MANIFEST_ROLE_TRUST: return "role_trust";
-    case ZCL_SERVICE_MANIFEST_ENFORCEMENT: return "enforcement";
-    case ZCL_SERVICE_MANIFEST_DEPENDENCY: return "dependency";
-    case ZCL_SERVICE_MANIFEST_READINESS: return "readiness";
-    case ZCL_SERVICE_MANIFEST_IPC_GRANT: return "ipc_grant";
-    case ZCL_SERVICE_MANIFEST_DESCRIPTOR: return "descriptor";
-    case ZCL_SERVICE_MANIFEST_RESOURCE_BUDGET: return "resource_budget";
-    case ZCL_SERVICE_MANIFEST_RESTART_BUDGET: return "restart_budget";
-    case ZCL_SERVICE_MANIFEST_STATE_SCHEMA: return "state_schema";
-    case ZCL_SERVICE_MANIFEST_GENERATION: return "generation";
-    case ZCL_SERVICE_MANIFEST_HEALTH: return "health";
-    case ZCL_SERVICE_MANIFEST_CATALOG_ORDER: return "catalog_order";
-    case ZCL_SERVICE_MANIFEST_CATALOG_REFERENCE: return "catalog_reference";
-    case ZCL_SERVICE_MANIFEST_CATALOG_CYCLE: return "catalog_cycle";
-    }
-    return "invalid";
-}
-
 enum zcl_service_manifest_result zcl_service_manifest_validate_v1(
     const struct zcl_service_manifest_v1 *manifest)
 {

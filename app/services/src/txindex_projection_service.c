@@ -283,31 +283,6 @@ bool txindex_projection_service_registered(void)
     return atomic_load(&g_tx_registered);
 }
 
-bool txindex_projection_service_rederive(void)
-{
-    if (!txindex_projection_enabled())
-        return false; // raw-return-ok:opt-in-disabled-has-nothing-to-rederive
-    sqlite3 *db = projection_store_db();
-    if (!db)
-        LOG_FAIL("txindex", "rederive: projection store not open");
-    if (!projection_store_tx_trylock())
-        return false; // raw-return-ok:store-busy-retry-later-not-a-failure
-    bool ok = txindex_projection_drop(db) && txindex_projection_ensure_schema(db);
-    projection_store_tx_unlock();
-    if (ok) {
-        atomic_fetch_add(&g_tx_resets, 1);
-        atomic_store(&g_tx_schema_ready, true);
-        atomic_store(&g_tx_cursor, -1);
-        atomic_store(&g_tx_rows, 0);
-        atomic_store(&g_tx_blocked, false);
-        atomic_store(&g_tx_blocked_height, -1);
-        pthread_mutex_lock(&g_tx_digest_lock);
-        g_tx_digest_hex[0] = '\0';
-        pthread_mutex_unlock(&g_tx_digest_lock);
-    }
-    return ok;
-}
-
 /* ── dumpstate `txindex` ─────────────────────────────────────────────── */
 static void tx_dump_status(struct json_value *out)
 {
@@ -416,24 +391,4 @@ bool txindex_dump_state_json(struct json_value *out, const char *key)
         break;
     }
     return true;
-}
-
-void txindex_projection_service_reset_for_test(void)
-{
-    atomic_store(&g_tx_registered, false);
-    atomic_store(&g_tx_schema_ready, false);
-    atomic_store(&g_tx_cursor, -1);
-    atomic_store(&g_tx_hstar, -1);
-    atomic_store(&g_tx_rows, 0);
-    atomic_store(&g_tx_blocks_folded, 0);
-    atomic_store(&g_tx_ticks, 0);
-    atomic_store(&g_tx_last_batch_blocks, 0);
-    atomic_store(&g_tx_last_batch_us, 0);
-    atomic_store(&g_tx_resets, 0);
-    atomic_store(&g_tx_blocked, false);
-    atomic_store(&g_tx_blocked_height, -1);
-    atomic_store(&g_tx_id, SUPERVISOR_INVALID_ID);
-    pthread_mutex_lock(&g_tx_digest_lock);
-    g_tx_digest_hex[0] = '\0';
-    pthread_mutex_unlock(&g_tx_digest_lock);
 }
