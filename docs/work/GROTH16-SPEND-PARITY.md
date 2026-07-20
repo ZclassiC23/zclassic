@@ -15,10 +15,37 @@ and what is pending.
 |------|------|----------------|
 | H2 | `lib/test/src/groth16_spend_oracle.c` | Native `nsk_to_nk` / `crh_ivk` / `ivk_to_pkd` / `compute_cm` / `compute_nf` == librustzcash, byte-for-byte, for one pinned KAT witness. |
 | H3 | `lib/sapling/src/sapling_circuit.c` + shape gate in `test_groth16_selfverify.c` | Ported spend sections **1..7** synthesize with per-section cumulative constraint counts equal to the reference trace; in-circuit `nk`/`rk` wires carry reference-correct points; synthesis deterministic. Single witness. |
-| **H4** | `lib/test/src/groth16_spend_parity.c` | **Standing** differential parity oracle over a **corpus** of witnesses — generalizes H2+H3 and auto-tightens as H3 ports more sections. |
+| H4 | `lib/test/src/groth16_spend_parity.c` | **Standing** differential parity oracle over a **corpus** of witnesses — generalizes H2+H3 and auto-tightens as H3 ports more sections. |
+| **H5** | `lib/test/src/groth16_spend_adversarial.c` | Adversarial + negative-control gate over the **active production proving path** (reference-oracle prover -> native C23 verifier) — the only lane that runs a real prove/verify round-trip and tries to break it. Requires `~/.zcash-params` (SKIPs cleanly when absent, same convention as the rest of the self-test block). |
 
-Run: `make t-fast ONLY=groth16_selfverify` (params-free; no `~/.zcash-params`,
-no proving key required). `make t-fast ONLY=snark_kat` is the sibling KAT gate.
+Run: `make t-fast ONLY=groth16_selfverify` (H2/H3/H4 are params-free; no
+`~/.zcash-params`, no proving key required — H5 needs real params and SKIPs
+without them). `make t-fast ONLY=snark_kat` is the sibling KAT gate.
+
+## H5 — acceptance bar per check category
+
+H5 (`lib/test/src/groth16_spend_adversarial.c`) is the only lane that drives
+the ACTIVE production proving path end to end: the reference-oracle prover
+(librustzcash) generates a real spend proof, the independent native C23
+verifier (`sapling_check_spend`) accepts or rejects it, using real
+`~/.zcash-params` proving/verifying keys. Every check below states the
+acceptance bar it enforces — a differential vector without a stated bar is
+not a gate, so this table is authoritative, not decorative:
+
+| # | Category | Vector | Acceptance bar |
+|---|----------|--------|-----------------|
+| 1 | Self-test end-to-end | prove(reference oracle) for a freshly-built note/Merkle-witness/nullifier/signature bundle | `sapling_check_spend` MUST **accept** |
+| 2 | Differential | native `sapling_compute_rk(ak,ar)` vs the `rk` the reference-oracle prover returned for the identical `(ak,ar)` | MUST be **byte-identical** (no FFI export for `rk` exists, see H2's doc comment, so this is the closest available cross-check of a public-input wire against ground truth) |
+| 3 | Corrupted proof bytes | single-bit flip at 3 offsets across the 192-byte proof (A's flag byte, C's tail byte, inside B) | MUST be **rejected** |
+| 4 | Corrupted witness | a valid proof from a *different* witness, replayed against the original statement's public inputs | MUST be **rejected** — this is exactly the attack the Groth16 pairing check exists to stop |
+| 5 | Wrong public inputs | single-bit flip in `cv` / `anchor` / `nullifier` / `rk`, real proof held fixed | MUST be **rejected** |
+| 6 | Corrupted signature/sighash | single-bit flip in `spend_auth_sig` or `sighash` | MUST be **rejected** (the RedJubjub gate, independent of the Groth16 check) |
+| 7 | Truncated/bit-flipped proving key | `groth16_pk_read` (native C23 parser) on truncated (5 cut points, 0%..90%) or bit-flipped real `sapling-output.params` bytes, plus 0-byte/1-byte buffers | MUST return **false** (typed refusal) and MUST NOT crash |
+| 8 | Determinism | `rk` / nullifier across two independent re-provings of the byte-identical witness | MUST be **byte-identical** (double-spend protection depends on the nullifier being reproducible) |
+| 8 | Documented non-determinism | `cv` / the 192-byte proof across the same two re-provings | MUST **differ** (Groth16 ZK blinding + value-commitment re-randomization are intentional, OsRng-backed on this path) — asserted explicitly so a silent change either direction is caught; both independently-blinded proofs must still independently verify |
+| 8 | Determinism | `groth16_pk_read` parsed twice from identical bytes; `sapling_spend_prover_native_status()` called twice | MUST be **structurally/byte-identical** (pure functions, no hidden state) |
+| 9 | Zeroization | `memory_cleanse(cs.witness, cap_vars*sizeof(fr))` — the exact call `sapling_create_spend_proof` makes before `cs_free` | MUST leave the buffer **all-zero** (this is where the secret `ar`/`nsk` bit-decomposition wires live until this line runs) |
+| 9 | Zeroization | `memory_cleanse(&wit, sizeof(wit))` over a `struct sapling_spend_witness` populated by `sapling_spend_parse_witness` | MUST leave the struct **all-zero** |
 
 ## What the H4 parity oracle proves (per witness, whole corpus)
 

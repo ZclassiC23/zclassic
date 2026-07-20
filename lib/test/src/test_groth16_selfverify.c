@@ -293,6 +293,13 @@ int groth16_spend_reference_oracle(void);
  * H3 port advances. Lives in lib/test/src/groth16_spend_parity.c. */
 int groth16_spend_parity_oracle(void);
 
+/* H5 lane: adversarial + negative-control gate over the production SPEND
+ * prove (reference oracle) -> verify (native C23) round-trip, plus a
+ * proving-key-parser fuzz spot-check and zeroization spot-checks. Requires
+ * proving params (guarded below by the same is-ready check the rest of this
+ * self-test block uses). Lives in lib/test/src/groth16_spend_adversarial.c. */
+int groth16_spend_adversarial_gate(void);
+
 int test_groth16_selfverify(void);
 int test_groth16_selfverify(void)
 {
@@ -371,6 +378,12 @@ int test_groth16_selfverify(void)
         if (pctx)
             zclassic_sapling_proving_ctx_free(pctx);
     }
+
+    /* H5: adversarial + negative-control gate over the production SPEND
+     * prove->verify round-trip. Gated on proving readiness (needs a real
+     * proof to tamper with), independent of the OUTPUT-only checks above. */
+    if (zclassic_sapling_prover_is_ready())
+        failures += groth16_spend_adversarial_gate();
 
     /* Non-gating: emit native C23 circuit baseline counts for the
      * spend-prover campaign. Only meaningful once params are loaded. */
