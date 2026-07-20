@@ -100,11 +100,6 @@ static int caf_mkdir_p(const char *p)
     return -1;
 }
 
-static void caf_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/coins_applied_frontier_%d_%s", (int)getpid(), tag);
-}
-
 static void cb_txid(struct uint256 *out, uint8_t branch_tag, int h)
 {
     uint256_set_null(out);
@@ -390,7 +385,7 @@ int test_coins_applied_frontier(void)
     CAF_CHECK("branches build", built);
 
     if (built) {
-        char dir[256]; caf_tmpdir(dir, sizeof(dir), "main"); caf_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "main");
         char log_path[512], proj_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
         snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
@@ -545,7 +540,7 @@ int test_coins_applied_frontier(void)
     CAF_CHECK("fail-branch builds", fbuilt);
 
     if (fbuilt) {
-        char dir[256]; caf_tmpdir(dir, sizeof(dir), "upfail"); caf_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "upfail");
         char log_path[512], proj_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
         snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
@@ -608,7 +603,7 @@ int test_coins_applied_frontier(void)
      * coins_applied_height key (predates P2): the backfill must seed the
      * frontier == cursor, NOT from MAX(coins.height). ──────────────────── */
     {
-        char dir[256]; caf_tmpdir(dir, sizeof(dir), "backfill"); caf_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "backfill");
         CAF_CHECK("backfill: progress_store opens", progress_store_open(dir));
         sqlite3 *pdb = progress_store_db();
         (void)coins_kv_ensure_schema(pdb);
@@ -675,7 +670,7 @@ int test_coins_applied_frontier(void)
      * the SAME BEGIN IMMEDIATE, so coins_applied_height == the rewound utxo_apply
      * cursor. This pins that. */
     {
-        char dir[256]; caf_tmpdir(dir, sizeof(dir), "poison"); caf_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "poison");
         CAF_CHECK("poison: progress_store opens", progress_store_open(dir));
         sqlite3 *pdb = progress_store_db();
         (void)coins_kv_ensure_schema(pdb);
@@ -790,7 +785,7 @@ int test_coins_applied_frontier(void)
         CAF_CHECK("reject-branch builds", rbuilt);
 
         if (rbuilt) {
-            char dir[256]; caf_tmpdir(dir, sizeof(dir), "reject"); caf_mkdir_p(dir);
+            char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "reject");
             char log_path[512], proj_path[512];
             snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
             snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);

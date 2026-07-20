@@ -84,14 +84,6 @@ static bool insert_block_row(struct node_db *ndb,
 
 /* ── Datadir harness (mirrors test_block_index_integrity.c) ──── */
 
-static bool bisp_make_tmpdir(char *out, size_t cap)
-{
-    static _Atomic int seq = 0;
-    int s = atomic_fetch_add(&seq, 1);
-    snprintf(out, cap, "/tmp/zcl_bisp_test_%d_%d", (int)getpid(), s);
-    return mkdir(out, 0700) == 0 || errno == EEXIST;
-}
-
 static void bisp_write_body(const char *dir, const char *bytes, size_t n)
 {
     char path[512];
@@ -168,7 +160,8 @@ int test_block_index_sidecar_port(void)
      * port now backs, and it must not change. */
     {
         char dir[256];
-        BISP_CHECK("tmpdir made", bisp_make_tmpdir(dir, sizeof(dir)));
+        test_make_tmpdir(dir, sizeof(dir), "bisp", "sidecar");
+        BISP_CHECK("tmpdir made", dir[0] != '\0');
         const char body[] = "body-for-sidecar-port-test";
         bisp_write_body(dir, body, sizeof(body) - 1);
         BISP_CHECK("sidecar written", bii_write_sidecar(dir).ok);

@@ -129,17 +129,13 @@ static int sm_range(uint64_t *s, int lo, int hi)  /* inclusive */
     return lo + (int)(sm_u32(s) % (uint32_t)(hi - lo + 1));
 }
 
-static int mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
-
+/* rf_tmpdir folds the per-iteration suffix into a single tag, then
+ * delegates path-build + stale-cleanup + mkdir to the shared helper. */
 static void rf_tmpdir(char *buf, size_t n, const char *tag, int i)
 {
-    snprintf(buf, n, "./test-tmp/reducer_fuzz_%d_%s_%d",
-             (int)getpid(), tag, i);
+    char t[64];
+    snprintf(t, sizeof(t), "%s_%d", tag, i);
+    test_make_tmpdir(buf, n, "reducer_fuzz", t);
 }
 
 static bool exec_sql(sqlite3 *db, const char *sql)
@@ -516,7 +512,6 @@ static void fuzz_header_admit(uint64_t *rng, int iter)
 {
     char dir[256];
     rf_tmpdir(dir, sizeof(dir), "ha", iter);
-    mkdir_p("./test-tmp"); mkdir_p(dir);
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return; }
 
     struct main_state ms;
@@ -555,7 +550,6 @@ static void fuzz_validate_headers(uint64_t *rng, int iter)
 {
     char dir[256];
     rf_tmpdir(dir, sizeof(dir), "vh", iter);
-    mkdir_p("./test-tmp"); mkdir_p(dir);
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return; }
 
     struct main_state ms;
@@ -606,7 +600,6 @@ static void fuzz_body_fetch(uint64_t *rng, int iter)
 {
     char dir[256];
     rf_tmpdir(dir, sizeof(dir), "bf", iter);
-    mkdir_p("./test-tmp"); mkdir_p(dir);
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return; }
 
     struct main_state ms;
@@ -685,7 +678,6 @@ static void fuzz_downstream(uint64_t *rng, int iter, const struct down_spec *sp)
 {
     char dir[256];
     rf_tmpdir(dir, sizeof(dir), sp->label, iter);
-    mkdir_p("./test-tmp"); mkdir_p(dir);
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return; }
 
     struct main_state ms;
@@ -735,7 +727,6 @@ static void fuzz_tip_finalize(uint64_t *rng, int iter)
 {
     char dir[256];
     rf_tmpdir(dir, sizeof(dir), "tf", iter);
-    mkdir_p("./test-tmp"); mkdir_p(dir);
     if (!progress_store_open(dir)) { test_cleanup_tmpdir(dir); return; }
 
     struct main_state ms;

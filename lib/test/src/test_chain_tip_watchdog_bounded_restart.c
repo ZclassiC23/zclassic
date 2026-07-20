@@ -62,18 +62,6 @@ static void wd_operator_observer(enum event_type type, uint32_t peer_id,
     atomic_fetch_add(&g_operator_events, 1);
 }
 
-static void wd_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/chain_tip_wd_%d_%s", (int)getpid(), tag);
-}
-
-static int wd_mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
-
 /* Model one process boot: zero in-memory state, then reload the persisted
  * counters from the open progress.kv (exactly what register() does). */
 static void wd_sim_boot(void)
@@ -170,8 +158,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
     /* ── (a) deterministic wedge: K restarts then STOP + page ───────── */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "wedge");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "wedge");
         WD_CHECK("open progress.kv", progress_store_open(dir));
         atomic_store(&g_operator_events, 0);
 
@@ -253,8 +240,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
     /* ── (b) transient hang: 1 restart, then tip advances → reset ───── */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "transient");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "transient");
         WD_CHECK("open progress.kv (transient)", progress_store_open(dir));
 
         const int64_t STUCK_H = 1000000;
@@ -331,8 +317,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
     /* ── (c) persistence carries the count across an in-memory wipe ─── */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "persist");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "persist");
         WD_CHECK("open progress.kv (persist)", progress_store_open(dir));
 
         const int64_t STUCK_H = 42;
@@ -369,8 +354,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
     /* ── (d) creeping wedge: re-stuck within the margin = SAME episode ── */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "creep");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "creep");
         WD_CHECK("open progress.kv (creep)", progress_store_open(dir));
 
         /* Each restart "helps" by 2 blocks, then the tip re-wedges. The
@@ -434,8 +418,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
      * restarts on exactly this deterministic condition before paging). */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "deterministic");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "deterministic");
         WD_CHECK("open progress.kv (deterministic)", progress_store_open(dir));
         atomic_store(&g_operator_events, 0);
         sticky_escalator_test_reset();
@@ -495,8 +478,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
      * (T0 + age) - T0. */
     {
         char dir[256];
-        wd_tmpdir(dir, sizeof(dir), "ladder");
-        wd_mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "ladder");
         WD_CHECK("open progress.kv (ladder)", progress_store_open(dir));
 
         /* Capture the boot-default thresholds so we can restore them after

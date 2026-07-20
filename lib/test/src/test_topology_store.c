@@ -38,17 +38,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-static void ts_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/topology_store_%d_%s", (int)getpid(), tag);
-}
-
-static int mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
 
 static struct net_addr ts_ipv4(unsigned char a, unsigned char b,
                                unsigned char c, unsigned char d)
@@ -77,8 +66,7 @@ int test_topology_store(void)
     /* ── open creates the file + both tables ─────────────────────────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "open");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "open");
 
         TS_CHECK("first open succeeds", topology_store_open(dir));
         TS_CHECK("second open is idempotent (same handle, no error)",
@@ -98,8 +86,7 @@ int test_topology_store(void)
     /* ── record_edge: new edge, then upsert on re-observation ───────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "upsert");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "upsert");
         TS_CHECK("open for upsert", topology_store_open(dir));
         topology_store_test_reset();
 
@@ -140,8 +127,7 @@ int test_topology_store(void)
     /* ── PEDANTIC: non-routable garbage rejected, never stored ───────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "reject");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "reject");
         TS_CHECK("open for reject", topology_store_open(dir));
         topology_store_test_reset();
 
@@ -176,8 +162,7 @@ int test_topology_store(void)
     /* ── distinct onion identities never collapse ─────────────────────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "onion");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "onion");
         TS_CHECK("open for onion", topology_store_open(dir));
         topology_store_test_reset();
 
@@ -201,8 +186,7 @@ int test_topology_store(void)
     /* ── bounded-upsert cap eviction ──────────────────────────────────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "evict");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "evict");
         TS_CHECK("open for evict", topology_store_open(dir));
         topology_store_test_reset();
         topology_store_test_set_cap(5);
@@ -240,8 +224,7 @@ int test_topology_store(void)
     /* ── record_self_edge (crawler results) + record_sweep ────────────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "sweep");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "sweep");
         TS_CHECK("open for sweep", topology_store_open(dir));
         topology_store_test_reset();
 
@@ -272,8 +255,7 @@ int test_topology_store(void)
     /* ── dump_state_json surfaces the graph summary ───────────────────── */
     {
         char dir[256];
-        ts_tmpdir(dir, sizeof(dir), "dump");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "topology_store", "dump");
         TS_CHECK("open for dump", topology_store_open(dir));
         topology_store_test_reset();
 

@@ -110,11 +110,6 @@ static int sru_mkdir_p(const char *p)
     return -1;
 }
 
-static void sru_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/stage_reorg_unwind_%d_%s", (int)getpid(), tag);
-}
-
 /* ── Builders (mirror test_utxo_apply_stage's synthetic shapes) ──────── */
 
 /* Deterministic coinbase txid: (branch_tag, height). Distinct branches
@@ -414,7 +409,7 @@ int test_stage_reorg_unwind_parity(void)
 
     /* ── RUN 1: stage reorg path ─────────────────────────────────────── */
     if (built) {
-        char dir[256]; sru_tmpdir(dir, sizeof(dir), "run1"); sru_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "stage_reorg_unwind", "run1");
         char log_path[512], proj_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
         snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
@@ -507,7 +502,7 @@ int test_stage_reorg_unwind_parity(void)
 
     /* ── RUN 2: direct build of W ─────────────────────────────────────── */
     if (built) {
-        char dir[256]; sru_tmpdir(dir, sizeof(dir), "run2"); sru_mkdir_p(dir);
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "stage_reorg_unwind", "run2");
         char log_path[512], proj_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
         snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);

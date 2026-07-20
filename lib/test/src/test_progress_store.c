@@ -36,18 +36,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-/* cwd-relative tmpdir to comply with the "no /tmp" project convention. */
-static void ps_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/progress_store_%d_%s", (int)getpid(), tag);
-}
-
-static int mkdir_p(const char *p)
-{
-    if (mkdir(p, 0700) == 0) return 0;
-    if (errno == EEXIST) return 0;
-    return -1;
-}
 
 /* Tiny stage step that advances the cursor by one each time. */
 static job_result_t step_advance_by_one(struct stage_step_ctx *c)
@@ -155,8 +143,7 @@ int test_progress_store(void)
     /* ── open creates file + table, idempotent on same path ────────── */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "open");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "open");
 
         PS_CHECK("first open succeeds", progress_store_open(dir));
         PS_CHECK("handle is non-NULL", progress_store_db() != NULL);
@@ -209,8 +196,7 @@ int test_progress_store(void)
 
         /* Different dir is rejected (one process, one store). */
         char dir2[256];
-        ps_tmpdir(dir2, sizeof(dir2), "open_other");
-        mkdir_p(dir2);
+        test_make_tmpdir(dir2, sizeof(dir2), "progress_store", "open_other");
         PS_CHECK("second open with different dir is rejected",
                  !progress_store_open(dir2));
 
@@ -225,8 +211,7 @@ int test_progress_store(void)
     /* ── cursor persistence: stage cursor survives close + reopen ──── */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "persist");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "persist");
 
         PS_CHECK("open #1 OK", progress_store_open(dir));
         stage_t *s1 = stage_create("test-advance",
@@ -262,8 +247,7 @@ int test_progress_store(void)
     /* ── dump_state_json shape ─────────────────────────────────────── */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "dump");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "dump");
 
         char buf[1024];
 
@@ -311,8 +295,7 @@ int test_progress_store(void)
     /* ── progress_meta k/v API (S-4b) ───────────────────────────────── */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "meta");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "meta");
         PS_CHECK("open for meta", progress_store_open(dir));
         sqlite3 *db = progress_store_db();
 
@@ -523,8 +506,7 @@ int test_progress_store(void)
      *   (c) it is auto-terminating (one quarantine, not a loop). */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "quarantine");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "quarantine");
         char fpath[512];
         snprintf(fpath, sizeof(fpath), "%s/consensus.db", dir);
 
@@ -639,8 +621,7 @@ int test_progress_store(void)
      * refusal, not a quarantine or a rewrite. */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "downgrade");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "downgrade");
 
         PS_CHECK("downgrade: seed open", progress_store_open(dir));
         PS_CHECK("downgrade: current-version marker writes",
@@ -717,8 +698,7 @@ int test_progress_store(void)
      *   (c) it is auto-terminating (one quarantine, not a loop). */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "proj_quarantine");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "proj_quarantine");
         char fpath[512];
         snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
 
@@ -844,8 +824,7 @@ int test_progress_store(void)
      * busy_timeout) and both must commit their own row. */
     {
         char dir[256];
-        ps_tmpdir(dir, sizeof(dir), "projsplit");
-        mkdir_p(dir);
+        test_make_tmpdir(dir, sizeof(dir), "progress_store", "projsplit");
 
         PS_CHECK("split: progress_store opens", progress_store_open(dir));
         PS_CHECK("split: projection_store opens", projection_store_open(dir));

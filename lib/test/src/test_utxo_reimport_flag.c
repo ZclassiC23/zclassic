@@ -17,6 +17,7 @@
 #include "test/test_helpers.h"
 #include "storage/utxo_reimport_flag.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,9 +32,14 @@
 
 static bool urf_make_tmpdir(char *out, size_t cap)
 {
-    mkdir("./test-tmp", 0755);
-    snprintf(out, cap, "./test-tmp/urf_XXXXXX");
-    return mkdtemp(out) != NULL;
+    /* Unique suffix via a counter; path-build + stale-cleanup + mkdir
+     * delegate to the shared helper. */
+    static _Atomic int seq = 0;
+    int s = atomic_fetch_add(&seq, 1);
+    char tag[16];
+    snprintf(tag, sizeof(tag), "%d", s);
+    test_make_tmpdir(out, cap, "urf", tag);
+    return true;
 }
 
 static bool urf_file_exists(const char *path)
