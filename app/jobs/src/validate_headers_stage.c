@@ -27,6 +27,7 @@
 #include "storage/txdb.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -51,7 +52,7 @@
  * copy of a header has a missing/corrupt Equihash solution ("invalid-solution",
  * classified permanent); that mask persists across boots via block_index_cache
  * and mark_valid_header refuses any FAILED-masked entry forever. A
- * streak-throttled blocker + JOB_IDLE backoff keeps that from becoming a
+ * throttled blocker + JOB_IDLE backoff keeps that from becoming a
  * WARN/JOB_FATAL hot loop. */
 #define VH_MARK_FAIL_BLOCKER_ID "validate_headers.mark_failed"
 
@@ -91,13 +92,18 @@ static _Atomic int64_t  g_last_recheck_frontier = -1;
 static _Atomic int64_t  g_last_recheck_start = -1;
 static _Atomic int64_t  g_last_recheck_selected = 0;
 
-/* Mark-failure streak throttle (deliverable a). g_mark_fail_streak counts the
- * consecutive mark refusals of a streak; only the FIRST emits a WARN + raises
- * the typed blocker, and the next clean mark logs one recovery line. Both mark
- * sites hold progress_store_tx_lock (the serial reducer drive), so the plain
- * static is race-free — mirrors tip_finalize_post_step's s_boundary_fail_streak.
- * g_mark_fail_warn_total is the atomic rising-edge WARN counter (test hook). */
-static int              g_mark_fail_streak = 0;
+/* Mark-failure throttle (deliverable a), standardized on the shared
+ * log_throttle primitive (util/log_throttle.h) rather than a bespoke streak
+ * counter: only the FIRST refusal of a streak (keyed on height+nStatus) emits
+ * a WARN + raises the typed blocker; same-key repeats collapse to a 60 s
+ * keep-alive so the condition stays visible without storming (this is the
+ * exact site that stormed 18,440 WARN lines at h=3,179,245). The next clean
+ * mark logs one recovery line, gated on the typed blocker still being set
+ * (vh_mark_fail_recover). Both mark sites hold progress_store_tx_lock (the
+ * serial reducer drive); log_throttle's own atomics make it safe regardless.
+ * g_mark_fail_warn_total is the atomic rising-edge WARN counter (test hook,
+ * incremented only on an actual emit). */
+static struct log_throttle g_mark_fail_throttle = LOG_THROTTLE_INIT;
 static _Atomic int64_t  g_mark_fail_warn_total = 0;
 
 /* Infra-db fault ladder (R5). A momentary sqlite glitch (busy/locked/transient
@@ -336,8 +342,16 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         progress_store_tx_unlock();
-        LOG_ERR("validate_headers",
-                "failed-row recheck query prepare failed");
+        /* De-storm: a stuck db connection re-hits this same prepare failure
+         * every recheck poll. Key on rc so a genuinely different sqlite fault
+         * re-emits but a stuck one collapses to first-fire + 60 s keepalive. */
+        static struct log_throttle recheck_prepare_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&recheck_prepare_throttle, (uint64_t)rc,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_ERR("validate_headers",
+                    "failed-row recheck query prepare failed rc=%d repeats=%llu",
+                    rc, (unsigned long long)reps);
         return vh_db_fault(rc, (int)start, "recheck query prepare");
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
@@ -362,8 +376,18 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         if (h64 < 0 || h64 > INT32_MAX) {
             sqlite3_finalize(stmt);
             progress_store_tx_unlock();
-            LOG_ERR("validate_headers",
-                    "failed-row recheck height out of range");
+            /* De-storm: key on the offending height so a genuinely different
+             * corrupt row re-emits but the same one collapses to first-fire +
+             * 60 s keepalive. */
+            static struct log_throttle recheck_range_throttle = LOG_THROTTLE_INIT;
+            uint64_t reps = 0;
+            if (log_throttle_should_emit(&recheck_range_throttle,
+                                         (uint64_t)h64,
+                                         platform_time_wall_unix(), 60, &reps))
+                LOG_ERR("validate_headers",
+                        "failed-row recheck height out of range h=%lld "
+                        "repeats=%llu", (long long)h64,
+                        (unsigned long long)reps);
             return JOB_FATAL;
         }
         struct block_index *bi = vh_resolve_bi(ms, (int)h64);
@@ -394,7 +418,14 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         sqlite3_finalize(stmt);
         progress_store_tx_unlock();
-        LOG_ERR("validate_headers", "failed-row recheck query failed");
+        /* De-storm: keyed on rc, mirrors recheck_prepare_throttle above. */
+        static struct log_throttle recheck_step_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&recheck_step_throttle, (uint64_t)rc,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_ERR("validate_headers",
+                    "failed-row recheck query failed rc=%d repeats=%llu",
+                    rc, (unsigned long long)reps);
         return vh_db_fault(rc, (int)last_seen, "recheck query step");
     }
     atomic_store(&g_last_recheck_selected, n);
@@ -428,7 +459,15 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     const char *vh_commit = vh_batched ? "RELEASE SAVEPOINT vh_recheck" : "COMMIT";
     if (sqlite3_exec(db, vh_open, NULL, NULL, &err) != SQLITE_OK) {
         int frc = sqlite3_extended_errcode(db);
-        LOG_WARN("validate_headers", "[validate_headers] failed-row recheck BEGIN failed: %s", err ? err : "(no message)");
+        /* De-storm: keyed on frc, mirrors recheck_prepare_throttle above. */
+        static struct log_throttle recheck_begin_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&recheck_begin_throttle, (uint64_t)frc,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_WARN("validate_headers",
+                     "[validate_headers] failed-row recheck BEGIN failed: %s "
+                     "repeats=%llu", err ? err : "(no message)",
+                     (unsigned long long)reps);
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
         return vh_db_fault(frc, (int)start, "recheck begin/savepoint");
@@ -442,7 +481,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         if (jobs[i].ok &&
             !vh_authoritative_mark(&jobs[i], true)) {
             /* Still un-markable after the scoped clear (e.g. a NULL entry). Name
-             * ONE typed blocker (streak-throttled) and back off JOB_IDLE — never
+             * ONE typed blocker (throttled) and back off JOB_IDLE — never
              * the JOB_FATAL hot loop. */
             vh_mark_fail_note(jobs[i].height, jobs[i].mark_bi);
             vh_recheck_rollback(db, vh_batched);
@@ -465,7 +504,15 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     }
     if (sqlite3_exec(db, vh_commit, NULL, NULL, &err) != SQLITE_OK) {
         int frc = sqlite3_extended_errcode(db);
-        LOG_WARN("validate_headers", "[validate_headers] failed-row recheck COMMIT failed: %s", err ? err : "(no message)");
+        /* De-storm: keyed on frc, mirrors recheck_begin_throttle above. */
+        static struct log_throttle recheck_commit_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&recheck_commit_throttle, (uint64_t)frc,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_WARN("validate_headers",
+                     "[validate_headers] failed-row recheck COMMIT failed: %s "
+                     "repeats=%llu", err ? err : "(no message)",
+                     (unsigned long long)reps);
         if (err) sqlite3_free(err);
         vh_recheck_rollback(db, vh_batched);
         progress_store_tx_unlock();
@@ -509,43 +556,53 @@ static bool mark_valid_header(struct block_index *bi)
     return true;
 }
 
-/* Rising-edge recovery for the mark-failure streak: the stale FAILED mask
+/* Rising-edge recovery for the mark-failure throttle: the stale FAILED mask
  * cleared and the header marked valid, so emit ONE recovery line and clear the
- * blocker — only if a streak was actually open. */
+ * blocker — only if the typed blocker was actually raised (i.e. a suppressed
+ * streak was open). */
 static void vh_mark_fail_recover(void)
 {
-    if (g_mark_fail_streak > 0) {
+    if (blocker_exists(VH_MARK_FAIL_BLOCKER_ID)) {
         LOG_INFO("validate_headers",
-                 "[validate_headers] header mark recovered after %d suppressed "
-                 "refusal(s); stale BLOCK_FAILED mask cleared by a clean "
-                 "PoW+Equihash re-validation", g_mark_fail_streak);
-        g_mark_fail_streak = 0;
+                 "[validate_headers] header mark recovered after %llu "
+                 "suppressed refusal(s); stale BLOCK_FAILED mask cleared by a "
+                 "clean PoW+Equihash re-validation",
+                 (unsigned long long)log_throttle_reps(&g_mark_fail_throttle));
+        log_throttle_reset(&g_mark_fail_throttle);
         blocker_clear(VH_MARK_FAIL_BLOCKER_ID);
     }
 }
 
-/* Streak-throttled typed blocker for a header that re-validates clean but whose
+/* Throttled typed blocker for a header that re-validates clean but whose
  * block_index entry is FAILED-masked and could not be cleared here (no
- * repairable evidence). Log the FIRST refusal of a streak (loud + named:
- * height+hash+nStatus) and raise ONE typed blocker; suppress the rest. Runs on
- * the serial reducer drive under progress_store_tx_lock, so the statics are
- * race-free (mirrors tip_finalize_post_step's boundary streak). */
+ * repairable evidence). Keyed on (height, nStatus) via the shared
+ * log_throttle primitive: log the FIRST refusal of a streak (loud + named:
+ * height+hash+nStatus), then collapse same-key repeats to a 60 s keep-alive so
+ * the condition stays visible without storming; the typed blocker is
+ * (re)raised every call — cheap and idempotent — so it always reflects the
+ * live condition regardless of log cadence. Runs on the serial reducer drive
+ * under progress_store_tx_lock; log_throttle's atomics make it race-free
+ * regardless. */
 static void vh_mark_fail_note(int height, const struct block_index *bi)
 {
-    if (g_mark_fail_streak++ != 0)
-        return;
     char hex[65] = {0};
     if (bi && bi->phashBlock)
         uint256_get_hex(bi->phashBlock, hex);
     unsigned long nstatus = bi ? (unsigned long)bi->nStatus : 0UL;
-    atomic_fetch_add(&g_mark_fail_warn_total, 1);
-    LOG_WARN("validate_headers",
-             "[validate_headers] header mark refused height=%d hash=%s "
-             "nStatus=0x%lx: header re-validates clean (PoW+Equihash) but the "
-             "block_index entry carries a stale BLOCK_FAILED mask with no "
-             "clearable repair row; holding (JOB_IDLE, no hot loop), suppressing "
-             "repeats until it clears", height, hex[0] ? hex : "(unknown)",
-             nstatus);
+
+    uint64_t key = ((uint64_t)(uint32_t)height << 32) | (uint32_t)nstatus;
+    uint64_t reps = 0;
+    if (log_throttle_should_emit(&g_mark_fail_throttle, key,
+                                 platform_time_wall_unix(), 60, &reps)) {
+        atomic_fetch_add(&g_mark_fail_warn_total, 1);
+        LOG_WARN("validate_headers",
+                 "[validate_headers] header mark refused height=%d hash=%s "
+                 "nStatus=0x%lx: header re-validates clean (PoW+Equihash) but "
+                 "the block_index entry carries a stale BLOCK_FAILED mask with "
+                 "no clearable repair row; holding (JOB_IDLE, no hot loop), "
+                 "repeats=%llu", height, hex[0] ? hex : "(unknown)", nstatus,
+                 (unsigned long long)reps);
+    }
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
              "height=%d hash=%s nStatus=0x%lx: header re-validates clean but the "
@@ -654,7 +711,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             !vh_authoritative_mark(&jobs[i], jobs[i].had_repair_row)) {
             /* Validator PASSED but the block_index entry is FAILED-masked and no
              * clearable repair row proves it is the serve-refusal class. Name
-             * ONE typed blocker (streak-throttled) and BACK OFF (JOB_IDLE) —
+             * ONE typed blocker (throttled) and BACK OFF (JOB_IDLE) —
              * never the hot JOB_FATAL loop that stormed 18,440 WARN lines at
              * h=3,179,245. Backing off also un-starves the condition runner so
              * block_failed_mask_at_tip / process_block_revalidate can clear the
@@ -842,7 +899,7 @@ void validate_headers_stage_shutdown(void)
     atomic_store(&g_last_recheck_frontier, (int64_t)-1);
     atomic_store(&g_last_recheck_start, (int64_t)-1);
     atomic_store(&g_last_recheck_selected, (int64_t)0);
-    g_mark_fail_streak = 0;
+    log_throttle_reset(&g_mark_fail_throttle);
     atomic_store(&g_mark_fail_warn_total, (int64_t)0);
     stage_db_fault_clear(&g_vh_db_fault);
     pthread_mutex_unlock(&g_lock);
