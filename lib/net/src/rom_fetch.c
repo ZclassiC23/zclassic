@@ -1085,8 +1085,8 @@ bool rom_fetch_get_manifest(const char *peer_addr, uint16_t port,
 /* ── Per-chunk-verified download with durable resume ────────────────── */
 
 struct rf_ver_job {
-    char     peer_addr[128];
-    uint16_t port;
+    const struct rom_fetch_peer *peers; /* caller-owned, npeers entries      */
+    size_t   npeers;
     struct rom_fetch_manifest m;      /* copy, filename already resolved   */
     const uint8_t (*chunk_sha3)[32];  /* caller-owned, num_chunks rows     */
     uint32_t num_chunks;
@@ -1100,6 +1100,83 @@ struct rf_ver_job {
     void *cb_ctx;
     pthread_mutex_t cb_mutex;
 };
+
+/* One round tries every peer once (fast failover across seeders); a full-round
+ * miss backs off before the next round to absorb a stock seeder's per-peer
+ * wall-clock-1s rate window. Sized so a single-peer job (npeers==1) preserves
+ * the whole-file driver's exact tolerance: ROM_FETCH_CHUNK_RETRIES backoffs. */
+#define ROM_FETCH_VER_ROUNDS (ROM_FETCH_CHUNK_RETRIES + 1u)
+
+/* Acquire + content-verify chunk `i` into `buf`, trying the job's peers in
+ * round-robin (starting at i % npeers) so a corrupt/unreachable seeder fails
+ * OVER to the next one. Two distinct failure classes are handled differently,
+ * which is what keeps single-peer behaviour identical to the old driver:
+ *
+ *   - A TRANSIENT miss (unreachable / refused / wrong-size) is retryable — a
+ *     stock seeder's per-peer wall-clock-1s rate window refuses back-to-back
+ *     chunks and clears in ~1 s — so a full-ring miss backs off once and
+ *     retries the whole ring, bounded by ROM_FETCH_VER_ROUNDS.
+ *   - A CONTENT-verify failure (right-sized bytes, wrong digest) means that
+ *     peer is serving non-committed content; it is scored bad
+ *     (rom_peer_note_bad_chunk) and POISONED for this chunk — never re-fetched.
+ *     Re-requesting the same bad bytes would only burn the seeder's rate window
+ *     and the wire. When every peer is poisoned (no peer can still be retried),
+ *     the chunk fails immediately — so a single-peer digest mismatch fails on
+ *     the first attempt exactly as before, never looping.
+ *
+ * Returns true (with *out_got set) only on digest-verified bytes from some
+ * peer; false when the chunk cannot be satisfied, or the job aborted. Peer
+ * indices past 63 are not poison-tracked (a bounded bitmask); they degrade to
+ * retryable, still bounded by the round cap. */
+static bool rf_ver_acquire_chunk(struct rf_ver_job *j, uint32_t i,
+                                  uint32_t want, uint8_t *buf, uint32_t *out_got)
+{
+    *out_got = 0;
+    uint64_t poisoned = 0; /* bit p set => peers[p] served bad content here */
+    for (uint32_t round = 0; round < ROM_FETCH_VER_ROUNDS; round++) {
+        if (atomic_load(&j->abort))
+            return false;
+        bool any_retryable_miss = false;
+        for (size_t a = 0; a < j->npeers; a++) {
+            if (atomic_load(&j->abort))
+                return false;
+            size_t pi = (i + a) % j->npeers;
+            if (pi < 64 && (poisoned & (1ull << pi)))
+                continue; /* served bad content already — never re-fetch it */
+            const struct rom_fetch_peer *p = &j->peers[pi];
+            uint32_t got = 0;
+            if (!rom_fetch_chunk(p->addr, p->port, j->m.chunk_root, i,
+                                 buf, ROM_SEED_CHUNK_SIZE, &got) ||
+                got != want) {
+                any_retryable_miss = true; /* transient — may clear next round */
+                continue;
+            }
+            /* CONTENT verify BEFORE this peer's bytes can be marked durable —
+             * a set journal bit must always imply digest-verified data. */
+            if (!rom_fetch_verify_chunk(buf, got, j->chunk_sha3[i])) {
+                LOG_WARN(RF_SUBSYS, "ver: chunk %u/%u digest mismatch from "
+                         "%s:%u (seeder served non-committed content) — "
+                         "failing over", i, j->num_chunks, p->addr,
+                         (unsigned)p->port);
+                (void)rom_peer_note_bad_chunk(p->addr, p->port, i, "digest");
+                if (pi < 64)
+                    poisoned |= (1ull << pi);
+                continue; /* corrupt bytes — poison + fail over to next peer */
+            }
+            *out_got = got;
+            return true;
+        }
+        /* No peer can still be retried (all poisoned / exhausted) — fail now
+         * rather than loop re-fetching content we already know is bad. */
+        if (!any_retryable_miss)
+            return false;
+        /* Some peer had a transient miss — back off once, then retry the ring
+         * (skip the sleep after the final round). */
+        if (round + 1u < ROM_FETCH_VER_ROUNDS && !atomic_load(&j->abort))
+            platform_sleep_ms(ROM_FETCH_CHUNK_RETRY_MS);
+    }
+    return false;
+}
 
 static void *rf_ver_worker(void *arg)
 {
@@ -1130,38 +1207,13 @@ static void *rf_ver_worker(void *arg)
         if (remaining < want)
             want = (uint32_t)remaining;
 
-        /* Bounded retry for the seeder's rate window (same tolerance as the
-         * whole-file driver). */
+        /* Fetch + per-chunk content-verify with round-robin multi-seeder
+         * failover (single-peer jobs pass npeers==1). */
         uint32_t got = 0;
-        bool chunk_ok = false;
-        for (uint32_t attempt = 0;; attempt++) {
-            if (atomic_load(&j->abort))
-                break;
-            if (rom_fetch_chunk(j->peer_addr, j->port, j->m.chunk_root, i,
-                                buf, ROM_SEED_CHUNK_SIZE, &got)) {
-                chunk_ok = true;
-                break;
-            }
-            if (attempt >= ROM_FETCH_CHUNK_RETRIES)
-                break;
-            platform_sleep_ms(ROM_FETCH_CHUNK_RETRY_MS);
-        }
-        if (!chunk_ok || got != want) {
-            LOG_WARN(RF_SUBSYS, "ver: chunk %u/%u fetch failed (got %u want %u)"
-                     " from %s:%u", i, j->num_chunks, got, want,
-                     j->peer_addr, (unsigned)j->port);
-            atomic_store(&j->failed, true);
-            atomic_store(&j->abort, true);
-            break;
-        }
-
-        /* CONTENT verify BEFORE any durable marking — a set journal bit must
-         * always imply digest-verified data. */
-        if (!rom_fetch_verify_chunk(buf, got, j->chunk_sha3[i])) {
-            LOG_WARN(RF_SUBSYS, "ver: chunk %u/%u digest mismatch from %s:%u "
-                     "(seeder served non-committed content)", i, j->num_chunks,
-                     j->peer_addr, (unsigned)j->port);
-            (void)rom_peer_note_bad_chunk(j->peer_addr, j->port, i, "digest");
+        if (!rf_ver_acquire_chunk(j, i, want, buf, &got)) {
+            if (!atomic_load(&j->abort))
+                LOG_WARN(RF_SUBSYS, "ver: chunk %u/%u failed content-verify on "
+                         "all %zu peer(s)", i, j->num_chunks, j->npeers);
             atomic_store(&j->failed, true);
             atomic_store(&j->abort, true);
             break;
@@ -1266,14 +1318,20 @@ static bool rf_ver_spotcheck_resume(int fd, const struct rom_fetch_manifest *m,
     return ok;
 }
 
-bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
-                                 const struct rom_fetch_manifest *m,
-                                 const uint8_t (*chunk_sha3)[32],
-                                 uint32_t num_chunks, const char *out_dir,
-                                 rom_fetch_progress_cb cb, void *cb_ctx)
+/* Shared per-chunk-verified download core for both the single-peer and
+ * multi-seeder public entry points. `peers` holds npeers>=1 seeder endpoints;
+ * the worker ring content-verifies every chunk and fails OVER across them
+ * (rf_ver_acquire_chunk). Everything else — durable resume journal, spot-check
+ * on resume, whole-file gate, atomic read-only install — is identical to the
+ * single-peer contract, so a single-element ring reproduces it byte-for-byte. */
+static bool rf_download_verified_core(const struct rom_fetch_peer *peers,
+                                      size_t npeers,
+                                      const struct rom_fetch_manifest *m,
+                                      const uint8_t (*chunk_sha3)[32],
+                                      uint32_t num_chunks, const char *out_dir,
+                                      rom_fetch_progress_cb cb, void *cb_ctx)
 {
-    if (!peer_addr || !peer_addr[0] || !m || !chunk_sha3 || !out_dir ||
-        !out_dir[0])
+    if (!peers || npeers == 0 || !m || !chunk_sha3 || !out_dir || !out_dir[0])
         LOG_FAIL(RF_SUBSYS, "ver: null arg");
 
     struct rom_fetch_manifest mc = *m;
@@ -1304,7 +1362,7 @@ bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
     if (pn <= 0 || (size_t)pn >= sizeof(jrnl_path))
         LOG_FAIL(RF_SUBSYS, "ver: journal path overflow");
 
-    rf_note_begin(peer_addr, port, &mc);
+    rf_note_begin(peers[0].addr, peers[0].port, &mc);
 
     struct rom_journal *jrnl = rom_journal_open(jrnl_path, mc.chunk_root,
                                                 mc.whole_sha3, mc.chunk_size,
@@ -1357,8 +1415,8 @@ bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
 
     struct rf_ver_job job;
     memset(&job, 0, sizeof(job));
-    snprintf(job.peer_addr, sizeof(job.peer_addr), "%s", peer_addr);
-    job.port = port;
+    job.peers = peers;
+    job.npeers = npeers;
     job.m = mc;
     job.chunk_sha3 = chunk_sha3;
     job.num_chunks = num_chunks;
@@ -1420,8 +1478,43 @@ bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
 
     rf_note_end(true, final_path);
     LOG_INFO(RF_SUBSYS, "ver: fetched '%s' (%llu bytes, %u chunks) from %s:%u "
-             "— per-chunk + whole-file verified", final_path,
-             (unsigned long long)mc.size_bytes, mc.num_chunks, peer_addr,
-             (unsigned)port);
+             "(+%zu failover peer(s)) — per-chunk + whole-file verified",
+             final_path, (unsigned long long)mc.size_bytes, mc.num_chunks,
+             peers[0].addr, (unsigned)peers[0].port, npeers - 1);
     return true;
+}
+
+bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
+                                 const struct rom_fetch_manifest *m,
+                                 const uint8_t (*chunk_sha3)[32],
+                                 uint32_t num_chunks, const char *out_dir,
+                                 rom_fetch_progress_cb cb, void *cb_ctx)
+{
+    if (!peer_addr || !peer_addr[0])
+        LOG_FAIL(RF_SUBSYS, "ver: null/empty peer_addr");
+    struct rom_fetch_peer p;
+    memset(&p, 0, sizeof(p));
+    snprintf(p.addr, sizeof(p.addr), "%s", peer_addr);
+    p.port = port;
+    return rf_download_verified_core(&p, 1, m, chunk_sha3, num_chunks, out_dir,
+                                     cb, cb_ctx);
+}
+
+bool rom_fetch_download_verified_parallel(const struct rom_fetch_peer *peers,
+                                          size_t npeers,
+                                          const struct rom_fetch_manifest *m,
+                                          const uint8_t (*chunk_sha3)[32],
+                                          uint32_t num_chunks,
+                                          const char *out_dir,
+                                          rom_fetch_progress_cb cb,
+                                          void *cb_ctx)
+{
+    if (!peers || npeers == 0)
+        LOG_FAIL(RF_SUBSYS, "ver-par: null/empty peer list");
+    for (size_t i = 0; i < npeers; i++) {
+        if (!peers[i].addr[0] || peers[i].port == 0)
+            LOG_FAIL(RF_SUBSYS, "ver-par: peer %zu has empty addr/port", i);
+    }
+    return rf_download_verified_core(peers, npeers, m, chunk_sha3, num_chunks,
+                                     out_dir, cb, cb_ctx);
 }

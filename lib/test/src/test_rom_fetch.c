@@ -20,6 +20,8 @@
 
 #include "test/test_helpers.h"
 #include "net/rom_fetch.h"
+#include "net/rom_journal.h"
+#include "net/rom_peer_scoring.h"
 #include "net/rom_seed.h"
 #include "net/file_service.h"
 #include "crypto/sha3.h"
@@ -58,6 +60,19 @@ static bool write_file(const char *dir, const char *name,
     }
     close(fd);
     return true;
+}
+
+/* Server-side ground truth for how many "ROM" chunks crossed the wire — used
+ * to prove resume refetches ONLY the missing chunk (client thread timing can't
+ * fudge it; mirrors test_rom_journal_resume.c). */
+static int64_t seed_chunks_served(void)
+{
+    struct json_value dj;
+    json_init(&dj);
+    (void)rom_seed_dump_state_json(&dj, NULL);
+    int64_t n = json_get_int(json_get(&dj, "chunks_served"));
+    json_free(&dj);
+    return n;
 }
 
 /* Fill a committed manifest from a serve-side registered artifact. */
@@ -564,6 +579,169 @@ static int test_parallel_download(void)
     return failures;
 }
 
+/* ── (f) Multi-seeder per-chunk-verified download: failover, content proof,
+ *        trustable resume across seeders ────────────────────────────────── */
+
+static int test_verified_multi_seeder(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: multi-seeder per-chunk-verified download fails over past "
+         "a dead seeder, fails closed on bad content, and resumes only the "
+         "missing chunk") {
+        fs_server_stop(); /* never inherit a leaked server */
+        rom_seed_reset();
+        rom_peer_scoring_test_reset();
+        rom_seed_set_peer_bps_cap(1ull << 30);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_romfetch_vmsrv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+        char croot[] = "/tmp/zcl_romfetch_vmcli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        /* 3 chunks: two full 4 MB chunks + a short 4 KB tail. */
+        size_t size = 2 * (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size);
+        ASSERT(write_file(sdir, "consensus-state-bundle-vm.sqlite",
+                          content, size));
+
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-vm.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+        ASSERT(art.num_chunks == 3);
+        struct rom_fetch_manifest m;
+        manifest_from_artifact(&art, &m);
+
+        static const uint16_t cand_ports[] = { 18301, 18305, 18309 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        /* Real per-chunk manifest over the RMF wire path. */
+        uint8_t (*chunk_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
+        ASSERT(chunk_sha3 != NULL);
+        uint32_t manifest_chunks = 0;
+        ASSERT(rom_fetch_get_manifest("127.0.0.1", port, m.chunk_root,
+                                      chunk_sha3, ROM_SEED_MAX_CHUNKS,
+                                      &manifest_chunks));
+        ASSERT(manifest_chunks == 3);
+
+        char part_path[1200];
+        snprintf(part_path, sizeof(part_path), "%s/%s%s", cdir, m.filename,
+                 ROM_FETCH_PART_SUFFIX);
+        char jrnl_path[1264];
+        snprintf(jrnl_path, sizeof(jrnl_path), "%s.journal", part_path);
+        char final_path[1200];
+        snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
+        struct stat st;
+
+        /* (1) FAILOVER: the first seeder is DEAD (nothing on port 1); every
+         * chunk must fail over to the live one and the whole-file proof pass. */
+        struct rom_fetch_peer peers[2];
+        memset(peers, 0, sizeof(peers));
+        snprintf(peers[0].addr, sizeof(peers[0].addr), "%s", "127.0.0.1");
+        peers[0].port = 1; /* tcpmux — nothing listening (dead seeder) */
+        snprintf(peers[1].addr, sizeof(peers[1].addr), "%s", "127.0.0.1");
+        peers[1].port = port; /* live seeder */
+        ASSERT(rom_fetch_download_verified_parallel(peers, 2, &m, chunk_sha3,
+                                                    manifest_chunks, cdir,
+                                                    NULL, NULL));
+        ASSERT(rom_fetch_verify_file(final_path, &m));
+        ASSERT(stat(jrnl_path, &st) != 0); /* journal cleaned on install */
+        unlink(final_path);
+
+        /* (2) CONTENT FAIL-CLOSED: two LIVE seeder entries, but a committed
+         * digest for chunk 2 that no peer can satisfy — the download fails
+         * closed (never installs), leaving a resumable .part + journal. Both
+         * peers point at the live server so the poisoned-content path (not a
+         * dead-peer miss) drives the terminal failure. */
+        struct rom_fetch_peer live2[2];
+        memset(live2, 0, sizeof(live2));
+        for (int i = 0; i < 2; i++) {
+            snprintf(live2[i].addr, sizeof(live2[i].addr), "%s", "127.0.0.1");
+            live2[i].port = port;
+        }
+        uint8_t (*bad_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
+        ASSERT(bad_sha3 != NULL);
+        memcpy(bad_sha3, chunk_sha3, (size_t)manifest_chunks * 32);
+        bad_sha3[2][0] ^= 0xFF;
+        ASSERT(!rom_fetch_download_verified_parallel(live2, 2, &m, bad_sha3,
+                                                     manifest_chunks, cdir,
+                                                     NULL, NULL));
+        ASSERT(access(final_path, F_OK) != 0); /* never installed */
+        ASSERT(stat(part_path, &st) == 0);     /* .part left for resume */
+        ASSERT(stat(jrnl_path, &st) == 0);     /* journal left for resume */
+        /* The endpoint that served the (committed-)bad chunk is scored down. */
+        ASSERT(rom_peer_is_deprioritized("127.0.0.1", port));
+        free(bad_sha3);
+        (void)unlink(part_path);
+        (void)unlink(jrnl_path);
+
+        /* (3) TRUSTABLE RESUME across seeders (deterministic): hand-build the
+         * exact durable .part + journal a run would have left after chunks 0
+         * and 1 (N-1 of N), then resume through the multi-seeder path with a
+         * DEAD first peer — exactly ONE chunk must cross the wire. */
+        int fd = open(part_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        ASSERT(fd >= 0);
+        struct rom_journal *j = rom_journal_open(jrnl_path, m.chunk_root,
+                                                 m.whole_sha3, m.chunk_size,
+                                                 m.num_chunks);
+        ASSERT(j != NULL);
+        uint8_t *cbuf = malloc(ROM_SEED_CHUNK_SIZE);
+        ASSERT(cbuf != NULL);
+        for (uint32_t ci = 0; ci < 2; ci++) {
+            uint32_t got = 0;
+            ASSERT(rom_fetch_chunk("127.0.0.1", port, m.chunk_root, ci,
+                                   cbuf, ROM_SEED_CHUNK_SIZE, &got));
+            ASSERT(rom_fetch_verify_chunk(cbuf, got, chunk_sha3[ci]));
+            ASSERT(pwrite(fd, cbuf, got,
+                          (off_t)((uint64_t)ci * m.chunk_size)) == (ssize_t)got);
+            ASSERT(fdatasync(fd) == 0);
+            ASSERT(rom_journal_mark(j, ci));
+        }
+        free(cbuf);
+        close(fd);
+        ASSERT(rom_journal_count_done(j) == 2);
+        rom_journal_close(j);
+
+        int64_t served_before = seed_chunks_served();
+        ASSERT(rom_fetch_download_verified_parallel(peers, 2, &m, chunk_sha3,
+                                                    manifest_chunks, cdir,
+                                                    NULL, NULL));
+        int64_t served_after = seed_chunks_served();
+        ASSERT(served_after - served_before == 1); /* only chunk 2 refetched */
+        ASSERT(rom_fetch_verify_file(final_path, &m));
+        ASSERT(stat(jrnl_path, &st) != 0); /* journal cleaned on install */
+
+        free(chunk_sha3);
+        fs_server_stop();
+        free(content);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-vm.sqlite", sdir);
+        unlink(p);
+        unlink(final_path);
+        rmdir(sdir);
+        rmdir(cdir);
+        rom_seed_reset();
+        rom_peer_scoring_test_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_rom_fetch(void)
 {
     int failures = 0;
@@ -573,5 +751,6 @@ int test_rom_fetch(void)
     failures += test_loopback_e2e();
     failures += test_rate_cap_retry();
     failures += test_parallel_download();
+    failures += test_verified_multi_seeder();
     return failures;
 }

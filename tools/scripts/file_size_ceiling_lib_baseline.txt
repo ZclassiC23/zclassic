@@ -42,7 +42,7 @@ lib/net/src/msgprocessor_snapshot_serve.c 1108
 lib/net/src/net.c 1666
 lib/net/src/onion_service.c 963
 lib/net/src/peer_lifecycle.c 1779
-lib/net/src/rom_fetch.c 1427
+lib/net/src/rom_fetch.c 1520
 lib/net/src/rom_seed.c 892
 lib/platform/src/os_sandbox_linux.c 1162
 lib/rpc/src/httpserver.c 1320
