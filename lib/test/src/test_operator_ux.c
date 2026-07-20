@@ -791,6 +791,46 @@ static int test_brief_status_one_line_contract(void)
     return failures;
 }
 
+static int test_brief_status_registry_fields_agree(void)
+{
+    int failures = 0;
+    TEST("brief renders blockers=/blocker_head= from the registry so it agrees "
+         "with dumpstate blocker, and only when present") {
+        /* Disjoint-truth case: headline blocker is a posture gate while the
+         * typed-blocker registry head is a different id. Both must appear so
+         * the two surfaces never name disjoint truths. */
+        struct json_value d;
+        fixture_brief_body(&d, 3187524, 3187525, 1, "at_tip",
+                           "review_required_bootstrap_trust", 0, 1, 4, 2937,
+                           false);
+        json_push_kv_int(&d, "active_blockers", 6);
+        json_push_kv_str(&d, "blocker_head",
+                         "catalog.address_index.lag_exceeded");
+
+        char buf[1024];
+        zcl_native_status_brief_render(&d, buf, sizeof(buf));
+        ASSERT(strchr(buf, '\n') == NULL);
+        ASSERT(strlen(buf) <= 200);
+        ASSERT(strstr(buf, "blocker=review_required_bootstrap_trust") != NULL);
+        ASSERT(strstr(buf, "blockers=6") != NULL);
+        ASSERT(strstr(buf, "blocker_head=catalog.address_index.lag_exceeded")
+               != NULL);
+        json_free(&d);
+
+        /* Absent case: a node that does not export the registry summary must
+         * not fabricate blockers=0 / an empty head. */
+        struct json_value d2;
+        fixture_brief_body(&d2, 100, 142, 42, "syncing", "none", 0, 0, 8, 512,
+                           true);
+        zcl_native_status_brief_render(&d2, buf, sizeof(buf));
+        ASSERT(strstr(buf, "blockers=") == NULL);
+        ASSERT(strstr(buf, "blocker_head=") == NULL);
+        json_free(&d2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_brief_status_unknown_fields_render_unknown(void)
 {
     int failures = 0;
@@ -982,6 +1022,7 @@ int test_operator_ux(void)
     failures += test_producer_status_completed_target_needs_no_rate();
     failures += test_producer_status_rejects_long_datadir();
     failures += test_brief_status_one_line_contract();
+    failures += test_brief_status_registry_fields_agree();
     failures += test_brief_status_unknown_fields_render_unknown();
     failures += test_next_command_prioritizes_blocker_over_gap();
     failures += test_field_selection_selects_requested_fields();

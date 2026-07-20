@@ -889,12 +889,21 @@ Fields (frozen names, always present, `unknown` when the underlying RPC
 didn't answer — never a fabricated zero): `hstar` (the provable tip, same
 value `getblockcount` serves), `gap` (validated header tip minus `hstar`),
 `peer_best` (max peer-advertised height, untrusted hint), `sync` (the sync
-state machine's state), `blocker` (dominant typed blocker id, `none` when
-nothing is blocked), `blocker_age` (seconds, suffixed `s`), `conditions`
-(active self-heal condition count), `peers` (connected peer count), `rss_mb`
-(node RSS). All nine are read from ONE flat JSON body
-(`core.status.brief` / `zcl_native_status_brief_body`) — the field selector
-below reads the same body; there is no second data path.
+state machine's state), `blocker` (the headline blocker/gate id — may be a
+posture gate that outranks the registry, `none` when nothing is blocked),
+`blocker_age` (seconds, suffixed `s`), `conditions` (active self-heal
+condition count), `peers` (connected peer count), `rss_mb` (node RSS). All
+nine are read from ONE flat JSON body (`core.status.brief` /
+`zcl_native_status_brief_body`) — the field selector below reads the same
+body; there is no second data path.
+
+Two further fields appear **when the node exports the typed-blocker-registry
+summary** (omitted, never zero-fabricated, on older nodes): `blockers` (count
+of active typed blockers) and `blocker_head` (the registry's dominant blocker
+id). Both come from the **same authority** as `zclassic23 dumpstate blocker`
+(`blocker_snapshot_all` + `blocker_select_dominant`), so the compact brief and
+`dumpstate blocker` can never name disjoint blockers even when the headline
+`blocker=` is a higher-priority posture gate.
 
 **Field selector.** `zclassic23 status field=<k1,k2,...>` and
 `zclassic23 dumpstate <subsystem> field=<k1,k2,...>` print ONLY the named

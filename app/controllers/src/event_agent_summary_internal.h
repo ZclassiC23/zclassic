@@ -138,6 +138,8 @@ struct agent_fast_snapshot {
     char warning_reasons[256];
     char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
     char dominant_blocker_id[BLOCKER_ID_MAX];
+    int active_blocker_count;
+    char dominant_blocker_class[24];
     char operator_needed_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
     char last_error_type[64];
     char projection_state[32];

@@ -289,9 +289,13 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
         const struct blocker_snapshot *dominant =
             blocker_select_dominant(blockers, blocker_count);
+        s->active_blocker_count = blocker_count;
         if (dominant) {
             snprintf(s->dominant_blocker_id,
                      sizeof(s->dominant_blocker_id), "%s", dominant->id);
+            snprintf(s->dominant_blocker_class,
+                     sizeof(s->dominant_blocker_class), "%s",
+                     blocker_class_name((enum blocker_class)dominant->class));
             s->hard_typed_blocker =
                 api_blocker_hard_gates_public_serving(dominant);
             if (!s->hard_typed_blocker)
@@ -714,6 +718,29 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
             health.unresolved_critical_condition_count,
     };
     agent_push_condition_summary_contract_json(result, &condition_view);
+    /* Typed-blocker-registry summary derived from the SAME authority as
+     * `zclassic23 dumpstate blocker` (blocker_snapshot_all +
+     * blocker_select_dominant). Exposing the registry head and count here lets
+     * the compact status brief present it beside the condition-engine count so
+     * the two operator surfaces can never name disjoint truths. `dominant_id`
+     * is the registry head; the brief's `primary_blocker` may still be a
+     * higher-priority posture gate, but the registry head is always visible. */
+    {
+        struct json_value breg = {0};
+        json_set_object(&breg);
+        json_push_kv_str(&breg, "schema", "zcl.blocker_registry_summary.v1");
+        json_push_kv_int(&breg, "active_count", health.active_blocker_count);
+        json_push_kv_str(&breg, "dominant_id",
+                         health.dominant_blocker_id[0]
+                             ? health.dominant_blocker_id : "none");
+        json_push_kv_str(&breg, "dominant_class",
+                         health.dominant_blocker_class[0]
+                             ? health.dominant_blocker_class : "none");
+        json_push_kv_str(&breg, "native_state_command",
+                         "zclassic23 dumpstate blocker");
+        json_push_kv(result, "blocker_registry", &breg);
+        json_free(&breg);
+    }
     legacy_mirror_sync_push_status_contract_json(result, &health.mirror);
     agent_push_readiness_contract_json(
         result, "readiness", public_serving, health.has_peers, operator_needed,

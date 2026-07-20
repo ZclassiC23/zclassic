@@ -90,6 +90,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 26, "zcl.operator_snapshot.v3",
       "zclassic23 operatorsnapshot",
       "single-target bounded component snapshots, capture coherence, typed evidence, invariants, and native summary" },
+    { 27, "zcl.blocker_registry_summary.v1",
+      "nested in zcl.public_status.v2 blocker_registry",
+      "typed-blocker-registry active count and dominant head, from the same authority as dumpstate blocker, so status surfaces cannot name disjoint blockers" },
 };
 
 static const size_t g_agent_schema_surface_count =
