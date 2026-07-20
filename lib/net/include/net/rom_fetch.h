@@ -236,4 +236,25 @@ bool rom_fetch_download_verified(const char *peer_addr, uint16_t port,
                                  uint32_t num_chunks, const char *out_dir,
                                  rom_fetch_progress_cb cb, void *cb_ctx);
 
+/* Multi-seeder per-chunk-verified download with durable resume — the parallel
+ * generalization of rom_fetch_download_verified. Worker threads pull chunk
+ * indices from one shared queue; each chunk is fetched from peers in
+ * round-robin (starting at i % npeers) and CONTENT-verified against
+ * chunk_sha3[i] BEFORE its journal bit is set, so a corrupt/unreachable seeder
+ * fails OVER to the next peer for that chunk (a peer that serves non-committed
+ * bytes is scored via rom_peer_note_bad_chunk and skipped) rather than failing
+ * the whole download. Every peer's addr must be non-empty and port non-zero.
+ * Resume, spot-check, whole-file gate, and atomic read-only install are
+ * identical to the single-peer path; npeers==1 reproduces it exactly. Returns
+ * false (leaving .part + journal for a later resume) when some chunk fails
+ * content-verify on ALL peers. */
+bool rom_fetch_download_verified_parallel(const struct rom_fetch_peer *peers,
+                                          size_t npeers,
+                                          const struct rom_fetch_manifest *m,
+                                          const uint8_t (*chunk_sha3)[32],
+                                          uint32_t num_chunks,
+                                          const char *out_dir,
+                                          rom_fetch_progress_cb cb,
+                                          void *cb_ctx);
+
 #endif /* ZCL_NET_ROM_FETCH_H */

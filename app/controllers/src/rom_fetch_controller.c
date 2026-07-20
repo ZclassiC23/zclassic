@@ -247,10 +247,11 @@ void zcl_native_handle_rom_fetch_bundle(
      * `peer` may be a comma-separated host list (all sharing `port`): a
      * single peer prefers the per-chunk-verified manifest path (falling back
      * to the whole-file-only driver if the seeder doesn't serve a manifest —
-     * a legacy seeder, never an offence); several peers use the parallel
-     * multi-seeder scheduler (round-robin chunk retry across peers), which
-     * has no per-chunk-verified multi-seeder variant yet so it always takes
-     * the whole-file path. */
+     * a legacy seeder, never an offence); several peers ALSO prefer the
+     * per-chunk-verified path (rom_fetch_download_verified_parallel: round-robin
+     * chunk fetch with content-verify-and-failover across seeders), and fall
+     * back to the whole-file-only multi-seeder scheduler only when no reachable
+     * peer serves a manifest. */
     bool fetched = false;
     bool fallback_used = false;
     bool used_manifest_path = false;
@@ -287,9 +288,37 @@ void zcl_native_handle_rom_fetch_bundle(
         uint32_t workers = (uint32_t)(2 * npeers);
         if (workers > ROM_FETCH_MAX_WORKERS)
             workers = ROM_FETCH_MAX_WORKERS;
-        fetched = rom_fetch_download_parallel(peers, npeers, &m, out_dir,
-                                              workers, NULL, NULL);
-        fallback_used = true; /* whole-file-only path, always */
+
+        /* Prefer the per-chunk-verified multi-seeder path: probe reachable
+         * peers for the "RMF" manifest and, on the first that serves one
+         * matching the committed num_chunks, run the content-verify-and-failover
+         * download (trustable resume + per-chunk content proof across flaky
+         * seeders). Only if NO peer serves a manifest — an all-legacy seeder
+         * set — do we take the whole-file-only multi-seeder scheduler. */
+        uint8_t (*chunk_sha3)[32] = zcl_malloc(
+            (size_t)ROM_SEED_MAX_CHUNKS * 32, "rfc_par_chunk_sha3");
+        uint32_t manifest_chunks = 0;
+        bool have_manifest = false;
+        for (size_t i = 0; chunk_sha3 && i < npeers && !have_manifest; i++) {
+            if (rom_fetch_get_manifest(peers[i].addr, peers[i].port,
+                                       m.chunk_root, chunk_sha3,
+                                       ROM_SEED_MAX_CHUNKS, &manifest_chunks) &&
+                manifest_chunks == m.num_chunks)
+                have_manifest = true;
+        }
+        if (have_manifest) {
+            rfc_journal_reused(out_dir, &m, &reused_chunks, &reused_bytes);
+            fetched = rom_fetch_download_verified_parallel(
+                peers, npeers, &m, chunk_sha3, manifest_chunks, out_dir,
+                NULL, NULL);
+            used_manifest_path = true;
+            chunks_verified = manifest_chunks;
+        } else {
+            fetched = rom_fetch_download_parallel(peers, npeers, &m, out_dir,
+                                                  workers, NULL, NULL);
+            fallback_used = true; /* whole-file-only path across seeders */
+        }
+        free(chunk_sha3);
     } else {
         uint8_t (*chunk_sha3)[32] = zcl_malloc(
             (size_t)ROM_SEED_MAX_CHUNKS * 32, "rfc_manifest_chunk_sha3");
