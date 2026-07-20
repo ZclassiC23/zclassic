@@ -3135,6 +3135,24 @@ int importblockindex_cli_mode(int argc, char **argv, int ibi_idx)
         snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
                  home ? home : ".");
 
+    /* The importer's per-row hash-bind + PoW-target verify reads
+     * chain_params_get(), which asserts unless a network was selected —
+     * the normal boot path does this in boot_step_select_chain_and_datadir,
+     * but this CLI mode never reaches boot. Mirror boot's selection,
+     * honoring the same network flags anywhere in argv. */
+    {
+        enum chain_network net = CHAIN_MAIN;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "-regtest") == 0 ||
+                strcmp(argv[i], "-regtest=1") == 0)
+                net = CHAIN_REGTEST;
+            else if (strcmp(argv[i], "-testnet") == 0 ||
+                     strcmp(argv[i], "-testnet=1") == 0)
+                net = CHAIN_TESTNET;
+        }
+        chain_params_select(net);
+    }
+
     printf("=== ZClassic Block-Index (header) Import ===\n");
     printf("Source: %s/blocks/index (LevelDB CDiskBlockIndex)\n", snap_dir);
     printf("Target: %s (SQLite blocks)\n", db_path);
