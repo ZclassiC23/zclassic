@@ -75,6 +75,27 @@
  * env `ZCL_BLOCKER_RATE_LIMIT_MS` for testing. */
 #define BLOCKER_DEFAULT_RATE_LIMIT_MS  12000  /* 5/min */
 
+/* Lifecycle policy for TRANSIENT-class blockers (see "Lifecycle policy"
+ * below). Ignored for PERMANENT/DEPENDENCY/RESOURCE — those classes keep
+ * their existing "persists until explicitly cleared" semantics unchanged.
+ *
+ *   BLOCKER_DEFAULT_TRANSIENT_TTL_SECS — a TRANSIENT blocker that has not
+ *     re-fired (no blocker_set touch at all, rate-limited or not) within
+ *     this window is stale evidence, not a live claim: the supervisor
+ *     sweep retires it. Per-blocker overridable via
+ *     `blocker_record.transient_ttl_secs` (0 = this default).
+ *
+ *   BLOCKER_MAX_DEADLINE_REARMS — a TRANSIENT blocker with an
+ *     `escape_deadline_secs` but no `escape_action` (nothing to dispatch)
+ *     cannot self-clear via the escape path. Rather than sit with a
+ *     growing-negative `deadline_remaining_us` forever, the sweep re-arms
+ *     the deadline this many times, then flags the blocker `escalated`
+ *     (visible in the snapshot/dump) and stops re-arming. The TTL rule
+ *     above still applies on top and eventually retires it once it goes
+ *     quiet. */
+#define BLOCKER_DEFAULT_TRANSIENT_TTL_SECS  1800   /* 30 min */
+#define BLOCKER_MAX_DEADLINE_REARMS         3
+
 enum blocker_class {
     BLOCKER_PERMANENT  = 0, /* bad PoW, malformed block, consensus reject
                              * — never auto-retry. Only operator clears. */
@@ -97,6 +118,9 @@ struct blocker_record {
     char     escape_action[BLOCKER_ACTION_MAX];
     int32_t  retry_budget;            /* -1 = unbounded (PERMANENT only) */
     char     reason[BLOCKER_REASON_MAX];
+    int64_t  transient_ttl_secs;      /* TRANSIENT-only; 0 = default
+                                        * (BLOCKER_DEFAULT_TRANSIENT_TTL_SECS).
+                                        * Ignored for other classes. */
 };
 
 /* Convenience initializer; zeroes the struct and fills required fields,
@@ -152,6 +176,10 @@ struct blocker_snapshot {
     int32_t  retry_budget;
     uint32_t fire_count;
     char     reason[BLOCKER_REASON_MAX];
+    bool     escalated;                /* TRANSIENT-only: bounded deadline
+                                         * re-arm budget exhausted; needs an
+                                         * owner look, never auto-cleared. */
+    int32_t  deadline_rearm_count;
 };
 
 /* Copy up to `max` snapshots into `out`. Returns count actually written. */
@@ -183,6 +211,30 @@ int blocker_count_by_class(enum blocker_class c);
 /* Total active blockers. */
 int blocker_count_active(void);
 
+/* ── Lifecycle policy — TTL retirement + deadline escalation ─────────
+ * A blocker is a live claim, not a log line: the two rules above (TTL
+ * retirement, bounded deadline re-arm) are enforced by
+ * blocker_supervisor_sweep(). Retirement is never a silent delete — it is
+ * counted and the most recent instance is retained for the dump. */
+
+struct blocker_retirement_info {
+    bool     valid;                    /* false if nothing retired yet */
+    char     id[BLOCKER_ID_MAX];
+    char     owner_subsystem[BLOCKER_OWNER_MAX];
+    int64_t  retired_at_us;
+    uint32_t fire_count_at_retirement;
+    char     reason[BLOCKER_REASON_MAX];
+};
+
+/* Monotonic count of TRANSIENT blockers TTL-retired since module init /
+ * last test reset. Exposed via `dumpstate blocker` as
+ * `transient_retired_total`. */
+uint32_t blocker_retired_transient_count(void);
+
+/* Most recent TTL retirement. Returns false (out->valid = false) if none
+ * has happened yet. */
+bool blocker_last_retired(struct blocker_retirement_info *out);
+
 /* JSON dumper backing `zclassic23 dumpstate blocker`.
  * Caller initializes `out` with json_set_object before calling. */
 struct json_value;
@@ -202,10 +254,20 @@ bool blocker_register_escape(const char *action_name, blocker_escape_fn fn);
 /* Look up the function registered for an action name. NULL if unknown. */
 blocker_escape_fn blocker_lookup_escape(const char *action_name);
 
-/* Sweep registry once: for each blocker whose escape_deadline_us has
- * elapsed and whose escape has not yet fired in the current deadline
- * crossing, fire the escape. Edge-triggered. Returns the number of
- * escapes fired. Intended for a supervisor child running ~1 Hz. */
+/* Sweep registry once. Three passes, TRANSIENT-class only for the first
+ * two (PERMANENT/DEPENDENCY/RESOURCE semantics are untouched):
+ *   1. TTL retirement — a TRANSIENT blocker inactive past its TTL is
+ *      removed and counted (see blocker_retired_transient_count).
+ *   2. Deadline re-arm/escalate — a TRANSIENT blocker with an overdue
+ *      escape_deadline_us but no escape_action (nothing to dispatch) is
+ *      re-armed up to BLOCKER_MAX_DEADLINE_REARMS times, then marked
+ *      `escalated` instead of sitting with a growing-negative deadline.
+ *   3. Escape dispatch (original behavior, unchanged): for each blocker
+ *      whose escape_deadline_us has elapsed and whose escape has not yet
+ *      fired in the current deadline crossing, with a registered
+ *      escape_action, fire the escape. Edge-triggered.
+ * Returns the number of escapes dispatched (pass 3 only, unchanged
+ * return contract). Intended for a supervisor child running ~1 Hz. */
 int blocker_supervisor_sweep(void);
 
 /* Monotonic count of escape dispatches since module init. Exposed through

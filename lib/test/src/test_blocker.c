@@ -13,7 +13,14 @@
  *   - escape dispatch: edge-triggered, no re-fire, missing action handled
  *   - rate-limit: env override + testing override
  *   - capacity: cap exhaustion returns -1
- *   - test clock override + advance */
+ *   - test clock override + advance
+ *   - lifecycle policy (wf/os-blocker-retire): TRANSIENT TTL retirement
+ *     (witnessed via the retired-count + last_retired dump), a re-fire
+ *     resetting the TTL clock, a per-blocker TTL override, bounded
+ *     deadline re-arm → escalation for a deadline with no escape_action
+ *     (the worker.stall.op.projection_backfill shape), and
+ *     PERMANENT/DEPENDENCY/RESOURCE staying completely unaffected by
+ *     both rules */
 
 #include "test/test_helpers.h"
 #include "util/blocker.h"
@@ -355,6 +362,223 @@ int test_blocker(void)
         /* Not re-fired on next sweep */
         fired = blocker_supervisor_sweep();
         BCK_CHECK("missing escape: second sweep returns 0", fired == 0);
+    }
+
+    /* ── lifecycle policy: TTL retirement (rule 1) ────────────────
+     * A TRANSIENT blocker is a live claim, not a log line — one that has
+     * not re-fired within its TTL window auto-retires, witnessed via the
+     * retired counter + last_retired info (never a silent delete). This
+     * is exactly the boot.stage_regression shape: a one-shot observation
+     * raised once at boot with no deadline and nothing to ever clear it. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(10000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        struct blocker_record r;
+        blocker_init(&r, "boot.stage_regression", "boot", BLOCKER_TRANSIENT,
+                     "stage=sapling_tree_load ms=6637 median=11 threshold=5000");
+        blocker_set(&r);
+        BCK_CHECK("ttl: one-shot blocker exists right after raise",
+                  blocker_exists("boot.stage_regression"));
+
+        /* Well before TTL: a sweep must not touch it. */
+        blocker_advance_clock_for_testing(1000000);
+        int fired = blocker_supervisor_sweep();
+        BCK_CHECK("ttl: sweep well before TTL is a no-op for escapes",
+                  fired == 0);
+        BCK_CHECK("ttl: still active well before the TTL window",
+                  blocker_exists("boot.stage_regression"));
+        BCK_CHECK("ttl: retired_total still 0",
+                  blocker_retired_transient_count() == 0);
+
+        /* Cross the default 30-minute TTL with no re-fire → retires. */
+        blocker_advance_clock_for_testing(
+            (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000 + 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl: retired after inactivity window",
+                  !blocker_exists("boot.stage_regression"));
+        BCK_CHECK("ttl: active count drops with it",
+                  blocker_count_active() == 0);
+        BCK_CHECK("ttl: retired_total incremented",
+                  blocker_retired_transient_count() == 1);
+
+        struct blocker_retirement_info info;
+        bool has_last = blocker_last_retired(&info);
+        BCK_CHECK("ttl: last_retired reports valid", has_last && info.valid);
+        BCK_CHECK("ttl: last_retired id matches",
+                  strcmp(info.id, "boot.stage_regression") == 0);
+        BCK_CHECK("ttl: last_retired owner matches",
+                  strcmp(info.owner_subsystem, "boot") == 0);
+        BCK_CHECK("ttl: last_retired fire_count captured",
+                  info.fire_count_at_retirement == 1u);
+    }
+
+    /* ── lifecycle policy: re-fire resets the TTL clock ───────────── */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(20000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        struct blocker_record r;
+        blocker_init(&r, "ttl-refire", "lms", BLOCKER_TRANSIENT, "stuck");
+        blocker_set(&r);
+
+        int64_t near_ttl =
+            (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000 - 1000000;
+
+        /* Advance to just under the TTL, then re-fire. */
+        blocker_advance_clock_for_testing(near_ttl);
+        blocker_set(&r);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl refire: alive right after the re-fire",
+                  blocker_exists("ttl-refire"));
+
+        /* Advance the same span again — if the TTL clock had NOT reset,
+         * cumulative inactivity would now exceed the TTL and it would be
+         * gone. It must still be alive. */
+        blocker_advance_clock_for_testing(near_ttl);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl refire: still alive — re-fire reset the TTL clock",
+                  blocker_exists("ttl-refire"));
+
+        /* Now let it go fully quiet across the TTL. */
+        blocker_advance_clock_for_testing(
+            (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000 + 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl refire: retires once genuinely quiet",
+                  !blocker_exists("ttl-refire"));
+    }
+
+    /* ── lifecycle policy: per-blocker TTL override ───────────────── */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(30000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        struct blocker_record r;
+        blocker_init(&r, "ttl-override", "lms", BLOCKER_TRANSIENT, "stuck");
+        r.transient_ttl_secs = 5;  /* far shorter than the 30-min default */
+        blocker_set(&r);
+
+        blocker_advance_clock_for_testing(2 * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl override: still alive before the 5s override elapses",
+                  blocker_exists("ttl-override"));
+
+        blocker_advance_clock_for_testing(4 * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("ttl override: retires at the custom TTL, not the default",
+                  !blocker_exists("ttl-override"));
+    }
+
+    /* ── lifecycle policy: overdue-deadline re-arm → escalation ─────
+     * Live shape: worker.stall.op.projection_backfill raised an
+     * escape_deadline_secs but no escape_action (nothing to dispatch), so
+     * the deadline sat negative and growing forever. A TRANSIENT blocker
+     * in that shape must re-arm a bounded number of times, then escalate
+     * visibly instead of sitting silently overdue. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(40000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        struct blocker_record r;
+        blocker_init(&r, "worker.stall.op.projection_backfill",
+                     "boot.background_workers", BLOCKER_TRANSIENT,
+                     "deadline exceeded us=-12800000000");
+        r.escape_deadline_secs = 60;  /* set, no escape_action — matches
+                                        * boot_worker_supervisor.c's
+                                        * worker_on_stall() shape exactly. */
+        blocker_set(&r);
+
+        struct blocker_snapshot s;
+        for (int i = 0; i < BLOCKER_MAX_DEADLINE_REARMS; i++) {
+            blocker_advance_clock_for_testing(61 * 1000000);
+            blocker_supervisor_sweep();
+            int n = blocker_snapshot_all(&s, 1);
+            BCK_CHECK("rearm: still present mid-rearm", n == 1);
+            BCK_CHECK("rearm: not escalated before the budget is spent",
+                      n == 1 && !s.escalated);
+            BCK_CHECK("rearm: rearm_count tracks the attempt",
+                      n == 1 && s.deadline_rearm_count == i + 1);
+            BCK_CHECK("rearm: deadline pushed back into the future",
+                      n == 1 && s.deadline_remaining_us > 0);
+        }
+
+        /* One more overdue crossing exhausts the budget → escalate. */
+        blocker_advance_clock_for_testing(61 * 1000000);
+        blocker_supervisor_sweep();
+        int n = blocker_snapshot_all(&s, 1);
+        BCK_CHECK("rearm: escalated once the re-arm budget is exhausted",
+                  n == 1 && s.escalated);
+        BCK_CHECK("rearm: escalated blocker is still an active, visible claim",
+                  blocker_exists("worker.stall.op.projection_backfill"));
+
+        /* Escalation is sticky — no un-escalation, no spam re-log — until
+         * a re-fire or the TTL eventually retires it. */
+        blocker_advance_clock_for_testing(61 * 1000000);
+        blocker_supervisor_sweep();
+        n = blocker_snapshot_all(&s, 1);
+        BCK_CHECK("rearm: stays escalated on later overdue sweeps",
+                  n == 1 && s.escalated);
+
+        /* It never goes silent forever: TTL inactivity eventually retires
+         * even an escalated blocker. */
+        blocker_advance_clock_for_testing(
+            (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("rearm: escalated blocker still retires on TTL inactivity",
+                  !blocker_exists("worker.stall.op.projection_backfill"));
+    }
+
+    /* ── lifecycle policy: non-TRANSIENT classes are untouched ─────
+     * Rule 4: dependency blockers legitimately persist until their
+     * dependency resolves; PERMANENT/RESOURCE persist until cleared. Both
+     * new rules (TTL retirement, deadline re-arm/escalation) must be a
+     * complete no-op for them, even when raised in the exact same
+     * "deadline set, no escape_action" shape that triggers rule 2 for
+     * TRANSIENT. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(50000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+
+        enum blocker_class classes[3] = {
+            BLOCKER_PERMANENT, BLOCKER_DEPENDENCY, BLOCKER_RESOURCE};
+        const char *ids[3] = {
+            "perm-unaffected", "dep-unaffected", "res-unaffected"};
+        for (int i = 0; i < 3; i++) {
+            struct blocker_record r;
+            blocker_init(&r, ids[i], "lms", classes[i], "x");
+            r.escape_deadline_secs = 5;   /* empty escape_action */
+            blocker_set(&r);
+        }
+
+        blocker_advance_clock_for_testing(
+            (int64_t)(BLOCKER_DEFAULT_TRANSIENT_TTL_SECS + 1000) * 1000000);
+        for (int i = 0; i < 5; i++) blocker_supervisor_sweep();
+
+        struct blocker_snapshot snaps[3];
+        int n = blocker_snapshot_all(snaps, 3);
+        BCK_CHECK("non-transient: all three survive the sweep storm",
+                  n == 3);
+        for (int i = 0; i < 3; i++) {
+            BCK_CHECK(ids[i], blocker_exists(ids[i]));
+            const struct blocker_snapshot *found = NULL;
+            for (int j = 0; j < n; j++) {
+                if (strcmp(snaps[j].id, ids[i]) == 0) { found = &snaps[j]; break; }
+            }
+            char label[96];
+            snprintf(label, sizeof(label), "non-transient: %s never escalated",
+                     ids[i]);
+            BCK_CHECK(label, found && !found->escalated);
+            snprintf(label, sizeof(label),
+                     "non-transient: %s deadline left as-is (no re-arm)", ids[i]);
+            BCK_CHECK(label, found && found->deadline_rearm_count == 0);
+        }
+        BCK_CHECK("non-transient: no retirements recorded",
+                  blocker_retired_transient_count() == 0);
     }
 
     /* ── retry counter ────────────────────────────────────────── */
