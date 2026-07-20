@@ -27,7 +27,7 @@ zcl_catchup      bounded  one-shot catch-up sync job (sync_controller_catchup_jo
 zcl_db_import    bounded  one-shot legacy-db import job (sync_controller_catchup_jobs.c)
 zcl_utxo_dec     bounded  bounded UTXO-decode worker, joined at import end (node_db_import_service.c)
 zcl_utxo_wr      bounded  bounded UTXO-writer, joined at import end (node_db_import_service.c)
-zcl_hodl_ref     bounded  one-shot explorer HODL-page refresh per task (explorer_pages_hodl.c)
+zcl_hodl_ref     bounded  one-shot explorer HODL-page refresh per task (explorer_pages_hodl_snapshot.c)
 zcl_blk_scan     bounded  boot-time block-file scan worker, joined (boot_block_file_scan.c)
 bg_quick_check   bounded  boot-time fast-restart quick check, joined (boot_fast_restart.c)
 #
