@@ -166,6 +166,130 @@ bool chaos_fault_stall_single_stage(struct chaos_fault_result *out);
  * erroring or stalling). */
 bool chaos_fault_kill_restart_mid_recovery(struct chaos_fault_result *out);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * (g)-(l): the sync/ROM-artifact fault matrix (lane G3)
+ *
+ * Six more named injectors extending the always-sync corpus above, this time
+ * over the ROM-artifact delivery path (lib/net/rom_fetch.c, rom_journal.c,
+ * rom_seed.c) and the pure snapshot-sync kernel (lib/sync/src/sync_reduce.c).
+ * Same law as (a)-(f): every fault DRIVES real production entry points as
+ * pure oracles — no production .c/.h logic is edited by this module's
+ * existence — and every outcome is either a proven recovery or a NAMED
+ * blocker, never a silent stall or an unproven "looks fine".
+ *
+ * Every function fills a `struct sync_fault_capsule`, which wraps the (a)-(f)
+ * `chaos_fault_result` shape (ok/recovered/operator_paged/note) with the
+ * "every bug is a 64-bit seed" replay fields the doctrine requires: the seed
+ * that drove any per-run variation, the ordinal event that fired the fault,
+ * a short phase/fault-point label, and a before/after state snapshot. */
+
+/* Common capsule every (g)-(l) injector fills in — see the header above. */
+struct sync_fault_capsule {
+    struct chaos_fault_result base;   /* ok / recovered / operator_paged / note */
+    uint64_t seed;                    /* deterministic replay seed for this run */
+    uint32_t event_number;            /* ordinal of the event that fired the fault */
+    char     phase[32];               /* short phase/state name at the fault point */
+    char     fault_point[80];         /* exact boundary/action the fault targets */
+    char     state_before[160];       /* human-readable snapshot before the fault */
+    char     state_after[160];        /* human-readable snapshot after the fault  */
+    char     replay_command[192];     /* how an operator reproduces this exact run */
+};
+
+/* (g) Two peers serving DIFFERENT bytes for the SAME chunk index.
+ *
+ * Registers one real artifact on a real fs_server (the GOOD peer, honest
+ * content). A second, hand-built TCP listener (the BAD peer — real
+ * fs_session_init/fs_handshake/fs_recv_frame/fs_send_chunk_fast, all real
+ * production wire primitives, just fed deliberately wrong chunk bytes) claims
+ * to serve the SAME chunk_root/index. The transport MAC is self-consistent
+ * (fs_send_chunk_fast binds MAC to whatever bytes it is given, exactly as the
+ * honest server does — the MAC proves in-flight integrity, never semantic
+ * correctness), so the fetch from the BAD peer succeeds at the transport
+ * layer; the fault is caught only by the CONTENT check
+ * (rom_fetch_verify_chunk against the manifest's committed digest). Asserts:
+ * the good peer's chunk is fetched, verified, and durably journaled first;
+ * the bad peer's reply for the SAME index fails content verify; the bad peer
+ * is named via rom_peer_note_bad_chunk and reads back deprioritized; and the
+ * journal + on-disk .part bytes for that chunk are UNCHANGED by the rejected
+ * attempt (the good chunk is kept). */
+bool chaos_fault_conflicting_chunk_peers(uint64_t seed,
+                                         struct sync_fault_capsule *out);
+
+/* (h) ENOSPC (write failure) during a journal bitmap commit.
+ *
+ * Marks one chunk done normally, then uses setrlimit(RLIMIT_FSIZE) positioned
+ * exactly at the journal's bitmap-byte offset (SIGXFSZ ignored for the
+ * duration) to force a REAL pwrite() failure (EFBIG — the standard,
+ * privilege-free substitute for ENOSPC at this exact syscall boundary; no
+ * root/mount-namespace is available in a sandboxed worktree to force a
+ * literal full filesystem, and rom_journal_mark's error handling does not
+ * distinguish errno) on the NEXT rom_journal_mark() call — the same pwrite
+ * the durability contract requires before a bit is considered set. Asserts
+ * the failed mark returns false, the in-memory bit is rolled back (never a
+ * half-committed bit), count_done is unaffected, and — after the rlimit is
+ * restored — the SAME mark call succeeds and a fresh reopen of the journal
+ * from disk agrees with the in-memory state exactly (no stray bit either
+ * way). */
+bool chaos_fault_journal_commit_enospc(uint64_t seed,
+                                       struct sync_fault_capsule *out);
+
+/* (i) Kill at the two per-chunk resume boundaries rom_journal.h documents:
+ * "pwrite the chunk data -> fdatasync(.part) -> set the chunk's journal bit
+ * -> fdatasync(journal)". `after_bitmap_commit=false` kills BETWEEN the data
+ * fsync and the bitmap mark (the last chunk's bytes are durably on disk but
+ * the journal never learns it — resume must not trust it and must refetch
+ * exactly that one chunk). `after_bitmap_commit=true` kills AFTER every
+ * chunk's bitmap bit is committed but BEFORE the final whole-file-verify +
+ * atomic rename (resume must trust every journaled bit, refetch NOTHING, and
+ * still complete the rename). Either way asserts at most one chunk is ever
+ * refetched/redone and the resumed run converges to a correctly verified,
+ * correctly renamed final file. */
+bool chaos_fault_kill_resume_boundary(uint64_t seed, bool after_bitmap_commit,
+                                      struct sync_fault_capsule *out);
+
+/* (j) Header reorg during an artifact download — driven directly against the
+ * PURE sync_reduce kernel (lib/sync/src/sync_reduce.c), no IO. Walks the
+ * legitimate START/OFFER_RECEIVED/OFFER_ACCEPTED/CHUNK_RECEIVED sequence into
+ * RECEIVING, then fires a PEER_LOST event — the kernel's existing, documented
+ * stand-in for "the anchor this session was chasing was reorged out from
+ * under it" (there is no separate REORG event in the catalog; PEER_LOST is
+ * the typed blocker this class of fault raises). Asserts the decision moves
+ * to FAILED with SYNC_BLOCKER_PEER_LOST and SYNC_ACTION_FAIL, and then drives
+ * a further CHUNK_RECEIVED / RECEIVE_COMPLETE / PROOF_VERIFIED(proof_ok=true)
+ * sequence at the SAME (now-stale) session id, asserting the phase never
+ * leaves FAILED and SYNC_ACTION_STAGE_BUNDLE never appears again — the
+ * bundle whose anchor was reorged out is never installed. */
+bool chaos_fault_reorg_during_artifact_download(uint64_t seed,
+                                                struct sync_fault_capsule *out);
+
+/* (k) Slow-loris seeder: a connection that stalls forever instead of
+ * refusing or replying. Modeled at the SAME supervisor liveness primitive
+ * every bounded-stall class in this codebase ultimately surfaces through
+ * (mirrors chaos_fault_freeze_reducer_drive's idiom exactly, scoped to a
+ * distinct "chaos.rom_fetch_wait" liveness contract) rather than blocking
+ * this gate on rom_fetch.c's REAL multi-second socket timeouts
+ * (RF_CONNECT_TIMEOUT_SEC=10 / RF_IO_TIMEOUT_SEC=120 — no test-only override
+ * exists, and adding one would be a rom_fetch.c logic edit this lane may not
+ * make): a frozen heartbeat proves the SAME "bounded stall -> named stall,
+ * never a silent hang" property those real timeouts exist to guarantee, in
+ * milliseconds instead of two real minutes. Asserts a named
+ * SUPERVISOR_STALL_TIME_DEADLINE fires (never silent) and the child resumes
+ * ticking once unfrozen (the stall was bounded, not permanent). */
+bool chaos_fault_slow_loris_seeder(uint64_t seed,
+                                   struct sync_fault_capsule *out);
+
+/* (l) A valid multi-block "bundle" (a genesis-rooted prefix a checkpoint/
+ * artifact install would have left, minted via the real simnet_cluster
+ * mint/connect path) immediately followed by one invalid TAIL block — driven
+ * through the real Byzantine-fixture connect_block(...,just_check=false)
+ * path (sim/simnet_byzantine.h), never a synthetic accept. Asserts the tail
+ * block is REJECTED independently of the valid prefix (the tip never
+ * advances past the bundle's last height — bundle acceptance never vouches
+ * for what comes after it), and that an honest block at the same height
+ * connects cleanly right after (the rejected tail did not wedge the chain). */
+bool chaos_fault_invalid_tail_block(uint64_t seed,
+                                    struct sync_fault_capsule *out);
+
 #ifdef __cplusplus
 }
 #endif

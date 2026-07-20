@@ -1,0 +1,29 @@
+# Lane G3 fault matrix (k) companion: a bounded network stall (a seeder that
+# never replies) must never hang the caller — the stall window is simulated
+# virtual time (advance_clock), so this scenario runs in milliseconds
+# regardless of the window's length. The deep per-fault proof (a named
+# SUPERVISOR_STALL_TIME_DEADLINE fires, then the child resumes ticking once
+# unfrozen) lives in chaos_fault_slow_loris_seeder (sim/simnet_chaos_faults.c);
+# this scenario is the corpus-level regression companion, proving traffic
+# through this same peer resumes cleanly once the stall window expires
+# instead of staying wedged.
+
+seed 0x510C0F0000000001
+boot_phase  listening
+peer_count  1
+partition_network for=30s
+send_block  peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture
+expect      partition_drops == 1
+expect      blocks_sent == 0
+expect      tip_height == 0
+
+# The stall is BOUNDED: once the window has fully elapsed, the same peer's
+# traffic goes through — never a permanent hang. A window under 60s (like
+# network_partition.scenario's own 30s) sidesteps advance_clock's own
+# seconds/60 "mining while idle" tip bump, which is orthogonal to this fault.
+advance_clock +30s
+send_block  peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture
+expect      partition_drops == 1
+expect      blocks_sent == 1
+expect      tip_height == 1
+expect      no_crash

@@ -1,0 +1,38 @@
+# Lane G3 fault matrix (h/j companion): a node chasing one branch (the
+# anchor an in-flight artifact/snapshot download would be bound to) gets
+# partitioned from that branch's miner while a COMPETING, eventually-longer
+# branch keeps building elsewhere — modeling a header reorg invalidating the
+# anchor mid-download. Real simnet_cluster (real connect_block/
+# disconnect_block/fork-choice), not sim_peer counters. The deep per-fault
+# proof (PEER_LOST -> FAILED, never STAGE_BUNDLE on the stale session) lives
+# in chaos_fault_reorg_during_artifact_download (sim/simnet_chaos_faults.c);
+# this scenario is the corpus-level regression companion.
+
+seed 0x8EAD000000000001
+mode simnet
+simnet_nodes 3
+
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+expect simnet_converged == 1
+
+# Sever node 2 from the honest branch right as it would be mid-download —
+# node 0 (its would-be artifact source) keeps extending in isolation.
+simnet_partition a=0 b=2
+simnet_mint node=0
+simnet_relay node=0
+simnet_mint node=0
+simnet_relay node=0
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+
+# Heal: node 2 must adopt the real, now-longer branch — never a stuck/
+# half-installed state, never a silent divergence.
+simnet_heal a=0 b=2
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash
