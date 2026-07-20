@@ -138,6 +138,36 @@ static void agent_fast_add_warning(struct agent_fast_snapshot *s,
     }
 }
 
+/* POINT 3.4: a TRANSIENT/DEPENDENCY blocker never becomes the hard headline
+ * (api_blocker_hard_gates_public_serving is PERMANENT/RESOURCE-only, by
+ * design — that boundary is untouched here) — but that also means a
+ * stuck/overdue transient can sit for hours while the headline reads
+ * "healthy". This is a read-only classifier over the existing blocker
+ * snapshot fields (class, age_us, escape_deadline_us/deadline_remaining_us,
+ * escalated); it does not touch lib/util/src/blocker.c or its lifecycle
+ * sweep. A blocker counts as overdue when any of:
+ *   - the supervisor sweep already flagged it `escalated` (deadline re-arm
+ *     budget exhausted, see blocker_supervisor_sweep);
+ *   - it has an explicit escape_deadline_us that has elapsed
+ *     (deadline_remaining_us < 0);
+ *   - it has no deadline but has lived past the default TRANSIENT TTL
+ *     (BLOCKER_DEFAULT_TRANSIENT_TTL_SECS) — DEPENDENCY blockers are never
+ *     TTL-swept by design, so age is the only overdue signal for those. */
+static bool agent_blocker_is_overdue_transient(
+    const struct blocker_snapshot *b)
+{
+    if (!b)
+        return false;
+    if (b->class != BLOCKER_TRANSIENT && b->class != BLOCKER_DEPENDENCY)
+        return false;
+    if (b->escalated)
+        return true;
+    if (b->escape_deadline_us > 0 && b->deadline_remaining_us < 0)
+        return true;
+    return b->age_us >
+           (int64_t)BLOCKER_DEFAULT_TRANSIENT_TTL_SECS * 1000000;
+}
+
 static bool agent_mirror_same_height_hash_gap(
     const struct legacy_mirror_sync_stats *mirror)
 {
@@ -302,6 +332,19 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
             if (!s->hard_typed_blocker)
                 agent_fast_add_warning(s, dominant->id);
         }
+        const struct blocker_snapshot *overdue_dominant = NULL;
+        for (int i = 0; i < blocker_count; i++) {
+            if (!agent_blocker_is_overdue_transient(&blockers[i]))
+                continue;
+            s->overdue_transient_count++;
+            if (!overdue_dominant ||
+                blockers[i].age_us > overdue_dominant->age_us)
+                overdue_dominant = &blockers[i];
+        }
+        if (overdue_dominant)
+            snprintf(s->overdue_transient_dominant_id,
+                     sizeof(s->overdue_transient_dominant_id), "%s",
+                     overdue_dominant->id);
     }
     struct condition_engine_summary condition_summary;
     condition_engine_get_summary(&condition_summary);
@@ -763,6 +806,17 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         json_push_kv_str(&breg, "dominant_class",
                          health.dominant_blocker_class[0]
                              ? health.dominant_blocker_class : "none");
+        /* POINT 3.4: count of active TRANSIENT/DEPENDENCY blockers that are
+         * overdue (escalated, past their escape deadline, or past the
+         * default TTL — see agent_blocker_is_overdue_transient). These never
+         * drive `primary_blocker` (that headline stays PERMANENT/RESOURCE-
+         * only by design), so without this an overdue transient could sit
+         * for hours behind a "healthy" headline. */
+        json_push_kv_int(&breg, "overdue_transient_count",
+                         health.overdue_transient_count);
+        json_push_kv_str(&breg, "overdue_transient_dominant_id",
+                         health.overdue_transient_dominant_id[0]
+                             ? health.overdue_transient_dominant_id : "none");
         json_push_kv_str(&breg, "native_state_command",
                          "zclassic23 dumpstate blocker");
         json_push_kv(result, "blocker_registry", &breg);

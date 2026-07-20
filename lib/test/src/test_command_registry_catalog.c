@@ -638,6 +638,177 @@ static int test_status_brief_flat_lean_envelope(void)
     return failures;
 }
 
+/* POINT 3.4: a TRANSIENT/DEPENDENCY blocker never drives `primary_blocker`
+ * (PERMANENT/RESOURCE-only headline, unchanged) so an overdue one could
+ * otherwise sit invisible behind a "healthy" brief. Proves the registry's
+ * overdue_transient_count/overdue_transient_dominant_id (event_agent_summary.c)
+ * surface into the brief as overdue_transient_count/overdue_transient_note
+ * (status_brief_native_handler.c), beside the existing active_blockers/
+ * blocker_head fields, without ever becoming primary_blocker. */
+static int test_status_brief_overdue_transient_surfaces(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.status.brief surfaces overdue_transient_count/note from the "
+         "typed-blocker registry without promoting it to primary_blocker") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.status.brief");
+        ASSERT(s != NULL);
+
+        static const char fixture[] =
+            "{\"schema\":\"zcl.public_status.v2\","
+            "\"partial_result\":false,"
+            "\"served_height\":100,\"header_height\":100,"
+            "\"served_height_known\":true,"
+            "\"header_height_known\":true,"
+            "\"gap\":0,\"peer_best_height\":100,"
+            "\"peer_best_height_known\":true,"
+            "\"target_height\":100,\"target_height_known\":true,"
+            "\"chain_evidence_consistent\":true,"
+            "\"sync_state\":\"at_tip\",\"serving\":true,"
+            "\"healthy\":true,\"primary_blocker\":\"none\","
+            "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                "\"budget_ms\":250,\"partial_result\":false,"
+                "\"budget_exceeded\":false},"
+            "\"peers\":{\"total\":1},"
+            "\"conditions\":{"
+                "\"schema\":\"zcl.condition_engine_summary.v2\","
+                "\"active_count\":0},"
+            "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                "\"rss_mb\":512},"
+            "\"reducer\":{\"tip_advance_age_seconds\":3},"
+            "\"security_posture\":{"
+                "\"schema\":\"zcl.security_posture.v1\","
+                "\"anchor_backfill_gap\":false,"
+                "\"nullifier_backfill_gap\":false},"
+            "\"blocker_registry\":{"
+                "\"schema\":\"zcl.blocker_registry_summary.v1\","
+                "\"active_count\":3,"
+                "\"dominant_id\":\"chain_gap\","
+                "\"dominant_class\":\"TRANSIENT\","
+                "\"overdue_transient_count\":2,"
+                "\"overdue_transient_dominant_id\":"
+                    "\"catalog.address_index.lag_exceeded\","
+                "\"native_state_command\":\"zclassic23 dumpstate blocker\"}}";
+        g_status_brief_agent_fixture = fixture;
+
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+
+        /* The healthy-looking headline is untouched. */
+        ASSERT_STR_EQ(json_get_str(json_get(data, "primary_blocker")),
+                      "none");
+        ASSERT(json_get_bool(json_get(data, "healthy")));
+
+        /* The registry truth is fully visible from the compact brief alone. */
+        ASSERT_EQ(json_get_int(json_get(data, "active_blockers")),
+                  (int64_t)3);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "blocker_head")),
+                      "chain_gap");
+        ASSERT_EQ(json_get_int(json_get(data, "overdue_transient_count")),
+                  (int64_t)2);
+        const char *note = json_get_str(
+            json_get(data, "overdue_transient_note"));
+        ASSERT(note != NULL);
+        ASSERT(strstr(note, "2") != NULL);
+        ASSERT(strstr(note, "catalog.address_index.lag_exceeded") != NULL);
+
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+/* Absent/zero case: a node predating the field, or with nothing overdue,
+ * must never fabricate overdue_transient_count=0 or an empty note. */
+static int test_status_brief_overdue_transient_absent_when_zero(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.status.brief omits overdue_transient_count/note when the "
+         "registry reports zero, never fabricates a zero/empty field") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.status.brief");
+        ASSERT(s != NULL);
+
+        static const char fixture[] =
+            "{\"schema\":\"zcl.public_status.v2\","
+            "\"partial_result\":false,"
+            "\"served_height\":100,\"header_height\":100,"
+            "\"served_height_known\":true,"
+            "\"header_height_known\":true,"
+            "\"gap\":0,\"peer_best_height\":100,"
+            "\"peer_best_height_known\":true,"
+            "\"target_height\":100,\"target_height_known\":true,"
+            "\"chain_evidence_consistent\":true,"
+            "\"sync_state\":\"at_tip\",\"serving\":true,"
+            "\"healthy\":true,\"primary_blocker\":\"none\","
+            "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                "\"budget_ms\":250,\"partial_result\":false,"
+                "\"budget_exceeded\":false},"
+            "\"peers\":{\"total\":1},"
+            "\"conditions\":{"
+                "\"schema\":\"zcl.condition_engine_summary.v2\","
+                "\"active_count\":0},"
+            "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                "\"rss_mb\":512},"
+            "\"reducer\":{\"tip_advance_age_seconds\":3},"
+            "\"security_posture\":{"
+                "\"schema\":\"zcl.security_posture.v1\","
+                "\"anchor_backfill_gap\":false,"
+                "\"nullifier_backfill_gap\":false},"
+            "\"blocker_registry\":{"
+                "\"schema\":\"zcl.blocker_registry_summary.v1\","
+                "\"active_count\":1,"
+                "\"dominant_id\":\"chain_gap\","
+                "\"dominant_class\":\"TRANSIENT\","
+                "\"overdue_transient_count\":0,"
+                "\"overdue_transient_dominant_id\":\"none\","
+                "\"native_state_command\":\"zclassic23 dumpstate blocker\"}}";
+        g_status_brief_agent_fixture = fixture;
+
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+
+        ASSERT_EQ(json_get_int(json_get(data, "active_blockers")),
+                  (int64_t)1);
+        /* known-but-zero -> field present with value 0 (never omitted,
+         * since the registry DID report a known count); the NOTE, however,
+         * only exists when the count is positive. */
+        ASSERT_EQ(json_get_int(json_get(data, "overdue_transient_count")),
+                  (int64_t)0);
+        ASSERT(json_get(data, "overdue_transient_note") == NULL);
+
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_status_brief_composite_fails_closed(void)
 {
     int failures = 0;
@@ -1993,6 +2164,8 @@ int test_command_registry_catalog(void)
     failures += test_bridge_rpc_errors_fail_closed();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
+    failures += test_status_brief_overdue_transient_surfaces();
+    failures += test_status_brief_overdue_transient_absent_when_zero();
     failures += test_status_brief_composite_fails_closed();
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();

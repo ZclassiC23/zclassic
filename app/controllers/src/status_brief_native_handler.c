@@ -381,6 +381,17 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     int64_t active_blockers = 0;
     bool blocker_registry_known = false;
     const char *blocker_head = NULL;
+    /* POINT 3.4: overdue_transient_count surfaces the same registry truth
+     * for TRANSIENT/DEPENDENCY blockers that are stuck past their deadline
+     * or TTL (see agent_blocker_is_overdue_transient in
+     * event_agent_summary.c). A TRANSIENT never becomes `primary_blocker`
+     * (PERMANENT/RESOURCE-only headline, unchanged here) so without this an
+     * overdue transient could sit invisible behind a "healthy" brief. Read
+     * OPTIONALLY, same as active_blockers/blocker_head above, so an older
+     * node predating this field simply omits it. */
+    int64_t overdue_transient_count = 0;
+    bool overdue_transient_known = false;
+    const char *overdue_transient_id = NULL;
     const struct json_value *blocker_registry =
         json_get(&agent, "blocker_registry");
     if (blocker_registry && blocker_registry->type == JSON_OBJ) {
@@ -390,6 +401,13 @@ char *zcl_native_status_brief_body(const struct json_value *args,
             json_get(blocker_registry, "dominant_id"));
         if (head && head[0])
             blocker_head = head;
+        overdue_transient_known = status_read_nonnegative_int(
+            blocker_registry, "overdue_transient_count",
+            &overdue_transient_count);
+        const char *odom = json_get_str(
+            json_get(blocker_registry, "overdue_transient_dominant_id"));
+        if (odom && odom[0] && strcmp(odom, "none") != 0)
+            overdue_transient_id = odom;
     }
 
     struct json_value root;
@@ -417,6 +435,24 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         json_push_kv_int(&root, "active_blockers", active_blockers);
     if (blocker_head)
         json_push_kv_str(&root, "blocker_head", blocker_head);
+    /* POINT 3.4: overdue TRANSIENT/DEPENDENCY count, so the compact brief
+     * alone shows the registry truth even though such a blocker never
+     * becomes `primary_blocker`. Omitted (never null/zero-fabricated) when
+     * the node predates the field, matching active_blockers/blocker_head.
+     * The note is emitted only when the count is actually positive so a
+     * healthy node never grows an empty/zero note field. */
+    if (overdue_transient_known)
+        json_push_kv_int(&root, "overdue_transient_count",
+                         overdue_transient_count);
+    if (overdue_transient_count > 0) {
+        char note[128];
+        (void)snprintf(note, sizeof(note),
+                      "%lld transient blockers overdue: %s",
+                      (long long)overdue_transient_count,
+                      overdue_transient_id ? overdue_transient_id
+                                           : "unknown");
+        json_push_kv_str(&root, "overdue_transient_note", note);
+    }
     json_push_kv_int(&root, "active_conditions", active_conditions);
     status_push_int_if_known(&root, "rss_mb", rss_known, rss_mb);
     status_push_int_if_known(&root, "tip_advance_age_seconds", tip_age_known,
