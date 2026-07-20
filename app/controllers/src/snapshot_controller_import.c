@@ -22,6 +22,7 @@
 #include "storage/dbwrapper.h"
 #include "storage/block_index_db.h"
 #include "storage/coins_db.h"
+#include "services/block_row_verify.h"
 #include "chain/chain.h"   /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO */
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"  /* get_rom_state_checkpoint (re-derive floor) */
@@ -119,41 +120,44 @@ static void import_row_build_header(const struct disk_block_index *dbi,
 /* Hash-bind + PoW-target-check every row; full Equihash solution check on
  * the stride/above-checkpoint subset (see block comment above). Returns
  * true (row admissible) or false with a short machine-readable reason in
- * `out_reason` (never NULL-terminated beyond out_reason_size). */
+ * `out_reason` (never NULL-terminated beyond out_reason_size).
+ *
+ * The hash-bind + PoW + gated-Equihash sequence lives in the canonical
+ * block_row_verify() primitive (services/block_row_verify.h) shared with the
+ * blocks-hydrate and flat loaders; this wrapper only builds the header, gates
+ * the Equihash budget (stride / above-checkpoint), and maps the verdict to
+ * this path's machine tokens. */
 static bool import_row_verify(const struct disk_block_index *dbi,
                               const uint8_t block_hash[32],
                               const struct chain_params *cp,
                               int64_t rom_checkpoint_height,
                               char *out_reason, size_t out_reason_size)
 {
-    struct uint256 computed_hash;
-    disk_block_index_get_hash(dbi, &computed_hash);
-    if (memcmp(computed_hash.data, block_hash, 32) != 0) {
-        snprintf(out_reason, out_reason_size, "hash-bind-mismatch");
-        return false;
-    }
-
-    if (!cp) {
-        snprintf(out_reason, out_reason_size, "no-chain-params");
-        return false;
-    }
-    if (!CheckProofOfWork(computed_hash, dbi->nBits, &cp->consensus)) {
-        snprintf(out_reason, out_reason_size, "high-hash");
-        return false;
-    }
-
     bool full_check =
         (dbi->nHeight > 0 && (dbi->nHeight % IMPORT_ROW_POW_STRIDE) == 0) ||
         (rom_checkpoint_height >= 0 && dbi->nHeight > rom_checkpoint_height);
-    if (full_check) {
-        struct block_header h;
-        import_row_build_header(dbi, &h);
-        if (!check_equihash_solution(&h, cp)) {
+
+    struct block_header h;
+    import_row_build_header(dbi, &h);
+
+    switch (block_row_verify(block_hash, dbi->nBits, &h, cp, full_check)) {
+        case BLOCK_ROW_VERIFY_OK:
+            return true;
+        case BLOCK_ROW_VERIFY_NO_PARAMS:
+            snprintf(out_reason, out_reason_size, "no-chain-params");
+            return false;
+        case BLOCK_ROW_VERIFY_HASH_BIND_MISMATCH:
+            snprintf(out_reason, out_reason_size, "hash-bind-mismatch");
+            return false;
+        case BLOCK_ROW_VERIFY_HIGH_HASH:
+            snprintf(out_reason, out_reason_size, "high-hash");
+            return false;
+        case BLOCK_ROW_VERIFY_BAD_EQUIHASH:
             snprintf(out_reason, out_reason_size, "invalid-equihash-solution");
             return false;
-        }
     }
-    return true;
+    snprintf(out_reason, out_reason_size, "unknown-verify-verdict");
+    return false;
 }
 
 /* Quarantine bookkeeping: bump the process counter, refresh the (rate-

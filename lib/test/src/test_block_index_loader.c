@@ -139,7 +139,34 @@ static bool bih_insert_header_row(sqlite3 *db, int h,
     hdr.nSolutionSize = 32;
     for (int i = 0; i < 32; i++)
         hdr.nSolution[i] = (uint8_t)(i + h);
-    block_header_get_hash(&hdr, out_hash);
+
+    /* Mine (bump nTime) until the real header hash meets the PoW target at
+     * nBits — the hydrate loader's canonical per-row verify now runs hash-bind
+     * + CheckProofOfWork on every row (POINT 1 admission parity), exactly as a
+     * genuine imported header already satisfies its own network difficulty.
+     * Cheap SHA256d search (no Equihash: these low heights sit below the
+     * stride / ROM-checkpoint gate). Compares against the decoded target the
+     * same way CheckProofOfWork does, but without its per-attempt log storm. */
+    {
+        bool neg = false, of = false;
+        struct arith_uint256 target;
+        arith_uint256_set_compact(&target, hdr.nBits, &neg, &of);
+        if (neg || of || arith_uint256_is_zero(&target))
+            return false;
+        bool mined = false;
+        for (uint32_t tries = 0; tries < 2000000u; tries++) {
+            hdr.nTime = 1231006505u + tries;
+            block_header_get_hash(&hdr, out_hash);
+            struct arith_uint256 ha;
+            uint256_to_arith(&ha, out_hash);
+            if (arith_uint256_compare(&ha, &target) <= 0) {
+                mined = true;
+                break;
+            }
+        }
+        if (!mined)
+            return false;
+    }
 
     uint8_t zero32[32] = {0};
     sqlite3_stmt *s = NULL;

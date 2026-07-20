@@ -29,7 +29,7 @@ app/jobs/src/stage_repair_reducer_frontier.c 815
 app/jobs/src/tip_finalize_stage.c 807
 app/jobs/src/utxo_apply_stage.c 911
 app/jobs/src/validate_headers_stage.c 948
-app/services/src/block_index_loader.c 801
+app/services/src/block_index_loader.c 876
 app/services/src/node_db_catchup_service.c 886
 app/services/src/rolling_anchor_service.c 801
 

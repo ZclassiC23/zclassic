@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
+#include "services/block_row_verify.h"
 #include "services/block_index_integrity.h"
 #include "services/invariant_sentinel.h"
 #include "services/chain_state_service.h"
@@ -38,9 +39,65 @@
 #include <sqlite3.h>
 
 #include "util/ar_step_readonly.h"
+#include "util/blocker.h"
 #include "util/boot_phase.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/safe_alloc.h"
+
+/* ── Flat-loader per-row admission quarantine ───────────────────────
+ * The flat cache stores no merkle root / nonce / Equihash solution, so it
+ * cannot hash-bind or re-check the solution the way the import + blocks-hydrate
+ * loaders do; it CAN re-check that each stored hash still meets its own PoW
+ * difficulty target. A row that fails is dropped per-row (never inserted into
+ * the map, so header sync + body_fetch re-supply it) instead of admitting an
+ * entry below PoW strength. The whole-file bii_verify SHA3 envelope stays the
+ * OUTER gate; this is the inner one, capped by the shared
+ * BLOCKS_HYDRATE_MAX_QUARANTINE outer bound. */
+static _Atomic int64_t g_flat_row_quarantined = 0;
+static struct log_throttle g_flat_row_quarantine_log = LOG_THROTTLE_INIT;
+
+int64_t block_index_flat_row_quarantined(void)
+{
+    return atomic_load_explicit(&g_flat_row_quarantined, memory_order_relaxed);
+}
+
+/* Record one dropped flat row: bump the process counter + this-load count,
+ * name the (rate-limited) typed blocker, and emit a throttled WARN. Never
+ * aborts the caller — the row is simply skipped. */
+static void flat_quarantine_row(int32_t height, const uint8_t hash[32],
+                                int64_t *bad_count)
+{
+    (*bad_count)++;
+    atomic_fetch_add_explicit(&g_flat_row_quarantined, 1, memory_order_relaxed);
+
+    char hex[65];
+    struct uint256 hh;
+    memcpy(hh.data, hash, 32);
+    uint256_get_hex(&hh, hex);
+
+    bool gross = (*bad_count > BLOCKS_HYDRATE_MAX_QUARANTINE);
+    struct blocker_record rec;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "block_index.bin flat row quarantined height=%d hash=%s "
+             "reason=high-hash (dropped from map; header sync + body_fetch "
+             "re-supply)%s", height, hex,
+             gross ? " — > outer bound, deferring to whole-file SHA3 + reindex"
+                   : "");
+    if (blocker_init(&rec, "block_index.flat_row_quarantine", "block_index",
+                     gross ? BLOCKER_PERMANENT : BLOCKER_TRANSIENT, reason))
+        (void)blocker_set(&rec);
+
+    uint64_t reps = 0;
+    if (log_throttle_should_emit(&g_flat_row_quarantine_log,
+                                 (uint64_t)(uint32_t)height,
+                                 platform_time_wall_unix(), 60, &reps))
+        LOG_WARN("block_index_flat",
+                 "flat row quarantined height=%d hash=%s reason=high-hash "
+                 "(dropped, load continues; repeats=%llu)",
+                 height, hex, (unsigned long long)reps);
+}
 
 /* ── Flat file format ────────────────────────────────────── */
 
@@ -513,7 +570,13 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
     /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. Fetched
      * once; the per-entry reconcile below is O(1) and adds no extra scan. */
     int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    /* Chain params for the per-row PoW-target admission gate (header==NULL:
+     * the flat cache stores no solution to hash-bind or re-check Equihash).
+     * NULL is not expected this late in boot; if it is, the gate is skipped so
+     * a missing params table cannot drop the whole index. */
+    const struct chain_params *cp = chain_params_get();
     int64_t stripped_failed = 0, demoted_failed = 0;
+    int64_t flat_bad_count = 0;
     for (uint32_t i = 0; i < count; i++) {
         /* Feed the supervisor_backstop liveness marker every 64K entries so
          * this single-threaded pre-serving loop over ~3.1M entries is not
@@ -522,6 +585,18 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
             boot_progress_note("block_index.flat_insert", i, count);
         if (uint256_is_null((const struct uint256 *)entries[i].hash))
             continue;
+
+        /* Per-row inner admission gate (POINT 1 admission strength): re-check
+         * the stored hash meets its own PoW target. A failing row is dropped
+         * per-row (not inserted → header sync + body_fetch re-supply it) rather
+         * than admitted below PoW strength. Skipped when cp is NULL (see above)
+         * so it can never drop every row on a missing params table. */
+        if (cp && block_row_verify(entries[i].hash, entries[i].n_bits, NULL,
+                                   cp, false) != BLOCK_ROW_VERIFY_OK) {
+            flat_quarantine_row(entries[i].height, entries[i].hash,
+                                &flat_bad_count);
+            continue;
+        }
 
         struct block_index *pindex = &arena[i];
         block_index_init(pindex);

@@ -19,6 +19,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/block_index_db.h"
 #include "storage/progress_store.h"
+#include "services/block_row_verify.h"
 #include "validation/check_block.h"
 
 #include <stdio.h>
@@ -384,17 +385,30 @@ static bool validate_header_fields(const struct block_header *header,
         return false;
     }
 
+    /* PoW target + full Equihash solution check via the canonical
+     * block_row_verify() primitive (services/block_row_verify.h) shared with
+     * the import + blocks-hydrate loaders. The caller (validate_from_source)
+     * has already hash-bound this header to bi->phashBlock, so the primitive's
+     * hash-bind re-confirms it against the header's own recomputed hash (always
+     * passes here); the load-bearing checks are the PoW target and the Equihash
+     * solution. This path's reason tokens ("high-hash"/"invalid-solution") are
+     * preserved by the mapping below. */
     struct uint256 hash;
     block_header_get_hash(header, &hash);
-    if (!CheckProofOfWork(hash, header->nBits, &cp->consensus)) {
-        snprintf(out_reason, out_reason_size, "high-hash");
-        return false;
+    switch (block_row_verify(hash.data, header->nBits, header, cp, true)) {
+        case BLOCK_ROW_VERIFY_OK:
+            return true;
+        case BLOCK_ROW_VERIFY_HIGH_HASH:
+            snprintf(out_reason, out_reason_size, "high-hash");
+            return false;
+        case BLOCK_ROW_VERIFY_BAD_EQUIHASH:
+        case BLOCK_ROW_VERIFY_HASH_BIND_MISMATCH:
+        case BLOCK_ROW_VERIFY_NO_PARAMS:
+            snprintf(out_reason, out_reason_size, "invalid-solution");
+            return false;
     }
-    if (!check_equihash_solution(header, cp)) {
-        snprintf(out_reason, out_reason_size, "invalid-solution");
-        return false;
-    }
-    return true;
+    snprintf(out_reason, out_reason_size, "invalid-solution");
+    return false;
 }
 
 static bool header_hash_matches_index(const struct block_header *header,

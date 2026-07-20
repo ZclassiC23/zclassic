@@ -8,7 +8,10 @@
 
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
+#include "services/block_row_verify.h"
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/checkpoints.h"
 #include "chain/pow.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -58,13 +61,24 @@ static struct log_throttle g_blocks_hydrate_quarantine_log = LOG_THROTTLE_INIT;
 
 /* Safety valve: localized corruption → per-row quarantine; a table with more
  * than this many poisoned rows is grossly shredded, so refuse the whole
- * hydration (the pre-J5 behavior) rather than seed a lace-riddled map. */
-#define BLOCKS_HYDRATE_MAX_QUARANTINE 4096
+ * hydration (the pre-J5 behavior) rather than seed a lace-riddled map.
+ * BLOCKS_HYDRATE_MAX_QUARANTINE is shared with the flat loader via
+ * services/block_index_loader.h (the common outer bound). */
+
+/* Equihash budget knob mirroring the import path's IMPORT_ROW_POW_STRIDE: the
+ * canonical block_row_verify() runs hash-bind + PoW target on EVERY row, but
+ * the expensive full Equihash solution check only on every STRIDE-th height
+ * plus every height above the ROM checkpoint (the unverified tail). Keeps the
+ * ~3.1M-row boot hydrate affordable while still spot-checking solutions and
+ * fully checking the above-checkpoint region. */
+#define BLOCKS_HYDRATE_POW_STRIDE 10000
 
 enum bhc_bad_reason {
     BHC_BAD_SHORT_HASH = 0,     /* hash PRIMARY KEY column missing/short */
     BHC_BAD_UNUSABLE_HEADER,    /* a fixed header field / solution unusable */
     BHC_BAD_HASH_MISMATCH,      /* header re-serializes to a different PoW hash */
+    BHC_BAD_HIGH_HASH,          /* stored hash fails the PoW difficulty target */
+    BHC_BAD_EQUIHASH,           /* Equihash solution check failed */
 };
 
 static const char *bhc_bad_reason_name(enum bhc_bad_reason r)
@@ -73,6 +87,8 @@ static const char *bhc_bad_reason_name(enum bhc_bad_reason r)
         case BHC_BAD_SHORT_HASH:      return "short-or-missing-hash";
         case BHC_BAD_UNUSABLE_HEADER: return "unusable-header";
         case BHC_BAD_HASH_MISMATCH:   return "hash-mismatch";
+        case BHC_BAD_HIGH_HASH:       return "high-hash";
+        case BHC_BAD_EQUIHASH:        return "invalid-equihash-solution";
     }
     return "unknown";
 }
@@ -252,6 +268,13 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
              "Hydrating block index from node.db `blocks` (%lld rows)...",
              (long long)row_count);
 
+    /* Canonical admission context (shared with the import + flat loaders):
+     * chain params for the PoW target + Equihash params, and the ROM
+     * checkpoint height that opens the full-Equihash budget on the tail. */
+    const struct chain_params *cp = chain_params_get();
+    const struct rom_state_checkpoint *rom_cp = get_rom_state_checkpoint();
+    int64_t rom_checkpoint_height = rom_cp ? (int64_t)rom_cp->height : -1;
+
     /* ── Pass A (J5): VALIDATE every row hash-binds BEFORE touching the map,
      *    but a poisoned row NO LONGER refuses the whole table. Each bad row is
      *    QUEUED for a deferred purge (we cannot DELETE while this SELECT is
@@ -284,7 +307,36 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
             reason = BHC_BAD_SHORT_HASH;
         } else if (!blocks_row_to_header(sel, &hdr)) {
             reason = BHC_BAD_UNUSABLE_HEADER;
+        } else if (cp) {
+            /* Canonical admission (J5 upgrade): hash-bind + PoW target on every
+             * row, plus the full Equihash solution check on the strided /
+             * above-checkpoint subset — the SAME strength the import + flat
+             * loaders admit at, via the shared block_row_verify() primitive. */
+            bool full_check =
+                (h > 0 && (h % BLOCKS_HYDRATE_POW_STRIDE) == 0) ||
+                (rom_checkpoint_height >= 0 && h > rom_checkpoint_height);
+            switch (block_row_verify(stored_hash, hdr.nBits, &hdr, cp,
+                                     full_check)) {
+                case BLOCK_ROW_VERIFY_OK:
+                    bad_row = false;
+                    break;
+                case BLOCK_ROW_VERIFY_HASH_BIND_MISMATCH:
+                    reason = BHC_BAD_HASH_MISMATCH;
+                    break;
+                case BLOCK_ROW_VERIFY_HIGH_HASH:
+                    reason = BHC_BAD_HIGH_HASH;
+                    break;
+                case BLOCK_ROW_VERIFY_BAD_EQUIHASH:
+                    reason = BHC_BAD_EQUIHASH;
+                    break;
+                case BLOCK_ROW_VERIFY_NO_PARAMS:
+                    reason = BHC_BAD_HASH_MISMATCH; /* unreachable: cp != NULL */
+                    break;
+            }
         } else {
+            /* Chain params unavailable (not expected this late in boot): fall
+             * back to the pre-J5 hash-bind-only admission so a missing params
+             * table cannot quarantine the whole chain. */
             struct uint256 computed;
             block_header_get_hash(&hdr, &computed);
             if (memcmp(computed.data, stored_hash, 32) != 0)
