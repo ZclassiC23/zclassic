@@ -190,32 +190,7 @@ datadir) and **GCT — Global Convergence Time** (a forked node → canonical, u
   human, a flag, or `$HOME/.zclassic`.** v1 sticky-gate: AAR 100% on the matrix in CI.
 - G-SOV green is a hard sub-gate of every row (recovered AND sovereign, not borrowed).
 
-## 5. WHAT CHANGES vs the dated detective plan
-
-The removed plan's dated verdict and commits are recoverable from Git history
-(`git log --follow -- docs/work/archive/detective-forward-plan.md`); the
-in-repo archive evidence ledger that used to index it was removed along with
-`docs/work/archive/`.
-
-- **Prime goal flips:** T (time-to-self-verified-tip) → MTTUR/AAR (unattended recovery).
-  Detective re-derivation stays the mechanism; "always-terminating remedy" becomes the law.
-- **Track A is REFRAMED + PROMOTED:** the 3157647 row-overwrite remedy is replaced by the
-  general S8 re-derivation invariant (#2) and the peer-sourced + sibling-adopt cure (#3). The
-  oracle-dependency and the equal-work `<=0` gate — both unaddressed in the current plan — are
-  now P0.
-- **Track B is RESEQUENCED:** G-SOV truth instrument (#5) moves to P0 (gates the deletion);
-  fold-speed drops to P2 (catch-up tolerability, not the prize).
-- **Act 3 is RE-ORDERED:** sovereign self-mint becomes the DEFAULT boot path BEFORE the borrow
-  is deleted (#4) — the current sequence would delete the only fallback before a default
-  sovereign path ships.
-- **ADDED (absent from current plan):** the top-level escalator (#1), boot-self-heal-before-
-  FATAL (#6), the peer-coordination/global-reconvergence track (#9), dead-edge wiring (#10),
-  systemd-decoupled liveness (#8), disk-full/clock-skew (#13), and the OPERATOR_NEEDED-latch
-  removal (#1) — the structural defect the current plan never touches.
-
----
-
-## 6. RED-TEAM ADDENDUM (main-loop critique; the workflow's critic stage died on a serialization cap, so this replaces it)
+## 5. RED-TEAM ADDENDUM
 
 - **R1 — "deepest rung always succeeds given any honest peer set" is conditional, not free.**
   The last-resort rung (re-bootstrap from genesis) needs peers that serve *full history* +
@@ -251,20 +226,3 @@ in-repo archive evidence ledger that used to index it was removed along with
   must become context-appropriate) AND a blocker for trusting the forward-progress gate. Fix:
   make the trusted anchor network/context-derived (regtest gets a regtest anchor), so the gate
   can actually verify forward progress. Promote to P0-adjacent (it gates #1's matrix).
-
-## 7. IN-FLIGHT WORK — RECONCILIATION (2026-06-25)
-
-- **Track A CURE** (branch `acute/header-repair-cure`, built): VALID as the FIRST instance of
-  S8 (#2) — but do NOT merge as a one-off. Confirmed NOT a regression (forward_progress is red
-  on clean HEAD too, per R6). Its accept-path re-arm (C2) is oracle-INDEPENDENT (uses the inbound
-  P2P block's solution) — good; but C3 (the condition's `header_probe` backfill) is oracle-COUPLED
-  (#3b gap). Copy-prove must show the live 3157647 class un-wedges with the oracle DEAD. Then
-  fold C1/C2/C4 into the general S8 condition (#2) and land the equal-work gate change (#3a).
-- **Track B Wave-1** (branch `chronic/wave1-integration`, built green: test_parallel 0/461,
-  lint+E13 green): KEEP. G-SOV (#5) is now P0 — this branch already implements
-  `coins_kv_contains_refold_marker()` + `gsov_self_verified_tip()`; bank it as the truth
-  instrument. WELD + TESTFOLD stay (stickiness-aligned). SPEED is P2/#12 but already built and
-  green — keep it on the branch; it serves R1's bounded-time clause.
-- **Merge discipline:** both branches stay off `main` until the owner approves; nothing is the
-  prime deliverable until the P0 escalator (#1) + G-SOV gate (#5) make a recovered tip
-  machine-checkably sovereign. Live un-wedge (Track A copy-prove) is the immediate proof point.

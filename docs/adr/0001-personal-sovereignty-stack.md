@@ -1,8 +1,6 @@
 # ADR-0001: Adopt the AI-Integrated Personal Sovereignty Stack vision
 
-> **Update:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is held below tip by incomplete shielded anchors/nullifiers (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current state). The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
-
-- **Status:** Accepted 2026-05-22.
+- **Status:** Superseded by `docs/FRAMEWORK.md`.
 - **Deciders:** Project maintainer.
 - **Supersedes:** the audit-first master plan (archived as `~/.claude/plans/archive/zclassic23-plan-audit-first-2026-05-22.md`) and the 3-epoch revamp framing (`~/.claude/plans/archive/revamp-zclassic23.md`).
 
@@ -10,9 +8,7 @@
 
 ## Context
 
-For two days (2026-05-20 → 2026-05-22) the project oscillated between three incompatible framings — audit-first, ruthless purge, demolition-only (each rejected below in Alternatives) — while the live node sat wedged at h=3,115,059 (legacy at 3,118,574+). Each framing produced a plan that contradicted the previous one's recent commits. The user named the failure mode in `feedback_dream_first_dont_flip_flop.md` and `feedback_less_is_more_holistic.md`. The maintainer then reframed it with: *"imagine the best thing, the best architecture zclassic23 could possibly be that would get you excited"* — turning "what should we delete?" into "what are we building?", answered in `~/.claude/plans/zclassic23-ideal-architecture.md`.
-
-The wedge at h=3,115,059 is **not** treated as an emergency. It is the canonical example of the structural problem the new architecture solves by construction: chain progress becomes a stage cursor on disk, and "in-memory cache stale, watchdog firing but coordinator unable to decide" exits the state space entirely. Patching it now would be the whack-a-mole pattern the user explicitly rejected.
+The project oscillated between three incompatible framings — audit-first, ruthless purge, demolition-only (each rejected below in Alternatives) — each producing a plan that contradicted the previous one's recent commits. The maintainer resolved the oscillation by reframing the question from "what should we delete?" to "what are we building?", answered in `~/.claude/plans/zclassic23-ideal-architecture.md`.
 
 ## Decision
 

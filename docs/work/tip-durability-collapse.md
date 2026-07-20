@@ -6,14 +6,12 @@ UTXO author and read source** (the event_log / `utxo_projection.db` is seed-only
 This doc is the rationale of record for the `coins_kv` subsystem — the WHY/invariant
 anchor cited by the source.
 
-## The disease (every tip-wedge for weeks)
+## The disease (resolved by the rip-out below)
 
-(Prior state, now resolved by the rip-out below.) The served chain tip / "coins
-applied through N" **was** recorded **redundantly** in multiple stores with **no
-atomic cross-commit**, so any crash/recovery drifted them apart and boot *guessed*
-which was right. Live 4-way split observed at the time:
-`coins_best_block HASH`=3134313 / `cec.coins_best_block_height` INT=3134559 /
-`utxo_apply` cursor=3134559 / `utxos MAX`=3132687. The guessing was the bug factory.
+The served chain tip / "coins applied through N" **was** recorded
+**redundantly** in multiple stores with **no atomic cross-commit**, so any
+crash/recovery drifted them apart and boot *guessed* which was right. The
+guessing was the bug factory.
 
 ### Root cause, code-confirmed (the single tear window)
 
@@ -92,29 +90,6 @@ which can only make consensus state more consistent. No `tip_finalize_log` row i
 ever deleted (anti-rewind preserved); the public tip can never drop below the
 contiguous ok=1 frontier. (Boot keeps a back-compat replay of pre-migration
 event_log into the new progress.kv `coins` table.)
-
-## Historical live-node recovery (superseded by 2026-07-12 shielded wedge)
-
-Historical ground truth 2026-06-23: `~/.zclassic-c23` was at the network tip
-(`getblockcount`=3,156,944, `verificationprogress`=1) and self-heals on restart —
-it was **NOT** wiped or rebuilt. Recovery from the former wedge was achieved by
-loading a **borrowed transparent snapshot with a verified body SHA3 above the wedge height**
-(`utxo-seed-3156809.snapshot` at h=3,156,809, count 1,344,918) via
-`-load-snapshot-at-own-height` and folding forward. Seeding the full UTXO set at
-3,156,809 never re-touches the block (3,156,171) that wedged the older **torn**
-seed (`utxo-stopgap-3151901.snapshot`, missing prevout `21876e8b`). Fixed by commit
-`ab512d577`: `boot_refold_staged.c` extends the active-chain window to the
-PoW-proven header tip (`active_chain_extend_window`) when the seed height is above
-coins-best, instead of FATAL-ing "Run --importblockindex". The downstream
-anchor-hash cross-check is unchanged — a forged/missing anchor still fails closed.
-
-**Still borrowed (not yet sovereign):** the 3,156,809 snapshot is **minted from the
-zclassicd oracle**. Its anchor block hash matches the validated local header at
-that height, but that header does not commit the UTXO-set CONTENT, which is not
-yet independently re-derived from genesis. The
-sovereign cure — self-mint a from-genesis SHA3 anchor at compiled checkpoint
-3,056,758 → `-refold-from-anchor` cutover → DELETE the borrowed loader — remains the
-**END GOAL, not done**.
 
 **Standing caution — `cold-import` is NOT safe against the always-running oracle**
 (refuted, 2026-06-07): `ldb_snapshot_make` hardlinks the oracle's LevelDB SSTs — a

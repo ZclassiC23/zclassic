@@ -212,26 +212,3 @@ are different threat models (see `docs/SECURITY_AND_INTEGRITY.md` for the
 runtime-facing controls). A runtime check does nothing to stop an
 autonomous agent from committing and hot-swapping a changed validity
 predicate; only a build/publish-time gate does.
-
-## Verification notes (what this ADR could and could not confirm this session)
-
-- **Confirmed by reading code:** the four `core/` contexts and their include
-  tokens (`Makefile`, the `CORE_CONTEXTS`/`CORE_INCLUDES` block); the seal
-  tool and its two-mode CLI (`tools/core_seal.c`); `check-core-seal` is
-  **HARD** today (`make lint`'s dependency list includes it unconditionally,
-  and commit `7ae4ab55e`'s message says so directly) — this **supersedes**
-  the "WARN/ratchet mode until core-split wave W5" line still written in
-  `core/UNSEAL.md` (that file is append-only history and was not edited by
-  this ADR; the Makefile and commit history are authoritative for current
-  gate mode, per `check_doc_accuracy.sh`'s own rule that code is
-  authoritative over prose).
-  the dev-loop refusal path (`tools/dev/devloop_plan.c`,
-  `tools/dev/devloop_cycle.c`, read-only this session per the
-  Wave-4.4 lane boundary) and its exit-3 structured envelope.
-- **Not independently re-verified this session:** live-node behavior when a
-  sealed-path edit is actually attempted against a running dev-loop cycle
-  (the refusal path was read, not re-exercised end-to-end here); whether
-  every non-`core/`-prefixed file `path_is_consensus_risk()` still names is
-  fully redundant with the `core/` seal (both lists still coexist in
-  `tools/dev/devloop_plan.c`, and reconciling them is out of scope for a
-  docs-only lane).

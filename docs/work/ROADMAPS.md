@@ -26,24 +26,34 @@ history with `git log --follow -- docs/work/archive/<old-name>.md`.
 - **[`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md)** — the
   durable Phase 0–6 hierarchy and promotion gates (cited at the top of
   `../HANDOFF.md`); ordering authority when other plans differ.
-- **[`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md)**
-  — the operational (`release_assisted`) import-path cure design
-  (`-import-complete-shielded`, `shielded_history_import_service.c`,
-  `sovereignty_controller.c`'s self_folded gating). Proven to clear the wedge
-  on a datadir copy, but **not** the path that actually cured the live node —
-  the sovereign bundle install (below) passed the wedge live on 2026-07-19
-  (`../HANDOFF.md` §0-LATEST). Kept live because it documents currently-shipped
-  code (the importer + the operational-vs-sovereign trust-mode split), not
-  because it is still the active cure track.
+- **[`shielded-history-importer.md`](./shielded-history-importer.md)**
+  (renamed from `fast-sync-to-tip-plan-2026-07-16.md`, see RENAMED table
+  below) — present-tense reference for the shipped operational
+  (`release_assisted`) import-path cure (`-import-complete-shielded`,
+  `shielded_history_import_service.c`, `anchor_kv`/`nullifier_kv` schema +
+  cursor-flip primitive, `sovereignty_controller.c`'s self_folded gating).
+  Proven to clear the wedge on a datadir copy, but **not** the path that
+  actually cured the live node — the sovereign bundle install (below) passed
+  the wedge live on 2026-07-19 (`../HANDOFF.md` §0-LATEST). Kept live because
+  it documents currently-shipped code (the importer + the
+  operational-vs-sovereign trust-mode split), not because it is still the
+  active cure track.
 - **[`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md)** —
   owner-gated live cutover + revert procedure for the sovereign-bundle cure;
   this is the path that actually passed the wedge (`../HANDOFF.md`
   §0-LATEST, 2026-07-19).
 
+## RENAMED — same content, new path
+
+| Old path | New path | Why |
+|---|---|---|
+| `fast-sync-to-tip-plan-2026-07-16.md` | `shielded-history-importer.md` | Rewritten present-tense as a reference for the shipped importer; the "design only" framing no longer applied once the code landed. Recover the pre-rename text with `git log --follow -- docs/work/shielded-history-importer.md`. |
+
 ## SUPERSEDED — removed from the tree, history only
 
 | Removed doc | Superseded by |
 |---|---|
+| `c5-real-shielded-purchase-plan.md` | `FORWARD_PLAN.md` §A/§B (remaining C5 work — full live shielded-purchase + file-transfer proof — tracked there); the doc was a fully-landed completed-implementation narrative for the `store_e2e_shielded` slice. Recover with `git log --follow -- docs/work/c5-real-shielded-purchase-plan.md`. |
 | `architecture-deletion-plan.md` | `docs/FRAMEWORK.md` §9 (deletion targets mostly landed) |
 | `next-wave-plan.md` | `FORWARD_PLAN.md` |
 | `never-stuck-roadmap-2026-06-28.md` | `never-stuck-plan.md` |

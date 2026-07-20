@@ -8,17 +8,11 @@
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 
-**Date:** 2026-06-11 · **Status:** in implementation · **Net LOC:** ≈ −2,800 to −3,100
-
-Owner mandate: *"the node must always strongly stay synced to tip; multiple layers
-of redundancy; do it the strongest way; simulator + real data, no guessing; **don't
-add more repair code — make it canonical and DRY**; commit + push."* Net-subtractive:
-two small gates added, nine repair modules deleted.
-
-Both live wedge classes are one defect — **state INSTALLED instead of DERIVED from
-the log** — surfacing at two chokepoints (the "two faces of one defect" framing
-and the wedge narratives live in [`tenacity-roadmap.md`](./tenacity-roadmap.md);
-this doc is the design-of-record for the gates and the deletion order).
+Net-subtractive design: two small gates, nine repair modules deleted. Both
+live wedge classes are one defect — **state INSTALLED instead of DERIVED from
+the log** — surfacing at two chokepoints (the wedge narratives live in
+[`tenacity-roadmap.md`](./tenacity-roadmap.md); this doc is the
+design-of-record for the gates and the deletion order).
 
 ## Canonical invariants (enforced by construction at one chokepoint each)
 
@@ -45,14 +39,12 @@ this doc is the design-of-record for the gates and the deletion order).
 
 ## Ordered steps (each independently buildable + gated build+lint+test_parallel green)
 
-Steps 1–4 (frontier reader, Invariant B, **Invariant A**, restore tip-selection) are
-**landed** — Invariant A on `a2da7e107`.
+Steps 1–4 (frontier reader, Invariant B, Invariant A, restore tip-selection) are
+**landed**. Step 6 (derive `coins_best_block` from `coins_applied_height`,
+killing the two-name drift) is **landed**
+(`reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`).
 
 5. **Re-point SHA3 / fast-sync serve readers to coins_kv** (parity-gated, utxos still present).
-6. **Derive `coins_best_block` from `coins_applied_height`** (kills the two-name drift).
-   *Status: landed on `refactor/derive-coins-best-demote-mirror`
-   (`reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`); serve-side
-   (step 5) still pending.*
 7. **Delete the dead heal ladder** (grep-proven zero callers): chain_restore_integrity,
    chain_restore rebuild ladder, stage_repair_reducer_frontier_{tipfin,refill,purge} +
    tear branch, reducer_frontier_reconcile_light, utxo_recovery_torn_anchor (M2),

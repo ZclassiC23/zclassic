@@ -32,32 +32,18 @@ for a file that is now clean or marker-exempt).
 
 ## Starting point vs. current baseline
 
-- `app/services/src/` has **115** `.c` files.
-- **66** of them export at least one legacy (non-static, top-level) bare-bool
-  function by this gate's counting rule (close to the ~67 estimate that
-  motivated this work).
-- **41** of those 66 already carry a `// one-result-type-ok:<tag>` marker
-  (the same marker E2 defines — reused here EXACTLY, file-level, no new
-  syntax) — a prior wave already judged their bool surface deliberate (pure
-  classifiers, watchdog/state-machine predicates, recovery-primitive int/bool
-  contracts, etc.). Marked files are fully exempt from this gate and must
-  NOT appear in its baseline.
-- That left **25** unmarked files needing a baseline entry when this gate
-  landed (71 legacy exports total).
-- **This same change converged 6 of those 25 immediately**: `block_pruning_
-  service.c`, `db_maintenance.c`, `header_probe.c`, `quorum_oracle_service.c`,
-  `utxo_parity_service.c`, `zclassicd_oracle_service.c`. In every one of
-  these, the file's **only** remaining legacy export was its
-  `*_dump_state_json` function — the CLAUDE.md "Adding state introspection"
-  convention **mandates** a `bool` return there (`false` = couldn't
-  populate), not `struct zcl_result`, and every other fallible surface in
-  each of these 6 files already used `struct zcl_result`. This is the exact
-  scenario the marker exists for (see `app/services/src/bg_validation_dump.c`
-  for the pre-existing precedent), so each got `// one-result-type-ok:
-  json-dump-bool` and was removed from the baseline.
-- **Current baseline: 19 files, 65 legacy exports.** Re-run
-  `./tools/scripts/check_service_result_convergence.sh` for the live number —
-  this count will change as lanes land.
+`app/services/src/*.c` files export legacy (non-static, top-level) bare-bool
+functions; a file is exempt from this gate's baseline once it carries a
+`// one-result-type-ok:<tag>` marker (the same marker E2 defines, reused here
+exactly — file-level, no new syntax) judging its bool surface deliberate
+(pure classifiers, watchdog/state-machine predicates, recovery-primitive
+int/bool contracts, `*_dump_state_json` functions — see the CLAUDE.md
+"Adding state introspection" convention, which mandates a `bool` return
+there, not `struct zcl_result`). Re-run
+`./tools/scripts/check_service_result_convergence.sh`, or read
+`tools/scripts/service_result_convergence_baseline.txt` directly, for the
+live file count and legacy-export count — both shrink as lanes land and
+must not be pinned here.
 
 ### The `*_dump_state_json` pattern generalizes — read before converting
 
