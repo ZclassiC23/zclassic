@@ -108,6 +108,27 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_sym)
 
 ZCL_COMMAND_READY_READ(
+    "code.capsule", "code", "",
+    "Compose one symbol's identity, call graph, includes, and command join",
+    "One symbol's identity (id/def/decl/signature/group), direct callers and "
+    "callees (each capped), in-tree includes of its def file, and the "
+    "command paths whose registered handler is defined in that file, from "
+    "the code index and the command handler index; budget-aware "
+    "self-shrinking drops includes then callees then callers (never "
+    "identity/def/route) to fit the reply budget — `dropped_sections` names "
+    "what was cut.", 0,
+    "code,capsule,symbol,callers,callees,commands,graph", "zcl.code_name_input.v1",
+    "zcl.code_capsule.v1", "name", "name",
+    "zclassic23 code capsule sovereignty_guard_allow",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_capsule)
+
+ZCL_COMMAND_READY_READ(
     "code.refs", "code", "",
     "List bounded call sites and references to one symbol",
     "Call sites and references to one symbol from the code index, capped by "
