@@ -208,6 +208,20 @@ bool rom_fetch_get_manifest(const char *peer_addr, uint16_t port,
 bool rom_fetch_verify_chunk(const uint8_t *data, uint32_t len,
                             const uint8_t expected_chunk_sha3[32]);
 
+/* Pure: parse + verify a received "RMF" manifest blob
+ * ([u32 version=1 LE][u32 num_chunks LE][num_chunks × 32B]) against the
+ * caller-committed `chunk_root`. Enforces version == 1, that `len` is exactly
+ * 8 + num_chunks*32, that num_chunks is in (0, ROM_SEED_MAX_CHUNKS] and fits
+ * `out_cap`, and — the content bind — that the per-chunk digests fold (SHA3
+ * over their concatenation) to `chunk_root`. On success fills
+ * out_chunk_sha3[0..*out_num_chunks) and returns true. Any inconsistency
+ * returns false and leaves *out_num_chunks = 0 (the caller's fall-back
+ * signal). No IO — this is the testable core of rom_fetch_get_manifest. */
+bool rom_fetch_parse_manifest_blob(const uint8_t *blob, size_t len,
+                                   const uint8_t chunk_root[32],
+                                   uint8_t (*out_chunk_sha3)[32],
+                                   uint32_t out_cap, uint32_t *out_num_chunks);
+
 /* Per-chunk-verified sequential download with durable resume. `chunk_sha3`
  * holds the manifest's num_chunks per-chunk digests (from
  * rom_fetch_get_manifest). Writes <out_dir>/<filename>.part with a
