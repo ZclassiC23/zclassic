@@ -288,6 +288,11 @@ static int spend_circuit_shape_gate(void)
  * ~/.zcash-params is absent and the prover self-test below SKIPs. */
 int groth16_spend_reference_oracle(void);
 
+/* H4 lane: standing differential parity oracle over a corpus of witnesses.
+ * Params-free; auto-tightens off the reference section-boundary table as the
+ * H3 port advances. Lives in lib/test/src/groth16_spend_parity.c. */
+int groth16_spend_parity_oracle(void);
+
 int test_groth16_selfverify(void);
 int test_groth16_selfverify(void)
 {
@@ -296,6 +301,7 @@ int test_groth16_selfverify(void)
 
     failures += groth16_spend_reference_oracle();
     failures += spend_circuit_shape_gate();
+    failures += groth16_spend_parity_oracle();
 
     const char *home = getenv("HOME");
     char params_dir[512];
