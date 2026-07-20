@@ -44,11 +44,14 @@
  *       exactly N hops to the fixture root — the exact property the live
  *       incident lacked (a freshly-imported node stuck at H*=0).
  *   (3) A poisoned SOURCE row (LevelDB value's hashMerkleRoot mutated so its
- *       content no longer hashes to its own claimed key) survives import
- *       UNCHANGED (the importer copies fields verbatim, no hash-bind check)
- *       and is only caught at hydrate time, which REFUSES the WHOLE
- *       hydration (a loud named blocker, .ok=false) rather than seeding a
- *       partial map.
+ *       content no longer hashes to its own claimed key) is QUARANTINED at
+ *       import by lane C4's per-row hash-bind check (import_row_verify) — the
+ *       bulk import CONTINUES, the poisoned row never enters `blocks`, and the
+ *       quarantine counter advances. The resulting hydrate loads the surviving
+ *       rows but the poisoned height is absent and the loader honestly
+ *       declines to bridge the gap — a poisoned source row seeds no partial
+ *       map. (Before C4 the poison was copied verbatim and caught only at
+ *       hydrate; C4 moved the same hash-bind one stage earlier.)
  *
  * FIDELITY GAP (documented, not closed here)
  * -------------------------------------------
@@ -76,7 +79,9 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"                 /* BLOCK_HAVE_DATA / BLOCK_VALID_* */
+#include "chain/chainparams.h"           /* chain_params_get / consensus.powLimit */
 #include "controllers/snapshot_controller.h"
+#include "core/arith_uint256.h"
 #include "services/block_index_loader.h"
 #include "storage/block_index_db.h"
 #include "storage/dbwrapper.h"
@@ -93,6 +98,16 @@
 
 #define E2E_N_BLOCKS   300
 #define E2E_NO_POISON  (-1)
+
+/* A small NON-EMPTY Equihash-solution stand-in. It must be > 0 bytes: the
+ * hydrate loader (blocks_row_to_header, app/services/src/
+ * block_index_blocks_hydrate.c) rejects a zero-length solution as an
+ * unusable header. It is kept small (not the real 1344-byte size) purely so
+ * the per-row PoW mine below hashes a short header and stays cheap — these
+ * synthetic rows are below the ROM checkpoint, so import_row_verify never
+ * runs check_equihash_solution on them (only the hash-bind + PoW-target
+ * check, which is content-agnostic about the solution). */
+#define E2E_SOLUTION_SIZE  8
 
 #define E2E_CHECK(name, expr) do {                              \
     printf("e2e_cold_start: %s... ", (name));                   \
@@ -112,6 +127,55 @@ static int e2e_mkdir_p(const char *p)
     return -1;
 }
 
+/* The mainnet powLimit as compact nBits — the EASIEST target
+ * CheckProofOfWork will legally accept (a weaker/easier target is rejected
+ * outright), so it gives a synthetic fixture row the best odds of an
+ * inexpensive "mine". The SAME value the real GetNextWorkRequired() genesis
+ * case uses (core/chainparams/src/pow.c). */
+static uint32_t e2e_pow_limit_bits(void)
+{
+    const struct chain_params *cp = chain_params_get();
+    struct arith_uint256 pow_limit;
+    uint256_to_arith(&pow_limit, &cp->consensus.powLimit);
+    return arith_uint256_get_compact(&pow_limit, false);
+}
+
+/* Grind nNonce until dbi's real header hash satisfies the PoW target at
+ * `bits`, writing the winning hash to *out_hash. Lane C4 made the importer
+ * hash-bind AND PoW-target-check every row (import_row_verify), so a fixture
+ * row must carry genuine (minimum-difficulty) proof-of-work exactly as a real
+ * zclassicd datadir row already does for its network difficulty — a random
+ * placeholder hash is now quarantined "high-hash". Grinding nNonce (not
+ * nTime) leaves the header's nTime intact so the body round-trip check (1b)
+ * still holds. ~1/8192 expected tries at the mainnet powLimit; bounded so a
+ * structural break fails loudly instead of hanging. Compares against the
+ * decoded target directly (the same arith compare CheckProofOfWork does)
+ * rather than calling CheckProofOfWork per attempt, which logs every miss. */
+static bool e2e_mine_pow(struct disk_block_index *dbi, uint32_t bits,
+                         struct uint256 *out_hash)
+{
+    bool neg = false, overflow = false;
+    struct arith_uint256 target;
+    arith_uint256_set_compact(&target, bits, &neg, &overflow);
+    if (neg || overflow || arith_uint256_is_zero(&target))
+        return false;
+
+    dbi->nBits = bits;
+    for (uint32_t tries = 0; tries < 8000000u; tries++) {
+        memset(dbi->nNonce.data, 0, 32);
+        dbi->nNonce.data[0] = (uint8_t)(tries & 0xff);
+        dbi->nNonce.data[1] = (uint8_t)((tries >> 8) & 0xff);
+        dbi->nNonce.data[2] = (uint8_t)((tries >> 16) & 0xff);
+        dbi->nNonce.data[3] = (uint8_t)((tries >> 24) & 0xff);
+        disk_block_index_get_hash(dbi, out_hash);
+        struct arith_uint256 hash_arith;
+        uint256_to_arith(&hash_arith, out_hash);
+        if (arith_uint256_compare(&hash_arith, &target) <= 0)
+            return true;
+    }
+    return false;
+}
+
 /* Build a real legacy-shaped source datadir: `src_dir/blocks/index` (a
  * LevelDB block-tree, real disk_block_index_serialize() wire format) plus
  * real `src_dir/blocks/blkNNNNN.dat` bodies (write_block_to_disk() — the
@@ -121,12 +185,20 @@ static int e2e_mkdir_p(const char *p)
  * fields load_block_index_from_blocks_table later re-derives), so a
  * downstream hash-bind check genuinely passes for every unpoisoned row.
  *
+ * Every row also carries GENUINE minimum-difficulty proof-of-work: nNonce is
+ * ground (e2e_mine_pow) until the header hash satisfies CheckProofOfWork at
+ * the mainnet powLimit. This is mandatory since lane C4 — the importer now
+ * hash-binds AND PoW-target-checks every row (import_row_verify), quarantining
+ * a placeholder-hash / no-PoW row as "high-hash", exactly as a real zclassicd
+ * datadir row already satisfies its own network difficulty.
+ *
  * If poison_height >= 0, that ONE row's STORED VALUE gets a corrupted
- * hashMerkleRoot before the LevelDB write — its key (the hash children link
- * against via hashPrev, exactly as real corruption would leave it) is left
- * as the correct, originally-computed hash, so chain linkage stays
- * structurally intact but that one row no longer hash-binds to its own
- * content.
+ * hashMerkleRoot AFTER mining — its key (the mined hash children link against
+ * via hashPrev, exactly as real corruption would leave it) is left as the
+ * correct, originally-computed hash, so chain linkage stays structurally
+ * intact but that one row no longer hash-binds to its own content. With lane
+ * C4 that row is now quarantined at IMPORT (it never enters `blocks`), one
+ * layer earlier than the old verbatim-copy-then-refuse-at-hydrate path.
  *
  * fx->hash[h] records every block's real computed hash for the caller's
  * later assertions; fx->pos[h] records its real body position. */
@@ -145,28 +217,54 @@ static bool e2e_build_fixture_chain(const char *src_dir, int n,
     }
 
     static const unsigned char msg_start[4] = { 0x24, 0xe9, 0x27, 0x64 };
+    const uint32_t pow_bits = e2e_pow_limit_bits();
     struct uint256 prev;
     memset(&prev, 0, sizeof(prev));
     bool ok = true;
 
     for (int h = 0; h < n && ok; h++) {
+        /* Build the LevelDB record (the CDiskBlockIndex the importer reads)
+         * first, then mine genuine minimum-difficulty PoW into it; the block
+         * body below is written with a header consistent with the mined
+         * record. Positions (nFile/nDataPos/nUndoPos) are not header fields,
+         * so they are filled AFTER mining without disturbing the hash. */
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = h;
+        dbi.hashPrev = prev;
+        dbi.nStatus = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
+                                     BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+        dbi.nTx = 1;
+        dbi.nVersion = 4;
+        memset(dbi.hashMerkleRoot.data, 0, 32);
+        dbi.hashMerkleRoot.data[0] = 0xBB;
+        dbi.hashMerkleRoot.data[1] = (uint8_t)(h & 0xff);
+        dbi.hashMerkleRoot.data[2] = (uint8_t)((h >> 8) & 0xff);
+        dbi.hashMerkleRoot.data[31] = 0x02;
+        memset(dbi.hashFinalSaplingRoot.data, 0, 32);
+        dbi.nTime = 1231006505u + (uint32_t)h;
+        memset(dbi.nSolution, 0x40 + (h & 0x3f), E2E_SOLUTION_SIZE);
+        dbi.nSolutionSize = E2E_SOLUTION_SIZE;
+        dbi.nSaplingValue = (int64_t)h * 1000;
+
+        struct uint256 real_hash;
+        if (!e2e_mine_pow(&dbi, pow_bits, &real_hash)) {
+            fprintf(stderr, "e2e_build_fixture_chain: PoW mine failed h=%d\n", h);
+            ok = false;
+            break;
+        }
+
         struct block b;
         block_init(&b);
-        b.header.nVersion = 4;
-        b.header.hashPrevBlock = prev;
-        memset(b.header.hashMerkleRoot.data, 0, 32);
-        b.header.hashMerkleRoot.data[0] = 0xBB;
-        b.header.hashMerkleRoot.data[1] = (uint8_t)(h & 0xff);
-        b.header.hashMerkleRoot.data[2] = (uint8_t)((h >> 8) & 0xff);
-        b.header.hashMerkleRoot.data[31] = 0x02;
-        memset(b.header.hashFinalSaplingRoot.data, 0, 32);
-        b.header.nTime = 1231006505u + (uint32_t)h;
-        b.header.nBits = 0x1d00ffffu;
-        memset(b.header.nNonce.data, 0, 32);
-        b.header.nNonce.data[0] = 0xCC;
-        b.header.nNonce.data[1] = (uint8_t)(h & 0xff);
-        memset(b.header.nSolution, 0x40 + (h & 0x3f), MAX_SOLUTION_SIZE);
-        b.header.nSolutionSize = MAX_SOLUTION_SIZE;
+        b.header.nVersion = dbi.nVersion;
+        b.header.hashPrevBlock = dbi.hashPrev;
+        b.header.hashMerkleRoot = dbi.hashMerkleRoot;
+        b.header.hashFinalSaplingRoot = dbi.hashFinalSaplingRoot;
+        b.header.nTime = dbi.nTime;
+        b.header.nBits = dbi.nBits;
+        b.header.nNonce = dbi.nNonce;
+        memcpy(b.header.nSolution, dbi.nSolution, dbi.nSolutionSize);
+        b.header.nSolutionSize = dbi.nSolutionSize;
 
         b.num_vtx = 1;
         b.vtx = zcl_calloc(1, sizeof(struct transaction), "e2e_fixture_vtx");
@@ -196,34 +294,17 @@ static bool e2e_build_fixture_chain(const char *src_dir, int n,
             break;
         }
 
-        struct disk_block_index dbi;
-        disk_block_index_init(&dbi);
-        dbi.nHeight = h;
-        dbi.hashPrev = prev;
-        dbi.nStatus = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
-                                     BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
-        dbi.nTx = 1;
         dbi.nFile = pos.nFile;
         dbi.nDataPos = pos.nPos;
         dbi.nUndoPos = pos.nPos + 500u;
-        dbi.nVersion = b.header.nVersion;
-        dbi.hashMerkleRoot = b.header.hashMerkleRoot;
-        dbi.hashFinalSaplingRoot = b.header.hashFinalSaplingRoot;
-        dbi.nTime = b.header.nTime;
-        dbi.nBits = b.header.nBits;
-        dbi.nNonce = b.header.nNonce;
-        memcpy(dbi.nSolution, b.header.nSolution, b.header.nSolutionSize);
-        dbi.nSolutionSize = b.header.nSolutionSize;
-        dbi.nSaplingValue = (int64_t)h * 1000;
-
-        struct uint256 real_hash;
-        disk_block_index_get_hash(&dbi, &real_hash);
 
         struct disk_block_index dbi_stored = dbi;
         if (h == poison_height) {
             /* Corrupt the STORED VALUE only — the key (real_hash, used for
              * chain linkage below) is untouched, matching how a bit-flip /
-             * partial write would corrupt a real legacy datadir. */
+             * partial write would corrupt a real legacy datadir. The mined
+             * PoW-valid hash stays the key; only the stored merkle_root is
+             * mutated, so this row no longer hash-binds to its own content. */
             memset(dbi_stored.hashMerkleRoot.data, 0xEE, 32);
         }
 
@@ -356,8 +437,19 @@ int test_e2e_cold_start(void)
         free(fx);
     }
 
-    /* ── Scenario B: a poisoned SOURCE row survives import, refuses at
-     *    hydrate ──────────────────────────────────────────────────────── */
+    /* ── Scenario B: a poisoned SOURCE row is caught at IMPORT (lane C4),
+     *    never seeding a map entry ──────────────────────────────────────────
+     *
+     * Before lane C4 the importer copied every LevelDB row verbatim and the
+     * poison was only caught at hydrate (which then refused the WHOLE table).
+     * C4 moved that hash-bind check to import time: the poisoned row now fails
+     * hash-bind and is QUARANTINED at import — it never enters `blocks`. The
+     * invariant this slice pins is unchanged ("a poisoned source row never
+     * seeds a partial map"); only WHICH layer enforces it moved one stage
+     * earlier. (The hydrate loader is itself hardened by J5 to per-row
+     * quarantine rather than whole-table refusal, so the old .ok==false /
+     * size==0 assertion no longer models either layer — see
+     * block_index_blocks_hydrate.c.) ──────────────────────────────────────── */
     {
         char src_dir[340];
         snprintf(src_dir, sizeof(src_dir), "%s/legacy-src-poison", base);
@@ -374,12 +466,18 @@ int test_e2e_cold_start(void)
 
         char target_db[380];
         snprintf(target_db, sizeof(target_db), "%s/node_poison.db", base);
+        uint64_t q_before = snapshot_import_block_index_quarantine_total();
         int count = -1;
         bool import_ok = built && snapshot_import_block_index(
             src_dir, target_db, /*header_only=*/true, &count);
-        E2E_CHECK("(3b) the poisoned row SURVIVES the real import unchanged "
-                  "(the importer copies fields verbatim — no hash-bind check "
-                  "at import time)", import_ok && count == E2E_N_BLOCKS);
+        uint64_t q_after = snapshot_import_block_index_quarantine_total();
+        E2E_CHECK("(3b) lane C4 hash-binds every row at import: the poisoned "
+                  "row (its stored merkle_root no longer hashes to its LevelDB "
+                  "key) is QUARANTINED at import — the batch CONTINUES (import "
+                  "ok), count == N-1, and the quarantine counter advances by "
+                  "exactly 1; it never enters `blocks`",
+                  import_ok && count == E2E_N_BLOCKS - 1 &&
+                  (q_after - q_before) == 1);
 
         struct node_db ndb;
         memset(&ndb, 0, sizeof(ndb));
@@ -387,17 +485,34 @@ int test_e2e_cold_start(void)
 
         struct main_state ms;
         main_state_init(&ms);
-        bool refused = false, untouched = false;
+        bool hydrate_ok = false, poison_absent = false, gap_not_bridged = false;
+        size_t hydrated = 0;
         if (opened) {
             struct zcl_result hydrate =
                 load_block_index_from_blocks_table(&ndb, &ms);
-            refused = !hydrate.ok;
-            untouched = ms.map_block_index.size == 0;
+            hydrate_ok = hydrate.ok;
+            hydrated = ms.map_block_index.size;
+            /* The poisoned height's hash (its LevelDB key = the mined,
+             * PoW-valid hash) must be ABSENT — the corrupt source row seeded
+             * no map entry. */
+            poison_absent = block_map_find(&ms.map_block_index,
+                                           &fx->hash[poison_h]) == NULL;
+            /* Defense-in-depth: the loader honestly declines to bridge the gap
+             * the quarantine left — the child of the missing height links to a
+             * hash that is not in the map, so its pprev stays NULL rather than
+             * fabricating a chain across the hole. */
+            struct block_index *child = block_map_find(&ms.map_block_index,
+                                                       &fx->hash[poison_h + 1]);
+            gap_not_bridged = child && child->pprev == NULL;
         }
-        E2E_CHECK("(3c) the real hydrate-at-boot entry point REFUSES the "
-                  "WHOLE hydration loudly (.ok=false) — a poisoned source "
-                  "row never seeds a partial map, even after surviving a "
-                  "real import", opened && refused && untouched);
+        E2E_CHECK("(3c) the poisoned SOURCE row never seeds a map entry: "
+                  "hydrate loads the surviving N-1 rows (.ok), the poisoned "
+                  "height is ABSENT from the map, and the loader declines to "
+                  "bridge the gap (its child's pprev stays NULL) — no partial "
+                  "linked map is seeded across the poison",
+                  opened && hydrate_ok &&
+                  hydrated == (size_t)(E2E_N_BLOCKS - 1) &&
+                  poison_absent && gap_not_bridged);
 
         if (opened) node_db_close(&ndb);
         main_state_free(&ms);
@@ -408,6 +523,7 @@ int test_e2e_cold_start(void)
 
     if (failures == 0)
         printf("e2e_cold_start OK (real import -> real hydrate seam: clean "
-               "fixture reaches the tip, poisoned fixture refuses loudly)\n");
+               "fixture reaches the tip, poisoned row quarantined at import "
+               "and never seeds a map entry)\n");
     return failures;
 }

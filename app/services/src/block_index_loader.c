@@ -116,8 +116,9 @@ block_index_apply_persisted_failure_trust(struct block_index *pindex,
     }
 
     /* Above the checkpoint: demote to a lazy revalidation candidate. The stages
-     * re-run full validation when the fold reaches the block; a genuine failure
-     * is re-set fresh by the connect path (genuinely-failed behavior unchanged). */
+     * re-run full validation when the fold reaches the block; a block that is
+     * genuinely invalid gets its FAILED bit re-set by the connect path once
+     * revalidation reaches and rejects it. */
     pindex->nStatus = status | (unsigned int)BLOCK_REVALIDATE_PENDING;
     atomic_fetch_add_explicit(&g_failed_bits_demoted, 1, memory_order_relaxed);
     return BLOCK_FAILURE_TRUST_DEMOTED;
