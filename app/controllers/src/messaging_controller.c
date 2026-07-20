@@ -442,6 +442,43 @@ bool api_msg_inbox(struct json_value *result)
     return rpc_msg_inbox(NULL, false, result);
 }
 
+/* ── Diagnostics: `ops state --subsystem=messaging` ──────────────────
+ *
+ * See CLAUDE.md "Adding state introspection". Reports the two ZMSG channels'
+ * live readiness (off-chain P2P is always available but plaintext on the wire;
+ * the on-chain Sapling-memo channel needs the prover params loaded), whether
+ * the controller is wired to a node_db + connman, and the in-memory inbox
+ * store occupancy. No SQLite scan — the store counter read is a bounded mutex
+ * acquire, so this is safe on the health-rollup hot path. */
+bool messaging_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    bool db_open = g_msg_ndb != NULL;
+    bool net_up = g_msg_connman != NULL;
+    bool onchain_ready = sapling_params_loaded();
+
+    json_push_kv_bool(out, "controller_wired", db_open && net_up);
+    json_push_kv_bool(out, "db_open", db_open);
+    json_push_kv_bool(out, "network_available", net_up);
+    json_push_kv_bool(out, "p2p_channel_available", true);
+    json_push_kv_bool(out, "onchain_channel_ready", onchain_ready);
+    json_push_kv_int(out, "inbox_store_count", (int64_t)zmsg_store_count());
+    json_push_kv_int(out, "inbox_store_cap", (int64_t)ZMSG_MAX_STORED);
+    json_push_kv_int(out, "onchain_memo_max_bytes",
+                     (int64_t)ZMSG_MEMO_MAX_PAYLOAD);
+
+    diag_push_health(out, true,
+                     onchain_ready
+                         ? "messaging ready (p2p + on-chain)"
+                         : "messaging ready (p2p only; on-chain prover not "
+                           "loaded)");
+    return true;
+}
+
 /* ── Registration ───────────────────────────────────────────────── */
 
 void register_msg_rpc_commands(struct rpc_table *t)

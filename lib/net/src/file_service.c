@@ -35,6 +35,7 @@
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
 #include "util/thread_liveness.h"
+#include "json/json.h"
 
 static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
@@ -1296,6 +1297,72 @@ bool fs_server_is_running(void)
 }
 
 uint16_t fs_server_get_port(void) { return g_fs_port; }
+
+/* ── Diagnostics: `ops state --subsystem=file_service` ───────────────
+ *
+ * See CLAUDE.md "Adding state introspection". Surfaces the file-market
+ * server's live serving state without grepping node.log + ss: whether the
+ * listener is up, the served-data manifest is built, how many client
+ * connections are queued for the worker pool, and the per-IP admission
+ * table's active occupancy / concurrent-serve load. Atomic reads for the
+ * bg-thread flags; brief acquires of the queue/manifest/IP mutexes for a
+ * consistent snapshot. */
+bool file_service_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    bool running = atomic_load(&g_fs_running);
+    json_push_kv_bool(out, "running", running);
+    json_push_kv_int(out, "port", (int64_t)g_fs_port);
+    json_push_kv_bool(out, "datadir_set", g_fs_datadir != NULL);
+    json_push_kv_int(out, "server_workers", (int64_t)FS_SERVER_WORKERS);
+    json_push_kv_int(out, "worker_threads_started",
+                     (int64_t)g_fs_worker_threads_started);
+
+    /* Client connection backlog awaiting the worker pool. */
+    pthread_mutex_lock(&g_fs_client_queue_mutex);
+    unsigned qlen = g_fs_client_queue_len;
+    pthread_mutex_unlock(&g_fs_client_queue_mutex);
+    json_push_kv_int(out, "client_queue_len", (int64_t)qlen);
+    json_push_kv_int(out, "client_queue_cap", (int64_t)FS_CLIENT_QUEUE_CAP);
+
+    /* Served-data manifest (built lazily by the background hasher). */
+    bool have_manifest = atomic_load(&g_have_manifest);
+    uint32_t manifest_chunks = 0;
+    int32_t manifest_height = 0;
+    if (have_manifest) {
+        pthread_mutex_lock(&g_manifest_mutex);
+        manifest_chunks = g_server_fm.num_chunks;
+        manifest_height = g_server_fm.chain_height;
+        pthread_mutex_unlock(&g_manifest_mutex);
+    }
+    json_push_kv_bool(out, "have_manifest", have_manifest);
+    json_push_kv_int(out, "manifest_chunks", (int64_t)manifest_chunks);
+    json_push_kv_int(out, "manifest_height", (int64_t)manifest_height);
+
+    /* Per-IP admission table: active clients + concurrent large serves. */
+    unsigned active_ips = 0;
+    uint64_t total_concurrent = 0;
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    for (size_t i = 0; i < FS_IP_TABLE_CAP; i++) {
+        if (!g_fs_ip[i].used)
+            continue;
+        active_ips++;
+        total_concurrent += g_fs_ip[i].concurrent;
+    }
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+    json_push_kv_int(out, "active_ips", (int64_t)active_ips);
+    json_push_kv_int(out, "concurrent_serves", (int64_t)total_concurrent);
+    json_push_kv_int(out, "ip_table_cap", (int64_t)FS_IP_TABLE_CAP);
+
+    diag_push_health(out, true,
+                     running ? "file service listening"
+                             : "file service not started");
+    return true;
+}
 
 void fs_server_start(const char *datadir, uint16_t port)
 {

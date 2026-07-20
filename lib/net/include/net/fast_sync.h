@@ -283,25 +283,20 @@ const uint8_t *fast_sync_get_snapshot_buf(int64_t *size);
  * Returns false if no snapshot has been pre-built yet. */
 bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count);
 
-/* Serve a snapshot to a requesting peer (chunked) */
-typedef bool (*chunk_callback)(const struct utxo_chunk *chunk,
-                                void *ctx);
-bool fast_sync_serve_snapshot(const char *datadir,
-                               int from_height,
-                               chunk_callback cb, void *ctx);
-
 /* Receive and apply a snapshot */
 bool fast_sync_apply_chunk(const char *datadir,
                             const struct utxo_chunk *chunk);
 
-/* Compute UTXO set Merkle root for verification */
-bool fast_sync_compute_utxo_root(const char *datadir,
-                                  uint8_t root_out[32]);
-
-/* Internal: compute from open db handle */
+/* Internal: compute the SHA3 UTXO root from an open db handle. */
 struct sqlite3;
 void fast_sync_compute_utxo_root_db(struct sqlite3 *db,
                                      uint8_t root_out[32]);
+
+/* Diagnostics dump (`ops state --subsystem=fast_sync`).
+ * See CLAUDE.md "Adding state introspection". Reentrant-safe; the caller
+ * runs json_set_object(out) semantics — this implementation initializes out. */
+struct json_value;
+bool fast_sync_dump_state_json(struct json_value *out, const char *key);
 
 /* ── BitTorrent-style parallel chunk sync ────────────────── */
 

@@ -20,4 +20,8 @@ void register_msg_rpc_commands(struct rpc_table *t);
 #include "json/json.h"
 bool api_msg_inbox(struct json_value *result);
 
+/* Diagnostics dump (`ops state --subsystem=messaging`).
+ * See CLAUDE.md "Adding state introspection". Reentrant-safe; initializes out. */
+bool messaging_dump_state_json(struct json_value *out, const char *key);
+
 #endif
