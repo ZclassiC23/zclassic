@@ -39,6 +39,7 @@
 #include "models/block.h"
 #include "event/event.h"
 #include "supervisors/domains.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
 #include "util/safe_alloc.h"
@@ -100,6 +101,24 @@ static bool projection_sparse_prefix_is_expected(int projection_tip,
 
 #define PAYMENT_SUPERVISOR_DEADLINE_SEC             120
 #define PROJECTION_BACKFILL_SUPERVISOR_DEADLINE_SEC 120
+/* NO_PROGRESS window for op.projection_backfill. While BEHIND the marker is the
+ * projection cursor height, so a cursor frozen this long (a genuinely stuck
+ * backfill, e.g. hole-repair exhausted) surfaces as SUPERVISOR_STALL_NO_PROGRESS
+ * instead of hiding behind a loop counter. A caught-up / mid-refold worker beats
+ * a synthetic marker instead, so quiescence at the tip never trips this.
+ * Generous vs a healthy-but-slow catchup; the deadline gate still catches a
+ * fully dead (non-ticking) thread. */
+#define PROJECTION_BACKFILL_PROGRESS_QUIET_US       (600LL * 1000000)
+/* At-tip synthetic-beat base: above any plausible height so a beat marker never
+ * equals a cursor-height marker (disjoint marker namespaces). */
+#define PROJECTION_BACKFILL_AT_TIP_BEAT_BASE        (1LL << 40)
+/* Terminal projection-stuck typed blocker (hole-repair budget spent, missing
+ * connected block still absent). Stable id — height lives in the reason — so the
+ * per-loop refresh dedups and the recovery clear finds it. TRANSIENT + escape
+ * deadline, no escape_action: the fixed blocker sweep re-arms a bounded number
+ * of times then marks it `escalated`, never a growing-negative deadline. */
+#define PROJECTION_STUCK_BLOCKER_ID                 "worker.projection_stuck"
+#define PROJECTION_STUCK_ESCAPE_DEADLINE_SEC        300
 #define HODL_HISTORY_SUPERVISOR_DEADLINE_SEC        900
 #define ADDRESS_BACKFILL_SUPERVISOR_DEADLINE_SEC    600
 #define HODL_HISTORY_FILL_BATCH                     1
@@ -322,6 +341,36 @@ static void *hodl_history_worker_thread(void *arg)
     return NULL;
 }
 
+/* Name the terminal projection-stuck state as a TYPED blocker. Called every loop
+ * while the hole-repair give-up state holds so the claim stays live (blocker_set
+ * self-rate-limits; a re-fired TRANSIENT is not TTL-retired). */
+static void projection_backfill_set_stuck_blocker(int stuck_height,
+                                                   int first_missing_height,
+                                                   int repair_cap,
+                                                   int attempts)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "projection stuck at height %d (first missing connected height "
+             "%d, repair cap %d, gave up after %d rewind attempts)",
+             stuck_height, first_missing_height, repair_cap, attempts);
+
+    struct blocker_record br;
+    if (!blocker_init(&br, PROJECTION_STUCK_BLOCKER_ID,
+                      "boot.background_workers", BLOCKER_TRANSIENT, reason))
+        return;
+    br.escape_deadline_secs = PROJECTION_STUCK_ESCAPE_DEADLINE_SEC;
+    (void)blocker_set(&br);
+}
+
+/* Retire the terminal projection-stuck blocker once the hole is resolved (a
+ * new/moved hole, or no hole within the repair cap). Idempotent. */
+static void projection_backfill_clear_stuck_blocker(void)
+{
+    if (blocker_exists(PROJECTION_STUCK_BLOCKER_ID))
+        blocker_clear(PROJECTION_STUCK_BLOCKER_ID);
+}
+
 static void *projection_backfill_service_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
@@ -329,6 +378,7 @@ static void *projection_backfill_service_thread(void *arg)
     int last_hole_rewind_height = -1;
     int hole_rewind_attempts = 0;
     bool hole_rewind_gave_up_reported = false;
+    int last_projection_cursor = -1;
     int64_t loop_iterations = 0;
 
     /* Genuinely-background bulk backfill worker — never the
@@ -341,23 +391,52 @@ static void *projection_backfill_service_thread(void *arg)
     }
 
     while (!svc->projection_backfill_thread_stop && boot_running(svc)) {
-        supervisor_child_id sup_id =
-            atomic_load(&g_projection_backfill_sup_id);
-        if (sup_id != SUPERVISOR_INVALID_ID) {
-            supervisor_tick(sup_id);
-            supervisor_progress(sup_id, ++loop_iterations);
-            /* Alive + progressing this loop → retire any stale stall blocker a
-             * slow boot-time start left standing (worker.stall.op.projection_-
-             * backfill). Kept adjacent to the heartbeat so the two move
-             * together. */
-            boot_worker_clear_stall_blocker(&g_projection_backfill_contract);
-        }
         struct node_db *ndb = boot_node_db(svc);
         int chain_tip = svc->state ?
             active_chain_height(&svc->state->chain_active) : -1;
         int projection_tip = -1;
         int projection_block_tip = -1;
         int first_missing_height = -1;
+        bool refolding = refold_in_progress();
+
+        /* The actual projection cursor (the height the backfill has REACHED),
+         * read before the rewind logic below mutates projection_tip. This — not
+         * a loop counter — is the supervisor progress marker while behind, so a
+         * stuck cursor freezes the marker and NO_PROGRESS can fire. */
+        int projection_cursor =
+            (ndb && ndb->open) ? node_db_sync_get_tip_height(ndb) : -1;
+
+        /* BEHIND = there is real backfill work to do and it is not being
+         * intentionally suppressed by an in-progress mint/refold. Only in this
+         * state is a frozen cursor a fault; a caught-up (cursor >= tip) or
+         * mid-refold worker is healthy/quiescent. */
+        bool behind = !refolding && projection_cursor >= 0 && chain_tip >= 0 &&
+                      projection_cursor < chain_tip;
+
+        supervisor_child_id sup_id =
+            atomic_load(&g_projection_backfill_sup_id);
+        if (sup_id != SUPERVISOR_INVALID_ID) {
+            supervisor_tick(sup_id);
+            /* Progress marker: the cursor height while behind (a frozen cursor
+             * freezes the marker → SUPERVISOR_STALL_NO_PROGRESS), else a
+             * synthetic beat in a disjoint numeric range so quiescence at the
+             * tip never false-trips the gate. */
+            int64_t marker = behind
+                ? (int64_t)projection_cursor
+                : PROJECTION_BACKFILL_AT_TIP_BEAT_BASE + (++loop_iterations);
+            supervisor_progress(sup_id, marker);
+            /* Retire the stale stall blocker ONLY when the worker is healthy
+             * this loop — quiescent (at tip / mid-refold) or the cursor
+             * advanced. A behind-and-frozen worker skips the clear so a
+             * NO_PROGRESS-raised worker.stall.* blocker stays standing until the
+             * cursor moves again — advance-or-name-a-blocker, honestly. */
+            bool healthy_this_loop =
+                !behind || projection_cursor != last_projection_cursor;
+            if (healthy_this_loop)
+                boot_worker_clear_stall_blocker(
+                    &g_projection_backfill_contract);
+        }
+        last_projection_cursor = projection_cursor;
 
         boot_reap_catchup_service(svc);
 
@@ -375,7 +454,7 @@ static void *projection_backfill_service_thread(void *arg)
          * refold_in_progress() clears. Mirrors the proven guards in
          * node_db_catchup_service.c and utxo_mirror_sync_service.c. A normal
          * boot never sets the signal, so this branch is unchanged there. */
-        if (refold_in_progress()) {
+        if (refolding) {
             for (int i = 0; i < 5 &&
                  !svc->projection_backfill_thread_stop &&
                  boot_running(svc); i++)
@@ -432,6 +511,9 @@ static void *projection_backfill_service_thread(void *arg)
                     last_hole_rewind_height = first_missing_height;
                     hole_rewind_attempts = 0;
                     hole_rewind_gave_up_reported = false;
+                    /* New/moved hole → the previous terminal-stuck claim (if
+                     * any) is stale; retire it. A fresh give-up re-raises. */
+                    projection_backfill_clear_stuck_blocker();
                 }
                 if (hole_rewind_attempts < 3) {
                     int rewind_height = first_missing_height - 1;
@@ -462,18 +544,31 @@ static void *projection_backfill_service_thread(void *arg)
                                     first_missing_height, rewind_height,
                                     hole_rewind_attempts);
                     }
-                } else if (!hole_rewind_gave_up_reported) {
-                    event_emitf(EV_RECOVERY_ACTION, 0,
-                                "projection-hole-repair-gave-up missing=%d "
-                                "attempts=%d cap=%d",
-                                first_missing_height, hole_rewind_attempts,
-                                repair_cap);
-                    hole_rewind_gave_up_reported = true;
+                } else {
+                    /* Terminal stuck state for this hole: the rewind budget is
+                     * spent and the missing connected block is still absent.
+                     * Emit the give-up event ONCE (no log spam) but name the
+                     * TYPED "projection stuck at height N" blocker every loop so
+                     * it stays a live claim — advance-or-name-a-blocker. */
+                    if (!hole_rewind_gave_up_reported) {
+                        event_emitf(EV_RECOVERY_ACTION, 0,
+                                    "projection-hole-repair-gave-up missing=%d "
+                                    "attempts=%d cap=%d",
+                                    first_missing_height, hole_rewind_attempts,
+                                    repair_cap);
+                        hole_rewind_gave_up_reported = true;
+                    }
+                    projection_backfill_set_stuck_blocker(
+                        projection_tip, first_missing_height, repair_cap,
+                        hole_rewind_attempts);
                 }
             } else if (first_missing_height < 0 || sparse_prefix) {
                 last_hole_rewind_height = -1;
                 hole_rewind_attempts = 0;
                 hole_rewind_gave_up_reported = false;
+                /* No hole within the repair cap (or an expected sparse prefix)
+                 * → any terminal-stuck claim has resolved; retire it. */
+                projection_backfill_clear_stuck_blocker();
             }
             if (projection_tip < chain_tip && !sparse_tip_pending) {
                 if (last_start_height != chain_tip) {
@@ -535,7 +630,7 @@ bool boot_start_projection_backfill_service(struct boot_svc_ctx *svc)
                                     &g_projection_backfill_contract, &g_op_sup,
                                     "op.projection_backfill",
                                     PROJECTION_BACKFILL_SUPERVISOR_DEADLINE_SEC,
-                                    0);
+                                    PROJECTION_BACKFILL_PROGRESS_QUIET_US);
     svc->projection_backfill_thread_stop = false;
     return boot_start_thread_service(&svc->projection_backfill_thread,
                                      &svc->projection_backfill_thread_started,

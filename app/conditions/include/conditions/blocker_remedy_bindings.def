@@ -209,6 +209,12 @@ ZCL_BLOCKER_REMEDY(coin_backfill.*,                             OWNER)
 ZCL_BLOCKER_REMEDY(simnet_byz.*,                                OWNER)
 ZCL_BLOCKER_REMEDY(*.body_read_failed,                          OWNER)
 ZCL_BLOCKER_REMEDY(worker.stall.*,                              OWNER)
+/* projection_backfill gave up repairing a hole (rewind budget spent, missing
+ * connected block still absent). Self-clears via projection_backfill_clear_-
+ * stuck_blocker once forward sync backfills the block — no named ZCL_CONDITION
+ * drives it, so OWNER is the honest binding (same shape as worker.stall.* and
+ * block_index.blocks_hydrate_quarantine). */
+ZCL_BLOCKER_REMEDY(worker.projection_stuck,                     OWNER)
 ZCL_BLOCKER_REMEDY(chaos.stage_stall,                           OWNER)
 
 /* ── OWNER — boot-time one-shot mint/refold tooling (config/src/, not the
