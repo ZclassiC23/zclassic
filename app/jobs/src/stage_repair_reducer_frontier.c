@@ -587,9 +587,18 @@ static bool reducer_frontier_reconcile_light_impl(
     }
 
     if (local.refused_coin_unknown) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier L1 refused: "
-                 "coins_applied_height absent (coin frontier unknown)");
+        /* De-storm: fires every apply pass while coins_applied_height stays
+         * absent. Key is constant (there is no varying identity here — the
+         * condition is either present or not) so this collapses to
+         * first-fire + 60 s keepalive, mirroring l1_refuse_throttle below. */
+        static struct log_throttle coin_unknown_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&coin_unknown_throttle, 1,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_WARN("stage_repair",
+                     "[stage_repair] reducer_frontier L1 refused: "
+                     "coins_applied_height absent (coin frontier unknown) "
+                     "repeats=%llu", (unsigned long long)reps);
         if (out)
             *out = local;
         return true;
@@ -646,15 +655,31 @@ static bool reducer_frontier_reconcile_light_impl(
             local.refused_coin_tear = false;
             local.repaired = true;
             if (apply) {
-                LOG_WARN("stage_repair",
-                         "[stage_repair] reducer_frontier repaired stale "
-                         "validate hash before coin-tear refusal "
-                         "hstar=%d coins_applied=%d validate_headers=%d->%d "
-                         "validate_hash_split=%d",
-                         local.hstar, local.coins_applied_height,
-                         local.validate_headers_cursor_before,
-                         local.validate_headers_cursor_after,
-                         local.lowest_validate_headers_hash_split);
+                /* De-storm: a wedged node re-hits this identical repair every
+                 * reducer pass until the split genuinely clears. Key on the
+                 * repair fingerprint (hstar, validate_headers target height)
+                 * so a genuinely-advancing repair re-emits but a stuck repeat
+                 * collapses to first-fire + 60 s keepalive. Mirrors
+                 * l1_repaired_throttle below. */
+                static struct log_throttle stale_validate_throttle =
+                    LOG_THROTTLE_INIT;
+                uint64_t key =
+                    ((uint64_t)(uint32_t)local.hstar << 32) |
+                    (uint32_t)local.validate_headers_cursor_after;
+                uint64_t reps = 0;
+                if (log_throttle_should_emit(&stale_validate_throttle, key,
+                                             platform_time_wall_unix(), 60,
+                                             &reps))
+                    LOG_WARN("stage_repair",
+                             "[stage_repair] reducer_frontier repaired stale "
+                             "validate hash before coin-tear refusal "
+                             "hstar=%d coins_applied=%d validate_headers=%d->%d "
+                             "validate_hash_split=%d repeats=%llu",
+                             local.hstar, local.coins_applied_height,
+                             local.validate_headers_cursor_before,
+                             local.validate_headers_cursor_after,
+                             local.lowest_validate_headers_hash_split,
+                             (unsigned long long)reps);
             }
             if (out)
                 *out = local;
