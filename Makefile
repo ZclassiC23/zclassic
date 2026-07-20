@@ -1189,6 +1189,16 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
 
+# Regenerate the pinned Sapling SPEND reference ground-truth vector (H2 lane).
+# Runs the groth16_selfverify group's oracle in emit mode against
+# vendor/lib/librustzcash.a and prints a ready-to-paste C block for
+# lib/test/include/test/groth16_spend_oracle_kat.h. Deterministic, params-free.
+.PHONY: spend-oracle-kat
+spend-oracle-kat: $(TEST_PARALLEL_FAST_CANDIDATE)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && ZCL_EMIT_SPEND_ORACLE_KAT=1 exec $(TEST_PARALLEL_FAST_ACTIVE) --only=groth16_selfverify'
+
 # ASan/UBSan variant of `t-fast`: one group per invocation under the
 # instrumented harness (build/bin/test-asan, own build/test-asan-obj tree).
 # Triage posture: ASan aborts the failing child (halt_on_error=1 default) so

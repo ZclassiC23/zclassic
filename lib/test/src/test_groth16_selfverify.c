@@ -166,11 +166,18 @@ static void native_circuit_baseline(void)
     printf("--- end H1 baseline (informational) ---\n");
 }
 
+/* H2 lane: reference differential oracle (test-only librustzcash bridge).
+ * Runs FIRST and unconditionally — it is params-free, so it gates even when
+ * ~/.zcash-params is absent and the prover self-test below SKIPs. */
+int groth16_spend_reference_oracle(void);
+
 int test_groth16_selfverify(void);
 int test_groth16_selfverify(void)
 {
     printf("\n=== Sapling prover -> consensus verifier capability ===\n");
     int failures = 0;
+
+    failures += groth16_spend_reference_oracle();
 
     const char *home = getenv("HOME");
     char params_dir[512];
@@ -182,8 +189,9 @@ int test_groth16_selfverify(void)
 
     FILE *probe = fopen(output_path, "rb");
     if (!probe) {
-        printf("  params absent — SKIP\n");
-        return 0;
+        printf("  params absent — SKIP (prover self-test); "
+               "H2 oracle already ran above\n");
+        return failures;
     }
     fclose(probe);
 
