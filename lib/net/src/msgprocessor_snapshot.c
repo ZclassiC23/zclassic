@@ -42,6 +42,7 @@
 #include "net/peer_scoring.h"
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
+#include "net/sync_reduce_adapter.h"
 #include "storage/disk_block_io.h"
 #include "coins/coins_view.h"
 #include "net/snapshot_sync_contract.h"
@@ -684,6 +685,44 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     if (svc) {
                         enum snapsync_offer_result result =
                             snapsync_handle_offer(svc, &params);
+
+                        /* SHADOW (WF1 lane 1D, sync/sync_reduce.h): the pure
+                         * kernel gets the SAME pre-offer status + the SAME
+                         * offer params the reference path above just used,
+                         * and its structural accept/reject call is compared
+                         * against the reference's. This has zero influence
+                         * on `result` or any branch below — the reference
+                         * service stays fully authoritative. A divergence is
+                         * expected for the reference's independent
+                         * range/schema/finality/work rejects when no session
+                         * is yet active (the kernel doesn't model offer
+                         * quality, only session identity + phase) and is
+                         * logged for visibility, not treated as a fault. */
+                        {
+                            struct sync_reduce_offer_shadow_result shadow =
+                                sync_reduce_offer_shadow_check(
+                                    (uint64_t)snap_status.serving_peer_id,
+                                    snap_status.state,
+                                    (uint64_t)params.peer_id,
+                                    params.height, params.utxo_root,
+                                    result == SNAPSYNC_OFFER_ACCEPTED);
+                            if (!shadow.agrees) {
+                                LOG_ERROR("sync_reduce_adapter",
+                                    "shadow kernel disagrees with reference "
+                                    "offer decision: peer=%u "
+                                    "state_before=%s(session=%u) "
+                                    "event_session=%u reference_result=%d "
+                                    "reference_accepts=%d kernel_next=%s "
+                                    "kernel_accepts=%d",
+                                    (uint32_t)node->id,
+                                    snapsync_state_name(snap_status.state),
+                                    snap_status.serving_peer_id,
+                                    params.peer_id, (int)result,
+                                    (int)shadow.reference_accepts,
+                                    sync_phase_name(shadow.kernel_decision.next),
+                                    (int)shadow.kernel_accepts);
+                            }
+                        }
 
                         switch (result) {
                         case SNAPSYNC_OFFER_ACCEPTED: {
