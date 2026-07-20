@@ -1,0 +1,332 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * codeindex_impact — the impact-closure query (F3, proof-DAG from symbol
+ * closure). Given a set of changed FILES it computes the file-level blast
+ * radius by walking the reverse-caller call graph:
+ *
+ *   changed files
+ *     -> changed symbols   (ci_store_symbols_in_file: defs of a .c / decls of
+ *                           a header)
+ *     -> reverse-caller closure  (codeindex_callers: refs WHERE callee = sym;
+ *                           each ref carries `enclosing` = the caller symbol,
+ *                           and `ref_file` = the file the call sits in)
+ *     -> impacted FILES    (every ref_file seen + the changed files themselves)
+ *
+ * Everything below the public query surface is REUSED — this TU adds only the
+ * traversal + the two bounded string sets it needs, over existing store reads.
+ * The result is deterministic (sorted, unique) and hard-capped: any bound hit
+ * sets *truncated so a caller never silently builds a huge test plan from a
+ * partial closure. */
+
+#include "codeindex_priv.h"
+
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+/* ── bounds (all deliberately generous; the point is a hard ceiling, not a
+ * tight budget — on a bounded change set none of these is reached) ── */
+
+/* Per-query fan-out buffer: rows pulled from one callers()/symbols_in_file()
+ * call. If a single symbol has MORE callers than this we cannot prove the
+ * closure is complete, so we truncate. */
+#define CI_CLOSURE_QUERY_BATCH 4096
+/* Distinct symbols the traversal is allowed to visit. */
+#define CI_CLOSURE_MAX_SYMS 50000
+/* Distinct impacted files the traversal is allowed to collect. */
+#define CI_CLOSURE_MAX_FILES 20000
+
+/* ── a tiny open-addressing string set (owns its keys) ──────────────────
+ * Used for dedup only; iteration order is never observed, so the final file
+ * list is sorted separately for determinism. */
+struct ci_strset {
+    char  **slots;   /* NULL == empty */
+    size_t  cap;     /* power of two */
+    size_t  len;
+};
+
+static uint64_t ci_str_hash(const char *s)
+{
+    /* FNV-1a — deterministic, no external dep. */
+    uint64_t h = 1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= *p;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static bool ci_strset_init(struct ci_strset *set, size_t cap)
+{
+    set->slots = zcl_calloc(cap, sizeof(*set->slots), "ci_strset");
+    if (!set->slots)
+        LOG_FAIL("codeindex", "ci_strset alloc (%zu slots)", cap);
+    set->cap = cap;
+    set->len = 0;
+    return true;
+}
+
+static void ci_strset_free(struct ci_strset *set)
+{
+    if (!set || !set->slots)
+        return;
+    for (size_t i = 0; i < set->cap; i++)
+        free(set->slots[i]);
+    free(set->slots);
+    set->slots = NULL;
+    set->cap = set->len = 0;
+}
+
+static bool ci_strset_grow(struct ci_strset *set)
+{
+    size_t ncap = set->cap * 2;
+    char **ns = zcl_calloc(ncap, sizeof(*ns), "ci_strset_grow");
+    if (!ns)
+        LOG_FAIL("codeindex", "ci_strset grow (%zu slots)", ncap);
+    for (size_t i = 0; i < set->cap; i++) {
+        char *k = set->slots[i];
+        if (!k)
+            continue;
+        size_t j = (size_t)ci_str_hash(k) & (ncap - 1);
+        while (ns[j])
+            j = (j + 1) & (ncap - 1);
+        ns[j] = k;
+    }
+    free(set->slots);
+    set->slots = ns;
+    set->cap = ncap;
+    return true;
+}
+
+/* Add `s`. *added=true iff it was newly inserted (false on a dup). Returns
+ * false only on a hard error (alloc). */
+static bool ci_strset_add(struct ci_strset *set, const char *s, bool *added)
+{
+    if (added) *added = false;
+    if (!s || !s[0])
+        return true;  /* ignore empties (unattributed enclosing) — not an error */
+    if (set->len * 10 >= set->cap * 7 && !ci_strset_grow(set))
+        return false;
+    size_t j = (size_t)ci_str_hash(s) & (set->cap - 1);
+    while (set->slots[j]) {
+        if (strcmp(set->slots[j], s) == 0)
+            return true;  /* dup */
+        j = (j + 1) & (set->cap - 1);
+    }
+    char *dup = zcl_strdup(s, "ci_strset_key");
+    if (!dup)
+        LOG_FAIL("codeindex", "ci_strset key dup");
+    set->slots[j] = dup;
+    set->len++;
+    if (added) *added = true;
+    return true;
+}
+
+/* ── a growable name list (traversal frontier + impacted-file accumulator) ── */
+struct ci_strlist {
+    char  **items;   /* owns each string */
+    size_t  cap;
+    size_t  len;
+};
+
+static bool ci_strlist_push(struct ci_strlist *l, const char *s)
+{
+    if (l->len == l->cap) {
+        size_t ncap = l->cap ? l->cap * 2 : 64;
+        char **ni = zcl_realloc(l->items, ncap * sizeof(*ni), "ci_strlist");
+        if (!ni)
+            LOG_FAIL("codeindex", "ci_strlist grow");
+        l->items = ni;
+        l->cap = ncap;
+    }
+    char *dup = zcl_strdup(s, "ci_strlist_item");
+    if (!dup)
+        LOG_FAIL("codeindex", "ci_strlist item dup");
+    l->items[l->len++] = dup;
+    return true;
+}
+
+static void ci_strlist_free(struct ci_strlist *l)
+{
+    if (!l || !l->items)
+        return;
+    for (size_t i = 0; i < l->len; i++)
+        free(l->items[i]);
+    free(l->items);
+    l->items = NULL;
+    l->cap = l->len = 0;
+}
+
+static int ci_str_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* ── traversal state (heap-owned; freed on every exit) ── */
+struct ci_closure_ctx {
+    struct ci_strset  seen_syms;   /* symbol names already queued/visited */
+    struct ci_strset  seen_files;  /* impacted files already collected */
+    struct ci_strlist files;       /* impacted files (unsorted; deduped) */
+    struct ci_ref    *refbuf;      /* CI_CLOSURE_QUERY_BATCH rows */
+    struct ci_symbol *symbuf;      /* CI_CLOSURE_QUERY_BATCH rows */
+};
+
+static void ci_closure_ctx_free(struct ci_closure_ctx *c)
+{
+    ci_strset_free(&c->seen_syms);
+    ci_strset_free(&c->seen_files);
+    ci_strlist_free(&c->files);
+    free(c->refbuf);
+    free(c->symbuf);
+}
+
+/* Record an impacted file (dedup). *hit_cap=true if the file cap is exceeded. */
+static bool ci_closure_add_file(struct ci_closure_ctx *c, const char *path,
+                                bool *hit_cap)
+{
+    if (!path || !path[0])
+        return true;
+    bool added = false;
+    if (!ci_strset_add(&c->seen_files, path, &added))
+        return false;
+    if (!added)
+        return true;
+    if (c->files.len >= CI_CLOSURE_MAX_FILES) {
+        *hit_cap = true;
+        return true;
+    }
+    return ci_strlist_push(&c->files, path);
+}
+
+/* Seed the frontier from a changed file's symbols and record the file itself. */
+static bool ci_closure_seed_file(struct ci_closure_ctx *c, struct codeindex *ci,
+                                 const char *file, struct ci_strlist *frontier,
+                                 bool *truncated)
+{
+    if (!ci_closure_add_file(c, file, truncated))
+        return false;
+
+    int ns = codeindex_symbols_in_file(ci, file, c->symbuf,
+                                        CI_CLOSURE_QUERY_BATCH);
+    if (ns < 0)
+        LOG_FAIL("codeindex", "symbols_in_file failed for %s", file);
+    if (ns == CI_CLOSURE_QUERY_BATCH)
+        *truncated = true;  /* a file with more symbols than we can enumerate */
+
+    for (int i = 0; i < ns; i++) {
+        if (c->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
+            *truncated = true;
+            break;
+        }
+        bool added = false;
+        if (!ci_strset_add(&c->seen_syms, c->symbuf[i].name, &added))
+            return false;
+        if (added && !ci_strlist_push(frontier, c->symbuf[i].name))
+            return false;
+    }
+    return true;
+}
+
+/* Expand one symbol: pull its callers, record their files, queue new callers. */
+static bool ci_closure_expand_symbol(struct ci_closure_ctx *c,
+                                     struct codeindex *ci, const char *sym,
+                                     struct ci_strlist *next, bool *truncated)
+{
+    int nc = codeindex_callers(ci, sym, c->refbuf, CI_CLOSURE_QUERY_BATCH);
+    if (nc < 0)
+        LOG_FAIL("codeindex", "callers failed for %s", sym);
+    if (nc == CI_CLOSURE_QUERY_BATCH)
+        *truncated = true;  /* more callers than one batch — closure incomplete */
+
+    for (int i = 0; i < nc; i++) {
+        if (!ci_closure_add_file(c, c->refbuf[i].ref_file, truncated))
+            return false;
+        const char *caller = c->refbuf[i].enclosing;
+        if (!caller[0])
+            continue;  /* file-scope reference: file recorded, no symbol to walk */
+        if (c->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
+            *truncated = true;
+            continue;
+        }
+        bool added = false;
+        if (!ci_strset_add(&c->seen_syms, caller, &added))
+            return false;
+        if (added && !ci_strlist_push(next, caller))
+            return false;
+    }
+    return true;
+}
+
+int codeindex_impact_closure(struct codeindex *ci,
+                             const char (*changed_files)[256], int n_changed,
+                             int max_depth,
+                             char (*out)[256], int cap, bool *truncated)
+{
+    if (truncated) *truncated = false;
+    if (!ci || !ci->store || !changed_files || n_changed < 0 || !out ||
+        cap <= 0 || !truncated)
+        LOG_ERR("codeindex", "bad args to codeindex_impact_closure");
+
+    int depth = max_depth > 0 ? max_depth : CI_CLOSURE_DEFAULT_DEPTH;
+
+    struct ci_closure_ctx c = {0};
+    int rc = -1;
+    if (!ci_strset_init(&c.seen_syms, 1024) ||
+        !ci_strset_init(&c.seen_files, 1024)) {
+        ci_closure_ctx_free(&c);
+        LOG_ERR("codeindex", "closure set init failed");
+    }
+    c.refbuf = zcl_malloc(sizeof(*c.refbuf) * CI_CLOSURE_QUERY_BATCH,
+                          "ci_closure_refbuf");
+    c.symbuf = zcl_malloc(sizeof(*c.symbuf) * CI_CLOSURE_QUERY_BATCH,
+                          "ci_closure_symbuf");
+    if (!c.refbuf || !c.symbuf) {
+        ci_closure_ctx_free(&c);
+        LOG_ERR("codeindex", "closure batch alloc failed");
+    }
+
+    struct ci_strlist frontier = {0};
+    struct ci_strlist next = {0};
+
+    for (int i = 0; i < n_changed; i++) {
+        if (!ci_closure_seed_file(&c, ci, changed_files[i], &frontier,
+                                  truncated))
+            goto done;
+    }
+
+    for (int d = 0; d < depth && frontier.len > 0; d++) {
+        /* Deterministic per-level expansion order. */
+        qsort(frontier.items, frontier.len, sizeof(*frontier.items),
+              ci_str_cmp);
+        for (size_t i = 0; i < frontier.len; i++) {
+            if (!ci_closure_expand_symbol(&c, ci, frontier.items[i], &next,
+                                          truncated))
+                goto done;
+        }
+        ci_strlist_free(&frontier);
+        frontier = next;
+        memset(&next, 0, sizeof(next));
+    }
+
+    /* Deterministic, unique output. */
+    qsort(c.files.items, c.files.len, sizeof(*c.files.items), ci_str_cmp);
+    int n = 0;
+    for (size_t i = 0; i < c.files.len && n < cap; i++) {
+        memset(out[n], 0, sizeof(out[n]));
+        snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        n++;
+    }
+    if ((size_t)n < c.files.len)
+        *truncated = true;  /* caller's cap could not hold the full set */
+    rc = n;
+
+done:
+    ci_strlist_free(&frontier);
+    ci_strlist_free(&next);
+    ci_closure_ctx_free(&c);
+    if (rc < 0)
+        LOG_ERR("codeindex", "closure traversal failed");
+    return rc;
+}

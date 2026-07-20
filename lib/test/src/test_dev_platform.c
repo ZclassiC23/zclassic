@@ -202,6 +202,114 @@ static size_t read_native_cycle(const char *repo_root, char *buf, size_t cap)
                ? len : 0;
 }
 
+/* Write <dir>/<rel> creating parent dirs (mirrors test_codeindex's mk_write). */
+static bool dp_mk_write(const char *dir, const char *rel, const char *content)
+{
+    char full[4096];
+    snprintf(full, sizeof(full), "%s/%s", dir, rel);
+    for (char *p = full + 1; *p; p++) {
+        if (*p == '/') { *p = '\0'; mkdir(full, 0755); *p = '/'; }
+    }
+    FILE *f = fopen(full, "wb");
+    if (!f) return false;
+    if (content && content[0]) fwrite(content, 1, strlen(content), f);
+    fclose(f);
+    return true;
+}
+
+static bool dp_group_in(const char (*groups)[ZCL_DEVLOOP_GROUP_MAX],
+                        size_t len, const char *g)
+{
+    for (size_t i = 0; i < len; i++)
+        if (strcmp(groups[i], g) == 0)
+            return true;
+    return false;
+}
+
+/* F3: dev test/change plan gains symbol-closure-derived proof groups. A tiny
+ * codeindex fixture with a cross-file call edge lib/net/src/download.c ->
+ * lib/net/src/tor_integration.c: changing the tor file (path group "tor") must
+ * additionally surface download.c's groups ("download"...) via the closure,
+ * WITHOUT dropping the path floor. */
+#define DP_CLOSURE_FIX "test-tmp/dp_closure"
+
+static int test_change_plan_closure(void)
+{
+    int failures = 0;
+    TEST("dev platform: change plan unions symbol-closure groups onto the path floor") {
+        system("rm -rf " DP_CLOSURE_FIX);
+        /* tor_integration.c defines the changed leaf; download.c's function
+         * calls it, so download.c is in the reverse-caller closure. Both paths
+         * match distinct agent_impact rules ("tor" vs "download ..."). */
+        ASSERT(dp_mk_write(DP_CLOSURE_FIX, "lib/net/src/tor_integration.c",
+                           "/* tor fixture */\n"
+                           "#include \"net/clp.h\"\n"
+                           "int tor_leaf(int x) { return x + 1; }\n"));
+        ASSERT(dp_mk_write(DP_CLOSURE_FIX, "lib/net/src/download.c",
+                           "/* download fixture */\n"
+                           "#include \"net/clp.h\"\n"
+                           "int dl_top(int x) { return tor_leaf(x) * 2; }\n"));
+        ASSERT(dp_mk_write(DP_CLOSURE_FIX, "lib/net/include/net/clp.h",
+                           "#ifndef NET_CLP_H\n#define NET_CLP_H\n"
+                           "int tor_leaf(int x);\nint dl_top(int x);\n#endif\n"));
+        ASSERT(dp_mk_write(DP_CLOSURE_FIX, "build/obj/tor_integration.d",
+                           "build/obj/tor_integration.o: "
+                           "lib/net/src/tor_integration.c "
+                           "lib/net/include/net/clp.h\n"));
+        ASSERT(dp_mk_write(DP_CLOSURE_FIX, "build/obj/download.d",
+                           "build/obj/download.o: lib/net/src/download.c "
+                           "lib/net/include/net/clp.h\n"));
+
+        const char *files[] = { "lib/net/src/tor_integration.c" };
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+
+        /* Floor: the path glob alone maps the changed file to "tor". */
+        ASSERT(dp_group_in(plan.path_groups, plan.path_groups_len, "tor"));
+        /* "download" is NOT reachable by path glob from the tor file. */
+        ASSERT(!dp_group_in(plan.path_groups, plan.path_groups_len, "download"));
+
+        ASSERT(zcl_devloop_plan_add_closure(DP_CLOSURE_FIX, files, 1, &plan));
+        ASSERT(plan.closure_attempted);
+        ASSERT(!plan.closure_truncated);
+        /* Closure surfaces download.c's group set as an ADDITION. */
+        ASSERT(dp_group_in(plan.closure_groups, plan.closure_groups_len,
+                           "download"));
+        /* Additive only: the path floor is never dropped, and a closure group
+         * is never also duplicated into the path set. */
+        ASSERT(dp_group_in(plan.path_groups, plan.path_groups_len, "tor"));
+        ASSERT(!dp_group_in(plan.closure_groups, plan.closure_groups_len,
+                            "tor"));
+
+        /* Fallback: an unavailable index (empty root, no sources) leaves the
+         * path floor intact and adds nothing — never a partial/huge plan. */
+        struct zcl_devloop_plan plan2;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan2));
+        ASSERT(zcl_devloop_plan_add_closure("test-tmp/dp_closure_absent",
+                                            files, 1, &plan2));
+        ASSERT(plan2.closure_attempted);
+        ASSERT(plan2.closure_groups_len == 0);
+        ASSERT(dp_group_in(plan2.path_groups, plan2.path_groups_len, "tor"));
+
+        /* JSON surface carries both group sets + the truncation flag. */
+        char body[16384];
+        size_t n = zcl_devloop_plan_json_closure(DP_CLOSURE_FIX, files, 1, body,
+                                                 sizeof(body));
+        ASSERT(n > 0 && n < sizeof(body));
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, n));
+        ASSERT(json_get(&root, "path_groups") != NULL);
+        ASSERT(json_get(&root, "closure_groups") != NULL);
+        ASSERT(strstr(body, "\"closure_truncated\":false") != NULL);
+        ASSERT(strstr(body, "download") != NULL);
+        json_free(&root);
+
+        system("rm -rf " DP_CLOSURE_FIX);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_core_classification(void)
 {
     int failures = 0;
@@ -1682,6 +1790,7 @@ int test_dev_platform(void)
     failures += test_distill_first_error();
     failures += test_menu_and_search();
     failures += test_change_classification();
+    failures += test_change_plan_closure();
     failures += test_watcher_publication_containment();
     failures += test_watch_relevance();
     failures += test_core_classification();

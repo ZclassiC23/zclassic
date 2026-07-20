@@ -172,4 +172,28 @@ int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
 int codeindex_symbol_id(struct codeindex *ci, const char *name,
                         char *buf, size_t cap);
 
+/* ── Impact-closure query (proof-DAG from symbol closure, F3) ───────────
+ *
+ * Given a set of changed FILES, compute the changed symbols (every symbol the
+ * store attributes to one of those files — a .c's definitions, a header's
+ * declarations), then walk the bounded REVERSE-caller closure (callers of
+ * callers, via refs.enclosing) up to `max_depth` levels, and return the set of
+ * impacted FILES: every file that transitively references a changed symbol
+ * PLUS the changed files themselves. This is the file-level "blast radius" of a
+ * change, derived from the call graph rather than a path glob.
+ *
+ * Output is DETERMINISTIC (unique, sorted by path) and filled up to `cap` rows.
+ * *truncated is set true iff the closure hit an internal size cap, a per-query
+ * fan-out cap, or overflowed `cap` — i.e. the returned set may be INCOMPLETE,
+ * so a caller building a test plan MUST fall back to path-only rather than
+ * trust a silently-partial set. `max_depth <= 0` selects CI_CLOSURE_DEFAULT_DEPTH
+ * (depth exhaustion is a normal bound, NOT truncation: the file set returned for
+ * the walked depth is complete). Returns the file count (>=0), -1 on hard error.
+ * `changed_files` is an array of NUL-terminated repo-relative paths. */
+#define CI_CLOSURE_DEFAULT_DEPTH 8
+int codeindex_impact_closure(struct codeindex *ci,
+                             const char (*changed_files)[256], int n_changed,
+                             int max_depth,
+                             char (*out)[256], int cap, bool *truncated);
+
 #endif /* ZCL_CODEINDEX_H */
