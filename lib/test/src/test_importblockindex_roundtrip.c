@@ -49,6 +49,7 @@
 #include "core/serialize.h"
 #include "models/block.h"
 #include "models/database.h"
+#include "platform/time_compat.h"
 #include "storage/block_index_db.h"
 #include "storage/dbwrapper.h"
 #include "util/blocker.h"
@@ -678,6 +679,70 @@ int test_importblockindex_roundtrip(void)
         }
 
         checkpoints_reset_rom_state_override_for_test();
+    }
+
+    /* ==================================================================
+     * Scenario E — throughput profile (profile-first, no unmeasured
+     * claims). Measures the actual marginal per-row cost import_row_verify
+     * adds on TOP of the pre-existing bulk-memcpy import: one
+     * disk_block_index_get_hash() (the hash-bind recompute; the ORIGINAL
+     * code never touched the header bytes to get a hash, it only memcpy'd
+     * the LevelDB key) plus one CheckProofOfWork() call (cheap — compact
+     * decode + a couple of 256-bit compares, no disk/crypto beyond the
+     * hash already computed). Both run unconditionally on every row; the
+     * stride/above-checkpoint full check_equihash_solution() is
+     * deliberately excluded (it is the expensive part this design
+     * INTENTIONALLY does not run on every row — see the import_row_verify
+     * doc comment in snapshot_controller_import.c). 1,000,000 iterations
+     * on a fixed pre-mined header, extrapolated x3.1 to the real
+     * --importblockindex row count; asserted against a generous ceiling
+     * so a future regression here fails loudly instead of silently
+     * eating the "~2x the unverified ~60-74s baseline" budget. */
+    {
+        uint32_t pow_bits = ibr_pow_limit_bits();
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = 12345;
+        dbi.nStatus = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
+                                     BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+        dbi.nTx = 1;
+        dbi.nVersion = 4;
+        dbi.hashMerkleRoot.data[0] = 0x55;
+        dbi.nSolutionSize = 0;
+
+        struct uint256 mined_hash;
+        bool mined = ibr_mine_pow(&dbi, pow_bits, &mined_hash);
+        IBR_CHECK("scenario E: mine a representative header for the "
+                  "throughput probe", mined);
+
+        if (mined) {
+            const struct chain_params *cp = chain_params_get();
+            const int64_t n = 1000000;
+            int64_t t0 = platform_time_monotonic_us();
+            for (int64_t i = 0; i < n; i++) {
+                struct uint256 h;
+                disk_block_index_get_hash(&dbi, &h);
+                (void)CheckProofOfWork(h, dbi.nBits, &cp->consensus);
+            }
+            int64_t t1 = platform_time_monotonic_us();
+            double us_per_row = (double)(t1 - t0) / (double)n;
+            /* The real --importblockindex fixture is ~3.1M rows (see
+             * CLAUDE.md "Tenacity & recovery"); the unverified baseline
+             * is ~60-74s, so the "~2x" budget leaves ~60-74s of added-cost
+             * headroom for the WHOLE import, i.e. up to ~19-24us/row on
+             * average. Assert two full orders of magnitude below that
+             * (<= 5us/row) so a real regression trips this long before it
+             * would ever threaten the throughput doctrine. */
+            double extrapolated_3_1m_secs = us_per_row * 3100000.0 / 1e6;
+            printf("importblockindex_roundtrip: scenario E throughput: "
+                   "%.3f us/row (hash-bind recompute + PoW-target check), "
+                   "%.2fs extrapolated added cost for 3.1M rows\n",
+                   us_per_row, extrapolated_3_1m_secs);
+            IBR_CHECK("scenario E: per-row hash-bind+PoW-target overhead "
+                      "stays well within the ~2x-baseline import-"
+                      "throughput budget (<= 5us/row)",
+                      us_per_row <= 5.0);
+        }
     }
 
     return failures;
