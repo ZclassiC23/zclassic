@@ -57,11 +57,6 @@ static const char *const g_owning_conditions[] = {
     "segment_corruption",               /* rung 3: segment refetch-by-hash     */
 };
 
-static int64_t now_unix(void)
-{
-    return (int64_t)platform_time_wall_time_t();
-}
-
 static bool owning_condition_active(void)
 {
     for (size_t i = 0; i < sizeof(g_owning_conditions) /
@@ -88,12 +83,8 @@ static void name_blocker(void)
              "cheap self-healing condition owns it (cursor clamp / range "
              "re-derive / segment refetch all covered elsewhere and inactive) "
              "— deeper recovery or operator attention required");
-    struct blocker_record b;
-    if (blocker_init(&b, "recovery_coordinator.no_applicable_rung",
-                     "recovery_coordinator", BLOCKER_DEPENDENCY, reason)) {
-        b.retry_budget = -1;
-        (void)blocker_set(&b);
-    }
+    blocker_name_dependency("recovery_coordinator.no_applicable_rung",
+                            "recovery_coordinator", reason);
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=recovery-no-applicable-rung blocker=named");
     LOG_WARN("recovery_coordinator",
@@ -120,7 +111,7 @@ static void recovery_coordinator_drive(void)
         return;
 
     name_blocker();
-    atomic_store(&g_last_run_unix, now_unix());
+    atomic_store(&g_last_run_unix, platform_time_wall_unix());
     atomic_fetch_add(&g_runs, 1u);
 }
 
@@ -198,7 +189,7 @@ void recovery_coordinator_test_drive(void)
 void recovery_coordinator_test_name_blocker(void)
 {
     name_blocker();
-    atomic_store(&g_last_run_unix, now_unix());
+    atomic_store(&g_last_run_unix, platform_time_wall_unix());
     atomic_fetch_add(&g_runs, 1u);
 }
 

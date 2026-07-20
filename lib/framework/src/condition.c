@@ -24,11 +24,6 @@ void condition_engine_set_progress_hook(void (*fn)(void))
     atomic_store(&g_progress_hook, fn);
 }
 
-static int64_t now_unix(void)
-{
-    return platform_time_wall_unix();
-}
-
 const char *condition_severity_name(enum condition_severity s)
 {
     switch (s) {
@@ -449,7 +444,7 @@ void condition_engine_tick(void)
         snapshot[i] = g_conditions[i];
     pthread_mutex_unlock(&g_condition_mu);
 
-    int64_t now = now_unix();
+    int64_t now = platform_time_wall_unix();
     void (*hook)(void) = atomic_load(&g_progress_hook);
     for (int i = 0; i < count; i++) {
         condition_tick_one(snapshot[i], now);
@@ -475,7 +470,7 @@ int condition_engine_get_active_count(void)
 
 void condition_engine_rebaseline_clocks(void)
 {
-    int64_t now = now_unix();
+    int64_t now = platform_time_wall_unix();
     pthread_mutex_lock(&g_condition_mu);
     for (int i = 0; i < g_condition_count; i++) {
         struct condition_state *s =

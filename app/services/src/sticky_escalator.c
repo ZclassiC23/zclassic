@@ -141,7 +141,7 @@ const char *sticky_rung_name(enum sticky_rung r)
 
 static int64_t now_unix(void)
 {
-    return (int64_t)platform_time_wall_time_t();
+    return platform_time_wall_unix();
 }
 
 /* Provable-tip first (sovereign H*), active-chain tip as fallback. */
@@ -316,11 +316,7 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
  * instead of a silent cycle. Reason text is truncated to fit, never rejected. */
 static void name_dependency_blocker(const char *id, const char *reason)
 {
-    struct blocker_record b;
-    if (blocker_init(&b, id, "sticky_escalator", BLOCKER_DEPENDENCY, reason)) {
-        b.retry_budget = -1;
-        (void)blocker_set(&b);
-    }
+    blocker_name_dependency(id, "sticky_escalator", reason);
 }
 
 static enum sticky_rung_result rung_resnapshot_default(void)

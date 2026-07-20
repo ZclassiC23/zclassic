@@ -51,13 +51,8 @@ static void build_blocker_id(char *buf, size_t buflen, const char *tag)
 static void escalate_named_blocker(const char *blocker_id,
                                    const char *reason_text)
 {
-    struct blocker_record b;
     /* blocker-id: rewind_driver.* */
-    if (blocker_init(&b, blocker_id, "rewind_driver",
-                     BLOCKER_DEPENDENCY, reason_text)) {
-        b.retry_budget = -1;
-        (void)blocker_set(&b);
-    }
+    blocker_name_dependency(blocker_id, "rewind_driver", reason_text);
 }
 
 bool rewind_to_nearest_self_verified_base(int32_t at_or_below,
