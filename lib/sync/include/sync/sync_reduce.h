@@ -101,14 +101,31 @@ struct sync_event {
 };
 
 /* The reducer's output: next phase, a bounded ordered list of side-effect
- * intents, and an optional typed blocker. Pure data; the adapter executes it. */
+ * intents, and an optional typed blocker. Pure data; the adapter executes it.
+ *
+ * Layout is deliberately padding-free: `blocker` precedes `has_blocker` so the
+ * trailing gap after the bool is an EXPLICIT `_reserved[]` member, not implicit
+ * padding. This is load-bearing for the byte-identical-decision invariant —
+ * C copies struct MEMBERS on return-by-value, not padding bytes, so a struct
+ * with implicit padding would carry indeterminate padding into the caller and
+ * make `memcmp` over two decisions from identical inputs non-deterministic.
+ * memset(&d,0,sizeof d) in decision_base zeroes _reserved; being a real member
+ * it is then copied on every return. The static_assert pins the no-padding
+ * shape so a future field reorder can't silently reintroduce the gap. */
 struct sync_decision {
     enum sync_phase   next;
     enum sync_action  actions[SYNC_DECISION_MAX_ACTIONS];
     int               action_count;
-    bool              has_blocker;
     enum sync_blocker blocker;
+    bool              has_blocker;
+    uint8_t           _reserved[3];
 };
+static_assert(sizeof(struct sync_decision) ==
+                  sizeof(enum sync_phase) +
+                  sizeof(enum sync_action) * SYNC_DECISION_MAX_ACTIONS +
+                  sizeof(int) + sizeof(enum sync_blocker) +
+                  sizeof(bool) + 3,
+              "sync_decision must be padding-free so memcmp determinism holds");
 
 /* ── The reducer + name lookups ─────────────────────────────────────── */
 
