@@ -168,6 +168,25 @@ int blocker_set(const struct blocker_record *r)
             return 1; /* rate-limited dup */
         }
         s->last_set_us = now;
+        /* Fault IDENTITY: does this refire describe the SAME live fault, or
+         * a genuinely new occurrence? Identity = the class plus the
+         * descriptive fields the producer varies when the underlying fault
+         * changes (reason, and the root-cause edge caused_by/cause_detail).
+         * A worker stall re-raised with the same enum reason is the SAME
+         * stall still live; a stall re-raised at a new height/target changes
+         * reason and is a fresh occurrence. This is the keystone
+         * convergence fix: only a genuinely NEW occurrence may reset the
+         * rule-2 escalation clock (rearm_count/escalated) and re-anchor the
+         * deadline horizon. An actively-refiring SAME-identity blocker must
+         * keep advancing toward escalation — the previous code reset both on
+         * every touch and re-anchored the deadline to the ever-staler fixed
+         * since_us, so a still-stalling worker dodged escalation forever. */
+        bool identity_changed =
+            (int)s->class != (int)r->class ||
+            strcmp(s->reason, r->reason) != 0 ||
+            strcmp(s->caused_by, r->caused_by) != 0 ||
+            strcmp(s->cause_detail, r->cause_detail) != 0;
+
         /* Refresh fields except since_us (preserves age semantics). */
         s->class = r->class;
         s->retry_budget = r->retry_budget;
@@ -178,17 +197,25 @@ int blocker_set(const struct blocker_record *r)
         snprintf(s->caused_by, BLOCKER_ID_MAX, "%s", r->caused_by);
         snprintf(s->cause_detail, BLOCKER_CAUSE_DETAIL_MAX, "%s", r->cause_detail);
         if (r->escape_deadline_secs > 0) {
-            s->escape_deadline_us = s->since_us + r->escape_deadline_secs * 1000000;
             s->escape_span_us = r->escape_deadline_secs * 1000000;
+            /* Anchor a fresh forward horizon from NOW (never the stale
+             * since_us) only on a new occurrence or when a deadline is
+             * first requested. On a same-identity refire, LEAVE the
+             * existing deadline/rearm_count/escalated untouched so the
+             * sweep keeps driving the still-live fault toward escalation. */
+            if (identity_changed || s->escape_deadline_us <= 0) {
+                s->escape_deadline_us = now + s->escape_span_us;
+                s->rearm_count = 0;
+                s->escalated = false;
+            }
         } else {
             s->escape_deadline_us = 0;
             s->escape_span_us = 0;
+            if (identity_changed) {
+                s->rearm_count = 0;
+                s->escalated = false;
+            }
         }
-        /* A genuine (non-rate-limited) refresh is a fresh occurrence of the
-         * condition — reset rule-2 escalation state so it re-evaluates the
-         * new deadline horizon rather than carrying a stale escalation. */
-        s->rearm_count = 0;
-        s->escalated = false;
         pthread_mutex_unlock(&g_lock);
         return 0;
     }

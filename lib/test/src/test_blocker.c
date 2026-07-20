@@ -650,6 +650,68 @@ int test_blocker(void)
                   !blocker_exists("worker.stall.op.projection_backfill"));
     }
 
+    /* ── KEYSTONE: an actively-refiring blocker still escalates ─────
+     * Regression for the blocker-convergence bug. Live shape:
+     * worker.stall.op.projection_backfill re-raised every ~5s with the
+     * SAME enum reason (a still-stalling worker), an escape_deadline_secs
+     * but no escape_action. The old refresh branch reset rearm_count /
+     * escalated on every touch AND re-anchored the deadline to the fixed
+     * (ever-staler) since_us, so it was permanently "overdue" yet never
+     * completed the 3 re-arms — it dodged BOTH TTL retirement (stays
+     * active) and escalation forever (~3.6h live). With the fix, a
+     * same-identity refire no longer resets the escalation clock, so the
+     * sweep drives it to escalated=true. Uses the test clock, no wall
+     * sleep. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(100000000);
+        blocker_set_rate_limit_ms_for_testing(0); /* every refire is genuine —
+                                                    * worst case for the bug */
+
+        struct blocker_record r;
+        blocker_init(&r, "worker.stall.op.projection_backfill",
+                     "boot.background_workers", BLOCKER_TRANSIENT,
+                     "deadline_exceeded");   /* stable enum-name reason, as
+                                              * worker_on_stall() passes */
+        r.escape_deadline_secs = 10;         /* deadline set, no escape_action */
+        int rc = blocker_set(&r);
+        BCK_CHECK("keystone: initial set → 0", rc == 0);
+
+        /* Re-fire every 5s and sweep every 5s, well past the deadline span
+         * and the re-arm budget, but nowhere near the 30-min TTL — so the
+         * only lifecycle exit available is escalation. Under the old code
+         * escalated NEVER became true here; it must now. */
+        bool became_escalated = false;
+        struct blocker_snapshot s;
+        for (int i = 0; i < 40 && !became_escalated; i++) {
+            blocker_advance_clock_for_testing(5 * 1000000);
+            blocker_set(&r);               /* same-identity refire */
+            blocker_supervisor_sweep();
+            int n = blocker_snapshot_all(&s, 1);
+            if (n == 1 && s.escalated) became_escalated = true;
+        }
+        BCK_CHECK("keystone: actively-refiring blocker escalates (was never)",
+                  became_escalated);
+        BCK_CHECK("keystone: still an active, visible claim after escalation",
+                  blocker_exists("worker.stall.op.projection_backfill"));
+        BCK_CHECK("keystone: not TTL-retired while actively refiring",
+                  blocker_retired_transient_count() == 0);
+
+        /* A genuinely NEW occurrence (reason changes → new height/target)
+         * re-anchors the horizon and resets the escalation clock. */
+        blocker_init(&r, "worker.stall.op.projection_backfill",
+                     "boot.background_workers", BLOCKER_TRANSIENT,
+                     "no_progress");    /* different reason == new identity */
+        r.escape_deadline_secs = 10;
+        blocker_advance_clock_for_testing(5 * 1000000);
+        blocker_set(&r);
+        int n = blocker_snapshot_all(&s, 1);
+        BCK_CHECK("keystone: new identity resets escalation state",
+                  n == 1 && !s.escalated && s.deadline_rearm_count == 0);
+        BCK_CHECK("keystone: new identity re-anchors deadline into the future",
+                  n == 1 && s.deadline_remaining_us > 0);
+    }
+
     /* ── lifecycle policy: non-TRANSIENT classes are untouched ─────
      * Rule 4: dependency blockers legitimately persist until their
      * dependency resolves; PERMANENT/RESOURCE persist until cleared. Both
