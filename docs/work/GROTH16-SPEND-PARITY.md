@@ -67,4 +67,28 @@ A negative-control (corrupting a reference boundary) turns the gate RED with a
 
 The oracle re-reports this scoreboard (`parity coverage: N/28 sections,
 C/98777 constraints`) on every run, so the number moves the moment H3 lands the
-next section — no edit to H4 required.
+next section — no edit to H4 required. It also prints the **named** next
+unimplemented section as a typed blocker line (currently
+`8:representation of ak`), so the seam is legible, never a silent gap.
+
+## Honest self-test surface — the native prover names its own blocker
+
+`sapling_spend_prover_native_status()` (lib/sapling/src/sapling_circuit.c) is the
+production, params-free coverage probe: it runs a canonical (non-secret)
+synthesis, reports `sections_ported / sections_total`,
+`constraints_ported / constraints_total`, and `next_blocker` (the NAME of the
+first unported section), with `roundtrip_ready = false` while the port is a
+partial prefix. The production prover self-test (`self_test_bundle` in
+`sapling_prover_c23.c`) reads it and emits a **non-gating** honest line:
+
+> native C23 spend prover NOT yet sovereign: 7/28 sections, 2032/98777
+> constraints ported; next blocker: 8:representation of ak; this self-test's
+> spend proof uses the reference oracle (librustzcash), the verifier is native C23
+
+This makes the sovereignty gap first-class and typed at the self-test surface —
+never a stubbed pass. The operational gate that controls `msg_send_onchain`
+(Sapling params loaded + a passing self-test) is **unchanged**: today it still
+produces the spend proof via the reference oracle and checks it with the
+unmodified native C23 consensus verifier. `roundtrip_ready` flips to `true` only
+once every section is ported AND a native-generated proof is accepted by that
+verifier — the honest acceptance bar, not section coverage alone.

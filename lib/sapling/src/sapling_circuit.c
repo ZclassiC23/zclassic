@@ -230,6 +230,106 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     return sapling_spend_synthesize_traced(cs, wit, pub, NULL, 0, NULL, NULL);
 }
 
+/* Canonical section roadmap for bellman's Spend::synthesize. Names index the
+ * NEXT unimplemented section for the honest blocker; index 0 is section 1, so
+ * roadmap[sections_ported] is the first section NOT yet ported. Kept in the
+ * production circuit as the authoritative port target (the test-side reference
+ * trace in groth16_spend_parity.c is an INDEPENDENT differential fixture, not
+ * this list — they must agree, and the parity oracle proves they do). */
+static const char *const SPEND_SECTION_ROADMAP[SPEND_CIRCUIT_TOTAL_SECTIONS] = {
+    "1:ak witness+on-curve+not-small-order",
+    "2:ar bits",
+    "3:randomization of signing key",
+    "4:computation of rk",
+    "5:rk inputize",
+    "6:nsk bits",
+    "7:computation of nk",
+    "8:representation of ak",
+    "9:representation of nk",
+    "10:computation of ivk",
+    "11:witness g_d",
+    "12:g_d not small order",
+    "13:compute pk_d",
+    "14:value commitment",
+    "15:representation of g_d",
+    "16:representation of pk_d",
+    "17:note content hash",
+    "18:rcm bits",
+    "19:commitment randomness",
+    "20:randomization of note commitment",
+    "21:merkle tree hash 0..31",
+    "22:conditionally enforce correct root",
+    "23:anchor inputize",
+    "24:g^position",
+    "25:faerie gold prevention",
+    "26:representation of rho",
+    "27:nf computation",
+    "28:pack nullifier",
+};
+
+void sapling_spend_prover_native_status(struct spend_prover_native_status *out)
+{
+    if (!out)
+        return;
+    out->sections_ported = 0;
+    out->sections_total = SPEND_CIRCUIT_TOTAL_SECTIONS;
+    out->constraints_ported = 0;
+    out->constraints_total = SPEND_CIRCUIT_TOTAL_CONSTRAINTS;
+    out->roundtrip_ready = false;
+    out->next_blocker = SPEND_SECTION_ROADMAP[0];
+
+    /* Canonical, deterministic, non-secret witness: derive a valid ak/rk from a
+     * fixed dummy ask/ar so synthesis reaches the ported prefix. No proving key
+     * and no real spend secrets are touched — this is a coverage probe only. */
+    struct sapling_spend_witness wit;
+    struct sapling_spend_inputs pub;
+    memset(&wit, 0, sizeof(wit));
+    memset(&pub, 0, sizeof(pub));
+
+    uint8_t ask[32] = {0};
+    ask[0] = 0x2a;
+    ask[1] = 0x17;
+    uint8_t ak[32];
+    sapling_ask_to_ak(ask, ak);
+    memcpy(wit.ak, ak, 32);
+    wit.nsk[0] = 0x11;
+    wit.ar[0] = 0x03;
+    wit.value = UINT64_C(12345);
+    uint8_t rk[32];
+    if (!sapling_compute_rk(ak, wit.ar, rk)) {
+        memory_cleanse(ask, sizeof(ask));
+        /* Leave the pessimistic defaults (0/blocked); a failure to build the
+         * probe witness is itself an honest "not ready". */
+        return;
+    }
+    memcpy(pub.rk, rk, 32);
+    memcpy(pub.cv, ak, 32);   /* any valid point; unbound in the ported prefix */
+
+    struct spend_section_shape sections[SPEND_CIRCUIT_TOTAL_SECTIONS];
+    size_t nsec = 0;
+    struct constraint_system cs;
+    cs_init(&cs);
+    bool synth = sapling_spend_synthesize_traced(
+        &cs, &wit, &pub, sections, SPEND_CIRCUIT_TOTAL_SECTIONS, &nsec, NULL);
+    if (synth) {
+        out->sections_ported = nsec;
+        out->constraints_ported = cs.num_constraints;
+        if (nsec >= SPEND_CIRCUIT_TOTAL_SECTIONS) {
+            /* All sections synthesize. round-trip readiness still requires a
+             * verifier-accepted native proof; that promotion is done by the
+             * self-test, not by mere section coverage — stay false here. */
+            out->next_blocker = "port complete (round-trip verification pending)";
+        } else {
+            out->next_blocker = SPEND_SECTION_ROADMAP[nsec];
+        }
+    }
+    if (cs.witness)
+        memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
+    cs_free(&cs);
+    memory_cleanse(ask, sizeof(ask));
+    memory_cleanse(&wit, sizeof(wit));
+}
+
 /* ── Output Circuit Synthesis ───────────────────────────────────── */
 
 /* Matching Zcash sapling-crypto Output::synthesize exactly:

@@ -90,6 +90,35 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
                                       size_t *n_sections_out,
                                       struct spend_wire_probe *probe);
 
+/* ── Native spend-prover sovereignty status (honest, typed, named) ──────────
+ *
+ * bellman's Spend::synthesize is 28 sections / 98777 constraints. The native
+ * C23 port synthesizes a faithful PREFIX; a partial prefix produces NO valid
+ * Groth16 proof (pairing is all-or-nothing), so the native spend prover cannot
+ * yet round-trip through the unmodified consensus verifier. This surface makes
+ * that gap a first-class, typed, NAMED blocker instead of a silent gap: the
+ * production self-test and any operator command can read it, and it flips to
+ * `roundtrip_ready = true` only once every section is ported AND a native proof
+ * is accepted by the verifier. It never reports a pass it cannot back. */
+#define SPEND_CIRCUIT_TOTAL_SECTIONS    28u
+#define SPEND_CIRCUIT_TOTAL_CONSTRAINTS 98777u
+
+struct spend_prover_native_status {
+    size_t sections_ported;      /* sections synthesized natively today */
+    size_t sections_total;       /* SPEND_CIRCUIT_TOTAL_SECTIONS */
+    size_t constraints_ported;   /* num_constraints from a canonical synthesis */
+    size_t constraints_total;    /* SPEND_CIRCUIT_TOTAL_CONSTRAINTS */
+    bool   roundtrip_ready;      /* native circuit -> verifier round-trips? */
+    const char *next_blocker;    /* NAME of the next unimplemented section, or
+                                    "port complete" when the prefix is whole */
+};
+
+/* Report the native spend-prover port coverage. Honest by construction:
+ * `roundtrip_ready` stays false while the port is a partial prefix. Runs a
+ * canonical (non-secret) synthesis to derive the ported counts — no proving
+ * key, no secret material. */
+void sapling_spend_prover_native_status(struct spend_prover_native_status *out);
+
 /* Parse a caller-supplied Sapling merkle authentication path into
  * the auth_path / auth_path_bits fields of `wit`. Wire layout:
  *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes

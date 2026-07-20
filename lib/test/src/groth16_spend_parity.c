@@ -366,6 +366,14 @@ int groth16_spend_parity_oracle(void)
            "%d inputs — remaining sections %zu..%d pending H3 port\n",
            REF_TOTAL_CONSTRAINTS, REF_TOTAL_AUX, REF_TOTAL_INPUTS,
            max_ported + 1, REF_NUM_SECTIONS);
+    if (max_ported < (size_t)REF_NUM_SECTIONS)
+        printf("  next unimplemented section (typed blocker): '%s' "
+               "(+%zu constraints to cum %zu) — native spend prover cannot "
+               "round-trip until sections %zu..%d land\n",
+               REF_SECTIONS[max_ported].name,
+               REF_SECTIONS[max_ported].cum_constraints - cum,
+               REF_SECTIONS[max_ported].cum_constraints,
+               max_ported + 1, REF_NUM_SECTIONS);
 
     printf("--- end H4 parity oracle (%d failure[s]) ---\n", failures);
     return failures;

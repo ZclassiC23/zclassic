@@ -505,6 +505,32 @@ static bool self_test_bundle(void)
         !sapling_final_check(&vctx, 0, binding_sig, sighash))
         goto cleanup;
 
+    /* Honest sovereignty note (non-gating): the spend PROOF above is produced by
+     * the reference oracle (librustzcash), not the native C23 spend circuit,
+     * which is a partial prefix and cannot yet round-trip. Name the blocker so
+     * the gap is legible at the self-test surface, never silently passed. The
+     * VERIFIER (sapling_check_spend) is already the native C23 path. */
+    {
+        struct spend_prover_native_status ns;
+        sapling_spend_prover_native_status(&ns);
+        if (ns.roundtrip_ready) {
+            LOG_INFO("sapling_prover",
+                     "native C23 spend prover is sovereign: %zu/%zu sections, "
+                     "%zu/%zu constraints; spend proof self-generated",
+                     ns.sections_ported, ns.sections_total,
+                     ns.constraints_ported, ns.constraints_total);
+        } else {
+            LOG_INFO("sapling_prover",
+                     "native C23 spend prover NOT yet sovereign: %zu/%zu "
+                     "sections, %zu/%zu constraints ported; next blocker: %s; "
+                     "this self-test's spend proof uses the reference oracle "
+                     "(librustzcash), the verifier is native C23",
+                     ns.sections_ported, ns.sections_total,
+                     ns.constraints_ported, ns.constraints_total,
+                     ns.next_blocker);
+        }
+    }
+
     ok = true;
 
 cleanup:
