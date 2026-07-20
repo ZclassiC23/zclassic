@@ -29,7 +29,7 @@ Before you Read a file or `grep`, ask the in-tree **code navigator** (`lib/codei
 
 - `zclassic23 code sym --input='{"name":"<symbol>"}'` → definition `path:line` + full signature + group. Answers "where is X defined?"
 - `zclassic23 code refs --input='{"name":"<symbol>"}'` → every call site as `file:line`. Answers "who calls X? / what breaks if I change it?" (e.g. it flags a caller a delete must handle before you've opened a single file).
-- `zclassic23 code find` / `code file` / `code group` → text search / a file's symbol surface / a directory's surface. Run `zclassic23 discover schema <leaf>` for the exact input keys.
+- `zclassic23 code find` / `code file` / `code group` → text search / a file's symbol surface / a directory's surface. `code find` takes `{"text":"<needle>","limit":<n>}` (no `name`/`query` key). Run `zclassic23 discover schema <leaf>` for the exact input keys of the others.
 
 When the navigator can't answer and you fall back to a raw-text search, scope it with **`git grep`** (or `git ls-files | xargs grep`) — never `grep -r` / `find .` from the repo root. `.claude/worktrees/` (every lane's full checkout) and `test-tmp/` (per-run test scratch) live under the repo root and are gitignored/untracked, so an unscoped recursive scan walks tens of GB of duplicate/scratch content instead of the tracked source tree.
 
@@ -58,7 +58,7 @@ The platform exists so you **drop in C and let the machine classify, build, and 
 
 ## The model in four lines
 
-1. One durable append-only log of facts on disk (`progress.kv`). It is the only consensus authority.
+1. One durable append-only log of facts on disk (`consensus.db` — the reducer kernel's own SQLite file since the A3/A4 flip; `progress.kv` is a legacy alias that now holds only address_index/txindex projections). `consensus.db` is the only consensus authority.
 2. One kind of worker — a **reducer stage**. Each reads the height its upstream finished, then
    **advances its cursor by one (one log row) OR names a typed blocker**. Eight stages, fixed line:
    `header_admit → validate_headers → body_fetch → body_persist → script_validate → proof_validate → utxo_apply → tip_finalize`.

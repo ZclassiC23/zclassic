@@ -175,10 +175,10 @@ runtime state, follow the convention:
 
 That's it — no new RPC handler, command route, or schema.
 Every future subsystem becomes introspectable via `zclassic23 ops state` with
-~30 lines of changes total. Currently wired: `supervisor`, `watchdog`,
-`boot`, `block_index`, plus the existing services that follow the
-same convention (`health`, `chain_evidence`, `chain_advance_coordinator`,
-`legacy_mirror`, `oracle`, `header_probe`, etc).
+~30 lines of changes total. 121+ subsystems are wired today (see
+`app/controllers/include/controllers/diagnostics_dumpers.def`); enumerate the
+live catalog with `zclassic23 ops state` and no `--subsystem` argument rather
+than trusting a hand-list here.
 
 The `supervisor` subsystem (Round 5) is the *root* of the liveness
 tree: it lists every registered child (`sync.watchdog`,
@@ -316,7 +316,7 @@ Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereu
 
 Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded).
 
-- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — **plaintext on the wire** (transport encryption not yet implemented)
+- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — Noise-encrypted v2 transport is **implemented** below the message layer (`lib/net/src/v2_transport.c` + `lib/session/src/noise_handshake.c`, armed as INITIATOR in `lib/net/src/net.c` and decrypted/torn down in `lib/net/src/connman.c`) but **default OFF** pending rollout; until a peer negotiates v2, messages ride plaintext on the wire
 - **On-chain**: structured data in the Sapling 512-byte encrypted memo field (shielded) — **implemented**: `msg_send_onchain()` (`messaging_controller.c`) composes `z_sendmany` with the 38-byte memo codec (`lib/net/src/zmsg.c`), receive-side ingestion is wired at tip-finalize; sending requires Sapling params loaded + a passing prover self-test
 - Messages stored in SQLite, delivery acknowledgment
 - RPC: `msg_send`, `msg_inbox`, `msg_read`
@@ -331,12 +331,12 @@ File marketplace: offer gossip with price metadata, proof-of-possession challeng
 
 ### Atomic Swaps (ZSWP) — Cross-Chain HTLC Trading
 
-HTLC contract scaffolding: swap initiation and participation with redeem script generation. Redemption, refund, and settlement not yet implemented.
+HTLC contract scaffolding: swap initiation and participation with redeem script generation. Redemption, refund, and status/secret-extraction are wired end-to-end (`app/controllers/src/swap_controller.c`): `rpc_swap_redeem`/`rpc_swap_refund` build the settlement tx (`swap_settlement_build_redeem`), sign it, broadcast it on-chain (`swap_broadcast()`), and persist `SWAP_REDEEMED`/`SWAP_REFUNDED` state.
 
 - **Chains**: ZCL, BTC, LTC, DOGE (same 97-byte contract as dcrdex)
 - Script: OP_IF/OP_SHA256/OP_CLTV with shared OP_CHECKSIG
-- Secret extraction / redeem + refund scriptSig builders exist as library primitives (`script/htlc.*`, tested), not yet wired to a node-broadcast/settlement path
-- RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`
+- Secret extraction / redeem + refund scriptSig builders exist as library primitives (`script/htlc.*`, tested) and are wired to the node-broadcast/settlement path via the RPCs below
+- RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`, `swap_redeem`, `swap_refund`, `swap_status`, `swap_extractsecret`
 - Reference: dcrdex HTLC script format (Blue Oak License 1.0.0), reimplemented in `script/htlc.*`
 
 ### Background Validation
