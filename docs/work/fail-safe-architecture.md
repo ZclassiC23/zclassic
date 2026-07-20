@@ -6,55 +6,15 @@ structurally impossible.** Supersedes per-class whack-a-mole; absorbs
 Grounded in a 6-mapper code audit + live forensics of the stall active while
 this was written.
 
-## 0. The live specimen (2026-07-02, observed on main)
+## 0. Motivation
 
-Live node stalled 2.3h at H\*=3166988 (header frontier 3167119). Full causal
-chain, every link verified in code + live logs:
-
-1. 00:26:38 UTC Jul 2: the node folded stale block `00001b41` at 3166989 —
-   all stage rows ok=1, coins applied. ~00:32:10: the network's canonical
-   branch (`00001763` at 3166989) arrived; `tip_fork_stale` fired and its
-   remedy invalidated the stale active tip. A real, routine 1-block reorg.
-2. `purge_noncanonical` (`app/jobs/src/stage_repair_reducer_frontier_purge.c:129-255`)
-   deleted the hash-mismatched script/proof rows at 3166989 **while leaving
-   cursors at 3167048** — deliberately manufacturing a rowless hole, on the
-   assumption the refill layer heals it. Worse: the purge runs with **no
-   enclosing BEGIN IMMEDIATE** (each DELETE auto-commits; only
-   `progress_store_tx_lock` at `:105`) and **no cursor write anywhere in the
-   TU**; and the refill scan in the same repair pass ran on a **pre-purge
-   frontier snapshot** (`stage_repair_reducer_frontier.c:555` reads before
-   the purge at `:561`), so the pass that created the hole could not see it.
-3. The refill REFUSES rowless holes below `coins_applied_height`
-   (`app/jobs/src/stage_repair_reducer_frontier_refill.c:385-391` — "replay
-   domain (inverse-delta), refusing forward refill clamp"), and the layer it
-   defers to, the stale-script/proof replay, matches only EXISTING ok=0 rows
-   (`reducer_frontier_replay.c:98-104`) — a rowless hole matches nothing.
-   **Two repair layers, mutually exclusive domains, this class in the gap.**
-4. The healer condition's detect dry-run found "nothing actionable" (no
-   clamped/refused/loudness evidence flags set for this shape,
-   `reducer_frontier_reconcile_light.c:227-238`), and its peer gate compares
-   `peer_max` to the header/download tip instead of H\*
-   (`reconcile_light.c:56-74`) — suppressing repair precisely when stalled
-   below the header tip.
-5. The condition entered the framework zombie state: `currently_active=true`,
-   `detect()=false`, `witness()=false` ⇒ `lib/framework/src/condition.c:288-296`
-   does nothing every tick, forever. Attempts froze at 1 of 5, so the
-   operator page at `attempts >= max_attempts` (condition.c:366-401) never
-   fired either. `utxo_apply` idles "by design — the reconcile-light
-   Condition is the healer" (`utxo_apply_stage_observe.c:145`), alarm fired
-   ~2000×.
-6. L0 named the blocker perfectly (`log_hole / missing-success-row @3166989`)
-   but `repair_owner=""` — the owner hint is a 3-string reason-text lookup
-   (`reducer_frontier_dump.c:69-82`) that doesn't contain
-   "missing-success-row"; and the frontier never registers into the typed
-   blocker registry, so `zclassic23 core sync blockers` showed **0 active** during the stall.
-7. The advertised deep ladder is stubs: `targeted_rederive` returns FAILED
-   ("no in-process curative surface yet", `sticky_escalator.c:118-127`),
-   resnapshot / self_mint_refold / widen_peers / rebootstrap are
-   NOT_IMPLEMENTED (`:128-186`), zero `sticky_escalator_register_rung`
-   production callers; the one real rung (reindex) arms for the NEXT boot
-   while `chain_tip_watchdog.c:202-226` deliberately refuses to restart a
-   deterministic stall — so it never executes on a wedged-but-alive node.
+A live stall class was traced end-to-end: a routine 1-block reorg's cleanup
+step could delete stale verdict rows without rewinding the cursors that
+pointed at them, manufacturing a rowless hole that no existing repair layer's
+domain covered — and the healer condition, the blocker registry, and the
+advertised deep-repair ladder each independently failed to close it. This
+design generalizes the fix so any future birth mechanism for that class of
+hole is cured by construction instead of requiring a new bespoke healer.
 
 ## 0b. The structural defects (each verified at file:line)
 
@@ -269,43 +229,19 @@ recurring ones earn a rung-0 fast path for latency only.
    string table (kind-keyed now); demote bespoke conditions to rung-0;
    delete the borrowed-seed loader once rung 3 is live.
 
-## 4a. Copy-proof round 1 findings (2026-07-02): the two-boot heal — P6 + P7
+## 4a. The two-boot heal defect class — P6 + P7
 
-The first copy-proof of P1–P5 on the stalled specimen FAILED the climb gate,
-and the failure exposed a sixth defect class: **the boot restore can leave the
+A sixth defect class, distinct from D1-D5: **the boot restore can leave the
 node DEGRADED for a whole process lifetime while its own repairs are already
-on disk — the heal lands on the NEXT boot** (boot-1 stayed at H\*=3166988 for
-1500 s; boot-2 of the same datadir, equally isolated to a dead-sink peer,
-climbed to 3167141 purely from local bodies).
-
-Causal chain (all verified at file:line):
-
-1. The flat block-index file was corrupt at the tip mapping → reload from
-   SQLite left the canonical tip hash `00002161b…` as a contentless stub
-   (height 0, nBits 0, no HAVE_DATA).
-2. `topup_row_cb` saw projection row h=3166988 vs loaded h=0 and REFUSED the
-   merge (`block_index_loader_topup.c:149-157` pre-fix) — discarding the
-   crash-safe projection record that carried the full header + file coords.
-3. `utxo_recovery_restore_chain_tip` resolved coins_best to the stub,
-   declared "not backed by real block data", rewound the container to
-   3166987 (`utxo_recovery_restore.c:660-669`) — c->height=3166987.
-4. `chain_restore_rebuild_active_chain`'s install guard asked
-   `active_chain_tip()/active_chain_height()` — which resolve through the
-   tip_finalize AUTHORITY (durable cursor → block-map hash lookup), not the
-   container — got "already installed at 3166988", and skipped
-   `active_chain_install_tip_slot` (`chain_restore_repair.c:102` pre-fix).
-5. Both ancestry rebuilds filled `arr[0..3166988]` directly (and the
-   block-file rebuild fully HEALED the stub in place from the on-disk
-   header, `chain_restore_disk_repair.c:442-481`) but nothing raised
-   `c->height`, so `active_chain_at(3166988)` stayed NULL
-   (`chainstate.c:283` bounds by c->height).
-6. The integrity check mixes both authorities — tip_height from the
-   authority (3166988), slot lookups bounded by the container (3166987) —
-   and reported a phantom `tip_window_holes=1 tip_slot_ok=0 tip_real=1` →
-   DEGRADED_SERVING; the stages stayed JOB_IDLE behind the un-exposed tip.
-7. Boot-1's own flat-file save + cursor clamps persisted the repairs;
-   boot-2 loaded them clean and climbed. Two boots for one heal = the exact
-   "wait for the next boot" failure mode this document exists to kill.
+on disk — the heal lands on the NEXT boot, not the current one.** Root cause:
+a corrupt flat block-index tip reloads as a contentless stub; the ancestry
+rebuild heals the stub's content in place and fills the active-chain array,
+but nothing raises `active_chain`'s tracked height afterward, so lookups at
+the tip stay bounded by the stale (pre-heal) height and the integrity check
+reports a phantom hole — DEGRADED_SERVING for the rest of that process
+lifetime. The repair only takes effect because it was persisted to disk and
+loaded clean on the *next* boot — exactly the failure mode this document
+exists to kill.
 
 Fixes (both container-only derived state, zero consensus surface):
 

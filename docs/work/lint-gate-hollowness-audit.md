@@ -37,13 +37,6 @@ a real violation is present** — a *fail-silent* (hollow) gate. A hollow gate i
 worse than no gate: it gives false "all green" confidence, the exact
 self-deception this project fights.
 
-This was found after fixing a real fail-silent bug in
-`gate_no_csr_lock_on_finalize_drive.sh` (an awk regex went *fatal* on this gawk,
-its output was swallowed by `|| true`, so the scan ran over empty input and
-passed an injected violation). An audit of all 33 gate scripts (workflow
-`wf_04e65ef5-a98`, 22 agents, each finding empirically reproduced in an isolated
-worktree) found the same class is widespread.
-
 ## Root cause (one pattern, many gates)
 
 A gate derives its scan set from a `find` / glob / `grep -rl` / hardcoded list,
@@ -75,27 +68,14 @@ substitution — its nonzero exit does not abort the parent shell.
 ## Status
 
 ### FIXED (inject-verified: clean passes, real violation fires, breakage fails loud)
-- **`check_consensus_parity.sh` (E13, the most sacred gate).** Fail-loud preflight
-  (every `PATHS` dir must exist → `exit 2`) + explicit `grep` exit handling (≥2 →
-  `exit 2`). Zero-broadening; a NEW consensus dir still must be added to `PATHS`
-  deliberately (now documented in the gate). Commit `6c4e08a6b`.
-- **`check_long_functions.sh`.** End-anchor `/^\}$/` → `/^\}[[:space:]]*(\/\/.*|\/\*.*)?$/`
-  so a `}`-with-trailing-whitespace/comment close (`}\t`, `} // end`) no longer
-  evades the length check; still rejects `};` / `} while`. Commit `b5ae38dc4`.
-- **`check_honest_witness.sh` (Law 7, never-lie).** Producer + awk anchor made
-  qualifier-tolerant (`static (inline )?bool witness_`) so an inline witness is
-  scanned (and its body extracted, not emptied) + a fail-loud "scanned 0 → exit 2"
-  floor. Commit `b5ae38dc4`.
-- **`check_no_silent_ready.sh` (E8, never-lie).** Fail-loud preflight: the READY
-  authority discovery must be non-empty AND contain the known authority
-  `chain_activation_service.c` (a setter/enum rename now fails loud, not silent);
-  fixed the stale comment that named the defunct `chain_activation_controller.c`.
-- **`check_coins_lookup_nullcheck.sh` (controller chainstate guard).** Fail-loud
-  preflight now requires controller source files and at least one
-  `coins_view_cache_get_coins()` call site, and grep scans go through
-  `gate_grep`. Empty-controller and non-empty/no-lookup surfaces now exit 2
-  instead of reporting "clean"; `test_make_lint_gates` inject-verifies both
-  cases.
+
+| Gate | Fix | Commit |
+|---|---|---|
+| `check_consensus_parity.sh` (E13, the most sacred gate) | Fail-loud preflight (every `PATHS` dir must exist → `exit 2`) + explicit `grep` exit handling (≥2 → `exit 2`); zero-broadening, a new consensus dir must still be added to `PATHS` deliberately | `6c4e08a6b` |
+| `check_long_functions.sh` | End-anchor `/^\}$/` → `/^\}[[:space:]]*(\/\/.*|\/\*.*)?$/` so a `}`-with-trailing-whitespace/comment close no longer evades the length check | `b5ae38dc4` |
+| `check_honest_witness.sh` (Law 7, never-lie) | Producer + awk anchor made qualifier-tolerant (`static (inline )?bool witness_`) + a fail-loud "scanned 0 → exit 2" floor | `b5ae38dc4` |
+| `check_no_silent_ready.sh` (E8, never-lie) | Fail-loud preflight: READY authority discovery must be non-empty AND contain the known authority `chain_activation_service.c` | — |
+| `check_coins_lookup_nullcheck.sh` (controller chainstate guard) | Fail-loud preflight requires controller source files + at least one `coins_view_cache_get_coins()` call site; grep scans go through `gate_grep`; `test_make_lint_gates` inject-verifies both empty-controller and non-empty/no-lookup cases | — |
 
 ### TODO — hollow under a GREEN build (genuine; fix carefully, inject-verify each)
 These go hollow via a refactor that *keeps the build compiling*, so CI would be
@@ -137,7 +117,3 @@ Add a shared `tools/lint/gate_lib.sh` providing `gate_require_scanned <count>
 Fix the GREEN-build-hollow set first; inject-verify each (clean passes, real
 violation fires, producer-breakage fails loud) before greening. Do NOT ship a
 broaden-surface fix without confirming the clean tree stays green.
-
-Full per-gate evidence (the exact injection + commands + exit codes that proved
-each one hollow): workflow `wf_04e65ef5-a98` result, archived under the session
-tasks dir.

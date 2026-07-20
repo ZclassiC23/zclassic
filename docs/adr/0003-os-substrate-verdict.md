@@ -214,22 +214,3 @@ Detail, file inventories, and the ordered checklist are in
   path-grant sandbox can be enabled by default.
 - Network confinement (outbound connection filtering) is out of scope for
   Rung 2 — it targets local resource/exec confinement only.
-
-## Verification notes (what this review could and could not confirm)
-
-- **Confirmed by reading code and git history:** all four bottleneck items
-  in Evidence (a) against `docs/work/refold-fold-rate-bottlenecks.md`'s
-  cited lines; that `thread_pool.c`/`thread_pool.h` and `verify_queue.c` do
-  **not** exist in the current tree (`git log --all -- lib/validation/src/thread_pool.c
-  lib/validation/include/validation/thread_pool.h` shows build-then-delete
-  at `9c5357930` → `b1e27ce0e`, both ancestors of `HEAD`); zero
-  `seccomp|landlock|capsicum|pledge(|setrlimit` matches outside `vendor/`;
-  all 12 shell-out call sites and their exact line ranges; the duplicated
-  `/proc/self/stat` parser in both cited files; `connman.c`'s 256-fd cap and
-  50 ms `poll()` timeout at the cited lines; the `SIGCHLD`/`SA_NOCLDWAIT`
-  install and its documented consequence.
-- **Not independently re-verified this session:** live behavior of a
-  Landlock/seccomp profile under this node's actual OpenSSL/SQLite/Tor
-  thread mix (Rung 2 is design-only, no implementation exists to test);
-  whether every `/proc/self/*` read site in the tree was found by grep (the
-  count is a lower bound, not an exhaustive audit).
