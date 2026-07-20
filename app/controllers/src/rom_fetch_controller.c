@@ -26,6 +26,7 @@
 #include "net/rom_journal.h"      /* pre-download reused-bytes accounting */
 #include "net/file_service.h"     /* FS_PORT default */
 #include "net/rom_seed.h"         /* ROM_SEED_* bounds */
+#include "services/sync_benchmark_service.h" /* zcl.sync_benchmark.v1 receipt */
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "util/safe_alloc.h"
@@ -241,6 +242,19 @@ void zcl_native_handle_rom_fetch_bundle(
     }
     rfc_derive_filename(&m);
 
+    /* zcl.sync_benchmark.v1: instrument the artifact-fetch slice of fast sync.
+     * This command drives only the manifest + artifact_download phases; the
+     * peer_discovery / headers / verify / install / tail phases belong to the
+     * boot sync orchestrator, so the receipt written below is deliberately
+     * marked incomplete and its other phases stay null-with-reason. Real reuse
+     * accounting comes from rfc_journal_reused() (the ROM resume journal). */
+    {
+        char artifact_hex[65];
+        HexStr(m.chunk_root, 32, false, artifact_hex, sizeof(artifact_hex));
+        sync_benchmark_init(out_dir);
+        sync_benchmark_set_artifact(artifact_hex);
+    }
+
     /* Synchronous download + content proof. Blocks this command worker for
      * the duration (minutes for a full bundle over a slow peer); a
      * background/scheduling engine is the follow-up lane.
@@ -287,21 +301,28 @@ void zcl_native_handle_rom_fetch_bundle(
         uint32_t workers = (uint32_t)(2 * npeers);
         if (workers > ROM_FETCH_MAX_WORKERS)
             workers = ROM_FETCH_MAX_WORKERS;
+        sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_DOWNLOAD);
         fetched = rom_fetch_download_parallel(peers, npeers, &m, out_dir,
                                               workers, NULL, NULL);
+        sync_benchmark_phase_end(SYNC_BENCH_ARTIFACT_DOWNLOAD);
         fallback_used = true; /* whole-file-only path, always */
     } else {
         uint8_t (*chunk_sha3)[32] = zcl_malloc(
             (size_t)ROM_SEED_MAX_CHUNKS * 32, "rfc_manifest_chunk_sha3");
         uint32_t manifest_chunks = 0;
+        sync_benchmark_phase_begin(SYNC_BENCH_MANIFEST);
         bool have_manifest = chunk_sha3 &&
             rom_fetch_get_manifest(peer, port, m.chunk_root, chunk_sha3,
                                    ROM_SEED_MAX_CHUNKS, &manifest_chunks);
+        sync_benchmark_phase_end(SYNC_BENCH_MANIFEST);
         if (have_manifest && manifest_chunks == m.num_chunks) {
             rfc_journal_reused(out_dir, &m, &reused_chunks, &reused_bytes);
+            sync_benchmark_note_reused(reused_bytes);
+            sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_DOWNLOAD);
             fetched = rom_fetch_download_verified(peer, port, &m, chunk_sha3,
                                                   manifest_chunks, out_dir,
                                                   NULL, NULL);
+            sync_benchmark_phase_end(SYNC_BENCH_ARTIFACT_DOWNLOAD);
             used_manifest_path = true;
             chunks_verified = manifest_chunks;
         } else {
@@ -311,11 +332,18 @@ void zcl_native_handle_rom_fetch_bundle(
                          "whole-file verify", manifest_chunks, m.num_chunks,
                          peer, (unsigned)port);
             fallback_used = true;
+            sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_DOWNLOAD);
             fetched = rom_fetch_download(peer, port, &m, out_dir, NULL, NULL);
+            sync_benchmark_phase_end(SYNC_BENCH_ARTIFACT_DOWNLOAD);
         }
         free(chunk_sha3);
     }
     if (!fetched) {
+        /* Honest abort receipt: only the phases that DID finish are recorded
+         * (artifact_download is left in-progress → null-with-reason), never a
+         * receipt implying a full fast sync happened. */
+        (void)sync_benchmark_write_receipt(
+            false, "artifact_download_failed via ops.debug.rom_fetch.bundle");
         struct rom_fetch_status st;
         rom_fetch_status_snapshot(&st);
         char msg[256];
@@ -363,4 +391,21 @@ void zcl_native_handle_rom_fetch_bundle(
     (void)json_push_kv_str(&reply->data, "next",
                            "reboot with -install-consensus-bundle=<path> to "
                            "activate through the unified installer");
+
+    /* Record the download-side resource counters and write the durable
+     * zcl.sync_benchmark.v1 receipt. Marked incomplete: this command exercises
+     * the artifact fetch only, not the whole T_ready/T_sovereign sync. The
+     * downloaded byte count nets out journal-reused bytes (the resume path). */
+    uint64_t fresh_bytes =
+        (m.size_bytes > reused_bytes) ? (m.size_bytes - reused_bytes) : 0;
+    sync_benchmark_note_downloaded(fresh_bytes);
+    if (sync_benchmark_write_receipt(
+            false, "artifact_fetch_only via ops.debug.rom_fetch.bundle; "
+                   "peer_discovery/headers/verify/install/tail phases not "
+                   "exercised by this command")) {
+        char bench_path[640];
+        snprintf(bench_path, sizeof(bench_path), "%s/sync_benchmark.json",
+                 out_dir);
+        (void)json_push_kv_str(&reply->data, "benchmark_receipt", bench_path);
+    }
 }
