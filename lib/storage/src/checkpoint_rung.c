@@ -172,6 +172,13 @@ bool checkpoint_rung_serialize(struct checkpoint_rung *r,
     if (!r || !buf)
         LOG_FAIL(RUNG_SUBSYS, "serialize: NULL arg (r=%p buf=%p)",
                  (const void *)r, (const void *)buf);
+    /* Zero the whole framed buffer FIRST so the reserved tail
+     * (CHECKPOINT_RUNG_WIRE_SIZE is 404; body + self_digest fill only 356) is
+     * defined. Without this the 48 trailing bytes are whatever the caller's
+     * stack held, making the on-disk artifact and any full-buffer memcmp/hash
+     * non-deterministic (surfaced intermittently by the "serialize is
+     * deterministic" test under load). */
+    memset(buf, 0, CHECKPOINT_RUNG_WIRE_SIZE);
     checkpoint_rung_finalize(r);
     size_t body_len = rung_serialize_body(r, buf);
     memcpy(buf + body_len, r->self_digest, 32);
