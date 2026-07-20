@@ -3,7 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
  * The operational-vs-sovereign trust split, made explicit and enforced.
- * See docs/work/fast-sync-to-tip-plan-2026-07-16.md §5 for the design and
+ * See docs/work/shielded-history-importer.md §5 for the design and
  * lib/storage/include/storage/coins_kv.h (coins_kv_is_proven_authority,
  * coins_kv_contains_refold_marker, coins_kv_tip_is_self_derived) for the
  * two underlying provenance bits this module composes into one guard. */

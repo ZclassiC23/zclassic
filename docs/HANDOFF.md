@@ -69,7 +69,7 @@ design reference (not live narrative) in
 [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) and
 memory `project_live_wedge_anchor_frontier_rootcause_2026-07-12`. The
 alternate **operational** cure design
-([`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md))
+([`docs/work/shielded-history-importer.md`](work/shielded-history-importer.md))
 documents currently-shipped importer code but is **not** the path that
 actually passed the wedge — the sovereign consensus-bundle install
 (`docs/work/sovereign-cutover-runbook.md`) is, per §0-LATEST.
@@ -159,7 +159,7 @@ exit). Replay any consensus-predicate tightening against REAL history first
 
 - [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md) — THE plan.
 - [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) — the sovereign-cure spine.
-- [`docs/work/fast-sync-to-tip-plan-2026-07-16.md`](work/fast-sync-to-tip-plan-2026-07-16.md) — the operational import-path cure design (the alternate cure noted in §0 History; not the path that passed the wedge).
+- [`docs/work/shielded-history-importer.md`](work/shielded-history-importer.md) — the operational import-path cure design (the alternate cure noted in §0 History; not the path that passed the wedge).
 - [`docs/work/sovereign-cutover-runbook.md`](work/sovereign-cutover-runbook.md) — owner-gated live cutover + revert for the sovereign bundle cure (the path that passed the wedge).
 - [`docs/work/ROADMAPS.md`](work/ROADMAPS.md) — live vs superseded roadmaps.
 - [`docs/AGENT_TRAPS.md`](AGENT_TRAPS.md) — looks-broken-but-isn't; read before "fixing" anything.

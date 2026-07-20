@@ -130,7 +130,7 @@ static bool rpc_generate(const struct json_value *params, bool help,
         "Arguments:\n"
         "1. numblocks (numeric, required) How many blocks to generate");
 
-    /* Sovereign guard (docs/work/fast-sync-to-tip-plan-2026-07-16.md §5.3):
+    /* Sovereign guard (docs/work/shielded-history-importer.md §5.3):
      * refuse to mint on a borrowed-and-not-self-folded (release_assisted)
      * shielded history. This gates the MINT action only — tip-following
      * (rpc_submitblock accepting a block relayed/mined by someone else, the

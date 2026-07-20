@@ -23,7 +23,7 @@
  * wallet-spend entry (app/controllers/src/wallet_shielded_send.c
  * rpc_z_sendmany — covers t->t / t->z / z->t / z->z). Tip-FOLLOWING (the
  * reducer forward fold, P2P relay, explorer, wallet viewing) is never
- * gated. See docs/work/fast-sync-to-tip-plan-2026-07-16.md §5. */
+ * gated. See docs/work/shielded-history-importer.md §5. */
 
 #include "controllers/sovereignty_controller.h"
 

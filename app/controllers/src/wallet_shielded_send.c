@@ -20,7 +20,7 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         "\nSend from a transparent or shielded address to multiple recipients.\n"
         "Supports t→t, t→z, z→z, and z→t transactions.\n");
 
-    /* Sovereign guard (docs/work/fast-sync-to-tip-plan-2026-07-16.md §5.3):
+    /* Sovereign guard (docs/work/shielded-history-importer.md §5.3):
      * refuse a spend (t->t, t->z, z->t, z->z — this handler covers all four)
      * while the tip is release_assisted (borrowed shielded history, not
      * self-folded). Wallet viewing, balance, and receive stay unaffected —

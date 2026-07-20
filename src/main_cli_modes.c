@@ -2736,7 +2736,7 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
  * anchor + nullifier set from a zclassicd chainstate into the TARGET datadir's
  * progress.kv, atomically, and flip both activation cursors to 0 — clearing the
  * utxo_apply.anchor_backfill_gap + nullifier_backfill_gap wedge WITHOUT a
- * from-genesis fold (docs/work/fast-sync-to-tip-plan-2026-07-16.md §4).
+ * from-genesis fold (docs/work/shielded-history-importer.md §4).
  *
  * NOT auto-run on any live datadir: this REFUSES the operator's live canonical
  * (~/.zclassic-c23) and mint (~/.zclassic-c23-mint) datadirs by construction;
@@ -2821,7 +2821,7 @@ int import_complete_shielded_mode(int argc, char **argv)
                 "REFUSING: %s is a live datadir. Copy-prove on a COPY first "
                 "(cp -a the datadir + chainstate, run this against the copy, "
                 "gate on H* climb + tip-hash parity vs zclassicd), then cut "
-                "over. See docs/work/fast-sync-to-tip-plan-2026-07-16.md §6.\n",
+                "over. See docs/work/shielded-history-importer.md §6.\n",
                 target);
         return 1;
     }

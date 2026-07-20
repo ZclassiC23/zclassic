@@ -222,7 +222,7 @@ char *zcl_native_status_body(const struct json_value *args,
                                "condition_engine", ce);
     status_push_dumpstate_json(&root, "sovereignty", "sovereignty", sv);
     /* Also surface trust_mode as a flat top-level field — the operator
-     * sovereignty posture (docs/work/fast-sync-to-tip-plan-2026-07-16.md
+     * sovereignty posture (docs/work/shielded-history-importer.md
      * §5.5) is load-bearing enough to not require drilling into
      * `sovereignty.trust_mode`. Reads the just-pushed nested object rather
      * than re-parsing `sv`, so it can never disagree with it. */

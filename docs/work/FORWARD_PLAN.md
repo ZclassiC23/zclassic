@@ -21,7 +21,7 @@
 > used to run in parallel, **the sovereign consensus-bundle install**
 > (`docs/work/sovereign-cutover-runbook.md`) is the one that actually passed
 > the wedge live; the operational import-path track
-> ([`fast-sync-to-tip-plan-2026-07-16.md`](./fast-sync-to-tip-plan-2026-07-16.md))
+> ([`shielded-history-importer.md`](./shielded-history-importer.md))
 > documents currently-shipped importer code but was not cut over. Cure design
 > record (now PROVEN, not an open plan):
 > [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). The durable
