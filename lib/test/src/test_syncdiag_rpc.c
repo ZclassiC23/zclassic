@@ -3643,6 +3643,85 @@ syncdiag_net_split_done:
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: agent status answers from snapshot while node.db is busy... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        node_db_long_op_test_clear();
+
+        /* 1. A live call while the connection is idle publishes the in-memory
+         *    posture snapshot and is labelled source=live. */
+        struct json_value p0, live;
+        json_init(&p0);
+        json_set_array(&p0);
+        json_init(&live);
+        bool exec_live = rpc_table_execute(&tbl, "agent", &p0, &live);
+        bool ok = exec_live && live.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&live, "schema")),
+                          "zcl.public_status.v2") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&live, "source")),
+                          "live") == 0;
+        ok = ok && json_get(&live, "db_maintenance") == NULL;
+        json_free(&p0);
+        json_free(&live);
+
+        /* 2. Hold the shared node.db connection busy with a long maintenance op
+         *    (the ~11-minute quick_check that once made status go dark). */
+        node_db_long_op_test_set("quick_check", 647514);
+        const char *busy_op = NULL;
+        int64_t busy_elapsed = 0;
+        ok = ok && node_db_long_op_active(&busy_op, &busy_elapsed);
+        ok = ok && busy_op && strcmp(busy_op, "quick_check") == 0;
+        ok = ok && busy_elapsed >= 647514;
+
+        /* 3. The status call must still answer promptly, from the snapshot,
+         *    naming the maintenance op — never hang on the busy connection. */
+        struct json_value p1, busy;
+        json_init(&p1);
+        json_set_array(&p1);
+        json_init(&busy);
+        int64_t t0 = platform_time_monotonic_ms();
+        bool exec_busy = rpc_table_execute(&tbl, "agent", &p1, &busy);
+        int64_t answer_ms = platform_time_monotonic_ms() - t0;
+        ok = ok && exec_busy && busy.type == JSON_OBJ;
+        ok = ok && answer_ms < 2000;   /* bounded: proves it did not block */
+        ok = ok && strcmp(json_get_str(json_get(&busy, "schema")),
+                          "zcl.public_status.v2") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&busy, "source")),
+                          "snapshot") == 0;
+        ok = ok && json_get(&busy, "age_ms") != NULL &&
+             json_get_int(json_get(&busy, "age_ms")) >= 0;
+        const struct json_value *maint = json_get(&busy, "db_maintenance");
+        ok = ok && maint && maint->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(maint, "op")),
+                          "quick_check") == 0;
+        ok = ok && json_get_int(json_get(maint, "elapsed_ms")) >= 647514;
+        json_free(&p1);
+        json_free(&busy);
+
+        /* 4. Once maintenance clears, status returns to live source. */
+        node_db_long_op_test_clear();
+        ok = ok && !node_db_long_op_active(NULL, NULL);
+        struct json_value p2, after;
+        json_init(&p2);
+        json_set_array(&p2);
+        json_init(&after);
+        bool exec_after = rpc_table_execute(&tbl, "agent", &p2, &after);
+        ok = ok && exec_after && after.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&after, "source")),
+                          "live") == 0;
+        ok = ok && json_get(&after, "db_maintenance") == NULL;
+        json_free(&p2);
+        json_free(&after);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: mirror cached snapshot avoids live height refresh... ");
     {
         legacy_mirror_sync_reset_for_test();

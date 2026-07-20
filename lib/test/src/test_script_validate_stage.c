@@ -10,6 +10,7 @@
 #include "primitives/transaction.h"
 #include "script/script.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/script_validate_stage.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -39,6 +40,14 @@ bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
 bool find_lowest_prevout_unresolved_hole_unlocked(
     struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
     char status_out[32], struct uint256 *hash_out, bool *hash_found);
+
+/* Root-cause chaining exemplar (app/jobs/src/script_validate_stage.c,
+ * non-static for this reason): the body-availability-blocker discovery a
+ * prevout_unresolved HOLD uses to wire caused_by. Driven directly here
+ * because the real HOLD-to-PERMANENT-blocker transition is gated by a
+ * real-wall-clock 10-minute budget (SV_UNRESOLVED_BUDGET_SECONDS) that a
+ * fast test must not wait out. */
+const char *sv_find_body_availability_cause(struct blocker_snapshot *snap_out);
 
 #define SV_CHECK(name, expr) do { \
     printf("script_validate: %s... ", (name)); \
@@ -807,6 +816,109 @@ int test_script_validate_stage(void)
         SV_CHECK("body_read_failed: blocker cleared on resolve",
                  !blocker_exists("script_validate.body_read_failed"));
         sv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Lane E3, part 3 — downstream cause naming. A torn ANCESTOR body
+         * (recorded by stage_repair_read_active_block_checked via the
+         * reducer_frontier body-read note) is the ROOT CAUSE of a descendant's
+         * prevout_unresolved HOLD: the coin the ancestor block creates cannot be
+         * applied until the torn body is refetched + revalidated. The
+         * descendant's named prevout_unresolved blocker must NAME that torn
+         * ancestor height as its cause both in the free-text reason AND (lane
+         * E4) via the typed caused_by/cause_detail fields. Proves the chain:
+         * torn body => dependent script_validate defers with a blocker naming
+         * the missing-body height; restore the body + coin => H* climbs and
+         * the blocker clears via the normal revalidation flow. */
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("torn_cause: setup",
+                 sv_setup("torn_cause", 3, -1, dir, sizeof(dir), &ms, &sc) == 0);
+        sc.missing_prevout_height = 1;         /* h=1's spend is unresolved */
+
+        blocker_reset_for_testing();
+        reducer_frontier_body_read_note_reset_for_testing();
+        /* A torn ancestor body at h=0 (below the held height) — armed exactly
+         * as read_active_block_checked would on a failed disk read. */
+        reducer_frontier_body_read_note_record(
+            0, 12, 34, REDUCER_FRONTIER_BODY_READ_DISK);
+        /* Reach the named-blocker path on the first held tick (no 10-min wait). */
+        script_validate_stage_unresolved_budget_set_for_test(0);
+
+        /* h=0 advances; h=1 HOLDS on prevout_unresolved → JOB_BLOCKED (budget
+         * 0) → the stage framework publishes the typed blocker. */
+        script_validate_stage_drain(100);
+        SV_CHECK("torn_cause: cursor held at the hole (1)",
+                 script_validate_stage_cursor() == 1);
+
+        struct blocker_snapshot snaps[16];
+        int n = blocker_snapshot_all(snaps, 16);
+        bool named = false, caused_by_ok = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "script_validate.prevout_unresolved") != 0)
+                continue;
+            named = strstr(snaps[i].reason, "torn body height=0") != NULL;
+            caused_by_ok =
+                strcmp(snaps[i].caused_by, "reducer_frontier.body_read_torn") == 0 &&
+                strstr(snaps[i].cause_detail, "height=0") != NULL;
+        }
+        SV_CHECK("torn_cause: prevout_unresolved blocker names the torn "
+                 "ancestor body height", named);
+        SV_CHECK("torn_cause: typed caused_by/cause_detail name the torn "
+                 "ancestor blocker (lane E4 field)", caused_by_ok);
+
+        /* Restore: the torn body is refetched + revalidated (clear the note)
+         * and the missing coin resolves — H* climbs and the blocker clears via
+         * the normal advance path (sv_unresolved_clear). */
+        reducer_frontier_body_read_note_clear_at(0);
+        sc.missing_prevout_height = -1;
+        SV_CHECK("torn_cause: cursor advances once the body revalidates",
+                 script_validate_stage_drain(100) == 2 &&
+                 script_validate_stage_cursor() == 3);
+        SV_CHECK("torn_cause: prevout_unresolved blocker cleared on resolve",
+                 !blocker_exists("script_validate.prevout_unresolved"));
+
+        script_validate_stage_unresolved_budget_set_for_test(-1); /* restore */
+        reducer_frontier_body_read_note_reset_for_testing();
+        blocker_reset_for_testing();
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    /* Root-cause chaining exemplar: script_validate's prevout_unresolved
+     * defer path wires caused_by to an active body-availability blocker
+     * (see util/blocker.h "Root-cause chaining" + sv_find_body_availability_
+     * cause in script_validate_stage.c). Driven directly — the real HOLD
+     * transition into the named PERMANENT blocker is gated by a real
+     * 10-minute wall-clock budget (SV_UNRESOLVED_BUDGET_SECONDS) a fast
+     * test must not wait out; this proves the discovery half of the wire
+     * fires correctly, including which candidate wins when both are active. */
+    {
+        blocker_clear("utxo_apply.body_read_failed");
+        blocker_clear("body_persist.body_read_failed");
+
+        struct blocker_snapshot snap;
+        SV_CHECK("root_cause: no candidate active -> NULL",
+                 sv_find_body_availability_cause(&snap) == NULL);
+
+        struct blocker_record r;
+        blocker_init(&r, "body_persist.body_read_failed", "body_persist",
+                    BLOCKER_TRANSIENT, "height=7: body vanished");
+        blocker_set(&r);
+        const char *found = sv_find_body_availability_cause(&snap);
+        SV_CHECK("root_cause: body_persist candidate found",
+                 found && strcmp(found, "body_persist.body_read_failed") == 0);
+
+        /* utxo_apply is the stage that must itself read the block bytes to
+         * fold the coin — its own read failure is the more direct cause and
+         * is checked first; it must win when both candidates are active. */
+        blocker_init(&r, "utxo_apply.body_read_failed", "utxo_apply",
+                    BLOCKER_TRANSIENT, "height=7: body vanished");
+        blocker_set(&r);
+        found = sv_find_body_availability_cause(&snap);
+        SV_CHECK("root_cause: utxo_apply candidate preferred",
+                 found && strcmp(found, "utxo_apply.body_read_failed") == 0);
+
+        blocker_clear("utxo_apply.body_read_failed");
+        blocker_clear("body_persist.body_read_failed");
     }
 
     printf("script_validate_stage tests: %s\n",

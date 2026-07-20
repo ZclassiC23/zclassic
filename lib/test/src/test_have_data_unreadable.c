@@ -48,11 +48,13 @@
 #include "core/arith_uint256.h"
 #include "core/serialize.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "platform/clock.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "services/sync_monitor.h"
 #include "storage/disk_block_io.h"
+#include "util/blocker.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -671,6 +673,99 @@ int test_have_data_unreadable(void)
         have_data_unreadable_test_reset();
         sync_monitor_test_set_tip_advance_ts(0);
         clock_reset_default();
+        main_state_free(&ms);
+    }
+
+    /* ── 7. Body torn-read repair note (lane E3): a torn/failed canonical body
+     *      read recorded by stage_repair_read_active_block_checked raises a
+     *      typed blocker (quarantine) and is healed OFF-LOCK by this Condition
+     *      — the exact "read_active_block_checked: disk read failed h=3143721
+     *      ... repair defers" live wedge. Proves the chain: torn read => typed
+     *      blocker emitted => HAVE_DATA dropped so body_fetch refetches => on
+     *      heal the note + blocker clear (revalidation flow). This is
+     *      candidate 3, fed by the REAL reducer_frontier note channel — NOT a
+     *      stub — so it fires even when utxo_apply never reached the height
+     *      (the replay defers first). ── */
+    {
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        reducer_frontier_body_read_note_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        hdu_build_chain(&ms, 10, hashes); /* tip h=9 */
+        condition_engine_set_main_state(&ms);
+        register_have_data_unreadable();
+
+        /* A mid-chain block (h=5) whose on-disk body has torn (nFile=-1 → an
+         * unreadable HAVE_DATA flag), exactly as read_active_block_checked
+         * discovers it during a replay. */
+        struct block_index *mid = block_map_find(&ms.map_block_index,
+                                                  &hashes[5]);
+        mid->nFile = -1;
+        mid->nDataPos = 0;
+
+        /* stage_repair records the torn read; the quarantine bound raises the
+         * NAMED typed blocker BEFORE any condition tick. */
+        for (int i = 0; i < REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX; i++)
+            reducer_frontier_body_read_note_record(
+                5, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK);
+
+        bool pre = blocker_exists("reducer_frontier.body_read_torn") &&
+                   reducer_frontier_body_read_note_active() &&
+                   reducer_frontier_body_read_note_height() == 5 &&
+                   (mid->nStatus & BLOCK_HAVE_DATA) != 0;
+        HDU_CHECK("body_read_torn: quarantine emits typed blocker, HAVE_DATA "
+                  "still set pre-heal", pre);
+
+        int64_t now = platform_time_wall_unix();
+        sync_monitor_test_set_tip_advance_ts(now - 120); /* tip stalled */
+
+        struct condition_runtime_snapshot presnap;
+        int cleared_before = 0;
+        if (condition_engine_get_registered_snapshot("have_data_unreadable",
+                                                      &presnap))
+            cleared_before = presnap.cleared_count;
+
+        /* One tick: candidate 3 detects h=5 from the note, remedy DROPS
+         * HAVE_DATA (arming body_fetch's refetch), the witness (block no longer
+         * falsely HAVE_DATA → healed) retires the note + typed blocker. */
+        condition_engine_tick();
+
+        bool ok = have_data_unreadable_test_remedy_calls() == 1;
+        ok = ok && (mid->nStatus & BLOCK_HAVE_DATA) == 0; /* refetch armed */
+        ok = ok && mid->nFile == -1 && mid->nDataPos == 0;
+        HDU_CHECK("body_read_torn: candidate 3 drops HAVE_DATA for refetch",
+                  ok);
+
+        struct condition_runtime_snapshot post;
+        bool ok2 = condition_engine_get_registered_snapshot(
+            "have_data_unreadable", &post);
+        ok2 = ok2 && condition_engine_get_active_count() == 0;
+        ok2 = ok2 && post.cleared_count == cleared_before + 1;
+        /* Revalidation flow: the note + typed blocker are retired on heal. */
+        ok2 = ok2 && !blocker_exists("reducer_frontier.body_read_torn");
+        ok2 = ok2 && !reducer_frontier_body_read_note_active();
+        HDU_CHECK("body_read_torn: heal retires the note + typed blocker", ok2);
+
+        /* Only the torn height healed — every other block stays HAVE_DATA. */
+        bool others = true;
+        for (int h = 0; h < 10; h++) {
+            if (h == 5) continue;
+            struct block_index *bi =
+                block_map_find(&ms.map_block_index, &hashes[h]);
+            others = others && bi && (bi->nStatus & BLOCK_HAVE_DATA) != 0;
+        }
+        HDU_CHECK("body_read_torn: only the torn height healed", others);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        reducer_frontier_body_read_note_reset_for_testing();
+        blocker_reset_for_testing();
+        sync_monitor_test_set_tip_advance_ts(0);
         main_state_free(&ms);
     }
 

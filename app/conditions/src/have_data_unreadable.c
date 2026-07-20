@@ -6,6 +6,7 @@
 
 #include "chain/chain.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_stage.h"
 #include "services/sync_monitor.h"
 #include "storage/disk_block_io.h"
@@ -103,6 +104,24 @@ static bool detect_have_data_unreadable(void)
         }
     }
 
+    /* Candidate 3: the stage_repair body torn-read repair note (lane E3;
+     * jobs/reducer_frontier.h). stage_repair_read_active_block_checked recorded
+     * a canonical body it could not read (torn bytes / wrong block) during a
+     * reducer_frontier replay — a height utxo_apply's own step may never reach
+     * because the replay defers first (the live "read_active_block_checked:
+     * disk read failed h=3143721 ... repair defers" wedge). Re-verify against
+     * the live index and prefer the lowest candidate, same as candidate 2. */
+    if (reducer_frontier_body_read_note_active()) {
+        int64_t rf_h = reducer_frontier_body_read_note_height();
+        if (rf_h >= 0 && (p == NULL || rf_h < target)) {
+            struct block_index *rf_p = unreadable_at(ms, (int)rf_h, datadir);
+            if (rf_p) {
+                target = (int)rf_h;
+                p = rf_p;
+            }
+        }
+    }
+
     if (!p)
         return false;
 
@@ -140,22 +159,30 @@ static bool witness_have_data_unreadable(int64_t target_at_detect)
         return false;
 
     struct block_index *p = target_index(ms, target);
-    if (!p)
-        return true;
+    bool healed;
+    if (!p) {
+        healed = true;
+    } else {
+        char datadir[2048];
+        GetDataDir(true, datadir, sizeof(datadir));
+        /* The reducer stage's own cursor advancing past target is the
+         * authoritative "re-derived through the repaired height" signal for the
+         * mid-chain (backfill/replay) case: there the active/finalized tip can
+         * already sit above an arbitrary rewound target even though nothing has
+         * actually been repaired yet, so tip-height alone is not a safe witness.
+         * Covers the tip+1 case too — once the block is re-fetched and applied,
+         * the cursor advances to target+1. */
+        healed = block_index_have_data_readable(p, datadir) ||
+                 (int64_t)utxo_apply_stage_cursor() > (int64_t)target;
+    }
 
-    char datadir[2048];
-    GetDataDir(true, datadir, sizeof(datadir));
-    if (block_index_have_data_readable(p, datadir))
-        return true;
-
-    /* The reducer stage's own cursor advancing past target is the
-     * authoritative "re-derived through the repaired height" signal for the
-     * mid-chain (backfill/replay) case: there the active/finalized tip can
-     * already sit above an arbitrary rewound target even though nothing has
-     * actually been repaired yet, so tip-height alone is not a safe witness.
-     * Covers the tip+1 case too — once the block is re-fetched and applied,
-     * the cursor advances to target+1. */
-    return (int64_t)utxo_apply_stage_cursor() > (int64_t)target;
+    /* When the torn body at `target` is readable/advanced again, retire the
+     * stage_repair body-read note + its typed blocker (lane E3) so the
+     * refetch+revalidate chain terminates even if the replay path itself does
+     * not re-read the height. No-op unless the note currently names target. */
+    if (healed)
+        reducer_frontier_body_read_note_clear_at(target);
+    return healed;
 }
 
 static struct condition c_have_data_unreadable = {

@@ -24,6 +24,7 @@ app/controllers/src/api_controller_status.c 896
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 807
+app/jobs/src/reducer_frontier_replay.c 813
 app/jobs/src/stage_repair_reducer_frontier.c 815
 app/jobs/src/tip_finalize_stage.c 807
 app/jobs/src/utxo_apply_stage.c 911

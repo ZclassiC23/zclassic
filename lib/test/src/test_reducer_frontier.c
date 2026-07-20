@@ -19,6 +19,7 @@
 #include "jobs/reducer_frontier.h"
 #include "storage/progress_store.h"
 #include "storage/seal_kv.h"
+#include "util/blocker.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -1565,10 +1566,100 @@ static int case_dump_reports_rewind_bases(void)
     return failures;
 }
 
+/* Lane E3: the body torn-read repair note + quarantine + typed blocker that
+ * stage_repair_read_active_block_checked records when a HAVE_DATA body cannot
+ * be read (torn bytes / wrong block). Proves the note/quarantine/blocker logic
+ * and the clear-on-successful-read (revalidation) path in isolation; the
+ * end-to-end HAVE_DATA-drop + refetch chain is proven in
+ * test_have_data_unreadable.c. */
+static int case_body_read_repair_note(void)
+{
+    int failures = 0;
+    blocker_module_init();
+    blocker_reset_for_testing();
+    blocker_set_rate_limit_ms_for_testing(0); /* re-sets always replace */
+    reducer_frontier_body_read_note_reset_for_testing();
+
+    RF_CHECK("body_read_note: inactive at start",
+             !reducer_frontier_body_read_note_active() &&
+             reducer_frontier_body_read_note_height() == -1);
+
+    /* Below the quarantine bound: note recorded, no blocker yet. */
+    reducer_frontier_body_read_note_record(
+        3143721, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK);
+    reducer_frontier_body_read_note_record(
+        3143721, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK);
+    RF_CHECK("body_read_note: height/file/pos exposed",
+             reducer_frontier_body_read_note_active() &&
+             reducer_frontier_body_read_note_height() == 3143721 &&
+             reducer_frontier_body_read_note_file() == 49 &&
+             reducer_frontier_body_read_note_pos() == 129998574);
+    RF_CHECK("body_read_note: count == 2 (below bound)",
+             reducer_frontier_body_read_note_count_for_testing() == 2);
+    RF_CHECK("body_read_note: no blocker below the quarantine bound",
+             !blocker_exists("reducer_frontier.body_read_torn"));
+
+    /* Crossing REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX raises ONE typed
+     * TRANSIENT blocker naming height/nFile/reason — a NAMED blocker, never a
+     * silent defer. */
+    reducer_frontier_body_read_note_record(
+        3143721, 49, 129998574, REDUCER_FRONTIER_BODY_READ_DISK);
+    RF_CHECK("body_read_note: quarantine raises typed blocker",
+             blocker_exists("reducer_frontier.body_read_torn"));
+    {
+        struct blocker_snapshot snaps[16];
+        int n = blocker_snapshot_all(snaps, 16);
+        bool named = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "reducer_frontier.body_read_torn") != 0)
+                continue;
+            named = snaps[i].class == BLOCKER_TRANSIENT &&
+                    strstr(snaps[i].reason, "height=3143721") != NULL &&
+                    strstr(snaps[i].reason, "nFile=49") != NULL &&
+                    strstr(snaps[i].reason, "disk_read_failed") != NULL;
+        }
+        RF_CHECK("body_read_note: blocker names height+file+reason, TRANSIENT",
+                 named);
+    }
+
+    /* Revalidation flow: a successful read of the noted height retires the
+     * note AND its blocker (this is exactly the clear_at() call the
+     * read_active_block_checked success path makes). */
+    reducer_frontier_body_read_note_clear_at(3143721);
+    RF_CHECK("body_read_note: matching clear retires note + blocker",
+             !reducer_frontier_body_read_note_active() &&
+             !blocker_exists("reducer_frontier.body_read_torn"));
+
+    /* Lowest-height-first: a LOWER failing height supersedes and restarts the
+     * count (it must heal first so the frontier climbs); a HIGHER failing
+     * height never displaces a lower pending one. */
+    reducer_frontier_body_read_note_record(
+        3100000, 7, 42, REDUCER_FRONTIER_BODY_READ_WRONG);
+    RF_CHECK("body_read_note: fresh lower note counts from 1",
+             reducer_frontier_body_read_note_height() == 3100000 &&
+             reducer_frontier_body_read_note_count_for_testing() == 1);
+    reducer_frontier_body_read_note_record(
+        3300000, 9, 9, REDUCER_FRONTIER_BODY_READ_DISK);
+    RF_CHECK("body_read_note: higher height does not displace the lower one",
+             reducer_frontier_body_read_note_height() == 3100000 &&
+             reducer_frontier_body_read_note_count_for_testing() == 1);
+
+    /* clear_at only fires for the currently-noted height. */
+    reducer_frontier_body_read_note_clear_at(3300000);
+    RF_CHECK("body_read_note: clear_at(non-noted height) is a no-op",
+             reducer_frontier_body_read_note_height() == 3100000);
+
+    reducer_frontier_body_read_note_reset_for_testing();
+    blocker_reset_for_testing();
+    blocker_set_rate_limit_ms_for_testing(BLOCKER_DEFAULT_RATE_LIMIT_MS);
+    return failures;
+}
+
 int test_reducer_frontier(void)
 {
     int failures = 0;
     printf("\n--- reducer_frontier (L0 H* authority) ---\n");
+    failures += case_body_read_repair_note();
     failures += case_consistent();
     failures += case_proof_and_utxo_fork_split();
     failures += case_validation_evidence_contained();
