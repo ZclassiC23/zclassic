@@ -287,16 +287,125 @@ const struct zcl_command_registry *zcl_command_catalog(void)
 }
 
 /* WF4 code-capsule dispatch join — see config/command_handler_index.h.
- * STEP-0 STATUS: empty table; lane 4C replaces g_handler_index_entries with a
- * parallel stringizing expansion of the command .def files. */
+ *
+ * A SECOND, parallel stringizing expansion of the exact same command .def
+ * catalogs used to build g_catalog_commands above. Each macro here mirrors
+ * the arity of its g_catalog_commands counterpart exactly (so the same .def
+ * line compiles against either expansion) but emits only a
+ * {path, handler_name} pair, and ONLY for leaves that actually bind a
+ * non-NULL native handler — branch/compat/planned leaves never bind one and
+ * expand to nothing here. This never touches the g_catalog_commands
+ * expansion above; it is purely additive. */
+
+#define ZCL_COMMAND_BRANCH(path_, parent_, summary_, layer_) /* no handler */
+
+#define ZCL_COMMAND_READY_READ(path_, parent_, aliases_, summary_,           \
+                               semantics_, budget_, tags_,                   \
+                               in_, out_, in_keys_, pos_keys_, example_,      \
+                               layer_, scope_, authority_, latency_, cost_,   \
+                               lanes_, caps_, traits_, transports_, handler_) \
+    { .path = (path_), .handler_name = #handler_ },
+
+#define ZCL_COMMAND_COMPAT_READ(path_, parent_, aliases_, summary_,          \
+                                semantics_, budget_, tags_,                  \
+                                in_, out_, in_keys_, pos_keys_, example_,     \
+                                layer_, scope_, authority_, latency_, cost_,  \
+                                lanes_, caps_, transports_, compat_) /* NULL */
+
+#define ZCL_COMMAND_PLANNED_READ(path_, parent_, aliases_, summary_,         \
+                                 semantics_, budget_, tags_,                 \
+                                 in_, out_, in_keys_, pos_keys_, example_,    \
+                                 layer_, scope_, authority_, latency_, cost_, \
+                                 lanes_, caps_, reason_) /* NULL handler */
+
+#define ZCL_COMMAND_PLANNED_COMMAND(path_, parent_, aliases_, summary_,      \
+                                    semantics_, budget_, tags_,              \
+                                    in_, out_, in_keys_, pos_keys_, example_,\
+                                    layer_, effect_, risk_, scope_,           \
+                                    authority_, mode_, latency_, cost_,       \
+                                    confirmation_, lanes_, caps_, traits_,    \
+                                    reason_) /* NULL handler */
+
+#define ZCL_COMMAND_COMPAT_COMMAND(path_, parent_, aliases_, summary_,       \
+                                   semantics_, budget_, tags_,               \
+                                   in_, out_, in_keys_, pos_keys_, example_,  \
+                                   layer_, effect_, risk_, scope_,            \
+                                   authority_, mode_, latency_, cost_,        \
+                                   confirmation_, lanes_, caps_, traits_,     \
+                                   reason_, compat_) /* NULL handler */
+
+#define ZCL_COMMAND_READY_COMMAND(path_, parent_, aliases_, summary_,        \
+                                  semantics_, budget_, tags_,                \
+                                  in_, out_, in_keys_, pos_keys_, example_,   \
+                                  layer_, effect_, risk_, scope_,             \
+                                  authority_, mode_, latency_, cost_,         \
+                                  confirmation_, lanes_, caps_, traits_,      \
+                                  handler_)                                   \
+    { .path = (path_), .handler_name = #handler_ },
+
+/* Dev leaves bind a real handler only in a dev build (ZCL_DEV_HANDLER above
+ * mirrors this same condition for g_catalog_commands); a release catalog
+ * leaves the leaf on the COMPAT path with a NULL handler, so the index must
+ * not claim one either. */
+#ifdef ZCL_DEV_BUILD
+#define ZCL_INDEX_DEV_ENTRY(path_, handler_) \
+    { .path = (path_), .handler_name = #handler_ },
+#else
+#define ZCL_INDEX_DEV_ENTRY(path_, handler_) /* release: handler not bound */
+#endif
+
+#define ZCL_COMMAND_DEV_READ(path_, parent_, aliases_, summary_, semantics_, \
+                             budget_, tags_,                                 \
+                             in_, out_, in_keys_, pos_keys_, example_,       \
+                             scope_, authority_, latency_, cost_, lanes_,    \
+                             caps_, traits_, handler_, release_reason_,      \
+                             compat_)                                        \
+    ZCL_INDEX_DEV_ENTRY(path_, handler_)
+
+#define ZCL_COMMAND_DEV_COMMAND(path_, parent_, aliases_, summary_,          \
+                                semantics_, budget_, tags_,                  \
+                                in_, out_, in_keys_, pos_keys_, example_,    \
+                                effect_, risk_, scope_, authority_, mode_,    \
+                                latency_, cost_, confirmation_, lanes_,       \
+                                caps_, traits_, handler_, release_reason_,    \
+                                compat_)                                      \
+    ZCL_INDEX_DEV_ENTRY(path_, handler_)
+
 static const struct zcl_command_handler_entry g_handler_index_entries[] = {
-    { 0 } /* placeholder terminator; count below is 0 until lane 4C lands */
+#include "../commands/root.def"
+#include "../commands/core.def"
+#include "../commands/apps.def"
+#include "../commands/app_features.def"
+#include "../commands/ops.def"
+#include "../commands/dev.def"
+#include "../commands/code.def"
+#include "../commands/accounts.def"
 };
+
+#undef ZCL_COMMAND_BRANCH
+#undef ZCL_COMMAND_READY_READ
+#undef ZCL_COMMAND_COMPAT_READ
+#undef ZCL_COMMAND_PLANNED_READ
+#undef ZCL_COMMAND_PLANNED_COMMAND
+#undef ZCL_COMMAND_READY_COMMAND
+#undef ZCL_COMMAND_COMPAT_COMMAND
+#undef ZCL_COMMAND_DEV_READ
+#undef ZCL_COMMAND_DEV_COMMAND
+#undef ZCL_INDEX_DEV_ENTRY
 
 static const struct zcl_command_handler_index g_handler_index = {
     .entries = g_handler_index_entries,
-    .count = 0,
+    .count = sizeof(g_handler_index_entries) /
+             sizeof(g_handler_index_entries[0]),
 };
+
+/* Count guard mirroring the kernel latency-ring guard above (:278-281): the
+ * handler index can never hold more entries than the catalog it indexes,
+ * since every indexed leaf is itself one catalog row. */
+_Static_assert(sizeof(g_handler_index_entries) /
+                       sizeof(g_handler_index_entries[0]) <=
+                   sizeof(g_catalog_commands) / sizeof(g_catalog_commands[0]),
+               "handler index cannot exceed the catalog it indexes");
 
 const struct zcl_command_handler_index *zcl_command_handler_index(void)
 {

@@ -7,6 +7,7 @@
 #include "config/db_service.h"
 #include "config/boot_snapshot_offer.h"
 #include "config/runtime.h"
+#include "services/sync_trust_policy.h"
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "net/fast_sync.h"
@@ -82,6 +83,37 @@ static int test_snapshot_offer_trust_policy(void)
         ASSERT(strcmp(reason,
                       "snapshot_payload_authority_binding_incomplete") == 0);
         boot_snapshot_offer_test_set_trust_override(-1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* config/src/boot_snapshot_offer.c routes the offer-advertisement trust bit
+ * through sync_trust_cap_allowed(sync_trust_derive(...), SYNC_CAP_SEED_BUNDLE)
+ * instead of reading the raw self_derived predicate directly. By
+ * construction SYNC_CAP_SEED_BUNDLE is granted iff self_derived holds
+ * (ARTIFACT_VERIFIED and SOVEREIGN both carry it, no other trust state
+ * does), so the centralized expression must equal the raw self_derived bit
+ * for every (proven, refold, self_derived) combination — this is the
+ * equivalence the routing change relies on. */
+static int test_snapshot_offer_seed_cap_matches_self_derived(void)
+{
+    int failures = 0;
+    TEST("offer seed-bundle cap equals raw self_derived for all combos") {
+        for (int p = 0; p < 2; p++) {
+            for (int r = 0; r < 2; r++) {
+                for (int s = 0; s < 2; s++) {
+                    bool proven = p != 0;
+                    bool refold = r != 0;
+                    bool self_derived = s != 0;
+                    enum sync_trust_state st =
+                        sync_trust_derive(proven, refold, self_derived);
+                    bool seed_allowed =
+                        sync_trust_cap_allowed(st, SYNC_CAP_SEED_BUNDLE);
+                    ASSERT(seed_allowed == self_derived);
+                }
+            }
+        }
         PASS();
     } _test_next:;
     return failures;
@@ -2013,6 +2045,7 @@ int test_snapshot_sync_service(void)
     }
     failures += test_snapshot_sync_service_followups();
     failures += test_snapshot_offer_trust_policy();
+    failures += test_snapshot_offer_seed_cap_matches_self_derived();
     failures += test_snapshot_sync_service_builds_pow();
     failures += test_snapshot_sync_service_stream_helpers();
     failures += test_snapshot_manifest_contract();
