@@ -234,8 +234,31 @@ def render(path: Path, doc: dict) -> list[str]:
                        f"class={e.get('class', '?')} age={age_s(e.get('age_us'))}"
                        f" fires={e.get('fire_count', 0)}")
             out.append(f"      reason: {reason}")
+            caused_by = e.get("caused_by")
+            if isinstance(caused_by, str) and caused_by:
+                detail = e.get("cause_detail")
+                suffix = f" ({detail})" if isinstance(detail, str) and detail else ""
+                out.append(f"      caused_by: {caused_by}{suffix}")
         if len(entries) > MAX_BLOCKERS_SHOWN:
             out.append(f"  ... and {len(entries) - MAX_BLOCKERS_SHOWN} more")
+
+        # ── root-cause chain (see util/blocker.h "Root-cause chaining") ──
+        roots = blk.get("root_blocker_ids")
+        orphans = blk.get("orphaned_symptom_ids")
+        by_id = {e.get("id"): e for e in entries if isinstance(e, dict)}
+        if isinstance(roots, list) and roots:
+            for root_id in roots:
+                its_symptoms = sorted(
+                    e.get("id", "?") for e in entries
+                    if isinstance(e, dict) and e.get("caused_by") == root_id)
+                out.append(f"  root cause: {root_id} — "
+                           f"symptoms: [{', '.join(its_symptoms)}]")
+        if isinstance(orphans, list) and orphans:
+            for sym_id in orphans:
+                e = by_id.get(sym_id, {})
+                caused_by = e.get("caused_by", "?")
+                out.append(f"  orphaned symptom: {sym_id} still points to "
+                           f"cleared/absent root {caused_by}")
 
     # ── supervisor stalls ────────────────────────────────────────────
     sup = doc.get("supervisor_stalls")
