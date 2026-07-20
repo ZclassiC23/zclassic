@@ -23,6 +23,7 @@
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "validation/process_block.h"
 
 static void ckpt_fill_hash(struct uint256 *h, uint8_t seed, size_t idx)
@@ -474,6 +475,109 @@ done_delta:;
                    "activation=%lld ckpt_h=%lld stall_height=%lld)\n",
                    (long long)activation, (long long)got_h,
                    (long long)stall_height);
+            failures++;
+        } else {
+            printf("OK\n");
+        }
+    }
+
+    /* (h) sapling_checkpoint_hook_in_tx names a typed blocker (Wave N
+     * hardening, FORWARD_PLAN.md item 7) when anchor_kv_latest_tree hits a
+     * genuine store-read error on sapling_anchors (a corrupt tree blob),
+     * distinct from the benign "no frontier yet" case (h)'s sibling (g)
+     * covers, and self-clears on the next clean read. */
+    printf("sapling_ckpt_persist sapling_checkpoint_hook_in_tx names a typed "
+           "blocker on an anchor read error, self-clears on repair ... ");
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sapling_ckpt_hook", "anchor_err");
+        progress_store_close();
+        bool ok = progress_store_open(dir);
+        sqlite3 *pdb = ok ? progress_store_db() : NULL;
+        ok = ok && pdb != NULL && ckpt_ensure_log_schema(pdb);
+
+        uint8_t txid[32];
+        memset(txid, 0x55, sizeof(txid));
+        ok = ok && coins_kv_ensure_schema(pdb) &&
+             coins_kv_add(pdb, txid, 0, 1000LL, 1, false, NULL, 0);
+        uint8_t one = 1;
+        ok = ok && progress_meta_set(pdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1);
+
+        const int64_t activation = 100;
+        const int64_t H = 500000;
+        ok = ok && anchor_kv_initialize_history(pdb, activation);
+        struct incremental_merkle_tree frontier;
+        ckpt_build_tree(11, &frontier);
+        ok = ok && anchor_kv_add_tree(pdb, ANCHOR_POOL_SAPLING, &frontier, H);
+        ok = ok && coins_kv_set_applied_height_in_tx(pdb, (int32_t)H + 1);
+
+        /* Corrupt the just-written frontier row's tree blob so
+         * anchor_kv_latest_tree's decode/root check fails -> ANCHOR_KV_ERROR
+         * (a genuine store-read error), not ANCHOR_KV_MISSING/
+         * HISTORY_INCOMPLETE. */
+        if (ok) {
+            sqlite3_stmt *upd = NULL;
+            static const uint8_t garbage[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0};
+            ok = sqlite3_prepare_v2(pdb,
+                    "UPDATE sapling_anchors SET tree=? WHERE height=?",
+                    -1, &upd, NULL) == SQLITE_OK;
+            if (ok) {
+                sqlite3_bind_blob(upd, 1, garbage, sizeof(garbage), SQLITE_STATIC);
+                sqlite3_bind_int64(upd, 2, H);
+                ok = sqlite3_step(upd) == SQLITE_DONE;
+                sqlite3_finalize(upd);
+            }
+        }
+
+        set_sapling_checkpoint_datadir(dir);
+        char ckpt_path[512];
+        snprintf(ckpt_path, sizeof(ckpt_path), "%s/sapling_tree_ckpt.dat",
+                 dir);
+
+        uint8_t bhash[32];
+        for (int i = 0; i < 32; i++) bhash[i] = (uint8_t)(0xC0 + i);
+#ifdef ZCL_TESTING
+        sapling_checkpoint_hook_test_force_next();
+#endif
+        if (ok)
+            sapling_checkpoint_hook_in_tx(pdb, H, bhash);
+
+        bool blocker_raised_on_error = ok &&
+            blocker_exists("sapling_checkpoint_hook.anchor_read_error");
+
+        /* Repair via a fresh, VALID higher-height frontier row (the anchor
+         * the reducer would normally append) — the hook reads MAX(height),
+         * so this becomes the new latest and the corrupt row is bypassed
+         * without needing to hand-repair it. anchor_kv_add_tree keys on the
+         * tree's OWN root (anchor_kv.c: INSERT OR IGNORE on the `anchor`
+         * primary key), so re-adding the byte-identical `frontier` would
+         * silently no-op against the still-corrupted row's PK — append one
+         * more commitment so the repair root genuinely differs. */
+        struct incremental_merkle_tree frontier2 = frontier;
+        struct uint256 extra_cm;
+        ckpt_fill_hash(&extra_cm, 0x5A, 99);
+        incremental_tree_append(&frontier2, &extra_cm);
+        ok = ok && anchor_kv_add_tree(pdb, ANCHOR_POOL_SAPLING, &frontier2, H + 1);
+#ifdef ZCL_TESTING
+        sapling_checkpoint_hook_test_force_next();
+#endif
+        if (ok)
+            sapling_checkpoint_hook_in_tx(pdb, H + 1, bhash);
+        bool blocker_cleared_after_repair = ok &&
+            !blocker_exists("sapling_checkpoint_hook.anchor_read_error");
+
+        set_sapling_checkpoint_datadir(NULL);
+        unlink(ckpt_path);
+        progress_store_close();
+
+        if (!ok) {
+            printf("FAIL (fixture setup)\n"); failures++;
+        } else if (!blocker_raised_on_error) {
+            printf("FAIL (typed blocker NOT raised on anchor read error)\n");
+            failures++;
+        } else if (!blocker_cleared_after_repair) {
+            printf("FAIL (typed blocker did NOT self-clear after repair)\n");
             failures++;
         } else {
             printf("OK\n");

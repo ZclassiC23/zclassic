@@ -71,7 +71,14 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms);
 
 /* Load block_index from the block_index_cache table.
  * Returns .ok=true if >= 1 entry loaded.  Requires >= 1000 cached rows.
- * The previous bare-bool true/false maps to .ok. */
+ * The previous bare-bool true/false maps to .ok.
+ *
+ * Integrity envelope (Wave N hardening, docs/work/FORWARD_PLAN.md item 7.3,
+ * services/block_index_cache_envelope.h): a mismatch DEMOTES the cache
+ * (discarded, named TRANSIENT blocker, .ok=false so the loader ladder falls
+ * through to the next rung) — it is a pure, re-derivable cache, so this
+ * NEVER refuses boot. An ABSENT envelope (a cache written before this
+ * feature existed) falls back to the pre-existing COUNT(*)>1000 trust. */
 struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
 
 /* ── node.db `blocks` table hydrate (--importblockindex sink) ─────── */
