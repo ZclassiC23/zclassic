@@ -22,6 +22,8 @@
 #include "test/test_helpers.h"
 #include "controllers/agent_security_posture.h"
 #include "services/soak_attestation_service.h"
+#include "services/sync_benchmark_service.h"
+#include "platform/clock.h"
 #include "json/json.h"
 
 #include <dirent.h>
@@ -380,6 +382,284 @@ static int test_multiple_lines(void)
     return failures;
 }
 
+/* ══ sync_benchmark_service (zcl.sync_benchmark.v1) ═════════════════
+ *
+ * Co-located here (same datadir-receipt evidence pattern) so the shared
+ * soak_attestation test group covers both without registering a new group.
+ * A tape-driven monotonic clock makes every phase timing deterministic. */
+
+/* Injectable clock source — see platform/clock.h. */
+static int64_t g_fake_us = 0;
+static int64_t sb_fake_monotonic_us(void *user) { (void)user; return g_fake_us; }
+static int64_t sb_fake_wall_unix(void *user)     { (void)user; return 1000000; }
+static struct platform_clock_source g_sb_clock = {
+    .monotonic_us = sb_fake_monotonic_us,
+    .wall_unix    = sb_fake_wall_unix,
+};
+
+/* Read <tmpdir>/sync_benchmark.json into `dst` (parsed). Returns true iff the
+ * file existed, was non-empty, and parsed as JSON. */
+static bool sb_read_receipt(struct json_value *dst)
+{
+    char path[320];
+    snprintf(path, sizeof(path), "%s/sync_benchmark.json", g_tmpdir);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return false;
+    buf[n] = '\0';
+    json_init(dst);
+    return json_read(dst, buf, n);
+}
+
+/* A phase timing must be either a non-negative int or JSON null. */
+static bool sb_timing_ok(const struct json_value *timings, const char *phase,
+                         bool expect_present)
+{
+    const struct json_value *v = json_get(timings, phase);
+    if (!v) return false;
+    if (expect_present)
+        return v->type == JSON_INT && json_get_int(v) >= 0;
+    return json_is_null(v);
+}
+
+static int test_sync_benchmark_receipt_wellformed(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: receipt written, well-formed, phases monotonic") {
+        sync_benchmark_reset_for_test();
+        make_tmpdir();
+        g_fake_us = 100000;              /* arbitrary origin */
+        platform_clock_set_source(&g_sb_clock);
+        sync_benchmark_init(g_tmpdir);   /* t0 = 100000 us */
+        sync_benchmark_set_artifact("deadbeef");
+
+        /* Phase MANIFEST: 3 ms. */
+        sync_benchmark_phase_begin(SYNC_BENCH_MANIFEST);
+        g_fake_us += 3000;
+        sync_benchmark_phase_end(SYNC_BENCH_MANIFEST);
+        /* Phase ARTIFACT_DOWNLOAD: 7 ms. */
+        sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_DOWNLOAD);
+        g_fake_us += 7000;
+        sync_benchmark_phase_end(SYNC_BENCH_ARTIFACT_DOWNLOAD);
+        sync_benchmark_note_reused(4096);
+        sync_benchmark_note_downloaded(9000);
+        /* Derived milestone: T_ready at +12 ms from t0. */
+        g_fake_us += 2000;
+        sync_benchmark_mark_ready();
+
+        bool wrote = sync_benchmark_write_receipt(false, "unit_fixture");
+        platform_clock_clear_source();
+
+        if (!wrote) { printf("FAIL: write_receipt returned false\n");
+                      failures++; goto _done_wf; }
+
+        struct json_value r = {0};
+        if (!sb_read_receipt(&r)) {
+            printf("FAIL: receipt missing/unparseable\n");
+            failures++; goto _done_wf;
+        }
+        bool ok = true;
+        const char *schema = json_get_str(json_get(&r, "schema"));
+        ok = ok && schema && strcmp(schema, "zcl.sync_benchmark.v1") == 0;
+        ok = ok && json_get(&r, "source_epoch");     /* key present */
+        const char *aid = json_get_str(json_get(&r, "artifact_id"));
+        ok = ok && aid && strcmp(aid, "deadbeef") == 0;
+        ok = ok && json_get(&r, "complete") &&
+                   !json_get_bool(json_get(&r, "complete"));
+
+        const struct json_value *t = json_get(&r, "timings_ms");
+        ok = ok && t && t->type == JSON_OBJ;
+        /* The two driven phases are present + non-negative. */
+        ok = ok && sb_timing_ok(t, "manifest", true);
+        ok = ok && sb_timing_ok(t, "artifact_download", true);
+        /* Non-driven phases are null (honest, never fabricated). */
+        ok = ok && sb_timing_ok(t, "peer_discovery", false);
+        ok = ok && sb_timing_ok(t, "headers", false);
+        ok = ok && sb_timing_ok(t, "tail_fold", false);
+        /* Exact deterministic values from the tape clock. */
+        ok = ok && json_get_int(json_get(t, "manifest")) == 3;
+        ok = ok && json_get_int(json_get(t, "artifact_download")) == 7;
+        /* T_ready derived (+12 ms), monotonic w.r.t. non-negative. */
+        ok = ok && sb_timing_ok(t, "t_ready", true);
+        ok = ok && json_get_int(json_get(t, "t_ready")) == 12;
+        ok = ok && sb_timing_ok(t, "t_sovereign", false); /* never marked */
+
+        const struct json_value *res = json_get(&r, "resources");
+        ok = ok && res && res->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(res, "bytes_reused")) == 4096;
+        ok = ok && json_get_int(json_get(res, "bytes_downloaded")) == 9000;
+        json_free(&r);
+
+        if (ok) PASS();
+        else { printf("FAIL: receipt not well-formed\n"); failures++; }
+    } _done_wf:;
+    platform_clock_clear_source();
+    sync_benchmark_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
+static int test_sync_benchmark_incomplete_on_abort(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: aborted sync writes incomplete receipt") {
+        sync_benchmark_reset_for_test();
+        make_tmpdir();
+        g_fake_us = 0;
+        platform_clock_set_source(&g_sb_clock);
+        sync_benchmark_init(g_tmpdir);
+
+        /* Manifest completes, artifact_download STARTS but never ends. */
+        sync_benchmark_phase_begin(SYNC_BENCH_MANIFEST);
+        g_fake_us += 2000;
+        sync_benchmark_phase_end(SYNC_BENCH_MANIFEST);
+        sync_benchmark_phase_begin(SYNC_BENCH_ARTIFACT_DOWNLOAD);
+        /* ... simulate an abort: no phase_end. */
+
+        bool wrote = sync_benchmark_write_receipt(false, "download_aborted");
+        platform_clock_clear_source();
+        if (!wrote) { printf("FAIL: write returned false\n");
+                      failures++; goto _done_ab; }
+
+        struct json_value r = {0};
+        if (!sb_read_receipt(&r)) { printf("FAIL: no receipt\n");
+                                    failures++; goto _done_ab; }
+        bool ok = true;
+        ok = ok && !json_get_bool(json_get(&r, "complete"));
+        const char *reason = json_get_str(json_get(&r, "incomplete_reason"));
+        ok = ok && reason && strcmp(reason, "download_aborted") == 0;
+
+        const struct json_value *t = json_get(&r, "timings_ms");
+        ok = ok && sb_timing_ok(t, "manifest", true);        /* finished */
+        ok = ok && sb_timing_ok(t, "artifact_download", false); /* in-flight → null */
+
+        /* The in-progress phase must carry a null-reason, never a fake number. */
+        const struct json_value *nr = json_get(&r, "null_reasons");
+        ok = ok && nr && nr->type == JSON_OBJ;
+        ok = ok && json_get_str(json_get(nr, "artifact_download")) != NULL;
+        json_free(&r);
+
+        if (ok) PASS();
+        else { printf("FAIL: abort receipt not honest\n"); failures++; }
+    } _done_ab:;
+    platform_clock_clear_source();
+    sync_benchmark_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
+static int test_sync_benchmark_bytes_reused_on_resume(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: bytes_reused populated on a resumed fixture") {
+        sync_benchmark_reset_for_test();
+        make_tmpdir();
+        g_fake_us = 0;
+        platform_clock_set_source(&g_sb_clock);
+        sync_benchmark_init(g_tmpdir);
+
+        /* Two resume-journal accounting calls accumulate (like two chunks
+         * already durable from a prior interrupted download). */
+        sync_benchmark_note_reused(1024 * 1024);
+        sync_benchmark_note_reused(512 * 1024);
+        sync_benchmark_note_downloaded(2 * 1024 * 1024);
+        sync_benchmark_note_redownloaded(0);
+
+        bool wrote = sync_benchmark_write_receipt(false, "resume_fixture");
+        platform_clock_clear_source();
+        if (!wrote) { printf("FAIL: write returned false\n");
+                      failures++; goto _done_rz; }
+
+        struct json_value r = {0};
+        if (!sb_read_receipt(&r)) { printf("FAIL: no receipt\n");
+                                    failures++; goto _done_rz; }
+        const struct json_value *res = json_get(&r, "resources");
+        bool ok = res && res->type == JSON_OBJ;
+        /* Reused counter accumulated across both calls, not null. */
+        const struct json_value *br = json_get(res, "bytes_reused");
+        ok = ok && br && br->type == JSON_INT &&
+                   json_get_int(br) == (int64_t)(1024 * 1024 + 512 * 1024);
+        /* redownloaded was noted as 0 → present int, not null. */
+        const struct json_value *rd = json_get(res, "bytes_redownloaded");
+        ok = ok && rd && rd->type == JSON_INT && json_get_int(rd) == 0;
+        json_free(&r);
+
+        if (ok) PASS();
+        else { printf("FAIL: bytes_reused not populated\n"); failures++; }
+    } _done_rz:;
+    platform_clock_clear_source();
+    sync_benchmark_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
+static int test_sync_benchmark_derived_monotonic(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: t_ready <= t_sovereign, both non-negative") {
+        sync_benchmark_reset_for_test();
+        make_tmpdir();
+        g_fake_us = 5000;
+        platform_clock_set_source(&g_sb_clock);
+        sync_benchmark_init(g_tmpdir);   /* t0 = 5000 us */
+
+        g_fake_us += 20000;              /* +20 ms */
+        sync_benchmark_mark_ready();
+        g_fake_us += 30000;              /* +50 ms total */
+        sync_benchmark_mark_sovereign();
+
+        struct json_value dump = {0};
+        json_init(&dump);
+        bool ok = sync_benchmark_dump_state_json(&dump, NULL);
+        platform_clock_clear_source();
+
+        const struct json_value *t = json_get(&dump, "timings_ms");
+        ok = ok && t && t->type == JSON_OBJ;
+        int64_t tr = json_get_int(json_get(t, "t_ready"));
+        int64_t ts = json_get_int(json_get(t, "t_sovereign"));
+        ok = ok && tr == 20 && ts == 50 && tr >= 0 && ts >= 0 && tr <= ts;
+        json_free(&dump);
+
+        if (ok) PASS();
+        else { printf("FAIL: derived milestones wrong (tr=%lld ts=%lld)\n",
+                      (long long)tr, (long long)ts); failures++; }
+    }
+    platform_clock_clear_source();
+    sync_benchmark_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
+static int test_sync_benchmark_no_datadir_no_write(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: dump-only mode (no datadir) skips durable write") {
+        sync_benchmark_reset_for_test();
+        sync_benchmark_init(NULL);       /* armed for dump, no durable path */
+        sync_benchmark_phase_begin(SYNC_BENCH_HEADERS);
+        sync_benchmark_phase_end(SYNC_BENCH_HEADERS);
+
+        /* write must refuse cleanly (no datadir), but dump still works. */
+        bool wrote = sync_benchmark_write_receipt(false, "no_dir");
+        struct json_value dump = {0};
+        json_init(&dump);
+        bool dumped = sync_benchmark_dump_state_json(&dump, NULL);
+        const char *schema = json_get_str(json_get(&dump, "schema"));
+        bool ok = !wrote && dumped && schema &&
+                  strcmp(schema, "zcl.sync_benchmark.v1") == 0;
+        json_free(&dump);
+
+        if (ok) PASS();
+        else { printf("FAIL: wrote=%d dumped=%d\n", (int)wrote, (int)dumped);
+               failures++; }
+    }
+    sync_benchmark_reset_for_test();
+    return failures;
+}
+
 /* ── Test registration ───────────────────────────────────────────── */
 
 int test_soak_attestation(void)
@@ -392,5 +672,11 @@ int test_soak_attestation(void)
     failures += test_write_failure_counter();
     failures += test_reset();
     failures += test_multiple_lines();
+    /* zcl.sync_benchmark.v1 receipt (co-located; same evidence pattern). */
+    failures += test_sync_benchmark_receipt_wellformed();
+    failures += test_sync_benchmark_incomplete_on_abort();
+    failures += test_sync_benchmark_bytes_reused_on_resume();
+    failures += test_sync_benchmark_derived_monotonic();
+    failures += test_sync_benchmark_no_datadir_no_write();
     return failures;
 }
