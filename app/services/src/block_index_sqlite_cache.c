@@ -11,6 +11,7 @@
 #include "services/block_index_cache_envelope.h"
 
 #include "chain/chain.h"
+#include "chain/checkpoints.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "models/database.h"
@@ -166,6 +167,9 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
             -1, &sel, NULL) != SQLITE_OK || !sel)
         return ZCL_ERR(-3, "load_block_index_sqlite: failed to prepare SQLite SELECT for block_index_cache");
 
+    /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. */
+    int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    int64_t stripped_failed = 0, demoted_failed = 0;
     static const unsigned char zero32[32] = {0}; uint8_t computed_acc[32] = {0};
     size_t loaded = 0;
     while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
@@ -197,9 +201,26 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
         const void *pvb = sqlite3_column_blob(sel, 1);  /* fold, same O(rows) pass */
         bic_row_digest_xor(computed_acc, pindex, (pvb && sqlite3_column_bytes(sel, 1) >= 32)
                            ? (const unsigned char *)pvb : zero32);
+
+        /* Same persisted-FAILED trust reconcile as the flat loader: strip
+         * below the ROM checkpoint, demote to a revalidation candidate above
+         * it (a stale FAILED bit can no longer wedge the tip). Runs AFTER the
+         * digest fold above so the envelope validates the bytes actually
+         * stored on disk, not this load's post-reconcile in-memory state. */
+        switch (block_index_apply_persisted_failure_trust(pindex, ckpt_h)) {
+            case BLOCK_FAILURE_TRUST_STRIPPED: stripped_failed++; break;
+            case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
+            case BLOCK_FAILURE_TRUST_NONE:     break;
+        }
         loaded++;
     }
     sqlite3_finalize(sel);
+    if (stripped_failed || demoted_failed)
+        LOG_INFO("block_index",
+                 "load_block_index_sqlite: persisted-FAILED trust reconcile: "
+                 "%lld stripped (<=ckpt h=%d), %lld demoted to revalidation "
+                 "candidates (>ckpt)",
+                 (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
     if (!bic_verify_or_demote(ndb, ms, envelope_present, envelope_row_count,
                               envelope_digest, (int64_t)loaded, computed_acc))
         return ZCL_ERR(-5, "load_block_index_sqlite: integrity envelope "
