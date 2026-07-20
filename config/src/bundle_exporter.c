@@ -31,6 +31,8 @@
 
 #include "jobs/tip_finalize_stage.h"
 
+#include "services/sync_trust_policy.h"
+
 #include "kernel/service_kernel.h"
 #include "util/supervisor.h"
 #include "supervisors/domains.h"
@@ -206,12 +208,20 @@ static bool bx_qualified(sqlite3 *pdb, char *reason, size_t cap)
     bool proven = coins_kv_is_proven_authority(pdb, NULL);
     bool refolded = proven && coins_kv_contains_refold_marker(pdb);
     progress_store_tx_unlock();
-    if (!proven) {
-        snprintf(reason, cap, "coins not proven authority");
-        return false;
-    }
-    if (!refolded) {
-        snprintf(reason, cap, "coins lacks self-folded refold marker");
+    /* Route ONLY the provenance-bit portion of the gate through the central
+     * trust table (services/sync_trust_policy.h). EXPORT_BUNDLE is granted
+     * exactly in the X states (HEADERS_VERIFIED, SOVEREIGN), i.e. iff
+     * (proven && refold); it is independent of the self_derived bit, so that
+     * input is immaterial here and passed false. X = proven && refolded
+     * (refolded already carries proven), so the derived answer is identical to
+     * the old `!proven || !refolded` gate. Every other rung (coins_ram above,
+     * build_commit below) stays exactly where it is and is never weakened. */
+    if (!sync_trust_cap_allowed(
+            sync_trust_derive(proven, refolded, /*self_derived=*/false),
+            SYNC_CAP_EXPORT_BUNDLE)) {
+        snprintf(reason, cap, "%s",
+                 !proven ? "coins not proven authority"
+                         : "coins lacks self-folded refold marker");
         return false;
     }
     if (!bx_is_40hex(zcl_build_commit_full())) {

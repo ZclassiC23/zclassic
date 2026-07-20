@@ -172,6 +172,46 @@ int test_sovereignty_guard(void)
         SG_CHECK("sovereign: snapshot_bundle_export_allowed == true",
                  gated && json_get_bool(json_get(gated,
                                         "snapshot_bundle_export_allowed")));
+
+        /* v2 schema + central trust→capability table view. Assert only the
+         * hstar-INDEPENDENT invariants: the dumper's self_derived (part 2) needs
+         * a compute_hstar this unit fixture does not seed, so trust_state and
+         * the S-gated caps (mine/spend/seed) are not deterministic here — but:
+         *   • schema is v2;
+         *   • export_bundle.allowed == gated.snapshot_bundle_export_allowed
+         *     (both are X = proven && self_folded, independent of hstar);
+         *   • mine.allowed == wallet_spend.allowed == seed_bundle.allowed
+         *     (all three are exactly S, so equal whatever S resolves to);
+         *   • t_ready / t_sovereign are null (this slice adds no persistence). */
+        const struct json_value *schema = json_get(&out, "schema");
+        SG_CHECK("sovereign: schema == zcl.sovereignty.v2",
+                 schema && strcmp(json_get_str(schema),
+                                  "zcl.sovereignty.v2") == 0);
+        const struct json_value *caps = json_get(&out, "capabilities");
+        const struct json_value *exp_cap =
+            caps ? json_get(caps, "export_bundle") : NULL;
+        SG_CHECK("sovereign: capabilities.export_bundle.allowed == "
+                 "gated.snapshot_bundle_export_allowed",
+                 exp_cap && gated &&
+                 json_get_bool(json_get(exp_cap, "allowed")) ==
+                 json_get_bool(json_get(gated,
+                                        "snapshot_bundle_export_allowed")));
+        const struct json_value *mine_cap =
+            caps ? json_get(caps, "mine") : NULL;
+        const struct json_value *spend_cap =
+            caps ? json_get(caps, "wallet_spend") : NULL;
+        const struct json_value *seed_cap =
+            caps ? json_get(caps, "seed_bundle") : NULL;
+        SG_CHECK("sovereign: mine/spend/seed caps all agree (== S)",
+                 mine_cap && spend_cap && seed_cap &&
+                 json_get_bool(json_get(mine_cap, "allowed")) ==
+                     json_get_bool(json_get(spend_cap, "allowed")) &&
+                 json_get_bool(json_get(spend_cap, "allowed")) ==
+                     json_get_bool(json_get(seed_cap, "allowed")));
+        SG_CHECK("sovereign: t_ready is null (no new persistence)",
+                 json_is_null(json_get(&out, "t_ready")));
+        SG_CHECK("sovereign: t_sovereign is null (no new persistence)",
+                 json_is_null(json_get(&out, "t_sovereign")));
         json_free(&out);
     }
 

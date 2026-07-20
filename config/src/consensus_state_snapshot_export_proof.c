@@ -14,6 +14,7 @@
 #include "storage/coins_kv.h"
 #include "storage/coins_ram.h"
 #include "storage/nullifier_kv.h"
+#include "services/sync_trust_policy.h"
 #include "util/log_macros.h"
 
 #include <errno.h>
@@ -324,7 +325,16 @@ bool consensus_export_prove_source(
             "durable export refused while coins RAM overlay is active");
     bool proven_authority = coins_kv_is_proven_authority(source, NULL);
     bool refold_marker = coins_kv_contains_refold_marker(source);
-    if (!proven_authority || !refold_marker)
+    /* Route ONLY the provenance-bit portion through the central trust table
+     * (services/sync_trust_policy.h). EXPORT_BUNDLE is granted exactly in the
+     * X states (proven && refold), independent of self_derived, so that input
+     * is immaterial here and passed false. The derived answer is identical to
+     * the old `!proven_authority || !refold_marker` gate; every other rung
+     * (coins_ram, cursors, receipt, H*, served-tip hash) stays in place. */
+    if (!sync_trust_cap_allowed(
+            sync_trust_derive(proven_authority, refold_marker,
+                              /*self_derived=*/false),
+            SYNC_CAP_EXPORT_BUNDLE))
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "coins source lacks durable migration and self-folded proof "

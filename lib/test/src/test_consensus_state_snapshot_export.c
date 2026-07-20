@@ -16,6 +16,7 @@
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "services/sync_trust_policy.h"
 
 #include <sqlite3.h>
 #include <errno.h>
@@ -496,6 +497,26 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("fixture directory", dir != NULL);
     if (!dir)
         return failures;
+    /* The export provenance gate (consensus_export_prove_source) now routes its
+     * proven/refold check through the central trust table via
+     * SYNC_CAP_EXPORT_BUNDLE. Prove the routing is behavior-identical to the old
+     * `proven_authority && refold_marker` predicate across all 8 combos before
+     * exercising the full DB-driven export path below. */
+    {
+        bool equiv = true;
+        for (int c = 0; c < 8; c++) {
+            bool proven = (c >> 2) & 1;
+            bool refold = (c >> 1) & 1;
+            bool self_d = (c >> 0) & 1;
+            bool table_ok = sync_trust_cap_allowed(
+                sync_trust_derive(proven, refold, self_d),
+                SYNC_CAP_EXPORT_BUNDLE);
+            if (table_ok != (proven && refold))
+                equiv = false;
+        }
+        CSE_CHECK("export gate table-routing == proven&&refold (8 combos)",
+                  equiv);
+    }
     CSE_CHECK("owned progress store opens", progress_store_open(dir));
     sqlite3 *db = progress_store_db();
     uint8_t hash[2][32] = {{0}};

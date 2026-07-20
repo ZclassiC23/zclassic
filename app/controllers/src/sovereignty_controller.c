@@ -30,6 +30,7 @@
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "services/shielded_history_import_service.h"
+#include "services/sync_trust_policy.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -114,11 +115,28 @@ bool sovereignty_guard_allow(const char *action, char *reason,
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     char why[96] = {0};
-    /* coins_kv_tip_is_self_derived acquires progress_store_tx_lock itself
-     * (recursive) — no outer lock needed for this single read. */
+    /* Read the three provenance predicates under one consistent recursive-lock
+     * scope and derive the trust state once, then route the action's allow
+     * decision through the central capability table (services/sync_trust_
+     * policy.h). coins_kv_is_proven_authority / coins_kv_contains_refold_marker
+     * do NOT self-lock; coins_kv_tip_is_self_derived acquires the recursive lock
+     * internally and nests cleanly (same pattern as sovereignty_dump_state_json
+     * below). MINE and WALLET_SPEND are each granted exactly in the S states
+     * (ARTIFACT_VERIFIED, SOVEREIGN), so the routed decision is identical to the
+     * old bare `self_derived` gate — this centralizes the provenance bit only,
+     * it does not change or weaken the gate. */
+    progress_store_tx_lock();
+    bool proven = coins_kv_is_proven_authority(pdb, NULL);
+    bool refold = coins_kv_contains_refold_marker(pdb);
     bool self_derived = coins_kv_tip_is_self_derived(pdb, hstar, why,
                                                      sizeof(why));
-    if (!self_derived) {
+    progress_store_tx_unlock();
+
+    enum sync_trust_state st = sync_trust_derive(proven, refold, self_derived);
+    enum sync_capability cap = (action && strcmp(action, "mint") == 0)
+                                   ? SYNC_CAP_MINE
+                                   : SYNC_CAP_WALLET_SPEND;
+    if (!sync_trust_cap_allowed(st, cap)) {
         if (reason && reason_cap)
             snprintf(reason, reason_cap, "release_assisted: %s",
                      why[0] ? why : "not_self_derived");
@@ -129,6 +147,44 @@ bool sovereignty_guard_allow(const char *action, char *reason,
         return false;
     }
     return true;
+}
+
+/* One capability the v2 dumper reports, with its stable JSON key. */
+struct sov_cap_entry {
+    const char *key;
+    enum sync_capability cap;
+};
+
+static const struct sov_cap_entry k_sov_caps[] = {
+    { "serve_validated_tip", SYNC_CAP_SERVE_VALIDATED_TIP },
+    { "wallet_receive",      SYNC_CAP_WALLET_RECEIVE },
+    { "wallet_spend",        SYNC_CAP_WALLET_SPEND },
+    { "mine",                SYNC_CAP_MINE },
+    { "export_bundle",       SYNC_CAP_EXPORT_BUNDLE },
+    { "seed_bundle",         SYNC_CAP_SEED_BUNDLE },
+};
+
+/* Short, derivable reason for a capability's allow/deny under `st` — the
+ * missing provenance rung, named. Pure: no persistence, no clock. */
+static const char *sov_cap_reason(enum sync_trust_state st,
+                                  enum sync_capability cap)
+{
+    if (sync_trust_cap_allowed(st, cap))
+        return "granted";
+    switch (cap) {
+    case SYNC_CAP_SERVE_VALIDATED_TIP:
+    case SYNC_CAP_WALLET_RECEIVE:
+        return "requires_proven_authority";
+    case SYNC_CAP_WALLET_SPEND:
+    case SYNC_CAP_MINE:
+    case SYNC_CAP_SEED_BUNDLE:
+        return "requires_self_derived";
+    case SYNC_CAP_EXPORT_BUNDLE:
+        return "requires_self_folded";
+    case SYNC_CAP_NONE:
+        break;
+    }
+    return "denied";
 }
 
 bool sovereignty_dump_state_json(struct json_value *out, const char *key)
@@ -210,8 +266,8 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
     const char *trust_mode = sovereignty_trust_mode(proven_authority,
                                                      self_folded);
 
-    json_push_kv_str(out, "schema", "zcl.sovereignty.v1");
-    json_push_kv_int(out, "schema_version", 1);
+    json_push_kv_str(out, "schema", "zcl.sovereignty.v2");
+    json_push_kv_int(out, "schema_version", 2);
     json_push_kv_bool(out, "progress_store_open", progress_open);
     json_push_kv_bool(out, "coins_kv_proven_authority", proven_authority);
     json_push_kv_bool(out, "self_folded_marker", self_folded);
@@ -225,6 +281,49 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "self_derived_reason", self_reason);
     json_push_kv_str(out, "authority_posture", authority_posture);
     json_push_kv_str(out, "trust_mode", trust_mode);
+
+    /* ── v2: the central trust→capability table's view of this posture ──────
+     * Derived from the SAME three provenance predicates the guard routes
+     * through (proven_authority, self_folded, self_derived), so this report can
+     * never disagree with the enforcement (services/sync_trust_policy.h).
+     * self_derived is only computed when hstar is available; when it is not,
+     * it is false (the conservative floor), matching the guard's own fail. */
+    enum sync_trust_state trust_st =
+        sync_trust_derive(proven_authority, self_folded, self_derived);
+    uint32_t cap_mask = sync_trust_caps(trust_st);
+    json_push_kv_str(out, "trust_state", sync_trust_state_name(trust_st));
+    json_push_kv_int(out, "capability_mask", (int64_t)cap_mask);
+
+    struct json_value caps = {0};
+    json_set_object(&caps);
+    for (size_t i = 0; i < sizeof(k_sov_caps) / sizeof(k_sov_caps[0]); i++) {
+        struct json_value entry = {0};
+        json_set_object(&entry);
+        json_push_kv_bool(&entry, "allowed",
+                          sync_trust_cap_allowed(trust_st, k_sov_caps[i].cap));
+        json_push_kv_str(&entry, "reason",
+                         sov_cap_reason(trust_st, k_sov_caps[i].cap));
+        json_push_kv(&caps, k_sov_caps[i].key, &entry);
+        json_free(&entry);
+    }
+    json_push_kv(out, "capabilities", &caps);
+    json_free(&caps);
+
+    /* T_ready / T_sovereign: the instants this datadir first reached assisted
+     * readiness / sovereignty. No durable timestamp is persisted for either
+     * transition (the self_folded marker is a bare boolean key), and this slice
+     * adds NO new persistence — so both are reported as null rather than
+     * fabricated. */
+    struct json_value t_ready = {0};
+    json_init(&t_ready);
+    json_set_null(&t_ready);
+    json_push_kv(out, "t_ready", &t_ready);
+    json_free(&t_ready);
+    struct json_value t_sovereign = {0};
+    json_init(&t_sovereign);
+    json_set_null(&t_sovereign);
+    json_push_kv(out, "t_sovereign", &t_sovereign);
+    json_free(&t_sovereign);
 
     /* Per-pool shielded-history row counts (anchor_kv/nullifier_kv tables) —
      * distinguishable from `self_folded_marker` above: a `release_assisted`
