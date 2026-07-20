@@ -239,6 +239,63 @@ bool network_dump_state_json(struct json_value *out, const char *key);
  * default-off (all-plaintext) node is explicit, not silent. */
 bool net_transport_dump_state_json(struct json_value *out, const char *key);
 
+/* ── MVP v1 scoreboard (diagnostics_mvp.c) ──────────────────────────
+ *
+ * The "mvp" g_dumpers[] entry (schema zcl.mvp_status.v1): docs/MVP.md's eight
+ * operator acceptance criteria as a typed, evidence-derived query surfaced via
+ * `ops state --subsystem=mvp`. REPORTER ONLY — it derives met=true|false|
+ * unknown strictly from durable/runtime evidence the node already produces
+ * (node_health tip-hold, the soak attestation service, the utxo_parity oracle,
+ * the replay-canary watch), flips nothing true on its own, and reports any
+ * criterion whose runtime evidence source is absent as "unknown" with a NAMED
+ * reason (never silently "met"). */
+
+#define MVP_CRITERIA_TOTAL 8
+#define MVP_SOAK_WINDOW_HOURS_REQUIRED 168 /* the 7-day (168h) clean window */
+#define MVP_RECOVERY_SECS_MAX 120          /* kill-9 recovery budget (2 min) */
+#define MVP_SLO_SUCCESS_MIN 0.999          /* SLO floor when a probe is present */
+
+/* Raw evidence inputs, one bundle for all eight criteria. The live dumper
+ * fills this from existing sources; the unit test seeds it directly.
+ * mvp_build_status_json() is the SINGLE place met/unmet/unknown is decided. */
+struct mvp_evidence {
+    /* C3 — cold-start sync to tip: live tip-hold + sync-benchmark receipt. */
+    bool      c3_health_present;                  /* node_health snapshot taken */
+    int       c3_sync_state;                      /* enum sync_state */
+    int       c3_log_head_gap;
+    bool      c3_sync_benchmark_receipt_present;  /* pending source: false */
+    long long c3_cold_sync_secs;                  /* -1 when unknown */
+
+    /* C6 — 7-day soak. */
+    bool      c6_soak_present;                    /* soak service initialized */
+    bool      c6_soak_last_healthy;
+    bool      c6_soak_window_eligible;
+    long long c6_soak_window_hours;               /* -1 when not tracked */
+    bool      c6_slo_probe_present;               /* external SLO surface? */
+    double    c6_slo_success_rate;                /* 0..1, <0 when unknown */
+
+    /* C7 — kill-9 recovery. */
+    bool      c7_recovery_drill_present;
+    long long c7_recovery_secs;                   /* -1 when unknown */
+
+    /* C8 — consensus parity. */
+    bool      c8_parity_present;                  /* standing oracle, checks>0 */
+    long long c8_parity_mismatches;               /* -1 when unknown */
+    bool      c8_canary_present;
+    bool      c8_canary_fail_active;
+};
+
+/* Pure classifier: build schema zcl.mvp_status.v1 into `out` (set to a fresh
+ * object) from `ev` (NULL treated as all-absent). Deterministic, no I/O — the
+ * test seeds `ev` and asserts. Returns false only on a NULL `out`. */
+bool mvp_build_status_json(const struct mvp_evidence *ev,
+                           struct json_value *out);
+
+/* The "mvp" g_dumpers[] entry. Gathers live evidence from the running node,
+ * then calls mvp_build_status_json. Reentrant-safe; NULL-safe on an
+ * uninitialized node. */
+bool mvp_dump_state_json(struct json_value *out, const char *key);
+
 /* diagnostics_omniscience.c — the "omniscience" g_dumpers[] entry: the
  * capstone one-call verdict on whether the node knows everything it should.
  * Composes the catalog_completeness per-index lag table (against reducer H*),
