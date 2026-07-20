@@ -31,6 +31,7 @@
 #include "jobs/block_header_emit.h"
 #include "jobs/created_outputs_index.h"
 #include "jobs/mint_skip_crypto.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/script_validate_contextual.h"
 #include "stage_repair_coin_backfill_util.h"
 #include "script/script.h"
@@ -119,6 +120,23 @@ static _Atomic int64_t g_sv_unresolved_height = -1;
 static _Atomic int64_t g_sv_unresolved_since_unix = 0;
 static _Atomic int64_t g_sv_unresolved_paged_height = -1;
 
+#ifdef ZCL_TESTING
+/* Test-only override of the held-budget so a test can reach the named-blocker
+ * path without waiting 10 minutes (lane E3, part 3). <0 restores the default. */
+static _Atomic int g_sv_unresolved_budget_override = -1;
+void script_validate_stage_unresolved_budget_set_for_test(int seconds)
+{
+    atomic_store(&g_sv_unresolved_budget_override, seconds);
+}
+static int sv_unresolved_budget(void)
+{
+    int o = atomic_load(&g_sv_unresolved_budget_override);
+    return o >= 0 ? o : SV_UNRESOLVED_BUDGET_SECONDS;
+}
+#else
+static int sv_unresolved_budget(void) { return SV_UNRESOLVED_BUDGET_SECONDS; }
+#endif
+
 /* Clear the HOLD tracking once a height advances cleanly (verified /
  * script_invalid / upstream_failed / contextual reject): the next hole, if any,
  * restarts the budget clock from scratch and the named blocker is released. */
@@ -179,18 +197,33 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
     int64_t elapsed = (since > 0 && now >= since) ? now - since : 0;
     atomic_store(&g_last_blocked_unix, now);
 
-    if (elapsed < SV_UNRESOLVED_BUDGET_SECONDS)
+    if (elapsed < sv_unresolved_budget())
         return JOB_IDLE; /* hold the cursor; the body re-derives next tick */
 
     char txhex[65];
     uint256_get_hex(&s->first_failure_txid, txhex);
+    /* Name the ROOT CAUSE when a stage_repair body torn-read note is active for
+     * an ancestor height (lane E3): the descendant's prevout is unresolvable
+     * precisely because that torn body has not yet been refetched + revalidated,
+     * so the operator-visible blocker points at the block to fix rather than the
+     * downstream symptom. (E4's typed cause field is additive and may be absent
+     * on this merge base; carry the cause in the blocker detail string.) */
+    char cause[96];
+    cause[0] = '\0';
+    if (reducer_frontier_body_read_note_active()) {
+        int64_t torn_h = reducer_frontier_body_read_note_height();
+        if (torn_h >= 0 && torn_h < (int64_t)height)
+            snprintf(cause, sizeof(cause),
+                     " cause: torn body height=%lld awaiting refetch",
+                     (long long)torn_h);
+    }
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
              "script_validate height=%d %s held %llds: prevout could not be "
              "re-derived from the body (creating coin missing or utxo_apply "
-             "irreducibly behind)",
+             "irreducibly behind)%s",
              height, s->reason[0] ? s->reason : "prevout_unresolved",
-             (long long)elapsed);
+             (long long)elapsed, cause);
     if (!blocker_init(&c->blocker, "script_validate.prevout_unresolved",
                       STAGE_NAME, BLOCKER_PERMANENT, reason)) {
         LOG_WARN("script_validate",

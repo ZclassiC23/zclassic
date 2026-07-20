@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Body torn-read repair note/quarantine/blocker (lane E3): see
+ * reducer_frontier_body_read_note.c; recorded below from the read path. */
+
 /* Lowest failed-row height strictly below `cursor` for `sql` (which takes a
  * single trailing int bind); no hole is success with *out_height == -1.
  * Caller holds the progress_store tx lock. */
@@ -169,9 +172,13 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
     char datadir[2048];
     GetDataDir(true, datadir, sizeof(datadir));
     if (!read_block_from_disk_pread(blk, &pos, datadir)) {
+        /* Arm the off-lock HAVE_DATA drop + peer refetch (lane E3) — not a
+         * side-channel write under the caller's progress lock. */
+        reducer_frontier_body_read_note_record(
+            height, pos.nFile, (int64_t)pos.nPos, REDUCER_FRONTIER_BODY_READ_DISK);
         LOG_WARN("stage_repair",
                  "[stage_repair] read_active_block_checked: disk read failed "
-                 "h=%d (nFile=%d pos=%d) — repair defers",
+                 "h=%d (nFile=%d pos=%d) — HAVE_DATA drop + refetch armed",
                  height, pos.nFile, pos.nPos);
         return false;
     }
@@ -183,11 +190,17 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
         char got_hex[65];
         uint256_get_hex(block_hash, want_hex);
         uint256_get_hex(&got, got_hex);
+        /* Wrong block under HAVE_DATA: same route as a torn read (lane E3). */
+        reducer_frontier_body_read_note_record(
+            height, pos.nFile, (int64_t)pos.nPos, REDUCER_FRONTIER_BODY_READ_WRONG);
         LOG_WARN("stage_repair",
-                 "[stage_repair] repair read wrong block h=%d want=%s got=%s",
+                 "[stage_repair] repair read wrong block h=%d want=%s got=%s "
+                 "— HAVE_DATA drop + refetch armed",
                  height, want_hex, got_hex);
         return false;
     }
+    /* Read + hash-verified: retire any stale torn-read note (+ blocker). */
+    reducer_frontier_body_read_note_clear_at(height);
     return true;
 }
 

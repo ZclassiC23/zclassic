@@ -309,6 +309,68 @@ bool reducer_frontier_derive_coins_best_now(
     uint8_t  out_hash[32],    /* OUT (nullable): hash when *out_hash_found */
     bool    *out_hash_found); /* OUT (nullable): hash from a durable log */
 
+/* ── Body torn-read repair note (lane E3) ────────────────────────────────
+ *
+ * When stage_repair_read_active_block_checked (reducer_frontier_replay.c)
+ * cannot read the canonical body for a HAVE_DATA height — the on-disk bytes
+ * are torn/truncated (the pread failed) or read fine but hash to the WRONG
+ * block — the read used to only DEFER, wedging every downstream stage forever
+ * (live: "read_active_block_checked: disk read failed h=3143721 (nFile=49
+ * pos=129998574) — repair defers", plus a repeating downstream
+ * "prevout_unresolved").
+ *
+ * The repair now records the failing height here — an event-driven note, NO
+ * new scan pass. It deliberately does NOT clear BLOCK_HAVE_DATA from inside the
+ * progress-locked replay (that would be a side-channel write racing the
+ * reducer's single writer). Instead the have_data_unreadable Condition consumes
+ * this note OFF-LOCK, re-verifies the body is genuinely unreadable, and clears
+ * BLOCK_HAVE_DATA through the same seam body_persist uses — so body_fetch
+ * re-downloads the body and the stages revalidate it. Bounded: after
+ * REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX consecutive failures at one height
+ * a typed TRANSIENT blocker (reducer_frontier.body_read_torn) is raised naming
+ * height/nFile/pos/reason, so a torn body is a NAMED blocker, never a silent
+ * hot loop. A successful read at the noted height clears the note + blocker
+ * (the normal revalidation flow). */
+#define REDUCER_FRONTIER_BODY_READ_QUARANTINE_MAX 3
+
+enum reducer_frontier_body_read_reason {
+    REDUCER_FRONTIER_BODY_READ_OK    = 0,
+    REDUCER_FRONTIER_BODY_READ_DISK  = 1, /* pread failed: torn/truncated bytes */
+    REDUCER_FRONTIER_BODY_READ_WRONG = 2, /* read ok but hashed to wrong block */
+};
+
+/* Record a failing canonical-body read at `height` (torn bytes / wrong block).
+ * Called by stage_repair_read_active_block_checked (and, in tests, to simulate
+ * it). Lowest-height-first — a higher failing height never displaces a lower
+ * pending one — and raises the typed blocker once the quarantine bound is
+ * crossed. Lock-free atomics: safe whether or not progress_store_tx_lock is
+ * held. Implemented in reducer_frontier_body_read_note.c. */
+void reducer_frontier_body_read_note_record(
+    int height, int nFile, int64_t pos,
+    enum reducer_frontier_body_read_reason reason);
+
+/* Lowest height a canonical body read is currently failing at, or -1 if none.
+ * have_data_unreadable reads these (lock-free atomic loads) as a repair
+ * candidate; never takes progress_store_tx_lock(). */
+int64_t reducer_frontier_body_read_note_height(void);
+bool    reducer_frontier_body_read_note_active(void);
+int     reducer_frontier_body_read_note_file(void);
+int64_t reducer_frontier_body_read_note_pos(void);
+const char *reducer_frontier_body_read_reason_name(
+    enum reducer_frontier_body_read_reason r);
+
+/* Clear the note (and its typed blocker) for `height` — called on a successful
+ * read of that height, and by have_data_unreadable's witness once the body is
+ * readable/advanced again. No-op unless the note currently names `height`. */
+void reducer_frontier_body_read_note_clear_at(int height);
+
+#ifdef ZCL_TESTING
+/* Test seams: reset all note state; observe the consecutive-failure counter.
+ * (Drive a note via reducer_frontier_body_read_note_record.) */
+void reducer_frontier_body_read_note_reset_for_testing(void);
+int  reducer_frontier_body_read_note_count_for_testing(void);
+#endif
+
 /* `zclassic23 dumpstate reducer_frontier`: read-only snapshot of the L0
  * reducer authority. Reports H*, served_floor, raw stage cursors,
  * success-checked log frontiers, coins_applied_height, and first
