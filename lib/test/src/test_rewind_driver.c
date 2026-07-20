@@ -316,7 +316,7 @@ static int rd_count_blockers_named(const char *id)
 /* Open a fresh throwaway progress.kv in a tmp dir. Caller closes + cleans. */
 static sqlite3 *rd_open_progress(char dir[256], const char *tag)
 {
-    test_make_tmpdir(dir, sizeof(dir), "rewind_driver", tag);
+    test_make_tmpdir(dir, 256, "rewind_driver", tag);
     progress_store_close();
     if (!progress_store_open(dir))
         return NULL;
