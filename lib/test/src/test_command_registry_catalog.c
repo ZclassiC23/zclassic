@@ -655,6 +655,16 @@ static int test_status_brief_composite_fails_closed(void)
         };
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
+        /* RPC error objects (cases 0-1) surface the REAL transport/RPC
+         * reason verbatim ("node status unavailable: ..."); only genuine
+         * schema skew / field faults (cases 2-3) read as a v2 schema
+         * error. Both still fail closed. */
+        static const char *const expect_msg[] = {
+            "node status unavailable: Method not found",
+            "node status unavailable: cannot connect to node",
+            "invalid zcl.public_status.v2",
+            "invalid zcl.public_status.v2",
+        };
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             g_status_brief_agent_fixture = cases[i];
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
@@ -663,7 +673,7 @@ static int test_status_brief_composite_fails_closed(void)
             ASSERT(strstr(out, "\"ok\":false") != NULL);
             ASSERT(strstr(out, "\"status\":\"failed\"") != NULL);
             ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
-            ASSERT(strstr(out, "invalid zcl.public_status.v2") != NULL);
+            ASSERT(strstr(out, expect_msg[i]) != NULL);
         }
         PASS();
     } _test_next:;
@@ -814,6 +824,21 @@ static int test_status_brief_valid_unknown_and_partial_contracts(void)
         ASSERT(json_get_bool(json_get(data, "serving")));
         ASSERT_EQ(json_get_int(json_get(data, "hstar")), (int64_t)100);
         json_free(&root);
+
+        /* Over budget yet COMPLETE (budget_exceeded=true, partial_result=
+         * false, resources present) is equally honest and must validate:
+         * budget overrun is a timing fact, orthogonal to completeness. */
+        status_brief_fixture_write(
+            fixture, sizeof(fixture), 100, true, 101, true, -1, false,
+            101, true, 1, true, 3, false, true,
+            true, true, true, false, false);
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT_EQ(json_get_int(json_get(data, "hstar")), (int64_t)100);
+        json_free(&root);
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
@@ -828,10 +853,16 @@ static int test_status_brief_rejects_contract_contradictions(void)
     const struct zcl_command_spec *s = find_spec(reg, "status");
     char fixture[2048];
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status rejects known/sentinel, gap, partial, and self-contradicting budget_exceeded") {
+    TEST("root status rejects known/sentinel, gap, and partial contract faults") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
-        static const int cases = 4;
+        /* budget_exceeded=true with partial_result=false is NOT a
+         * contradiction and is no longer rejected: budget overrun is a pure
+         * timing fact, orthogonal to data completeness — a busy node that
+         * overran 250ms while still collecting every field reports exactly
+         * that, truthfully. The valid case is covered in
+         * test_status_brief_valid_unknown_and_partial_contracts. */
+        static const int cases = 3;
         for (int i = 0; i < cases; i++) {
             if (i == 0) {
                 /* known peer height may not carry the -1 sentinel. */
@@ -845,22 +876,12 @@ static int test_status_brief_rejects_contract_contradictions(void)
                     fixture, sizeof(fixture), 100, true, 101, true, 101, true,
                     101, true, 9, true, 3, false, true,
                     true, true, false, false, false);
-            } else if (i == 2) {
+            } else {
                 /* Full results cannot silently omit the resources member. */
                 status_brief_fixture_write(
                     fixture, sizeof(fixture), 100, true, 101, true, 101, true,
                     101, true, 1, true, 3, false, false,
                     true, true, false, false, false);
-            } else {
-                /* budget_exceeded=true is a valid, honest degraded result
-                 * (see test_status_brief_valid_unknown_and_partial_contracts)
-                 * -- but claiming it while ALSO claiming partial_result=false
-                 * is self-contradictory: the node would be saying "I ran
-                 * over budget" and "I returned everything anyway" at once. */
-                status_brief_fixture_write(
-                    fixture, sizeof(fixture), 100, true, 101, true, 101, true,
-                    101, true, 1, true, 3, false, true,
-                    true, true, true, false, false);
             }
             g_status_brief_agent_fixture = fixture;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;

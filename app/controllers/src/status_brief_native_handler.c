@@ -410,9 +410,11 @@ char *zcl_native_status_brief_body(const struct json_value *args,
      * off as blocker age. */
     status_push_int_if_known(&root, "blocker_age_s", false, 0);
     /* Registry head shown beside primary_blocker so the brief and
-     * `dumpstate blocker` never present disjoint truths. */
-    status_push_int_if_known(&root, "active_blockers", blocker_registry_known,
-                             active_blockers);
+     * `dumpstate blocker` never present disjoint truths. Both fields are
+     * OMITTED (never null) when the node predates the registry export —
+     * the documented optional-sub-object contract. */
+    if (blocker_registry_known)
+        json_push_kv_int(&root, "active_blockers", active_blockers);
     if (blocker_head)
         json_push_kv_str(&root, "blocker_head", blocker_head);
     json_push_kv_int(&root, "active_conditions", active_conditions);
