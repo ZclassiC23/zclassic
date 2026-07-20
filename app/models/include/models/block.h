@@ -72,6 +72,14 @@ bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
                                          struct block_header *out);
 
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
+
+/* Delete a `blocks` row by height, for the pathological case where the row's
+ * `hash` PRIMARY KEY column is itself missing/short so db_block_delete (keyed
+ * on a 32-byte hash) cannot address it. Used by the blocks-hydrate per-row
+ * quarantine (services/block_index_loader.c) to purge a poisoned header-only
+ * row that has no usable hash. Runs through the AR destroy lifecycle. Returns
+ * true when the DELETE executed (including the "no such row" case). */
+bool db_block_delete_by_height(struct node_db *ndb, int height);
 int db_block_max_height(struct node_db *ndb);
 /* Max stored block height regardless of block status (no status>=3 filter).
  * The block explorer uses this for its native chain-height fallback when no

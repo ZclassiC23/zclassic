@@ -135,6 +135,13 @@ ZCL_BLOCKER_REMEDY(header_admit,                               OWNER)
 ZCL_BLOCKER_REMEDY(reducer_frontier.script_undetermined,       OWNER)
 ZCL_BLOCKER_REMEDY(body_fetch.header_solution_missing,         OWNER)
 ZCL_BLOCKER_REMEDY(validate_headers.window_resolve_miss,       OWNER)
+/* J5 blocks-hydrate per-row quarantine: a poisoned `blocks` header row was
+ * purged (db_block_delete) during boot hydration; its height is re-fetched by
+ * the always-running header sync + body_fetch stages and the reducer stages
+ * revalidate it. No CONDITION targets/clears this exact id (the operational
+ * cure is ordinary forward sync, not a named remedy), so OWNER is the honest
+ * binding — it flags that a quarantine happened, visible via dumpstate. */
+ZCL_BLOCKER_REMEDY(block_index.blocks_hydrate_quarantine,      OWNER)
 /* A header re-validates clean (unchanged PoW+Equihash) but its block_index
  * entry carries a stale BLOCK_FAILED mask (set by the getheaders serve path for
  * a locally missing/corrupt solution) that mark_valid_header refuses. The stage

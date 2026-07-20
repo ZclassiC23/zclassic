@@ -590,6 +590,29 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
     AR_FINISH_DESTROY(cbs, &blk, ok);
 }
 
+/* Delete a `blocks` row by height. The header-only quarantine path uses this
+ * ONLY when the row's `hash` column is missing/short — otherwise it cannot be
+ * addressed by db_block_delete's 32-byte key. Runs through the AR destroy
+ * lifecycle like db_block_delete; the record carries only the height (the
+ * block destroy hooks do not inspect the hash). No transactions cascade: a
+ * hashless imported header row cannot own transactions (their FK is
+ * block_hash), and we have no hash to match. */
+bool db_block_delete_by_height(struct node_db *ndb, int height)
+{
+    if (!ndb->open) {
+        LOG_FAIL("block", "delete_by_height: db not open (height=%d)", height);
+    }
+
+    struct ar_callbacks *cbs = db_block_callbacks();
+    struct db_block blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = height;
+
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_DESTROY(ndb, s, "DELETE FROM blocks WHERE height=?", cbs, &blk,
+                     AR_BIND_INT(s, 1, height));
+}
+
 /* ── Queries ───────────────────────────────────────────────────── */
 
 int db_block_max_height(struct node_db *ndb)

@@ -11,6 +11,7 @@
 #include "services/chain_tip.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/checkpoints.h"
 #include "chain/pow.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -26,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -62,6 +64,64 @@ struct __attribute__((packed)) block_index_flat {
     uint32_t n_cached_branch_id;
     uint8_t  sapling_root[32];
 };
+
+/* ── Persisted-FAILED-bit trust policy ───────────────────── */
+
+/* Process-monotonic tallies (see block_index_loader.h). The loaders run
+ * single-threaded, but the dumpstate reader is a separate thread, so keep the
+ * counters atomic. */
+static _Atomic int64_t g_failed_bits_stripped = 0;
+static _Atomic int64_t g_failed_bits_demoted = 0;
+
+int64_t block_index_failed_bits_stripped(void)
+{
+    return atomic_load_explicit(&g_failed_bits_stripped, memory_order_relaxed);
+}
+
+int64_t block_index_failed_bits_demoted(void)
+{
+    return atomic_load_explicit(&g_failed_bits_demoted, memory_order_relaxed);
+}
+
+enum block_index_failure_trust_action
+block_index_apply_persisted_failure_trust(struct block_index *pindex,
+                                           int32_t checkpoint_height)
+{
+    if (!pindex)
+        return BLOCK_FAILURE_TRUST_NONE;
+
+    /* The revalidation-pending marker is runtime-derived, never trusted from
+     * disk: clear any bit a prior save round-tripped so nStatus reflects only
+     * THIS load's verdict. */
+    unsigned int status = pindex->nStatus & ~(unsigned int)BLOCK_REVALIDATE_PENDING;
+
+    if (!(status & (unsigned int)BLOCK_FAILED_MASK)) {
+        pindex->nStatus = status; /* no persisted verdict; stale marker cleared */
+        return BLOCK_FAILURE_TRUST_NONE;
+    }
+
+    /* A persisted BLOCK_FAILED_VALID/FAILED_CHILD is present. Clear the real
+     * FAILED bits so a stale bit can never exclude this candidate from chain
+     * selection before revalidation re-confirms it. */
+    status &= ~(unsigned int)BLOCK_FAILED_MASK;
+
+    if (pindex->nHeight <= checkpoint_height) {
+        /* Below the baked ROM checkpoint: state is checkpoint-trusted and
+         * re-derived from the baked keystone — never honor a persisted verdict,
+         * and do not flag revalidation. */
+        pindex->nStatus = status;
+        atomic_fetch_add_explicit(&g_failed_bits_stripped, 1,
+                                  memory_order_relaxed);
+        return BLOCK_FAILURE_TRUST_STRIPPED;
+    }
+
+    /* Above the checkpoint: demote to a lazy revalidation candidate. The stages
+     * re-run full validation when the fold reaches the block; a genuine failure
+     * is re-set fresh by the connect path (genuinely-failed behavior unchanged). */
+    pindex->nStatus = status | (unsigned int)BLOCK_REVALIDATE_PENDING;
+    atomic_fetch_add_explicit(&g_failed_bits_demoted, 1, memory_order_relaxed);
+    return BLOCK_FAILURE_TRUST_DEMOTED;
+}
 
 static int cmp_height(const void *a, const void *b)
 {
@@ -136,9 +196,9 @@ void block_index_forward_pass(struct block_index **sorted,
  * false "synced" claim. Idempotent (work-ranked promotion never downgrades)
  * and safe: a later coins-reconcile (bii_anchor) only restores the tip UP to
  * the coins height, never below this frontier. */
-static void promote_best_header_after_load(struct main_state *ms,
-                                           struct block_index **sorted,
-                                           size_t count)
+void promote_best_header_after_load(struct main_state *ms,
+                                    struct block_index **sorted,
+                                    size_t count)
 {
     if (!ms || !sorted || count == 0)
         return;
@@ -449,6 +509,10 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
 
     /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
+    /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. Fetched
+     * once; the per-entry reconcile below is O(1) and adds no extra scan. */
+    int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    int64_t stripped_failed = 0, demoted_failed = 0;
     for (uint32_t i = 0; i < count; i++) {
         /* Feed the supervisor_backstop liveness marker every 64K entries so
          * this single-threaded pre-serving loop over ~3.1M entries is not
@@ -497,9 +561,24 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
         pindex->nCachedBranchId = entries[i].n_cached_branch_id;
         memcpy(pindex->hashFinalSaplingRoot.data, entries[i].sapling_root, 32);
 
+        /* Reconcile the persisted FAILED verdict against the ROM checkpoint
+         * before the forward pass runs (so a stripped/demoted entry does not
+         * re-propagate BLOCK_FAILED_CHILD to its descendants). */
+        switch (block_index_apply_persisted_failure_trust(pindex, ckpt_h)) {
+            case BLOCK_FAILURE_TRUST_STRIPPED: stripped_failed++; break;
+            case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
+            case BLOCK_FAILURE_TRUST_NONE:     break;
+        }
+
         if (by_height && pindex->nHeight >= 0 && pindex->nHeight <= max_h)
             by_height[pindex->nHeight] = pindex;
     }
+    if (stripped_failed || demoted_failed)
+        LOG_INFO("block_index_flat",
+                 "block_index_flat: persisted-FAILED trust reconcile: "
+                 "%lld stripped (<=ckpt h=%d), %lld demoted to revalidation "
+                 "candidates (>ckpt)",
+                 (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
     /* Link pprev via prev_hash lookup (handles orphans correctly).
      * Height-based linking breaks when orphan blocks at the same height
@@ -735,6 +814,9 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
             -1, &sel, NULL) != SQLITE_OK || !sel)
         return ZCL_ERR(-3, "load_block_index_sqlite: failed to prepare SQLite SELECT for block_index_cache");
 
+    /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. */
+    int32_t ckpt_h = get_rom_state_checkpoint()->height;
+    int64_t stripped_failed = 0, demoted_failed = 0;
     size_t loaded = 0;
     while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
         const void *hash_blob = sqlite3_column_blob(sel, 0);
@@ -762,9 +844,24 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
 
         pindex->nCachedBranchId = (uint32_t)sqlite3_column_int(sel, 12);
         pindex->nChainTx        = (uint32_t)sqlite3_column_int(sel, 13);
+
+        /* Same persisted-FAILED trust reconcile as the flat loader: strip
+         * below the ROM checkpoint, demote to a revalidation candidate above
+         * it (a stale FAILED bit can no longer wedge the tip). */
+        switch (block_index_apply_persisted_failure_trust(pindex, ckpt_h)) {
+            case BLOCK_FAILURE_TRUST_STRIPPED: stripped_failed++; break;
+            case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
+            case BLOCK_FAILURE_TRUST_NONE:     break;
+        }
         loaded++;
     }
     sqlite3_finalize(sel);
+    if (stripped_failed || demoted_failed)
+        LOG_INFO("block_index",
+                 "load_block_index_sqlite: persisted-FAILED trust reconcile: "
+                 "%lld stripped (<=ckpt h=%d), %lld demoted to revalidation "
+                 "candidates (>ckpt)",
+                 (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
     /* Link pprev pointers after every cached index entry is loaded. */
     sel = NULL;
@@ -916,269 +1013,3 @@ struct zcl_result load_block_index(struct main_state *ms,
     return ZCL_OK;
 }
 
-/* ── load_block_index_from_blocks_table ──────────────────── */
-
-/* Column order shared by the validate + insert passes of the blocks-table
- * hydrator. Keep these in lock-step with the SELECT string BLOCKS_HYDRATE_SEL. */
-enum {
-    BHC_HASH = 0, BHC_PREV, BHC_VERSION, BHC_MERKLE, BHC_SAPLING,
-    BHC_TIME, BHC_BITS, BHC_NONCE, BHC_SOLUTION, BHC_STATUS,
-    BHC_NUMTX, BHC_HEIGHT
-};
-
-#define BLOCKS_HYDRATE_SEL \
-    "SELECT hash,prev_hash,version,merkle_root,sapling_root,time,bits," \
-    "nonce,solution,status,num_tx,height FROM blocks ORDER BY height"
-
-/* Reconstruct the canonical block_header from a BLOCKS_HYDRATE_SEL row so its
- * PoW hash can be recomputed and compared to the stored `hash` column (the
- * same hash-bind test app/models/src/block.c performs on a stored row). Returns
- * false when a fixed header field is missing/short or the Equihash solution is
- * empty/oversize — every such row makes the whole hydration refuse. */
-static bool blocks_row_to_header(sqlite3_stmt *s, struct block_header *out)
-{
-    block_header_init(out);
-    out->nVersion = (int32_t)sqlite3_column_int(s, BHC_VERSION);
-
-    const void *prev = sqlite3_column_blob(s, BHC_PREV);
-    if (!prev || sqlite3_column_bytes(s, BHC_PREV) < 32)
-        return false;
-    memcpy(out->hashPrevBlock.data, prev, 32);
-
-    const void *mr = sqlite3_column_blob(s, BHC_MERKLE);
-    if (!mr || sqlite3_column_bytes(s, BHC_MERKLE) < 32)
-        return false;
-    memcpy(out->hashMerkleRoot.data, mr, 32);
-
-    /* sapling_root is a nullable projection column; a NULL/short value leaves
-     * the header field at zero, which only hash-binds for a block whose real
-     * hashFinalSaplingRoot is genuinely zero (pre-Sapling). A post-Sapling row
-     * with a dropped root simply fails the hash-bind check below — refused,
-     * never silently accepted. */
-    const void *sr = sqlite3_column_blob(s, BHC_SAPLING);
-    if (sr && sqlite3_column_bytes(s, BHC_SAPLING) >= 32)
-        memcpy(out->hashFinalSaplingRoot.data, sr, 32);
-
-    out->nTime = (uint32_t)sqlite3_column_int64(s, BHC_TIME);
-    out->nBits = (uint32_t)sqlite3_column_int64(s, BHC_BITS);
-
-    const void *nn = sqlite3_column_blob(s, BHC_NONCE);
-    if (!nn || sqlite3_column_bytes(s, BHC_NONCE) < 32)
-        return false;
-    memcpy(out->nNonce.data, nn, 32);
-
-    int sol_len = sqlite3_column_bytes(s, BHC_SOLUTION);
-    const void *sol = sqlite3_column_blob(s, BHC_SOLUTION);
-    if (!sol || sol_len <= 0 || sol_len > MAX_SOLUTION_SIZE)
-        return false;
-    memcpy(out->nSolution, sol, (size_t)sol_len);
-    out->nSolutionSize = (size_t)sol_len;
-    return true;
-}
-
-/* Hydrate the in-memory block_index map from the node.db `blocks` table.
- *
- * The `--importblockindex <src>` CLI bulk-loads ~3.1M header rows into `blocks`
- * (app/controllers/src/snapshot_controller_import.c) but writes NO flat file,
- * NO block_index_cache, and NO datadir LevelDB. So every other loader rung
- * leaves a genesis-only map on a freshly-imported datadir and the node serves
- * H*=0 until the legacy pull rescues it. This rung closes that hole.
- *
- * Validation (matches what the sibling rungs trust vs re-check): every row's
- * header is re-serialized and its PoW hash recomputed; a row whose stored
- * `hash` does not equal that recomputed value REFUSES the WHOLE hydration (a
- * loud named blocker), so a poisoned `blocks` table can never seed a partial
- * map — the map is left exactly as the caller passed it and boot falls through
- * to the LevelDB / legacy rungs. Parent linkage is asserted structurally via
- * the pprev link pass. NOTE the imported rows carry chain_work=0 (the importer
- * never populates it), so nChainWork is recomputed from the linked pprev chain
- * by block_index_forward_pass, exactly like the flat/LevelDB rungs.
- *
- * Validity is installed HONESTLY as header-only: the entry's BLOCK_VALID level
- * is clamped to at most BLOCK_VALID_TREE and NO HAVE_DATA/HAVE_UNDO bit is set
- * (we hold no block body — bodies are fetched lazily via P2P). Higher validity
- * is never fabricated from the stored status.
- *
- * Returns .ok=true on a non-empty hydrate; .ok=false (map untouched by the
- * refusal path) on an empty table, a prepare error, or the first non-hash-bound
- * row. */
-struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
-                                                     struct main_state *ms)
-{
-    if (!ndb || !ndb->open)
-        return ZCL_ERR(-1, "load_block_index_from_blocks_table: null/closed db");
-    if (!ms)
-        return ZCL_ERR(-1, "load_block_index_from_blocks_table: null main_state");
-
-    int64_t row_count = 0;
-    sqlite3_stmt *cnt = NULL;
-    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM blocks", -1, &cnt,
-                           NULL) == SQLITE_OK && cnt) {
-        if (AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW)
-            row_count = sqlite3_column_int64(cnt, 0);
-        sqlite3_finalize(cnt);
-    }
-    if (row_count <= 0)
-        return ZCL_ERR(-2, "load_block_index_from_blocks_table: `blocks` "
-                       "table empty — nothing to hydrate");
-
-    int64_t t0 = (int64_t)platform_time_wall_time_t();
-    LOG_INFO("block_index",
-             "Hydrating block index from node.db `blocks` (%lld rows)...",
-             (long long)row_count);
-
-    /* ── Pass A: VALIDATE every row hash-binds BEFORE touching the map. A
-     *    single poisoned row refuses the WHOLE hydration so a corrupt `blocks`
-     *    table never seeds a partial map. */
-    sqlite3_stmt *sel = NULL;
-    if (sqlite3_prepare_v2(ndb->db, BLOCKS_HYDRATE_SEL, -1, &sel, NULL)
-            != SQLITE_OK || !sel)
-        return ZCL_ERR(-3, "load_block_index_from_blocks_table: failed to "
-                       "prepare validate SELECT over `blocks`");
-
-    int64_t validated = 0;
-    while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
-        const void *hb = sqlite3_column_blob(sel, BHC_HASH);
-        int h = sqlite3_column_int(sel, BHC_HEIGHT);
-        if (!hb || sqlite3_column_bytes(sel, BHC_HASH) < 32) {
-            sqlite3_finalize(sel);
-            LOG_WARN("block_index",
-                     "blocks-hydrate: row at height=%d has no/short hash — "
-                     "refusing hydration (poisoned `blocks` table)", h);
-            return ZCL_ERR(-4, "load_block_index_from_blocks_table: short hash "
-                           "at height=%d", h);
-        }
-        struct block_header hdr;
-        if (!blocks_row_to_header(sel, &hdr)) {
-            sqlite3_finalize(sel);
-            LOG_WARN("block_index",
-                     "blocks-hydrate: row at height=%d has an unusable header "
-                     "(missing field or empty/oversize solution) — refusing "
-                     "hydration", h);
-            return ZCL_ERR(-4, "load_block_index_from_blocks_table: unusable "
-                           "header at height=%d", h);
-        }
-        struct uint256 computed;
-        block_header_get_hash(&hdr, &computed);
-        if (memcmp(computed.data, hb, 32) != 0) {
-            sqlite3_finalize(sel);
-            LOG_WARN("block_index",
-                     "blocks-hydrate: stored row does not hash-bind at "
-                     "height=%d — refusing hydration (poisoned `blocks` "
-                     "table)", h);
-            return ZCL_ERR(-5, "load_block_index_from_blocks_table: row does "
-                           "not hash-bind at height=%d", h);
-        }
-        validated++;
-    }
-    sqlite3_finalize(sel);
-    sel = NULL;
-    if (validated == 0)
-        return ZCL_ERR(-6, "load_block_index_from_blocks_table: 0 usable rows");
-
-    /* ── Pass B: INSERT (rows are hash-bound now). ORDER BY height means the
-     *    collected array is height-ASC, so pprev is always resolvable in the
-     *    link pass and the forward pass sees each parent before its child. */
-    struct block_index **sorted = zcl_malloc(
-        (size_t)validated * sizeof(*sorted), "blocks_table hydrate sorted");
-    if (!sorted)
-        return ZCL_ERR(-7, "load_block_index_from_blocks_table: OOM for %lld "
-                       "sorted pointers", (long long)validated);
-
-    if (sqlite3_prepare_v2(ndb->db, BLOCKS_HYDRATE_SEL, -1, &sel, NULL)
-            != SQLITE_OK || !sel) {
-        free(sorted);
-        return ZCL_ERR(-3, "load_block_index_from_blocks_table: failed to "
-                       "prepare insert SELECT over `blocks`");
-    }
-
-    size_t n = 0;
-    while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW && n < (size_t)validated) {
-        const void *hb = sqlite3_column_blob(sel, BHC_HASH);
-        if (!hb || sqlite3_column_bytes(sel, BHC_HASH) < 32)
-            continue;   /* validated in pass A; defensive */
-        struct uint256 hh;
-        memcpy(hh.data, hb, 32);
-        struct block_index *bi = chainstate_insert_block_index(
-            (struct chainstate *)ms, &hh);
-        if (!bi)
-            continue;
-
-        bi->nHeight  = sqlite3_column_int(sel, BHC_HEIGHT);
-        bi->nVersion = (int32_t)sqlite3_column_int(sel, BHC_VERSION);
-        bi->nTime    = (uint32_t)sqlite3_column_int64(sel, BHC_TIME);
-        bi->nBits    = (uint32_t)sqlite3_column_int64(sel, BHC_BITS);
-        {
-            int nt = sqlite3_column_int(sel, BHC_NUMTX);
-            if (nt > 0)
-                bi->nTx = (unsigned int)nt;
-        }
-
-        const void *mr = sqlite3_column_blob(sel, BHC_MERKLE);
-        if (mr && sqlite3_column_bytes(sel, BHC_MERKLE) >= 32)
-            memcpy(bi->hashMerkleRoot.data, mr, 32);
-        const void *sr = sqlite3_column_blob(sel, BHC_SAPLING);
-        if (sr && sqlite3_column_bytes(sel, BHC_SAPLING) >= 32)
-            memcpy(bi->hashFinalSaplingRoot.data, sr, 32);
-        const void *nn = sqlite3_column_blob(sel, BHC_NONCE);
-        if (nn && sqlite3_column_bytes(sel, BHC_NONCE) >= 32)
-            memcpy(bi->nNonce.data, nn, 32);
-
-        /* HONEST validity: we verified the header hash-binds (and the link
-         * pass verifies parent linkage), but we hold NO block body and have
-         * NOT checked tx/script/context validity. Clamp the BLOCK_VALID level
-         * to at most BLOCK_VALID_TREE and assert NO HAVE_DATA/HAVE_UNDO — the
-         * node fetches bodies lazily via P2P. Never fabricate a higher
-         * validity than the stored row, and never above TREE. */
-        unsigned int stored = (unsigned int)sqlite3_column_int(sel, BHC_STATUS);
-        unsigned int level = stored & (unsigned int)BLOCK_VALID_MASK;
-        if (level > (unsigned int)BLOCK_VALID_TREE)
-            level = (unsigned int)BLOCK_VALID_TREE;
-        bi->nStatus = level;   /* header-only: no HAVE bits, no FAILED bits */
-
-        sorted[n++] = bi;
-    }
-    sqlite3_finalize(sel);
-    sel = NULL;
-
-    /* ── Pass C: link pprev by prev_hash (both endpoints now in the map). */
-    if (sqlite3_prepare_v2(ndb->db, "SELECT hash,prev_hash FROM blocks",
-                           -1, &sel, NULL) == SQLITE_OK && sel) {
-        while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
-            const void *h = sqlite3_column_blob(sel, 0);
-            const void *ph = sqlite3_column_blob(sel, 1);
-            if (!h || !ph)
-                continue;
-            if (sqlite3_column_bytes(sel, 0) < 32 ||
-                sqlite3_column_bytes(sel, 1) < 32)
-                continue;
-            struct uint256 hash, prev;
-            memcpy(hash.data, h, 32);
-            memcpy(prev.data, ph, 32);
-            struct block_index *bi = block_map_find(&ms->map_block_index, &hash);
-            struct block_index *pprev =
-                block_map_find(&ms->map_block_index, &prev);
-            if (bi && pprev)
-                bi->pprev = pprev;
-        }
-        sqlite3_finalize(sel);
-    }
-
-    /* Post-load, identical to the LevelDB rung: recompute nChainWork/nChainTx/
-     * skip from the linked pprev chain (the imported chain_work column is
-     * zero), then promote the best header so active_chain_tip() is non-NULL
-     * over the just-hydrated map and header sync anchors above genesis. */
-    block_index_forward_pass(sorted, n);
-    promote_best_header_after_load(ms, sorted, n);
-    free(sorted);
-
-    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    LOG_INFO("block_index",
-             "Block index `blocks` hydrate: %zu header-only entries in %llds",
-             n, (long long)elapsed);
-
-    if (n == 0)
-        return ZCL_ERR(-6, "load_block_index_from_blocks_table: 0 entries "
-                       "hydrated");
-    return ZCL_OK;
-}

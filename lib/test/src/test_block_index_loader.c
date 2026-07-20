@@ -13,12 +13,17 @@
 #include "storage/coins_kv.h"
 #include "jobs/tip_finalize_stage.h"
 #include "validation/main_state.h"
+#include "validation/chainstate.h"
+#include "chain/checkpoints.h"
 #include "primitives/block.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/chainparamsbase.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
+#include "models/block.h"
+#include "util/blocker.h"
+#include "util/log_throttle.h"
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
@@ -1081,10 +1086,12 @@ int test_block_index_loader(void)
         free(hashes);
     }
 
-    /* ── 16. node.db `blocks` hydrate: a corrupted row REFUSES the whole
-     *       hydration and leaves the map untouched. ───────────────────── */
+    /* ── 16. node.db `blocks` hydrate (J5): a corrupted row is QUARANTINED
+     *       per-row (purged + typed blocker + dumpstate counter) and the load
+     *       CONTINUES with the remaining rows — it no longer refuses whole. ── */
     {
         const int N = 120;
+        const int POISON_H = N / 2;
         struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
         bool ok = (hashes != NULL);
 
@@ -1102,7 +1109,9 @@ int test_block_index_loader(void)
         }
 
         /* Poison ONE row: rewrite its merkle_root so the stored hash no longer
-         * hash-binds (the header re-serializes to a different PoW hash). */
+         * hash-binds (the header re-serializes to a different PoW hash). The
+         * `hash` column keeps its original value, so db_block_delete(that hash)
+         * addresses exactly this row. */
         if (ok) {
             uint8_t bad[32];
             memset(bad, 0xEE, sizeof(bad));
@@ -1112,7 +1121,7 @@ int test_block_index_loader(void)
                     -1, &u, NULL) == SQLITE_OK && u);
             if (ok) {
                 sqlite3_bind_blob(u, 1, bad, 32, SQLITE_TRANSIENT);
-                sqlite3_bind_int(u, 2, N / 2);
+                sqlite3_bind_int(u, 2, POISON_H);
                 ok = (sqlite3_step(u) == SQLITE_DONE);
                 sqlite3_finalize(u);
             }
@@ -1123,18 +1132,150 @@ int test_block_index_loader(void)
         block_map_init(&ms.map_block_index);
         active_chain_init(&ms.chain_active);
 
-        /* The load must REFUSE (.ok=false) and leave the map empty — the
-         * validate pass runs before any insert, so a poisoned table never
-         * seeds a partial map. */
-        bool refused = ok && !load_block_index_from_blocks_table(&ndb, &ms).ok;
-        bool untouched = (ms.map_block_index.size == 0);
+        blocker_clear("block_index.blocks_hydrate_quarantine");
+        int64_t q_before = block_index_blocks_hydrate_quarantined();
 
-        BIL_CHECK("bil: blocks-table hydrate refuses a non-hash-bound row",
-                  refused && untouched);
+        /* The load must SUCCEED, quarantining exactly the one poisoned row. */
+        bool loaded = ok && load_block_index_from_blocks_table(&ndb, &ms).ok;
+        int64_t q_delta = block_index_blocks_hydrate_quarantined() - q_before;
 
+        /* Exactly one row quarantined; the typed blocker is present. */
+        bool counter_ok = loaded && (q_delta == 1);
+        bool blocker_ok =
+            blocker_exists("block_index.blocks_hydrate_quarantine");
+
+        /* The poisoned height is absent from the map (never inserted) AND
+         * purged from `blocks`; the remaining N-1 rows loaded. */
+        bool poison_gone_map =
+            (block_map_find(&ms.map_block_index, &hashes[POISON_H]) == NULL);
+        bool remaining_ok = loaded && (ms.map_block_index.size == (size_t)(N - 1));
+
+        bool poison_gone_db = false;
+        if (ndb.db) {
+            sqlite3_stmt *c = NULL;
+            if (sqlite3_prepare_v2(ndb.db,
+                    "SELECT COUNT(*) FROM blocks WHERE height=?",
+                    -1, &c, NULL) == SQLITE_OK && c) {
+                sqlite3_bind_int(c, 1, POISON_H);
+                if (sqlite3_step(c) == SQLITE_ROW)
+                    poison_gone_db = (sqlite3_column_int(c, 0) == 0);
+                sqlite3_finalize(c);
+            }
+        }
+
+        /* A sampled surviving neighbour on each side is intact + header-only
+         * (no HAVE_DATA fabricated). */
+        struct block_index *below =
+            block_map_find(&ms.map_block_index, &hashes[POISON_H - 1]);
+        struct block_index *above =
+            block_map_find(&ms.map_block_index, &hashes[POISON_H + 1]);
+        bool neighbours_ok = below && above &&
+            below->nHeight == POISON_H - 1 && above->nHeight == POISON_H + 1 &&
+            !(below->nStatus & BLOCK_HAVE_DATA) &&
+            !(above->nStatus & BLOCK_HAVE_DATA);
+
+        BIL_CHECK("bil: blocks-table hydrate QUARANTINES one poisoned row + "
+                  "continues (counter=1, blocker set)",
+                  counter_ok && blocker_ok);
+        BIL_CHECK("bil: quarantined row purged from map + `blocks`, remaining "
+                  "rows intact",
+                  poison_gone_map && poison_gone_db && remaining_ok &&
+                  neighbours_ok);
+
+        blocker_clear("block_index.blocks_hydrate_quarantine");
         block_map_free(&ms.map_block_index);
         if (ndb.db) sqlite3_close(ndb.db);
         free(hashes);
+    }
+
+    /* ── 16b. node.db `blocks` hydrate (J5): an ALL-poisoned table quarantines
+     *        every row and returns .ok=false (0 usable) — never a partial map. */
+    {
+        const int N = 8;
+        struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+        bool ok = (hashes != NULL);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        ok = ok && bih_create_blocks_table(ndb.db);
+
+        struct uint256 zero;
+        memset(&zero, 0, sizeof(zero));
+        for (int h = 0; ok && h < N; h++) {
+            const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+            ok = bih_insert_header_row(ndb.db, h, prev, &hashes[h]);
+        }
+        /* Poison EVERY row's merkle_root. */
+        if (ok) {
+            uint8_t bad[32];
+            memset(bad, 0xEE, sizeof(bad));
+            sqlite3_stmt *u = NULL;
+            ok = (sqlite3_prepare_v2(ndb.db,
+                    "UPDATE blocks SET merkle_root=?", -1, &u, NULL)
+                    == SQLITE_OK && u);
+            if (ok) {
+                sqlite3_bind_blob(u, 1, bad, 32, SQLITE_TRANSIENT);
+                ok = (sqlite3_step(u) == SQLITE_DONE);
+                sqlite3_finalize(u);
+            }
+        }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        int64_t q_before = block_index_blocks_hydrate_quarantined();
+        bool refused = ok && !load_block_index_from_blocks_table(&ndb, &ms).ok;
+        int64_t q_delta = block_index_blocks_hydrate_quarantined() - q_before;
+        bool empty_map = (ms.map_block_index.size == 0);
+
+        BIL_CHECK("bil: all-poisoned blocks-table quarantines all rows, "
+                  "returns 0-usable, empty map",
+                  refused && q_delta == N && empty_map);
+
+        blocker_clear("block_index.blocks_hydrate_quarantine");
+        block_map_free(&ms.map_block_index);
+        if (ndb.db) sqlite3_close(ndb.db);
+        free(hashes);
+    }
+
+    /* ── 16c. Repair-storm throttle: N rapid SAME-key failures collapse to a
+     *        BOUNDED emission count (first-fire + one keepalive per window) —
+     *        the de-storm contract the quarantine WARN and the
+     *        stale_validate_headers_repair deferral WARN both rely on. Uses the
+     *        caller-supplied clock so the assertion is deterministic. ─────── */
+    {
+        struct log_throttle t = LOG_THROTTLE_INIT;
+        const int64_t keepalive = 60;
+        const uint64_t key = 3179245;   /* a fixed "height" fingerprint */
+        int64_t now = 1000000;
+
+        int emits = 0;
+        /* 500 rapid failures within the same wall-second: exactly ONE emit. */
+        for (int i = 0; i < 500; i++)
+            if (log_throttle_should_emit(&t, key, now, keepalive, NULL))
+                emits++;
+        bool first_window_ok = (emits == 1);
+
+        /* Advance past the keepalive window: exactly one keepalive emit. */
+        now += keepalive + 1;
+        int emits2 = 0;
+        for (int i = 0; i < 500; i++)
+            if (log_throttle_should_emit(&t, key, now, keepalive, NULL))
+                emits2++;
+        bool keepalive_ok = (emits2 == 1);
+
+        /* A DIFFERENT key emits immediately (distinct episode, not throttled). */
+        bool diff_key_ok =
+            log_throttle_should_emit(&t, key + 1, now, keepalive, NULL);
+
+        BIL_CHECK("bil: repair-storm throttle bounds N rapid same-key failures "
+                  "to 1 emit/window", first_window_ok && keepalive_ok);
+        BIL_CHECK("bil: repair-storm throttle re-emits on a new-key episode",
+                  diff_key_ok);
     }
 
     /* ── Fast-restart: forward pass ALWAYS re-derives stored work ────────
@@ -1194,6 +1335,238 @@ int test_block_index_loader(void)
         rmdir(tmpdir);
         block_map_free(&ms.map_block_index);
         block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── Persisted-FAILED-bit trust policy (C2) ─────────────────────────
+     * A stale persisted BLOCK_FAILED_VALID bit on the true best-chain tip must
+     * NEVER wedge the node ("stale BLOCK_FAILED_VALID wedges tip" class). The
+     * flat + SQLite loaders reconcile the bit against the baked ROM checkpoint:
+     *   - below the checkpoint: STRIP it (re-derive, never trust);
+     *   - above it:            DEMOTE it to a lazy revalidation candidate
+     *                          (clear the FAILED bit, set BLOCK_REVALIDATE_PENDING).
+     * Either way the demoted/stripped block is failure-free, so
+     * select_most_work_eligible() promotes it again. Genuinely-failed behavior
+     * is unchanged — the marker DEMANDS revalidation; the loader never blesses
+     * the block (no HAVE bit added, validity level not raised). */
+
+    /* ── T1: pure unit test of the policy helper (deterministic). ──────── */
+    {
+        /* Below checkpoint (h=100, ckpt=1000): STRIP, no marker. */
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nHeight = 100;
+        bi.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA | BLOCK_FAILED_VALID;
+        int64_t before_strip = block_index_failed_bits_stripped();
+        enum block_index_failure_trust_action a1 =
+            block_index_apply_persisted_failure_trust(&bi, 1000);
+        bool strip_ok = (a1 == BLOCK_FAILURE_TRUST_STRIPPED) &&
+                        !(bi.nStatus & BLOCK_FAILED_MASK) &&
+                        !(bi.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                        /* validity level + HAVE bit preserved (no weakening) */
+                        (bi.nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_SCRIPTS &&
+                        (bi.nStatus & BLOCK_HAVE_DATA) &&
+                        block_index_failed_bits_stripped() == before_strip + 1;
+        BIL_CHECK("bil: policy strips FAILED below the ROM checkpoint", strip_ok);
+
+        /* Above checkpoint (h=2000, ckpt=1000): DEMOTE to a candidate. */
+        struct block_index bi2;
+        block_index_init(&bi2);
+        bi2.nHeight = 2000;
+        bi2.nStatus = BLOCK_VALID_TREE | BLOCK_FAILED_CHILD;
+        int64_t before_demote = block_index_failed_bits_demoted();
+        enum block_index_failure_trust_action a2 =
+            block_index_apply_persisted_failure_trust(&bi2, 1000);
+        bool demote_ok = (a2 == BLOCK_FAILURE_TRUST_DEMOTED) &&
+                         !(bi2.nStatus & BLOCK_FAILED_MASK) &&
+                         (bi2.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                         !block_has_any_failure(&bi2) &&      /* selectable */
+                         block_is_revalidation_pending(&bi2) &&
+                         (bi2.nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_TREE &&
+                         block_index_failed_bits_demoted() == before_demote + 1;
+        BIL_CHECK("bil: policy demotes FAILED above the checkpoint to a "
+                  "revalidation candidate", demote_ok);
+
+        /* No persisted verdict + a stale round-tripped marker → NONE, marker
+         * self-clears, no counter movement, other bits untouched. */
+        struct block_index bi3;
+        block_index_init(&bi3);
+        bi3.nHeight = 2000;
+        bi3.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA |
+                      BLOCK_REVALIDATE_PENDING;
+        enum block_index_failure_trust_action a3 =
+            block_index_apply_persisted_failure_trust(&bi3, 1000);
+        bool none_ok = (a3 == BLOCK_FAILURE_TRUST_NONE) &&
+                       !(bi3.nStatus & BLOCK_REVALIDATE_PENDING) &&
+                       bi3.nStatus == (unsigned)(BLOCK_VALID_SCRIPTS |
+                                                 BLOCK_HAVE_DATA);
+        BIL_CHECK("bil: policy clears a stale round-tripped marker when no "
+                  "FAILED bit is present", none_ok);
+    }
+
+    /* ── T2: end-to-end via the FLAT loader with a low override checkpoint,
+     * proving the demote cures the wedge at the selection layer. A synthetic
+     * chain h=0..49 with a FAILED_VALID stamped on the tip is saved and
+     * reloaded; the override checkpoint at h=10 puts the tip ABOVE it, so the
+     * reloaded tip must be demoted (FAILED cleared + marker set) and
+     * select_most_work_eligible() must return it. */
+    {
+        struct rom_state_checkpoint ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.height = 10;   /* tip h=49 sits ABOVE this */
+        checkpoints_set_rom_state_override_for_test(&ov);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 50);
+
+        /* Stamp a STALE FAILED_VALID on the best-chain tip (h=49). */
+        struct uint256 tip_hash = make_test_hash(49);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_demote", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (ok) save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct block_index *loaded =
+            ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+        bool demoted = loaded &&
+            !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+            block_is_revalidation_pending(loaded) &&
+            !block_has_any_failure(loaded);
+
+        /* The cured tip must now be the most-work selection (was excluded by
+         * the stale FAILED bit before the reconcile). */
+        struct block_index *sel =
+            ok ? select_most_work_eligible(&ms2.chain_active,
+                                           &ms2.map_block_index, NULL) : NULL;
+        bool selected = (sel == loaded);
+
+        BIL_CHECK("bil: flat loader demotes a stale FAILED tip above the "
+                  "checkpoint and it becomes selectable", demoted && selected);
+
+        checkpoints_reset_rom_state_override_for_test();
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── T3: FLAT loader with the DEFAULT (high) checkpoint — the whole
+     * synthetic chain is BELOW it, so a stale FAILED tip is STRIPPED (no
+     * marker) and still becomes selectable. */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 40);
+
+        struct uint256 tip_hash = make_test_hash(39);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_strip", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (ok) save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct block_index *loaded =
+            ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+        bool stripped = loaded &&
+            !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+            !block_is_revalidation_pending(loaded) &&   /* below ckpt = no marker */
+            !block_has_any_failure(loaded);
+        struct block_index *sel =
+            ok ? select_most_work_eligible(&ms2.chain_active,
+                                           &ms2.map_block_index, NULL) : NULL;
+        bool selected = (sel == loaded);
+        BIL_CHECK("bil: flat loader strips a stale FAILED tip below the default "
+                  "checkpoint and it becomes selectable", stripped && selected);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── T4: SQLite loader applies the SAME reconcile. A FAILED_VALID tip
+     * above a low override checkpoint is demoted on load_block_index_sqlite. */
+    {
+        struct rom_state_checkpoint ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.height = 10;
+        checkpoints_set_rom_state_override_for_test(&ov);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 1200);
+
+        struct uint256 tip_hash = make_test_hash(1199);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &tip_hash);
+        bool ok = (tip != NULL);
+        if (ok) tip->nStatus |= BLOCK_FAILED_VALID;
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        if (ok) {
+            sqlite3_exec(ndb.db,
+                "CREATE TABLE block_index_cache ("
+                "hash BLOB PRIMARY KEY,prev_hash BLOB,height INTEGER,"
+                "n_bits INTEGER,n_time INTEGER,n_version INTEGER,"
+                "n_status INTEGER,n_file INTEGER,n_data_pos INTEGER,"
+                "n_undo_pos INTEGER,n_tx INTEGER,chain_work BLOB,"
+                "n_cached_branch_id INTEGER,n_chain_tx INTEGER)",
+                NULL, NULL, NULL);
+            save_block_index_recent(&ndb, &ms);
+
+            struct main_state ms2;
+            memset(&ms2, 0, sizeof(ms2));
+            block_map_init(&ms2.map_block_index);
+            active_chain_init(&ms2.chain_active);
+            ok = load_block_index_sqlite(&ndb, &ms2).ok;
+
+            struct block_index *loaded =
+                ok ? block_map_find(&ms2.map_block_index, &tip_hash) : NULL;
+            bool demoted = loaded &&
+                !(loaded->nStatus & BLOCK_FAILED_MASK) &&
+                block_is_revalidation_pending(loaded) &&
+                !block_has_any_failure(loaded);
+            BIL_CHECK("bil: SQLite loader demotes a stale FAILED tip above the "
+                      "checkpoint", ok && demoted);
+
+            block_map_free(&ms2.map_block_index);
+            sqlite3_close(ndb.db);
+        }
+        checkpoints_reset_rom_state_override_for_test();
+        block_map_free(&ms.map_block_index);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

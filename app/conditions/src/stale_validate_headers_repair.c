@@ -8,9 +8,11 @@
 #include "services/header_probe.h"
 #include "services/sync_monitor.h"
 #include "net/connman.h"
+#include "platform/time_compat.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -31,6 +33,13 @@ static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
  * solution appears on a later tick and is attributed there). Reset when the
  * episode target changes (detect) or on test reset. */
 static _Atomic int g_repair_pending_source = HEADER_PROBE_SRC_NONE;
+
+/* De-storm the remedy's recurring "deferring" WARN: the condition re-arms on
+ * cooldown forever (cooldown_max_rearms=0) while a missing-input episode
+ * persists, so an unthrottled WARN here is a co-mechanism of the log storm.
+ * Keyed on (target,peers-available) — a genuinely-new episode re-emits, a
+ * stuck repeat collapses to first-fire + 60 s keepalive. */
+static struct log_throttle g_stale_repair_defer_log = LOG_THROTTLE_INIT;
 
 /* Typed blocker id: names the missing input when NEITHER the oracle NOR any
  * peer can serve the header-solution repair. TRANSIENT class — the Condition's
@@ -267,6 +276,18 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
         int peers = cure_request_peer_refetch(target);
         atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_P2P);
         header_probe_note_p2p_request(target, peers);
+        /* De-storm: while the oracle is down / no peer can serve, this remedy
+         * re-fires on the condition cooldown re-arm indefinitely (by design —
+         * cooldown_max_rearms=0). Throttle the deferral WARN so a persistent
+         * missing-input episode collapses to first-fire + 60 s keepalive keyed
+         * on the (target,peers-available) fingerprint, rather than one WARN per
+         * re-arm. The typed blocker (below) remains the authoritative signal. */
+        uint64_t defer_key =
+            ((uint64_t)(uint32_t)target << 1) | (uint64_t)(peers > 0 ? 1u : 0u);
+        uint64_t defer_reps = 0;
+        bool emit_defer = log_throttle_should_emit(
+            &g_stale_repair_defer_log, defer_key, platform_time_wall_unix(),
+            60, &defer_reps);
         if (peers <= 0) {
             /* Missing input: no oracle, no peer can serve the repair right now.
              * Name it with a typed blocker and SKIP. condition.c increments
@@ -275,19 +296,23 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
              * always-terminating remedy on a recoverable cause — never a latch
              * to EV_OPERATOR_NEEDED. */
             raise_stale_header_no_source_blocker(target);
-            LOG_WARN("condition",
-                     "[condition:stale_validate_headers_repair] "
-                     "no durable repair header h=%d via oracle AND no peers "
-                     "(peers=%d) — named blocker %s, deferring (cooldown "
-                     "re-arms, no operator page)", target, peers,
-                     STALE_HEADER_NO_SOURCE_BLOCKER_ID);
+            if (emit_defer)
+                LOG_WARN("condition",
+                         "[condition:stale_validate_headers_repair] "
+                         "no durable repair header h=%d via oracle AND no peers "
+                         "(peers=%d) — named blocker %s, deferring (cooldown "
+                         "re-arms, no operator page) (repeats=%llu)", target,
+                         peers, STALE_HEADER_NO_SOURCE_BLOCKER_ID,
+                         (unsigned long long)defer_reps);
         } else {
             clear_stale_header_no_source_blocker();
-            LOG_WARN("condition",
-                     "[condition:stale_validate_headers_repair] "
-                     "no durable repair header h=%d via oracle — requested P2P "
-                     "getdata re-fetch (peers=%d), deferring (no operator page)",
-                     target, peers);
+            if (emit_defer)
+                LOG_WARN("condition",
+                         "[condition:stale_validate_headers_repair] "
+                         "no durable repair header h=%d via oracle — requested "
+                         "P2P getdata re-fetch (peers=%d), deferring (no "
+                         "operator page) (repeats=%llu)", target, peers,
+                         (unsigned long long)defer_reps);
         }
         return COND_REMEDY_SKIP;
     }
@@ -466,6 +491,7 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_test_peer_count_override, -1);
 #endif
     clear_stale_header_no_source_blocker();
+    log_throttle_reset(&g_stale_repair_defer_log);
     condition_reset_state(&c_stale_validate_headers_repair);
     /* Zero last_remedy_unix so condition_due_for_remedy treats the next tick
      * as due (last==0 bypasses the wall-clock backoff). There is no

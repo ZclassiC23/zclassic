@@ -84,8 +84,11 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
  * that hole.
  *
  * Each row's header is re-serialized and its PoW hash recomputed; a row whose
- * stored `hash` does not equal that value REFUSES the whole hydration (loud
- * named blocker, .ok=false) so a poisoned table never seeds a partial map.
+ * stored `hash` does not equal that value (J5) is QUARANTINED per-row —
+ * db_block_delete purges it, a typed blocker names height+hash+reason, a
+ * dumpstate counter (block_index_blocks_hydrate_quarantined) increments, and
+ * the load CONTINUES with the remaining rows (the purged height re-fetches via
+ * header sync + body_fetch). Only a grossly-shredded table refuses whole.
  * Parent linkage is asserted via the pprev link pass, and nChainWork is
  * recomputed from the linked chain (the imported chain_work column is zero).
  * Entries install HONESTLY as header-only: BLOCK_VALID level clamped to at
@@ -94,10 +97,16 @@ struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state
  *
  * Intended as a boot loader rung that fires ONLY when the earlier rungs leave a
  * (near-)empty map yet `blocks` has rows. Returns .ok=true on a non-empty
- * hydrate; .ok=false (map untouched by the refusal path) on an empty table, a
- * prepare error, or the first non-hash-bound row. */
+ * hydrate (even with some rows quarantined); .ok=false (map untouched by the
+ * refusal paths) on an empty table, a prepare error, all-rows-poisoned, or the
+ * gross-corruption refusal. */
 struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
                                                      struct main_state *ms);
+
+/* Dumpstate-visible tally (process-monotonic) of poisoned `blocks` rows purged
+ * by the load_block_index_from_blocks_table per-row quarantine (J5). Surfaced
+ * by diag_block_index_dump_state_json. Reentrant/lock-free. */
+int64_t block_index_blocks_hydrate_quarantined(void);
 
 /* ── LevelDB block tree ──────────────────────────────────── */
 
@@ -120,6 +129,46 @@ struct zcl_result load_block_index(struct main_state *ms,
 
 struct block_index;
 
+/* Persisted-FAILED-bit trust policy verdict for one just-loaded entry
+ * (block_index_apply_persisted_failure_trust). */
+enum block_index_failure_trust_action {
+    BLOCK_FAILURE_TRUST_NONE = 0, /* no persisted FAILED bit — left untouched */
+    BLOCK_FAILURE_TRUST_STRIPPED, /* below the ROM checkpoint — bits stripped */
+    BLOCK_FAILURE_TRUST_DEMOTED,  /* above — demoted to a revalidation candidate */
+};
+
+/* Reconcile a just-loaded block_index entry's PERSISTED negative verdict against
+ * the baked ROM checkpoint trust boundary. Called per entry by the flat and
+ * SQLite loaders (single-threaded, right after nHeight + nStatus are seated),
+ * so it is O(1) per entry and adds NO extra boot-time scan.
+ *
+ *   Below the baked ROM checkpoint height (get_rom_state_checkpoint()->height):
+ *     the state is checkpoint-trusted and re-derived from the baked keystone —
+ *     STRIP any persisted BLOCK_FAILED_VALID/FAILED_CHILD (never trust a
+ *     persisted verdict below the ROM), and do not flag revalidation.
+ *
+ *   Above it: a persisted FAILED verdict is a revalidation CANDIDATE, never
+ *     final — clear the real FAILED bits (so a STALE bit can never exclude this
+ *     block from find_most_work_chain / promote_best_header before revalidation
+ *     re-confirms it — the "stale BLOCK_FAILED_VALID wedges tip" class) and set
+ *     the node-local BLOCK_REVALIDATE_PENDING marker. The stages re-run full
+ *     validation when the fold reaches the block; a GENUINE failure is re-set
+ *     fresh by the connect path, so behavior for genuinely-failed blocks is
+ *     unchanged (no weakening).
+ *
+ * The BLOCK_REVALIDATE_PENDING marker is runtime-derived: any bit a prior save
+ * round-tripped to disk is cleared first, so it reflects only THIS load. Returns
+ * the action taken (for the caller's per-load summary + the process counters). */
+enum block_index_failure_trust_action
+block_index_apply_persisted_failure_trust(struct block_index *pindex,
+                                           int32_t checkpoint_height);
+
+/* Process-monotonic tallies of persisted FAILED bits the loaders reconciled:
+ * stripped below the ROM checkpoint, or demoted to revalidation candidates above
+ * it. Surfaced by diag_block_index_dump_state_json. Reentrant/lock-free. */
+int64_t block_index_failed_bits_stripped(void);
+int64_t block_index_failed_bits_demoted(void);
+
 /* Forward pass over a height-sorted block_index array: recompute
  * nChainWork, nChainTx, skip links, cached branch id, and failed-child
  * propagation from each entry's (already-linked) pprev. Shared by the
@@ -127,6 +176,16 @@ struct block_index;
  * the pointer-graph-derived fields identically. `sorted` must be height-ASC
  * ordered. */
 void block_index_forward_pass(struct block_index **sorted, size_t count);
+
+/* Publish the max-chainwork header of a just-loaded, forward-passed map into
+ * pindex_best_header and seat it in the active_chain[] window (THE LINCHPIN so
+ * active_chain_tip() is non-NULL over a freshly-hydrated header map). Shared by
+ * the LevelDB rung and the `blocks`-table hydrate (block_index_blocks_hydrate.c)
+ * so both anchor the getheaders locator identically. Idempotent + work-ranked
+ * (never downgrades); changes only which header the locator anchors at, never
+ * consensus validity/coins/H*. `sorted` must be height-ASC. */
+void promote_best_header_after_load(struct main_state *ms,
+                                    struct block_index **sorted, size_t count);
 
 /* ── Projection-backed boot rebuild (event_log -> projection -> map) ───── */
 
