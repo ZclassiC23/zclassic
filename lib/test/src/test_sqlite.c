@@ -864,6 +864,42 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* DB block delete-by-height (blocks-hydrate quarantine of a hashless row) */
+    {
+        printf("SQLite block delete_by_height... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0x5A, 32);
+        blk.height = 777;
+        memset(blk.prev_hash, 0x5B, 32);
+        blk.version = 4;
+        memset(blk.merkle_root, 0x5C, 32);
+        blk.time = 1700000777;
+        blk.bits = 0x1d00ffff;
+        memset(blk.nonce, 0x5D, 32);
+        uint8_t sol[] = {0x09, 0x08, 0x07};
+        blk.solution = sol;
+        blk.solution_len = 3;
+        memset(blk.chain_work, 0x5E, 32);
+        blk.status = 5;
+        blk.num_tx = 1;
+
+        ok = ok && db_block_save(&ndb, &blk);
+        ok = ok && (db_block_count(&ndb) == 1);
+        /* Purge by height (the row's hash is irrelevant to this path). */
+        ok = ok && db_block_delete_by_height(&ndb, 777);
+        ok = ok && (db_block_count(&ndb) == 0);
+        /* Idempotent: deleting an absent height still succeeds (no such row). */
+        ok = ok && db_block_delete_by_height(&ndb, 777);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* DB canonical block projection demotes stale same-height rows */
     {
         printf("SQLite canonical block save demotes stale height... ");

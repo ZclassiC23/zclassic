@@ -12,6 +12,7 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "services/block_index_integrity.h"
+#include "services/block_index_loader.h"
 #include "services/utxo_recovery_service.h"
 #include "sync/sync_planner.h"
 #include "util/blocker.h"
@@ -210,6 +211,13 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
         diag_push_health(out, !integrity_degraded,
                          integrity_degraded ? integrity_reason : "");
     }
+
+    /* J5 blocks-hydrate per-row quarantine tally (process-monotonic). Global,
+     * not per-block, so it is emitted regardless of whether `key` resolved a
+     * block_index entry. */
+    json_push_kv_int(out, "blocks_hydrate_quarantined",
+                     block_index_blocks_hydrate_quarantined());
+
     if (!bi) {
         json_push_kv_bool(out, "found", false);
         json_push_kv_str(out, "key", key ? key : "");
