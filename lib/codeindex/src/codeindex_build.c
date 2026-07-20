@@ -333,19 +333,6 @@ static bool source_stat_cb(const char *relpath, const struct stat *st,
     return true;
 }
 
-bool codeindex_source_root_sha3(const char *root, uint8_t out[32])
-{
-    if (!root || !out) LOG_FAIL("codeindex", "null arg to source_root_sha3");
-    struct stamp_ctx c;
-    memset(&c, 0, sizeof(c));
-    c.root = root;
-    source_root_init(&c.sha);
-    if (!ci_enumerate_sources(root, stamp_cb, &c))
-        LOG_FAIL("codeindex", "enumerate for stamp failed");
-    sha3_256_finalize(&c.sha, out);
-    return true;
-}
-
 bool ci_source_roots_sha3(const char *root, uint8_t exact_out[32],
                           uint8_t stat_out[32])
 {

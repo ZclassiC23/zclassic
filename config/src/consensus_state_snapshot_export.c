@@ -398,13 +398,6 @@ void consensus_state_snapshot_export_test_set_after_staging_create_hook(
     g_after_staging_create_ctx = ctx;
 }
 
-void consensus_state_snapshot_export_test_set_before_link_hook(
-    void (*hook)(void *), void *ctx)
-{
-    g_before_link_hook = hook;
-    g_before_link_ctx = ctx;
-}
-
 void consensus_export_run_after_bind_hook(void)
 {
     void (*hook)(void *) = g_after_output_bind_hook;

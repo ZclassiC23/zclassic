@@ -39,7 +39,6 @@ struct app_runtime_tx_index_hit {
  * - shutdown clears it before owned resources are freed
  */
 void app_runtime_set_current(struct app_runtime_context *runtime);
-const struct app_runtime_context *app_runtime_current(void);
 
 struct db_service *app_runtime_db_service(void);
 struct node_db *app_runtime_node_db(void);
@@ -50,7 +49,6 @@ bool app_runtime_node_db_state_set(struct node_db *ndb,
                                    size_t len);
 void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb);
-bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb);
 int app_runtime_node_db_utxo_max_height(struct node_db *ndb);
 bool app_runtime_node_db_tx_index_find(struct node_db *ndb,
                                        const uint8_t txid[32],

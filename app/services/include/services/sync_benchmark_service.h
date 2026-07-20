@@ -72,11 +72,6 @@ void sync_benchmark_mark_sovereign(void);
 void sync_benchmark_note_downloaded(uint64_t bytes);
 void sync_benchmark_note_reused(uint64_t bytes);
 void sync_benchmark_note_redownloaded(uint64_t bytes);
-void sync_benchmark_note_disk_write(uint64_t bytes);
-
-/* Network context. estimated_mbps < 0 or peer_count < 0 leaves that field
- * unmeasured (null). */
-void sync_benchmark_set_network(double estimated_mbps, int peer_count);
 
 /* Artifact identity (the fetched artifact's chunk_root as lowercase hex, or any
  * bounded identifier). Copied; NULL/"" leaves artifact_id null. */

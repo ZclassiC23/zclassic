@@ -64,17 +64,6 @@ bool process_block_live_height(int height)
     return height > 1000000;
 }
 
-void process_block_log_live_stage(int height,
-                                  const char *stage,
-                                  int64_t elapsed_us)
-{
-    if (!process_block_live_height(height))
-        return;
-    fprintf(stderr, "process_block.stage: h=%d stage=%s elapsed_ms=%lld\n", // obs-ok:pre-existing-diagnostic
-            height, stage, (long long)(elapsed_us / 1000));
-    fflush(stderr);
-}
-
 /* ── body-pull signal (public via process_block.h) ───────────── */
 /* See process_block.h. Set by fast-sync ingesters before their loops;
  * cleared after. Each per-block validation pass reads atomically. */
@@ -86,43 +75,9 @@ _Atomic int g_body_pull_active = 0;
  * progress. */
 static _Atomic bool s_active_tip_more_pending = false;
 
-void process_block_set_active_tip_more_pending(bool v)
-{
-    atomic_store(&s_active_tip_more_pending, v);
-}
-
 bool process_block_active_tip_has_pending(void)
 {
     return atomic_load(&s_active_tip_more_pending);
-}
-
-/* ── tip-child-connect limit knob ─────────────────────────────── */
-int active_tip_child_connect_limit(void)
-{
-    const char *limit_env = getenv("ZCL_ACTIVE_TIP_CHILD_CONNECT_LIMIT");
-    char *end = NULL;
-    long limit;
-
-    if (!limit_env || limit_env[0] == '\0')
-        return ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT;
-
-    limit = strtol(limit_env, &end, 10);
-    if (end == limit_env || *end != '\0' ||
-        limit <= 0 || limit > INT_MAX)
-        return ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT;
-
-    return (int)limit;
-}
-
-/* ── wallet / mempool accessors used by validation helpers ───── */
-struct wallet *process_block_wallet(void)
-{
-    return app_runtime_wallet();
-}
-
-struct tx_mempool *process_block_mempool(void)
-{
-    return app_runtime_mempool();
 }
 
 /* ── Cross-file accessors used by chain_advance / introspection ── */
@@ -130,9 +85,4 @@ struct tx_mempool *process_block_mempool(void)
 struct coins_view_sqlite *process_block_get_coins_sqlite(void)
 {
     return process_block_coins_sqlite_ptr();
-}
-
-struct block_tree_db *process_block_get_block_tree(void)
-{
-    return g_active_block_tree;
 }

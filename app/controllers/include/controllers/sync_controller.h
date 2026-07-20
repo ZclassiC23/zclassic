@@ -153,16 +153,6 @@ int sapling_tree_rebuild_test_persist_deferrals(void);
 void sapling_tree_rebuild_test_reset_persist_deferrals(void);
 #endif
 
-/* Called after a block is successfully connected to the active chain.
- * Indexes the block header, all transactions, and updates the UTXO set.
- * Runs inside a SQLite transaction for atomicity. */
-bool node_db_sync_connect_block(struct node_db *ndb,
-                                const struct block *blk,
-                                const struct block_index *pindex);
-bool node_db_sync_connect_block_async(struct node_db *ndb,
-                                      const struct block *blk,
-                                      const struct block_index *pindex);
-
 /* Called when a transaction is added to the wallet.
  * Tracks wallet-owned UTXOs and marks spent inputs. */
 bool node_db_sync_wallet_tx(struct node_db *ndb,

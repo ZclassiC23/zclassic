@@ -116,8 +116,6 @@ void consensus_state_snapshot_export_test_set_after_output_bind_hook(
     void (*hook)(void *), void *ctx);
 void consensus_state_snapshot_export_test_set_after_staging_create_hook(
     void (*hook)(void *), void *ctx);
-void consensus_state_snapshot_export_test_set_before_link_hook(
-    void (*hook)(void *), void *ctx);
 #endif
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_EXPORT_H */

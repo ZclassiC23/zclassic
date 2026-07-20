@@ -82,13 +82,6 @@ struct zcl_result snapsync_bind_store_internal(
     struct node_db *ndb,
     struct snapshot_store_port *out_port);
 
-/* Anchor slot accessor — exposes the static non-owning
- * g_snapshot_anchor pointer to snapshot_apply.c, which needs to set it
- * on metadata-anchor paths. Defined in snapshot_sync_service.c so the
- * public snapsync_get_anchor / snapsync_set_anchor remain in the
- * central translation unit. */
-struct block_index **snapsync_anchor_slot_internal(void);
-
 /* ── Manifest <-> params helpers (snapshot_offer.c) ────────────── */
 enum snapsync_offer_result snapsync_offer_result_from_manifest_internal(
     enum snapshot_manifest_result result);

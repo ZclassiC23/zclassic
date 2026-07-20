@@ -72,14 +72,6 @@ extern _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
 /* process_block.c */
 struct node_db *process_block_node_db_internal(void);
 bool process_block_live_height(int height);
-void process_block_log_live_stage(int height, const char *stage,
-                                  int64_t elapsed_us);
-int active_tip_child_connect_limit(void);
-struct wallet *process_block_wallet(void);
-struct tx_mempool *process_block_mempool(void);
-/* "more pending" signal set/read by staged activation drains and the public
- * process_block_active_tip_has_pending API. */
-void process_block_set_active_tip_more_pending(bool v);
 
 /* process_block_runtime_hooks.c */
 void process_block_kick_gap_fill(void);
