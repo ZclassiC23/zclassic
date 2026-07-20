@@ -40,15 +40,15 @@ struct snapshot_manifest {
     int32_t  peer_tip_height;
 };
 
-/* zcl_ids.h adoption (WF1 lane 1B, additive-only): strongly-typed readers
- * for the raw fields above. Wire layout is UNCHANGED — every field stays a
- * bare int32_t/uint8_t[32] a wire memcpy/parse writes directly; these are
- * read-side aliases only. `mmr_root` has no zcl_ids wrapper yet (it is
- * distinct from `mmb_root` and no dedicated MMR-root type exists) and
- * `num_utxos`/`protocol_version`/`snapshot_schema_version`/`peer_tip_height`
- * are left as their native scalar types — zcl_byte_count is reserved for
- * byte sizes, not item counts, so wrapping num_utxos with it would be a
- * type lie. Full struct-field migration is an explicit future slice. */
+/* zcl_ids.h adoption (additive-only): strongly-typed readers for the raw
+ * fields above. Wire layout is UNCHANGED — every field stays a bare
+ * int32_t/uint8_t[32] a wire memcpy/parse writes directly; these are
+ * read-side aliases only. `mmr_root` has no zcl_ids wrapper (it is distinct
+ * from `mmb_root` and no dedicated MMR-root type exists), and `num_utxos` /
+ * `protocol_version` / `snapshot_schema_version` / `peer_tip_height` stay
+ * their native scalar types on purpose: zcl_byte_count is reserved for byte
+ * sizes, not item counts, so wrapping num_utxos with it would be a type
+ * lie. A new dedicated wrapper type is the only way to close this gap. */
 _Static_assert(sizeof(((struct snapshot_manifest *)0)->block_hash) == sizeof(struct zcl_block_hash),
                "snapshot_manifest.block_hash must stay wire-compatible with zcl_block_hash");
 _Static_assert(sizeof(((struct snapshot_manifest *)0)->utxo_root) == sizeof(struct zcl_utxo_root),

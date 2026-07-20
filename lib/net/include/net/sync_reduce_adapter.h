@@ -2,8 +2,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* SHADOW-mode adapter for the pure sync kernel (sync/sync_reduce.h) — WF1
- * lane 1D. Builds the kernel's `sync_kernel_state` + `sync_event` from the
+/* SHADOW-mode adapter for the pure sync kernel (sync/sync_reduce.h).
+ * Builds the kernel's `sync_kernel_state` + `sync_event` from the
  * SAME inputs the reference offer-accept path (msgprocessor_snapshot.c)
  * already computed, calls `sync_reduce()`, and reports whether its
  * structural accept/reject decision agrees with the reference's. The

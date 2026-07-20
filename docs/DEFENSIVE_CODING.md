@@ -551,6 +551,7 @@ add/remove a gate.
 - `check-peer-floor-single-source`
 - `check-proc-self-shim`
 - `check-no-authoritative-ram-state`
+- `check-no-dev-history-in-contracts`
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
@@ -613,6 +614,17 @@ lint`; they are documented in their own docs rather than expanded here.)
 
 `check-no-retired-agent-protocol` rejects the retired agent-transport token in
 tracked paths and filenames while explicitly allowing ordinary `memcpy` usage.
+
+`check-no-dev-history-in-contracts` (`tools/scripts/
+check_no_dev_history_in_contracts.sh`) rejects a narrow, high-signal set of
+dev-history phrases ("STEP-0 STATUS", "stub bodies"/"stub body", `lane
+[0-9][A-Z]?` e.g. "lane 2A", "future slice") from production contract
+surfaces: every `*.h` under any `**/include/**` directory, and every `*.def`
+table. Once the real body lands, that phrasing is INCORRECT MODEL CONTEXT —
+an agent or operator reading the header trusts it over the `.c` file and
+wrongly concludes the feature is still a stub. `docs/`, `vendor/`, and any
+path with a `test`/`tests` component or a `*_test.*` filename are allowed to
+narrate dev history on purpose and are excluded from the scan.
 
 ---
 

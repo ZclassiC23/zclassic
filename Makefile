@@ -4951,6 +4951,14 @@ check-file-size-ceiling:
 	@echo "══ LINT: app/ file-size ceiling (E1) ══"
 	@./tools/scripts/check_file_size_ceiling.sh
 
+# Rejects dev-history phrasing ("STEP-0 STATUS", "stub bodies"/"stub body",
+# "lane <N><letter>", "future slice") from production contract surfaces
+# (*.h under any **/include/**, *.def tables) — INCORRECT MODEL CONTEXT once
+# the real body has landed. docs/, vendor/, and test paths narrate history on
+# purpose and are excluded. See tools/scripts/check_no_dev_history_in_contracts.sh.
+check-no-dev-history-in-contracts:
+	@./tools/scripts/check_no_dev_history_in_contracts.sh
+
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
 # without a subscriber in lib/util/src/alerts.c.
@@ -5256,6 +5264,7 @@ LINT_GATES := \
     check-projections-pure \
     check-one-write-path \
     check-no-authoritative-ram-state \
+    check-no-dev-history-in-contracts \
     check-stage-advances-or-blocks \
     check-no-silent-ready \
     check-honest-witness \

@@ -126,6 +126,7 @@ gate_command() {
         check-projections-pure)            echo './tools/scripts/check_projections_pure.sh' ;;
         check-one-write-path)              echo './tools/scripts/check_one_write_path.sh' ;;
         check-no-authoritative-ram-state)  echo './tools/scripts/check_no_authoritative_ram_state.sh' ;;
+        check-no-dev-history-in-contracts) echo './tools/scripts/check_no_dev_history_in_contracts.sh' ;;
         check-stage-advances-or-blocks)    echo './tools/scripts/check_stage_advances_or_blocks.sh' ;;
         check-no-silent-ready)             echo './tools/scripts/check_no_silent_ready.sh' ;;
         check-honest-witness)              echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh' ;;

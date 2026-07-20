@@ -203,8 +203,7 @@ bool rom_seed_dump_state_json(struct json_value *out, const char *key);
  * The seeder already holds every per-chunk SHA3 in RAM (rom_artifact.chunk_sha3);
  * this serializes them for the "RMF" manifest reply:
  *   [u32 version][u32 num_chunks][num_chunks × 32B chunk_sha3]
- * under the existing file-service MAC scheme. STEP-0 STATUS: contract + stub;
- * lane 2A lands the real serializer. */
+ * under the existing file-service MAC scheme. */
 
 /* Max serialized manifest-blob size: header (8) + one 32-byte digest per
  * chunk, bounded by ROM_SEED_MAX_CHUNKS. */

@@ -190,8 +190,7 @@ bool rom_fetch_dump_state_json(struct json_value *out, const char *key);
  * verification, so a resume can trust individual chunks. Back-compat is the
  * refusal: a legacy seeder that does not understand the "RMF" manifest request
  * replies FS_DONE, rom_fetch_get_manifest returns false, and the caller falls
- * back to the whole-file path — never an offence. STEP-0 STATUS: contract +
- * stub bodies; lanes 2A/2B land the real serve/verify/resume. */
+ * back to the whole-file path — never an offence. */
 
 /* Fetch the per-chunk SHA3 manifest for the artifact keyed by `chunk_root`
  * from peer_addr:port (the "RMF" request, FS_ROM_MANIFEST_REQUEST_SIZE). Fills
