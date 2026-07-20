@@ -10,6 +10,7 @@
 #include "net/rom_fetch.h"
 #include "net/file_service.h"
 #include "net/rom_journal.h"
+#include "net/rom_peer_scoring.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -319,9 +320,14 @@ bool rom_fetch_chunk(const char *peer_addr, uint16_t port,
     uint8_t diff = 0;
     for (int i = 0; i < 32; i++)
         diff |= mac_wire[i] ^ mac_expect[i];
-    if (diff != 0)
+    if (diff != 0) {
+        /* Scoring, not a content verdict: chunk-level whole-file content
+         * proof is a separate later step. This only stops us from wasting
+         * more retries on a peer whose transport MAC keeps failing. */
+        (void)rom_peer_note_bad_chunk(peer_addr, port, idx, "mac");
         LOG_FAIL(RF_SUBSYS, "chunk: transport MAC mismatch on chunk %u "
                  "from %s:%u", idx, peer_addr, (unsigned)port);
+    }
 
     *out_sz = size;
     return true;
@@ -1155,6 +1161,7 @@ static void *rf_ver_worker(void *arg)
             LOG_WARN(RF_SUBSYS, "ver: chunk %u/%u digest mismatch from %s:%u "
                      "(seeder served non-committed content)", i, j->num_chunks,
                      j->peer_addr, (unsigned)j->port);
+            (void)rom_peer_note_bad_chunk(j->peer_addr, j->port, i, "digest");
             atomic_store(&j->failed, true);
             atomic_store(&j->abort, true);
             break;

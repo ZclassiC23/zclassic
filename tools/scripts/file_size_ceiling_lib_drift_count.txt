@@ -67,4 +67,17 @@
 # re-baseline (515 is well under the 800 ceiling). Live drift measured at
 # 13 (all pre-existing grown-file WARNs, no new unbaselined files). Ratchet
 # lowered 15 -> 13.
+#
+# 2026-07-20 (lane wf/a4-rom-hardening): rom_fetch.c grew 1420 -> 1427 to
+# wire net/rom_peer_scoring.h's rom_peer_note_bad_chunk() into the two
+# existing digest/MAC-mismatch sites (transport MAC check in
+# rom_fetch_chunk, per-chunk content verify in the resume worker) — a
+# 2-call, 1-include wiring change, not new growth to pay down. rom_seed.c
+# grew 891 -> 892: rom_seed_dump_state_json() was missing json_set_object(out)
+# before its json_push_kv_* calls (every field silently no-op'd on a
+# non-JSON_OBJ target — json_push_kv() returns false when obj->type !=
+# JSON_OBJ), a pre-existing bug this lane's byte-accounting test exposed as
+# its first real caller; one-line fix matching every other *_dump_state_json
+# in the codebase. Both re-baselined in file_size_ceiling_lib_baseline.txt
+# (1427, 892); count stays at 13.
 13

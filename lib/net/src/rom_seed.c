@@ -802,6 +802,7 @@ bool rom_seed_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
+    json_set_object(out);
 
     json_push_kv_bool(out, "enabled", atomic_load(&g_enabled));
     json_push_kv_int(out, "max_inflight_per_peer",
