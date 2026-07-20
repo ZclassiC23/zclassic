@@ -16,7 +16,11 @@
 
 #include "test/test_helpers.h"
 
+#include "coins/utxo_commitment.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
 #include "jobs/reducer_frontier.h"
+#include "models/database.h"
 #include "storage/progress_store.h"
 #include "storage/seal_kv.h"
 #include "util/blocker.h"
@@ -32,6 +36,29 @@
     if (expr) { printf("OK\n"); }                                  \
     else { printf("FAIL\n"); failures++; }                         \
 } while (0)
+
+/* reducer_frontier_nearest_self_verified_base() and its result struct are
+ * declared only in the PRIVATE header app/jobs/src/reducer_frontier_rewind_
+ * bases.h (deliberately not on the public app/jobs/include/jobs/ path — see
+ * that file's own PURPOSE comment). This is the driver-facing selector the
+ * sovereignty invariant under test (case_sovereign_base_ignores_borrowed_
+ * higher_stamp below) exists to pin, so the test calls the REAL linked
+ * symbol directly rather than only exercising it indirectly through the JSON
+ * dump's own separately-implemented nearest-tracking. Mirrors the private
+ * declaration byte-for-byte (same idiom as e.g. test_always_sync_selfheal.c's
+ * local `extern bool stage_rederive_range(...)` and test_stage_repair_
+ * script_refill.c's `extern bool stage_reducer_frontier_try_unapplied_hole_
+ * clamp(...)` — a test-only extern of a private production symbol, no
+ * production header/Makefile include-path change). */
+struct reducer_frontier_rewind_base {
+    int32_t height;
+    bool    self_derived;
+    bool    ratified;
+    char    kind[32];
+    char    commitment_sha3[65];
+};
+extern bool reducer_frontier_nearest_self_verified_base(
+    int32_t at_or_below, struct reducer_frontier_rewind_base *out);
 
 /* The anchor the production algorithm clamps to. Fixtures sit just above it
  * so the contiguous-prefix walk has something to traverse without building
@@ -1566,6 +1593,144 @@ static int case_dump_reports_rewind_bases(void)
     return failures;
 }
 
+/* THE sovereignty invariant (docs/work/self-verified-tip-plan.md): a rewind
+ * base is only trustworthy if THIS node self-derived it — a borrowed
+ * finalized_utxo_sha3 stamp (self_derived=false, written once at snapshot
+ * import, never re-derived by forward fold) must NEVER win over a genuinely
+ * self-verified rung (self_derived=true — here the compiled SHA3 checkpoint
+ * at the fixed anchor A), even when the borrowed stamp sits at a HIGHER
+ * height (closer to H*, i.e. a smaller/cheaper rewind under naive
+ * height-only selection).
+ *
+ * Fixture: rows [A+1..A+5] fully consistent (H*=A+5), a borrowed
+ * finalized_utxo_sha3 stamped at A+4 (self_derived=false, HIGHER than the
+ * compiled checkpoint at A), and NO self-verified candidate closer than the
+ * compiled checkpoint (no seal_kv slot seeded). Proves BOTH halves at once:
+ *   (1) reducer_frontier_nearest_self_verified_base() — the function the
+ *       generic recovery driver (rewind_driver.c) actually calls — returns
+ *       the LOWER self-verified height A, never the higher borrowed A+4.
+ *   (2) the LEGACY height-only nearest_rewind_base_* JSON keys (unchanged,
+ *       still height-first over any provenance) DO pick the higher borrowed
+ *       A+4 — proving the two selectors now genuinely disagree, which is
+ *       exactly the bug this fix closes. */
+static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "sovereign_base");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("sovereign-base: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("sovereign-base: schema", db && build_schema(db));
+    RF_CHECK("sovereign-base: proven authority",
+             db && stamp_proven_authority(db, A));
+
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 5; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("sovereign-base: rows built", built);
+    RF_CHECK("sovereign-base: cursors", set_all_cursors(db, A + 6));
+
+    /* Wire a real node_db + db_service into app_runtime so enumerate_rewind_
+     * bases()'s app_runtime_node_db() resolves to a live handle (same seam
+     * test_dbquery_secret_denylist.c proves against: node_db_open ->
+     * db_service_init/attach/start -> app_runtime_set_current) and stamp a
+     * BORROWED finalized_utxo_sha3 at A+4 — strictly HIGHER than the
+     * self-verified compiled checkpoint at A. */
+    struct node_db ndb;
+    struct db_service dbsvc;
+    struct app_runtime_context runtime;
+    memset(&ndb, 0, sizeof(ndb));
+    memset(&dbsvc, 0, sizeof(dbsvc));
+    memset(&runtime, 0, sizeof(runtime));
+    bool ndb_ok = node_db_open(&ndb, ":memory:");
+    RF_CHECK("sovereign-base: node_db opens", ndb_ok);
+    db_service_init(&dbsvc);
+    RF_CHECK("sovereign-base: db_service attaches",
+             ndb_ok && db_service_attach(&dbsvc, &ndb));
+    RF_CHECK("sovereign-base: db_service starts",
+             ndb_ok && db_service_start(&dbsvc));
+    runtime.db_service = &dbsvc;
+    app_runtime_set_current(&runtime);
+
+    uint8_t borrowed_hash[32];
+    memset(borrowed_hash, 0xCD, sizeof(borrowed_hash));
+    RF_CHECK("sovereign-base: borrowed utxo_sha3 stamp saved",
+             utxo_commitment_sha3_save(ndb.db, borrowed_hash, A + 4, 7));
+
+    /* (1) The driver-facing selector: must return the LOWER self-verified
+     * compiled checkpoint (A), never the higher borrowed stamp (A+4). */
+    struct reducer_frontier_rewind_base base;
+    memset(&base, 0, sizeof(base));
+    bool found = reducer_frontier_nearest_self_verified_base(A + 5, &base);
+    RF_CHECK("sovereign-base: selector finds a base", found);
+    if (found) {
+        RF_CHECK("sovereign-base: selector picks the LOWER self-verified "
+                 "height, not the higher borrowed one",
+                 base.height == A);
+        RF_CHECK("sovereign-base: selector's pick is self_derived",
+                 base.self_derived);
+        RF_CHECK("sovereign-base: selector's pick is compiled_checkpoint",
+                 strcmp(base.kind, "compiled_checkpoint") == 0);
+        RF_CHECK("sovereign-base: selector never returns the borrowed height",
+                 base.height != A + 4);
+    }
+
+    /* (2) The legacy height-only JSON keys (nearest_rewind_base_*, unchanged
+     * "nearest by height, any provenance" semantics): they DO pick the
+     * higher borrowed stamp — proving the fix is a genuine behavior change,
+     * not a no-op relabeling. */
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("sovereign-base: dump returns true", dumped);
+    if (dumped) {
+        RF_CHECK("sovereign-base: hstar reaches the built tip",
+                 json_get_int(json_get(&out, "hstar")) == A + 5);
+        RF_CHECK("sovereign-base: legacy nearest picks the HIGHER borrowed "
+                 "height",
+                 json_get_int(json_get(&out, "nearest_rewind_base_height"))
+                     == A + 4);
+        RF_CHECK("sovereign-base: legacy nearest is NOT self_derived (it is "
+                 "the borrowed stamp)",
+                 !json_get_bool(json_get(&out,
+                           "nearest_rewind_base_self_derived")));
+        RF_CHECK("sovereign-base: new self-verified key picks the LOWER "
+                 "compiled checkpoint",
+                 json_get_int(json_get(&out,
+                           "nearest_self_verified_base_height")) == A);
+        RF_CHECK("sovereign-base: new self-verified key names "
+                 "compiled_checkpoint",
+                 strcmp(json_get_str(json_get(&out,
+                           "nearest_self_verified_base_kind")),
+                        "compiled_checkpoint") == 0);
+        /* The two keys now genuinely disagree — the exact bug this fix
+         * closes (a height-first selector would have rewound to the
+         * borrowed A+4 instead of the sovereign A). */
+        RF_CHECK("sovereign-base: legacy and self-verified nearest heights "
+                 "now DIFFER (the fix)",
+                 json_get_int(json_get(&out, "nearest_rewind_base_height"))
+                     != json_get_int(json_get(&out,
+                           "nearest_self_verified_base_height")));
+    }
+    json_free(&out);
+
+    app_runtime_set_current(NULL);
+    db_service_stop(&dbsvc);
+    node_db_close(&ndb);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 /* Lane E3: the body torn-read repair note + quarantine + typed blocker that
  * stage_repair_read_active_block_checked records when a HAVE_DATA body cannot
  * be read (torn bytes / wrong block). Proves the note/quarantine/blocker logic
@@ -1679,6 +1844,7 @@ int test_reducer_frontier(void)
     failures += case_dump_reports_tip_finalize_real_hole();
     failures += case_log_frontier_above_tip_finalize_cursor();
     failures += case_dump_reports_rewind_bases();
+    failures += case_sovereign_base_ignores_borrowed_higher_stamp();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");
     else
