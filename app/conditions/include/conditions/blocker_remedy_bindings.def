@@ -241,3 +241,12 @@ ZCL_BLOCKER_REMEDY(boot.restart_loop,                            OWNER)
  * never an auto-cure. ───────────────────────────────────────────────── */
 ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.persist_busy,           OWNER)
 ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.fail_closed,            OWNER)
+/* ── OWNER — checkpoint ladder divergence (lib/storage/src/checkpoint_ladder.c).
+ * Fires when the ladder verifier finds a candidate rung artifact under
+ * <datadir>/checkpoint_rungs/ that is self-inconsistent, out of monotonic
+ * order, or CONFLICTS the compiled sealed keystone at its own height — a
+ * divergent state artifact. There is no auto-cure: the operator inspects
+ * `dumpstate checkpoint_ladder`, removes/replaces the offending artifact, or
+ * investigates why the node's own state diverges from a baked rung. The dumper
+ * self-clears the blocker on the next pass with no divergence. ──────────── */
+ZCL_BLOCKER_REMEDY(checkpoint_ladder.mismatch,                  OWNER)

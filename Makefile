@@ -2159,6 +2159,27 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
+# checkpoint_rung_export: the ladder RUNG generator. Reads a consensus-state
+# bundle and emits the complete-state rung at its height as BOTH a binary
+# artifact (parseable by the node's checkpoint_ladder verifier) and a C
+# designated-initializer fragment for the sealed keystone table (owner unseal
+# ritual only). Reuses the CANONICAL node rung module
+# (lib/storage/src/checkpoint_rung.c) so tool + node artifacts are byte-
+# identical; that TU is deliberately free of the chain/ include tree so it
+# links standalone here alongside vendored sqlite + lib/crypto sha3 + log_level.
+.PHONY: tools/checkpoint_rung_export
+tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
+$(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
+		lib/storage/src/checkpoint_rung.c lib/util/src/log_level.c \
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Wno-unused-result -Wno-stringop-overflow \
+	    -Ilib/storage/include -Ilib/crypto/include -Ilib/util/include \
+	    -Ilib/support/include -Ivendor/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
+
 # rom_bundle_sha3: standalone whole-file SHA3-256 digest tool used by
 # tools/scripts/rom-bundle-replicate.sh to verify a ROM bundle replication
 # copy byte-for-byte against its source. No node libs, no sqlite, no Tor —
