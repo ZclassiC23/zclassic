@@ -75,6 +75,12 @@
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define PRIV_RECEIPT_SCRIPT_REL \
     "tools/lint/check_privileged_transition_receipt.sh"
+/* Gate — no ordinal comparison of enum sync_trust_state. Plant a fixture with
+ * an ordinal comparison into a scanned dir → trip; remove → recover. */
+#define TRUST_ORDER_SCRIPT_REL \
+    "tools/scripts/check_no_trust_state_ordering.sh"
+#define TRUST_ORDER_FIXTURE_DST \
+    "app/services/src/_trust_order_fixture_tmp.c"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 #define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
     "test-tmp/_pre_push_hook_fixture_tmp"
@@ -3512,6 +3518,44 @@ static int t_privileged_transition_receipt_gate(void)
         ASSERT(run_gate_script_with_env(PRIV_RECEIPT_SCRIPT_REL,
                                         "ZCL_PRIV_RECEIPT_DEF_DIR",
                                         empty_dir) == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate check-no-trust-state-ordering: the sync_trust_state enumerators are
+ * ORTHOGONAL provenance facts, so any </<=/>/>= comparison against a
+ * SYNC_TRUST_* value is forbidden (it invites the `state >= X` mis-grant bug).
+ * Real tree is clean; a planted fixture carrying `st >= SYNC_TRUST_SOVEREIGN`
+ * trips (exit 1); removing it recovers. Mirrors t_e13_consensus_parity_fixture. */
+static int t_no_trust_state_ordering_gate(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(TRUST_ORDER_FIXTURE_DST);
+    int baseline_rc = run_gate_script(TRUST_ORDER_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path), TRUST_ORDER_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* Transient lint-gate selftest fixture for "
+                       "check-no-trust-state-ordering;\n"
+                       " * planted+removed by test_make_lint_gates.c. Not "
+                       "part of the build. */\n"
+                       "#include \"services/sync_trust_policy.h\"\n"
+                       "int _trust_order_fixture_probe(enum sync_trust_state st)"
+                       "\n{\n"
+                       "    if (st >= SYNC_TRUST_SOVEREIGN)\n"
+                       "        return 1;\n"
+                       "    return 0;\n"
+                       "}\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0
+        ? run_gate_script(TRUST_ORDER_SCRIPT_REL, NULL) : -1;
+    unlink_rel(TRUST_ORDER_FIXTURE_DST);
+    int recover_rc = run_gate_script(TRUST_ORDER_SCRIPT_REL, NULL);
+    TEST("[lint-gate] no-trust-state-ordering: clean, trips on ordinal cmp, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -8358,6 +8402,7 @@ int test_make_lint_gates(void)
     failures += t_hotswap_static_state_gate();
     failures += t_privileged_transition_receipt_gate();
     failures += t_blocker_escape_registered_gate();
+    failures += t_no_trust_state_ordering_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
 }

@@ -4818,6 +4818,14 @@ check-privileged-transition-receipt:
 	@echo "→ Gate: privileged-transition-receipt (Law 7, OS-A1)"
 	@./tools/lint/check_privileged_transition_receipt.sh
 
+# Gate — no ordinal comparison of enum sync_trust_state. The sync-trust states
+# (services/sync_trust_policy.h) are ORTHOGONAL provenance facts, not a trust
+# ordinal, so any </<=/>/>= against a SYNC_TRUST_* value is a latent
+# authorization bug. Authorization must route through the capability mask.
+check-no-trust-state-ordering:
+	@echo "══ LINT: no ordinal sync_trust_state comparison ══"
+	@./tools/scripts/check_no_trust_state_ordering.sh
+
 # Gate #20 graduated WARN → RATCHET (E10): fails on any new controller
 # file that uses raw sqlite. Baseline of grandfathered files lives in
 # tools/lint/no_raw_sqlite_in_controllers_baseline.txt (may only shrink).
@@ -5274,7 +5282,8 @@ LINT_GATES := \
     check-vcs-no-sha1 \
     check-vendor-provenance \
     check-command-contract \
-    check-privileged-transition-receipt
+    check-privileged-transition-receipt \
+    check-no-trust-state-ordering
 
 # The driver execs gate scripts directly, so the two gates backed by a built
 # tool (check-core-seal, check-observability-pairing) need their binaries
