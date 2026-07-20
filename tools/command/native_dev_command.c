@@ -397,7 +397,11 @@ void zcl_native_handle_dev_change_plan(
         return;
     }
     char body[16384];
-    size_t n = zcl_devloop_plan_json(file_ptrs, count, body, sizeof(body));
+    /* Path-glob floor + symbol-closure additions (F3). The closure is
+     * best-effort: an unavailable/failed index degrades to the path floor, so
+     * the reply is always a valid plan. repo_root is the process cwd. */
+    size_t n = zcl_devloop_plan_json_closure(".", file_ptrs, count, body,
+                                             sizeof(body));
     if (n == 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "INVALID_FILE_SET",

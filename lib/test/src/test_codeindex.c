@@ -225,6 +225,63 @@ static bool write_cg_fixture(void)
                     "lib/net/include/net/cg.h\n");
 }
 
+/* ── impact-closure fixture (F3) ────────────────────────────────────────
+ * Three SEPARATE translation units forming a linear call chain across files:
+ *   cl_a.c: cl_a() calls cl_b()   cl_b.c: cl_b() calls cl_c()   cl_c.c: cl_c()
+ * so changing cl_c.c's file must impact cl_b.c (direct caller) AND cl_a.c
+ * (caller-of-caller), plus cl_c.c itself. */
+#define CL_FIX "test-tmp/ci_closure"
+
+static const char *CL_A_C =
+    "/* lib/net/src/cl_a.c — closure fixture A (top of the chain). */\n"
+    "#include \"net/cl.h\"\n"
+    "int cl_a(int x)\n"
+    "{\n"
+    "    return cl_b(x) + 1;\n"
+    "}\n";
+
+static const char *CL_B_C =
+    "/* lib/net/src/cl_b.c — closure fixture B (middle of the chain). */\n"
+    "#include \"net/cl.h\"\n"
+    "int cl_b(int x)\n"
+    "{\n"
+    "    return cl_c(x) * 2;\n"
+    "}\n";
+
+static const char *CL_C_C =
+    "/* lib/net/src/cl_c.c — closure fixture C (the changed leaf). */\n"
+    "#include \"net/cl.h\"\n"
+    "int cl_c(int x)\n"
+    "{\n"
+    "    return x + 7;\n"
+    "}\n";
+
+static const char *CL_H =
+    "/* lib/net/src/cl.h — closure fixture header. */\n"
+    "#ifndef NET_CL_H\n"
+    "#define NET_CL_H\n"
+    "int cl_a(int x);\n"
+    "int cl_b(int x);\n"
+    "int cl_c(int x);\n"
+    "#endif\n";
+
+static bool write_cl_fixture(void)
+{
+    return mk_write(CL_FIX, "lib/net/src/cl_a.c", CL_A_C) &&
+           mk_write(CL_FIX, "lib/net/src/cl_b.c", CL_B_C) &&
+           mk_write(CL_FIX, "lib/net/src/cl_c.c", CL_C_C) &&
+           mk_write(CL_FIX, "lib/net/include/net/cl.h", CL_H) &&
+           mk_write(CL_FIX, "build/obj/cl_a.d",
+                    "build/obj/cl_a.o: lib/net/src/cl_a.c "
+                    "lib/net/include/net/cl.h\n") &&
+           mk_write(CL_FIX, "build/obj/cl_b.d",
+                    "build/obj/cl_b.o: lib/net/src/cl_b.c "
+                    "lib/net/include/net/cl.h\n") &&
+           mk_write(CL_FIX, "build/obj/cl_c.d",
+                    "build/obj/cl_c.o: lib/net/src/cl_c.c "
+                    "lib/net/include/net/cl.h\n");
+}
+
 static bool write_fixture(void)
 {
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
@@ -1101,6 +1158,81 @@ int test_codeindex(void)
             codeindex_close(migr);
         }
         system("rm -rf " CG_FIX);
+    }
+
+    /* ── 12: impact closure (F3, proof-DAG from symbol closure) ──
+     * cl_a -> cl_b -> cl_c across three files; changing cl_c.c's file must
+     * impact cl_b.c and cl_a.c too. Deterministic, depth-bounded, cap-honoured. */
+    {
+        system("rm -rf " CL_FIX);
+        CI_CHECK("closure fixture writes", write_cl_fixture());
+        struct codeindex *cl = codeindex_open(CL_FIX);
+        CI_CHECK("closure fixture opens", cl != NULL);
+
+        if (cl) {
+            const char changed[1][256] = { "lib/net/src/cl_c.c" };
+            char out[64][256];
+            bool trunc = true;
+
+            /* Full closure: cl_c.c seeds -> cl_b.c -> cl_a.c, sorted unique. */
+            int n = codeindex_impact_closure(cl, changed, 1, 0, out, 64, &trunc);
+            CI_CHECK("closure(cl_c.c) = {cl_a.c, cl_b.c, cl_c.c} sorted, untruncated",
+                     n == 3 && !trunc &&
+                     strcmp(out[0], "lib/net/src/cl_a.c") == 0 &&
+                     strcmp(out[1], "lib/net/src/cl_b.c") == 0 &&
+                     strcmp(out[2], "lib/net/src/cl_c.c") == 0);
+
+            /* Deterministic: a second identical query yields the identical set. */
+            char out2[64][256];
+            bool trunc2 = true;
+            int n2 = codeindex_impact_closure(cl, changed, 1, 0, out2, 64,
+                                              &trunc2);
+            bool same = (n2 == n && trunc2 == trunc);
+            for (int i = 0; same && i < n; i++)
+                if (strcmp(out[i], out2[i]) != 0) same = false;
+            CI_CHECK("closure is deterministic across repeated queries", same);
+
+            /* Depth bound: depth=1 reaches the direct caller only (cl_b.c), not
+             * cl_a.c — depth exhaustion is a normal bound, NOT truncation. */
+            char outd[64][256];
+            bool truncd = true;
+            int nd = codeindex_impact_closure(cl, changed, 1, 1, outd, 64,
+                                              &truncd);
+            CI_CHECK("closure depth=1 = {cl_b.c, cl_c.c}, not truncated",
+                     nd == 2 && !truncd &&
+                     strcmp(outd[0], "lib/net/src/cl_b.c") == 0 &&
+                     strcmp(outd[1], "lib/net/src/cl_c.c") == 0);
+
+            /* Cap honoured: a cap smaller than the closure sets truncated and
+             * returns exactly `cap` rows (the sorted prefix). */
+            char outc[1][256];
+            bool truncc = false;
+            int nc = codeindex_impact_closure(cl, changed, 1, 0, outc, 1,
+                                              &truncc);
+            CI_CHECK("closure honours cap: cap=1 -> 1 row + truncated flag",
+                     nc == 1 && truncc &&
+                     strcmp(outc[0], "lib/net/src/cl_a.c") == 0);
+
+            /* A leaf change with no callers impacts only the changed file. */
+            const char lone[1][256] = { "lib/net/src/cl_a.c" };
+            char outl[64][256];
+            bool truncl = true;
+            int nl = codeindex_impact_closure(cl, lone, 1, 0, outl, 64, &truncl);
+            CI_CHECK("closure(cl_a.c) = itself only (no callers)",
+                     nl == 1 && !truncl &&
+                     strcmp(outl[0], "lib/net/src/cl_a.c") == 0);
+
+            /* Bad args are rejected (not found is never an error). */
+            bool tb = false;
+            CI_CHECK("closure rejects null out / non-positive cap",
+                     codeindex_impact_closure(cl, changed, 1, 0, NULL, 64,
+                                              &tb) == -1 &&
+                     codeindex_impact_closure(cl, changed, 1, 0, out, 0,
+                                              &tb) == -1);
+
+            codeindex_close(cl);
+        }
+        system("rm -rf " CL_FIX);
     }
 
     return failures;

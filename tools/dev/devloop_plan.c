@@ -2,10 +2,13 @@
 
 #include "devloop.h"
 
+#include "codeindex/codeindex.h"
 #include "controllers/agent_impact_rules.h"
+#include "util/safe_alloc.h"
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -155,6 +158,17 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
     }
     out->docs_only = all_docs;
 
+    /* Record the path-glob FLOOR: every shared-impact-rule group the changed
+     * files matched, in deterministic insertion order. proof_group stays the
+     * primary route (path_groups[0] or the consensus override); this set is
+     * additive reporting the closure step later unions onto. */
+    for (size_t i = 0; i < impact.groups_len &&
+                       out->path_groups_len < ZCL_DEVLOOP_MAX_PLAN_GROUPS; i++) {
+        snprintf(out->path_groups[out->path_groups_len],
+                 sizeof(out->path_groups[0]), "%s", impact.groups[i]);
+        out->path_groups_len++;
+    }
+
     if (all_docs) {
         out->reason = "documentation_only";
         return true;
@@ -183,6 +197,98 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
             ? "multi_provider_generation_not_yet_admitted"
             : "state_or_abi_contract_requires_process_reload");
     return true;
+}
+
+/* Hard ceiling on impacted files pulled from the closure. Beyond this the
+ * closure is treated as truncated and we fall back to the path floor — the plan
+ * must never be silently derived from a huge, incomplete blast radius. */
+#define ZCL_DEVLOOP_CLOSURE_FILE_CAP 2048
+
+static bool plan_group_present(const struct zcl_devloop_plan *plan,
+                               const char *group)
+{
+    for (size_t i = 0; i < plan->path_groups_len; i++)
+        if (strcmp(plan->path_groups[i], group) == 0)
+            return true;
+    for (size_t i = 0; i < plan->closure_groups_len; i++)
+        if (strcmp(plan->closure_groups[i], group) == 0)
+            return true;
+    return false;
+}
+
+bool zcl_devloop_plan_add_closure(const char *repo_root,
+                                  const char *const *files, size_t file_count,
+                                  struct zcl_devloop_plan *plan)
+{
+    if (!plan || (file_count > 0 && !files) ||
+        file_count > ZCL_DEVLOOP_MAX_FILES)
+        return false;
+
+    plan->closure_attempted = true;
+    plan->closure_truncated = false;
+    plan->closure_groups_len = 0;
+    if (file_count == 0)
+        return true;
+
+    const char *root = (repo_root && repo_root[0]) ? repo_root : ".";
+    struct codeindex *ci = codeindex_open(root);
+    if (!ci)  /* index unavailable — path floor stands, closure just adds nothing */
+        return true;
+
+    bool ok = true;
+    char (*changed)[256] = zcl_malloc(sizeof(*changed) * file_count,
+                                      "closure_changed");
+    char (*impacted)[256] = zcl_malloc(
+        sizeof(*impacted) * ZCL_DEVLOOP_CLOSURE_FILE_CAP, "closure_impacted");
+    if (!changed || !impacted) {
+        ok = false;
+        goto out;
+    }
+    for (size_t i = 0; i < file_count; i++)
+        snprintf(changed[i], 256, "%s", files[i]);
+
+    bool truncated = false;
+    int n = codeindex_impact_closure(ci, changed, (int)file_count, 0,
+                                     impacted, ZCL_DEVLOOP_CLOSURE_FILE_CAP,
+                                     &truncated);
+    if (n < 0) {
+        ok = false;
+        goto out;
+    }
+    if (truncated) {
+        /* Incomplete closure: never a silently-partial group set. */
+        plan->closure_truncated = true;
+        goto out;
+    }
+
+    /* Map each impacted file through the SAME shared rules the path floor uses;
+     * keep only the groups the path floor did not already name. */
+    for (int i = 0; i < n; i++) {
+        struct agent_impact_acc acc = {0};
+        (void)agent_impact_apply_shared_rules(impacted[i], &acc);
+        for (size_t g = 0; g < acc.groups_len; g++) {
+            if (plan_group_present(plan, acc.groups[g]))
+                continue;
+            if (plan->closure_groups_len >= ZCL_DEVLOOP_MAX_PLAN_GROUPS) {
+                plan->closure_truncated = true;
+                break;
+            }
+            snprintf(plan->closure_groups[plan->closure_groups_len],
+                     sizeof(plan->closure_groups[0]), "%s", acc.groups[g]);
+            plan->closure_groups_len++;
+        }
+        if (plan->closure_truncated) {
+            /* Group set full: fall back to the path floor, additions discarded. */
+            plan->closure_groups_len = 0;
+            break;
+        }
+    }
+
+out:
+    free(changed);
+    free(impacted);
+    codeindex_close(ci);
+    return ok;
 }
 
 static bool appendf(char *out, size_t out_sz, size_t *pos,
@@ -220,26 +326,41 @@ static bool append_json_string(char *out, size_t out_sz, size_t *pos,
     return appendf(out, out_sz, pos, "\"");
 }
 
-size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
-                             char *out, size_t out_sz)
+/* Emit `"name":["g0","g1",...]` from a fixed-stride group array. */
+static bool append_group_array(char *out, size_t out_sz, size_t *pos,
+                               const char *name,
+                               const char (*groups)[ZCL_DEVLOOP_GROUP_MAX],
+                               size_t len)
 {
-    struct zcl_devloop_plan plan;
-    size_t pos = 0;
-    if (!out || out_sz == 0 ||
-        !zcl_devloop_plan_files(files, file_count, &plan))
-        return 0;
+    if (!appendf(out, out_sz, pos, ",\"%s\":[", name))
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        if ((i && !appendf(out, out_sz, pos, ",")) ||
+            !append_json_string(out, out_sz, pos, groups[i]))
+            return false;
+    }
+    return appendf(out, out_sz, pos, "]");
+}
 
+/* Shared serializer for a fully-computed plan. When `include_closure` is set,
+ * the closure_groups + closure_truncated fields are emitted too; path_groups is
+ * always emitted (additive; existing readers ignore unknown keys). */
+static size_t plan_json_body(const struct zcl_devloop_plan *plan,
+                             const char *const *files, size_t file_count,
+                             bool include_closure, char *out, size_t out_sz)
+{
+    size_t pos = 0;
     if (!appendf(out, out_sz, &pos,
                  "{\"schema\":\"zcl.dev_plan.v1\",\"action\":") ||
-        !append_json_string(out, out_sz, &pos, plan.action_name) ||
+        !append_json_string(out, out_sz, &pos, plan->action_name) ||
         !appendf(out, out_sz, &pos, ",\"reason\":") ||
-        !append_json_string(out, out_sz, &pos, plan.reason) ||
+        !append_json_string(out, out_sz, &pos, plan->reason) ||
         !appendf(out, out_sz, &pos,
                  ",\"consensus_risk\":%s,\"sealed_core\":%s,\"docs_only\":%s,"
                  "\"files\":[",
-                 plan.consensus_risk ? "true" : "false",
-                 plan.sealed_core ? "true" : "false",
-                 plan.docs_only ? "true" : "false"))
+                 plan->consensus_risk ? "true" : "false",
+                 plan->sealed_core ? "true" : "false",
+                 plan->docs_only ? "true" : "false"))
         return 0;
 
     for (size_t i = 0; i < file_count; i++) {
@@ -248,13 +369,49 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
             return 0;
     }
     if (!appendf(out, out_sz, &pos, "],\"foreground_proof\":") ||
-        !append_json_string(out, out_sz, &pos, plan.proof_group) ||
+        !append_json_string(out, out_sz, &pos, plan->proof_group) ||
         !appendf(out, out_sz, &pos, ",\"probe\":") ||
-        !append_json_string(out, out_sz, &pos, plan.probe_tool) ||
-        !appendf(out, out_sz, &pos,
+        !append_json_string(out, out_sz, &pos, plan->probe_tool) ||
+        !append_group_array(out, out_sz, &pos, "path_groups",
+                            plan->path_groups, plan->path_groups_len))
+        return 0;
+    if (include_closure) {
+        if (!append_group_array(out, out_sz, &pos, "closure_groups",
+                                plan->closure_groups,
+                                plan->closure_groups_len) ||
+            !appendf(out, out_sz, &pos, ",\"closure_truncated\":%s",
+                     plan->closure_truncated ? "true" : "false"))
+            return 0;
+    }
+    if (!appendf(out, out_sz, &pos,
                  ",\"agent_next_action\":\"edit code; the native loop owns execution\"}"))
         return 0;
     return pos;
+}
+
+size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
+                             char *out, size_t out_sz)
+{
+    struct zcl_devloop_plan plan;
+    if (!out || out_sz == 0 ||
+        !zcl_devloop_plan_files(files, file_count, &plan))
+        return 0;
+    return plan_json_body(&plan, files, file_count, false, out, out_sz);
+}
+
+size_t zcl_devloop_plan_json_closure(const char *repo_root,
+                                     const char *const *files,
+                                     size_t file_count, char *out,
+                                     size_t out_sz)
+{
+    struct zcl_devloop_plan plan;
+    if (!out || out_sz == 0 ||
+        !zcl_devloop_plan_files(files, file_count, &plan))
+        return 0;
+    /* Closure is best-effort: a failure/unavailable index leaves the path
+     * floor intact, so we still emit a valid plan (closure_groups empty). */
+    (void)zcl_devloop_plan_add_closure(repo_root, files, file_count, &plan);
+    return plan_json_body(&plan, files, file_count, true, out, out_sz);
 }
 
 bool zcl_devloop_unseal_token_present(const char *repo_root)

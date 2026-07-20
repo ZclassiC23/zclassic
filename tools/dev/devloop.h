@@ -14,6 +14,10 @@ extern "C" {
 #define ZCL_DEVLOOP_MAX_FILES 256
 #define ZCL_DEVLOOP_PATH_MAX 1024
 #define ZCL_DEVLOOP_OUTPUT_MAX 65536
+/* Proof-group set bounds for a plan (mirrors ZCL_AGENT_IMPACT_* so a plan can
+ * hold the full path floor plus its symbol-closure additions). */
+#define ZCL_DEVLOOP_MAX_PLAN_GROUPS 32
+#define ZCL_DEVLOOP_GROUP_MAX 64
 #define ZCL_DEVLOOP_FIRST_ERROR_MAX 512
 #define ZCL_DEVLOOP_CYCLE_JSON_MAX 8192
 #define ZCL_DEVLOOP_WATCH_LOCK_REL ".cache/zcl-dev-watch.lock"
@@ -55,6 +59,27 @@ struct zcl_devloop_plan {
      * See zcl_devloop_path_is_sealed_core() / zcl_devloop_refusal_json(). */
     bool sealed_core;
     size_t file_count;
+
+    /* ── proof-group sets (F3: path floor + symbol-closure additions) ──
+     * proof_group above stays the PRIMARY route (path-derived, consensus-safe).
+     * These sets are ADDITIVE reporting only — nothing here changes proof_group.
+     *
+     * path_groups: the union of every shared-impact-rule group matched by the
+     * changed files themselves (the path-glob FLOOR). Deterministic insertion
+     * order; proof_group is normally path_groups[0] (or the consensus override).
+     *
+     * closure_groups: groups reached ONLY through the symbol-closure blast
+     * radius — each impacted file (callers of callers) mapped through the SAME
+     * shared impact rules, minus anything already in path_groups. Populated by
+     * zcl_devloop_plan_add_closure(); empty until then, and empty when the
+     * closure was truncated (fall back to the path floor — never a silently
+     * huge test plan) or the index was unavailable. */
+    char path_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
+    size_t path_groups_len;
+    char closure_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
+    size_t closure_groups_len;
+    bool closure_attempted;   /* zcl_devloop_plan_add_closure() ran */
+    bool closure_truncated;   /* closure hit a bound => closure_groups empty */
 };
 
 struct zcl_devloop_process_result {
@@ -74,6 +99,30 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
                             struct zcl_devloop_plan *out);
 size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
                              char *out, size_t out_sz);
+
+/* Augment `plan` (already produced by zcl_devloop_plan_files for the same
+ * `files`) with symbol-closure-derived proof groups. Opens the codeindex at
+ * `repo_root`, computes the impact closure (file blast radius) of `files`, maps
+ * each impacted file through the SAME shared impact rules the path floor uses,
+ * and fills plan->closure_groups with the groups that are NOT already in
+ * plan->path_groups. The primary proof_group route is left untouched.
+ *
+ * Best-effort and always safe: an unavailable index or a TRUNCATED closure
+ * leaves closure_groups empty (fall back to the path floor). Sets
+ * closure_attempted=true; sets closure_truncated=true iff the closure hit a
+ * bound. Returns true unless an argument is invalid. */
+bool zcl_devloop_plan_add_closure(const char *repo_root,
+                                  const char *const *files, size_t file_count,
+                                  struct zcl_devloop_plan *plan);
+
+/* Like zcl_devloop_plan_json but also runs the symbol closure at `repo_root`
+ * and emits the additional "path_groups", "closure_groups", and
+ * "closure_truncated" fields. Returns bytes written, or 0 on overflow/bad
+ * args. */
+size_t zcl_devloop_plan_json_closure(const char *repo_root,
+                                     const char *const *files,
+                                     size_t file_count, char *out,
+                                     size_t out_sz);
 
 /* True iff the persistent watcher should react to a change at `path`
  * (repo-relative): a .c/.h/.def/.md/.mk/.service source or the Makefile,
