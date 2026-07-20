@@ -350,7 +350,34 @@ BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUI
 # tools/scripts/symbolize_crash.sh uses gdb as its resolution engine.
 # Code generation is identical; only the .debug sidecar grows — the
 # shipped binary is stripped either way.
+# ── Reproducible-build flags (two-builder byte identity) ──────────────────
+# Behavior-identical determinism flags — no optimization or codegen change.
+# The shipped node binary is stripped (`strip -s`), so its .text/.rodata/.data
+# are already byte-identical across two builders in different absolute
+# directories; the ONLY divergences the two-builder gate (`make repro-verify`,
+# docs/SECURITY_AND_INTEGRITY.md) found were the absolute build directory baked
+# into DWARF:
+#   * DW_AT_comp_dir = the compile-time CWD (an absolute path) — differs per
+#     builder, perturbing the split .debug sidecar and therefore the
+#     .gnu_debuglink CRC32 (4 bytes) in the shipped binary, and the pre-strip
+#     link content and therefore the content-derived .note.gnu.build-id sha1
+#     (20 bytes).
+#   * DW_AT_producer records the exact gcc switch line when GCC defaults to
+#     -grecord-gcc-switches; that line contains the absolute -ffile-prefix-map
+#     argument below, so it is re-canonicalized with -gno-record-gcc-switches
+#     (the shipped binary is stripped, so this only trims debug metadata).
+# -ffile-prefix-map remaps the absolute build root ($(CURDIR)) to a fixed
+# virtual root in comp_dir and any absolute path GCC would emit. __FILE__ /
+# LOG_* strings are already RELATIVE (compiled with relative source paths), so
+# -fmacro-prefix-map (folded into -ffile-prefix-map) does not touch them —
+# log/error text is unchanged. Source file:line crash symbolization
+# (tools/scripts/symbolize_crash.sh via the .debug sidecar) is unaffected:
+# DW_AT_name entries stay relative and the line program is unchanged; only the
+# (already-unresolvable-post-deploy) comp_dir source-root hint moves.
+ZCL_REPRO_ROOT ?= /zclassic23
+REPRO_CFLAGS = -ffile-prefix-map=$(CURDIR)=$(ZCL_REPRO_ROOT) -gno-record-gcc-switches
 CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
+	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
@@ -5273,6 +5300,25 @@ ci-symbol-floor: zclassic23
 .PHONY: ci-reproducible
 ci-reproducible:
 	@bash tools/scripts/check_reproducible_build.sh
+
+# repro-verify: the STANDING two-builder byte-identity gate. Unlike
+# ci-reproducible above (which builds twice in the SAME source directory,
+# differing only by BUILD_DIR, under the release flag profile), repro-verify
+# builds the node binary twice in two DIFFERENT absolute directories — a real
+# two-builder simulation. That is the only configuration that exposes
+# absolute-build-path nondeterminism (DW_AT_comp_dir in DWARF, which perturbs
+# the split .debug sidecar's .gnu_debuglink CRC and the content-derived
+# build-id); the default build's REPRO_CFLAGS (-ffile-prefix-map +
+# -gno-record-gcc-switches, see near the CFLAGS definition) canonicalizes it so
+# both builders produce a byte-identical build/bin/zclassic23. The gate compares
+# the shipped (stripped) artifacts AS SHIPPED — it strips nothing itself and, on
+# any residual divergence, reports the exact differing ELF sections + byte
+# offsets rather than papering over them. See docs/SECURITY_AND_INTEGRITY.md
+# "Reproducible build gate". DELIBERATELY opt-in (NOT in `make ci` / `make lint`)
+# — it runs TWO full whole-program LTO links (~2x a normal `make zclassic23`).
+.PHONY: repro-verify
+repro-verify:
+	@bash tools/scripts/repro-verify.sh
 
 ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@echo "══ CI: portability symbol-floor (C1) ══"

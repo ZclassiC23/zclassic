@@ -176,6 +176,67 @@ item, not a claimed property.
   repository tree. Packaging of several static libraries is still a known
   pre-v1 build gap and is documented in the README.
 
+## Reproducible build gate: what is proven, what remains
+
+The node binary is byte-for-byte reproducible across two independent builders.
+`make repro-verify` (`tools/scripts/repro-verify.sh`) is the standing proof: it
+snapshots the current working tree into two isolated build directories whose
+absolute paths differ in both value and length, builds `build/bin/zclassic23` in
+each, and SHA3-256- plus `cmp`-compares the two shipped (stripped) artifacts. It
+prints one `PASS`/`FAIL` line. It is opt-in (two full whole-program LTO links,
+~2x a normal build) and is intentionally NOT on the `make lint` / `make ci`
+path.
+
+**Proven now (full byte identity):** two builders in different absolute
+directories produce an identical `build/bin/zclassic23` — identical SHA3-256,
+identical `.note.gnu.build-id`, identical bytes. `.text`/`.rodata`/`.data` were
+already identical because the shipped binary is stripped (`strip -s`); the only
+divergences an empirical two-directory build exposed were the absolute build
+directory baked into DWARF, fixed by behavior-identical determinism flags
+(`REPRO_CFLAGS` in the Makefile, no optimization or codegen change):
+
+- `DW_AT_comp_dir` (the compile-time working directory, an absolute path) is
+  remapped to a fixed virtual root with `-ffile-prefix-map=$(CURDIR)=/zclassic23`.
+  Left unmapped it perturbs the split `.debug` sidecar — and therefore the
+  `.gnu_debuglink` CRC32 (4 bytes) in the shipped binary — and the pre-strip
+  link content — and therefore the content-derived `.note.gnu.build-id` sha1
+  (20 bytes).
+- `DW_AT_producer` records the exact gcc switch line when GCC defaults to
+  `-grecord-gcc-switches`; that line embeds the absolute `-ffile-prefix-map`
+  argument, so it is re-canonicalized with `-gno-record-gcc-switches`.
+
+`__FILE__` / `LOG_*` strings are compiled with relative source paths, so they
+are already builder-independent; the macro-prefix map does not touch them and
+log/error text is unchanged. Source `file:line` crash symbolization
+(`tools/scripts/symbolize_crash.sh` via the `.debug` sidecar) is unaffected —
+`DW_AT_name` entries stay relative and the line program is unchanged; only the
+(already-unresolvable-post-deploy) `comp_dir` source-root hint moves.
+`__DATE__`/`__TIME__` are absent from the tree; the link-order source list is a
+sorted `$(wildcard)` glob; the vendored static archives are fixed committed
+inputs (identical bytes on both builders), so archive-timestamp determinism is
+moot for this gate. The content-derived `--build-id=sha1` is kept (not forced to
+`none`) because, once `comp_dir` is canonical, it is itself reproducible and
+remains a useful integrity anchor.
+
+**The honest report on residual divergence:** the gate strips nothing itself —
+it compares the artifacts exactly as shipped. If a future toolchain change
+reintroduces a divergence, `repro-verify` reports the differing byte count, the
+first differing byte offsets, and the differing ELF sections in full rather than
+masking them with aggressive stripping; a residual diff is surfaced, never
+papered over.
+
+**What remains (out of this gate's scope):** byte identity is proven for the
+default portable `-march=x86-64-v3` profile on a single toolchain/host class;
+cross-*toolchain* (different gcc versions) reproducibility is not asserted. A
+`ZCL_NATIVE=1` build is machine-specific by design and is excluded. The
+`ci-reproducible` target / `tools/scripts/check_reproducible_build.sh` remains
+the complementary same-directory check under the exact `tools/release.sh`
+release flag profile (pinned `SOURCE_DATE_EPOCH`, `-Wl,--build-id=none`); it and
+`repro-verify` share the `REPRO_CFLAGS` determinism through the resolved release
+flag set. The full offline signature quorum, SBOM/provenance, and independent
+third-party reproduction that gate *stable publication* remain contained (see
+Release integrity above).
+
 ## Reviewer checklist
 
 High-signal local checks:
