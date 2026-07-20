@@ -284,6 +284,7 @@ static void *hodl_history_worker_thread(void *arg)
         if (sup_id != SUPERVISOR_INVALID_ID) {
             supervisor_tick(sup_id);
             supervisor_progress(sup_id, ++loop_iterations);
+            boot_worker_clear_stall_blocker(&g_hodl_history_contract);
         }
         if (svc->state) {
             int tip = active_chain_height(&svc->state->chain_active);
@@ -345,6 +346,11 @@ static void *projection_backfill_service_thread(void *arg)
         if (sup_id != SUPERVISOR_INVALID_ID) {
             supervisor_tick(sup_id);
             supervisor_progress(sup_id, ++loop_iterations);
+            /* Alive + progressing this loop → retire any stale stall blocker a
+             * slow boot-time start left standing (worker.stall.op.projection_-
+             * backfill). Kept adjacent to the heartbeat so the two move
+             * together. */
+            boot_worker_clear_stall_blocker(&g_projection_backfill_contract);
         }
         struct node_db *ndb = boot_node_db(svc);
         int chain_tip = svc->state ?
@@ -649,6 +655,7 @@ static void *payment_processor_thread(void *arg)
         if (sup_id != SUPERVISOR_INVALID_ID) {
             supervisor_tick(sup_id);
             supervisor_progress(sup_id, ++loop_iterations);
+            boot_worker_clear_stall_blocker(&g_payment_contract);
         }
         for (int i = 0; i < 30 && boot_running(svc); i++)
             sleep(1);

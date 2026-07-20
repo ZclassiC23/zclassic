@@ -81,6 +81,30 @@ void boot_register_worker_supervisor(
     supervisor_progress(id, 0);
 }
 
+/* Retire this worker's stall blocker once the worker is demonstrably alive.
+ *
+ * worker_on_stall raises a TRANSIENT "worker.stall.<name>" blocker when the
+ * supervisor deadline lapses (e.g. a slow-to-start worker at boot). The
+ * supervisor is observe-only — it never re-arms that blocker's escape deadline
+ * or clears it — so without an explicit retire the blocker sits in the registry
+ * with an elapsed, ever-more-negative deadline for hours after the worker
+ * resumed ticking (the live serve-node symptom: worker.stall.op.projection_-
+ * backfill overdue by ~3.6 h, fire_count=1, no escalation). A looping worker
+ * calls this once per iteration right after it publishes progress: a recovered
+ * worker clears its own stale blocker within one loop, while a still-wedged
+ * worker never reaches this call and correctly leaves the blocker standing —
+ * advance-or-name-a-blocker, honestly. */
+void boot_worker_clear_stall_blocker(const struct liveness_contract *c)
+{
+    if (!c || c->name[0] == '\0')
+        return;
+    char id[BLOCKER_ID_MAX];
+    /* blocker-id: worker.stall.* */
+    snprintf(id, sizeof(id), "worker.stall.%s", c->name);
+    if (blocker_exists(id))
+        blocker_clear(id);
+}
+
 void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot)
 {
     if (!slot)

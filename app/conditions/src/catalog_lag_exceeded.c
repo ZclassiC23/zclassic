@@ -25,12 +25,23 @@
 
 /* The sustain state: an over-threshold index must survive TWO consecutive
  * detect passes before the symptom is declared, so a single-pass blip during a
- * legitimate reorg/catch-up never fires. g_lagging_name aliases the static row
- * name literal in catalog_completeness.c (stable lifetime), so storing the
- * pointer across passes is safe. */
+ * legitimate reorg/catch-up never fires. g_lagging_name / g_armed_name alias the
+ * static row name literals in catalog_completeness.c (stable lifetime), so
+ * storing the pointers across passes is safe. */
 static _Atomic bool          g_over_last_pass;
 static _Atomic(const char *) g_lagging_name;      /* NULL until a firing pass */
 static _Atomic int64_t       g_cursor_at_detect;  /* offending cursor at detect */
+
+/* Progress tracker: the over-threshold index observed on the PREVIOUS pass and
+ * its cursor then. A from-genesis backfill on a multi-million-block chain sits
+ * far behind H* for a long time while it folds forward one bounded batch per
+ * tick — that is healthy catch-up, not a stall, and must never raise a
+ * dependency blocker that reads as "backfill wedged". Comparing the offending
+ * index's cursor against its own previous-pass cursor distinguishes the two: an
+ * ADVANCING cursor is normal progress (never fire); only a FROZEN cursor across
+ * the poll interval is the genuine stall this condition names. */
+static _Atomic(const char *) g_armed_name;        /* over-threshold index, prev pass */
+static _Atomic int64_t       g_armed_cursor;      /* that index's cursor, prev pass */
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
@@ -52,14 +63,35 @@ static bool eval_over(const struct catalog_index_status *rows, size_t n)
         catalog_completeness_worst_over(rows, n, CATALOG_LAG_EXCEEDED_BLOCKS);
     if (!w) {
         atomic_store(&g_over_last_pass, false);
+        atomic_store(&g_armed_name, NULL);
         return false;
     }
-    bool prev = atomic_exchange(&g_over_last_pass, true);
-    if (!prev)
-        return false;                 /* first over-pass: arm, wait to confirm */
+
+    const char *armed = atomic_load(&g_armed_name);
+    int64_t armed_cursor = atomic_load(&g_armed_cursor);
+    bool same_index = armed && w->name && strcmp(armed, w->name) == 0;
+
+    /* Record this pass's observation so the NEXT pass can judge advancement. */
+    atomic_store(&g_over_last_pass, true);
+    atomic_store(&g_armed_name, w->name);
+    atomic_store(&g_armed_cursor, w->cursor);
+
+    /* First over-threshold pass for THIS index: arm, wait to confirm. A single
+     * blip during a reorg/catch-up burst never fires. */
+    if (!same_index)
+        return false;
+
+    /* Same index over threshold two consecutive passes. A healthy backfill
+     * ADVANCES its cursor every pass, so a still-advancing index is normal
+     * from-genesis catch-up, not a stall — never raise the dependency blocker
+     * for it. Only a FROZEN cursor (no advance across the ~5 s poll interval) is
+     * the genuine stall this condition exists to name. */
+    if (w->cursor > armed_cursor)
+        return false;                 /* advancing — healthy backfill */
+
     atomic_store(&g_lagging_name, w->name);
     atomic_store(&g_cursor_at_detect, w->cursor);
-    return true;
+    return true;                      /* frozen + sustained + over threshold */
 }
 
 /* Snapshot the live catalog against the reducer's provable tip. */
@@ -94,8 +126,9 @@ static enum condition_remedy_result remedy_catalog_lag_exceeded(void)
      * dependency loudly + let the service advance. */
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
-             "index %s is > %d blocks behind H* (cursor=%lld); its backfill "
-             "service must advance",
+             "index %s is > %d blocks behind H* and its cursor is NOT advancing "
+             "(frozen at %lld across the poll interval); its backfill service is "
+             "stalled and must resume",
              name, CATALOG_LAG_EXCEEDED_BLOCKS, (long long)cursor);
     struct blocker_record r;
     if (blocker_init(&r, id, "catalog_completeness", BLOCKER_DEPENDENCY,
@@ -178,6 +211,8 @@ void catalog_lag_exceeded_test_reset(void)
     atomic_store(&g_over_last_pass, false);
     atomic_store(&g_lagging_name, NULL);
     atomic_store(&g_cursor_at_detect, 0);
+    atomic_store(&g_armed_name, NULL);
+    atomic_store(&g_armed_cursor, 0);
     atomic_store(&g_test_remedy_calls, 0);
 }
 

@@ -93,6 +93,33 @@ int test_catalog_lag_exceeded(void)
                  !catalog_lag_exceeded_test_feed(rows, 2));
     }
 
+    /* An index far over threshold whose cursor ADVANCES every pass is healthy
+     * from-genesis catch-up, not a stall: it must NOT fire no matter how many
+     * passes (the live serve-node defect — a backfill folding one bounded batch
+     * per tick sat 2.9M blocks behind H* for hours and tripped a stall-reading
+     * dependency blocker while it was steadily advancing). */
+    catalog_lag_exceeded_test_reset();
+    {
+        struct catalog_index_status adv[1];
+        adv[0] = cl_row("address_index", 100000, 3000000, 2900000, true);
+        CL_CHECK("advancing backfill: pass 1 arms (no fire)",
+                 !catalog_lag_exceeded_test_feed(adv, 1));
+        adv[0] = cl_row("address_index", 100128, 3000000, 2899872, true);
+        CL_CHECK("advancing backfill: pass 2 advanced -> no fire",
+                 !catalog_lag_exceeded_test_feed(adv, 1));
+        adv[0] = cl_row("address_index", 100256, 3000000, 2899744, true);
+        CL_CHECK("advancing backfill: pass 3 advanced -> still no fire",
+                 !catalog_lag_exceeded_test_feed(adv, 1));
+        /* Cursor now FREEZES (genuine wedge): the next pass sees no advance and
+         * fires, naming the stalled index. */
+        adv[0] = cl_row("address_index", 100256, 3000000, 2899744, true);
+        CL_CHECK("frozen backfill: pass after freeze fires (real stall)",
+                 catalog_lag_exceeded_test_feed(adv, 1));
+        const char *fnm = catalog_lag_exceeded_test_lagging_name();
+        CL_CHECK("latched frozen index == address_index",
+                 fnm && strcmp(fnm, "address_index") == 0);
+    }
+
     /* A DISABLED index over threshold never fires, no matter how many passes. */
     catalog_lag_exceeded_test_reset();
     {
