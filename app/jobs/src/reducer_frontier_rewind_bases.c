@@ -1,8 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * reducer_frontier_rewind_bases — rolling self-verified rewind-base
- * observability (Pillar 3 of the always-sync spine). Split out of
- * reducer_frontier_dump.c to stay under the E1 file-size ceiling.
+ * observability (Pillar 3 of the always-sync spine) AND the programmatic
+ * nearest-self-verified base selector the generic recovery driver consumes.
+ * Split out of reducer_frontier_dump.c to stay under the E1 file-size ceiling.
  *
  * A rewind base is only valid if it was SELF-DERIVED (folded from real block
  * bodies by THIS node, then cross-checked against its own commitment) — never
@@ -27,6 +28,11 @@
  *     marker, not yet a self-verified rung (see docs/HANDOFF.md and
  *     docs/work/self-verified-tip-plan.md).
  *
+ * NEAREST-BASE SELECTION IS SELF-VERIFIED-FIRST, not height-first: a borrowed
+ * finalized_utxo_sha3 can never win over a genuinely self-verified rung, even
+ * when it sits at a higher height. See reducer_frontier_nearest_self_verified_
+ * base — the borrowed root is last-resort only.
+ *
  * READ-ONLY composition over each subsystem's own public dump/read API — no
  * new storage, no mutation, no lock ordering surprises (every call below
  * either takes no lock or acquires the RECURSIVE progress_store_tx_lock
@@ -46,50 +52,25 @@
 #include "storage/seal_kv.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
-/* Push one rewind-base entry onto `arr` and fold it into the running
- * "nearest base at or below the current tip" tracker (the O(delta) recovery
- * distance an operator/agent cares about). commitment_hex may be NULL/empty
- * when no commitment hash applies. */
-static void push_rewind_base(struct json_value *arr, const char *kind,
-                             int32_t height, bool self_derived, bool ratified,
-                             const char *commitment_hex, int32_t hstar,
-                             int32_t *nearest_height, const char **nearest_kind,
-                             bool *nearest_self_derived, bool *nearest_ratified)
+/* Visitor invoked once per enumerated rewind base. `kind` is a static string
+ * literal (safe to store by pointer); `commitment_hex` is transient (points
+ * into a caller-owned scratch JSON value that is freed after enumeration), so a
+ * visitor that keeps it must COPY. commitment_hex may be NULL/empty when no
+ * commitment hash applies. */
+typedef void (*rewind_base_visit_fn)(void *ctx, const char *kind,
+                                     int32_t height, bool self_derived,
+                                     bool ratified, const char *commitment_hex);
+
+/* Enumerate every candidate rewind base once, in cheapest-to-derive order, via
+ * `visit`. The single source of truth for WHICH bases exist — both the JSON
+ * dump and the nearest-self-verified selector fold over this, so the two can
+ * never disagree about the base set. */
+static void enumerate_rewind_bases(rewind_base_visit_fn visit, void *ctx)
 {
-    struct json_value o = {0};
-    json_set_object(&o);
-    json_push_kv_str(&o, "kind", kind);
-    json_push_kv_int(&o, "height", height);
-    json_push_kv_bool(&o, "self_derived", self_derived);
-    json_push_kv_bool(&o, "ratified", ratified);
-    json_push_kv_int(&o, "distance_from_tip", (int64_t)hstar - height);
-    json_push_kv_str(&o, "commitment_sha3",
-                     commitment_hex ? commitment_hex : "");
-    json_push_back(arr, &o);
-    json_free(&o);
-
-    if (height <= hstar &&
-        (*nearest_height < 0 || height > *nearest_height)) {
-        *nearest_height = height;
-        *nearest_kind = kind;
-        *nearest_self_derived = self_derived;
-        *nearest_ratified = ratified;
-    }
-}
-
-void reducer_frontier_push_rewind_bases_json(struct json_value *out,
-                                             int32_t hstar)
-{
-    struct json_value bases = {0};
-    json_set_array(&bases);
-
-    int32_t nearest_height = -1;
-    const char *nearest_kind = "";
-    bool nearest_self_derived = false;
-    bool nearest_ratified = false;
-
     /* 1) The compiled SHA3 UTXO checkpoint — always available, network gate
      * aside (get_sha3_utxo_checkpoint always returns the mainnet constant;
      * callers on non-mainnet networks already treat REDUCER_FRONTIER_
@@ -100,10 +81,8 @@ void reducer_frontier_push_rewind_bases_json(struct json_value *out,
     char compiled_hex[65] = "";
     if (cp)
         HexStr(cp->sha3_hash, 32, false, compiled_hex, sizeof(compiled_hex));
-    push_rewind_base(&bases, "compiled_checkpoint", compiled_height, true,
-                     false, compiled_hex, hstar,
-                     &nearest_height, &nearest_kind, &nearest_self_derived,
-                     &nearest_ratified);
+    visit(ctx, "compiled_checkpoint", compiled_height, true, false,
+          compiled_hex);
 
     /* 2) Every self-valid slot in the seal_kv ring. Reuses seal_kv's OWN
      * public dump (storage/seal_kv.h) rather than duplicating ring-iteration
@@ -119,13 +98,10 @@ void reducer_frontier_push_rewind_bases_json(struct json_value *out,
                 continue;
             if (!json_get_bool(json_get(item, "self_sha3_valid")))
                 continue; /* torn/corrupt slot — not a valid rewind base */
-            push_rewind_base(&bases, "sealed_coins_sha3",
-                             (int32_t)json_get_int(json_get(item, "height")),
-                             true,
-                             json_get_bool(json_get(item, "ratified")),
-                             json_get_str(json_get(item, "coins_sha3")),
-                             hstar, &nearest_height, &nearest_kind,
-                             &nearest_self_derived, &nearest_ratified);
+            visit(ctx, "sealed_coins_sha3",
+                  (int32_t)json_get_int(json_get(item, "height")), true,
+                  json_get_bool(json_get(item, "ratified")),
+                  json_get_str(json_get(item, "coins_sha3")));
         }
     }
     json_free(&seal_state);
@@ -143,26 +119,197 @@ void reducer_frontier_push_rewind_bases_json(struct json_value *out,
             stamp_height >= 0) {
             char hex[65];
             HexStr(hash, 32, false, hex, sizeof(hex));
-            push_rewind_base(&bases, "finalized_utxo_sha3", stamp_height,
-                             false, false, hex, hstar,
-                             &nearest_height, &nearest_kind,
-                             &nearest_self_derived, &nearest_ratified);
+            visit(ctx, "finalized_utxo_sha3", stamp_height, false, false, hex);
         }
     }
+}
+
+/* ── JSON observability ─────────────────────────────────────────────────── */
+
+struct json_dump_ctx {
+    struct json_value *arr;
+    int32_t hstar;
+
+    /* Backward-compatible "nearest by height (any provenance)" tracker — the
+     * legacy nearest_rewind_base_* keys. */
+    int32_t nearest_height;
+    const char *nearest_kind;
+    bool nearest_self_derived;
+    bool nearest_ratified;
+
+    /* Sovereignty-correct "nearest SELF-VERIFIED base" tracker — the driver's
+     * actual rewind target. self_derived=true only. */
+    int32_t sv_height;
+    const char *sv_kind;
+    bool sv_ratified;
+    char sv_commit[65];
+};
+
+static void json_dump_visit(void *vctx, const char *kind, int32_t height,
+                            bool self_derived, bool ratified,
+                            const char *commitment_hex)
+{
+    struct json_dump_ctx *c = (struct json_dump_ctx *)vctx;
+
+    struct json_value o = {0};
+    json_set_object(&o);
+    json_push_kv_str(&o, "kind", kind);
+    json_push_kv_int(&o, "height", height);
+    json_push_kv_bool(&o, "self_derived", self_derived);
+    json_push_kv_bool(&o, "ratified", ratified);
+    json_push_kv_int(&o, "distance_from_tip", (int64_t)c->hstar - height);
+    json_push_kv_str(&o, "commitment_sha3",
+                     commitment_hex ? commitment_hex : "");
+    json_push_back(c->arr, &o);
+    json_free(&o);
+
+    if (height > c->hstar)
+        return; /* above the tip — not a rewind base for this H* */
+
+    /* Legacy: nearest by height, any provenance. */
+    if (c->nearest_height < 0 || height > c->nearest_height) {
+        c->nearest_height = height;
+        c->nearest_kind = kind;
+        c->nearest_self_derived = self_derived;
+        c->nearest_ratified = ratified;
+    }
+
+    /* Sovereignty: nearest among SELF-VERIFIED bases only. */
+    if (self_derived && (c->sv_height < 0 || height > c->sv_height)) {
+        c->sv_height = height;
+        c->sv_kind = kind;
+        c->sv_ratified = ratified;
+        if (commitment_hex) {
+            strncpy(c->sv_commit, commitment_hex, sizeof(c->sv_commit) - 1);
+            c->sv_commit[sizeof(c->sv_commit) - 1] = '\0';
+        } else {
+            c->sv_commit[0] = '\0';
+        }
+    }
+}
+
+void reducer_frontier_push_rewind_bases_json(struct json_value *out,
+                                             int32_t hstar)
+{
+    struct json_value bases = {0};
+    json_set_array(&bases);
+
+    struct json_dump_ctx c = {
+        .arr = &bases,
+        .hstar = hstar,
+        .nearest_height = -1,
+        .nearest_kind = "",
+        .sv_height = -1,
+        .sv_kind = "",
+    };
+    c.sv_commit[0] = '\0';
+
+    enumerate_rewind_bases(json_dump_visit, &c);
 
     int64_t bases_count = (int64_t)json_size(&bases);
     json_push_kv(out, "rewind_bases", &bases);
     json_free(&bases);
 
     json_push_kv_int(out, "rewind_bases_count", bases_count);
+
+    /* Legacy keys (nearest by height, any provenance) — UNCHANGED shape. */
     json_push_kv_str(out, "nearest_rewind_base_kind",
-                     nearest_height >= 0 ? nearest_kind : "");
-    json_push_kv_int(out, "nearest_rewind_base_height", nearest_height);
+                     c.nearest_height >= 0 ? c.nearest_kind : "");
+    json_push_kv_int(out, "nearest_rewind_base_height", c.nearest_height);
     json_push_kv_bool(out, "nearest_rewind_base_self_derived",
-                      nearest_height >= 0 && nearest_self_derived);
+                      c.nearest_height >= 0 && c.nearest_self_derived);
     json_push_kv_bool(out, "nearest_rewind_base_ratified",
-                      nearest_height >= 0 && nearest_ratified);
+                      c.nearest_height >= 0 && c.nearest_ratified);
     json_push_kv_int(out, "nearest_rewind_distance",
-                     nearest_height >= 0 ? (int64_t)hstar - nearest_height
-                                         : -1);
+                     c.nearest_height >= 0 ? (int64_t)hstar - c.nearest_height
+                                           : -1);
+
+    /* New keys: the SELF-VERIFIED nearest base — the sovereignty-correct rewind
+     * target the recovery driver actually uses (borrowed roots excluded). Added
+     * alongside the legacy keys; no existing key changes meaning. */
+    json_push_kv_str(out, "nearest_self_verified_base_kind",
+                     c.sv_height >= 0 ? c.sv_kind : "");
+    json_push_kv_int(out, "nearest_self_verified_base_height", c.sv_height);
+    json_push_kv_bool(out, "nearest_self_verified_base_ratified",
+                      c.sv_height >= 0 && c.sv_ratified);
+    json_push_kv_str(out, "nearest_self_verified_base_commitment_sha3",
+                     c.sv_height >= 0 ? c.sv_commit : "");
+    json_push_kv_int(out, "nearest_self_verified_distance",
+                     c.sv_height >= 0 ? (int64_t)hstar - c.sv_height : -1);
+}
+
+/* ── Programmatic nearest-self-verified base selector ───────────────────── */
+
+struct select_ctx {
+    int32_t at_or_below;
+    struct reducer_frontier_rewind_base sv;       /* best self_derived=true */
+    struct reducer_frontier_rewind_base borrowed; /* best self_derived=false */
+    bool have_sv;
+    bool have_borrowed;
+};
+
+static void select_copy(struct reducer_frontier_rewind_base *dst,
+                        const char *kind, int32_t height, bool self_derived,
+                        bool ratified, const char *commitment_hex)
+{
+    dst->height = height;
+    dst->self_derived = self_derived;
+    dst->ratified = ratified;
+    strncpy(dst->kind, kind ? kind : "", sizeof(dst->kind) - 1);
+    dst->kind[sizeof(dst->kind) - 1] = '\0';
+    if (commitment_hex) {
+        strncpy(dst->commitment_sha3, commitment_hex,
+                sizeof(dst->commitment_sha3) - 1);
+        dst->commitment_sha3[sizeof(dst->commitment_sha3) - 1] = '\0';
+    } else {
+        dst->commitment_sha3[0] = '\0';
+    }
+}
+
+static void select_visit(void *vctx, const char *kind, int32_t height,
+                         bool self_derived, bool ratified,
+                         const char *commitment_hex)
+{
+    struct select_ctx *c = (struct select_ctx *)vctx;
+    if (height > c->at_or_below)
+        return; /* above the requested ceiling — not a candidate */
+
+    if (self_derived) {
+        if (!c->have_sv || height > c->sv.height) {
+            select_copy(&c->sv, kind, height, self_derived, ratified,
+                        commitment_hex);
+            c->have_sv = true;
+        }
+    } else {
+        if (!c->have_borrowed || height > c->borrowed.height) {
+            select_copy(&c->borrowed, kind, height, self_derived, ratified,
+                        commitment_hex);
+            c->have_borrowed = true;
+        }
+    }
+}
+
+bool reducer_frontier_nearest_self_verified_base(
+    int32_t at_or_below, struct reducer_frontier_rewind_base *out)
+{
+    if (!out)
+        return false; // raw-return-ok:null-out-arg
+    memset(out, 0, sizeof(*out));
+
+    struct select_ctx c = {0};
+    c.at_or_below = at_or_below;
+    enumerate_rewind_bases(select_visit, &c);
+
+    /* SELF-VERIFIED FIRST: a genuinely self-verified rung always beats a
+     * borrowed root, regardless of height. The borrowed finalized_utxo_sha3 is
+     * returned only when NO self-verified base exists at or below the ceiling. */
+    if (c.have_sv) {
+        *out = c.sv;
+        return true;
+    }
+    if (c.have_borrowed) {
+        *out = c.borrowed;
+        return true;
+    }
+    return false; // raw-return-ok:no-base-at-or-below-ceiling
 }

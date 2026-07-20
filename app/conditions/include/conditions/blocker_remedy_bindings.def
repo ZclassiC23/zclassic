@@ -224,6 +224,13 @@ ZCL_BLOCKER_REMEDY(worker.stall.*,                              OWNER)
  * block_index.blocks_hydrate_quarantine). */
 ZCL_BLOCKER_REMEDY(worker.projection_stuck,                     OWNER)
 ZCL_BLOCKER_REMEDY(chaos.stage_stall,                           OWNER)
+/* Generic rewind driver (app/jobs/src/rewind_driver.c): escalation when the
+ * nearest-self-verified-base re-derive is refused (LCC: applied height lacks an
+ * inverse delta) or no self-verified base is reachable — needs a refold-from-
+ * anchor / operator. The driver self-clears the blocker on a committed re-derive
+ * or a clean no-op, so this is OWNER (no cheap condition heals the refused
+ * class). */
+ZCL_BLOCKER_REMEDY(rewind_driver.*,                             OWNER)
 
 /* ── OWNER — boot-time one-shot mint/refold tooling (config/src/, not the
  * live reducer). ─────────────────────────────────────────────────────── */
