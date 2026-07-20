@@ -16,13 +16,26 @@
 
 struct json_value;
 
+/* progress_meta keys for the two durable, monotonic trust-transition
+ * timestamps (see sovereignty_dump_state_json's t_ready/t_sovereign below).
+ * Exposed for tests that need to poke/inspect the stamp directly (mirrors
+ * COINS_KV_MIGRATION_COMPLETE_KEY / SHIELDED_IMPORT_PROVENANCE_KEY). Value is
+ * an 8-byte native-byte-order int64 wall-clock epoch-seconds blob, written
+ * ONCE (checked-then-set under progress_store_tx_lock so concurrent
+ * first-observers can't race a later timestamp in over the true first). */
+#define SOVEREIGNTY_T_READY_KEY     "sovereignty.t_ready"
+#define SOVEREIGNTY_T_SOVEREIGN_KEY "sovereignty.t_sovereign"
+
 /* `zclassic23 dumpstate sovereignty`.
  * Reports coins_kv_proven_authority, self_folded_marker, coins_applied_height,
  * hstar, self_derived_tip_static_checks (the G-SOV parts 2+3 predicate),
  * self_derived_reason, authority_posture, trust_mode
- * ("sovereign" | "release_assisted" | "bare"), and what is gated at the
- * current posture. `key` is unused (NULL-safe). SELECT-only, reentrant-safe;
- * `out` is caller-initialized (json_set_object done here). */
+ * ("sovereign" | "release_assisted" | "bare"), what is gated at the
+ * current posture, and the durable t_ready/t_sovereign transition stamps
+ * (see SOVEREIGNTY_T_READY_KEY doc above and the stamping note on
+ * sovereignty_guard_allow). `key` is unused (NULL-safe). SELECT-only apart
+ * from the idempotent stamp-if-absent write, reentrant-safe; `out` is
+ * caller-initialized (json_set_object done here). */
 bool sovereignty_dump_state_json(struct json_value *out, const char *key);
 
 /* Machine-readable trust_mode used by both the dumper above and
@@ -56,8 +69,12 @@ const char *sovereignty_trust_mode(bool proven_authority, bool self_folded);
  * exactly the borrowed-and-not-self-folded posture (coins_kv_tip_is_self_
  * derived()==false) — it does NOT gate tip-following: the reducer forward
  * fold, P2P relay, explorer, and wallet *viewing* are never touched here.
- * SELECT-only — never mutates coins_kv/progress.kv. Fail-closed: a missing
- * progress store refuses rather than silently allowing the action. */
+ * Never mutates coins_kv. The only progress.kv write this function can cause
+ * is the idempotent t_ready/t_sovereign stamp-if-absent (SOVEREIGNTY_T_READY_
+ * KEY / SOVEREIGNTY_T_SOVEREIGN_KEY above) — a one-shot durable timestamp,
+ * not a state mutation; every provenance predicate stays SELECT-only.
+ * Fail-closed: a missing progress store refuses rather than silently
+ * allowing the action. */
 bool sovereignty_guard_allow(const char *action, char *reason,
                              size_t reason_cap);
 

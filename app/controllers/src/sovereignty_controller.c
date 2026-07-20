@@ -29,6 +29,7 @@
 
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "services/shielded_history_import_service.h"
 #include "services/sync_trust_policy.h"
 #include "storage/coins_kv.h"
@@ -39,6 +40,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Shielded-import provenance introspection ──────────────────────────
  *
@@ -91,6 +93,93 @@ static int64_t sov_count_rows(sqlite3 *db, const char *table,
     return val;
 }
 
+/* ── Durable trust-transition timestamps (t_ready / t_sovereign) ───────
+ *
+ * First-reached instants for two trust milestones, stamped ONCE into
+ * progress_meta (8-byte native int64 wall-clock epoch seconds) at the
+ * moment this module observes the transition — monotonic: never
+ * overwritten by a later call, never cleared by a later posture
+ * regression (a repair that later drops self_folded does NOT clear
+ * t_sovereign; the CURRENT posture is the separate trust_state/trust_mode
+ * fields above, t_sovereign always answers "was this datadir EVER
+ * sovereign"). See services/sync_trust_policy.h for the trust_state ladder:
+ *   t_ready:     first instant `st` granted SYNC_CAP_SERVE_VALIDATED_TIP
+ *                (RELEASE_ASSISTED_READY, PEER_ASSISTED_READY,
+ *                ARTIFACT_VERIFIED, SOVEREIGN) — the node first became able
+ *                to serve a validated tip on installed/proven state.
+ *   t_sovereign: first instant `st` was SOVEREIGN or ARTIFACT_VERIFIED
+ *                (self_derived, i.e. S holds) — the LANE SPEC's
+ *                "SOVEREIGN or ARTIFACT_VERIFIED (self-derived)".
+ *
+ * Hooked at both existing trust-derivation call sites in this file
+ * (sovereignty_guard_allow and sovereignty_dump_state_json) — no new
+ * polling thread. The read-then-conditional-write is wrapped in one
+ * progress_store_tx_lock scope (the lock is recursive, so nesting into
+ * progress_meta_get_blob_exact/progress_meta_set is safe) so two racing
+ * first-observers cannot both write, which would let the later of the two
+ * timestamps win instead of the true first. */
+
+static void sov_stamp_if_absent(sqlite3 *pdb, const char *key,
+                                const char *label)
+{
+    if (!pdb || !key)
+        return;
+    progress_store_tx_lock();
+    int64_t stamp = 0;
+    size_t n = 0;
+    bool found = false;
+    bool ok = progress_meta_get_blob_exact(pdb, key, &stamp, sizeof(stamp),
+                                           &n, &found);
+    if (ok && (!found || n != sizeof(stamp))) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (!progress_meta_set(pdb, key, &now, sizeof(now)))
+            LOG_WARN("sovereignty", "%s stamp write failed key=%s",
+                     label, key);
+    } else if (!ok) {
+        LOG_WARN("sovereignty", "%s stamp read failed key=%s", label, key);
+    }
+    progress_store_tx_unlock();
+}
+
+/* Stamp t_ready / t_sovereign (if not already stamped) for a freshly
+ * derived `st`. Cheap: at most two progress_meta reads plus, on the rare
+ * first transition, one write. */
+static void sov_stamp_transitions(sqlite3 *pdb, enum sync_trust_state st)
+{
+    if (sync_trust_cap_allowed(st, SYNC_CAP_SERVE_VALIDATED_TIP))
+        sov_stamp_if_absent(pdb, SOVEREIGNTY_T_READY_KEY, "t_ready");
+    if (st == SYNC_TRUST_SOVEREIGN || st == SYNC_TRUST_ARTIFACT_VERIFIED)
+        sov_stamp_if_absent(pdb, SOVEREIGNTY_T_SOVEREIGN_KEY, "t_sovereign");
+}
+
+/* Render a stamped transition key as {"epoch": N, "iso8601": "..."}, or
+ * JSON null when the transition has not yet been observed on this datadir.
+ * `field` is caller-owned (json_init'd here); SELECT-only. */
+static void sov_render_stamp(sqlite3 *pdb, const char *key,
+                             struct json_value *field)
+{
+    json_init(field);
+    int64_t stamp = 0;
+    size_t n = 0;
+    bool found = false;
+    bool ok = pdb && progress_meta_get_blob_exact(pdb, key, &stamp,
+                                                   sizeof(stamp), &n, &found);
+    if (!ok || !found || n != sizeof(stamp)) {
+        json_set_null(field);
+        return;
+    }
+    json_set_object(field);
+    json_push_kv_int(field, "epoch", stamp);
+    time_t stamp_t = (time_t)stamp;
+    struct tm tm_utc;
+    char iso[24] = {0};
+    if (gmtime_r(&stamp_t, &tm_utc) &&
+        strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", &tm_utc) > 0)
+        json_push_kv_str(field, "iso8601", iso);
+    else
+        json_push_kv_str(field, "iso8601", "");
+}
+
 const char *sovereignty_trust_mode(bool proven_authority, bool self_folded)
 {
     if (!proven_authority)
@@ -133,6 +222,7 @@ bool sovereignty_guard_allow(const char *action, char *reason,
     progress_store_tx_unlock();
 
     enum sync_trust_state st = sync_trust_derive(proven, refold, self_derived);
+    sov_stamp_transitions(pdb, st);
     enum sync_capability cap = (action && strcmp(action, "mint") == 0)
                                    ? SYNC_CAP_MINE
                                    : SYNC_CAP_WALLET_SPEND;
@@ -290,6 +380,8 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
      * it is false (the conservative floor), matching the guard's own fail. */
     enum sync_trust_state trust_st =
         sync_trust_derive(proven_authority, self_folded, self_derived);
+    if (progress_open)
+        sov_stamp_transitions(pdb, trust_st);
     uint32_t cap_mask = sync_trust_caps(trust_st);
     json_push_kv_str(out, "trust_state", sync_trust_state_name(trust_st));
     json_push_kv_int(out, "capability_mask", (int64_t)cap_mask);
@@ -309,19 +401,19 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
     json_push_kv(out, "capabilities", &caps);
     json_free(&caps);
 
-    /* T_ready / T_sovereign: the instants this datadir first reached assisted
-     * readiness / sovereignty. No durable timestamp is persisted for either
-     * transition (the self_folded marker is a bare boolean key), and this slice
-     * adds NO new persistence — so both are reported as null rather than
-     * fabricated. */
+    /* t_ready / t_sovereign: the durable, monotonic first-reached instants
+     * (SOVEREIGNTY_T_READY_KEY / SOVEREIGNTY_T_SOVEREIGN_KEY, stamped by
+     * sov_stamp_transitions above and at every sovereignty_guard_allow
+     * call) — {"epoch": <int64 wall-clock seconds>, "iso8601": "..."} once
+     * stamped, JSON null until this datadir has ever reached the milestone.
+     * A later posture regression never clears these; see the stamping
+     * comment above sovereignty_trust_mode for the full semantics. */
     struct json_value t_ready = {0};
-    json_init(&t_ready);
-    json_set_null(&t_ready);
+    sov_render_stamp(pdb, SOVEREIGNTY_T_READY_KEY, &t_ready);
     json_push_kv(out, "t_ready", &t_ready);
     json_free(&t_ready);
     struct json_value t_sovereign = {0};
-    json_init(&t_sovereign);
-    json_set_null(&t_sovereign);
+    sov_render_stamp(pdb, SOVEREIGNTY_T_SOVEREIGN_KEY, &t_sovereign);
     json_push_kv(out, "t_sovereign", &t_sovereign);
     json_free(&t_sovereign);
 
