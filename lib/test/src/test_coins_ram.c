@@ -336,6 +336,39 @@ int test_coins_ram(void)
              coins_kv_get_applied_height(db, &applied, &found));
     CR_CHECK("applied frontier == flushed+1", found && applied == 21);
 
+    /* ── coins_applied_height bound check (Wave N hardening, FORWARD_PLAN.md
+     * item 7): the stored width is int64 but every reader treats the value
+     * as int32_t. A corrupted blob decoding outside int32_t range must be a
+     * hard read error, never a silently-truncated in-range-looking height. */
+    {
+        uint8_t out_of_range[8];
+        int64_t huge = (int64_t)INT32_MAX + 1;  /* one past the valid range */
+        for (int i = 0; i < 8; i++)
+            out_of_range[i] = (uint8_t)(((uint64_t)huge) >> (8 * i));
+        CR_CHECK("applied_height bound: corrupt blob written",
+                 progress_meta_set(db, COINS_APPLIED_HEIGHT_KEY,
+                                   out_of_range, sizeof(out_of_range)));
+        int32_t bad_applied = -1; bool bad_found = true;
+        CR_CHECK("applied_height bound: out-of-range value REFUSED",
+                 !coins_kv_get_applied_height(db, &bad_applied, &bad_found));
+        CR_CHECK("applied_height bound: found not stamped true on refusal",
+                 !bad_found);
+
+        /* Restore the real (in-range) value so the rest of this test group
+         * keeps reading a valid applied frontier. */
+        uint8_t restore[8];
+        int64_t good = 21;
+        for (int i = 0; i < 8; i++)
+            restore[i] = (uint8_t)(((uint64_t)good) >> (8 * i));
+        CR_CHECK("applied_height bound: restored valid blob",
+                 progress_meta_set(db, COINS_APPLIED_HEIGHT_KEY,
+                                   restore, sizeof(restore)));
+        int32_t restored = -1; bool restored_found = false;
+        CR_CHECK("applied_height bound: restored value reads back ok",
+                 coins_kv_get_applied_height(db, &restored, &restored_found) &&
+                 restored_found && restored == 21);
+    }
+
     /* ── crash-replay reconcile: simulate the cursor advancing PAST the last
      *    flush (a crash between flushes), then reconcile must rewind it. ── */
     {

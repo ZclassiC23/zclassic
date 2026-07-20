@@ -838,7 +838,22 @@ bool coins_kv_get_applied_height(sqlite3 *db, int32_t *out, bool *found)
                  "[coins_kv] applied_height blob malformed (len=%zu)", n);
         return false;
     }
-    if (out) *out = (int32_t)le64_get(blob);
+    /* The stored width is int64 (le64_put/le64_get) but the setter only ever
+     * writes an int32_t-domain height and every reader below treats the
+     * result as int32_t. A bit-flip or torn write on this 8-byte blob can
+     * decode to a value outside int32_t range; narrowing that silently
+     * (the old `(int32_t)le64_get(blob)` cast) would hand callers an
+     * arbitrary in-range-looking height instead of the real corrupt one —
+     * unbound trust in a persisted verdict. Bound-check before narrowing and
+     * fail the same way the length check above does. */
+    int64_t v = le64_get(blob);
+    if (v < INT32_MIN || v > INT32_MAX) {
+        LOG_WARN("coins_kv",
+                 "[coins_kv] applied_height out of int32 range (%lld) — "
+                 "treating as malformed", (long long)v);
+        return false;
+    }
+    if (out) *out = (int32_t)v;
     if (found) *found = true;
     return true;
 }

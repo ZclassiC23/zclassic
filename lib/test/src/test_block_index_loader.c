@@ -6,12 +6,14 @@
 
 #include "test/test_helpers.h"
 #include "services/block_index_loader.h"
+#include "services/block_index_cache_envelope.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_tip.h"
 #include "storage/sha3_sidecar_io.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "jobs/tip_finalize_stage.h"
+#include "util/blocker.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/checkpoints.h"
@@ -457,6 +459,123 @@ int test_block_index_loader(void)
         }
 
         BIL_CHECK("bil: SQLite load rejects cache with < 1000 entries", ok);
+
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 6b. SQLite cache integrity envelope: tamper -> demote -> rebuild ──
+     * Wave N hardening (docs/work/FORWARD_PLAN.md item 7.3): the SQLite
+     * cache carries an XOR-combined SHA3 envelope (block_index_cache_
+     * envelope) verified in the SAME O(rows) load pass. A tampered row
+     * must be DETECTED (never silently trusted), DEMOTE the cache (discard
+     * + typed blocker, never refuse boot — it is a pure re-derivable
+     * cache), and a subsequent clean save+load must succeed and clear the
+     * blocker — "boots without FATAL" is not the bar; H*-equivalent proof
+     * here is the fresh rebuild actually loading every entry back. */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 1500);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        bool ok = (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+
+        if (ok) {
+            sqlite3_exec(ndb.db,
+                "CREATE TABLE block_index_cache ("
+                "hash BLOB PRIMARY KEY,"
+                "prev_hash BLOB,"
+                "height INTEGER,"
+                "n_bits INTEGER,"
+                "n_time INTEGER,"
+                "n_version INTEGER,"
+                "n_status INTEGER,"
+                "n_file INTEGER,"
+                "n_data_pos INTEGER,"
+                "n_undo_pos INTEGER,"
+                "n_tx INTEGER,"
+                "chain_work BLOB,"
+                "n_cached_branch_id INTEGER,"
+                "n_chain_tx INTEGER"
+                ");"
+                "CREATE TABLE block_index_cache_envelope ("
+                "envelope_id INTEGER PRIMARY KEY,"
+                "row_count INTEGER NOT NULL,"
+                "content_sha3 BLOB NOT NULL,"
+                "written_at INTEGER NOT NULL)",
+                NULL, NULL, NULL);
+
+            save_block_index_recent(&ndb, &ms);
+
+            int64_t env_rows = 0;
+            sqlite3_stmt *ec = NULL;
+            sqlite3_prepare_v2(ndb.db,
+                "SELECT COUNT(*) FROM block_index_cache_envelope", -1,
+                &ec, NULL);
+            if (sqlite3_step(ec) == SQLITE_ROW)
+                env_rows = sqlite3_column_int64(ec, 0);
+            sqlite3_finalize(ec);
+            ok = ok && env_rows == 1;
+
+            /* Tamper ONE cached row's n_bits — content changes, row_count
+             * does not, so this exercises the digest mismatch path (not
+             * the row-count mismatch path). */
+            sqlite3_exec(ndb.db,
+                "UPDATE block_index_cache SET n_bits=n_bits+1 "
+                "WHERE height=750", NULL, NULL, NULL);
+
+            uint64_t demotions_before =
+                block_index_cache_envelope_demotions_for_testing();
+
+            struct main_state ms2;
+            memset(&ms2, 0, sizeof(ms2));
+            block_map_init(&ms2.map_block_index);
+            active_chain_init(&ms2.chain_active);
+
+            struct zcl_result tampered = load_block_index_sqlite(&ndb, &ms2);
+            ok = ok && !tampered.ok;
+            ok = ok && block_index_cache_envelope_demotions_for_testing() ==
+                           demotions_before + 1;
+            ok = ok && ms2.map_block_index.size == 0;
+            ok = ok && blocker_exists("block_index_cache.integrity_demoted");
+
+            int64_t cache_rows_after_demote = -1;
+            sqlite3_stmt *cc = NULL;
+            sqlite3_prepare_v2(ndb.db,
+                "SELECT COUNT(*) FROM block_index_cache", -1, &cc, NULL);
+            if (sqlite3_step(cc) == SQLITE_ROW)
+                cache_rows_after_demote = sqlite3_column_int64(cc, 0);
+            sqlite3_finalize(cc);
+            ok = ok && cache_rows_after_demote == 0;
+
+            /* REBUILD: a fresh, clean save from the original (untampered)
+             * `ms` re-derives the cache; the next load must succeed and the
+             * blocker must self-clear. This is the "never refuses boot,
+             * always re-derivable" proof — not just "no crash". */
+            save_block_index_recent(&ndb, &ms);
+
+            struct main_state ms3;
+            memset(&ms3, 0, sizeof(ms3));
+            block_map_init(&ms3.map_block_index);
+            active_chain_init(&ms3.chain_active);
+
+            struct zcl_result rebuilt = load_block_index_sqlite(&ndb, &ms3);
+            ok = ok && rebuilt.ok;
+            ok = ok && ms3.map_block_index.size >= 1500;
+            ok = ok && !blocker_exists("block_index_cache.integrity_demoted");
+
+            block_map_free(&ms3.map_block_index);
+            block_map_free(&ms2.map_block_index);
+            sqlite3_close(ndb.db);
+        }
+
+        BIL_CHECK("bil: SQLite cache envelope detects tamper, demotes, "
+                 "rebuilds clean", ok);
 
         block_map_free(&ms.map_block_index);
     }

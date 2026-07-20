@@ -11,13 +11,20 @@
 
 #include "services/sapling_checkpoint_hook.h"
 
+#include "platform/time_compat.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "validation/process_block.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>
+
+/* Named so both the raise and the self-clear below agree on identity. */
+#define SAPLING_CKPT_ANCHOR_READ_ERROR_BLOCKER_ID \
+    "sapling_checkpoint_hook.anchor_read_error"
 
 /* Own interval counter, independent of the shared one inside
  * sapling_tree_flat_checkpoint_note (which node_db_catchup_service.c's
@@ -54,13 +61,43 @@ void sapling_checkpoint_hook_in_tx(struct sqlite3 *db, int64_t height,
     struct incremental_merkle_tree tree;
     enum anchor_kv_lookup_result lr =
         anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &tree, NULL, NULL);
-    if (lr == ANCHOR_KV_ERROR)
-        LOG_WARN("sapling_checkpoint_hook",
-                 "anchor_kv_latest_tree store error at h=%lld — skipping "
-                 "this checkpoint attempt (best-effort, not fatal)",
-                 (long long)height);
+    if (lr == ANCHOR_KV_ERROR) {
+        /* A store-level failure reading sapling_anchors (prepare/step/decode
+         * error inside anchor_kv_latest_tree) is distinct from the benign
+         * "no frontier yet" case (ANCHOR_KV_HISTORY_INCOMPLETE /
+         * ANCHOR_KV_MISSING, handled by the `lr != ANCHOR_KV_FOUND` fallthrough
+         * below). Best-effort/non-fatal for THIS hook — the checkpoint cache is
+         * a pure optimization, never fold_sapling's source of truth — but a
+         * bare LOG_WARN that scrolls off is invisible to dumpstate/automation.
+         * Raise a named, self-clearing TRANSIENT blocker so a persistent
+         * sapling_anchors read failure is a first-class, throttled signal
+         * instead of a silently-dropped log line. */
+        static struct log_throttle ckpt_anchor_err_throttle = LOG_THROTTLE_INIT;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&ckpt_anchor_err_throttle, 1, now, 300,
+                                     &reps))
+            LOG_WARN("sapling_checkpoint_hook",
+                     "anchor_kv_latest_tree store error at h=%lld — skipping "
+                     "this checkpoint attempt (best-effort, not fatal) "
+                     "repeated=%llu",
+                     (long long)height, (unsigned long long)reps);
+        struct blocker_record rec;
+        if (blocker_init(&rec, SAPLING_CKPT_ANCHOR_READ_ERROR_BLOCKER_ID,
+                         "sapling_checkpoint_hook", BLOCKER_TRANSIENT,
+                         "anchor_kv_latest_tree failed reading sapling_anchors "
+                         "during a periodic checkpoint attempt — the flat "
+                         "checkpoint cache is best-effort so boot/sync are "
+                         "unaffected, but a persisted read error on that "
+                         "table warrants operator attention"))
+            blocker_set(&rec);
+        return;
+    }
     if (lr != ANCHOR_KV_FOUND)
         return;
+    /* A clean read clears any earlier read-error episode — self-terminating,
+     * same discipline as every other typed blocker in this codebase. */
+    blocker_clear(SAPLING_CKPT_ANCHOR_READ_ERROR_BLOCKER_ID);
 
     /* force=true: this hook already self-paced above, so it does not need
      * the shared inner interval gate inside sapling_tree_flat_checkpoint_note

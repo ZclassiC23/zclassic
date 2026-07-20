@@ -257,3 +257,13 @@ ZCL_BLOCKER_REMEDY(sapling_tree_rebuild.fail_closed,            OWNER)
  * investigates why the node's own state diverges from a baked rung. The dumper
  * self-clears the blocker on the next pass with no divergence. ──────────── */
 ZCL_BLOCKER_REMEDY(checkpoint_ladder.mismatch,                  OWNER)
+
+/* ── Plain code-raised, self-clearing-in-place (not condition-engine) ──
+ * Both self-clear on the SAME code path's next clean pass (block_index_
+ * cache_envelope.c: bic_verify_or_demote's ok branch;
+ * sapling_checkpoint_hook.c: a subsequent ANCHOR_KV_FOUND read) — no
+ * condition-engine tick is involved, so per the OWNER definition above
+ * (no in-tree condition/ESCAPE remedy) these are OWNER, same convention as
+ * binary.fallback_active. ─────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(block_index_cache.integrity_demoted,         OWNER)
+ZCL_BLOCKER_REMEDY(sapling_checkpoint_hook.anchor_read_error,   OWNER)
