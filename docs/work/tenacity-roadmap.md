@@ -2,7 +2,7 @@
 
 # Tenacity Roadmap — sync super fast, fail almost never
 
-**Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
+**Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
 
 > This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Near-term hardening sequencing is in this doc's "Hold-class doctrine" and "Stability hardening backlog" sections (below); the merged rock-solid recovery-program L1/L2 items are in this doc (see "Rock-solid recovery program" below).
 
@@ -16,22 +16,16 @@ The three principles every item anchors to (state-duplication → divergence; ve
 
 ## Ordered items
 
-### 1. Invariant A — frontier-bounded tip *(LANDED — `21d177bf9`+`447fa757b`, merged `a2da7e107`)*
-Makes Wedge A (restore installs a tip above the validated header frontier → post-restore integrity FATAL → boot crash-loop) unwritable. Log half: every restore install funnels through the single `utxo_recovery_commit_tip` chokepoint with evidence-based floor rewind. Index half: installs must also be trust-rooted (pprev descent to genesis/SHA3-anchor), settle-looped, boot promotion bypass gated. Proven on the frozen fixture `~/.zclassic-c23-postrestore-wedge-20260611` (boots CLEAN, zero reindex, serving); build+lint+test_parallel 0/409. Residue on that fixture = the coins_applied>hstar coin-tear class (item 3 / §4d row 1).
+### 1. Invariant A — frontier-bounded tip — DONE (`21d177bf9`+`447fa757b`, merged `a2da7e107`), guarded by build+lint+`test_parallel` 0/409. Makes Wedge A (restore installs a tip above the validated header frontier) unwritable: every restore install funnels through the single `utxo_recovery_commit_tip` chokepoint with evidence-based floor rewind, and installs must be trust-rooted (pprev descent to genesis/SHA3-anchor).
 
-### 2. Oversize grandfather fix + full genesis replay *(LANDED — `ccc7fbbfa`, merged `b0c0b4f9a`)*
-The canonical chain must replay from genesis with zero consensus rejects. FR-3's text-copied `MAX_TX_SIZE_AFTER_SAPLING=102000` false-rejected real history (mined when the rule was 2 MB). A complete scan (every height 0..3143532, oracle-compared) found **413** oversize txs (h=478544..1968856, max 1,922,197 B at h=685036); each is excused via a txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`, **BLOCK context only** — mempool and fresh blocks stay strict 102000 (= zclassicd live behavior). The standing-nightly-replay institution (commitment == zclassicd `gettxoutsetinfo` every run) is item 5.
+### 2. Oversize grandfather fix + full genesis replay — DONE (`ccc7fbbfa`, merged `b0c0b4f9a`). **Standing rule:** legacy oversize txs (413 found, h=478544..1968856, max 1,922,197 B — mined when the block-size rule was larger) are excused via a txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`, **BLOCK context only** — mempool and fresh blocks stay strict at `MAX_TX_SIZE_AFTER_SAPLING=102000` (= zclassicd live behavior). The standing-nightly-replay institution (commitment == zclassicd `gettxoutsetinfo` every run) is item 5.
 
-### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge *(LANDED — reindex_epilogue.c wired at config/src/boot_index.c:402; test_reindex_epilogue.c)*
-- **Problem:** `-reindex-chainstate` (the crash-only auto-recovery path, `706a7c00a`) ends torn; with the never-give-up unit (`0b45e93a5`) it can degrade into an infinite reindex loop. Confirmed gaps at `config/src/boot_index.c:160–297` and `config/src/boot.c:3321–3344`: `boot_index_clear_coins_state` **deletes** `coins_best_block`/`utxo_commitment`/`utxo_sha3` but the epilogue never **recomputes** them; `coins_kv` is never reseeded; the `utxo_apply`/`coins_applied` cursors keep stale pre-reindex values — recovery manufactures the `coins_applied > hstar` wedge shape.
-- **Fix:** the epilogue derives in one ordered commit: reseed coins_kv from the replayed set, recompute (not delete) the SHA3 commitment, clamp the reducer cursors to the replayed tip. Derived, never installed-stale.
-- **Acceptance:** (a) regtest reindex smoke (~50 blocks, `-reindex-chainstate`, assert tip + row-count parity + recomputed==served commitment + SERVING) — gates every push, ~3 min; (b) mainnet copy reindex ends with cursors == replayed tip, no `coins_applied > hstar`; (c) kill -9 mid-reindex then reboot converges (feeds item 7).
-- **Size:** ~250 LOC + smoke harness; 1 session.
+### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge — DONE (`reindex_epilogue.c`, wired at `config/src/boot_index.c:402`), guarded by `test_reindex_epilogue.c`. The epilogue derives in one ordered commit: reseeds `coins_kv` from the replayed set, recomputes (never deletes) the SHA3 commitment, clamps the reducer cursors to the replayed tip.
 
 ### 4. Seal + Window — `window_rebuild`, the one recovery verb *(DESIGN)*
 **Status: PLANNED unless a line is marked IS.** Survey basis: main @`706a7c00a`. Consensus parity untouched throughout — `ZCL_FINALITY_DEPTH`, checkpoints, validity rules are *read*, never written. Doctrine home: `docs/TENACITY.md`.
 
-**The doctrine (THE ZCLASSIC23 WAY).** The chain is the only immutable truth. Derived state lives in exactly two domains. The **SEALED DOMAIN** (≤ seal height S): pinned by a checkpointed SHA3 UTXO commitment, recomputable from genesis, continuously proven by the standing replay institution (item 5). The **WORKING WINDOW** (> S): cursors, stage logs, coin deltas, verdicts, mirrors — explicitly **disposable**. One recovery verb replaces the entire ladder: **`window_rebuild`** — discard the window, reset to the seal, replay forward, recompute the commitment, verify, resume. **Recompute, never repair.** Our 2026-06-11 record is the evidence: every recovery that worked was a recompute (cold-import, reindex, auto-reindex, reorg unwind); every one that failed/re-wedged was a repair (anchor heals, backfills, reconcile guesses, oscillating poison rewinds).
+**The doctrine (THE ZCLASSIC23 WAY).** The chain is the only immutable truth. Derived state lives in exactly two domains. The **SEALED DOMAIN** (≤ seal height S): pinned by a checkpointed SHA3 UTXO commitment, recomputable from genesis, continuously proven by the standing replay institution (item 5). The **WORKING WINDOW** (> S): cursors, stage logs, coin deltas, verdicts, mirrors — explicitly **disposable**. One recovery verb replaces the entire ladder: **`window_rebuild`** — discard the window, reset to the seal, replay forward, recompute the commitment, verify, resume. **Recompute, never repair.** The evidence: every recovery that has worked was a recompute (cold-import, reindex, auto-reindex, reorg unwind); every one that has failed/re-wedged was a repair (anchor heals, backfills, reconcile guesses, oscillating poison rewinds).
 
 #### 4a. The seal — dual boundary
 
@@ -99,12 +93,8 @@ Rule of thumb: **anomaly above S ⇒ rebuild; anomaly at/below S ⇒ page.** Not
 - **Ladder removal proof:** grep-zero-callers per module before each delete; build + lint (incl. the new ratchet + E13) + **test_parallel 0/409 green** after every wave; canaries #5/#7 green 7 consecutive days with the ladder gone.
 - **Size:** M1–M2 ≈ 1 session each; M3–M4 ≈ 2 sessions, mechanical after fixtures exist.
 
-### 5. Standing full-history replay canary *(HARNESS + GATE LANDED — wave4/i5-replay-canary; 7-green-nights + live timer-install owner-gated)*
-- **Goal:** a recurring institution that samples the REAL distribution (would have caught 3 of this session's 4 live failures). The gates ARE the product — lands before/with item 4's deletions, the only honest verification of them.
-- **Landed:** harness `tools/scripts/replay_canary.sh` (pure bash + the binary's own tools) + `tools/scripts/isolated_mainnet_env.sh` (mainnet sibling of the regtest isolation chokepoint). Spawns an isolated /tmp mainnet node on 3905x ports, headers via `--importblockindex` (read-only vs `~/.zclassic`), seeds the UTXO snapshot to anchor 3,056,758, replays anchor→tip, asserts: (a) bg_validation COMPLETE with zero header-admit rejects (`getsyncdiag`); (b) the compiled anchor checkpoint passed without integrity FATAL + local commitment is a real 64-hex recompute (`getutxocommitment`); (c) coarse UTXO stats == co-located zclassicd `gettxoutsetinfo` (RPC 8232, read-only). Weekly variant replays genesis→tip (~6 h, bg-validation ON, zclassicd P2P 8034 for bodies on the operator host). **Authoritative verdict = a sentinel FILE** (`~/.local/state/zclassic23-canary/replay_canary_<from>.json`, atomic tmp+sync+rename) written ONLY after every assertion passes; shell exit is advisory and drives systemd `OnFailure=` (page channel `journalctl -t replay-canary`). Never exit-0-as-proof — a killed/OOM run leaves no fresh PASS sentinel.
-- **Deviations from spec (honest):** (1) Use `zclassic23 core consensus report` for `consensus_reject_index_total`; the independently reachable "zero rejects" signal is `bg_validation.state==COMPLETE` + `getsyncdiag headers.total_rejected==0`. (2) From-anchor the commitment is computed at the TIP, so the byte-equal checkpoint assert is exercised by the boot integrity gate at h=3,056,758 (boot refuses otherwise) + a non-error 64-hex check. (3) The mvp-spawn workflow merge (`c086c5136`) is OUT of scope.
-- **Acceptance (landed):** hermetic gate `lib/test/src/test_replay_canary_verdict.c` drives `replay_canary.sh --self-test=<mode>` against fixture RPC outputs, red-fails on a seeded known-bad reducer (`fail-rejects`, `fail-sha3`, `fail-crossnode`, `fail-timeout`, plus SIGKILL-leaves-no-fresh-PASS) and green-passes `pass`. Runs in `make ci`. **OPEN (owner-gated):** install the systemd timers (`deploy/examples/zclassic23-replay-canary-*`), accumulate 7 consecutive green nights, then flip the `docs/MVP.md` rows from ◐.
-- **Size:** ~200 LOC harness + 2 timer/service unit pairs; 1 session. ~45 min/night + ~6 h/wk.
+### 5. Standing full-history replay canary — DONE (harness + gate): `tools/scripts/replay_canary.sh` + `tools/scripts/isolated_mainnet_env.sh` spawn an isolated mainnet node, import headers read-only vs `~/.zclassic`, seed the UTXO snapshot to anchor 3,056,758, replay anchor→tip, and assert (a) bg_validation COMPLETE with zero header-admit rejects, (b) the compiled anchor checkpoint passes without integrity FATAL, (c) coarse UTXO stats match co-located zclassicd `gettxoutsetinfo`. A weekly variant replays genesis→tip. The authoritative verdict is a sentinel FILE (`~/.local/state/zclassic23-canary/replay_canary_<from>.json`, atomic tmp+sync+rename) written only after every assertion passes — shell exit is advisory only, drives `OnFailure=` paging. Guarded by hermetic gate `lib/test/src/test_replay_canary_verdict.c` (in `make ci`), which red-fails on seeded known-bad reducers and green-passes clean fixtures.
+  **OPEN (owner-gated):** install the systemd timers (`deploy/examples/zclassic23-replay-canary-*`), accumulate 7 consecutive green nights, then flip the `docs/MVP.md` rows from ◐.
 
 ### 6. Chain-derived golden extremals for every bounded consensus predicate *(OPEN)*
 - **Goal:** permanently close the text-vs-chain class. FR-3 was one of 12 text-derived rule findings on the same "history-safe-by-text" argument (FR-1–FR-5 + the miner cap + the 6 confirmed in [`consensus-parity-supplemental-audit-2026-06-08.md`](./consensus-parity-supplemental-audit-2026-06-08.md), which explicitly invokes "exactly the FR-3 argument" — the one h=478544 refuted). "History-safe" must be a machine invariant, not a header comment (`consensus.h:23–29` was prose, never checked, and was wrong).
@@ -125,16 +115,16 @@ Rule of thumb: **anomaly above S ⇒ rebuild; anomaly at/below S ⇒ page.** Not
 - **Size:** ~200 LOC boot wiring + invariant + canary unit; 1 session.
 
 ### 9. Remove the temporary `-nobgvalidation` once item 2 deploys *(OPEN, owner-gated/live)*
-- **Goal:** restore full background re-verification on the live node. The flag is a TEMPORARY mitigation (2026-06-11, via `~/.config/zclassic23/env` word-split into `ZCL_ADDNODE_FLAGS`) because `bg_validation_service.c:291` `check_block` would false-flag canonical block 478544 → a `BLOCK_FAILED_VALID` tip-wedge vector (one stale failed-bit wedges the tip).
+- **Goal:** restore full background re-verification on the live node. The flag is a TEMPORARY mitigation (via `~/.config/zclassic23/env` word-split into `ZCL_ADDNODE_FLAGS`) because `bg_validation_service.c:291` `check_block` would false-flag canonical block 478544 → a `BLOCK_FAILED_VALID` tip-wedge vector (one stale failed-bit wedges the tip).
 - **Mechanism:** after item 2 deploys, delete the flag from the env file, restart the service, let bg validation walk past h=478544.
 - **Acceptance:** live `zclassic23 core sync validation` shows progress monotonically past 478544 with zero false flags; no `BLOCK_FAILED_VALID` entries; RSS stays within the known bg-validation envelope (watch the stair-step gotcha).
 - **Size:** config-only + one live observation window.
 
 ---
 
-## Rock-solid recovery program — open L1/L2 items (merged from rock-solid-program-2026-06-16)
+## Rock-solid recovery program — open L1/L2 items
 
-The 2026-06-16 recovery program's Layer-0 (restore the live node) is DONE; these are
+The recovery program's Layer-0 (restore the live node) is DONE; these are
 its still-open autonomous (copy-prove-gated, no live mutation) and continuous-proof
 items. Both Layer-0 wedge classes (the coin tear AND restart fragility) share one
 root: cold import is a non-self-sufficient "borrow from zclassicd" bootstrap (skips
@@ -174,14 +164,11 @@ these harden the bridge.
   `tip_window_holes`; confirm both sanitizers clean + the canary survives. Review the
   lock change against the LOCK-ORDER LAW (do NOT take `cs_main` while holding a leaf
   lock the drive path holds).
-- **(d1) Scope the replay-canary FAIL sentinel *(LANDED 2026-06-24)*.**
-  `canary_sentinel_watch.c` now filters both stale dimensions in the shared
-  `~/.local/state/zclassic23-canary/` verdict dir: cross-build FAILs do not page
-  (already present before this pass), and FAILs whose `started_ts` predates the
-  watcher process start are recorded as `stale_run` but do not latch
-  `replay_canary_failed`. Both stale drops log once per mtime, and
-  `test_canary_sentinel_watch` proves stale-run suppression plus fresh same-build
-  FAIL paging.
+- **(d1) Scope the replay-canary FAIL sentinel** — DONE. `canary_sentinel_watch.c`
+  filters both stale dimensions in the shared `~/.local/state/zclassic23-canary/`
+  verdict dir (cross-build FAILs never page; FAILs predating the watcher's own
+  start are recorded `stale_run` but never latch `replay_canary_failed`),
+  guarded by `test_canary_sentinel_watch`.
 - **(d2) Make `contradiction_frozen` self-clearing once reconciled.** The freeze is
   raised on a transient `active_tip_hash != csr_tip_hash` at boot
   (`chain_evidence_reconstruct.c:178-184`) but the remedy returns
@@ -196,23 +183,20 @@ these harden the bridge.
 
 ### L2 — continuous proof (all LOCAL, no GitHub Actions)
 
-- **(4.1) Local pre-push enforcement.** Landed 2026-07-01 as tracked
-  `tools/githooks/pre-push`, armed per clone by `make install-hooks`
-  (`git config core.hooksPath tools/githooks`). The hook runs the local
-  `make ci` gate by default before push; `make lint` / `make ci` also run
-  `check-git-hooks-installed`, which fails if the clone is unarmed or if the
-  tracked hook no longer invokes the default `make ci` command. A raw first push
-  from an unarmed clone cannot be intercepted by Git because the hook is not yet
-  installed; run `make install-hooks` in each worktree.
+- **(4.1) Local pre-push enforcement** — DONE: tracked `tools/githooks/pre-push`,
+  armed per clone by `make install-hooks` (`git config core.hooksPath
+  tools/githooks`), runs `make ci` before push. `make lint`/`make ci` also run
+  `check-git-hooks-installed`, which fails if the clone is unarmed or the
+  tracked hook no longer invokes `make ci`. A raw first push from an unarmed
+  clone cannot be intercepted (the hook isn't installed yet) — run
+  `make install-hooks` in each worktree.
 - **(4.2) systemd --user timer for the heavy gate + soak accrual.** Nightly `make ci`
   against HEAD, dated verdict = local CI. Pair with the dev lane staying up to accrue
   soak time toward MVP-C (7-day soak).
-- **(4.3) Get the replay canary GREEN and scheduled.** Masking fix already landed
-  (poll loop `kill -0` + `node_crashed_signal_N`). Stale sentinel scoping (d1)
-  is now landed for both cross-build and pre-process-start FAILs. Remaining:
-  land (c) so anchor-replay no longer SEGVs, then schedule on the §4.2 timer
-  and require a PASS sentinel for the running build_commit before declaring the
-  node soak-healthy.
+- **(4.3) Get the replay canary GREEN and scheduled.** Masking fix and the (d1)
+  stale-sentinel scoping are DONE. OPEN: land (c) so anchor-replay no longer
+  SEGVs, then schedule on the §4.2 timer and require a PASS sentinel for the
+  running build before declaring the node soak-healthy.
 - **(4.4) MVP-C8 parity oracle — keep it continuous.** Make the tip-hash-vs-zclassicd
   probe a continuous timer on live + soak lanes, alerting on `match:false`, so a future
   tear is caught the moment it diverges, not 2.85 days later. The live node had NO
@@ -222,7 +206,7 @@ these harden the bridge.
   tear from its own recent history instead of a full re-import. Consensus-adjacent; must
   be designed against the parity doctrine first. Overlaps item 4 (the seal) above.
 
-## Hold-class doctrine (merged from hold-class-audit-2026-07-10)
+## Hold-class doctrine
 
 The stickiness invariant applied to reducer holds: **a stall must always be a
 NAMED typed blocker (`lib/util/blocker.h`) with either an auto-remedy
@@ -244,13 +228,13 @@ blocker registry and therefore to the meta-detector, unlike the directly
 analogous `coin_backfill.owner_gate` typed blocker for the equivalent
 env-ack gate. Fix: give it a typed `DEPENDENCY` blocker
 (`utxo_apply.value_overflow_owner_gate`) mirroring `coin_backfill_page_refusal`.
-(The 2026-07-10 audit's other two flagged defects are resolved: the
-nullifier-backfill no-auto-remedy gap now has an owner-gated populate-only
-walker, `app/services/src/nullifier_backfill_service.c`; the
+(The audit's other two flagged defects are resolved: the nullifier-backfill
+no-auto-remedy gap has an owner-gated populate-only walker,
+`app/services/src/nullifier_backfill_service.c`; the
 `proof_validate.internal_error` transient-held-permanent class is backstopped
 by the meta-detector above.)
 
-## Stability hardening backlog (merged from stability-improvements-2026-06-16)
+## Stability hardening backlog
 
 Landed since (verified against HEAD, dropped from this list): deploy
 force-rebuild on every push (`Makefile` `deploy` target), loud DNS-seed
