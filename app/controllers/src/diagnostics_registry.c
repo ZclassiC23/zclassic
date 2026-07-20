@@ -93,6 +93,7 @@
 #include "conditions/sync_rate_below_floor.h"
 #include "storage/block_index_projection.h"
 #include "storage/body_coverage.h"
+#include "storage/checkpoint_ladder.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"

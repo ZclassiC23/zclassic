@@ -635,3 +635,16 @@
                  "count, and the retention cap it prunes to.",
                  "lib/net/src/rom_seed_ledger.c",
                  "lib/test/src/test_rom_seed_ledger.c"),
+    DIAG_SERVICE("checkpoint_ladder", checkpoint_ladder_dump_state_json,
+                 "checkpoint ladder verifier: the compiled sealed keystone (the "
+                 "one `bound` trust root) plus on-disk candidate rung artifacts "
+                 "from <datadir>/checkpoint_rungs/, each reported as "
+                 "{height, bound, trust(baked|candidate_unbaked), "
+                 "verdict(verified|unverifiable|MISMATCH), detail}. Checks "
+                 "self-consistency, strictly-increasing height/non-decreasing "
+                 "chainwork, and byte-for-byte reproduction of the keystone at "
+                 "its own height; a MISMATCH raises the PERMANENT typed blocker "
+                 "checkpoint_ladder.mismatch. Candidate rungs are "
+                 "self-attestation, never elevated to trusted.",
+                 "lib/storage/src/checkpoint_ladder.c",
+                 "lib/test/src/test_consensus_state_snapshot_export.c"),
