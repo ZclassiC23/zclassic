@@ -5,7 +5,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
+#include "core/zcl_ids.h"
 #include "util/result.h"
 
 struct byte_stream;
@@ -37,6 +39,66 @@ struct snapshot_manifest {
     uint32_t snapshot_schema_version;
     int32_t  peer_tip_height;
 };
+
+/* zcl_ids.h adoption (WF1 lane 1B, additive-only): strongly-typed readers
+ * for the raw fields above. Wire layout is UNCHANGED — every field stays a
+ * bare int32_t/uint8_t[32] a wire memcpy/parse writes directly; these are
+ * read-side aliases only. `mmr_root` has no zcl_ids wrapper yet (it is
+ * distinct from `mmb_root` and no dedicated MMR-root type exists) and
+ * `num_utxos`/`protocol_version`/`snapshot_schema_version`/`peer_tip_height`
+ * are left as their native scalar types — zcl_byte_count is reserved for
+ * byte sizes, not item counts, so wrapping num_utxos with it would be a
+ * type lie. Full struct-field migration is an explicit future slice. */
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->block_hash) == sizeof(struct zcl_block_hash),
+               "snapshot_manifest.block_hash must stay wire-compatible with zcl_block_hash");
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->utxo_root) == sizeof(struct zcl_utxo_root),
+               "snapshot_manifest.utxo_root must stay wire-compatible with zcl_utxo_root");
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->mmb_root) == sizeof(struct zcl_mmb_root),
+               "snapshot_manifest.mmb_root must stay wire-compatible with zcl_mmb_root");
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->chain_work) == sizeof(struct zcl_chainwork_be256),
+               "snapshot_manifest.chain_work must stay wire-compatible with zcl_chainwork_be256");
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->height) == sizeof(struct zcl_height),
+               "snapshot_manifest.height must stay wire-compatible with zcl_height");
+_Static_assert(sizeof(((struct snapshot_manifest *)0)->total_bytes) == sizeof(struct zcl_byte_count),
+               "snapshot_manifest.total_bytes must stay wire-compatible with zcl_byte_count");
+
+static inline struct zcl_height snapshot_manifest_height_id(const struct snapshot_manifest *m)
+{
+    return (struct zcl_height){ .value = m->height };
+}
+
+static inline struct zcl_block_hash snapshot_manifest_block_hash_id(const struct snapshot_manifest *m)
+{
+    struct zcl_block_hash h;
+    memcpy(h.bytes, m->block_hash, 32);
+    return h;
+}
+
+static inline struct zcl_utxo_root snapshot_manifest_utxo_root_id(const struct snapshot_manifest *m)
+{
+    struct zcl_utxo_root r;
+    memcpy(r.bytes, m->utxo_root, 32);
+    return r;
+}
+
+static inline struct zcl_mmb_root snapshot_manifest_mmb_root_id(const struct snapshot_manifest *m)
+{
+    struct zcl_mmb_root r;
+    memcpy(r.bytes, m->mmb_root, 32);
+    return r;
+}
+
+static inline struct zcl_chainwork_be256 snapshot_manifest_chain_work_id(const struct snapshot_manifest *m)
+{
+    struct zcl_chainwork_be256 w;
+    memcpy(w.bytes, m->chain_work, 32);
+    return w;
+}
+
+static inline struct zcl_byte_count snapshot_manifest_total_bytes_id(const struct snapshot_manifest *m)
+{
+    return (struct zcl_byte_count){ .value = m->total_bytes };
+}
 
 struct zcl_result snapshot_manifest_parse(struct snapshot_manifest *out,
                                 struct byte_stream *s,

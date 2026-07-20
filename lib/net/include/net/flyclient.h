@@ -20,8 +20,10 @@
 #define ZCL_NET_FLYCLIENT_H
 
 #include "chain/mmb.h"
+#include "core/zcl_ids.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* Security parameter: number of random samples.
  * Under the FlyClient weighted distribution, an adversary with <50%
@@ -45,6 +47,23 @@ struct fc_challenge {
     uint64_t chain_length;      /* claimed number of blocks */
     uint8_t  mmb_root[32];      /* claimed MMB root to verify */
 };
+
+/* zcl_ids.h adoption (WF1 lane 1B, additive-only): a strongly-typed reader
+ * for the raw `mmb_root[32]` field above. Wire layout is UNCHANGED — the
+ * struct still carries a bare uint8_t[32] a wire memcpy writes directly;
+ * this is a read-side alias so a caller that wants a `struct zcl_mmb_root`
+ * (e.g. to hand to another zcl_ids-typed API) doesn't need its own memcpy.
+ * `seed` stays untyped: it is a random nonce, not a content root/digest, so
+ * no zcl_ids wrapper fits its semantics. */
+_Static_assert(sizeof(((struct fc_challenge *)0)->mmb_root) == sizeof(struct zcl_mmb_root),
+               "fc_challenge.mmb_root must stay wire-compatible with zcl_mmb_root");
+
+static inline struct zcl_mmb_root fc_challenge_mmb_root_id(const struct fc_challenge *c)
+{
+    struct zcl_mmb_root r;
+    memcpy(r.bytes, c->mmb_root, 32);
+    return r;
+}
 
 /* ── Sample (one header + MMB proof) ────────────────────── */
 

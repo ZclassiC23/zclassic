@@ -3,10 +3,15 @@
  * Strong-id wrapper types (core/zcl_ids.h). Step-0 contract test: proves the
  * 32-byte wrappers are layout-identical to a bare uint8_t[32] (so wire memcpy
  * stays valid) and the eq/copy helpers behave. WF1 lane 1B extends this with
- * the adoption proofs in flyclient.h / snapshot_manifest.h. */
+ * the adoption proofs in flyclient.h / snapshot_manifest.h: the new
+ * accessors read the SAME bytes a raw memcpy would, and the wire-compat
+ * _Static_assert guards in those headers are exercised by simply compiling
+ * this file (any layout drift breaks the build, not just this test). */
 
 #include "test/test_helpers.h"
 #include "core/zcl_ids.h"
+#include "net/flyclient.h"
+#include "services/snapshot_manifest.h"
 #include <string.h>
 
 static int test_zcl_ids_sizes(void)
@@ -74,6 +79,71 @@ static int test_zcl_ids_scalar_helpers(void)
     return failures;
 }
 
+static int test_zcl_ids_flyclient_adoption(void)
+{
+    int failures = 0;
+    TEST("zcl_ids: fc_challenge_mmb_root_id reads the same bytes as a raw memcpy") {
+        struct fc_challenge c;
+        memset(&c, 0, sizeof(c));
+        for (int i = 0; i < 32; i++) c.mmb_root[i] = (uint8_t)(i * 3 + 5);
+
+        struct zcl_mmb_root via_accessor = fc_challenge_mmb_root_id(&c);
+        struct zcl_mmb_root via_memcpy;
+        memcpy(via_memcpy.bytes, c.mmb_root, 32);
+        ASSERT(zcl_mmb_root_eq(&via_accessor, &via_memcpy));
+
+        /* The accessor returns a by-value copy, not a live view: mutating
+         * the source struct afterward must not retroactively change it. */
+        c.mmb_root[0] ^= 0xFF;
+        ASSERT(zcl_mmb_root_eq(&via_accessor, &via_memcpy));
+        struct zcl_mmb_root via_memcpy_after;
+        memcpy(via_memcpy_after.bytes, c.mmb_root, 32);
+        ASSERT(!zcl_mmb_root_eq(&via_accessor, &via_memcpy_after));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_ids_snapshot_manifest_adoption(void)
+{
+    int failures = 0;
+    TEST("zcl_ids: snapshot_manifest_*_id accessors match the raw fields") {
+        struct snapshot_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.height = 123456;
+        m.total_bytes = 9876543210ULL;
+        for (int i = 0; i < 32; i++) {
+            m.block_hash[i] = (uint8_t)(i + 1);
+            m.utxo_root[i]  = (uint8_t)(i + 2);
+            m.mmb_root[i]   = (uint8_t)(i + 3);
+            m.chain_work[i] = (uint8_t)(i + 4);
+        }
+
+        ASSERT(snapshot_manifest_height_id(&m).value == m.height);
+        ASSERT(snapshot_manifest_total_bytes_id(&m).value == m.total_bytes);
+
+        struct zcl_block_hash bh = snapshot_manifest_block_hash_id(&m);
+        ASSERT(memcmp(bh.bytes, m.block_hash, 32) == 0);
+
+        struct zcl_utxo_root ur = snapshot_manifest_utxo_root_id(&m);
+        ASSERT(memcmp(ur.bytes, m.utxo_root, 32) == 0);
+
+        struct zcl_mmb_root mr = snapshot_manifest_mmb_root_id(&m);
+        ASSERT(memcmp(mr.bytes, m.mmb_root, 32) == 0);
+
+        struct zcl_chainwork_be256 cw = snapshot_manifest_chain_work_id(&m);
+        ASSERT(memcmp(cw.bytes, m.chain_work, 32) == 0);
+
+        /* Cross-field sanity: a block_hash and utxo_root built from
+         * different byte patterns must not compare equal. */
+        struct zcl_block_hash bh2;
+        memcpy(bh2.bytes, m.utxo_root, 32);
+        ASSERT(!zcl_block_hash_eq(&bh, &bh2));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcl_ids(void)
 {
     int failures = 0;
@@ -81,5 +151,7 @@ int test_zcl_ids(void)
     failures += test_zcl_ids_scalar_sizes();
     failures += test_zcl_ids_hash_helpers();
     failures += test_zcl_ids_scalar_helpers();
+    failures += test_zcl_ids_flyclient_adoption();
+    failures += test_zcl_ids_snapshot_manifest_adoption();
     return failures;
 }
