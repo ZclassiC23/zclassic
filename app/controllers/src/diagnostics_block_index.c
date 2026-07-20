@@ -219,6 +219,11 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "blocks_hydrate_quarantined",
                      block_index_blocks_hydrate_quarantined());
 
+    /* block_index.bin flat per-row PoW-target quarantine tally
+     * (process-monotonic). Global, not per-block. */
+    json_push_kv_int(out, "flat_row_quarantined",
+                     block_index_flat_row_quarantined());
+
     /* Persisted-FAILED-bit trust reconcile tallies (process-monotonic): FAILED
      * bits stripped below the baked ROM checkpoint, and demoted to lazy
      * revalidation candidates above it (the "stale BLOCK_FAILED_VALID wedges

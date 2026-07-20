@@ -115,6 +115,21 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
  * by diag_block_index_dump_state_json. Reentrant/lock-free. */
 int64_t block_index_blocks_hydrate_quarantined(void);
 
+/* Outer bound shared by the per-row quarantine loaders (blocks-hydrate + flat):
+ * localized corruption heals per-row (skip + quarantine the offending row), but
+ * a source with more than this many poisoned rows is grossly shredded — defer to
+ * the whole-file re-derive / reindex recovery rather than seed a lace-riddled
+ * map. */
+#define BLOCKS_HYDRATE_MAX_QUARANTINE 4096
+
+/* Dumpstate-visible tally (process-monotonic) of block_index.bin flat rows
+ * dropped by the per-row PoW-target admission gate in load_block_index_flat.
+ * The flat cache stores no solution to hash-bind or re-check Equihash, so this
+ * gate re-checks only that each stored hash still meets its own PoW difficulty
+ * target; a failing row is dropped from the map (header sync + body_fetch
+ * re-supply it). Surfaced by diag_block_index_dump_state_json. Reentrant. */
+int64_t block_index_flat_row_quarantined(void);
+
 /* ── LevelDB block tree ──────────────────────────────────── */
 
 /* Load block_index from LevelDB block tree database.
