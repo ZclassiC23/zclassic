@@ -30,9 +30,11 @@
 
 #include "coins/utxo_commitment.h"
 #include "framework/condition.h"
+#include "jobs/rewind_driver.h"
 #include "models/database.h"
 #include "platform/clock.h"
 #include "services/invariant_sentinel.h"
+#include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chain_linkage_check.h"
 
@@ -95,6 +97,73 @@ static void vpc_clock_clear(void)
 void register_mirror_divergence_located(void);
 void register_tip_label_divergence(void);
 void register_state_window_inconsistent(void);
+
+/* Minimal reducer log schema — same DDL as test_reducer_frontier.c's own
+ * build_schema, trimmed to just what reducer_frontier_compute_hstar /
+ * tip_finalize_served_floor / coins_kv_get_applied_height read (progress_meta
+ * + stage_cursor + the six k_logs tables). No rows/cursors/proven-authority
+ * stamp are seeded: on a schema-only progress.kv, compute_hstar's own
+ * phantom-anchor guard (coins_kv_is_proven_authority reads progress_meta,
+ * finds no rows, cleanly returns false) drops the floor from the compiled
+ * SHA3 checkpoint to 0 and every per-log contiguous-prefix walk sees no rows
+ * above 0 — so H*=0 by construction, WITHOUT a SQL error, giving the
+ * tip_label_divergence remedy test below a real (non-error) H* to rewind
+ * against instead of the "hard store error" branch. */
+static bool vpc_build_reducer_schema(sqlite3 *db)
+{
+    static const char *const ddl =
+        "CREATE TABLE IF NOT EXISTS stage_cursor ("
+        "  name TEXT PRIMARY KEY,"
+        "  cursor INTEGER NOT NULL,"
+        "  updated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS progress_meta ("
+        "  key TEXT PRIMARY KEY, value BLOB);"
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        "  parent_hash BLOB, admitted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "  fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
+        "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  spent_count INTEGER, added_count INTEGER);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+        "  height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+        "  spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  tip_hash BLOB);";
+    char *err = NULL;
+    if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[test_validation_pack_conditions] schema: %s\n",
+                err ? err : "(null)");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+/* Count blocker_snapshot_all() entries whose id matches exactly. Used to
+ * prove an escalation blocker is a single, updated-in-place record across
+ * repeated remedy attempts — never a growing set of distinct entries. */
+static int vpc_count_blockers_named(const char *id)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    int count = 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(snaps[i].id, id) == 0)
+            count++;
+    return count;
+}
 
 /* Minimal utxo-row fixture, mirroring test_invariant_sentinel.c's
  * isn_insert_utxo: this test needs a REAL commitment-audit raise (not a
@@ -278,6 +347,106 @@ int test_validation_pack_conditions(void)
 
         vpc_clock_clear();
         vpc_fixture_reset();
+    }
+
+    /* ───────── tip_label_divergence → rewind_driver wiring ─────────
+     * Companion to the block above: there the fixture raised the blockers
+     * DIRECTLY (no HOLD latch), so chain_linkage_hold_refuse_from() stayed
+     * -1 and the remedy short-circuited before ever reaching rewind_to_
+     * nearest_self_verified_base() (tip_label_divergence.c:68) — the actual
+     * driver wiring this Condition exists to exercise had zero coverage.
+     * Here the linkage hold is raised through the REAL production seam
+     * (chain_linkage_hold_raise), so chain_linkage_hold_refuse_from()
+     * returns a genuine height and the remedy reaches the driver.
+     *
+     * A schema-only progress.kv (vpc_build_reducer_schema: the six k_logs
+     * tables + progress_meta + stage_cursor, no rows, no proven-authority
+     * stamp) gives H*=0 by construction (compute_hstar's own phantom-anchor
+     * guard, reducer_frontier.c:621) — cleanly, not a DB error — so no
+     * self-verified base exists at/below the ceiling and the driver
+     * escalates via its OWN typed blocker
+     * ("rewind_driver.tip_label_divergence.rewind_refused") rather than
+     * committing a rewind. Proves (a) the wiring genuinely reaches the
+     * driver, and (b) a second remedy attempt against the same persistent
+     * cause re-attempts (attempts accrue) but escalates to the SAME
+     * blocker identity — never a second, distinct entry. */
+    {
+        vpc_fixture_reset();
+        chain_linkage_reset_for_testing();
+        vpc_clock_install();
+        register_tip_label_divergence();
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "vpc_tip_label", "rewind_driver");
+        progress_store_close();
+        bool psopen = progress_store_open(dir);
+        VPC_CHECK("tip_label-driver: progress_store opens", psopen);
+        sqlite3 *pdb = progress_store_db();
+        VPC_CHECK("tip_label-driver: reducer schema built",
+                  psopen && pdb && vpc_build_reducer_schema(pdb));
+
+        condition_engine_tick();
+        VPC_CHECK("tip_label-driver: no false-positive with no blocker",
+                  condition_engine_get_active_count() == 0);
+        vpc_clock_step();
+
+        /* Raise the REAL linkage hold (HOLD latch + blocker + refuse_from
+         * in one call) — NOT a bare blocker_set — so
+         * chain_linkage_hold_refuse_from() returns a real height and the
+         * remedy's `refuse_from < 0` short-circuit (tip_label_divergence.c:
+         * 53) does not fire. */
+        const int refuse_from_h = 100;
+        chain_linkage_hold_raise("linkage", "chain.linkage_violation",
+                                 refuse_from_h,
+                                 "rewind_driver wiring fixture");
+        VPC_CHECK("tip_label-driver: hold latch carries a real refuse_from",
+                  chain_linkage_hold_refuse_from() >= 0);
+
+        condition_engine_tick(); /* detect -> remedy reaches the driver */
+        struct condition_runtime_snapshot snap1;
+        bool got1 = condition_engine_get_registered_snapshot(
+            "tip_label_divergence", &snap1);
+        VPC_CHECK("tip_label-driver: detected + stays active",
+                  got1 && snap1.currently_active);
+        VPC_CHECK("tip_label-driver: remedy reaches the driver and reports "
+                  "FAILED (escalated: no self-verified base under H*=0)",
+                  got1 && snap1.last_outcome == COND_REMEDY_FAILED);
+        VPC_CHECK("tip_label-driver: driver names its typed escalation "
+                  "blocker",
+                  blocker_exists(
+                      "rewind_driver.tip_label_divergence.rewind_refused"));
+        VPC_CHECK("tip_label-driver: exactly one escalation blocker after "
+                  "the first remedy attempt",
+                  vpc_count_blockers_named(
+                      "rewind_driver.tip_label_divergence.rewind_refused")
+                      == 1);
+
+        /* A second remedy tick against the SAME persistent cause must
+         * re-attempt (attempts accrue toward the engine's own escalation
+         * ladder) but must NOT multiply the driver's named blocker. */
+        vpc_clock_step();
+        condition_engine_tick();
+        struct condition_runtime_snapshot snap2;
+        bool got2 = condition_engine_get_registered_snapshot(
+            "tip_label_divergence", &snap2);
+        VPC_CHECK("tip_label-driver: second tick re-attempts the remedy",
+                  got2 && snap2.attempts == snap1.attempts + 1);
+        VPC_CHECK("tip_label-driver: second attempt still reports FAILED "
+                  "(escalated, persistent cause)",
+                  got2 && snap2.last_outcome == COND_REMEDY_FAILED);
+        VPC_CHECK("tip_label-driver: escalation blocker still a SINGLE "
+                  "entry after a second remedy attempt (escalate ONCE, "
+                  "never multiplied)",
+                  vpc_count_blockers_named(
+                      "rewind_driver.tip_label_divergence.rewind_refused")
+                      == 1);
+
+        chain_linkage_hold_clear("linkage");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        vpc_clock_clear();
+        vpc_fixture_reset();
+        chain_linkage_reset_for_testing();
     }
 
     /* ───────────────── state_window_inconsistent ─────────────────
