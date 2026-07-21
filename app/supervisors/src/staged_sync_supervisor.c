@@ -417,6 +417,22 @@ static void staged_stage_tick(struct liveness_contract *c)
      * size never changes WHAT a stage folds — only the commit cadence and
      * latency. */
     (void)d->drain(stage_effective_batch(d->batch));
+
+    /* Effective per-child tick period for the NEXT sweep: refold_cadence
+     * wins over catchup_cadence when both could apply (same precedence as
+     * stage_effective_batch above); refold_cadence_tick_period_us() is
+     * already a hard 0 whenever refold_cadence_active() is false, so this
+     * check is trivially correct. Recomputed every tick (not just at
+     * registration) so the period snaps back to 0 -> the shared 2s
+     * period_secs applies again the instant neither cadence is active --
+     * the load-bearing property that a normal at-tip node keeps its exact
+     * 2s tick and full validation is never altered. lib/util/src/
+     * supervisor.c's sweep re-reads period_us fresh every pass, so this
+     * atomic_store takes effect on the very next sweep. */
+    int64_t eff = refold_cadence_tick_period_us();
+    if (eff <= 0) eff = catchup_cadence_tick_period_us();
+    atomic_store(&d->contract.period_us, eff);
+
     uint64_t cur = d->cursor();
     supervisor_progress(d->id, (int64_t)cur);
     supervisor_tick(d->id);
@@ -606,7 +622,8 @@ int64_t staged_sync_supervisor_test_run_stage_tick(
     const char *name, const char *upstream_name,
     int (*drain)(int max_steps), uint64_t (*cursor)(void),
     uint64_t (*upstream_cursor)(void),
-    struct main_state *ms, bool *stall_escalated_inout)
+    struct main_state *ms, bool *stall_escalated_inout,
+    int64_t *period_us_out)
 {
     struct staged_stage_desc d;
     memset(&d, 0, sizeof(d));
@@ -636,6 +653,7 @@ int64_t staged_sync_supervisor_test_run_stage_tick(
 
     int64_t marker = atomic_load(&d.contract.progress_marker);
     if (stall_escalated_inout) *stall_escalated_inout = d.stall_escalated;
+    if (period_us_out) *period_us_out = atomic_load(&d.contract.period_us);
     supervisor_unregister(d.id);
     return marker;
 }

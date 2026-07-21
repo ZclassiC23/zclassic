@@ -68,12 +68,16 @@ void staged_sync_supervisor_test_apply_stall_escalation(
  * main_state_init()-inited `ms` (staged_stage_tick's durability-mode check
  * needs a real cs_main). Returns the resulting progress_marker, so a test
  * can assert what gets published to the supervisor child both with and
- * without an active reducer drive, without full stage registration. */
+ * without an active reducer drive, without full stage registration.
+ * `period_us_out`, if non-NULL, receives the contract's effective
+ * `period_us` AFTER the tick (0 when neither refold_cadence nor
+ * catchup_cadence is active — the shared 2s period_secs applies then). */
 int64_t staged_sync_supervisor_test_run_stage_tick(
     const char *name, const char *upstream_name,
     int (*drain)(int max_steps), uint64_t (*cursor)(void),
     uint64_t (*upstream_cursor)(void),
-    struct main_state *ms, bool *stall_escalated_inout);
+    struct main_state *ms, bool *stall_escalated_inout,
+    int64_t *period_us_out);
 #endif
 
 #endif /* ZCL_STAGED_SYNC_SUPERVISOR_H */

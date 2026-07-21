@@ -39,9 +39,12 @@
 
 #include "test/test_helpers.h"
 
+#include "jobs/catchup_cadence.h"
 #include "net/connman.h"
 #include "net/net.h"
+#include "net/protocol.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/sync_monitor.h"
 #include "supervisors/net_supervisor.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
@@ -426,7 +429,7 @@ int test_supervisor_production_tree(void)
         int64_t marker = staged_sync_supervisor_test_run_stage_tick(
             "staged.spt_test_stage", "staged.spt_test_upstream",
             spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
-            &staged_ms, &esc);
+            &staged_ms, &esc, NULL);
         SPT_CHECK("normal tick publishes the stage's own cursor",
                   marker == (int64_t)SPT_STUB_CURSOR);
         SPT_CHECK("normal tick drains the stage",
@@ -437,7 +440,7 @@ int test_supervisor_production_tree(void)
         marker = staged_sync_supervisor_test_run_stage_tick(
             "staged.spt_test_stage", "staged.spt_test_upstream",
             spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
-            &staged_ms, &esc);
+            &staged_ms, &esc, NULL);
         int64_t age_after = reducer_drive_age_us();
         SPT_CHECK("drive-active tick publishes the drive's age, not the cursor",
                   marker != (int64_t)SPT_STUB_CURSOR &&
@@ -445,6 +448,65 @@ int test_supervisor_production_tree(void)
         SPT_CHECK("drive-active tick skips the drain call",
                   atomic_load(&g_spt_drain_calls) == 1);
         reducer_drive_exit();
+    }
+
+    /* ── catchup_cadence tick-period integration (Lane B2, wf/catchup-tick):
+     * staged_stage_tick recomputes the contract's effective period_us every
+     * tick — refold_cadence_tick_period_us() first, catchup_cadence_tick_
+     * period_us() second, 0 when neither is active. Prove the full
+     * activate -> deactivate cycle through the REAL staged_stage_tick path
+     * (not just the standalone unit in test_catchup_cadence.c), pinning the
+     * byte-identical-at-tip reset: the moment the gap closes, period_us MUST
+     * return to 0 so the shared 2s period_secs governs again. */
+    {
+        atomic_store(&g_spt_drain_calls, 0);
+        bool esc = false;
+        int64_t period_us = -1;
+
+        /* Baseline: no peers on sync_monitor's connman -> catchup_cadence
+         * inactive -> effective period_us is 0 after the tick. */
+        sync_monitor_set_context(NULL, NULL, NULL);
+        catchup_cadence_test_reset();
+        (void)staged_sync_supervisor_test_run_stage_tick(
+            "staged.spt_test_stage", "staged.spt_test_upstream",
+            spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+            &staged_ms, &esc, &period_us);
+        SPT_CHECK("catchup inactive: effective period_us is 0",
+                  period_us == 0);
+
+        /* Activate catchup_cadence: one connected peer far ahead of the
+         * (test-overridden) log_head -> gap >= default threshold (500). */
+        struct connman cc_cm;
+        memset(&cc_cm, 0, sizeof(cc_cm));
+        net_manager_init(&cc_cm.manager);
+        struct p2p_node *peer = spt_add_healthy_outbound(&cc_cm, 20);
+        if (peer) peer->starting_height = 100000;
+        sync_monitor_set_context(&cc_cm, NULL, NULL);
+        catchup_cadence_test_set_log_head_override(0); /* gap = 100000 */
+
+        period_us = -1;
+        (void)staged_sync_supervisor_test_run_stage_tick(
+            "staged.spt_test_stage", "staged.spt_test_upstream",
+            spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+            &staged_ms, &esc, &period_us);
+        SPT_CHECK("catchup active: effective period_us is 1s (default)",
+                  peer != NULL && period_us == (int64_t)1000 * 1000);
+
+        /* Deactivate: the backlog drains (gap closes) -> RESETS to 0. This
+         * is the load-bearing byte-identical-at-tip property: the shortened
+         * tick period must not leak into a caught-up live node. */
+        catchup_cadence_test_set_log_head_override(100000); /* gap = 0 */
+        period_us = -1;
+        (void)staged_sync_supervisor_test_run_stage_tick(
+            "staged.spt_test_stage", "staged.spt_test_upstream",
+            spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+            &staged_ms, &esc, &period_us);
+        SPT_CHECK("catchup deactivated (gap closed): period_us resets to 0",
+                  period_us == 0);
+
+        catchup_cadence_test_reset();
+        sync_monitor_set_context(NULL, NULL, NULL);
+        connman_free(&cc_cm);
     }
 
     blocker_reset_for_testing();

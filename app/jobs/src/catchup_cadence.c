@@ -87,17 +87,18 @@ bool catchup_cadence_active(void)
  * without a rebuild. Fires at most once per process the first time an
  * accelerated batch is actually requested — same pattern as
  * refold_cadence.c's cadence_log_once(). */
-static void catchup_log_once(int batch)
+static void catchup_log_once(int batch, int64_t tick_us)
 {
     static _Atomic int logged = 0;
     int expected = 0;
     if (atomic_compare_exchange_strong(&logged, &expected, 1))
         LOG_INFO("catchup_cadence",
-                 "[catchup_cadence] accelerated catch-up drain batch ARMED: "
+                 "[catchup_cadence] accelerated catch-up cadence ARMED: "
                  "drain_batch=%d (ZCL_CATCHUP_DRAIN_BATCH), gap_threshold=%d "
-                 "(ZCL_CATCHUP_GAP_THRESHOLD) — tick period stays 2s "
-                 "(shared supervisor, not touched), full validation unchanged",
-                 batch, catchup_gap_threshold());
+                 "(ZCL_CATCHUP_GAP_THRESHOLD), tick=%lldms "
+                 "(ZCL_CATCHUP_TICK_MS, per-child only — global supervisor "
+                 "min-tick untouched), full validation unchanged",
+                 batch, catchup_gap_threshold(), (long long)(tick_us / 1000));
 }
 
 int catchup_cadence_drain_batch(int normal_batch)
@@ -107,8 +108,18 @@ int catchup_cadence_drain_batch(int normal_batch)
     int batch = catchup_env_int("ZCL_CATCHUP_DRAIN_BATCH",
                                 CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH,
                                 1, 1000000);
-    catchup_log_once(batch);
+    catchup_log_once(batch, catchup_cadence_tick_period_us());
     return batch;
+}
+
+int64_t catchup_cadence_tick_period_us(void)
+{
+    if (!catchup_cadence_active())
+        return 0;              /* caller uses its normal period_secs */
+    int ms = catchup_env_int("ZCL_CATCHUP_TICK_MS",
+                             CATCHUP_CADENCE_DEFAULT_TICK_MS,
+                             1000, 2000);
+    return (int64_t)ms * 1000;
 }
 
 #ifdef ZCL_TESTING
