@@ -300,7 +300,7 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
         if (has_hash)
             memcpy(stored_hash, hb, 32);
 
-        enum bhc_bad_reason reason;
+        enum bhc_bad_reason reason = BHC_BAD_UNUSABLE_HEADER;
         bool bad_row = true;
         struct block_header hdr;
         if (!has_hash) {
