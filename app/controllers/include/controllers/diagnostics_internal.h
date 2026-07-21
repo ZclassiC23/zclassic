@@ -239,6 +239,21 @@ bool network_dump_state_json(struct json_value *out, const char *key);
  * default-off (all-plaintext) node is explicit, not silent. */
 bool net_transport_dump_state_json(struct json_value *out, const char *key);
 
+/* diagnostics_connman.c — the "connman" g_dumpers[] entry: outbound/inbound
+ * counts + diversity, the addnode dial ledger (lifetime + per-index detail),
+ * reactor + message-cycle counters, the net.outbound_floor supervisor
+ * contract, an addrman size/new/tried pointer, and a peer_lifecycle
+ * per-source dial-attempt-outcome rollup. Distinct from the "network"
+ * rollup above (which nests a SUMMARY of some of the same data): this is
+ * the low-level connman surface itself, for diagnosing "dialer is broken"
+ * vs "addrman/peer pool is thin". */
+bool connman_diag_dump_state_json(struct json_value *out, const char *key);
+
+/* diagnostics_connman.c — the "addrman" g_dumpers[] entry: new/tried table
+ * sizes, bucket occupancy, address-index health, and a live-vs-dead
+ * candidate tally (addr_info_is_terrible() over every used entry). */
+bool addrman_diag_dump_state_json(struct json_value *out, const char *key);
+
 /* ── MVP v1 scoreboard (diagnostics_mvp.c) ──────────────────────────
  *
  * The "mvp" g_dumpers[] entry (schema zcl.mvp_status.v1): docs/MVP.md's eight

@@ -259,6 +259,21 @@
                "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source",
                "lib/net/src/peer_lifecycle.c",
                "lib/test/src/test_peer_lifecycle.c"),
+    DIAG_CHAIN("connman", connman_diag_dump_state_json,
+               "connection manager: outbound/inbound counts + diversity, the "
+               "addnode dial ledger (lifetime + per-index backoff/tcp+"
+               "protocol failures/retired), reactor admission + "
+               "message-cycle counters, the net.outbound_floor supervisor "
+               "contract, an addrman size/new/tried pointer, and a "
+               "per-source dial-attempt-outcome rollup",
+               "app/controllers/src/diagnostics_connman.c",
+               "lib/test/src/test_syncdiag_rpc.c"),
+    DIAG_CHAIN("addrman", addrman_diag_dump_state_json,
+               "address manager (peers.dat): new/tried table sizes, bucket "
+               "occupancy, address-index health, and a live-vs-dead "
+               "candidate tally (addr_info_is_terrible per used entry)",
+               "app/controllers/src/diagnostics_connman.c",
+               "lib/test/src/test_syncdiag_rpc.c"),
     DIAG_LOCAL("network_monitor", network_monitor_dump_state_json,
                "reachable-network chain view: modal tip, max height, our delta, fork clusters"),
     DIAG_SERVICE("network_census", network_crawler_dump_state_json,
