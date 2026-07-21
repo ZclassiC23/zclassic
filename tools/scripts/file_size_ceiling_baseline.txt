@@ -35,7 +35,7 @@ app/services/src/block_index_loader_rebuild.c 840
 app/services/src/node_db_catchup_service.c 886
 app/services/src/rolling_anchor_service.c 801
 
-app/services/src/sticky_escalator.c 1184
+app/services/src/sticky_escalator.c 1340
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_view.c 823
 # ADR-0006 (always-sync spine): the reindex-executability verb check +
