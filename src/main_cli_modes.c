@@ -1365,39 +1365,59 @@ static size_t cli_list_datadir_candidates(const char *home, char **out)
     return count;
 }
 
-/* Scan `<HOME>/.zclassic-c23*` for a directory recording the given RPC
+/* Outcome of a `-rpcport=<N>` (no `-datadir=`) auto-discovery scan.
+ * CLI_AUTODISCOVER_UNIQUE is the only outcome that may resolve a
+ * datadir automatically. Stale sibling fixtures commonly reuse the same
+ * fixed test port across separate runs (the incident this closes:
+ * `.zclassic-c23-fullbuild-test` AND three other sibling datadirs all
+ * recorded port 39072 on this host from earlier, no-longer-live runs) —
+ * picking "first match in sorted order" in that case can silently
+ * authenticate against, and answer from, a datadir that is NOT the
+ * instance actually listening on the requested port. Zero or multiple
+ * matches must both refuse and name the ambiguity/absence explicitly so
+ * the operator can pass -datadir=DIR themselves. */
+enum cli_autodiscover_outcome {
+    CLI_AUTODISCOVER_UNIQUE = 0,
+    CLI_AUTODISCOVER_NONE,
+    CLI_AUTODISCOVER_AMBIGUOUS,
+};
+
+/* Scan `<HOME>/.zclassic-c23*` for directories recording the given RPC
  * port (see cli_read_stored_rpcport) AND holding a readable `.cookie`.
- * First match in sorted-name order wins (ports normally identify a
- * single live instance, so ambiguity should not arise in practice; a
- * deterministic tie-break keeps behavior reproducible if it ever
- * does). Returns false (out untouched) with no candidates or no match —
- * callers keep whatever datadir they already had. */
-static bool cli_autodiscover_datadir_for_port(int port, char *out,
-                                              size_t outlen)
+ * `out` is populated ONLY when exactly one candidate matches
+ * (CLI_AUTODISCOVER_UNIQUE) — never on zero or 2+ matches. */
+static enum cli_autodiscover_outcome
+cli_autodiscover_datadir_for_port(int port, char *out, size_t outlen)
 {
     const char *home = getenv("HOME");
     if (!home || !home[0])
-        return false;
+        return CLI_AUTODISCOVER_NONE;
 
     char *candidates[CLI_DATADIR_GLOB_MAX];
     size_t n = cli_list_datadir_candidates(home, candidates);
-    bool found = false;
+    size_t match_count = 0;
+    char matched_path[512] = {0};
     for (size_t i = 0; i < n; i++) {
-        if (!found) {
-            int stored_port = 0;
-            char cookie_path[600];
-            snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie",
-                     candidates[i]);
-            if (cli_read_stored_rpcport(candidates[i], &stored_port) &&
-                stored_port == port &&
-                access(cookie_path, R_OK) == 0) {
-                snprintf(out, outlen, "%s", candidates[i]);
-                found = true;
-            }
+        int stored_port = 0;
+        char cookie_path[600];
+        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie",
+                 candidates[i]);
+        if (cli_read_stored_rpcport(candidates[i], &stored_port) &&
+            stored_port == port &&
+            access(cookie_path, R_OK) == 0) {
+            match_count++;
+            if (match_count == 1)
+                snprintf(matched_path, sizeof(matched_path), "%s",
+                         candidates[i]);
         }
         free(candidates[i]);
     }
-    return found;
+    if (match_count == 1) {
+        snprintf(out, outlen, "%s", matched_path);
+        return CLI_AUTODISCOVER_UNIQUE;
+    }
+    return match_count == 0 ? CLI_AUTODISCOVER_NONE
+                            : CLI_AUTODISCOVER_AMBIGUOUS;
 }
 
 /* Best-effort loopback liveness probe: non-blocking connect with a short
@@ -1443,6 +1463,49 @@ static bool cli_probe_port_alive(int port, int timeout_ms)
     return alive;
 }
 
+/* Shared instance-listing scan behind both `status`'s no-default-instance
+ * fallback and the -rpcport= auto-discovery refusal below. Scans
+ * `<HOME>/.zclassic-c23*` for every recorded RPC port, probes each for
+ * liveness, and appends one JSON object per candidate to `instances`
+ * (`instances` must already be json_init'd + json_set_array'd by the
+ * caller). When `tag_port >= 0`, each entry also carries
+ * `"port_match": <bool>` — whether that candidate's recorded port equals
+ * `tag_port` — so a refusal listing can show the operator exactly which
+ * sibling(s) claim the port they asked for. Returns the count of
+ * candidates found alive. */
+static size_t cli_append_local_instances(struct json_value *instances,
+                                         int tag_port)
+{
+    const char *home = getenv("HOME");
+    size_t alive_count = 0;
+    if (!home || !home[0])
+        return 0;
+
+    char *candidates[CLI_DATADIR_GLOB_MAX];
+    size_t n = cli_list_datadir_candidates(home, candidates);
+    for (size_t i = 0; i < n; i++) {
+        int stored_port = 0;
+        if (cli_read_stored_rpcport(candidates[i], &stored_port)) {
+            bool alive = cli_probe_port_alive(stored_port, 200);
+            if (alive)
+                alive_count++;
+            struct json_value inst;
+            json_init(&inst);
+            json_set_object(&inst);
+            json_push_kv_str(&inst, "datadir", candidates[i]);
+            json_push_kv_int(&inst, "rpcport", stored_port);
+            json_push_kv_str(&inst, "state", alive ? "alive" : "dead");
+            if (tag_port >= 0)
+                json_push_kv_bool(&inst, "port_match",
+                                  stored_port == tag_port);
+            json_push_back(instances, &inst);
+            json_free(&inst);
+        }
+        free(candidates[i]);
+    }
+    return alive_count;
+}
+
 /* `status` with no live node in the caller's DEFAULT datadir (no
  * `-datadir=` given, and the resolved default has no `.cookie`) used
  * to just fail — leaving "what's actually running on this host?" to a
@@ -1455,7 +1518,6 @@ static bool cli_probe_port_alive(int port, int timeout_ms)
  * never a bare, undifferentiated failure. */
 static int cli_print_local_instances_status_fallback(const char *default_datadir)
 {
-    const char *home = getenv("HOME");
     struct json_value doc;
     json_init(&doc);
     json_set_object(&doc);
@@ -1471,29 +1533,7 @@ static int cli_print_local_instances_status_fallback(const char *default_datadir
     struct json_value instances;
     json_init(&instances);
     json_set_array(&instances);
-
-    size_t alive_count = 0;
-    if (home && home[0]) {
-        char *candidates[CLI_DATADIR_GLOB_MAX];
-        size_t n = cli_list_datadir_candidates(home, candidates);
-        for (size_t i = 0; i < n; i++) {
-            int stored_port = 0;
-            if (cli_read_stored_rpcport(candidates[i], &stored_port)) {
-                bool alive = cli_probe_port_alive(stored_port, 200);
-                if (alive)
-                    alive_count++;
-                struct json_value inst;
-                json_init(&inst);
-                json_set_object(&inst);
-                json_push_kv_str(&inst, "datadir", candidates[i]);
-                json_push_kv_int(&inst, "rpcport", stored_port);
-                json_push_kv_str(&inst, "state", alive ? "alive" : "dead");
-                json_push_back(&instances, &inst);
-                json_free(&inst);
-            }
-            free(candidates[i]);
-        }
-    }
+    size_t alive_count = cli_append_local_instances(&instances, -1);
     json_push_kv(&doc, "instances", &instances);
     json_free(&instances);
     json_push_kv_int(&doc, "alive_count", (int64_t)alive_count);
@@ -1519,6 +1559,79 @@ static int cli_print_local_instances_status_fallback(const char *default_datadir
                     "recorded\n", default_datadir ? default_datadir : "");
     printf("%s\n", out);
     return ZCL_COMMAND_EXIT_TRANSIENT;
+}
+
+/* `-rpcport=<N>` given with no `-datadir=` and cli_autodiscover_datadir_for_port
+ * came back NONE or AMBIGUOUS: refuse rather than guess (guessing is
+ * exactly the footgun this replaces — see the enum's doc comment). Prints
+ * an `error=PORT_NOT_FOUND` / `error=PORT_AMBIGUOUS` taxonomy line (same
+ * `error=/detail=/try=` shape as the CONNECT_REFUSED/AUTH_REJECTED lines
+ * further down this file) plus a `zcl.cli_rpcport_autodiscovery_refused.v1`
+ * JSON document listing every sibling instance this scan found, each
+ * tagged `port_match` so the operator can see exactly which datadir(s)
+ * (zero, or two-or-more) claim the requested port and pass -datadir=DIR
+ * explicitly. Exit ZCL_COMMAND_EXIT_INVALID — the command as given cannot
+ * be resolved without more operator input, not a connectivity failure. */
+static int cli_refuse_rpcport_autodiscovery(int port,
+                                            enum cli_autodiscover_outcome outcome)
+{
+    const char *taxonomy = outcome == CLI_AUTODISCOVER_AMBIGUOUS
+                               ? "PORT_AMBIGUOUS" : "PORT_NOT_FOUND";
+    const char *status = outcome == CLI_AUTODISCOVER_AMBIGUOUS
+                             ? "ambiguous_port_match" : "no_port_match";
+
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    json_push_kv_str(&doc, "schema",
+                     "zcl.cli_rpcport_autodiscovery_refused.v1");
+    json_push_kv_int(&doc, "schema_version", 1);
+    json_push_kv_str(&doc, "status", status);
+    json_push_kv_int(&doc, "requested_rpcport", port);
+
+    struct json_value instances;
+    json_init(&instances);
+    json_set_array(&instances);
+    cli_append_local_instances(&instances, port);
+    size_t match_count = 0;
+    for (size_t i = 0; i < json_size(&instances); i++) {
+        const struct json_value *inst = json_at(&instances, i);
+        const struct json_value *pm = inst ? json_get(inst, "port_match")
+                                            : NULL;
+        if (pm && json_get_bool(pm))
+            match_count++;
+    }
+    json_push_kv(&doc, "instances", &instances);
+    json_free(&instances);
+    json_push_kv_int(&doc, "matching_instance_count", (int64_t)match_count);
+
+    char out[65536];
+    size_t need = json_write(&doc, out, sizeof(out));
+    json_free(&doc);
+    if (need >= sizeof(out)) {
+        fprintf(stderr, "Error: rpcport-autodiscovery refusal listing "
+                        "exceeded output buffer\n");
+        return ZCL_COMMAND_EXIT_INTERNAL;
+    }
+
+    if (outcome == CLI_AUTODISCOVER_AMBIGUOUS) {
+        fprintf(stderr,
+               "error=%s detail=%zu sibling datadirs under ~/.zclassic-c23* "
+               "all record rpcport=%d — refusing to guess which one is the "
+               "live instance try=pass -datadir=DIR to name the exact "
+               "instance you meant (see \"instances\" below, "
+               "\"port_match\":true)\n",
+               taxonomy, match_count, port);
+    } else {
+        fprintf(stderr,
+               "error=%s detail=no sibling ~/.zclassic-c23* datadir records "
+               "rpcport=%d try=start the node on this port, or pass "
+               "-datadir=DIR for the instance you meant (see \"instances\" "
+               "below)\n",
+               taxonomy, port);
+    }
+    printf("%s\n", out);
+    return ZCL_COMMAND_EXIT_INVALID;
 }
 
 static const char b64[] =
@@ -2191,11 +2304,22 @@ int cli_main(int argc, char **argv)
      * borrowing the default lane's (which is either absent — "Cannot
      * connect" even though a node genuinely IS listening on <N> — or
      * wrong — an indistinguishable 401). Explicit -datadir= always wins:
-     * this only runs when the operator did not name one. */
+     * this only runs when the operator did not name one.
+     *
+     * Only a UNIQUE port match may resolve automatically. Zero matches or
+     * 2+ matches (stale sibling fixtures commonly reuse the same fixed
+     * test port — see cli_autodiscover_datadir_for_port's doc comment)
+     * both refuse outright — falling through to the systemctl-default-
+     * service datadir here would reintroduce the exact pre-E4 footgun
+     * (silently answering with the default lane's cookie for a port that
+     * names a DIFFERENT instance) for every -rpcport that names no known
+     * sibling. The operator must pass -datadir=DIR explicitly. */
     if (rpcport_set && !datadir_set) {
         char discovered[512];
-        if (cli_autodiscover_datadir_for_port(cli_port, discovered,
-                                              sizeof(discovered))) {
+        enum cli_autodiscover_outcome outcome =
+            cli_autodiscover_datadir_for_port(cli_port, discovered,
+                                              sizeof(discovered));
+        if (outcome == CLI_AUTODISCOVER_UNIQUE) {
             snprintf(datadir, sizeof(datadir), "%s", discovered);
             datadir_set = true;
             fprintf(stderr,
@@ -2203,6 +2327,8 @@ int cli_main(int argc, char **argv)
                    "auto-discovered datadir %s (pass -datadir=DIR to "
                    "target a different instance)\n",
                    cli_port, datadir);
+        } else {
+            return cli_refuse_rpcport_autodiscovery(cli_port, outcome);
         }
     }
 

@@ -58,6 +58,15 @@
 #                        harness/setup error.
 #   2  SKIP           — prerequisite absent (binary not built / peer
 #                        unreachable). Not a verdict on C3 either way.
+#   5  FRONTIER-BUSY-TIMEOUT — `dumpstate reducer_frontier` kept returning a
+#                        partial `{"snapshot_status":"progress_store_busy",
+#                        "retryable":true}` doc (no "hstar" field) for the
+#                        entire busy-timeout window (--busy-timeout=SECS /
+#                        ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS, default 120s) —
+#                        this harness never observed a real frontier sample.
+#                        Distinct from FAIL: this is an instrument failure
+#                        ("we could not read the node's state"), not a claim
+#                        about the node's actual progress.
 
 set -uo pipefail
 
@@ -68,16 +77,27 @@ PEER="${ZCL_CS_PEER:-127.0.0.1:8033}"
 BUDGET="${ZCL_CS_BUDGET_SECS:-600}"     # 10-minute MVP C3 target
 SAMPLE_SECS="${ZCL_CS_SAMPLE_SECS:-10}"
 ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
+# Bounded window a persistently-busy progress_store may occupy before this
+# harness gives up observing and reports FRONTIER-BUSY-TIMEOUT instead of
+# silently folding busy reads into "no forward progress" (see D6 / the
+# is_busy_response()/rpc_frontier() comment below).
+FRONTIER_BUSY_TIMEOUT_SECS="${ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS:-120}"
 
-# ── argv: --bin=PATH / --peer=H:P / --budget=N / --sample=N, or bare
-#    positionals (bin, peer) for quick manual use. Flags win over env vars;
-#    env vars win over the defaults above.
+# ── argv: --bin=PATH / --peer=H:P / --budget=N / --sample=N /
+#    --busy-timeout=N / --selftest, or bare positionals (bin, peer) for quick
+#    manual use. Flags win over env vars; env vars win over the defaults
+#    above. --selftest runs the hermetic busy-JSON classification self-check
+#    below (is_busy_response()) and exits — no binary, network, or mktemp
+#    datadir touched.
+SELFTEST=0
 for arg in "$@"; do
     case "$arg" in
         --bin=*)    NODE_BIN="${arg#--bin=}" ;;
         --peer=*)   PEER="${arg#--peer=}" ;;
         --budget=*) BUDGET="${arg#--budget=}" ;;
         --sample=*) SAMPLE_SECS="${arg#--sample=}" ;;
+        --busy-timeout=*) FRONTIER_BUSY_TIMEOUT_SECS="${arg#--busy-timeout=}" ;;
+        --selftest) SELFTEST=1 ;;
         --*)        echo "cold-start-wipe-stopwatch: unknown flag: $arg" >&2; exit 2 ;;
         *)
             if [ "${_POSN:-0}" = "0" ]; then NODE_BIN="$arg"; _POSN=1;
@@ -100,6 +120,7 @@ last_hstar="-1"
 last_network_tip="-1"
 last_blocker_ids="-"
 last_blocker_count="0"
+busy_streak_start=0
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr '\n' ' '
@@ -112,6 +133,50 @@ json_number_or_null() {
     esac
 }
 
+# is_busy_response — true iff a `dumpstate reducer_frontier` body is the
+# PARTIAL progress_store-busy doc — {"snapshot_status":"progress_store_busy",
+# "retryable":true} — rather than a genuine empty/absent response. A naive
+# `grep -q '"hstar"'` miss cannot tell "the store is busy, retry" from "the
+# node isn't answering at all" apart; this lets both rpc_frontier() and the
+# failure-bundle capture below tell the two apart and label busy honestly
+# instead of reading it as hstar=-1 or a silent empty.
+is_busy_response() {
+    printf '%s' "$1" | grep -qE '"retryable"[[:space:]]*:[[:space:]]*true'
+}
+
+# --selftest: hermetic classification self-check for is_busy_response() /
+# the "hstar" field detector rpc_frontier() uses — canned JSON fixtures,
+# no binary/network/mktemp touched. Exits before any real infra setup.
+if [ "$SELFTEST" = "1" ]; then
+    st_fail=0
+    st_check() {  # desc, expect_rc, actual_rc
+        if [ "$3" = "$2" ]; then
+            echo "  ok: $1"
+        else
+            echo "  FAIL: $1 (expected rc=$2 got rc=$3)"
+            st_fail=1
+        fi
+    }
+    st_busy_json='{"snapshot_status":"progress_store_busy","retryable":true}'
+    st_good_json='{"hstar":123,"network_tip":456,"network_tip_read_ok":true}'
+    st_other_json='{"error":"method not found"}'
+
+    echo "cold-start-wipe-stopwatch: --selftest running canned-JSON checks"
+    is_busy_response "$st_busy_json";  st_check "busy fixture IS recognized as busy" 0 $?
+    is_busy_response "$st_good_json";  st_check "good hstar fixture NOT recognized as busy" 1 $?
+    is_busy_response "$st_other_json"; st_check "unrelated-error fixture NOT recognized as busy" 1 $?
+    is_busy_response "";               st_check "empty response NOT recognized as busy" 1 $?
+    printf '%s' "$st_good_json" | grep -q '"hstar"'; st_check "good fixture has hstar field" 0 $?
+    printf '%s' "$st_busy_json" | grep -q '"hstar"'; st_check "busy fixture has NO hstar field (would retry, not misread as -1)" 1 $?
+
+    if [ "$st_fail" = 0 ]; then
+        echo "cold-start-wipe-stopwatch: --selftest PASS"
+        exit 0
+    fi
+    echo "cold-start-wipe-stopwatch: --selftest FAIL" >&2
+    exit 1
+fi
+
 # capture_failure_bundle — on any non-pass verdict, snapshot the live
 # diagnostic state a human/agent needs to root-cause the run WITHOUT
 # re-running the harness: frontier.json (dumpstate reducer_frontier),
@@ -119,14 +184,21 @@ json_number_or_null() {
 # command if the node is still alive/RPC-reachable, else a plain tail of
 # node.log). Sets BUNDLE_CAPTURE_FAILED=true if ANY piece could not be
 # captured — a dropped bundle piece is RECORDED, never silently missing.
-# Safe to call before NODE_BIN/DATADIR/PID are ever set (an early
-# binary-absent/peer-unreachable skip has nothing to capture from).
+# Sets FRONTIER_BUSY_AT_CAPTURE=true when frontier.json WAS captured but its
+# content is a progress_store-busy partial doc — the file is still written
+# (never dropped just because it's busy), only LABELED, per D6. Safe to call
+# before NODE_BIN/DATADIR/PID are ever set (an early binary-absent/peer-
+# unreachable skip has nothing to capture from).
 capture_failure_bundle() {
     BUNDLE_CAPTURE_FAILED="false"
+    FRONTIER_BUSY_AT_CAPTURE="false"
     local got_frontier=0 got_blocker=0 got_logs=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_frontier \
             >"$ARTIFACT_DIR/frontier.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
+        if [ "$got_frontier" = 1 ] && is_busy_response "$(cat "$ARTIFACT_DIR/frontier.json" 2>/dev/null)"; then
+            FRONTIER_BUSY_AT_CAPTURE="true"
+        fi
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate blocker \
             >"$ARTIFACT_DIR/blocker.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/blocker.json" ] && got_blocker=1
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" ops logs \
@@ -146,6 +218,7 @@ write_artifact() {
     [ "${start:-0}" -gt 0 ] && elapsed=$((captured_at - start))
     mkdir -p "$ARTIFACT_DIR" 2>/dev/null || return 0
     BUNDLE_CAPTURE_FAILED="false"
+    FRONTIER_BUSY_AT_CAPTURE="false"
     [ "$verdict" != "pass" ] && capture_failure_bundle
     {
         printf '{\n'
@@ -164,7 +237,8 @@ write_artifact() {
         printf '  "reached_network_tip": %s,\n' "$([ "$verdict" = "pass" ] && printf true || printf false)"
         printf '  "scratch_datadir": %s,\n' "$(json_string "${DATADIR:-}")"
         printf '  "scratch_datadir_removed": true,\n'
-        printf '  "bundle_capture_failed": %s\n' "$BUNDLE_CAPTURE_FAILED"
+        printf '  "bundle_capture_failed": %s,\n' "$BUNDLE_CAPTURE_FAILED"
+        printf '  "frontier_busy_at_capture": %s\n' "$FRONTIER_BUSY_AT_CAPTURE"
         printf '}\n'
     } >"$ARTIFACT_DIR/proof.json"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
@@ -227,15 +301,36 @@ echo "cold-start-wipe-stopwatch: launched pid=$PID"
 rpc() { "$NODE_BIN" -rpcport=$RPC -datadir="$DATADIR" "$@" 2>/dev/null; }
 
 # dumpstate reads can transiently miss while the reducer drive holds the
-# progress_store lock (a busy read, not a stall) — retry a few times so a
-# lock-contention blip never reads as a regression.
+# progress_store lock — `dumpstate reducer_frontier` then returns a PARTIAL
+# doc, {"snapshot_status":"progress_store_busy","retryable":true}, with NO
+# "hstar" field (see is_busy_response() above). Retry with bounded,
+# growing backoff (1,1,2,3,5s — ~12s worst case per call) so a lock-
+# contention blip never reads as a regression or an empty sample. Sets the
+# global FRONTIER_LAST_BUSY=1 when every retry within this call still came
+# back busy (0 otherwise) — the caller tracks a busy STREAK across sample
+# ticks so a progress_store that never clears gets its own named verdict
+# (see FRONTIER_BUSY_TIMEOUT_SECS in the main loop) instead of silently
+# degrading into "no forward progress, no blocker" (silent-stall FAIL) —
+# those are different claims: "we could not observe" is not "we observed
+# nothing happening".
+FRONTIER_LAST_BUSY=0
 rpc_frontier() {
-    local out=""
-    for _ in 1 2 3 4; do
+    local out="" backoff
+    for backoff in 1 1 2 3 5 0; do
         out="$(rpc dumpstate reducer_frontier)"
-        printf '%s' "$out" | grep -q '"hstar"' && { printf '%s' "$out"; return 0; }
-        sleep 1
+        if printf '%s' "$out" | grep -q '"hstar"'; then
+            FRONTIER_LAST_BUSY=0
+            printf '%s' "$out"
+            return 0
+        fi
+        [ "$backoff" = 0 ] && break
+        sleep "$backoff"
     done
+    if is_busy_response "$out"; then
+        FRONTIER_LAST_BUSY=1
+    else
+        FRONTIER_LAST_BUSY=0
+    fi
     printf '%s' "$out"
 }
 
@@ -286,6 +381,25 @@ while :; do
     fi
 
     printf '%-8s %-8s %-10s %-8s %s\n' "$elapsed" "$hs" "$nt" "${nt_ok:+yes}" "b=$bc:$bids"
+
+    # Bounded busy-streak check: a progress_store that stays busy
+    # (retryable:true, no "hstar") across the ENTIRE FRONTIER_BUSY_TIMEOUT_SECS
+    # window means this harness never observed a real frontier sample in
+    # that time — an instrument failure, not evidence the node stalled.
+    # Reported as its own named verdict, never folded into hstar=-1 / "no
+    # forward progress, no blocker" (see D6).
+    if [ "$hs" = "-1" ] && [ "$FRONTIER_LAST_BUSY" = "1" ]; then
+        [ "$busy_streak_start" = 0 ] && busy_streak_start="$now"
+        busy_elapsed=$((now - busy_streak_start))
+        if [ "$busy_elapsed" -ge "$FRONTIER_BUSY_TIMEOUT_SECS" ]; then
+            echo "=== cold-start-wipe-stopwatch: FRONTIER-BUSY-TIMEOUT — progress_store_busy persisted ${busy_elapsed}s (>= ${FRONTIER_BUSY_TIMEOUT_SECS}s) with no hstar sample ever observed in that window ==="
+            write_artifact "frontier_busy_timeout" 5 \
+                "progress_store_busy persisted >= ${FRONTIER_BUSY_TIMEOUT_SECS}s (--busy-timeout); last raw frontier response: $fj"
+            exit 5
+        fi
+    else
+        busy_streak_start=0
+    fi
 
     # H* must never regress (a real regression is a correctness bug, not a
     # timing seam) — read-misses (-1) are excluded, they are not regressions.
