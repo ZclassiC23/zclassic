@@ -25,6 +25,7 @@
 #include "jobs/proof_validate_verify.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/script_validate_verify.h"
+#include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
@@ -135,19 +136,28 @@ static bool pv_eq(const struct proof_verify_summary *a,
            ptype_eq(a->first_failure_proof_type, b->first_failure_proof_type);
 }
 
-/* Run both modes N times; return true iff EVERY run matches AND the serial
- * result matches the caller's expectation (checked once). `exp` may be NULL to
- * only assert determinism. */
+/* Run every mode N times; return true iff EVERY run matches the serial
+ * reference AND the serial result matches the caller's expectation (checked
+ * once). `exp` may be NULL to only assert determinism. The parallel entry is
+ * driven under BOTH threshold routings — min forced to 0 (always fan the pool)
+ * and min forced very high (always fold serially via the sub-threshold path) —
+ * so the small-batch serial threshold is proven verdict-neutral in both
+ * directions, and the pool path stays exercised even for the tiny fixtures. */
 static bool sv_determinism(const struct block *blk, int height,
                            const struct script_verify_summary *exp)
 {
     for (int iter = 0; iter < 16; iter++) {
-        struct script_verify_summary s, p;
+        struct script_verify_summary s, p_pool, p_thr;
         script_verify_block(blk, height, NULL, NULL, vpd_prevout, NULL,
                             false, &s);
+        script_verify_set_parallel_min_inputs_for_test(0);      /* always fan */
         script_verify_block(blk, height, NULL, NULL, vpd_prevout, NULL,
-                            true, &p);
-        if (!sv_eq(&s, &p))
+                            true, &p_pool);
+        script_verify_set_parallel_min_inputs_for_test(1 << 30); /* always serial */
+        script_verify_block(blk, height, NULL, NULL, vpd_prevout, NULL,
+                            true, &p_thr);
+        script_verify_set_parallel_min_inputs_for_test(-1);      /* restore */
+        if (!sv_eq(&s, &p_pool) || !sv_eq(&s, &p_thr))
             return false;
         if (exp && iter == 0 && !sv_eq_verdict(&s, exp))
             return false;
@@ -187,12 +197,17 @@ static bool pv_determinism(const struct block *blk, int height,
                            const struct proof_verify_summary *exp)
 {
     for (int iter = 0; iter < 16; iter++) {
-        struct proof_verify_summary s, p;
+        struct proof_verify_summary s, p_pool, p_thr;
         proof_verify_block(blk, height, vpd_verifier, NULL, false,
                            NULL, NULL, NULL, &s);
+        proof_verify_set_parallel_min_shielded_for_test(0);       /* always fan */
         proof_verify_block(blk, height, vpd_verifier, NULL, true,
-                           NULL, NULL, NULL, &p);
-        if (!pv_eq(&s, &p))
+                           NULL, NULL, NULL, &p_pool);
+        proof_verify_set_parallel_min_shielded_for_test(1 << 30); /* always serial */
+        proof_verify_block(blk, height, vpd_verifier, NULL, true,
+                           NULL, NULL, NULL, &p_thr);
+        proof_verify_set_parallel_min_shielded_for_test(-1);      /* restore */
+        if (!pv_eq(&s, &p_pool) || !pv_eq(&s, &p_thr))
             return false;
         if (exp && iter == 0 && !pv_eq(&s, exp))
             return false;
@@ -422,6 +437,64 @@ int test_validate_parallel_determinism(void)
         exp.first_failure_txid = b.vtx[150].hash;
         exp.first_failure_proof_type = "sapling_spend";
         VPD_CHECK("proof big-block deep-invalid", pv_determinism(&b, H, &exp));
+        vpd_block_free(&b);
+    }
+
+    /* ---- THROUGHPUT / KEEPS-FED ---- */
+
+    /* The per-block worker-pool fan carries a fixed cost (broadcast cv_take to
+     * every worker + the cv_done join) that DOMINATES a light block. Measure
+     * script-verify throughput over a long run of light blocks (coinbase + one
+     * single-input tx — the common ZClassic history shape) under the two
+     * routings: the forced-POOL path (min=0) vs the sub-threshold SERIAL path
+     * (the default). The serial routing removes the fan overhead, so it must be
+     * at least as fast; both must produce the identical verdict. This is the
+     * end-to-end lever the tail-stage drive feels when catch-up keeps it fed. */
+    {
+        struct block b; block_init(&b);
+        b.num_vtx = 2;
+        b.vtx = zcl_calloc(2, sizeof(struct transaction), "vpd");
+        int one[1] = {0};                          /* single valid input */
+        vpd_build_tx(&b.vtx[0], 0, true, NULL, 0, 0);
+        vpd_build_tx(&b.vtx[1], 1, false, one, 1, 0);
+
+        struct script_verify_summary ref;
+        script_verify_block(&b, H, NULL, NULL, vpd_prevout, NULL, false, &ref);
+
+        const int REPS = 20000;
+        bool pool_ok = true, ser_ok = true;
+
+        script_verify_set_parallel_min_inputs_for_test(0);   /* force the fan */
+        int64_t t0 = platform_time_monotonic_us();
+        for (int i = 0; i < REPS; i++) {
+            struct script_verify_summary s;
+            script_verify_block(&b, H, NULL, NULL, vpd_prevout, NULL, true, &s);
+            if (!sv_eq(&s, &ref)) { pool_ok = false; break; }
+        }
+        int64_t us_pool = platform_time_monotonic_us() - t0;
+
+        script_verify_set_parallel_min_inputs_for_test(-1);  /* default => serial */
+        int64_t t1 = platform_time_monotonic_us();
+        for (int i = 0; i < REPS; i++) {
+            struct script_verify_summary s;
+            script_verify_block(&b, H, NULL, NULL, vpd_prevout, NULL, true, &s);
+            if (!sv_eq(&s, &ref)) { ser_ok = false; break; }
+        }
+        int64_t us_ser = platform_time_monotonic_us() - t1;
+
+        double pool_bps = us_pool > 0 ? (double)REPS * 1e6 / (double)us_pool : 0.0;
+        double ser_bps  = us_ser  > 0 ? (double)REPS * 1e6 / (double)us_ser  : 0.0;
+        printf("parallel_determinism: light-block script throughput: "
+               "pool=%.0f blk/s, serial-threshold=%.0f blk/s (%.2fx)\n",
+               pool_bps, ser_bps, pool_bps > 0 ? ser_bps / pool_bps : 0.0);
+
+        VPD_CHECK("light-block routing verdict-identical", pool_ok && ser_ok);
+        /* The serial routing eliminates the fan overhead, so it must not be
+         * materially slower. Loose bound (1.5x + 5ms slack) keeps the gate
+         * stable under scheduler noise while still catching a routing that
+         * accidentally kept fanning every light block. */
+        VPD_CHECK("light-block serial-threshold not slower than pool",
+                  us_ser <= us_pool * 3 / 2 + 5000);
         vpd_block_free(&b);
     }
 
