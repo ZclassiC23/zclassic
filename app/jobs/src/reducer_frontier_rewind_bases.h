@@ -49,4 +49,32 @@ struct reducer_frontier_rewind_base {
 bool reducer_frontier_nearest_self_verified_base(
     int32_t at_or_below, struct reducer_frontier_rewind_base *out);
 
+/* Resolve the nearest SELF-VERIFIED rewind base at or below `at_or_below`,
+ * gating the compiled SHA3 checkpoint on whether its verified snapshot artifact
+ * is loadable. This is the recovery-rung variant of the selector above, with two
+ * differences that make it the honest "can I actually rewind to a base RIGHT
+ * NOW" question a wedged-state recovery rung must ask:
+ *
+ *   - The compiled SHA3 checkpoint is a proven HASH, not loadable STATE. It is a
+ *     usable rewind base only when its verified on-disk snapshot artifact is
+ *     present (anchor_snapshot_verified_reachable, surfaced via
+ *     boot_refold_from_anchor_artifact_available). Pass `compiled_checkpoint_
+ *     loadable` accordingly: true includes it (an operator supplied the
+ *     artifact, or the delta chain reaches it), false EXCLUDES it so recovery is
+ *     never pointed at a base whose state cannot be materialized. A self-valid
+ *     seal is in-state and never needs the artifact.
+ *   - A BORROWED root (finalized_utxo_sha3, self_derived=false) is NEVER
+ *     returned here — a resnapshot/refold rung must not reinstate the exact
+ *     trust root the sovereign cure deletes. (The struct selector above still
+ *     returns it as a documented last resort; this one is self-verified-only.)
+ *
+ * Writes `*base_height_out` (the base height) and `*base_kind_out` (a static
+ * string literal, safe to store) on success. Returns true iff a usable
+ * self-verified base was found; false (FAIL-CLOSED: a genuinely missing verified
+ * base is a real blocker, not a silent success) otherwise. Read-only; takes no
+ * outer transaction, so the caller must NOT hold an open progress-store txn. */
+bool reducer_frontier_nearest_loadable_self_verified_base(
+    int32_t at_or_below, bool compiled_checkpoint_loadable,
+    int32_t *base_height_out, const char **base_kind_out);
+
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_REWIND_BASES_H */
