@@ -24,10 +24,13 @@
 #include "test/test_helpers.h"
 
 #include "config/boot.h"
+#include "core/serialize.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
 #include "models/database.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "storage/anchor_kv.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -402,9 +405,10 @@ static int case_warm_never_clobbers_published(void)
     return failures;
 }
 
-/* (5) Post-install derived-state invalidation: clears the persisted Sapling
- * tree pair (node.db), resets the in-process provable-tip cache, and verifies
- * MAX(coins.height) == bundle height, refusing on a mismatch. */
+/* (5) Post-install derived-state reconciliation: replaces the persisted
+ * Sapling tree pair (node.db) from the bundle-installed frontier, resets the
+ * in-process provable-tip cache, and verifies MAX(coins.height) == bundle
+ * height, refusing on a mismatch. */
 static bool piv_build_coins(sqlite3 *db, int32_t max_height)
 {
     char *err = NULL;
@@ -423,6 +427,21 @@ static bool piv_build_coins(sqlite3 *db, int32_t max_height)
              max_height - 1, max_height);
     return sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK
            || (sqlite3_free(err), false);
+}
+
+static bool piv_seed_sapling_frontier(sqlite3 *db, int32_t height,
+                                      struct uint256 *root_out)
+{
+    struct incremental_merkle_tree tree;
+    sapling_tree_init(&tree);
+    struct uint256 leaf;
+    for (int i = 0; i < 32; i++)
+        leaf.data[i] = (uint8_t)(0x51 + i);
+    incremental_tree_append(&tree, &leaf);
+    incremental_tree_root(&tree, root_out);
+    return anchor_kv_ensure_schema(db) &&
+           anchor_kv_reset_mark_complete_in_tx(db) &&
+           anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &tree, height);
 }
 
 static int case_post_install_invalidation(void)
@@ -446,7 +465,7 @@ static int case_post_install_invalidation(void)
                                 sizeof(stale_blob)) &&
               node_db_state_set_int(&ndb, "sapling_tree_rebuild_height",
                                     3155872));
-    uint8_t rb[64];
+    uint8_t rb[8192];
     size_t rlen = 0;
     IVW_CHECK("invalidate: stale pair present pre-call",
               node_db_state_get(&ndb, "sapling_tree", rb, sizeof(rb), &rlen));
@@ -458,6 +477,9 @@ static int case_post_install_invalidation(void)
         return failures + 1;
     }
     IVW_CHECK("invalidate: coins at bundle height", piv_build_coins(pdb, bundle_h));
+    struct uint256 installed_root;
+    IVW_CHECK("invalidate: bundle Sapling frontier installed",
+              piv_seed_sapling_frontier(pdb, bundle_h - 7, &installed_root));
 
     /* Poison the in-process provable-tip cache with the OLD tip. */
     reducer_frontier_provable_tip_set(3155872);
@@ -465,11 +487,22 @@ static int case_post_install_invalidation(void)
     IVW_CHECK("invalidate: succeeds on matching coin tip",
               boot_install_consensus_bundle_invalidate_derived_for_test(
                   &ndb, pdb, bundle_h));
-    IVW_CHECK("invalidate: sapling_tree key cleared",
-              !node_db_state_get(&ndb, "sapling_tree", rb, sizeof(rb), &rlen));
+    IVW_CHECK("invalidate: bundle sapling_tree replaced stale cache",
+              node_db_state_get(&ndb, "sapling_tree", rb, sizeof(rb), &rlen) &&
+              rlen > 0 && rlen < sizeof(rb));
     int64_t rh = 0;
-    IVW_CHECK("invalidate: sapling_tree_rebuild_height cleared",
-              !node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &rh));
+    IVW_CHECK("invalidate: sapling_tree_rebuild_height is bundle height",
+              node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &rh) &&
+              rh == bundle_h);
+    struct incremental_merkle_tree installed_tree;
+    sapling_tree_init(&installed_tree);
+    struct byte_stream tree_stream;
+    stream_init_from_data(&tree_stream, rb, rlen);
+    struct uint256 decoded_root;
+    bool decoded = incremental_tree_deserialize(&installed_tree, &tree_stream);
+    incremental_tree_root(&installed_tree, &decoded_root);
+    IVW_CHECK("invalidate: cached tree decodes to bundle frontier",
+              decoded && memcmp(decoded_root.data, installed_root.data, 32) == 0);
     IVW_CHECK("invalidate: provable-tip cache reset (served 0)",
               reducer_frontier_provable_tip_cached() == 0 &&
               !reducer_frontier_provable_tip_is_published());

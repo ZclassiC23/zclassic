@@ -25,14 +25,18 @@
 #include "consensus_state_snapshot_install_internal.h" /* candidate_lease_begin/end */
 #include "chain/chain.h"                              /* block_index, active_chain_at */
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
+#include "controllers/sync_controller.h"              /* sapling_tree_persist_pair */
+#include "core/serialize.h"                           /* byte_stream */
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
 #include "jobs/reducer_frontier.h"                    /* reducer_frontier_provable_tip_reset */
 #include "jobs/tip_finalize_stage.h"                 /* tip_finalize_stage_warm_authority_caches */
 #include "jobs/validate_headers_stage.h"             /* validate_headers_stage_ensure_pass_record */
-#include "models/database.h"                          /* node_db_state_delete */
+#include "models/database.h"                          /* node_db state helpers */
+#include "sapling/incremental_merkle_tree.h"
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
 #include "services/utxo_mirror_sync_service.h"        /* UTXO_MIRROR_SYNC_CURSOR_KEY */
+#include "storage/anchor_kv.h"
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -258,7 +262,64 @@ static bool icb_coins_max_height(sqlite3 *progress_db, int64_t *out, bool *found
     return ok;
 }
 
-/* Post-install derived-state invalidation. The atomic activate step resets the
+/* The activated bundle already installed every Sapling anchor row, including
+ * the verified current frontier tree. Persist that frontier into node.db's
+ * boot cache as the bundle-height state instead of deleting the cache and
+ * forcing an O(chain) block replay. The latest stored anchor may have been
+ * created below bundle_height when intervening blocks carried no Sapling
+ * outputs; its unchanged root still represents the Sapling state at the
+ * bundle height, which admission/activation bound to the selected header.
+ *
+ * The bundle ships the complete sapling tree, so a successful install must
+ * leave boot able to load it and skip the Sapling rebuild. The pair writer is
+ * atomic: a stale pre-install blob can never survive beside the new height. */
+static bool icb_install_bundle_sapling_tree(struct node_db *ndb,
+                                            sqlite3 *progress_db,
+                                            int32_t bundle_height)
+{
+    if (!ndb || !progress_db || bundle_height < 0)
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install Sapling cache: invalid ndb/progress_db/height");
+
+    struct incremental_merkle_tree tree;
+    sapling_tree_init(&tree);
+    int64_t frontier_height = -1;
+    enum anchor_kv_lookup_result found = anchor_kv_latest_tree(
+        progress_db, ANCHOR_POOL_SAPLING, &tree, NULL, &frontier_height);
+    if (found != ANCHOR_KV_FOUND || frontier_height < 0 ||
+        frontier_height > bundle_height)
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install Sapling cache: installed frontier unavailable "
+                 "or out of range (result=%d frontier_h=%lld bundle_h=%d)",
+                 (int)found, (long long)frontier_height, bundle_height);
+
+    struct byte_stream encoded;
+    stream_init(&encoded, 4096);
+    bool serialized = incremental_tree_serialize(&tree, &encoded) &&
+                      !encoded.error && encoded.size > 0;
+    if (!serialized) {
+        stream_free(&encoded);
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install Sapling cache: frontier serialization failed "
+                 "at bundle height=%d", bundle_height);
+    }
+
+    bool persisted = sapling_tree_persist_pair(
+        ndb, encoded.data, encoded.size, (int64_t)bundle_height);
+    stream_free(&encoded);
+    if (!persisted)
+        LOG_FAIL(ICB_SUBSYS,
+                 "post-install Sapling cache: atomic tree/height persist failed "
+                 "at bundle height=%d", bundle_height);
+
+    LOG_INFO(ICB_SUBSYS,
+             "post-install Sapling cache installed from bundle frontier_h=%lld "
+             "at bundle_h=%d (boot skips Sapling rebuild)",
+             (long long)frontier_height, bundle_height);
+    return true;
+}
+
+/* Post-install derived-state reconciliation. The atomic activate step resets the
  * kernel store's (consensus.db) reducer/tip_finalize authority to the installed
  * anchor, but two derived surfaces live OUTSIDE that store and would fight the new
  * kernel on the next boot (the 2026-07-19 seam). Returns true iff every derived
@@ -270,20 +331,7 @@ static bool icb_invalidate_derived_state(struct node_db *ndb,
     if (!ndb || !progress_db)
         LOG_FAIL(ICB_SUBSYS, "post-install invalidation: null ndb/progress_db");
 
-    /* (1) Sapling commitment tree pair (node.db node_state) — NOT touched by
-     * activate. A leftover blob at the OLD tip makes the boot loader FATAL on
-     * "Sapling tree root MISMATCH". Drop both keys so the boot loader rebuilds
-     * from the installed anchors (rebuild retry-robustness is owned by another
-     * lane; here we only invalidate). */
-    bool st_ok = node_db_state_delete(ndb, "sapling_tree");
-    bool sh_ok = node_db_state_delete(ndb, "sapling_tree_rebuild_height");
-    if (!st_ok || !sh_ok)
-        LOG_FAIL(ICB_SUBSYS,
-                 "post-install invalidation: could not clear persisted "
-                 "sapling_tree pair (sapling_tree=%d rebuild_height=%d)",
-                 st_ok, sh_ok);
-
-    /* (2) tip_finalize provable-tip cache. Its DURABLE source (tip_finalize_log
+    /* (1) tip_finalize provable-tip cache. Its DURABLE source (tip_finalize_log
      * + the 8 stage cursors) was already reset to the installed anchor AND
      * post-install-verified inside consensus_state_snapshot_install_activate.
      * This path pre-warmed the process-local reducer_frontier provable-tip cache
@@ -291,7 +339,7 @@ static bool icb_invalidate_derived_state(struct node_db *ndb,
      * republish the old tip if this path returns rather than _exit()ing. */
     reducer_frontier_provable_tip_reset();
 
-    /* (3) The installed coin set must sit exactly at the bundle height. */
+    /* (2) The installed coin set must sit exactly at the bundle height. */
     int64_t coins_max = -1;
     bool have_coins = false;
     if (!icb_coins_max_height(progress_db, &coins_max, &have_coins))
@@ -304,9 +352,15 @@ static bool icb_invalidate_derived_state(struct node_db *ndb,
                   (long long)coins_max, bundle_height);
         return false;
     }
+
+    /* (3) Replace any stale node.db Sapling tree pair with the complete,
+     * destination-verified frontier that activation just installed. */
+    if (!icb_install_bundle_sapling_tree(ndb, progress_db, bundle_height))
+        return false;
+
     LOG_INFO(ICB_SUBSYS,
-             "post-install derived-state invalidation OK: sapling_tree pair "
-             "cleared, provable-tip cache reset, coins tip=%lld == bundle "
+             "post-install derived-state reconciliation OK: bundle Sapling "
+             "tree cached, provable-tip cache reset, coins tip=%lld == bundle "
              "height=%d", (long long)coins_max, bundle_height);
     return true;
 }
