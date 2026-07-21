@@ -323,6 +323,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_state_snapshot_install) \
     X(checkpoint_rom_authority) \
     X(consensus_state_install_runtime) \
+    X(boot_bundle_fetch) \
     X(consensus_state_snapshot_export) \
     X(ratify_mint_anchor) \
     X(consensus_state_producer_receipt) \
