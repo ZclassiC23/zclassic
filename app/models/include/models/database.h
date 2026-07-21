@@ -150,6 +150,18 @@ bool node_db_exec(struct node_db *ndb, const char *sql);
 bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
                                     sqlite3_stmt **stmt_out);
 
+/* The `struct node_db`-free primitive node_db_prepare_readonly_query wraps:
+ * prepare `sql` against any already-open handle and reject any statement
+ * SQLite itself classifies as writable (sqlite3_stmt_readonly). Exposed so a
+ * caller with an ad hoc handle — no `struct node_db` — gets the identical
+ * readonly guard without the models layer's raw sqlite3_prepare_v2 call
+ * leaking into app/controllers (Gate #20, check_no_raw_sqlite_in_
+ * controllers.sh). dbquery_controller.c's dbquery_execute() uses this for
+ * both the live node.db handle and an ad hoc SQLITE_OPEN_READONLY handle
+ * opened against a copied/stopped datadir (core.storage.query.offline). */
+bool node_db_prepare_readonly_stmt(sqlite3 *db, const char *sql,
+                                   sqlite3_stmt **stmt_out);
+
 /* Transaction control for batch operations. */
 bool node_db_begin(struct node_db *ndb);
 bool node_db_commit(struct node_db *ndb);

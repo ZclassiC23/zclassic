@@ -530,7 +530,14 @@ Every leaf declares:
 
 - risk: `read`, `app-write`, `wallet`, `core-recovery`, `destructive`, or
   `dev-mutation`;
-- scope: `local`, `node`, `dev-lane`, or `offline-copy`;
+- scope: `local`, `node`, `dev-lane`, or `offline-copy` — `offline-copy`
+  leaves take an explicit `--datadir=<path>` and open that datadir's SQLite
+  stores directly (no node contact, no RPC), so they answer for a STOPPED
+  or COPIED datadir: `core.storage.query.offline` (a SELECT-only query
+  against `--datadir`'s `node.db`) and `core.sync.frontier.offline` (H* —
+  the L0 reducer frontier fold — against `--datadir`'s consensus.db/
+  progress.kv). Both are implemented in
+  `tools/command/native_offline_query.c`;
 - authority: `public`, `operator`, or `owner`;
 - allowed lanes;
 - whether it is idempotent;

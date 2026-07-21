@@ -612,26 +612,37 @@ bool node_db_exec(struct node_db *ndb, const char *sql)
     return true;
 }
 
+bool node_db_prepare_readonly_stmt(sqlite3 *db, const char *sql,
+                                   sqlite3_stmt **stmt_out)
+{
+    if (!db || !sql || !stmt_out)
+        LOG_FAIL("db", "prepare_readonly_stmt called with invalid arguments");
+
+    *stmt_out = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, stmt_out, NULL);
+    if (rc != SQLITE_OK || !*stmt_out) {
+        LOG_FAIL("db", "prepare_readonly_stmt failed: rc=%d msg=%s sql=%s",
+                 rc, sqlite3_errmsg(db), sql);
+    }
+    if (!sqlite3_stmt_readonly(*stmt_out)) {
+        sqlite3_finalize(*stmt_out);
+        *stmt_out = NULL;
+        LOG_FAIL("db", "prepare_readonly_stmt rejected writable statement: %s",
+                 sql);
+    }
+    return true;
+}
+
 bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
                                     sqlite3_stmt **stmt_out)
 {
     if (!ndb || !ndb->open || !sql || !stmt_out)
         LOG_FAIL("db", "prepare_readonly_query called with invalid arguments");
 
-    *stmt_out = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, stmt_out, NULL);
-    node_db_note_activity(ndb, "prepare_readonly_query", rc);
-    if (rc != SQLITE_OK || !*stmt_out) {
-        LOG_FAIL("db", "prepare_readonly_query failed: rc=%d msg=%s sql=%s",
-                 rc, sqlite3_errmsg(ndb->db), sql);
-    }
-    if (!sqlite3_stmt_readonly(*stmt_out)) {
-        sqlite3_finalize(*stmt_out);
-        *stmt_out = NULL;
-        LOG_FAIL("db", "prepare_readonly_query rejected writable statement: %s",
-                 sql);
-    }
-    return true;
+    bool ok = node_db_prepare_readonly_stmt(ndb->db, sql, stmt_out);
+    node_db_note_activity(ndb, "prepare_readonly_query",
+                          (ok && *stmt_out) ? SQLITE_OK : SQLITE_ERROR);
+    return ok;
 }
 
 /* Preserve the REAL sqlite rc node_db_exec() stamped into last_sqlite_rc

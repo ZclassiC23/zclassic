@@ -1470,6 +1470,8 @@ int main(int argc, char **argv)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    { extern int test_offline_datadir_query(void);
+      failures += test_offline_datadir_query(); }
     { extern int test_hstar_integrity(void);
       failures += test_hstar_integrity(); }
     { extern int test_install_verb_warm(void);

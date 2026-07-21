@@ -219,6 +219,23 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.sync.frontier.offline", "core.sync", "",
+    "H* (reducer frontier) of a STOPPED/COPIED datadir",
+    "The pure SELECT-only L0 H* fold (reducer_frontier_compute_hstar) run "
+    "directly against --datadir=<path>'s own consensus.db/progress.kv at "
+    "call time — no node contact, no RPC; works on a stopped node or a "
+    "copy of one.", 0,
+    "sync,frontier,hstar,offline,datadir,copy",
+    "zcl.core_sync_frontier_offline.input.v1",
+    "zcl.core_sync_frontier_offline.v1", "datadir", "",
+    "zclassic23 core sync frontier offline --datadir=/home/you/.zclassic-c23",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_sync_frontier_offline)
 
 /* ── consensus ─────────────────────────────────────────────────────── */
 ZCL_COMMAND_BRANCH("core.consensus", "core",
@@ -859,6 +876,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.storage.query.offline", "core.storage", "",
+    "Run one SELECT-only query over a STOPPED/COPIED datadir's node.db",
+    "Raw SELECT-only query results read directly from --datadir=<path>'s "
+    "own node.db at call time via an ad hoc SQLITE_OPEN_READONLY handle — "
+    "no node contact, no RPC; rows are auto-LIMITed and capped by the "
+    "list budget, non-SELECT statements are rejected.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "storage,query,sql,select,offline,datadir,copy",
+    "zcl.core_storage_query_offline.input.v1", "zcl.storage_query.v1",
+    "datadir,sql,limit", "",
+    "zclassic23 core storage query offline "
+    "--datadir=/home/you/.zclassic-c23 --sql='SELECT ...'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_storage_query_offline)
 
 /* ── mining ────────────────────────────────────────────────────────── */
 ZCL_COMMAND_BRANCH("core.mining", "core", "Mining info and benchmarks",
