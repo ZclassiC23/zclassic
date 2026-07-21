@@ -24,6 +24,7 @@
 #include "validation/tx_verifier.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,6 +164,45 @@ static void sv_serial(const struct block *blk, int height, uint32_t flags,
 
 /* ── pool-parallel sweep ──────────────────────────────────────────────────── */
 
+/* Below this many verify_script inputs, the per-block worker-pool fan costs
+ * MORE than the serial sweep it would replace: vwp_pool_run_batch broadcasts
+ * cv_take to EVERY worker (a thundering-herd wakeup of GetNumCores threads even
+ * for a 1-input block), then blocks the drive on the cv_done join. During an
+ * offline fold those wakeups also steal cores from the cross-height proof
+ * lookahead workers (pv_lookahead). ZClassic history is dominated by light
+ * blocks (coinbase + a single simple send), so folding sub-threshold blocks
+ * serially keeps the drive's critical path off the pool for the common case.
+ * The serial sweep IS the verdict reference the pool reduce reproduces, so this
+ * is verdict-identical (pinned by test_validate_parallel_determinism). Default
+ * 2 => only 0/1-input blocks skip the fan, which never regresses a multi-input
+ * block. Env ZCL_SV_PARALLEL_MIN_INPUTS overrides (clamped). */
+#define SV_PARALLEL_MIN_INPUTS_DEFAULT 2
+
+#ifdef ZCL_TESTING
+static _Atomic int g_sv_parallel_min_inputs_test = -1;   /* <0 = env/default */
+void script_verify_set_parallel_min_inputs_for_test(int v)
+{
+    atomic_store(&g_sv_parallel_min_inputs_test, v);
+}
+#endif
+
+static int sv_parallel_min_inputs(void)
+{
+#ifdef ZCL_TESTING
+    int t = atomic_load(&g_sv_parallel_min_inputs_test);
+    if (t >= 0)
+        return t;
+#endif
+    const char *e = getenv("ZCL_SV_PARALLEL_MIN_INPUTS");
+    if (e && e[0]) {
+        long n = strtol(e, NULL, 10);
+        if (n < 0) n = 0;
+        if (n > 1000000) n = 1000000;
+        return (int)n;
+    }
+    return SV_PARALLEL_MIN_INPUTS_DEFAULT;
+}
+
 struct sv_job {
     const struct transaction *tx;
     const struct precomputed_tx_data *txdata;
@@ -245,6 +285,11 @@ static bool sv_parallel(const struct block *blk, int height, uint32_t flags,
         out->tx_count = blk->num_vtx;      /* no inputs: verdict trivially ok */
         return true;
     }
+    /* Sub-threshold: fold serially (verdict-identical; see the threshold note
+     * above). Returning false before touching `out` lets the caller run the
+     * serial sweep exactly as the alloc/pool-failure fallback does. */
+    if (n_inputs < (size_t)sv_parallel_min_inputs())
+        return false;
 
     struct vwp_pool *pool = sv_pool_get();
     if (!pool)

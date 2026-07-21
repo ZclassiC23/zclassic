@@ -66,4 +66,12 @@ void script_verify_block(const struct block *blk, int height,
  * shutdown and test teardown). Idempotent. */
 void script_verify_pool_shutdown(void);
 
+#ifdef ZCL_TESTING
+/* Test-only: force the input-count threshold below which script_verify_block's
+ * parallel path folds serially instead of fanning the worker pool. 0 => always
+ * fan (exercise the pool); a large value => always serial; <0 restores the
+ * env/default routing. Perf-only — the verdict is identical either way. */
+void script_verify_set_parallel_min_inputs_for_test(int v);
+#endif
+
 #endif /* ZCL_JOBS_SCRIPT_VALIDATE_VERIFY_H */

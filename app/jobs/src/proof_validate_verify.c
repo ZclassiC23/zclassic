@@ -28,6 +28,7 @@
 #include "validation/sighash.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -285,6 +286,53 @@ static void pv_serial(const struct block *blk, int height,
 
 /* ── pool-parallel sweep ──────────────────────────────────────────────────── */
 
+/* Proof-verification cost lives almost entirely in SHIELDED txs (Sapling
+ * Groth16 spend/output, the binding sig, Sprout Groth16/PHGR13). A transparent
+ * tx is a near-free early-out in default_verify_tx, so fanning a block of N
+ * transparent txs across the pool is N trivial jobs plus a full thundering-herd
+ * cv_take broadcast + cv_done join — pure loss. Cross-tx parallelism only pays
+ * once at least this many txs each carry real proof work; a single shielded tx
+ * has no sibling to run beside it (its own spends/outputs already batch inside
+ * pv_sapling_set). Below the threshold, fold serially (verdict-identical — the
+ * serial sweep is the reference the reduce reproduces, pinned by
+ * test_validate_parallel_determinism). Default 2. Env
+ * ZCL_PV_PARALLEL_MIN_SHIELDED overrides (clamped). */
+#define PV_PARALLEL_MIN_SHIELDED_DEFAULT 2
+
+#ifdef ZCL_TESTING
+static _Atomic int g_pv_parallel_min_shielded_test = -1;  /* <0 = env/default */
+void proof_verify_set_parallel_min_shielded_for_test(int v)
+{
+    atomic_store(&g_pv_parallel_min_shielded_test, v);
+}
+#endif
+
+static int pv_parallel_min_shielded(void)
+{
+#ifdef ZCL_TESTING
+    int t = atomic_load(&g_pv_parallel_min_shielded_test);
+    if (t >= 0)
+        return t;
+#endif
+    const char *e = getenv("ZCL_PV_PARALLEL_MIN_SHIELDED");
+    if (e && e[0]) {
+        long n = strtol(e, NULL, 10);
+        if (n < 0) n = 0;
+        if (n > 1000000) n = 1000000;
+        return (int)n;
+    }
+    return PV_PARALLEL_MIN_SHIELDED_DEFAULT;
+}
+
+static size_t pv_shielded_tx_count(const struct block *blk)
+{
+    size_t c = 0;
+    for (size_t i = 0; i < blk->num_vtx; i++)
+        if (tx_has_shielded_proofs(&blk->vtx[i]))
+            c++;
+    return c;
+}
+
 struct pv_job {
     const struct transaction *tx;
     int height;
@@ -343,6 +391,13 @@ static bool pv_parallel(const struct block *blk, int height,
     size_t n = blk->num_vtx;
     if (n == 0)
         return true;
+    /* Sub-threshold shielded work: fold serially (verdict-identical; see the
+     * threshold note above). Returning false before touching `out` lets the
+     * caller run the serial sweep exactly as the alloc/pool-failure fallback
+     * does. A custom verifier whose cost is not shielded-correlated simply
+     * folds serially more often — a perf conservatism, never a wrong verdict. */
+    if (pv_shielded_tx_count(blk) < (size_t)pv_parallel_min_shielded())
+        return false;
 
     struct vwp_pool *pool = pv_pool_get();
     if (!pool)

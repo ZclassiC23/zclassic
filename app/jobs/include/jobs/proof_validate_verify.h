@@ -71,4 +71,13 @@ bool proof_verify_block_has_shielded_proofs(const struct block *blk);
  * teardown). Idempotent. */
 void proof_verify_pool_shutdown(void);
 
+#ifdef ZCL_TESTING
+/* Test-only: force the shielded-tx-count threshold below which
+ * proof_verify_block's parallel path folds serially instead of fanning the
+ * worker pool. 0 => always fan (exercise the pool); a large value => always
+ * serial; <0 restores the env/default routing. Perf-only — the verdict is
+ * identical either way. */
+void proof_verify_set_parallel_min_shielded_for_test(int v);
+#endif
+
 #endif /* ZCL_JOBS_PROOF_VALIDATE_VERIFY_H */
