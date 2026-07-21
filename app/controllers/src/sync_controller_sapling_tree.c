@@ -707,7 +707,7 @@ struct sapling_tree_deferred_args {
 static void *sapling_tree_rebuild_deferred_thread(void *arg)
 {
     struct sapling_tree_deferred_args *a = arg;
-    struct node_db *ndb = a->ndb;
+    struct node_db *reducer_ndb = a->ndb;
     struct active_chain *chain = a->chain;
     const char *datadir = a->datadir;
     struct main_state *ms = a->ms;
@@ -718,11 +718,26 @@ static void *sapling_tree_rebuild_deferred_thread(void *arg)
             "deferred rebuild: starting background replay "
             "(pre-rebuild size=%zu)", old_size);
     atomic_store(&g_sapling_tree_rebuilding, true);
-    int n = sapling_tree_rebuild(ndb, chain, datadir);
+
+    /* The reducer can legitimately keep its own node_db transaction open
+     * across a batch. The old background rebuild shared that connection and
+     * could therefore DEFER every checkpoint/final persist forever. Give the
+     * rebuild a dedicated runtime connection: SQLite now arbitrates two
+     * writers, and the existing bounded BUSY/LOCKED retry either lands after
+     * the reducer commits or names sapling_tree_rebuild.persist_busy. */
+    struct node_db persist_ndb;
+    if (!sapling_tree_open_persist_lane(reducer_ndb, &persist_ndb,
+                                        active_chain_height(chain))) {
+        atomic_store(&g_sapling_tree_rebuilding, false);
+        thread_registry_unregister_self();
+        return NULL;
+    }
+
+    int n = sapling_tree_rebuild(&persist_ndb, chain, datadir);
     if (n >= 0) {
         uint8_t tbuf[8192];
         size_t tlen = 0;
-        if (node_db_state_get(ndb, "sapling_tree", tbuf, sizeof(tbuf),
+        if (node_db_state_get(&persist_ndb, "sapling_tree", tbuf, sizeof(tbuf),
                               &tlen) && tlen > 0) {
             struct byte_stream ts2;
             stream_init_from_data(&ts2, tbuf, tlen);
@@ -741,7 +756,8 @@ static void *sapling_tree_rebuild_deferred_thread(void *arg)
                 "blocker`)", n, old_size);
     }
     atomic_store(&g_sapling_tree_rebuilding, false);
-    node_db_wal_checkpoint(ndb);
+    node_db_wal_checkpoint(&persist_ndb);
+    node_db_close(&persist_ndb);
     if (datadir)
         save_block_index_flat(datadir, ms);
     thread_registry_unregister_self();

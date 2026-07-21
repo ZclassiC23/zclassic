@@ -564,9 +564,10 @@ static int test_sapling_persist_pair_busy_exhausted_names_blocker(void)
  * sqlite refuses with SQLITE_ERROR "cannot start a transaction within a
  * transaction" — NEVER SQLITE_BUSY/LOCKED, so the old bounded BUSY-retry was
  * dead code against it and re-fired forever. The fix detects the foreign open
- * tx via sqlite3_get_autocommit() and DEFERS (writes nothing, names no
- * blocker, does not spin) — then the persist completes once the tx closes.
- * This drives that exact sequence on one connection, deterministically. */
+ * tx via sqlite3_get_autocommit() and DEFERS without writing. A bounded
+ * number of repeated deferrals names a height-bearing TRANSIENT blocker;
+ * then the persist completes and clears it once the tx closes. This drives
+ * that exact sequence on one connection, deterministically. */
 static int test_sapling_persist_pair_defers_while_tx_open(void)
 {
     int failures = 0;
@@ -601,19 +602,27 @@ static int test_sapling_persist_pair_defers_while_tx_open(void)
      * nested-BEGIN retry dead code. */
     bool tx_opened = ok && node_db_begin(&ndb);
 
-    /* persist must DEFER (not write, not name a blocker, not spin) — and the
-     * deferral path must actually FIRE (counter increments), proving we took
-     * the detect-open-tx branch rather than silently no-oping. */
+    /* Persist must DEFER without writing. Four attempts exhaust the bounded
+     * deferral budget and must name the livelock blocker with the production
+     * height, proving an open reducer transaction cannot remain silent. */
     int deferrals_before = sapling_tree_rebuild_test_persist_deferrals();
-    bool persisted_while_open =
-        tx_opened &&
-        sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+    bool persisted_while_open = false;
+    if (tx_opened) {
+        for (int i = 0; i < 4; i++) {
+            persisted_while_open =
+                sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
+            if (persisted_while_open)
+                break;
+        }
+    }
     int deferrals_after = sapling_tree_rebuild_test_persist_deferrals();
 
     bool deferred = !persisted_while_open &&
-                    (deferrals_after == deferrals_before + 1);
-    bool no_spam_blocker =
-        !blocker_exists("sapling_tree_rebuild.persist_busy");
+                    (deferrals_after == deferrals_before + 4);
+    bool blocker_named =
+        blocker_exists("sapling_tree_rebuild.persist_busy") &&
+        blocker_class_for("sapling_tree_rebuild.persist_busy") ==
+            BLOCKER_TRANSIENT;
 
     /* Nothing was written while deferred: the height key must still be absent. */
     int64_t peek_h = -1;
@@ -631,6 +640,8 @@ static int test_sapling_persist_pair_defers_while_tx_open(void)
         sapling_tree_persist_pair(&ndb, ts.data, ts.size, saved_h);
     bool no_extra_deferral =
         sapling_tree_rebuild_test_persist_deferrals() == deferrals_pre_retry;
+    bool blocker_cleared =
+        !blocker_exists("sapling_tree_rebuild.persist_busy");
 
     int64_t got_h = -1;
     bool got = persisted_after_close &&
@@ -640,9 +651,9 @@ static int test_sapling_persist_pair_defers_while_tx_open(void)
     stream_free(&ts);
     sapling_tree_rebuild_test_reset_persist_deferrals();
 
-    ok = ok && tx_opened && deferred && no_spam_blocker &&
+    ok = ok && tx_opened && deferred && blocker_named &&
          absent_while_deferred && tx_closed && persisted_after_close &&
-         no_extra_deferral && got && got_h == saved_h;
+         no_extra_deferral && blocker_cleared && got && got_h == saved_h;
 
     node_db_close(&ndb);
     test_rm_rf_recursive(dir);
@@ -650,11 +661,13 @@ static int test_sapling_persist_pair_defers_while_tx_open(void)
     if (ok) {
         printf("OK\n");
     } else {
-        printf("FAIL (tx_opened=%d deferred=%d(%d->%d) no_spam=%d absent=%d "
-               "tx_closed=%d persisted_after=%d no_extra_defer=%d got_h=%lld)\n",
+        printf("FAIL (tx_opened=%d deferred=%d(%d->%d) blocker_named=%d "
+               "absent=%d tx_closed=%d persisted_after=%d "
+               "no_extra_defer=%d blocker_cleared=%d got_h=%lld)\n",
                tx_opened, deferred, deferrals_before, deferrals_after,
-               no_spam_blocker, absent_while_deferred, tx_closed,
-               persisted_after_close, no_extra_deferral, (long long)got_h);
+               blocker_named, absent_while_deferred, tx_closed,
+               persisted_after_close, no_extra_deferral, blocker_cleared,
+               (long long)got_h);
         failures++;
     }
     return failures;

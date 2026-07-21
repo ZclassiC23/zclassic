@@ -120,5 +120,8 @@ enum sapling_persist_status
 sapling_tree_persist_pair_status(struct node_db *ndb,
                                  const void *blob, size_t blob_len,
                                  int64_t height);
+bool sapling_tree_open_persist_lane(struct node_db *reducer_ndb,
+                                    struct node_db *persist_ndb,
+                                    int height);
 
 #endif

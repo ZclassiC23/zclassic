@@ -164,6 +164,10 @@ bool node_db_prepare_readonly_stmt(sqlite3 *db, const char *sql,
 
 /* Transaction control for batch operations. */
 bool node_db_begin(struct node_db *ndb);
+/* Acquire the SQLite writer reservation at BEGIN time. Use for a dedicated
+ * writer connection whose caller must classify/retry BUSY before mutating any
+ * rows; ordinary reducer batching continues to use node_db_begin(). */
+bool node_db_begin_immediate(struct node_db *ndb);
 bool node_db_commit(struct node_db *ndb);
 bool node_db_rollback(struct node_db *ndb);
 

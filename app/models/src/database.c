@@ -666,6 +666,10 @@ static bool node_db_tx_op(struct node_db *ndb, const char *sql,
 }
 
 bool node_db_begin(struct node_db *ndb) { return node_db_tx_op(ndb, "BEGIN TRANSACTION", true); }
+bool node_db_begin_immediate(struct node_db *ndb)
+{
+    return node_db_tx_op(ndb, "BEGIN IMMEDIATE", true);
+}
 bool node_db_commit(struct node_db *ndb) { return node_db_tx_op(ndb, "COMMIT", false); }
 bool node_db_rollback(struct node_db *ndb) { return node_db_tx_op(ndb, "ROLLBACK", false); }
 

@@ -31,6 +31,57 @@
  * the residual defense for a genuine cross-connection BUSY/LOCKED. */
 #define SAPLING_TREE_BEGIN_MAX_ATTEMPTS 5
 #define SAPLING_TREE_BEGIN_BACKOFF_MS   60
+#define SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS 4
+
+/* Deferrals belong to one calling persist lane. The deferred rebuild is
+ * single-threaded, but other callers may persist under their own threads, so
+ * a process-global counter would combine unrelated transactions and fire a
+ * false livelock blocker. Cap at the threshold to avoid overflow during a
+ * genuinely stuck legacy caller. */
+static _Thread_local int t_sapling_foreign_tx_deferrals = 0;
+static _Thread_local bool t_sapling_foreign_tx_blocker_raised = false;
+
+static void sapling_tree_raise_persist_livelock_blocker(int64_t height)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+            "persist deferring height=%lld after %d attempts: foreign open "
+            "transaction on shared reducer connection",
+            (long long)height, SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS);
+    struct blocker_record rec;
+    if (blocker_init(&rec, "sapling_tree_rebuild.persist_busy",
+                     "sync.sapling_tree_rebuild", BLOCKER_TRANSIENT, reason)) {
+        rec.retry_budget = SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS;
+        blocker_set(&rec);
+    }
+    LOG_WARN("sapling_tree_rebuild", "%s", reason);
+}
+
+bool sapling_tree_open_persist_lane(struct node_db *reducer_ndb,
+                                    struct node_db *persist_ndb,
+                                    int height)
+{
+    if (persist_ndb)
+        memset(persist_ndb, 0, sizeof(*persist_ndb));
+    bool opened = reducer_ndb && persist_ndb && reducer_ndb->path[0] &&
+        strcmp(reducer_ndb->path, ":memory:") != 0 &&
+        node_db_open_runtime(persist_ndb, reducer_ndb->path,
+                             "sync.sapling_tree_rebuild");
+    if (opened)
+        return true;
+
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+            "dedicated persist connection open failed height=%d path=%s",
+            height, reducer_ndb && reducer_ndb->path[0]
+                ? reducer_ndb->path : "(unavailable)");
+    struct blocker_record rec;
+    if (blocker_init(&rec, "sapling_tree_rebuild.persist_busy",
+                     "sync.sapling_tree_rebuild", BLOCKER_TRANSIENT, reason))
+        blocker_set(&rec);
+    LOG_ERROR("sapling_tree_rebuild", "%s", reason);
+    return false;
+}
 
 #ifdef ZCL_TESTING
 /* See controllers/sync_controller.h. 0 = disabled (real node_db_begin runs);
@@ -74,7 +125,11 @@ static bool sapling_tree_do_begin(struct node_db *ndb, int *rc_out)
         return false;
     }
 #endif
-    if (node_db_begin(ndb)) {
+    /* BEGIN IMMEDIATE acquires the writer reservation here, so a dedicated
+     * persist connection sees cross-connection contention as BUSY/LOCKED in
+     * this bounded retry loop instead of succeeding with a deferred BEGIN and
+     * discovering the lock only during the first state mutation. */
+    if (node_db_begin_immediate(ndb)) {
         *rc_out = SQLITE_OK;
         return true;
     }
@@ -162,14 +217,31 @@ sapling_tree_persist_pair_status(struct node_db *ndb,
 #ifdef ZCL_TESTING
             atomic_fetch_add(&g_sapling_persist_deferrals, 1);
 #endif
-            LOG_INFO("sapling_tree_rebuild",
-                    "persist_pair: deferring height=%lld — connection holds a "
-                    "foreign open transaction (reducer batch); will retry when "
-                    "it returns to autocommit", (long long)height);
+            if (t_sapling_foreign_tx_deferrals <
+                SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS)
+                t_sapling_foreign_tx_deferrals++;
+            if (t_sapling_foreign_tx_deferrals ==
+                    SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS &&
+                !t_sapling_foreign_tx_blocker_raised) {
+                sapling_tree_raise_persist_livelock_blocker(height);
+                t_sapling_foreign_tx_blocker_raised = true;
+            } else {
+                if (!t_sapling_foreign_tx_blocker_raised)
+                    LOG_INFO("sapling_tree_rebuild",
+                            "persist_pair: deferring height=%lld — connection "
+                            "holds a foreign open transaction (reducer batch); "
+                            "attempt=%d/%d",
+                            (long long)height,
+                            t_sapling_foreign_tx_deferrals,
+                            SAPLING_TREE_FOREIGN_TX_MAX_DEFERRALS);
+            }
             return SAPLING_PERSIST_DEFERRED;
         }
-        if (!sapling_tree_begin_with_retry(ndb, height))
+        if (!sapling_tree_begin_with_retry(ndb, height)) {
+            t_sapling_foreign_tx_deferrals = 0;
+            t_sapling_foreign_tx_blocker_raised = false;
             return SAPLING_PERSIST_FAILED;
+        }
     }
 
     bool ok = node_db_state_set(ndb, "sapling_tree", blob, blob_len) &&
@@ -182,6 +254,12 @@ sapling_tree_persist_pair_status(struct node_db *ndb,
         } else {
             node_db_rollback(ndb);
         }
+    }
+    if (own_tx && ok && t_sapling_foreign_tx_blocker_raised)
+        blocker_clear("sapling_tree_rebuild.persist_busy");
+    if (own_tx && ok) {
+        t_sapling_foreign_tx_deferrals = 0;
+        t_sapling_foreign_tx_blocker_raised = false;
     }
     return ok ? SAPLING_PERSIST_OK : SAPLING_PERSIST_FAILED;
 }
