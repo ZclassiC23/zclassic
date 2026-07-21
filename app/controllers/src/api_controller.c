@@ -112,6 +112,11 @@ static size_t g_api_deep_stats_cache_len = 0;
 static _Atomic int g_api_cache_thread_running = 0;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* #13: the cache-refresh thread's supervisor liveness contract lives in
+ * api_controller_cache_liveness.c (split out for E1 file-size ceiling) —
+ * api_cache_register_supervisor / api_cache_supervisor_tick /
+ * api_cache_supervisor_quiesce declared in api_controller_internal.h. */
+
 static bool api_response_cacheable(const uint8_t *buf, size_t len);
 static int64_t api_response_height(const uint8_t *buf, size_t len);
 
@@ -339,6 +344,8 @@ static void *api_cache_refresh_thread(void *arg)
 
     int iteration = 0;
     while (g_api_cache_thread_running) {
+        api_cache_supervisor_tick();
+
         /* Refresh /api/blocks every 30 seconds */
         if (iteration % 3 == 0) {
             uint8_t *tmp = zcl_malloc(API_BLOCKS_CACHE_SIZE, "api_blocks_tmp");
@@ -483,6 +490,7 @@ static bool ensure_cache_thread(void)
     if (!atomic_compare_exchange_strong(&g_api_cache_thread_running,
                                         &expected, 1))
         return expected == 1;
+    api_cache_register_supervisor();
     if (!api_start_detached_thread(&t, api_cache_refresh_thread, NULL)) {
         atomic_store(&g_api_cache_thread_running, 0);
         LOG_FAIL("api", "ensure_cache_thread: failed to start cache refresh thread");
@@ -517,6 +525,7 @@ void api_start_cache(void)
 
 void api_stop_cache(void)
 {
+    api_cache_supervisor_quiesce();
     atomic_store(&g_api_cache_thread_running, 0);
 }
 

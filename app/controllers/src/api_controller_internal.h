@@ -11,6 +11,7 @@
 #include "controllers/api_controller.h"
 #include "models/database.h"
 #include "util/blocker.h"
+#include "util/supervisor.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 
@@ -278,6 +279,25 @@ bool api_parse_collection_limit(const char *path, const char *query_key,
 bool api_start_detached_thread(pthread_t *thread_out,
                                void *(*entry)(void *),
                                void *arg);
+
+/* #13 — cache-refresh thread supervision, defined in
+ * api_controller_cache_liveness.c (split out for E1 file-size ceiling). */
+void api_cache_register_supervisor(void);
+void api_cache_supervisor_tick(void);
+void api_cache_supervisor_quiesce(void);
+
+#ifdef ZCL_TESTING
+/* #13 supervision-coverage test seams (chain_integrity/api-controller
+ * lint-gate remediation). See the "supervision for the detached ...
+ * thread" block comments in api_controller.c / api_controller_lookup.c. */
+void    api_cache_test_register_supervisor(void);
+supervisor_child_id api_cache_test_supervisor_id(void);
+int64_t api_cache_test_loop_ticks(void);
+void    api_cache_test_force_stall(void);
+void    api_lookup_test_register_supervisor(void);
+supervisor_child_id api_lookup_test_supervisor_id(void);
+void    api_lookup_test_force_stall(void);
+#endif
 
 /* ── Resource route registry (defined in api_controller_routes.c) ── */
 

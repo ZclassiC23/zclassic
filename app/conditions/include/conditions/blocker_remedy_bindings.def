@@ -309,3 +309,28 @@ ZCL_BLOCKER_REMEDY(sapling_checkpoint_hook.anchor_read_error,   OWNER)
  * incident class — the maintenance is now a named blocker, never a quiet
  * hang. ──────────────────────────────────────────────────────────────── */
 ZCL_BLOCKER_REMEDY(db.maintenance_slow,                         OWNER)
+/* ── OWNER — Task D/E supervision-coverage watchdogs (2026-07-21). Each of
+ * these is a supervisor-tree liveness contract's own on_stall naming a
+ * blocker for a detached worker/thread it watches from the OUTSIDE; none
+ * has a condition-engine healer because the whole point is that the
+ * watched worker itself is unresponsive:
+ *   - api_cache_refresh_stalled / api_lookup_stalled: the REST /api
+ *     cache-refresh and block/tx/address lookup-worker detached threads
+ *     (app/controllers/src/api_controller_cache_liveness.c,
+ *     api_controller_lookup.c) stopped heartbeating past their supervisor
+ *     deadline — BLOCKER_TRANSIENT, self-clears on the next successful
+ *     heartbeat if the hang was transient; a genuine wedge needs an
+ *     operator restart.
+ *   - chain_integrity_restore_stuck: the background
+ *     chain_restore_finalize repair worker
+ *     (app/conditions/src/chain_integrity_failed.c) exceeded its 30-minute
+ *     deadline — BLOCKER_DEPENDENCY, self-clears when the worker returns
+ *     (chain_integrity_restore_worker's finish path calls blocker_clear).
+ *   - node_db_unopened: node.db failed to open at boot
+ *     (config/src/boot_node_db_gate.c) — BLOCKER_PERMANENT; an unopenable
+ *     database needs an operator to look at disk/permissions/corruption,
+ *     not an auto-retry. ─────────────────────────────────────────────── */
+ZCL_BLOCKER_REMEDY(api_cache_refresh_stalled,                   OWNER)
+ZCL_BLOCKER_REMEDY(api_lookup_stalled,                           OWNER)
+ZCL_BLOCKER_REMEDY(chain_integrity_restore_stuck,               OWNER)
+ZCL_BLOCKER_REMEDY(node_db_unopened,                             OWNER)

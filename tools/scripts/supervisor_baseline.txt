@@ -1,8 +1,11 @@
 # Lint gate #15 baseline — grandfathered long-running services that
 # do not yet register a supervisor liveness contract.
 #
-# Each entry is a long-running service in app/services/src/ that
-# spawns threads or subscribes to lib/health periodic callbacks but
+# Each entry is a long-running service (originally scoped to
+# app/services/src/, widened 2026-07-21 to app/controllers/src,
+# app/conditions/src, app/jobs/src, config/src, and the audited lib/net,
+# lib/health, lib/rpc production daemons — see check_supervisor_registration.sh)
+# that spawns threads or subscribes to lib/health periodic callbacks but
 # was not migrated to supervisor_register() in Round 5. Future rounds
 # will pick these off one by one; the gate fails on any NEW long-
 # running file that isn't in this list and isn't supervised.
@@ -20,3 +23,52 @@
 #   5. Re-run `make lint` to confirm.
 #
 # Format: one file path per line. Blank lines and # comments ignored.
+#
+# ── 2026-07-21 fresh baseline seeded on scope widen (Task D/E) ───────────
+# These 12 are pre-existing gaps the widened scan newly discovered — none
+# introduced by this change. Each already terminates (bounded/joined worker
+# pool) or is cross-checked by an adjacent mechanism (see the comment above
+# each entry); none is a new unaccounted-for infinite loop. Pick these off
+# same as any other baseline entry.
+#
+# bounded: one-shot snapshot block-index/UTXO/wallet import workers
+# (zcl_snap_idx/zcl_snap_utxo/zcl_snap_wallet — already in
+# tools/lint/thread_supervision_baseline.txt Gate #23)
+app/controllers/src/snapshot_controller_import.c
+# bounded: one-shot snapshot tx-index import worker (zcl_snap_txidx —
+# Gate #23 baseline)
+app/controllers/src/snapshot_controller_txindex.c
+# bounded: one-shot catch-up sync + legacy-db import jobs
+# (zcl_catchup/zcl_db_import — Gate #23 baseline)
+app/controllers/src/sync_controller_catchup_jobs.c
+# bounded: parallel-fold worker pool, joined at range-fold end (dynamic
+# per-worker thread names)
+app/jobs/src/psc_range_fold.c
+# bounded: header-validation worker pool, joined at pool shutdown (dynamic
+# per-worker thread names)
+app/jobs/src/validate_headers_pool.c
+# bounded: PoW-validation worker pool, joined at pool shutdown (dynamic
+# per-worker thread names)
+app/jobs/src/validate_work_pool.c
+# bounded: one-shot boot-time block-file scan worker, joined (zcl_blk_scan
+# — Gate #23 baseline)
+config/src/boot_block_file_scan.c
+# bounded: one-shot boot-time fast-restart quick check, joined
+# (bg_quick_check — Gate #23 baseline)
+config/src/boot_fast_restart.c
+# observer: systemd WATCHDOG=1 heartbeat pinger; reads (does not drive) the
+# root supervisor's own sweep heartbeat as its liveness gate — see its
+# file-header "Pillar 7" note; a wedge here stops the ping and lets
+# systemd's WatchdogSec timer restart the unit, an independent recovery path
+config/src/boot_sd_watchdog.c
+# the pre-Round-5 periodic sweeper itself (zcl_health_sweep) — the
+# historical single-point-of-failure this whole supervisor tree was built
+# to route around; joining it to the tree it predates is tracked debt, not
+# a new gap
+lib/health/src/heartbeat.c
+# bounded: one-shot ROM parallel-fetch + verify worker pools
+# (zcl_romfetch/zcl_romver), joined at job end
+lib/net/src/rom_fetch.c
+# bounded: one-shot RPC-timeout watchdog thread (zcl_rpc_timeout), joined
+# at manager shutdown
+lib/rpc/src/rpc_timeout.c

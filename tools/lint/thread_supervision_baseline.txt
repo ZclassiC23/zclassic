@@ -18,7 +18,6 @@
 # a hang surfaces as a thread_registry straggler at the shutdown join and via
 # the job's own progress logging, so a per-job liveness contract would be
 # churn. Register-on-start/retire-on-join is future work if any proves flaky.
-zcl_chain_fix    bounded  one-shot chain-integrity repair (app/conditions/src/chain_integrity_failed.c)
 zcl_snap_idx     bounded  one-shot snapshot block-index import (snapshot_controller_import.c)
 zcl_snap_utxo    bounded  one-shot snapshot UTXO import (snapshot_controller_import.c)
 zcl_snap_wallet  bounded  one-shot snapshot wallet import (snapshot_controller_import.c)

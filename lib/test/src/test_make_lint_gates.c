@@ -3002,6 +3002,126 @@ static int t_thread_supervision_ratchet(void)
     return failures;
 }
 
+/* Gate #15 — supervisor-registration ratchet, widened 2026-07-21 scope
+ * (Task D/E: app/controllers, app/conditions, app/jobs, config/src, audited
+ * lib/net,lib/health,lib/rpc — see check_supervisor_registration.sh). Runs
+ * hermetically via ZCL_SERVICES_DIR / ZCL_SUPREG_BASELINE so it never
+ * touches the live tree/baseline: a planted unsupervised raw pthread_create
+ * (the acceptance-bar shape: "a planted unsupervised thread in
+ * app/controllers") trips the gate; a baseline entry OR a
+ * // supervisor-ok: marker clears it; the real (widened) tree stays green. */
+#define SUPREG_SCRIPT_REL   "tools/scripts/check_supervisor_registration.sh"
+#define SUPREG_SCAN_DIR_REL "test-tmp/_supreg_scan_dir_tmp"
+#define SUPREG_KEEP_REL     "test-tmp/_supreg_scan_dir_tmp/keep.c"
+#define SUPREG_FIXTURE_REL  "test-tmp/_supreg_scan_dir_tmp/_supreg_probe_tmp.c"
+#define SUPREG_BASELINE_REL "test-tmp/_supreg_baseline_tmp.txt"
+
+static int t_supervisor_registration_widened_ratchet(void)
+{
+    int failures = 0;
+    char scan_dir[PATH_MAX];
+    char keep_path[PATH_MAX];
+    char fixture_path[PATH_MAX];
+    char baseline_path[PATH_MAX];
+
+    if (repo_path(scan_dir, sizeof(scan_dir), SUPREG_SCAN_DIR_REL) != 0 ||
+        repo_path(keep_path, sizeof(keep_path), SUPREG_KEEP_REL) != 0 ||
+        repo_path(fixture_path, sizeof(fixture_path),
+                  SUPREG_FIXTURE_REL) != 0 ||
+        repo_path(baseline_path, sizeof(baseline_path),
+                  SUPREG_BASELINE_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve supervisor-registration "
+                        "fixture paths\n");
+        return 1;
+    }
+    (void)mkdir(scan_dir, 0700);
+
+    /* Non-spawning keep file so the non-empty-scan floor is always met. */
+    int wrote_keep = write_file(keep_path, "int supreg_keep_placeholder;\n");
+
+    /* Case A: an unsupervised raw pthread_create (mirrors
+     * api_controller.c's api_start_detached_thread shape) + EMPTY baseline
+     * must trip — this is the acceptance-bar plant. */
+    int wrote_fixture_spawn = write_file(fixture_path,
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { (void)arg; return 0; }\n"
+        "void demo(void)\n"
+        "{\n"
+        "    pthread_t t;\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "}\n");
+    int wrote_empty_baseline = write_file(baseline_path, "");
+    int unaccounted_rc =
+        (wrote_keep == 0 && wrote_fixture_spawn == 0 &&
+         wrote_empty_baseline == 0)
+            ? run_gate_script_with_env2(SUPREG_SCRIPT_REL,
+                  "ZCL_SERVICES_DIR", SUPREG_SCAN_DIR_REL,
+                  "ZCL_SUPREG_BASELINE", SUPREG_BASELINE_REL)
+            : -999;
+    char un_out_path[PATH_MAX];
+    char *un_out = NULL;
+    int un_read =
+        (unaccounted_rc >= 0 &&
+         repo_path(un_out_path, sizeof(un_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(un_out_path, &un_out)
+            : -1;
+
+    /* Case B: same fixture, file now BASELINED — must pass. */
+    int wrote_baseline_entry = write_file(baseline_path,
+        SUPREG_FIXTURE_REL "\n");
+    int baselined_rc =
+        wrote_baseline_entry == 0
+            ? run_gate_script_with_env2(SUPREG_SCRIPT_REL,
+                  "ZCL_SERVICES_DIR", SUPREG_SCAN_DIR_REL,
+                  "ZCL_SUPREG_BASELINE", SUPREG_BASELINE_REL)
+            : -999;
+
+    /* Case C: same shape, EMPTY baseline but a // supervisor-ok: marker
+     * — must pass. */
+    int wrote_fixture_marked = write_file(fixture_path,
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { (void)arg; return 0; }\n"
+        "// supervisor-ok:probe-fixture\n"
+        "void demo(void)\n"
+        "{\n"
+        "    pthread_t t;\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "}\n");
+    int wrote_empty_baseline2 = write_file(baseline_path, "");
+    int marked_rc =
+        (wrote_fixture_marked == 0 && wrote_empty_baseline2 == 0)
+            ? run_gate_script_with_env2(SUPREG_SCRIPT_REL,
+                  "ZCL_SERVICES_DIR", SUPREG_SCAN_DIR_REL,
+                  "ZCL_SUPREG_BASELINE", SUPREG_BASELINE_REL)
+            : -999;
+
+    /* Case D: the real (widened) tree, with its OWN default scan roots and
+     * real baseline, must stay green. */
+    int real_tree_rc = run_gate_script(SUPREG_SCRIPT_REL, NULL);
+
+    (void)unlink(fixture_path);
+    (void)unlink(keep_path);
+    (void)unlink(baseline_path);
+    (void)rmdir(scan_dir);
+
+    TEST("[lint-gate] supervisor-registration widened ratchet: planted "
+         "app/controllers-shaped thread trips; baselined/marked pass; real "
+         "widened tree stays green") {
+        ASSERT(unaccounted_rc != 0);
+        ASSERT(un_read == 0);
+        ASSERT(un_out != NULL &&
+               strstr(un_out, "NEW long-running service") != NULL);
+        ASSERT(baselined_rc == 0);
+        ASSERT(marked_rc == 0);
+        ASSERT(real_tree_rc == 0);
+        PASS();
+    } _test_next:;
+
+    free(un_out);
+    return failures;
+}
+
 /* E3 — shape-includes-header HARD: a condition file that includes neither
  * framework/condition.h nor a conditions/ header trips the gate; removing
  * it restores green. */
@@ -8469,6 +8589,7 @@ int test_make_lint_gates(void)
     failures += t_e2_one_result_type();
     failures += t_service_result_convergence_ratchet();
     failures += t_thread_supervision_ratchet();
+    failures += t_supervisor_registration_widened_ratchet();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
     failures += t_domain_purity();

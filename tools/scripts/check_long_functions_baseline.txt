@@ -23,4 +23,7 @@
 # through the tier-2 load + mismatch-check blocks and calls the new
 # sapling_tree_verify_at_saved_height / sapling_tree_attempt_fold_forward
 # helpers instead of unconditionally deferring or full-rebuilding.
-config/src/boot.c app_init 2802
+# 2026-07-21 (Task D/E, #7): node.db-open-failure branch now calls the
+# extracted boot_node_db_open_failed_gate() (boot_node_db_gate.c) — net +1
+# line is the shorter call site replacing the old inline warning/continue.
+config/src/boot.c app_init 2803

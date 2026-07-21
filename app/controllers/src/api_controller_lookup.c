@@ -37,9 +37,12 @@
 #include "validation/contextual_check_tx.h"
 #include "validation/main_state.h"
 #include "views/format_helpers.h"
+#include "supervisors/domains.h"
 #include "util/ar_step_readonly.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -476,6 +479,70 @@ static uint8_t g_lookup_result[262144];
 static size_t  g_lookup_result_len = 0;
 static _Atomic int g_lookup_thread_running = 0;
 
+/* ── #13: supervision for the detached lookup-worker thread ────────────
+ * Previously an unsupervised infinite loop: a DB-lock hang inside
+ * compute_block/tx/address freezes /api/block/tx/address lookups forever
+ * (do_lookup's 15s client-side wait just returns 503 to each caller, over
+ * and over) with no liveness signal anywhere. Self-driven contract (mirrors
+ * disk_monitor.c / the api_cache_refresh sibling above): the thread ticks
+ * once per idle-wait pass (~1s cadence while there is no request to serve),
+ * so a real processing hang — the only time ticks stop — trips the
+ * independent supervisor deadline. */
+#define API_LOOKUP_SUPERVISOR_DEADLINE_SEC 60
+static struct liveness_contract    g_api_lookup_contract;
+static _Atomic supervisor_child_id g_api_lookup_sup_id = SUPERVISOR_INVALID_ID;
+static _Atomic int64_t             g_api_lookup_loop_ticks = 0;
+
+static void api_lookup_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_api_lookup_sup_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, atomic_load(&g_api_lookup_loop_ticks));
+}
+
+static void api_lookup_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    LOG_WARN("api", "[api] lookup-worker thread stall reason=%s "
+             "loop_ticks=%lld — /api/block,/tx,/address lookups will 503 "
+             "forever", reason, (long long)atomic_load(&g_api_lookup_loop_ticks));
+    struct blocker_record rec;
+    if (blocker_init(&rec, "api_lookup_stalled", "op.api_lookup",
+                     BLOCKER_TRANSIENT,
+                     "REST /api lookup worker stopped heartbeating; "
+                     "/api/block,/tx,/address requests will 503 forever"))
+        (void)blocker_set(&rec);
+}
+
+static void api_lookup_register_supervisor(void)
+{
+    if (atomic_load(&g_api_lookup_sup_id) != SUPERVISOR_INVALID_ID)
+        return;  /* idempotent */
+    if (!supervisor_start()) {
+        LOG_WARN("api", "[api] lookup: supervisor_start failed");
+        return;
+    }
+    liveness_contract_init(&g_api_lookup_contract, "op.api_lookup");
+    atomic_store(&g_api_lookup_contract.period_secs, (int64_t)0);
+    atomic_store(&g_api_lookup_contract.deadline_secs,
+                (int64_t)API_LOOKUP_SUPERVISOR_DEADLINE_SEC);
+    g_api_lookup_contract.on_stall = api_lookup_on_stall;
+    supervisor_domains_init();
+    supervisor_child_id id =
+        supervisor_register_in_domain(g_op_sup, &g_api_lookup_contract);
+    if (id == SUPERVISOR_INVALID_ID) {
+        LOG_WARN("api", "[api] lookup: supervisor register failed");
+        return;
+    }
+    atomic_store(&g_api_lookup_sup_id, id);
+    api_lookup_supervisor_heartbeat();
+}
+
 /* Background thread that processes lookup requests one at a time */
 static void *api_lookup_thread(void *arg)
 {
@@ -490,6 +557,8 @@ static void *api_lookup_thread(void *arg)
             platform_time_realtime_timespec(&ts);
             ts.tv_sec += 1;
             pthread_cond_timedwait(&g_lookup_request_cond, &g_lookup_mutex, &ts);
+            atomic_fetch_add(&g_api_lookup_loop_ticks, 1);
+            api_lookup_supervisor_heartbeat();
         }
         if (!g_lookup_thread_running) {
             pthread_mutex_unlock(&g_lookup_mutex);
@@ -536,6 +605,7 @@ static bool ensure_lookup_thread(void)
     if (!atomic_compare_exchange_strong(&g_lookup_thread_running,
                                         &expected, 1))
         return expected == 1;
+    api_lookup_register_supervisor();
     if (!api_start_detached_thread(&t, api_lookup_thread, NULL)) {
         atomic_store(&g_lookup_thread_running, 0);
         LOG_FAIL("api", "ensure_lookup_thread: failed to start lookup thread");
@@ -592,3 +662,24 @@ size_t do_lookup(enum lookup_type type, const char *param,
     pthread_mutex_unlock(&g_lookup_mutex);
     return api_json_error(response, response_max, JSON_500_HEADERS, "RPC unavailable");
 }
+
+#ifdef ZCL_TESTING
+/* #13 test seams — see the "supervision for the detached lookup-worker
+ * thread" block comment near g_api_lookup_sup_id above. Registers the
+ * liveness contract WITHOUT spawning the real detached thread, so the
+ * wiring can be exercised hermetically and fast. */
+void api_lookup_test_register_supervisor(void)
+{
+    api_lookup_register_supervisor();
+}
+
+supervisor_child_id api_lookup_test_supervisor_id(void)
+{
+    return atomic_load(&g_api_lookup_sup_id);
+}
+
+void api_lookup_test_force_stall(void)
+{
+    api_lookup_on_stall(&g_api_lookup_contract);
+}
+#endif
