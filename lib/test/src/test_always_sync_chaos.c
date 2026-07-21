@@ -25,6 +25,13 @@
  * See lib/sim/include/sim/simnet_chaos_faults.h for what each fault
  * reproduces and app/services/include/services/block_index_loader.h for
  * BLOCK_INDEX_LOADER_SEED_MAX_GAP.
+ *
+ * Fault (m) (lane G4, wf/disruption-resume) extends the corpus with the
+ * ordinary P2P block-body download/resume path: a peer disconnects mid-
+ * transfer and reconnects, and the on-disk BLOCK_HAVE_DATA contract must
+ * hold — never re-request a block already durably persisted, always reach
+ * tip. Distinct from the (g)-(l) matrix's rom_journal/artifact-download
+ * subsystem below.
  */
 
 #include "test/test_helpers.h"
@@ -247,6 +254,38 @@ int test_always_sync_chaos(void)
                   asc_never_pages_capsule(&sc));
         ASC_CHECK("invalid tail block: rejected independently, chain never "
                   "wedged", sc.base.recovered);
+    }
+
+    /* ── (m) peer disconnect mid body-download, then resume — lane G4 ──
+     * (wf/disruption-resume). Distinct subsystem from (i): this is the
+     * ordinary P2P block-BODY download path (lib/net/src/download.c +
+     * the real syncsvc_collect_needed_blocks() planner msg_headers.c
+     * calls on every accepted header batch), not the rom_journal
+     * snapshot/artifact chunk resume. Proves the on-disk BLOCK_HAVE_DATA
+     * contract: a block already durably persisted before the peer died
+     * is NEVER re-requested after reconnect, and the node still reaches
+     * tip. See sim/simnet_chaos_faults.h for the full fixture narrative
+     * and struct body_download_resume_result for the measured fields. */
+    {
+        struct body_download_resume_result r2;
+        bool harness_ok = chaos_fault_peer_disconnect_mid_body_download(
+            40, &r2);
+        printf("  note: %s\n", r2.base.note);
+        ASC_CHECK("body-download resume: harness fixture built", harness_ok);
+        ASC_CHECK("body-download resume: never pages operator",
+                  asc_never_pages(&r2.base));
+        ASC_CHECK("body-download resume: zero re-requests of already-"
+                  "persisted (HAVE_DATA) blocks",
+                  r2.base.ok && r2.duplicate_persisted_requests == 0);
+        ASC_CHECK("body-download resume: reaches tip after reconnect",
+                  r2.base.ok && r2.final_height == r2.chain_len);
+        ASC_CHECK("body-download resume: recovered verdict",
+                  r2.base.recovered);
+        printf("  measured: reconnect_decision_us=%lld "
+               "resume_latency_us=%lld (persisted_at_disruption=%d/%d)\n",
+               (long long)r2.reconnect_decision_us,
+               (long long)r2.resume_latency_us,
+               r2.persisted_at_disruption, r2.chain_len);
     }
 
     if (failures == 0)

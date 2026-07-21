@@ -290,6 +290,79 @@ bool chaos_fault_slow_loris_seeder(uint64_t seed,
 bool chaos_fault_invalid_tail_block(uint64_t seed,
                                     struct sync_fault_capsule *out);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * (m) P2P body-download disruption/resume — the on-disk BLOCK_HAVE_DATA
+ * no-refetch contract (lane G4: wf/disruption-resume)
+ *
+ * Distinct from (i) (rom_journal's chunk-bitmap resume, the SHA3
+ * snapshot/artifact path) — this fault exercises the OTHER, older resume
+ * surface: ordinary P2P block-BODY download, the real
+ * download_manager (lib/net/src/download.c) plus the real pure planner
+ * app/services/src/header_sync_service.c implements against
+ * sync/sync_planner.h's syncsvc_collect_needed_blocks() — the exact
+ * function msg_headers.c calls on every accepted header batch to decide
+ * which bodies to queue.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Result of chaos_fault_peer_disconnect_mid_body_download. */
+struct body_download_resume_result {
+    struct chaos_fault_result base;   /* ok / recovered / operator_paged / note */
+    int32_t  chain_len;               /* simulated chain height (tip) */
+    int32_t  persisted_at_disruption; /* our_height the instant the peer died */
+    int32_t  final_height;            /* our_height after the resumed drive */
+    uint64_t requested_total;         /* dl_get_stats total_requested, final */
+    uint64_t duplicate_persisted_requests; /* count of already-HAVE_DATA
+                                            * heights EVER handed back by a
+                                            * post-disruption collect/queue
+                                            * pass, or ever found in-flight
+                                            * again — must be 0 */
+    int64_t  reconnect_decision_us;   /* wall-clock: disconnect ->
+                                       * reconnected peer's first assigned
+                                       * request (collect+queue+assign,
+                                       * NO simulated transfer delay) — the
+                                       * production decision path's own
+                                       * contribution to resume latency */
+    int64_t  resume_latency_us;       /* wall-clock: reconnect assignment ->
+                                       * first NEW (post-disruption) block
+                                       * durably received — includes a
+                                       * deliberate per-block simulated
+                                       * transfer delay so this number is a
+                                       * representative LAN figure, not a
+                                       * meaningless sub-microsecond one.
+                                       * -1 if no block was ever received. */
+};
+
+/* Builds a genesis-rooted synthetic chain [0, chain_len] (chain_len must be
+ * >= 8). A durable quarter-chain baseline starts BLOCK_HAVE_DATA (blocks the
+ * node already had before this run). A download_manager then plays out a
+ * realistic mid-transfer disruption: a peer is assigned a window of the next
+ * blocks, roughly a third of that window completes (real forward progress:
+ * received + HAVE_DATA set + the active-chain tip pointer genuinely
+ * advances) before the peer disconnects — dl_peer_disconnected() re-queues
+ * only the still-in-flight remainder of that window, never a
+ * received/persisted height (structurally impossible: a received hash is no
+ * longer in the in-flight table dl_peer_disconnected scans).
+ *
+ * The reconnect is modeled by re-running syncsvc_collect_needed_blocks() —
+ * literally the production decision msg_headers.c makes on the next accepted
+ * header batch — against the block_index as it stands post-disruption, then
+ * assigning a NEW peer id and driving the remainder to the tip (re-collecting
+ * + re-assigning as needed, exactly the steady-state gap_fill/block_sync_
+ * service tick). Every collect pass, and the download manager's own in-
+ * flight table, are checked for a height <= persisted_at_disruption ever
+ * reappearing — that is duplicate_persisted_requests, and it must be 0 for
+ * out->recovered to be true.
+ *
+ * out->base.ok is false only for a harness-fixture defect (OOM, an
+ * assignment the manager unexpectedly refused, chain_len < 8) — check
+ * out->base.recovered for the actual property: final_height == chain_len
+ * AND duplicate_persisted_requests == 0. This fault never touches the
+ * blocker/condition/event escalation surface (a stalled body fetch is
+ * body_fetch_missing_have_data's typed blocker, not an operator page), so
+ * out->base.operator_paged is always false when out->base.ok is true. */
+bool chaos_fault_peer_disconnect_mid_body_download(
+    int32_t chain_len, struct body_download_resume_result *out);
+
 #ifdef __cplusplus
 }
 #endif

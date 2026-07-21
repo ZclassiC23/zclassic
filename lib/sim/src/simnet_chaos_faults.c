@@ -34,6 +34,7 @@
 #include "jobs/stage_rederive_range.h"
 #include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
+#include "net/download.h"
 #include "net/file_service.h"
 #include "net/rom_fetch.h"
 #include "net/rom_journal.h"
@@ -45,8 +46,10 @@
 #include "storage/chain_segment.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "sync/sync_planner.h"
 #include "sync/sync_reduce.h"
 #include "util/blocker.h"
+#include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "util/supervisor.h"
 #include "validation/chainstate.h"
@@ -2034,5 +2037,254 @@ bool chaos_fault_invalid_tail_block(uint64_t seed,
     sfm_note(out, "invalid tail block after valid bundle: prefix_h=%d "
              "tail_rejected=%d tip_unmoved=%d honest_advanced=%d",
              bundle_height, tail_rejected, tip_unmoved, honest_advanced);
+    return true;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (m) P2P body-download disruption/resume — BLOCK_HAVE_DATA no-refetch
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Deterministic 32-byte hash for the (m) fixture. Tag byte 0xD0 keeps it
+ * disjoint from chaos_synth_hash's 0xC5 (a)-(f) tag and synth_chain_bf's
+ * 0xB4 (lib/test/src/test_body_fetch_stage.c) so a shared debugging
+ * session never confuses the three synthetic-chain families. */
+static void bdr_hash(uint8_t out[32], int32_t h)
+{
+    memset(out, 0, 32);
+    out[0] = (uint8_t)(h & 0xff);
+    out[1] = (uint8_t)((h >> 8) & 0xff);
+    out[31] = 0xD0;
+}
+
+bool chaos_fault_peer_disconnect_mid_body_download(
+    int32_t chain_len, struct body_download_resume_result *out)
+{
+    struct body_download_resume_result empty = {0};
+    if (!out) return false;
+    *out = empty;
+    out->base.hstar_before = -1;
+    out->base.hstar_after = -1;
+
+    if (chain_len < 8) {
+        chaos_note(&out->base, "harness defect: chain_len must be >= 8 "
+                   "(got %d)", chain_len);
+        return false;
+    }
+
+    int32_t n = chain_len;  /* heights 0..n inclusive, n+1 entries */
+    struct block_index *chain = zcl_calloc((size_t)n + 1, sizeof(*chain),
+                                           "bdr_chain");
+    struct uint256 *hashes = zcl_calloc((size_t)n + 1, sizeof(*hashes),
+                                        "bdr_hashes");
+    if (!chain || !hashes) {
+        free(chain); free(hashes);
+        chaos_note(&out->base, "harness defect: OOM building %d-height "
+                   "chain", n);
+        return false;
+    }
+    for (int32_t h = 0; h <= n; h++) {
+        block_index_init(&chain[h]);
+        bdr_hash(hashes[h].data, h);
+        chain[h].phashBlock = &hashes[h];
+        chain[h].nHeight = h;
+        chain[h].nVersion = 4;
+        if (h > 0) chain[h].pprev = &chain[h - 1];
+    }
+
+    /* Fixed, deterministic proportions of the chain:
+     *   [1, baseline]              — already durably persisted (HAVE_DATA)
+     *                                 before this run even starts.
+     *   (baseline, batch_end]      — the doomed peer's assigned window.
+     *   (baseline, completed_kill] — the part of that window that actually
+     *                                 completed (real forward progress)
+     *                                 before the peer died mid-transfer.
+     *   (completed_kill, batch_end]— interrupted in-flight at the kill.
+     *   (batch_end, n]             — never even assigned yet. */
+    int32_t baseline = n / 4;
+    int32_t batch_end = n / 2;
+    int32_t completed_kill = baseline + (batch_end - baseline) / 3;
+
+    for (int32_t h = 1; h <= baseline; h++)
+        chain[h].nStatus |= BLOCK_HAVE_DATA;
+
+    struct download_manager dm;
+    dl_init(&dm);
+    if (!dm.slots) {
+        dl_free(&dm); free(chain); free(hashes);
+        chaos_note(&out->base, "harness defect: dl_init allocation failed");
+        return false;
+    }
+
+    const uint32_t PEER_A = 1001, PEER_B = 2002;
+    struct block_index *candidate = &chain[n];
+    struct block_index *tip0 = &chain[baseline];
+
+    /* ── Phase 1: the FIRST header-driven scan, at the durable baseline —
+     * exactly what msg_headers.c runs the moment headers up to `candidate`
+     * are admitted. ────────────────────────────────────────────────── */
+    enum { BDR_MAX_COLLECT = 4096 };
+    struct uint256 need_hashes[BDR_MAX_COLLECT];
+    int32_t need_heights[BDR_MAX_COLLECT];
+    struct sync_needed_blocks needed;
+    syncsvc_collect_needed_blocks(&needed, candidate, tip0, baseline,
+                                  need_hashes, need_heights, BDR_MAX_COLLECT);
+    if (!needed.chains_from_tip || needed.count == 0) {
+        dl_free(&dm); free(chain); free(hashes);
+        chaos_note(&out->base, "harness defect: initial collect found "
+                   "chains_from_tip=%d count=%zu (want true, >0)",
+                   needed.chains_from_tip, needed.count);
+        return false;
+    }
+    dl_queue_blocks(&dm, need_hashes, need_heights, needed.count);
+
+    struct uint256 out_hashes[BDR_MAX_COLLECT];
+    size_t want = (size_t)(batch_end - baseline);
+    size_t assigned = dl_assign_to_peer(&dm, PEER_A, out_hashes, want);
+    if (assigned != want) {
+        dl_free(&dm); free(chain); free(hashes);
+        chaos_note(&out->base, "harness defect: peer A got %zu of %zu "
+                   "requested", assigned, want);
+        return false;
+    }
+
+    /* dl_assign_to_peer hands back heights in ascending order (the queue is
+     * height-sorted), so the first `completed_count` entries are exactly
+     * heights (baseline, baseline+completed_count]. */
+    int32_t completed_count = completed_kill - baseline;
+    for (int32_t i = 0; i < completed_count; i++) {
+        int32_t h = baseline + 1 + i;
+        uint32_t got_peer = dl_mark_received(&dm, &out_hashes[i]);
+        if (got_peer != PEER_A) {
+            dl_free(&dm); free(chain); free(hashes);
+            chaos_note(&out->base, "harness defect: mark_received(h=%d) "
+                       "peer=%u want=%u", h, got_peer, PEER_A);
+            return false;
+        }
+        chain[h].nStatus |= BLOCK_HAVE_DATA;
+    }
+    int32_t our_height = completed_kill;   /* genuine forward progress */
+
+    /* ── Phase 2: DISRUPTION — the peer dies mid-transfer. Everything it
+     * held in-flight but never delivered goes back to the pending queue;
+     * a received/persisted height cannot be among them (dl_mark_received
+     * already removed it from the in-flight table). ──────────────────── */
+    size_t requeued = dl_peer_disconnected(&dm, PEER_A);
+
+    /* ── Phase 3: reconnect — re-run the SAME production decision fresh
+     * against the post-disruption block_index. The core assertion this
+     * fault exists to prove: no height <= our_height (already durable)
+     * ever reappears, from EITHER the fresh collect pass or the download
+     * manager's own in-flight table. ─────────────────────────────────── */
+    struct block_index *tip1 = &chain[our_height];
+    struct sync_needed_blocks needed2;
+    int64_t t_disconnect_us = platform_time_monotonic_us();
+    syncsvc_collect_needed_blocks(&needed2, candidate, tip1, our_height,
+                                  need_hashes, need_heights, BDR_MAX_COLLECT);
+
+    uint64_t duplicate_persisted = 0;
+    for (size_t i = 0; i < needed2.count; i++)
+        if (need_heights[i] <= our_height)
+            duplicate_persisted++;
+    for (int32_t h = 1; h <= our_height; h++) {
+        struct uint256 hh;
+        bdr_hash(hh.data, h);
+        if (dl_is_in_flight(&dm, &hh))
+            duplicate_persisted++;
+    }
+    dl_queue_blocks(&dm, need_hashes, need_heights, needed2.count);
+
+    /* Deliberately small first reconnect window (a fresh, unscored peer) so
+     * the steady-state re-collect/re-assign loop below actually runs more
+     * than once — a stronger regression proof than a single giant batch. */
+    size_t reconnect_assign = dl_assign_to_peer(&dm, PEER_B, out_hashes, 8);
+    int64_t t_assigned_us = platform_time_monotonic_us();
+    out->reconnect_decision_us = t_assigned_us - t_disconnect_us;
+
+    if (reconnect_assign == 0) {
+        dl_free(&dm); free(chain); free(hashes);
+        chaos_note(&out->base, "harness defect: peer B got 0 blocks on "
+                   "reconnect (requeued=%zu queued2=%zu)",
+                   requeued, needed2.count);
+        return false;
+    }
+
+    /* ── Phase 4: drive the resumed peer to tip, re-collecting/re-
+     * assigning as its window empties — the real steady-state tick
+     * (gap_fill_service / block_sync_service). A small per-block sleep
+     * models a real LAN body round-trip so resume_latency_us reports a
+     * representative figure instead of a meaningless sub-microsecond
+     * in-process one. ────────────────────────────────────────────────── */
+    int64_t t_first_progress_us = 0;
+    bool measured_first = false;
+    int32_t cur_height = our_height;
+    size_t batch_off = 0, batch_len = reconnect_assign;
+    int guard = 0;
+    while (cur_height < n && guard++ < 4 * (n + 1)) {
+        if (batch_off >= batch_len) {
+            struct sync_needed_blocks more;
+            struct block_index *tipN = &chain[cur_height];
+            syncsvc_collect_needed_blocks(&more, candidate, tipN, cur_height,
+                                          need_hashes, need_heights,
+                                          BDR_MAX_COLLECT);
+            for (size_t i = 0; i < more.count; i++)
+                if (need_heights[i] <= our_height)
+                    duplicate_persisted++;
+            dl_queue_blocks(&dm, need_hashes, need_heights, more.count);
+            batch_len = dl_assign_to_peer(&dm, PEER_B, out_hashes,
+                                          BDR_MAX_COLLECT);
+            batch_off = 0;
+            if (batch_len == 0) break;   /* nothing assignable; real stall */
+        }
+
+        struct uint256 *hh = &out_hashes[batch_off++];
+        struct timespec xfer = { .tv_sec = 0, .tv_nsec = 2 * 1000 * 1000 };
+        nanosleep(&xfer, NULL);   /* simulated LAN body-transfer latency */
+        uint32_t got_peer = dl_mark_received(&dm, hh);
+        if (got_peer != PEER_B) {
+            dl_free(&dm); free(chain); free(hashes);
+            chaos_note(&out->base, "harness defect: post-resume "
+                       "mark_received peer=%u want=%u at h=%d",
+                       got_peer, PEER_B, cur_height + 1);
+            return false;
+        }
+        if (!measured_first) {
+            t_first_progress_us = platform_time_monotonic_us();
+            measured_first = true;
+        }
+        cur_height++;
+        chain[cur_height].nStatus |= BLOCK_HAVE_DATA;
+        dl_add_bytes_received(&dm, 512);
+    }
+
+    uint64_t requested_total = 0;
+    dl_get_stats(&dm, &requested_total, NULL, NULL, NULL, NULL);
+
+    out->chain_len = n;
+    out->persisted_at_disruption = our_height;
+    out->final_height = cur_height;
+    out->requested_total = requested_total;
+    out->duplicate_persisted_requests = duplicate_persisted;
+    out->resume_latency_us = measured_first
+        ? t_first_progress_us - t_assigned_us : -1;
+
+    out->base.ok = true;
+    out->base.recovered = (cur_height == n) && (duplicate_persisted == 0);
+    /* This path never touches the blocker/condition/event escalation
+     * surface — a stalled body fetch is body_fetch_missing_have_data's
+     * typed blocker, not an operator page. */
+    out->base.operator_paged = false;
+    chaos_note(&out->base,
+               "chain=%d baseline=%d disrupted_at=%d final=%d requeued=%zu "
+               "requested_total=%llu duplicates=%llu "
+               "reconnect_decision_us=%lld resume_latency_us=%lld",
+               n, baseline, our_height, cur_height, requeued,
+               (unsigned long long)requested_total,
+               (unsigned long long)duplicate_persisted,
+               (long long)out->reconnect_decision_us,
+               (long long)out->resume_latency_us);
+
+    dl_free(&dm);
+    free(chain);
+    free(hashes);
     return true;
 }
