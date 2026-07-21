@@ -673,6 +673,7 @@ int test_always_sync_chaos(void);
 int test_waitforheight_provable(void);
 int test_refold_progress_floor(void);
 int test_refold_cadence(void);
+int test_catchup_cadence(void);
 int test_refold_premature_clear(void);
 int test_chain_linkage_check(void);
 int test_invariant_sentinel(void);
