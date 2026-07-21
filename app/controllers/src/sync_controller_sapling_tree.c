@@ -36,14 +36,9 @@
 #include <sys/mman.h>
 #include <time.h>
 
-/* The deferred/live rebuild shares the reducer's
- * node_db connection from another thread, so a persist's BEGIN can nest into
- * the reducer's open batch tx (SQLITE_ERROR, un-retryable), spamming on
- * every checkpoint while the rebuild never completes. The primary cure is the
- * autocommit guard in sapling_tree_persist_pair_status; this bounded retry is
- * the residual defense for a genuine cross-connection BUSY/LOCKED. */
-#define SAPLING_TREE_BEGIN_MAX_ATTEMPTS 5
-#define SAPLING_TREE_BEGIN_BACKOFF_MS   60
+/* The BEGIN-retry + atomic (tree-blob, height) persist machinery lives in
+ * sync_controller_sapling_tree_persist.c (enum sapling_persist_status +
+ * sapling_tree_persist_pair_status declared in sync_controller_internal.h). */
 
 /* The FINAL persist bounded-retries a DEFERRED result, yielding between
  * attempts so the reducer can commit its batch and return to autocommit. The
@@ -60,182 +55,6 @@ static bool sapling_header_root_known(const struct block_index *bi)
     static const uint8_t zeros32[32] = {0};
 
     return bi && memcmp(bi->hashFinalSaplingRoot.data, zeros32, 32) != 0;
-}
-
-#ifdef ZCL_TESTING
-/* See controllers/sync_controller.h. 0 = disabled (real node_db_begin runs);
- * >0 = decrementing count of forced-busy attempts; <0 = forced busy forever
- * (stays negative — never reaches 0). */
-static _Atomic int g_sapling_begin_force_busy = 0;
-
-void sapling_tree_rebuild_test_force_begin_busy(int attempts)
-{
-    atomic_store(&g_sapling_begin_force_busy, attempts);
-}
-
-/* Counts persists DEFERRED because the shared node_db connection already held
- * a foreign open tx (the real production failure). Lets a test assert the
- * deferral path actually FIRED, not just "no crash". */
-static _Atomic int g_sapling_persist_deferrals = 0;
-
-int sapling_tree_rebuild_test_persist_deferrals(void)
-{
-    return atomic_load(&g_sapling_persist_deferrals);
-}
-
-void sapling_tree_rebuild_test_reset_persist_deferrals(void)
-{
-    atomic_store(&g_sapling_persist_deferrals, 0);
-}
-#endif
-
-/* Single BEGIN attempt. Returns true + rc=SQLITE_OK on success, false + the
- * sqlite result code on failure. Under ZCL_TESTING the fault-injection counter
- * above can substitute a simulated SQLITE_BUSY without touching the real
- * connection, so the retry/backoff/blocker logic is deterministically tested. */
-static bool sapling_tree_do_begin(struct node_db *ndb, int *rc_out)
-{
-#ifdef ZCL_TESTING
-    int remaining = atomic_load(&g_sapling_begin_force_busy);
-    if (remaining != 0) {
-        if (remaining > 0)
-            atomic_fetch_sub(&g_sapling_begin_force_busy, 1);
-        *rc_out = SQLITE_BUSY;
-        return false;
-    }
-#endif
-    if (node_db_begin(ndb)) {
-        *rc_out = SQLITE_OK;
-        return true;
-    }
-    struct node_db_status st;
-    node_db_get_status(ndb, &st);
-    *rc_out = st.last_sqlite_rc;
-    return false;
-}
-
-/* Bounded retry + linear backoff around node_db_begin() for a GENUINE
- * SQLITE_BUSY/LOCKED — a lock lost to another CONNECTION (e.g. the periodic
- * WAL-checkpoint thread), the one contention class that clears on its own.
- * The nested-BEGIN case (a foreign tx open on THIS connection → SQLITE_ERROR
- * "cannot start a transaction within a transaction", which can NEVER clear by
- * retrying) is filtered out upstream by the sqlite3_get_autocommit() guard in
- * sapling_tree_persist_pair_status, so this loop only ever sees the retryable
- * class. Correct classification depends on node_db_begin now preserving the
- * real rc (app/models/src/database.c). Bounded attempts + name-a-blocker on
- * exhaustion (no log spam); waits only on the CALLING thread, so it cannot
- * block the reducer drive (LOCK-ORDER LAW). */
-static bool sapling_tree_begin_with_retry(struct node_db *ndb, int64_t height)
-{
-    for (int attempt = 1; attempt <= SAPLING_TREE_BEGIN_MAX_ATTEMPTS;
-         attempt++) {
-        int rc = SQLITE_OK;
-        if (sapling_tree_do_begin(ndb, &rc))
-            return true;
-
-        bool busy = (rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
-        bool exhausted = (attempt == SAPLING_TREE_BEGIN_MAX_ATTEMPTS);
-
-        if (!busy || exhausted) {
-            char reason[BLOCKER_REASON_MAX];
-            snprintf(reason, sizeof(reason),
-                    "persist_pair BEGIN failed height=%lld attempt=%d/%d "
-                    "rc=%d (%s)", (long long)height, attempt,
-                    SAPLING_TREE_BEGIN_MAX_ATTEMPTS, rc,
-                    sqlite3_errstr(rc));
-            struct blocker_record rec;
-            if (blocker_init(&rec, "sapling_tree_rebuild.persist_busy",
-                             "sync.sapling_tree_rebuild",
-                             BLOCKER_TRANSIENT, reason))
-                blocker_set(&rec);
-            LOG_WARN("sapling_tree_rebuild", "%s", reason);
-            return false;
-        }
-
-        int64_t backoff_ms = (int64_t)SAPLING_TREE_BEGIN_BACKOFF_MS * attempt;
-        struct timespec ts = {
-            .tv_sec = backoff_ms / 1000,
-            .tv_nsec = (backoff_ms % 1000) * 1000000L,
-        };
-        nanosleep(&ts, NULL);
-    }
-    return false;
-}
-
-/* Tri-state outcome of a persist attempt. DEFERRED is distinct from FAILED:
- * it means "wrote nothing on purpose, retry later" (a foreign open tx owned
- * the connection), NOT a derived-state error — the rebuild loop must not
- * fail-close on it. */
-enum sapling_persist_status {
-    SAPLING_PERSIST_OK = 0,
-    SAPLING_PERSIST_DEFERRED,
-    SAPLING_PERSIST_FAILED,
-};
-
-/* lane/sapling-tree-persist: persist node_state["sapling_tree"] and
- * node_state["sapling_tree_rebuild_height"] as ONE atomic write so a crash
- * can never pair the tree blob with a stale/absent height (the boot-time
- * loader, config/src/boot.c sapling_tree_verify_at_saved_height, trusts that
- * pairing). When the reducer already holds the batch (ndb->sync_in_batch) the
- * pair folds into that outer tx instead of nesting a BEGIN.
- *
- * lane/e3-sapling-rebuild-robust: NEVER nest a BEGIN on a connection that
- * already holds an open tx. The deferred/live rebuild runs on a thread OTHER
- * than the reducer while SHARING the reducer's FULLMUTEX node_db handle; the
- * reducer's batch (sync_controller_blocks.c) keeps a tx open across many
- * blocks. A BEGIN into that live tx returns SQLITE_ERROR "cannot start a
- * transaction within a transaction" — un-retryable while the outer tx lives,
- * the real production failure the old BUSY/LOCKED retry could never clear.
- * ndb->sync_in_batch only tracks the reducer's OWN bookkeeping (and lags a
- * live tx in the begin→flag-set window), so gate the own-BEGIN decision on the
- * ACTUAL connection state via sqlite3_get_autocommit(): a foreign open tx is a
- * transient timing condition, not a state error — DEFER (write nothing) and
- * let the caller retry once the connection returns to autocommit. */
-static enum sapling_persist_status
-sapling_tree_persist_pair_status(struct node_db *ndb,
-                                 const void *blob, size_t blob_len,
-                                 int64_t height)
-{
-    bool own_tx = ndb && !ndb->sync_in_batch;
-    if (own_tx) {
-        if (ndb->db && sqlite3_get_autocommit(ndb->db) == 0) {
-#ifdef ZCL_TESTING
-            atomic_fetch_add(&g_sapling_persist_deferrals, 1);
-#endif
-            LOG_INFO("sapling_tree_rebuild",
-                    "persist_pair: deferring height=%lld — connection holds a "
-                    "foreign open transaction (reducer batch); will retry when "
-                    "it returns to autocommit", (long long)height);
-            return SAPLING_PERSIST_DEFERRED;
-        }
-        if (!sapling_tree_begin_with_retry(ndb, height))
-            return SAPLING_PERSIST_FAILED;
-    }
-
-    bool ok = node_db_state_set(ndb, "sapling_tree", blob, blob_len) &&
-              node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                                    height);
-
-    if (own_tx) {
-        if (ok) {
-            ok = node_db_commit(ndb);
-        } else {
-            node_db_rollback(ndb);
-        }
-    }
-    return ok ? SAPLING_PERSIST_OK : SAPLING_PERSIST_FAILED;
-}
-
-/* Public bool wrapper (unchanged signature — external callers in
- * sync_controller_blocks.c, wallet_rescan_controller_witness.c, and
- * boot_refold_staged.c always persist under their OWN tx / sync_in_batch, so
- * they never hit the DEFERRED branch and OK-vs-not-OK is all they need). */
-bool sapling_tree_persist_pair(struct node_db *ndb,
-                               const void *blob, size_t blob_len,
-                               int64_t height)
-{
-    return sapling_tree_persist_pair_status(ndb, blob, blob_len, height)
-           == SAPLING_PERSIST_OK;
 }
 
 /* ── Supervision (lib/util/include/util/supervisor.h contract) ───────────
@@ -315,6 +134,43 @@ static void sapling_tree_rebuild_raise_fail_blocker(const char *fail_reason,
         blocker_set(&rec);
 }
 
+/* Per-class typed accounting for a block the replay could not fold. The old
+ * code had four SILENT `continue`s (no index / no body / unmappable file /
+ * data-position past the mmap / undeserializable) — a dropped block's shielded
+ * commitments then vanished with ZERO accounting, surfacing only ~100k blocks
+ * later as an opaque tip-root mismatch. This makes every skip a named,
+ * counted event at the EXACT height, so a skipped shielded-output block is
+ * never a silent gap.
+ *
+ * Returns true when the caller MUST fail-closed: when the rebuild endpoint is
+ * the coins-applied frontier, every in-range block has by construction been
+ * APPLIED (body on disk, data position valid), so a skip there is a real local
+ * defect, not a legitimate header-only tail — name it and stop AT the block.
+ * When the endpoint is the header tip (legacy/no coins frontier), a header-only
+ * tail block genuinely has no body to fold; the skip is TOLERATED (counted +
+ * throttled-logged), and the denser per-block root check below still catches
+ * any skip that actually dropped commitments, at its exact height. */
+static bool sapling_rebuild_account_skip(const char *reason_tag, int h,
+                                         bool fatal, int *counter,
+                                         int *first_skip_h, int *last_skip_h)
+{
+    (*counter)++;
+    if (*first_skip_h < 0)
+        *first_skip_h = h;
+    *last_skip_h = h;
+    /* Throttle: log the first of each class, then every 512th, so a wide
+     * header-only tail cannot spam node.log while a lone defect is still
+     * always surfaced. */
+    if (fatal || *counter == 1 || (*counter % 512) == 0)
+        LOG_WARN("sapling_tree_rebuild",
+                 "shielded verify: block h=%d skipped — reason=%s "
+                 "(class_count=%d)%s", h, reason_tag, *counter,
+                 fatal ? " [fail-closed: endpoint is coins-applied frontier, "
+                         "every in-range block must have a foldable body]"
+                       : " [tolerated: header-tip endpoint]");
+    return fatal;
+}
+
 int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir)
@@ -342,6 +198,12 @@ int sapling_tree_rebuild(struct node_db *ndb,
      * already skips header-only (non-HAVE_DATA) blocks (see :BLOCK_HAVE_DATA
      * check below), so the existing legacy-resume behavior is preserved. */
     int chain_tip = header_tip;
+    /* When the endpoint is the coins-applied frontier, every block in
+     * [sapling_height, chain_tip] has been APPLIED — its body is on disk and
+     * its data position is valid — so a per-block skip (below) is a real local
+     * defect worth failing-closed AT that height, not a legitimate header-only
+     * tail. Stays false for the legacy/header-tip endpoint. */
+    bool endpoint_is_coins_applied = false;
     {
         int32_t coins_best = -1;
         if (reducer_frontier_derive_coins_best_now(&coins_best, NULL, NULL)
@@ -350,6 +212,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
                      "sapling_tree_rebuild: capping endpoint to coins-applied "
                      "height %d (header tip %d)", coins_best, header_tip);
             chain_tip = coins_best;
+            endpoint_is_coins_applied = true;
         }
     }
 
@@ -371,6 +234,16 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int start_height = sapling_height;
     const char *fail_reason = NULL;
     int fail_height = -1;
+
+    /* Typed skip accounting — one counter per class so a dropped-block gap is
+     * never silent (see sapling_rebuild_account_skip). */
+    int skipped_no_index = 0;
+    int skipped_no_data = 0;
+    int skipped_no_mmap = 0;
+    int skipped_datapos_oob = 0;
+    int skipped_deserialize = 0;
+    int first_skip_height = -1;
+    int last_skip_height = -1;
 
     /* Try to resume from a persisted checkpoint to avoid replaying
      * 2.6M blocks on every crash recovery. Two candidates, most
@@ -495,18 +368,58 @@ int sapling_tree_rebuild(struct node_db *ndb,
             }
         }
         const struct block_index *bi = active_chain_at(chain, h);
-        if (!bi) continue;
-        if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
+        if (!bi) {
+            if (sapling_rebuild_account_skip("no_index", h,
+                    endpoint_is_coins_applied, &skipped_no_index,
+                    &first_skip_height, &last_skip_height)) {
+                fail_reason = "shielded_verify_skip_no_index";
+                fail_height = h;
+                goto fail;
+            }
+            continue;
+        }
+        if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
+            if (sapling_rebuild_account_skip("no_data", h,
+                    endpoint_is_coins_applied, &skipped_no_data,
+                    &first_skip_height, &last_skip_height)) {
+                fail_reason = "shielded_verify_skip_no_data";
+                fail_height = h;
+                goto fail;
+            }
+            continue;
+        }
 
         if (bi->nFile != cached_file) {
             if (cached_data) munmap(cached_data, cached_size);
             cached_data = sync_controller_mmap_block_file(datadir, bi->nFile,
                                                           &cached_size);
             cached_file = cached_data ? bi->nFile : -1;
-            if (!cached_data) continue;
+            if (!cached_data) {
+                if (sapling_rebuild_account_skip("no_mmap", h,
+                        endpoint_is_coins_applied, &skipped_no_mmap,
+                        &first_skip_height, &last_skip_height)) {
+                    fail_reason = "shielded_verify_skip_no_mmap";
+                    fail_height = h;
+                    goto fail;
+                }
+                continue;
+            }
         }
 
-        if (bi->nDataPos >= cached_size) continue;
+        if (bi->nDataPos >= cached_size) {
+            /* Data position past the mapped size: the block file was still
+             * growing when it was mmap'd (stale cached_size), or the recorded
+             * position is corrupt. This is the leading suspect for a
+             * final-window drop on an actively-appended latest block file. */
+            if (sapling_rebuild_account_skip("datapos_out_of_range", h,
+                    endpoint_is_coins_applied, &skipped_datapos_oob,
+                    &first_skip_height, &last_skip_height)) {
+                fail_reason = "shielded_verify_skip_datapos_out_of_range";
+                fail_height = h;
+                goto fail;
+            }
+            continue;
+        }
 
         struct block blk;
         block_init(&blk);
@@ -515,20 +428,56 @@ int sapling_tree_rebuild(struct node_db *ndb,
         stream_init_from_data(&s, cached_data + bi->nDataPos, remaining);
         if (!block_deserialize(&blk, &s)) {
             block_free(&blk);
+            if (sapling_rebuild_account_skip("deserialize_failed", h,
+                    endpoint_is_coins_applied, &skipped_deserialize,
+                    &first_skip_height, &last_skip_height)) {
+                fail_reason = "shielded_verify_skip_deserialize_failed";
+                fail_height = h;
+                goto fail;
+            }
             continue;
         }
 
+        int appended_this_block = 0;
         for (size_t i = 0; i < blk.num_vtx; i++) {
             const struct transaction *tx = &blk.vtx[i];
             for (size_t j = 0; j < tx->num_shielded_output; j++) {
                 incremental_tree_append(&tree,
                     &tx->v_shielded_output[j].cm);
                 total_commitments++;
+                appended_this_block++;
             }
         }
 
         bool is_checkpoint = ((h - sapling_height) % 100000 == 0 &&
                               h > sapling_height);
+
+        /* Denser root check — mirror the LIVE fold's per-block cadence
+         * (app/jobs/src/utxo_apply_anchors.c fold_sapling:180): whenever a
+         * block CHANGED the tree, the post-append incremental root MUST equal
+         * that block's committed hashFinalSaplingRoot. Verifying at every such
+         * block (not only on the sparse 100k grid + final tip) localizes a
+         * divergence to the EXACT block that introduced it — a dropped/missing
+         * leaf is caught at its height, not up to 99,999 blocks later at the
+         * tip. Compare against the BLOCK-INDEX root (bi->hashFinalSaplingRoot),
+         * the same authoritative, node-validated source the final tip check
+         * uses (:tip below) and the same value the gate just tested — NOT the
+         * re-read on-disk block-body header, which the node never independently
+         * validated here. Skip checkpoint heights: the existing checkpoint
+         * verify below already covers them (no double count). Detection only —
+         * the append order/tree math and what is accepted as valid are
+         * unchanged. */
+        if (!is_checkpoint && appended_this_block > 0 &&
+            sapling_header_root_known(bi)) {
+            struct uint256 computed;
+            incremental_tree_root(&tree, &computed);
+            if (!uint256_eq(&computed, &bi->hashFinalSaplingRoot)) {
+                mismatches++;
+                fail_reason = "intermediate_sapling_root_mismatch";
+                fail_height = h;
+            }
+        }
+
         if (is_checkpoint) {
             struct uint256 computed;
             incremental_tree_root(&tree, &computed);
@@ -583,6 +532,24 @@ int sapling_tree_rebuild(struct node_db *ndb,
         munmap(cached_data, cached_size);
         cached_data = NULL;
         cached_size = 0;
+    }
+
+    int total_skipped = skipped_no_index + skipped_no_data + skipped_no_mmap +
+                        skipped_datapos_oob + skipped_deserialize;
+    if (total_skipped > 0) {
+        /* Never silent: even a tolerated header-tip-tail skip is summarized so
+         * an operator can see exactly how many blocks — and of which class —
+         * were not folded, and over what height span. On the coins-applied
+         * endpoint total_skipped is always 0 here (any skip already
+         * fail-closed at its height above). */
+        LOG_WARN("sapling_tree_rebuild",
+                "sapling_tree_rebuild: skip summary total=%d "
+                "no_index=%d no_data=%d no_mmap=%d datapos_oob=%d "
+                "deserialize=%d span=[%d..%d] endpoint=%s",
+                total_skipped, skipped_no_index, skipped_no_data,
+                skipped_no_mmap, skipped_datapos_oob, skipped_deserialize,
+                first_skip_height, last_skip_height,
+                endpoint_is_coins_applied ? "coins_applied" : "header_tip");
     }
 
     /* Verify against the RESOLVED endpoint (the coins-applied frontier, or the
@@ -692,6 +659,24 @@ fail:
     if (cached_data) munmap(cached_data, cached_size);
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_child_complete(sup_id);
+    /* Root-cause aid: a tip/intermediate root mismatch is very often the
+     * downstream shadow of an earlier dropped block. Emit the skip tally next
+     * to the fail-closed reason so the exact class + height span that dropped
+     * commitments is visible without a second run. */
+    {
+        int fail_skipped = skipped_no_index + skipped_no_data +
+                           skipped_no_mmap + skipped_datapos_oob +
+                           skipped_deserialize;
+        if (fail_skipped > 0)
+            LOG_WARN("sapling_tree_rebuild",
+                    "sapling_tree_rebuild: at fail — %d block(s) were skipped "
+                    "(no_index=%d no_data=%d no_mmap=%d datapos_oob=%d "
+                    "deserialize=%d span=[%d..%d]); a dropped shielded-output "
+                    "block below the mismatch height is the leading cause",
+                    fail_skipped, skipped_no_index, skipped_no_data,
+                    skipped_no_mmap, skipped_datapos_oob, skipped_deserialize,
+                    first_skip_height, last_skip_height);
+    }
     sapling_tree_rebuild_raise_fail_blocker(fail_reason, fail_height,
                                             total_commitments, mismatches);
     LOG_ERR("sapling_tree_rebuild",

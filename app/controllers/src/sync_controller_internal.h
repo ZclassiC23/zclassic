@@ -101,4 +101,24 @@ uint8_t *sync_controller_mmap_block_file(const char *datadir,
                                          int file_num,
                                          size_t *out_size);
 
+/* ── Sapling-tree persist (definitions in sync_controller_sapling_tree_persist.c) ──
+ * Tri-state outcome of a persist attempt. DEFERRED is distinct from FAILED:
+ * it means "wrote nothing on purpose, retry later" (a foreign open tx owned
+ * the connection), NOT a derived-state error — the rebuild loop must not
+ * fail-close on it. */
+enum sapling_persist_status {
+    SAPLING_PERSIST_OK = 0,
+    SAPLING_PERSIST_DEFERRED,
+    SAPLING_PERSIST_FAILED,
+};
+
+/* Persist node_state["sapling_tree"] + ["sapling_tree_rebuild_height"] as ONE
+ * atomic write. Shared between the rebuild replay (sync_controller_sapling_tree.c)
+ * and the public bool wrapper. See the definition for the DEFERRED/BEGIN-nesting
+ * contract. */
+enum sapling_persist_status
+sapling_tree_persist_pair_status(struct node_db *ndb,
+                                 const void *blob, size_t blob_len,
+                                 int64_t height);
+
 #endif
