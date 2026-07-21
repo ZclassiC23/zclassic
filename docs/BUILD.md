@@ -302,6 +302,26 @@ exact candidate is linked under `build/bin/test-strict/epochs/`. Consequences:
   warm cache rebuilds in a few seconds. `ccache` stays optional (auto-detected
   via `ZCL_USE_CCACHE`); everything works without it, just slower on the first
   build.
+- **The cache is already cross-worktree, not just cross-edit.** `CFLAGS`
+  unconditionally carries `REPRO_CFLAGS`
+  (`-ffile-prefix-map=$(CURDIR)=$(ZCL_REPRO_ROOT)`, default
+  `ZCL_REPRO_ROOT=/zclassic23`), which was added for build-host determinism
+  but has a second effect: it makes every compiled object byte-identical
+  regardless of which worktree's absolute path produced it, and ccache 4.x
+  recognizes the prefix map and keys its cache on the mapped (worktree-
+  independent) path rather than the real `$(CURDIR)`. Measured on this host
+  (two real `git worktree`s, one shared `ccache` dir, `build-only`): a second
+  worktree building identical source after a first worktree's cold build got
+  1118/1119 objects served from cache (99.91%) — spot-checked object files
+  came back byte-for-byte identical (`sha256sum`) to the first worktree's. The
+  one designed miss is `lib/util/src/clientversion.o`, which intentionally
+  gets the real per-build identity stamp appended
+  (`BUILD_ONLY_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)`) and so is never
+  cacheable across builds. No extra flag or opt-in is needed to get this — a
+  fleet of parallel worktree agents building the same or overlapping source
+  already shares one compile cache for free. Do **not** disable
+  `-ffile-prefix-map` or point `ZCL_REPRO_ROOT` at a per-worktree path; either
+  change would silently turn this back into a per-worktree-only cache.
 
 **Flag profile.** The cached objects use the identical release flags of the old
 whole-program `test_parallel` (`-O3 -Werror -pedantic`, the hardening flags,
