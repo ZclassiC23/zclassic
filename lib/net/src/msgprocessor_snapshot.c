@@ -50,12 +50,14 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/sync.h"
+#include "util/blocker.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
 #include "core/random.h"
 #include "crypto/sha3.h"
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -644,6 +646,48 @@ void mp_snapshot_init(struct msg_processor *mp)
     }
 }
 
+/* D1: aggregate SHA3 UTXO-snapshot verify for the swarm chunk-download
+ * path. Was previously a silent-accept: FAILED printed, then fell
+ * through into the same cleanup as PASSED (no offence, no blocker) —
+ * invisible to the self-healing safety net. Advisory layer only
+ * (background validation independently re-verifies block contents), so
+ * the already-applied rows stay; a mismatch now scores the peer, names
+ * a retry-forever DEPENDENCY blocker, and reports NOT complete. */
+static bool msg_swarm_utxo_sha3_verify(struct msg_processor *mp,
+                                       struct p2p_node *node,
+                                       const uint8_t local_root[32],
+                                       const uint8_t expected_root[32],
+                                       uint64_t local_count)
+{
+    if (memcmp(local_root, expected_root, 32) == 0) {
+        printf("SHA3 UTXO verification: PASSED "
+               "(%lu UTXOs)\n", (unsigned long)local_count);
+        return true;
+    }
+    LOG_WARN("net",
+             "Peer %s: swarm UTXO snapshot SHA3 mismatch (local_count=%"
+             PRIu64 ") — data corrupted or manifest root inconsistent "
+             "with its own chunk hashes; sync NOT complete",
+             node->addr_name, (uint64_t)local_count);
+    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
+                        "swarm snapshot SHA3 verification failed");
+    blocker_name_dependency(
+        "snapshot_sync.utxo_sha3_mismatch", "msgprocessor_snapshot",
+        "swarm UTXO snapshot aggregate SHA3 mismatch: applied chunk "
+        "range is untrusted, sync did not complete");
+    return false;
+}
+
+bool msgprocessor_test_swarm_utxo_sha3_verify(struct msg_processor *mp,
+                                              struct p2p_node *node,
+                                              const uint8_t local_root[32],
+                                              const uint8_t expected_root[32],
+                                              uint64_t local_count)
+{
+    return msg_swarm_utxo_sha3_verify(mp, node, local_root, expected_root,
+                                      local_count);
+}
+
 /* ── ZCL23 Sync Message Handler ──────────────────────────────────
  * Handles all snapshot, chunk, block-piece, and FlyClient messages.
  * These share complex state (g_swarm, g_block_swarm) and are kept
@@ -1185,9 +1229,9 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                    g_swarm.chunks_complete,
                                    g_swarm.manifest.num_chunks);
 
-                            /* Verify SHA3 UTXO commitment matches the
-                             * snapshot offer's root hash. This catches
-                             * any data corruption during transfer. */
+                            /* Verify SHA3 UTXO commitment vs the
+                             * manifest root — see msg_swarm_utxo_sha3_verify
+                             * (D1) for the mismatch reaction. */
                             if (mp->utxo_sha3_compute) {
                                 uint8_t local_root[32];
                                 uint64_t local_count = 0;
@@ -1201,18 +1245,15 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                                (const uint8_t[32]){0}, 32) == 0)
                                         expected_root =
                                             g_swarm.manifest.merkle_root;
-                                    if (memcmp(local_root, expected_root,
-                                               32) == 0) {
-                                        printf("SHA3 UTXO verification: PASSED "
-                                               "(%lu UTXOs)\n",
-                                               (unsigned long)local_count);
-                                    } else {
-                                        printf("SHA3 UTXO verification: FAILED "
-                                               "— snapshot data corrupted!\n");
-                                    }
+                                    (void)msg_swarm_utxo_sha3_verify(
+                                        mp, node, local_root, expected_root,
+                                        local_count);
                                 }
                             }
 
+                            /* Release the claim regardless of verify
+                             * outcome so a future manifest can retry —
+                             * not a declaration of trustworthiness. */
                             swarm_sync_free(&g_swarm);
                             /* explicit atomic_store for symmetry with
                              * the CAS at the init site. Functionally

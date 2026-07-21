@@ -7,6 +7,7 @@
 #include "models/database.h"
 #include "event/event.h"
 #include "framework/condition.h"
+#include "util/blocker.h"
 
 #include <sqlite3.h>
 #include <string.h>
@@ -112,12 +113,35 @@ static int test_utxo_drift_condition_escalates_and_clears(void)
         condition_engine_reset_for_testing();
         utxo_drift_detected_test_reset();
         utxo_drift_detected_test_set_node_db(&ndb);
+        blocker_module_init();
+        blocker_reset_for_testing();
         register_utxo_drift_detected();
         condition_engine_tick();
 
         ASSERT(utxo_drift_detected_test_remedy_calls() == 1);
         ASSERT(condition_engine_get_active_count() == 1);
         ASSERT(condition_engine_get_unresolved_count() == 1);
+
+        /* B2: the remedy is a deliberate no-op (never auto-run a
+         * destructive wipe/reimport) but must still surface a named,
+         * typed blocker so blocker_stall_meta_detector / `dumpstate
+         * blocker` can see the unresolved drift instead of it being
+         * invisible to the safety net. */
+        ASSERT(blocker_exists("utxo.parity_bh_drift"));
+        struct blocker_snapshot snaps[16];
+        int n = blocker_snapshot_all(snaps, 16);
+        bool found = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "utxo.parity_bh_drift") == 0) {
+                found = true;
+                ASSERT(snaps[i].class == BLOCKER_DEPENDENCY);
+                ASSERT(snaps[i].retry_budget == -1);
+                ASSERT(strcmp(snaps[i].owner_subsystem,
+                             "utxo_drift_detected") == 0);
+                break;
+            }
+        }
+        ASSERT(found);
 
         ASSERT(node_db_state_set_int(&ndb, "utxo_drift_detected", 0));
         condition_engine_tick();
@@ -126,6 +150,7 @@ static int test_utxo_drift_condition_escalates_and_clears(void)
 
         condition_engine_reset_for_testing();
         utxo_drift_detected_test_reset();
+        blocker_reset_for_testing();
         node_db_close(&ndb);
         unlink(path);
         PASS();

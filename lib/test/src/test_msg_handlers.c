@@ -23,6 +23,7 @@
 #include "primitives/block.h"
 #include "sync/sync_state.h"
 #include "util/safe_alloc.h"
+#include "util/blocker.h"
 #include "validation/main_state.h"
 
 #include <stdio.h>
@@ -768,6 +769,106 @@ static int test_msg_process_messages_yields_after_bounded_batch(void)
     return failures;
 }
 
+/* ── D1: swarm aggregate SHA3 UTXO-snapshot mismatch is NOT a
+ * silent-accept ───────────────────────────────────────────────────
+ *
+ * lib/net/src/msgprocessor_snapshot.c's swarm chunk-download path used
+ * to print "SHA3 UTXO verification: FAILED" on an aggregate-root
+ * mismatch and then fall straight through into the exact same cleanup
+ * as a PASSED verify — no peer_scoring_record, no blocker, no record
+ * that the sync did not complete trustworthily. These tests pin the
+ * fix via msgprocessor_test_swarm_utxo_sha3_verify: PASSED records
+ * nothing and returns true; a mismatch records PEER_OFFENCE_INVALID_PROOF,
+ * names the "snapshot_sync.utxo_sha3_mismatch" typed DEPENDENCY blocker,
+ * and returns false (sync NOT complete). */
+
+static int test_swarm_utxo_sha3_verify_passed_is_quiet(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: swarm UTXO SHA3 verify PASSED records nothing, "
+         "returns true") {
+        blocker_module_init();
+        blocker_reset_for_testing();
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 601);
+
+        uint8_t root[32];
+        memset(root, 0x42, sizeof(root));
+
+        bool ok = msgprocessor_test_swarm_utxo_sha3_verify(
+            &mp, &node, root, root, 12345);
+
+        ASSERT(ok);
+        ASSERT(atomic_load(&node.misbehavior) == 0);
+        ASSERT(!blocker_exists("snapshot_sync.utxo_sha3_mismatch"));
+
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_swarm_utxo_sha3_verify_mismatch_is_not_silent(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: swarm UTXO SHA3 mismatch scores the peer, names "
+         "a typed blocker, and reports sync NOT complete") {
+        blocker_module_init();
+        blocker_reset_for_testing();
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 602);
+
+        uint8_t local_root[32];
+        uint8_t expected_root[32];
+        memset(local_root, 0x11, sizeof(local_root));
+        memset(expected_root, 0x99, sizeof(expected_root));
+
+        bool ok = msgprocessor_test_swarm_utxo_sha3_verify(
+            &mp, &node, local_root, expected_root, 999);
+
+        /* Sync must NOT be reported complete on a mismatch. */
+        ASSERT(!ok);
+
+        /* Peer offence recorded — PEER_OFFENCE_INVALID_PROOF weight. */
+        ASSERT_EQ(atomic_load(&node.misbehavior),
+                  peer_offence_weight(PEER_OFFENCE_INVALID_PROOF));
+
+        /* Typed blocker named — visible to dumpstate blocker / the
+         * blocker_stall_meta_detector safety net, not invisible. */
+        ASSERT(blocker_exists("snapshot_sync.utxo_sha3_mismatch"));
+        struct blocker_snapshot snaps[16];
+        int n = blocker_snapshot_all(snaps, 16);
+        bool found = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, "snapshot_sync.utxo_sha3_mismatch") == 0) {
+                found = true;
+                ASSERT(snaps[i].class == BLOCKER_DEPENDENCY);
+                ASSERT(snaps[i].retry_budget == -1);
+                break;
+            }
+        }
+        ASSERT(found);
+
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────── */
 
 int test_msg_handlers(void);
@@ -796,6 +897,8 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_queues_reducer_during_catchup();
     failures += test_msg_block_intake_full_stays_retryable();
     failures += test_msg_process_messages_yields_after_bounded_batch();
+    failures += test_swarm_utxo_sha3_verify_passed_is_quiet();
+    failures += test_swarm_utxo_sha3_verify_mismatch_is_not_silent();
 
     return failures;
 }
