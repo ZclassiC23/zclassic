@@ -1239,5 +1239,49 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman seed discovery: hardcoded fixed seeds load into addrman, "
+           "onion bootstrap is a safe no-op without Tor... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        /* NULL-safety: neither entry point may crash on an unwired call. */
+        connman_kick_seed_discovery(NULL);
+        connman_kick_onion_seeds(NULL);
+
+        ok = ok && addrman_size(&cm.manager.addrman) == 0;
+
+        /* connman_kick_seed_discovery re-adds the compiled hardcoded fixed
+         * seeds (in-memory only, no I/O) and re-resolves DNS seeds (a no-op
+         * on mainnet today: nSeeds == 0 — see chainparams.c's DNS-seeders
+         * comment). This is the fresh-node "hardcoded seed set" path a
+         * genuinely offline/DNS-less node falls back to. (nFixedSeeds
+         * double-books each hardcoded IP under two ports — see chainparams.c
+         * — and addrman's address index keys on IP alone, so the landed
+         * entry count is <= nFixedSeeds, not equal to it.) */
+        connman_kick_seed_discovery(&cm);
+        size_t after_fixed = addrman_size(&cm.manager.addrman);
+        ok = ok && params->nFixedSeeds > 0;
+        ok = ok && after_fixed > 0 && after_fixed <= (size_t)params->nFixedSeeds;
+
+        /* connman_kick_onion_seeds is the operator/peer-of-last-resort
+         * remedy for the /directory.json onion-directory bootstrap
+         * (app/conditions/src/peer_floor_violated.c). Without Tor
+         * bootstrapped (the default state here) it must be a safe,
+         * addrman-preserving no-op — never a crash, never a partial write. */
+        ok = ok && !tor_integration_is_ready();
+        connman_kick_onion_seeds(&cm);
+        ok = ok && addrman_size(&cm.manager.addrman) == after_fixed;
+
+        connman_free(&cm);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

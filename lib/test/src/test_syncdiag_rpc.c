@@ -8768,6 +8768,125 @@ syncdiag_net_split_done:
         connman_free(&cm);
     }
 
+    printf("dumpstate connman/addrman: previously \"unknown subsystem\", "
+           "now direct P2P plumbing visibility on a minimal fixture... ");
+    {
+        /* ── Part 1: nothing wired — must still be a well-formed object,
+         * never crash, and every counter that depends on a live connman
+         * reads back as absent/zero rather than fabricated. */
+        rpc_net_set_connman(NULL);
+
+        struct json_value cm_result = {0};
+        bool ok = connman_diag_dump_state_json(&cm_result, NULL);
+        ok = ok && cm_result.type == JSON_OBJ;
+        ok = ok && json_get(&cm_result, "wired") &&
+            !json_get_bool(json_get(&cm_result, "wired"));
+        ok = ok && json_get(&cm_result, "outbound") == NULL;
+        json_free(&cm_result);
+
+        struct json_value am_result = {0};
+        ok = ok && addrman_diag_dump_state_json(&am_result, NULL);
+        ok = ok && am_result.type == JSON_OBJ;
+        ok = ok && json_get(&am_result, "wired") &&
+            !json_get_bool(json_get(&am_result, "wired"));
+        ok = ok && json_get(&am_result, "size") == NULL;
+        json_free(&am_result);
+
+        /* ── Part 2: a freshly-initialized connman with zero peers and an
+         * empty addrman wired in — "connman"/"addrman" flip wired=true and
+         * report real (zero) counts, not sentinels. */
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        chain_params_select(CHAIN_MAIN);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        rpc_net_set_connman(&cm);
+
+        struct json_value cm_result2 = {0};
+        ok = ok && connman_diag_dump_state_json(&cm_result2, NULL);
+        ok = ok && json_get(&cm_result2, "wired") &&
+            json_get_bool(json_get(&cm_result2, "wired"));
+
+        const struct json_value *ob = json_get(&cm_result2, "outbound");
+        ok = ok && ob && ob->type == JSON_OBJ &&
+            json_get(ob, "total") && json_get_int(json_get(ob, "total")) == 0;
+
+        const struct json_value *ib = json_get(&cm_result2, "inbound");
+        ok = ok && ib && ib->type == JSON_OBJ &&
+            json_get(ib, "total") && json_get_int(json_get(ib, "total")) == 0;
+
+        /* addnode ledger: a fresh connman has no addnodes, and the
+         * per-index "entries" array is present but empty. */
+        const struct json_value *an = json_get(&cm_result2, "addnode");
+        ok = ok && an && an->type == JSON_OBJ &&
+            json_get(an, "count") && json_get_int(json_get(an, "count")) == 0 &&
+            json_get(an, "retirements_total") &&
+            json_get_int(json_get(an, "retirements_total")) == 0;
+        const struct json_value *an_entries = an ? json_get(an, "entries")
+                                                  : NULL;
+        ok = ok && an_entries && an_entries->type == JSON_ARR &&
+            json_size(an_entries) == 0;
+
+        /* reactor + message_cycle + floor + addrman_summary + dial_outcomes
+         * sections are all present (rollups of existing owners — never
+         * absent just because the node is idle). */
+        ok = ok && json_get(&cm_result2, "reactor") != NULL;
+        ok = ok && json_get(&cm_result2, "message_cycle") != NULL;
+        ok = ok && json_get(&cm_result2, "floor") != NULL;
+        const struct json_value *am_sum = json_get(&cm_result2,
+                                                    "addrman_summary");
+        ok = ok && am_sum && json_get(am_sum, "size") &&
+            json_get_int(json_get(am_sum, "size")) == 0;
+        ok = ok && json_get(&cm_result2, "dial_outcomes") != NULL;
+        json_free(&cm_result2);
+
+        struct json_value am_result2 = {0};
+        ok = ok && addrman_diag_dump_state_json(&am_result2, NULL);
+        ok = ok && json_get(&am_result2, "wired") &&
+            json_get_bool(json_get(&am_result2, "wired"));
+        ok = ok && json_get(&am_result2, "size") &&
+            json_get_int(json_get(&am_result2, "size")) == 0;
+        ok = ok && json_get(&am_result2, "new_count") &&
+            json_get_int(json_get(&am_result2, "new_count")) == 0;
+        ok = ok && json_get(&am_result2, "tried_count") &&
+            json_get_int(json_get(&am_result2, "tried_count")) == 0;
+        ok = ok && json_get(&am_result2, "buckets") != NULL;
+        ok = ok && json_get(&am_result2, "address_index") != NULL;
+        const struct json_value *cand = json_get(&am_result2, "candidates");
+        ok = ok && cand && json_get(cand, "live") &&
+            json_get_int(json_get(cand, "live")) == 0 &&
+            json_get(cand, "dead") &&
+            json_get_int(json_get(cand, "dead")) == 0;
+        json_free(&am_result2);
+
+        /* Seed the hardcoded fixed seeds (offline, no network I/O) so
+         * addrman's real fields flip off zero and the two subsystems agree
+         * with each other on the resulting size. */
+        connman_kick_seed_discovery(&cm);
+        size_t seeded = addrman_size(&cm.manager.addrman);
+        ok = ok && seeded > 0;
+
+        struct json_value cm_result3 = {0};
+        ok = ok && connman_diag_dump_state_json(&cm_result3, NULL);
+        const struct json_value *am_sum3 = json_get(&cm_result3,
+                                                     "addrman_summary");
+        ok = ok && am_sum3 && json_get(am_sum3, "size") &&
+            (size_t)json_get_int(json_get(am_sum3, "size")) == seeded;
+        json_free(&cm_result3);
+
+        struct json_value am_result3 = {0};
+        ok = ok && addrman_diag_dump_state_json(&am_result3, NULL);
+        ok = ok && json_get(&am_result3, "size") &&
+            (size_t)json_get_int(json_get(&am_result3, "size")) == seeded;
+        json_free(&am_result3);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+        rpc_net_set_connman(NULL);
+        connman_free(&cm);
+    }
+
     /* ── mvp scoreboard (schema zcl.mvp_status.v1) ──────────────────────
      * The reporter's classifier is a PURE function over struct mvp_evidence,
      * so seed known evidence and assert the eight criteria classify as

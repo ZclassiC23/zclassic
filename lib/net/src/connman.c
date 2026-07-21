@@ -258,6 +258,14 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
         return;
     }
 
+    /* Fallback when a directory response omits/malforms clearnet_port —
+     * the advertising node's OWN configured P2P port, not a literal that
+     * silently assumes mainnet. */
+    uint16_t default_port = (cm->params && cm->params->nDefaultPort > 0 &&
+                             cm->params->nDefaultPort <= 65535)
+                                ? (uint16_t)cm->params->nDefaultPort
+                                : 8033;
+
     /* Parse minimal JSON: extract clearnet_ip and clearnet_port fields */
     const char *p = (const char *)result.body;
     int added = 0;
@@ -274,11 +282,11 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
         p = end + 1;
 
         /* Find clearnet_port */
-        uint16_t port = 8033;
+        uint16_t port = default_port;
         const char *pp = strstr(p, "\"clearnet_port\":");
         if (pp && pp - p < 50) {
             port = (uint16_t)atoi(pp + 16);
-            if (port == 0) port = 8033;
+            if (port == 0) port = default_port;
         }
 
         /* Add to address manager */
@@ -413,42 +421,20 @@ static void *thread_dns_seed(void *arg)
         }
     }
 
-    /* Also try operator-curated + hardcoded onion seeds if Tor is
-     * ready and few peers. Operator file at ~/.config/zclassic23/
-     * onion-seeds (one .onion per line, # comments allowed) is loaded
-     * first, then the chainparams fallback seeds. */
-    if (!g_stop && cm->manager.num_nodes < 3) {
-        if (tor_integration_is_ready()) {
-            char buf[32][96];
-            int n_seeds = 0;
-            const char *home = getenv("HOME");
-            if (home) {
-                char path[512];
-                snprintf(path, sizeof(path),
-                         "%s/.config/zclassic23/onion-seeds", home);
-                FILE *fp = fopen(path, "re");
-                if (fp) {
-                    char line[256];
-                    while (n_seeds < 32 && fgets(line, sizeof(line), fp)) {
-                        char *p = line;
-                        while (*p == ' ' || *p == '\t') p++;
-                        if (*p == '#' || *p == '\n' || *p == '\0') continue;
-                        char *end = strpbrk(p, " \t\r\n#");
-                        if (end) *end = '\0';
-                        if (strstr(p, ".onion")) {
-                            snprintf(buf[n_seeds], sizeof(buf[0]), "%s", p);
-                            n_seeds++;
-                        }
-                    }
-                    fclose(fp);
-                }
-            }
-            for (int i = 0; i < n_seeds && !g_stop; i++)
-                try_onion_seed_fetch(cm, buf[i]);
-            for (size_t i = 0; i < cm->params->nOnionSeeds && !g_stop; i++)
-                try_onion_seed_fetch(cm, cm->params->onionSeeds[i]);
-        }
-    }
+    /* Onion-directory bootstrap: operator-curated seeds
+     * (~/.config/zclassic23/onion-seeds), then the chainparams onionSeeds,
+     * then any .onion peers the ZSLP scan above found — the SAME
+     * run_onion_seed_pass() the below-floor retry loop and the operator
+     * peer-of-last-resort remedy (connman_kick_onion_seeds()) both use, so
+     * the boot path can never drift from either of them. (Previously this
+     * block re-implemented its own copy of the operator-file + chainparams
+     * loop inline; consolidated so a future seed-source change only needs
+     * one edit.) run_onion_seed_pass() checks tor_integration_is_ready()
+     * and g_stop/g_connect_only itself. Gated on "few peers" so a fresh
+     * boot that already found peers via DNS/fixed seeds skips the
+     * (up to 60s-per-seed, blocking) Tor round-trips. */
+    if (!g_stop && cm->manager.num_nodes < 3)
+        run_onion_seed_pass(cm);
 
     /* If still no peers after 15s, retry everything */
     sleep(12);
