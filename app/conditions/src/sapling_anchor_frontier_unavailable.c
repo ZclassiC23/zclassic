@@ -41,17 +41,35 @@
  *
  * NAMED REMEDY (not seed-curable): SAPLING_ANCHOR_GAP_HISTORICAL (rows exist,
  * a specific below-cursor root is absent) and/or a standalone nullifier gap
- * (utxo_apply.nullifier_backfill_gap) are the exact wedge
- * `-import-complete-shielded` (app/services/src/shielded_history_import_service.c)
- * exists to clear.  This condition does NOT run tier1/1b/2 for that class —
- * seeding a single frontier row cannot supply a full historical anchor+
- * nullifier set.  Instead it surfaces the SAME structured, contained recipe
- * `shielded_gap_remedy_controller.c` reports (owner-run import + copy-prove
- * step) on this condition's own typed detect/remedy/detail surface, and NEVER
- * executes anything — containment is asserted, not just documented (see
- * remedy_named_gap()).  The witness for this class requires BOTH the named
- * blocker(s) clearing AND H* climbing past the stall height, so a stray tick
- * cannot be mistaken for the operator having actually run the cure.
+ * (utxo_apply.nullifier_backfill_gap).  Seeding a single frontier row cannot
+ * supply a full historical anchor+nullifier set, so tier1/1b/2 do NOT apply.
+ * Instead the remedy dispatches to the SOVEREIGN self-heal ladder (Move 2a,
+ * shielded_selfheal_run_named_remedy in shielded_selfheal_ladder.c) — a
+ * bounded, self-terminating, auto-executing 3-rung ladder that RE-DERIVES
+ * proven state (Rung A) or CHECKPOINT-verifies (Rung B) or NAMES the exact
+ * need (Rung C); it never forges, borrows-unverified, or relaxes a check (see
+ * the ladder contract in sapling_anchor_frontier_unavailable.h and Move 2a):
+ *   Rung A — sovereign re-derive from LOCAL block bodies (preferred): the
+ *            in-process nullifier_backfill_service_run() populate-only walker
+ *            for a standalone nullifier gap, or the from-anchor/genesis refold
+ *            (arm + supervised respawn) that recomputes the SAME anchors the
+ *            fold would for an anchor gap.  Consensus-neutral.
+ *   Rung B — checkpoint-verified install (bodies absent): arm the durable
+ *            install-on-next-boot request (boot_install_bundle_request) against
+ *            a ROM-matching <datadir>/bundles/<name>.sqlite; the atomic keystone
+ *            installer is fail-closed and rolls back on any anomaly.
+ *   Rung C — self-terminating named need: name the EXACT first missing body
+ *            height, surface the terminal owner-run import option, and let the
+ *            bounded page fire.  The .progressing hook resets the attempt budget
+ *            ONLY while the durable heal cursor advances, so a genuinely frozen
+ *            node pages in bounded time and never re-spins the identical no-op.
+ * The AUTO path is authorized by a SEPARATE gate (shielded_selfheal_sovereign_
+ * authorized), distinct from the borrowed-import containment
+ * (shielded_gap_remedy_eval_containment / auto_execute), which stays owner-gated
+ * and UNTOUCHED — a -COPY- copy-prove datadir defers to the operator.  The
+ * witness for this class requires BOTH the named blocker(s) clearing AND H*
+ * climbing past the stall height, so a stray tick cannot be mistaken for the
+ * cure having actually landed.
  *
  * CONSENSUS PARITY: the sapling_frontier_mismatch reject path is untouched; a
  * mismatched frontier is never written (anchor_kv_seed_frontier_row re-verifies
@@ -62,6 +80,7 @@
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
 
+#include "conditions/shielded_selfheal_ladder.h"
 #include "config/boot.h"
 #include "config/runtime.h"
 #include "controllers/shielded_gap_remedy_controller.h"
@@ -84,7 +103,6 @@
 #include "validation/main_state.h"
 #include "validation/process_block.h"
 
-#include <assert.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -182,9 +200,12 @@ static bool detect_sapling_anchor_frontier(void)
     enum sapling_anchor_gap_class cls = sapling_anchor_frontier_classify(db);
     bool birth_defect = anchor_gap && cls == SAPLING_ANCHOR_GAP_EMPTY_TABLE;
     /* NAMED REMEDY: a genuine below-cursor historical anchor gap and/or a
-     * standalone nullifier gap.  Neither is seed-curable by tier1/1b/2 —
-     * `-import-complete-shielded` is the only cure, and it is never run here
-     * (see remedy_named_gap()). */
+     * standalone nullifier gap.  Not seed-curable by tier1/1b/2 — the remedy
+     * dispatches to the SOVEREIGN self-heal ladder (Move 2a,
+     * shielded_selfheal_run_named_remedy): re-derive from local bodies (Rung A),
+     * else checkpoint-verified install (Rung B), else name the exact need (Rung
+     * C).  The BORROWED -import-complete-shielded stays the owner's terminal
+     * option, never auto-run from here. */
     bool named_remedy = (anchor_gap && cls == SAPLING_ANCHOR_GAP_HISTORICAL) ||
                          nullifier_gap;
     if (!birth_defect && !named_remedy)
@@ -214,6 +235,10 @@ static bool detect_sapling_anchor_frontier(void)
                                                     : SAFU_EPISODE_NAMED_REMEDY);
         atomic_store(&g_anchor_gap_at_detect, anchor_gap);
         atomic_store(&g_nullifier_gap_at_detect, nullifier_gap);
+        /* Fresh episode: re-arm the self-heal ladder's progress baseline +
+         * named need so .progressing measures advance from THIS episode's
+         * start. */
+        shielded_selfheal_reset_episode();
     }
     return true;
 }
@@ -452,64 +477,6 @@ static bool tier1b_borrow_verified_frontier(sqlite3 *db, struct main_state *ms,
     return seeded;
 }
 
-/* NAMED REMEDY (owner-gated, verify-only): a genuine historical anchor gap
- * and/or a standalone nullifier gap.  Surfaces the SAME structured recipe
- * `shielded_gap_remedy_controller.c` reports on this condition's own
- * detect/remedy surface (single source of truth for the remedy text, read
- * back via its public JSON dumper) and NEVER executes anything.  Containment
- * is asserted, not merely logged, so a future edit cannot silently start
- * auto-running the import from inside a condition remedy. */
-static enum condition_remedy_result remedy_named_gap(void)
-{
-    struct shielded_gap_containment c;
-    shielded_gap_remedy_eval_containment(&c);
-    /* Structural invariant (matches the header contract in
-     * controllers/shielded_gap_remedy_controller.h): this surface never
-     * executes the import.  Assert, don't just trust the field. */
-    assert(!c.auto_execute);
-    if (c.auto_execute) {   /* belt-and-suspenders in a non-asserting build */
-        LOG_WARN(SAFU_SUBSYS,
-                 "[condition:%s] INVARIANT VIOLATION: containment reported "
-                 "auto_execute=true — refusing to treat this as a remedy",
-                 SAFU_COND_NAME);
-        return COND_REMEDY_SKIP;
-    }
-
-    struct json_value sgr;
-    json_init(&sgr);
-    bool have_sgr = shielded_gap_remedy_dump_state_json(&sgr, NULL);
-    const char *summary = "";
-    const char *copy_step = "";
-    const char *import_cmd = "";
-    if (have_sgr) {
-        const struct json_value *remedy = json_get(&sgr, "remedy");
-        summary = json_get_str(json_get(remedy, "summary"));
-        copy_step = json_get_str(json_get(remedy, "copy_prove_step"));
-        import_cmd = json_get_str(json_get(remedy, "import_command"));
-    }
-    LOG_WARN(SAFU_SUBSYS,
-             "[condition:%s] NAMED REMEDY (owner-gated, verify-only — this "
-             "condition NEVER auto-executes it): %s | copy-prove FIRST: %s | "
-             "then: %s | containment: refuses_live=%s lane=%s "
-             "(full detail: dumpstate shielded_gap_remedy)",
-             SAFU_COND_NAME,
-             summary[0] ? summary
-                        : "import the complete Sprout+Sapling anchor and "
-                          "nullifier history (-import-complete-shielded) "
-                          "then reboot",
-             copy_step[0] ? copy_step : "tools/scripts/import-copy-prove.sh",
-             import_cmd[0] ? import_cmd
-                           : "zclassic23 -import-complete-shielded=<zclassicd-datadir>",
-             c.refuses_live ? "true" : "false", c.operator_lane);
-    json_free(&sgr);
-
-    /* Never resolves the symptom itself: honest FAILED (not SKIP — the
-     * condition IS actively engaged and DID surface a remedy), so the engine's
-     * bounded attempt/page machinery still informs the operator. The witness
-     * (blocker cleared + H* climbed) is the only path to COND_REMEDY_OK. */
-    return COND_REMEDY_FAILED;
-}
-
 static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
 {
 #ifdef ZCL_TESTING
@@ -530,7 +497,7 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
     if ((cls == SAPLING_ANCHOR_GAP_HISTORICAL &&
          blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID)) ||
         blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID))
-        return remedy_named_gap();
+        return shielded_selfheal_run_named_remedy();
 
     /* Re-confirm we still face the curable empty-table birth defect. */
     if (cls != SAPLING_ANCHOR_GAP_EMPTY_TABLE)
@@ -610,6 +577,19 @@ static bool witness_sapling_anchor_frontier(int64_t target_at_detect)
     return climbed && anchor_cleared && nullifier_cleared;
 }
 
+/* TL-1 REFRESH-ONLY progress signal for the sovereign self-heal ladder — a thin
+ * wrapper delegating to the ladder TU (shielded_selfheal_progressing), gated to
+ * the NAMED-REMEDY episode (the birth-defect tiers clear purely on the H*
+ * witness).  A true return RESETS the attempt budget WITHOUT clearing so a
+ * multi-round heal never false-pages; a frozen heal cursor still exhausts the
+ * budget and pages in bounded time. */
+static bool progressing_sapling_anchor_frontier(int64_t target_at_detect)
+{
+    (void)target_at_detect;
+    return shielded_selfheal_progressing(
+        atomic_load(&g_episode_kind) == SAFU_EPISODE_NAMED_REMEDY);
+}
+
 static bool detail_sapling_anchor_frontier(struct json_value *out)
 {
     if (!out)
@@ -624,7 +604,15 @@ static bool detail_sapling_anchor_frontier(struct json_value *out)
               json_push_kv_bool(out, "gap_blocker_present",
                                 blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID)) &&
               json_push_kv_bool(out, "nullifier_gap_blocker_present",
-                                blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+                                blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID)) &&
+              /* Move 2a self-heal surface: the exact height Rung C last named as
+               * the missing need (-1 = none), and the sovereign auto-path
+               * authorization (distinct from the borrowed-import containment
+               * below). */
+              json_push_kv_int(out, "selfheal_named_height",
+                               shielded_selfheal_last_named_height()) &&
+              json_push_kv_bool(out, "selfheal_sovereign_authorized",
+                                shielded_selfheal_sovereign_authorized());
     if (!ok)
         return false;
 
@@ -657,6 +645,11 @@ static struct condition c_sapling_anchor_frontier_unavailable = {
     .detect = detect_sapling_anchor_frontier,
     .remedy = remedy_sapling_anchor_frontier,
     .witness = witness_sapling_anchor_frontier,
+    /* TL-1: keep the bounded budget from false-paging a multi-round sovereign
+     * self-heal (Rung A chunked backfill / a refold or install landing across
+     * more rounds than max_attempts) while it makes durable, resumable
+     * progress; a genuinely frozen heal still exhausts the budget and pages. */
+    .progressing = progressing_sapling_anchor_frontier,
     .detail = detail_sapling_anchor_frontier,
     .witness_window_secs = 120,
 };
@@ -674,11 +667,23 @@ void sapling_anchor_frontier_test_reset(void)
     atomic_store(&g_anchor_gap_at_detect, false);
     atomic_store(&g_nullifier_gap_at_detect, false);
     atomic_store(&g_tier1b_attempts, 0);
+    shielded_selfheal_reset_episode();
     atomic_store(&g_test_remedy_calls, 0);
 }
 
 int sapling_anchor_frontier_test_remedy_calls(void)
 {
     return atomic_load(&g_test_remedy_calls);
+}
+
+void sapling_anchor_frontier_test_force_named_episode(void)
+{
+    atomic_store(&g_episode_kind, SAFU_EPISODE_NAMED_REMEDY);
+    shielded_selfheal_reset_episode();
+}
+
+bool sapling_anchor_frontier_test_progressing(void)
+{
+    return progressing_sapling_anchor_frontier(0);
 }
 #endif
