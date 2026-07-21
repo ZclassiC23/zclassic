@@ -1400,6 +1400,74 @@ static int test_dl_tip_bias_no_starvation_shallow_queue(void)
     return failures;
 }
 
+/* Batched-compaction hot path: a deep queue drained in large front-pop
+ * batches must lose no block, duplicate none, and hand them all out in
+ * strict height order. The single-pass dl_queue_remove_sorted() compaction
+ * that replaced the per-pick O(queue_len) memmove must be exactly
+ * equivalent to the loop it superseded — this drives the deep-queue batch
+ * path (tip_bias_skip == 0, available == the full per-peer window) that
+ * dominates fresh IBD, where the queue is pinned near its cap. */
+static int test_dl_batch_compaction_deep_queue(void)
+{
+    int failures = 0;
+    TEST("deep-queue large-batch drain: no loss, no dup, height-sorted") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        const int N = 5000; /* deep enough to force the batch path */
+        for (int i = 0; i < N; i++) {
+            struct uint256 h = make_hash16((uint16_t)i);
+            int32_t height = 100000 + i;   /* hash order == height order */
+            ASSERT(dl_queue_blocks(&dm, &h, &height, 1) == 1);
+        }
+        uint64_t q0;
+        dl_get_stats(&dm, NULL, NULL, NULL, NULL, &q0);
+        ASSERT(q0 == (uint64_t)N);
+
+        /* Drain everything to peer 1 in large batches (bounded by the
+         * per-peer window), marking each received so the window reopens.
+         * Verify the exact hand-out order and a per-index seen-count. */
+        static uint8_t seen[5000];
+        memset(seen, 0, sizeof(seen));
+        struct uint256 out[200];
+        int prev_v = -1;
+        uint64_t total = 0;
+        for (;;) {
+            size_t got = dl_assign_to_peer(&dm, 1, out, 200);
+            if (got == 0)
+                break;
+            for (size_t k = 0; k < got; k++) {
+                int v = out[k].data[0] | (out[k].data[1] << 8);
+                ASSERT(v >= 0 && v < N);
+                ASSERT(seen[v] == 0);        /* no duplicate hand-out */
+                seen[v] = 1;
+                ASSERT(v > prev_v);          /* strict ascending == height order */
+                prev_v = v;
+                ASSERT(dl_mark_received(&dm, &out[k]) == 1);
+            }
+            total += got;
+        }
+        ASSERT(total == (uint64_t)N);        /* no loss */
+        for (int i = 0; i < N; i++)
+            ASSERT(seen[i] == 1);
+
+        /* Accounting identity holds after the whole drain. */
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.accounting_drift == 0);
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(req == (uint64_t)N);
+        ASSERT(recv == (uint64_t)N);
+        ASSERT(inflight == 0);
+        ASSERT(queued == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -1437,6 +1505,7 @@ int test_download(void)
     failures += test_dl_unknown_height_sorts_last();
     failures += test_dl_tip_bias_prefers_fast_peer();
     failures += test_dl_tip_bias_no_starvation_shallow_queue();
+    failures += test_dl_batch_compaction_deep_queue();
     failures += test_gap_fill_registers_supervisor_contract();
     return failures;
 }
