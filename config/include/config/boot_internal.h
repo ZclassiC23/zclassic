@@ -427,4 +427,21 @@ struct sha3_utxo_checkpoint;
 bool anchor_snapshot_verified_reachable(struct node_db *ndb,
                                         const struct sha3_utxo_checkpoint *cp);
 
+/* Park the process alive-but-degraded after a boot-storage gate names its
+ * blocker: never _exit()s into a Restart=always crash-loop, blocks until a
+ * shutdown signal is observed, then returns false so the caller (app_init)
+ * exits cleanly. Never returns true. Defined in boot.c; shared here so
+ * other boot-storage-gate call sites (boot_node_db_gate.c) use the SAME
+ * park path instead of duplicating the wait loop. */
+bool boot_park_until_shutdown(const char *gate_name);
+
+/* ── config/src/boot_node_db_gate.c ──────────────────────────────────────
+ * #7 supervision-coverage fix: node.db failing to open used to log a
+ * warning and continue booting RAM-only (silently dropping wallet/chain
+ * persistence). Names a PERMANENT blocker + parks alive-degraded like the
+ * sibling boot-storage gates (crypto_params_missing, coins_view_integrity,
+ * progress_kv_open). Always returns false (never advances past the gate);
+ * app_init does `return boot_node_db_open_failed_gate(ctx->datadir);`. */
+bool boot_node_db_open_failed_gate(const char *datadir);
+
 #endif

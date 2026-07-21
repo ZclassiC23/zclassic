@@ -265,9 +265,9 @@ static struct boot_svc_ctx g_svc;
  * to app_init_services; boot_services.c's main.c-facing entry points read it. */
 struct boot_svc_ctx *boot_active_svc(void) { return &g_svc; }
 
-/* Defined below (line ~1175); used by boot_step_init_crypto_and_state's
- * mainnet zk-params gate before its definition appears. */
-static bool boot_park_until_shutdown(const char *gate_name);
+/* boot_park_until_shutdown prototype is in config/boot_internal.h (included
+ * above); defined below (line ~1175), non-static so boot_node_db_gate.c can
+ * share the same park path. */
 
 static bool boot_params_thread_failure_is_fatal(const struct app_context *ctx,
                                                 const char *network_id)
@@ -1350,7 +1350,7 @@ void boot_stop_db_service_kernel(void)
  * app_init (and re-installed inside it). It is NOT g_running (which is not yet
  * set true at the pre-services boot-storage gates). Polls on a short sleep so a
  * service-manager stop is honoured promptly. */
-static bool boot_park_until_shutdown(const char *gate_name)
+bool boot_park_until_shutdown(const char *gate_name)
 {
     fprintf(stderr,
         "[boot] PARKED alive-degraded at gate '%s' — bounded re-derive budget "
@@ -1532,9 +1532,10 @@ bool app_init(struct app_context *ctx)
         boot_shutdown_marker_set_schema_version(
             node_db_schema_version(&g_node_db));
     } else {
-        fprintf(stderr, "Warning: SQLite database unavailable\n");
-        event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
-                    ctx->datadir);
+        /* #7: every other boot-storage gate names a typed blocker and parks
+         * alive-degraded on open failure; this one used to log a warning and
+         * CONTINUE booting RAM-only. See boot_node_db_gate.c. */
+        return boot_node_db_open_failed_gate(ctx->datadir);
     }
     boot_topmark("sqlite_open_migrate", t_phase);
 

@@ -6,6 +6,8 @@
 #include "framework/condition.h"
 #include "json/json.h"
 #include "services/chain_restore_integrity.h"
+#include "util/blocker.h"
+#include "util/supervisor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -23,6 +25,13 @@ int chain_integrity_failed_test_remedy_calls(void);
 void chain_integrity_failed_test_set_async(bool enabled);
 void chain_integrity_failed_test_disable_spawn(bool disabled);
 int chain_integrity_failed_test_queue_calls(void);
+
+/* #6 restore-worker watchdog test seams. */
+supervisor_child_id chain_integrity_failed_test_watchdog_id(void);
+void chain_integrity_failed_test_set_started_us_ago(int64_t age_us);
+void chain_integrity_failed_test_force_running(bool running);
+void chain_integrity_failed_test_watchdog_tick(void);
+int chain_integrity_failed_test_deadline_secs(void);
 
 static void reset_cif(struct main_state *ms)
 {
@@ -272,6 +281,75 @@ int test_chain_integrity_failed_condition(void)
                                          "first_nbits_zero_height")) == 4;
         json_free(&out);
         CIF_CHECK("detail exposes unrecoverable integrity state", ok);
+        cleanup_cif(&ms);
+    }
+
+    {
+        struct main_state ms;
+        reset_cif(&ms);
+        bool ok = true;
+        register_chain_integrity_failed();
+
+        supervisor_child_id wid = chain_integrity_failed_test_watchdog_id();
+        ok = ok && wid != SUPERVISOR_INVALID_ID;
+
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        bool found = false;
+        uint32_t stall_before = 0;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].name,
+                       "chain.chain_integrity_restore_watchdog") == 0) {
+                found = true;
+                stall_before = snaps[i].stall_fires;
+                ok = ok && snaps[i].period_secs == 30;
+                break;
+            }
+        }
+        ok = ok && found;
+
+        /* Not running: tick is a no-op, no blocker named. */
+        chain_integrity_failed_test_force_running(false);
+        chain_integrity_failed_test_watchdog_tick();
+        ok = ok && !blocker_exists("chain_integrity_restore_stuck");
+
+        /* Running, well under the deadline: still no blocker. */
+        chain_integrity_failed_test_force_running(true);
+        chain_integrity_failed_test_set_started_us_ago(5LL * 1000000);
+        chain_integrity_failed_test_watchdog_tick();
+        ok = ok && !blocker_exists("chain_integrity_restore_stuck");
+
+        /* Running, past the deadline: the watchdog names a blocker and
+         * reports a self-stall on its own supervisor child — the #6 fix
+         * (previously a hung worker was invisible: only g_restore_running
+         * stayed latched, no blocker, no supervisor signal). */
+        int64_t deadline_s = chain_integrity_failed_test_deadline_secs();
+        chain_integrity_failed_test_set_started_us_ago(
+            (deadline_s + 60) * 1000000LL);
+        chain_integrity_failed_test_watchdog_tick();
+        ok = ok && blocker_exists("chain_integrity_restore_stuck");
+        ok = ok && blocker_class_for("chain_integrity_restore_stuck") ==
+                         BLOCKER_DEPENDENCY;
+
+        n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        bool stall_bumped = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].name,
+                       "chain.chain_integrity_restore_watchdog") == 0) {
+                stall_bumped = snaps[i].stall_fires > stall_before;
+                break;
+            }
+        }
+        ok = ok && stall_bumped;
+
+        /* Simulate the worker returning: the finish path clears the
+         * blocker (exercised directly here; chain_integrity_restore_worker
+         * itself calls the same blocker_clear on return). */
+        chain_integrity_failed_test_force_running(false);
+        blocker_clear("chain_integrity_restore_stuck");
+        ok = ok && !blocker_exists("chain_integrity_restore_stuck");
+
+        CIF_CHECK("restore watchdog names+clears a blocker past deadline", ok);
         cleanup_cif(&ms);
     }
 

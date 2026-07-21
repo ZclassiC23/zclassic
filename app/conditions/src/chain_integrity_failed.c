@@ -1,10 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "framework/condition.h"
 #include "util/log_macros.h"
 
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_repair.h"
+#include "supervisors/domains.h"
+#include "util/blocker.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
 #include "validation/main_state.h"
@@ -13,6 +17,34 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+
+/* ── #6: supervised watchdog over the background restore worker ───────
+ *
+ * chain_integrity_restore_worker (below) runs the heavy
+ * chain_restore_finalize() fire-and-forget on a detached thread, guarded
+ * only by the bare bool g_restore_running: if the worker ever hangs (stuck
+ * DB lock, pathological block-index walk), the flag never clears and every
+ * future chain-integrity repair is silently skipped for the rest of the
+ * process's life (queue_chain_restore's "already running" guard above).
+ * Nothing watched that possibility before this. This is a DEADLINE/OBSERVE
+ * -only addition — chain_restore_finalize's own logic is unchanged. A
+ * period-driven supervisor child (mirrors chain_tip_watchdog's shape: it
+ * watches EXTERNAL state, not its own loop) polls g_restore_running + the
+ * wall-clock age of the current attempt every 30s; crossing the deadline
+ * names a typed blocker and reports a self-stall so `dumpstate supervisor`
+ * and `ops state --subsystem=condition` both surface the wedge instead of
+ * it being invisible. 30 minutes is generous slack over any observed
+ * chain_restore_finalize repair (a bounded active-chain/nBits walk+repair,
+ * not a from-genesis replay). */
+#define CHAIN_INTEGRITY_RESTORE_WATCHDOG_PERIOD_SECS   30
+#define CHAIN_INTEGRITY_RESTORE_DEADLINE_SECS         1800
+
+static struct liveness_contract     g_restore_watchdog_contract;
+static _Atomic supervisor_child_id  g_restore_watchdog_id = SUPERVISOR_INVALID_ID;
+/* CLOCK_MONOTONIC us timestamp the currently-running restore was queued at;
+ * 0 when no restore is in flight. Written under g_restore_mu alongside
+ * g_restore_running so the watchdog's read is always consistent with it. */
+static _Atomic int64_t g_restore_started_us;
 
 static _Atomic int g_remedy_calls;
 static _Atomic int g_last_zero_nbits;
@@ -141,6 +173,11 @@ static void *chain_integrity_restore_worker(void *arg)
     g_restore_ms = NULL;
     g_restore_datadir[0] = '\0';
     pthread_mutex_unlock(&g_restore_mu);
+    atomic_store(&g_restore_started_us, 0);
+    /* Clear any blocker the watchdog named while this attempt was still
+     * running past its deadline — the worker DID return (however late), so
+     * future repairs are no longer blocked. */
+    blocker_clear("chain_integrity_restore_stuck");
     return NULL;
 }
 
@@ -169,6 +206,7 @@ static enum condition_remedy_result queue_chain_restore(struct main_state *ms,
     snprintf(g_restore_datadir, sizeof(g_restore_datadir), "%s",
              datadir ? datadir : "");
     pthread_mutex_unlock(&g_restore_mu);
+    atomic_store(&g_restore_started_us, platform_time_monotonic_us());
 
     int rc = thread_registry_spawn("zcl_chain_fix",
                                    chain_integrity_restore_worker, NULL, NULL);
@@ -178,6 +216,7 @@ static enum condition_remedy_result queue_chain_restore(struct main_state *ms,
         g_restore_ms = NULL;
         g_restore_datadir[0] = '\0';
         pthread_mutex_unlock(&g_restore_mu);
+        atomic_store(&g_restore_started_us, 0);
         LOG_WARN("condition",
                  "[condition:chain_integrity_failed] failed to spawn "
                  "background chain restore rc=%d", rc);
@@ -312,9 +351,72 @@ static struct condition c_chain_integrity_failed = {
     .witness_window_secs = 60,
 };
 
+/* ── #6: restore-worker watchdog tick (see block comment near the top) ── */
+static void chain_integrity_restore_watchdog_tick(struct liveness_contract *c)
+{
+    (void)c;
+    supervisor_child_id id = atomic_load(&g_restore_watchdog_id);
+
+    pthread_mutex_lock(&g_restore_mu);
+    bool running = g_restore_running;
+    pthread_mutex_unlock(&g_restore_mu);
+
+    if (!running) {
+        /* Nothing in flight — advance the progress marker on the tick
+         * counter itself so a healthy idle watchdog never looks frozen. */
+        supervisor_progress(id, platform_time_monotonic_us());
+        return;
+    }
+
+    int64_t started = atomic_load(&g_restore_started_us);
+    int64_t age_s = started > 0
+        ? (platform_time_monotonic_us() - started) / 1000000
+        : 0;
+    supervisor_progress(id, age_s);
+
+    if (age_s >= CHAIN_INTEGRITY_RESTORE_DEADLINE_SECS) {
+        LOG_WARN("condition",
+                 "[condition:chain_integrity_failed] background "
+                 "chain_restore_finalize has been running %llds (>= %ds "
+                 "deadline) — naming a blocker; future chain-integrity "
+                 "repairs stay skipped (queue_chain_restore's dedup guard) "
+                 "until this worker returns or the process restarts",
+                 (long long)age_s, CHAIN_INTEGRITY_RESTORE_DEADLINE_SECS);
+        struct blocker_record rec;
+        if (blocker_init(&rec, "chain_integrity_restore_stuck",
+                         "condition.chain_integrity_failed",
+                         BLOCKER_DEPENDENCY,
+                         "background chain_restore_finalize exceeded its "
+                         "deadline; no future chain-integrity repair can be "
+                         "queued until it returns")) {
+            rec.retry_budget = -1;  /* unbounded — never auto-expires */
+            (void)blocker_set(&rec);
+        }
+        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+    }
+}
+
 void register_chain_integrity_failed(void)
 {
     (void)condition_register(&c_chain_integrity_failed);
+
+    if (atomic_load(&g_restore_watchdog_id) != SUPERVISOR_INVALID_ID)
+        return;  /* idempotent */
+    liveness_contract_init(&g_restore_watchdog_contract,
+                           "chain.chain_integrity_restore_watchdog");
+    atomic_store(&g_restore_watchdog_contract.period_secs,
+                (int64_t)CHAIN_INTEGRITY_RESTORE_WATCHDOG_PERIOD_SECS);
+    atomic_store(&g_restore_watchdog_contract.deadline_secs, (int64_t)0);
+    g_restore_watchdog_contract.on_tick = chain_integrity_restore_watchdog_tick;
+    g_restore_watchdog_contract.on_stall = NULL;
+    supervisor_domains_init();
+    atomic_store(&g_restore_watchdog_id,
+                supervisor_register_in_domain(g_chain_sup,
+                                              &g_restore_watchdog_contract));
+    if (atomic_load(&g_restore_watchdog_id) == SUPERVISOR_INVALID_ID)
+        LOG_WARN("condition",
+                 "[condition:chain_integrity_failed] WARN supervisor "
+                 "register failed for restore watchdog");
 }
 
 #ifdef ZCL_TESTING
@@ -353,9 +455,40 @@ void chain_integrity_failed_test_reset(void)
     g_restore_ms = NULL;
     g_restore_datadir[0] = '\0';
     pthread_mutex_unlock(&g_restore_mu);
+    atomic_store(&g_restore_started_us, 0);
+    blocker_clear("chain_integrity_restore_stuck");
     atomic_store(&g_test_force_async, false);
     atomic_store(&g_test_disable_spawn, false);
     atomic_store(&g_test_queue_calls, 0);
+}
+
+/* Test-only accessors for the #6 restore watchdog. */
+supervisor_child_id chain_integrity_failed_test_watchdog_id(void)
+{
+    return atomic_load(&g_restore_watchdog_id);
+}
+
+void chain_integrity_failed_test_set_started_us_ago(int64_t age_us)
+{
+    atomic_store(&g_restore_started_us,
+                platform_time_monotonic_us() - age_us);
+}
+
+void chain_integrity_failed_test_force_running(bool running)
+{
+    pthread_mutex_lock(&g_restore_mu);
+    g_restore_running = running;
+    pthread_mutex_unlock(&g_restore_mu);
+}
+
+void chain_integrity_failed_test_watchdog_tick(void)
+{
+    chain_integrity_restore_watchdog_tick(&g_restore_watchdog_contract);
+}
+
+int chain_integrity_failed_test_deadline_secs(void)
+{
+    return CHAIN_INTEGRITY_RESTORE_DEADLINE_SECS;
 }
 
 int chain_integrity_failed_test_remedy_calls(void)

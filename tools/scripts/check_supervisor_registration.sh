@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Lint gate #15 — supervisor registration for long-running services.
 #
-# Goal: every long-running service in `app/services/src/*.c`
-# either registers a liveness contract with the supervisor
-# (Round 5 — lib/util/supervisor.h), or appears in this gate's
-# baseline file of grandfathered exceptions.
+# Goal: every long-running service in the scanned roots (below) either
+# registers a liveness contract with the supervisor (Round 5 —
+# lib/util/supervisor.h), or appears in this gate's baseline file of
+# grandfathered exceptions.
 #
 # Why: on 2026-05-21 the node ran for 8.6 h with `watchdog.checks_run`
 # stuck at 0 because the lib/health sweeper wedged. The supervisor
@@ -13,10 +13,15 @@
 # gate is the ratchet that drives opt-in: new long-running services
 # cannot land without a contract; baseline shrinks over Rounds 6-8.
 #
-# Scope: ALL app/services/src/*.c, not just *_service.c — a background
-# daemon loop (disk_monitor, db_maintenance, mempool_limits, ...) is a
-# long-running service whatever the filename suffix, and must be visible
-# to `zclassic23 dumpstate supervisor` so a wedged loop is not silent.
+# Scope (2026-07-21 widen — Task D/E supervision-coverage): originally
+# hardcoded to app/services/src/*.c only, which left every supervision hole
+# in app/controllers, app/conditions, app/jobs, config/src, and the
+# production lib/ daemons (net/health/rpc) invisible to `make lint` — a
+# background daemon loop is a long-running service whatever directory it
+# lives in, and must be visible to `zclassic23 dumpstate supervisor` so a
+# wedged loop is not silent. Each root is scanned non-recursively
+# (`-maxdepth 1`, the `*/src` leaf convention); widening further just means
+# adding another root below.
 #
 # A file is "long-running" if it contains either:
 #   - thread_registry_spawn      (the project's long-running wrapper)
@@ -27,9 +32,13 @@
 #     within the spawning function, have bounded lifetime, and need no
 #     liveness contract — mirrors the check-pthread-create Makefile gate.
 #
-# Such a file must contain ≥1 call to `supervisor_register_in_domain(`, OR an
-# entry in `tools/scripts/supervisor_baseline.txt`, OR a per-file
-# override marker `// supervisor-ok:<tag>` on a line in the file.
+# Such a file must contain ≥1 call to a recognized registration site —
+# `supervisor_register(_in_domain)?(`, the lib/util/thread_liveness.h
+# adapter `thread_liveness_register(`, or the config/src boot-worker wrapper
+# `boot_register_worker_supervisor(` (which itself calls
+# supervisor_register_in_domain — see boot_worker_supervisor.c) — OR an
+# entry in `tools/scripts/supervisor_baseline.txt`, OR a per-file override
+# marker `// supervisor-ok:<tag>` on a line in the file.
 #
 # To clean up debt: pick a baseline entry, register a liveness
 # contract for that service (mirror what sync_watchdog_service.c
@@ -40,13 +49,19 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
 
-# Services dir is overridable via ZCL_SERVICES_DIR so the lint-gate self-test
-# can point the gate at an EMPTY dir and prove the non-empty-floor preflight
-# fires (exit 2) instead of the `for f in glob` silently iterating the literal
-# unmatched pattern and passing hollow.
-SERVICES_DIR="${ZCL_SERVICES_DIR:-app/services/src}"
+# Scan roots are overridable via ZCL_SERVICES_DIR (space-separated) so the
+# lint-gate self-test can point the gate at an EMPTY dir and prove the
+# non-empty-floor preflight fires (exit 2) instead of the `for f in glob`
+# silently iterating the literal unmatched pattern and passing hollow.
+read -r -a SERVICES_ROOTS <<< "${ZCL_SERVICES_DIR:-app/services/src app/controllers/src app/conditions/src app/jobs/src config/src lib/net/src lib/health/src lib/rpc/src}"
 
-BASELINE=tools/scripts/supervisor_baseline.txt
+COVER_RE='supervisor_register(_in_domain)?\(|thread_liveness_register\(|boot_register_worker_supervisor\('
+
+# Baseline path is overridable via ZCL_SUPREG_BASELINE so the lint-gate
+# self-test can point the gate at a throwaway baseline file (planted
+# fixture ⇒ trip; baselined ⇒ pass) without ever touching the real
+# tools/scripts/supervisor_baseline.txt.
+BASELINE="${ZCL_SUPREG_BASELINE:-tools/scripts/supervisor_baseline.txt}"
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
@@ -86,9 +101,9 @@ file_is_long_running() {
 # glob, `[ -f "$f" ]` skips it, the loop body runs zero times, `fail` stays 0,
 # and the gate prints "clean" exit 0 — a hollow pass when the dir is
 # renamed/moved/emptied. Discover the set with find + assert a floor instead.
-mapfile -t scan_files < <(find "$SERVICES_DIR" -maxdepth 1 -type f -name '*.c' 2>/dev/null | sort)
+mapfile -t scan_files < <(find "${SERVICES_ROOTS[@]}" -maxdepth 1 -type f -name '*.c' 2>/dev/null | sort)
 gate_require_scanned "${#scan_files[@]}" 1 check_supervisor_registration \
-    "no *.c under '$SERVICES_DIR' — was the services dir renamed/moved?"
+    "no *.c under: ${SERVICES_ROOTS[*]} — was a scanned dir renamed/moved?"
 
 fail=0
 new_violations=()
@@ -96,8 +111,9 @@ for f in "${scan_files[@]}"; do
     [ -f "$f" ] || continue
     # Long-running? Check for spawn / periodic-subscriber markers.
     file_is_long_running "$f" || continue
-    # Already registered with the supervisor? Pass.
-    if grep -qE 'supervisor_register(_in_domain)?\(' "$f"; then
+    # Already registered with the supervisor (directly, or via a
+    # recognized adapter/wrapper)? Pass.
+    if grep -qE "$COVER_RE" "$f"; then
         continue
     fi
     # Per-file override marker? Pass.
