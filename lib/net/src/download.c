@@ -430,6 +430,45 @@ static void dl_queue_remove_at(struct download_manager *dm, size_t idx)
     dm->queue_len--;
 }
 
+/* Remove a set of queue indices — supplied in STRICTLY ASCENDING order —
+ * in a single O(queue_len) compaction pass. dl_queue_remove_at() is
+ * O(queue_len) per call (a tail memmove), so removing k entries one at a
+ * time is O(k * queue_len); the assign hot loop pops from the height-sorted
+ * FRONT, where every per-pick removal shifts the whole tail. Batching the
+ * removal keeps dl_assign_to_peer linear in the queue depth regardless of
+ * batch size. Caller holds dm->cs and has already erased each index's qset
+ * membership. */
+static void dl_queue_remove_sorted(struct download_manager *dm,
+                                   const size_t *sorted_idx, size_t n)
+{
+    if (n == 0)
+        return;
+    size_t len = dm->queue_len;
+    /* Slide each contiguous run of survivors between consecutive removed
+     * indices leftward with a bulk memmove. n==1 collapses to exactly the
+     * single tail memmove dl_queue_remove_at() would do, so front-popping a
+     * single entry costs the same as before; large batches move the tail
+     * once instead of once per pick. */
+    size_t w = sorted_idx[0];   /* [0, sorted_idx[0]) stays in place */
+    for (size_t p = 0; p < n; p++) {
+        size_t gap_start = sorted_idx[p] + 1;
+        size_t gap_end = (p + 1 < n) ? sorted_idx[p + 1] : len; /* exclusive */
+        size_t run = gap_end - gap_start;
+        if (run > 0) {
+            memmove(&dm->queue[w], &dm->queue[gap_start],
+                    run * sizeof(dm->queue[0]));
+            memmove(&dm->queue_heights[w], &dm->queue_heights[gap_start],
+                    run * sizeof(dm->queue_heights[0]));
+            memmove(&dm->queue_avoid_peers[w], &dm->queue_avoid_peers[gap_start],
+                    run * sizeof(dm->queue_avoid_peers[0]));
+            memmove(&dm->queue_avoid_until[w], &dm->queue_avoid_until[gap_start],
+                    run * sizeof(dm->queue_avoid_until[0]));
+            w += run;
+        }
+    }
+    dm->queue_len = w;
+}
+
 /* Find or update peer stats. Caller holds mutex. */
 static struct dl_peer_stats *dl_find_peer(struct download_manager *dm,
                                            uint32_t peer_id, bool create)
@@ -1115,41 +1154,133 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     bool avoid_blocked = false;
     bool attempted_slot = false;
     int64_t retry_after = 0;
-    while (assigned < available && dm->queue_len > 0) {
-        size_t bias_skip = tip_bias_skip < dm->queue_len
-                               ? tip_bias_skip : dm->queue_len;
-        size_t pick = dl_scan_queue_for_peer(dm, peer_id, now, bias_skip,
-                                             dm->queue_len, &avoid_blocked,
-                                             &retry_after);
-        if (pick == dm->queue_len && bias_skip > 0) {
-            /* Nothing eligible past the tip-adjacent reserve — fall back
-             * into the reserve itself so a slower peer still gets work
-             * rather than stalling. */
-            pick = dl_scan_queue_for_peer(dm, peer_id, now, 0, bias_skip,
-                                          &avoid_blocked, &retry_after);
+
+    /* Fast path: select the whole batch in a single forward pass and remove
+     * the picked entries from the queue in ONE O(queue_len) compaction,
+     * rather than the per-pick dl_queue_remove_at() below whose tail memmove
+     * makes the loop O(available * queue_len). During deep IBD the queue is
+     * pinned near its 65536 cap and every assign call pops from the
+     * height-sorted FRONT, so each per-pick removal shifted the whole tail —
+     * measured at ~35-48 us PER assigned block, all while holding dm->cs,
+     * serializing every other peer's assignment and every dl_mark_received.
+     *
+     * Semantics are identical to the loop form: avoided entries are stable
+     * for the fixed `now`, and picked entries are consumed, so a forward
+     * cursor over the original indices yields the exact same pick sequence
+     * (all eligible primary entries in order, then all eligible fallback
+     * entries in order). Gated on a queue deep enough that consuming the
+     * batch cannot shift the tip-bias boundary (queue_len > available +
+     * tip_bias_skip) — that is exactly the deep-queue case that matters for
+     * throughput. The rare shallow-queue + active-tip-bias corner keeps the
+     * loop below, where the per-pick memmove is cheap anyway. */
+    bool can_batch = available > 0 &&
+                     available <= DL_MAX_IN_FLIGHT_PER_LOOPBACK &&
+                     (tip_bias_skip == 0 ||
+                      dm->queue_len > available + tip_bias_skip);
+    if (can_batch) {
+        size_t orig_len = dm->queue_len;
+        size_t clamp = tip_bias_skip < orig_len ? tip_bias_skip : orig_len;
+        size_t picks[DL_MAX_IN_FLIGHT_PER_LOOPBACK];  /* assignment order */
+        size_t npick = 0;
+
+        /* Primary region [clamp, orig_len): tip-adjacent reserve skipped. */
+        for (size_t i = clamp; i < orig_len && npick < available; i++) {
+            if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
+                avoid_blocked = true;
+                if (retry_after == 0 || dm->queue_avoid_until[i] < retry_after)
+                    retry_after = dm->queue_avoid_until[i];
+                continue;
+            }
+            picks[npick++] = i;
         }
-        if (pick == dm->queue_len)
-            break;
+        /* Fallback region [0, clamp): entered only after the primary is
+         * exhausted, matching the per-iteration fallback in the loop form. */
+        if (npick < available && clamp > 0) {
+            for (size_t i = 0; i < clamp && npick < available; i++) {
+                if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
+                    avoid_blocked = true;
+                    if (retry_after == 0 ||
+                        dm->queue_avoid_until[i] < retry_after)
+                        retry_after = dm->queue_avoid_until[i];
+                    continue;
+                }
+                picks[npick++] = i;
+            }
+        }
 
-        struct uint256 hash = dm->queue[pick];
-        int32_t height = dm->queue_heights[pick];
-        qset_remove(dm, &hash);
-        dl_queue_remove_at(dm, pick);
+        if (npick > 0) {
+            attempted_slot = true;
+            /* Apply: move each pick into the in-flight table. The queue
+             * arrays stay untouched until the single compaction below, so
+             * dm->queue[picks[p]] still refers to the original index. */
+            for (size_t p = 0; p < npick; p++) {
+                struct uint256 hash = dm->queue[picks[p]];
+                int32_t height = dm->queue_heights[picks[p]];
+                qset_remove(dm, &hash);
+                maybe_grow(dm);
+                struct dl_in_flight *slot = find_slot(dm, &hash, true);
+                if (!slot)
+                    continue;
+                slot->hash = hash;
+                slot->height = height;
+                slot->peer_id = peer_id;
+                slot->request_time = now;
+                slot->active = true;
+                dm->num_active++;
+                dm->total_requested++;
+                out_hashes[assigned++] = hash;
+            }
+            /* Build the ascending index set for the single compaction. The
+             * picks form two ascending runs (primary appended first, then
+             * fallback) with every fallback index < clamp <= every primary
+             * index, so fallback-run ++ primary-run is globally sorted. */
+            size_t spick[DL_MAX_IN_FLIGHT_PER_LOOPBACK];
+            size_t ns = 0;
+            for (size_t p = 0; p < npick; p++)
+                if (picks[p] < clamp)
+                    spick[ns++] = picks[p];   /* fallback run (ascending) */
+            for (size_t p = 0; p < npick; p++)
+                if (picks[p] >= clamp)
+                    spick[ns++] = picks[p];   /* primary run (ascending) */
+            dl_queue_remove_sorted(dm, spick, ns);
+        }
+    } else {
+        while (assigned < available && dm->queue_len > 0) {
+            size_t bias_skip = tip_bias_skip < dm->queue_len
+                                   ? tip_bias_skip : dm->queue_len;
+            size_t pick = dl_scan_queue_for_peer(dm, peer_id, now, bias_skip,
+                                                 dm->queue_len, &avoid_blocked,
+                                                 &retry_after);
+            if (pick == dm->queue_len && bias_skip > 0) {
+                /* Nothing eligible past the tip-adjacent reserve — fall back
+                 * into the reserve itself so a slower peer still gets work
+                 * rather than stalling. */
+                pick = dl_scan_queue_for_peer(dm, peer_id, now, 0, bias_skip,
+                                              &avoid_blocked, &retry_after);
+            }
+            if (pick == dm->queue_len)
+                break;
 
-        maybe_grow(dm);
-        attempted_slot = true;
-        struct dl_in_flight *slot = find_slot(dm, &hash, true);
-        if (!slot) continue;
+            struct uint256 hash = dm->queue[pick];
+            int32_t height = dm->queue_heights[pick];
+            qset_remove(dm, &hash);
+            dl_queue_remove_at(dm, pick);
 
-        slot->hash = hash;
-        slot->height = height;
-        slot->peer_id = peer_id;
-        slot->request_time = now;
-        slot->active = true;
-        dm->num_active++;
-        dm->total_requested++;
+            maybe_grow(dm);
+            attempted_slot = true;
+            struct dl_in_flight *slot = find_slot(dm, &hash, true);
+            if (!slot) continue;
 
-        out_hashes[assigned++] = hash;
+            slot->hash = hash;
+            slot->height = height;
+            slot->peer_id = peer_id;
+            slot->request_time = now;
+            slot->active = true;
+            dm->num_active++;
+            dm->total_requested++;
+
+            out_hashes[assigned++] = hash;
+        }
     }
 
     if (assigned > 0) {
