@@ -501,23 +501,21 @@ static void boot_register_core_liveness_and_reducer(
      * RE-SEEDED coins_kv from a self-SHA3-verified snapshot at the snapshot's
      * OWN height, forced the 8 stage cursors to that height, and seeded the
      * tip_finalize trusted base there (raise-only). It is the authoritative
-     * seed for THIS boot. Both fallback seed paths below would CLOBBER it:
-     *   - boot_refold_from_anchor_arm_if_torn: the loader's coins-dependent
-     *     cursors at seed_h (with on-disk bodies above) look like a "torn"
-     *     prevout hole to the detector; with a reachable anchor snapshot it
-     *     would re-seed coins_kv from the COMPILED checkpoint (3,056,758),
-     *     dropping the trusted base back to the checkpoint and pinning H*.
-     *   - block_index_loader_seed_stages_from_cold_import: the loader already
-     *     cleared the cold-import provenance keys (so this returns 0 today),
-     *     but suppress it explicitly so a future provenance write cannot
-     *     re-stamp the cursors forward off the loader's seed_h.
-     * So when the loader flag is set for this boot, skip BOTH — the loader
-     * owns the seed and the staged pipeline folds forward from seed_h. */
+     * seed for THIS boot. loader_owns_seed short-circuits EVERY fallback seeder
+     * below so none can CLOBBER it: arm_if_torn (the loader's coins-dependent
+     * cursors at seed_h look like a "torn" prevout hole), the W1-L1 cold-start
+     * arm (they are NOT empty — the loader populated them), and the cold-import
+     * seed. Any of those would otherwise re-seed coins_kv from the COMPILED
+     * checkpoint (3,056,758) or re-stamp cursors off it, dropping the trusted
+     * base and pinning H*. So on a loader boot skip them all — the loader owns
+     * the seed and the staged pipeline folds forward from seed_h. */
     bool loader_owns_seed = boot_loader_owns_seed(svc->app_ctx);
     bool armed_from_anchor =
         loader_owns_seed ||                      /* loader at boot.c re-seeded + armed the stages */
         refold_from_anchor_active() ||           /* already armed: flag / load-verify / mid-fold */
         boot_refold_from_anchor_arm_if_torn(     /* DEFAULT: detect-gated torn-import self-heal */
+            svc->state, boot_node_db(svc), progress_store_db()) ||
+        block_index_loader_arm_cold_start_from_index( /* W1-L1: --importblockindex + empty coins_kv */
             svc->state, boot_node_db(svc), progress_store_db());
     if (!armed_from_anchor)
         (void)block_index_loader_seed_stages_from_cold_import(

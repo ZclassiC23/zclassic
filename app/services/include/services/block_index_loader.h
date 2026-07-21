@@ -327,6 +327,49 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
                                                     struct node_db *ndb,
                                                     struct sqlite3 *progress_db);
 
+/* SYNC-STRENGTH W1-L1 — cold-start auto-seed from an imported block index.
+ *
+ * A fresh node built via the two-step recipe (`--importblockindex <legacy
+ * datadir>` then a normal boot) has the FULL header/block index but an EMPTY
+ * coins_kv and NO durable cold-import seed provenance key — `--importblockindex`
+ * seeds ONLY the block index, never coins_kv or the reducer cursors — so
+ * block_index_loader_seed_stages_from_cold_import returns 0 and the reducer
+ * folds the eight stages from GENESIS instead of resuming at the baked SHA3
+ * checkpoint anchor (h=3,056,758).
+ *
+ * When (1) coins_kv is EMPTY, (2) the loaded block index contains the checkpoint
+ * block at exactly the checkpoint height (the header chain WAS imported past the
+ * anchor), and (3) a SHA3-checkpoint-bound anchor snapshot artifact is reachable
+ * (<datadir>/utxo-anchor.snapshot, fully body-SHA3-verified AND independently
+ * bound to the compiled checkpoint — boot_refold_from_anchor_artifact_available,
+ * the W1-L3 gate), this routes the cold start through the EXISTING atomic anchor
+ * installer boot_refold_from_anchor_reset: it FULL-resets coins_kv, re-seeds the
+ * SHA3-verified anchor set, HARD-ASSERTS it == the compiled checkpoint (FATAL on
+ * mismatch), forces the 8 stage cursors to the anchor, and seeds the tip_finalize
+ * base there — all under the installer's own transactions (all-or-nothing; never
+ * a mixed-provenance seed). The fold then climbs the ~131k-block TAIL from the
+ * anchor to the imported header tip over bodies the body_fetch stage pulls
+ * lazily (the from-genesis mechanism, started 3.05M blocks higher), then marks
+ * refold_from_anchor so the L0 floor holds at the anchor.
+ *
+ * We do NOT set COLD_IMPORT_SEED_HEIGHT_KEY: the from-anchor reset forces the
+ * cursors to the anchor directly (a superset of what that key achieves) and
+ * clears the cold-import provenance, so arming both would double-seed with
+ * conflicting provenance — the single-provenance atomic install IS this path.
+ *
+ * FAIL-CLOSED: if the checkpoint or the verified snapshot is absent, returns
+ * 0 — the caller falls through to the UNCHANGED genesis-fold behavior; never a
+ * faked seed. Consensus validity math is untouched (only WHERE the reducer
+ * cursors start changes, and only after the anchor set re-verifies against the
+ * baked checkpoint). Returns 1 iff a from-anchor refold was armed (caller then
+ * SKIPS the cold-import seed), else 0 (int return matches the sibling
+ * block_index_loader_seed_stages_from_cold_import convention). WIRED into the
+ * seed-vs-anchor decision in boot_services.c, after
+ * boot_refold_from_anchor_arm_if_torn. */
+int block_index_loader_arm_cold_start_from_index(struct main_state *ms,
+                                                 struct node_db *ndb,
+                                                 struct sqlite3 *progress_db);
+
 /* (2a.5) BOOT-TIME TORN-IMPORT GATE — the durable forward-evidence verdict
  * that runs on a cold-import boot BEFORE the forward-only early-return (the
  * live wedge sits in the forward-applied region). Its own focused TU; the
