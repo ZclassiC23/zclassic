@@ -82,21 +82,29 @@ PoW-heaviest header chain — no DNS, CAs, or registries in the path. The
 independently derived rather than borrowed from an external `zclassicd`
 snapshot.
 
+## Requirements
+
+- A C23 compiler: **gcc 14+** (or clang with working `-std=c23`), and **GNU
+  make**. No other required runtime dependencies — the shipped binary links
+  only stock `libc` plus static archives built from vendored/fetched sources
+  (see below); there is no separate package/runtime dependency to install.
+- For the one-time vendored-library build only: `cmake`, `autoconf`, `patch`,
+  `cargo` + `rustc`, `curl`/`wget`, and `unzip`. **The first build needs
+  internet** — it fetches pinned third-party source tarballs (OpenSSL,
+  libevent, LevelDB, zlib, SQLite, and the canonical Zcash Sapling prover) and
+  verifies them against pinned SHA-256s before compiling locally; afterward
+  the archives are cached in `vendor/lib/` and builds are offline.
+
 ## Quick start
 
 Public start here: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) is the
-fresh-machine path for people cloning from GitHub. This README is the overview;
-`docs/HANDOFF.md` and `docs/RUNBOOK.md` are maintainer/operator documents for
-the project's own hosted lanes.
+fresh-machine path for people cloning from GitHub, covering build, running a
+production node + block explorer, and setting up an isolated development
+instance. This README is the overview; `docs/HANDOFF.md` and
+`docs/RUNBOOK.md` are maintainer/operator documents for the project's own
+hosted lanes.
 
-**Prerequisites:** gcc 14+ (or clang with `-std=c23`), GNU make, plus
-`cmake`, `autoconf`, `patch`, `cargo` + `rustc`, `curl`/`wget`, and `unzip` for the one-time vendored-library
-build. **The first build needs internet** — it fetches pinned third-party source
-tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite, and the canonical Zcash
-Sapling prover) and verifies them against
-pinned SHA-256s before compiling locally; afterward the archives are cached in
-`vendor/lib/` and builds are offline. A clean `make vendor && make` takes ~1–2
-minutes on a modern multi-core box.
+A clean `make vendor && make` takes ~1–2 minutes on a modern multi-core box.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic

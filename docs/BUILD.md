@@ -1,5 +1,11 @@
 # Building zclassic23
 
+This is the focused build reference — vendored-library sources/versions, the
+fast dev-compile targets, and the sanitizer profiles. For the full setup
+path (build → run in production → run in development), start at
+[`docs/GETTING_STARTED.md`](GETTING_STARTED.md) instead; this page is what it
+links to for build detail.
+
 `zclassic23` is one whole-program C23 binary. The build is a single `cc` over
 ~660–1400 `.c` files with LTO, linked against a set of **static** third-party
 archives in `vendor/lib/`.
