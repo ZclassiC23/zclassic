@@ -16,6 +16,7 @@
 #include "net/rom_fetch.h"
 #include "net/rom_seed.h"                       /* ROM_SEED_* bounds */
 #include "net/file_service.h"                   /* FS_PORT default */
+#include "encoding/utilstrencodings.h"          /* HexStr */
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"                    /* zcl_malloc */
 
@@ -27,6 +28,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #define BBF_SUBSYS "boot_bundle_fetch"
 
@@ -239,56 +241,109 @@ static char *bbf_read_text_file(const char *path, size_t cap)
     return buf;
 }
 
-bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
+/* Baked-facts cross-check for a picked manifest — the chunking + size invariants
+ * the compiled seeder always honours. rom_fetch_manifest_sane (called inside
+ * boot_bundle_pick_manifest) already enforces these; this is the belt-and-
+ * suspenders guard the discovery path asserts before it trusts a peer-advertised
+ * triple. Pure predicate — a false return is "not the compiled artifact shape",
+ * not an error site. */
+static bool bbf_manifest_facts_ok(const struct rom_fetch_manifest *m)
 {
-    if (!boot_bundle_fetch_should_run(datadir, ctx))
+    if (!m)
         return false;
+    if (m->chunk_size != ROM_SEED_CHUNK_SIZE)
+        return false;
+    if (m->size_bytes < ROM_SEED_MIN_ARTIFACT_BYTES ||
+        m->size_bytes > ROM_SEED_MAX_ARTIFACT_BYTES)
+        return false;
+    uint32_t expect =
+        (uint32_t)((m->size_bytes + m->chunk_size - 1) / m->chunk_size);
+    return m->num_chunks > 0 && m->num_chunks <= ROM_SEED_MAX_CHUNKS &&
+           m->num_chunks == expect;
+}
 
-    /* Manifest commitment: the publisher's small /directory.json, staged at
-     * <datadir>/bundles/directory.json. The multi-GB bytes are swarmed and
-     * content-verified against it; the install gate then binds the result to the
-     * compiled checkpoint. Absent hint → safe no-op (this is the common fresh
-     * boot with nothing staged; P2P IBD / the operator bundle remain the path). */
-    char hint_path[PATH_MAX];
-    int hn = snprintf(hint_path, sizeof(hint_path),
-                      "%s/bundles/directory.json", datadir);
-    if (hn < 0 || (size_t)hn >= sizeof(hint_path))
-        return false;
+/* Persist a discovered manifest as the canonical <datadir>/bundles/directory.json
+ * hint so a resume/reseed reads it locally without re-querying peers. Emits the
+ * minimal {"artifacts":[...]} object rom_fetch_parse_directory / pick consume;
+ * writes via a .tmp + rename so a crash never leaves a truncated hint. */
+static bool bbf_write_directory_hint(const char *datadir,
+                                     const struct rom_fetch_manifest *m)
+{
+    if (!datadir || !datadir[0] || !m)
+        LOG_FAIL(BBF_SUBSYS, "write hint: null arg");
 
-    char *body = bbf_read_text_file(hint_path, BBF_DIRECTORY_JSON_MAX);
-    if (!body) {
-        LOG_INFO(BBF_SUBSYS,
-                 "no bundle manifest at %s — skipping instant-on fetch",
-                 hint_path);
-        return false;
+    char bundles[PATH_MAX];
+    int bn = snprintf(bundles, sizeof(bundles), "%s/bundles", datadir);
+    if (bn < 0 || (size_t)bn >= sizeof(bundles))
+        LOG_FAIL(BBF_SUBSYS, "write hint: bundles path too long under %s",
+                 datadir);
+    if (mkdir(bundles, 0700) != 0 && errno != EEXIST)
+        LOG_FAIL(BBF_SUBSYS, "write hint: mkdir(%s) failed: %s", bundles,
+                 strerror(errno));
+
+    char digest_hex[65], whole_hex[65];
+    HexStr(m->chunk_root, 32, false, digest_hex, sizeof(digest_hex));
+    HexStr(m->whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
+
+    char body[1024];
+    int wn = snprintf(body, sizeof(body),
+        "{\"artifacts\":[{\"kind\":\"consensus_state\",\"digest\":\"%s\","
+        "\"whole_sha3\":\"%s\",\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}]}",
+        digest_hex, whole_hex, (unsigned long long)m->size_bytes,
+        m->chunk_size, m->num_chunks);
+    if (wn <= 0 || (size_t)wn >= sizeof(body))
+        LOG_FAIL(BBF_SUBSYS, "write hint: directory.json body overflow");
+
+    char path[PATH_MAX];
+    int pn = snprintf(path, sizeof(path), "%s/bundles/directory.json", datadir);
+    if (pn < 0 || (size_t)pn >= sizeof(path))
+        LOG_FAIL(BBF_SUBSYS, "write hint: path too long under %s", datadir);
+    char tmp[PATH_MAX];
+    int tn = snprintf(tmp, sizeof(tmp), "%s/bundles/directory.json.tmp", datadir);
+    if (tn < 0 || (size_t)tn >= sizeof(tmp))
+        LOG_FAIL(BBF_SUBSYS, "write hint: tmp path too long under %s", datadir);
+
+    FILE *f = fopen(tmp, "wb");
+    if (!f)
+        LOG_FAIL(BBF_SUBSYS, "write hint: fopen(%s) failed: %s", tmp,
+                 strerror(errno));
+    bool ok = fwrite(body, 1, (size_t)wn, f) == (size_t)wn;
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok) {
+        (void)unlink(tmp);
+        LOG_FAIL(BBF_SUBSYS, "write hint: writing %s failed", tmp);
     }
-
-    struct rom_fetch_manifest m;
-    memset(&m, 0, sizeof(m));
-    bool picked = boot_bundle_pick_manifest(body, &m);
-    free(body);
-    if (!picked) {
-        LOG_WARN(BBF_SUBSYS,
-                 "manifest hint present at %s but no usable consensus-state "
-                 "artifact — skipping", hint_path);
-        return false;
+    if (rename(tmp, path) != 0) {
+        (void)unlink(tmp);
+        LOG_FAIL(BBF_SUBSYS, "write hint: rename %s -> %s failed: %s", tmp, path,
+                 strerror(errno));
     }
+    return true;
+}
 
-    /* Assemble the file-service seed set from the SAME sources the node's other
-     * cold-start file-sync path uses: the operator's -fileservice= peer first,
-     * then the hardcoded clearnet file-service seeds (skipped in connect-only
-     * mode, where all bootstrap data must come from the explicit peer set). The
-     * seeds are unauthenticated transport — that is fine here: the download is
-     * content-verified against the committed manifest and the install path binds
-     * the result to the compiled checkpoint, so a MITM/forged seed can at worst
-     * fail the fetch or get refused at install, never seed a forged UTXO set. */
-    struct rom_fetch_peer peers[ROM_FETCH_MAX_WORKERS];
-    memset(peers, 0, sizeof(peers));
+/* Assemble the file-service seed set from the SAME sources the node's other
+ * cold-start file-sync path uses: the operator's -fileservice= peer first, then
+ * the hardcoded clearnet file-service seeds (skipped in connect-only mode, where
+ * all bootstrap data must come from the explicit peer set). The seeds are
+ * unauthenticated transport — that is fine here: the download is content-verified
+ * against the committed manifest and the install path binds the result to the
+ * compiled checkpoint, so a MITM/forged seed can at worst fail the fetch or get
+ * refused at install, never seed a forged UTXO set. Sets *out_explicit_first when
+ * the operator's -fileservice peer actually took slot 0. Returns the peer count. */
+static size_t bbf_assemble_seeds(const struct app_context *ctx,
+                                 struct rom_fetch_peer *peers, size_t cap,
+                                 bool *out_explicit_first)
+{
     size_t np = 0;
-    const size_t cap = sizeof(peers) / sizeof(peers[0]);
+    if (out_explicit_first)
+        *out_explicit_first = false;
 
-    if (ctx && ctx->file_service_peer && ctx->file_service_peer[0])
+    if (ctx && ctx->file_service_peer && ctx->file_service_peer[0]) {
         bbf_add_peer(peers, &np, cap, ctx->file_service_peer);
+        if (out_explicit_first && np == 1)
+            *out_explicit_first = true; /* the explicit peer took slot 0 */
+    }
 
     if (!(ctx && ctx->connect_only)) {
         static const char *const clearnet_fs_seeds[] = {
@@ -299,7 +354,149 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
         for (int i = 0; clearnet_fs_seeds[i]; i++)
             bbf_add_peer(peers, &np, cap, clearnet_fs_seeds[i]);
     }
+    return np;
+}
 
+/* One discovered-manifest candidate and how many independent seeds served it. */
+struct bbf_disc_cand {
+    struct rom_fetch_manifest m;
+    int  count;
+    bool has_explicit;   /* an explicit -fileservice seed served this triple */
+};
+
+/* Pure quorum decision over the tallied candidates. Returns the winning index,
+ * or -1 for "no quorum" (fail-open to IBD). The rule: the most-agreed candidate
+ * wins iff >=2 independent seeds served its (chunk_root, whole_sha3, size)
+ * triple; a lone candidate wins ONLY when the operator explicitly named its
+ * seed (-fileservice); a lone non-explicit candidate is refused (bandwidth-DoS
+ * guard — trust binds at install, not here). No IO. */
+static int bbf_quorum_pick(const int *counts, const bool *has_explicit,
+                           size_t ncand)
+{
+    int best = -1;
+    for (size_t c = 0; c < ncand; c++) {
+        if (best < 0) {
+            best = (int)c;
+            continue;
+        }
+        /* Higher count wins; a tie prefers an explicit-seed candidate so a lone
+         * operator-named seed is not shadowed by an equal-count non-explicit. */
+        if (counts[c] > counts[best] ||
+            (counts[c] == counts[best] && has_explicit[c] && !has_explicit[best]))
+            best = (int)c;
+    }
+    if (best < 0)
+        return -1;
+    if (counts[best] >= 2)
+        return best;
+    if (has_explicit[best])
+        return best;
+    return -1;
+}
+
+/* Query each seed for its directory listing over the FS "RLS" wire, pick the
+ * bundle manifest each advertises, and require >=2 independent seeds returning a
+ * byte-identical (chunk_root, whole_sha3, size) triple before trusting the
+ * discovered manifest — a bandwidth-DoS / lone-liar guard: trust binds at
+ * install, not here. quorum=1 is accepted ONLY when the lone seed is the
+ * operator's explicit -fileservice peer. On acceptance *out holds the winning
+ * manifest and the winning directory.json is persisted for resume. Returns false
+ * (fail-open to normal IBD) when no quorum forms. */
+static bool bbf_discover_from_peers(const char *datadir,
+                                    const struct rom_fetch_peer *peers,
+                                    size_t np, bool explicit_first,
+                                    struct rom_fetch_manifest *out)
+{
+    char *body = zcl_malloc(BBF_DIRECTORY_JSON_MAX + 1, "bbf_disc_body");
+    if (!body)
+        LOG_FAIL(BBF_SUBSYS, "discovery: OOM allocating listing buffer");
+
+    struct bbf_disc_cand cands[ROM_FETCH_MAX_WORKERS];
+    memset(cands, 0, sizeof(cands));
+    size_t ncand = 0;
+    const size_t ccap = sizeof(cands) / sizeof(cands[0]);
+
+    for (size_t i = 0; i < np; i++) {
+        if (!rom_fetch_get_directory(peers[i].addr, peers[i].port, body,
+                                     BBF_DIRECTORY_JSON_MAX + 1))
+            continue;
+        struct rom_fetch_manifest m;
+        memset(&m, 0, sizeof(m));
+        if (!boot_bundle_pick_manifest(body, &m))
+            continue;
+        if (!bbf_manifest_facts_ok(&m)) {
+            LOG_WARN(BBF_SUBSYS, "discovery: seed %s:%u advertised a manifest "
+                     "that fails the baked-facts cross-check — ignoring",
+                     peers[i].addr, (unsigned)peers[i].port);
+            continue;
+        }
+        bool is_explicit = explicit_first && i == 0;
+        bool merged = false;
+        for (size_t c = 0; c < ncand; c++) {
+            if (cands[c].m.size_bytes == m.size_bytes &&
+                memcmp(cands[c].m.chunk_root, m.chunk_root, 32) == 0 &&
+                memcmp(cands[c].m.whole_sha3, m.whole_sha3, 32) == 0) {
+                cands[c].count++;
+                cands[c].has_explicit = cands[c].has_explicit || is_explicit;
+                merged = true;
+                break;
+            }
+        }
+        if (!merged && ncand < ccap) {
+            cands[ncand].m = m;
+            cands[ncand].count = 1;
+            cands[ncand].has_explicit = is_explicit;
+            ncand++;
+        }
+    }
+    free(body);
+
+    int counts[ROM_FETCH_MAX_WORKERS];
+    bool flags[ROM_FETCH_MAX_WORKERS];
+    for (size_t c = 0; c < ncand; c++) {
+        counts[c] = cands[c].count;
+        flags[c] = cands[c].has_explicit;
+    }
+    int best = bbf_quorum_pick(counts, flags, ncand);
+    if (best < 0) {
+        if (ncand == 0)
+            LOG_INFO(BBF_SUBSYS, "discovery: no reachable seed served a usable "
+                     "bundle manifest — skipping instant-on fetch");
+        else
+            LOG_WARN(BBF_SUBSYS, "discovery: only a lone non-explicit seed "
+                     "served a bundle manifest — refusing quorum=1 "
+                     "(bandwidth-DoS guard); falling back to P2P IBD");
+        return false;
+    }
+
+    if (cands[best].count >= 2)
+        LOG_INFO(BBF_SUBSYS, "discovery: %d seeds agree on the bundle manifest "
+                 "(size=%llu) — proceeding with quorum", cands[best].count,
+                 (unsigned long long)cands[best].m.size_bytes);
+    else
+        LOG_WARN(BBF_SUBSYS, "discovery: only ONE seed served a bundle manifest "
+                 "and it is the explicit -fileservice peer — proceeding with "
+                 "quorum=1 (operator-named seed)");
+
+    *out = cands[best].m;
+    if (!bbf_write_directory_hint(datadir, out))
+        LOG_WARN(BBF_SUBSYS, "discovery: could not persist the discovered "
+                 "directory.json hint — resume will re-discover");
+    return true;
+}
+
+bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
+{
+    if (!boot_bundle_fetch_should_run(datadir, ctx))
+        return false;
+
+    /* Assemble the file-service seed set once — both discovery and the download
+     * ride it (see bbf_assemble_seeds for the trust rationale). */
+    struct rom_fetch_peer peers[ROM_FETCH_MAX_WORKERS];
+    memset(peers, 0, sizeof(peers));
+    bool explicit_first = false;
+    size_t np = bbf_assemble_seeds(ctx, peers, sizeof(peers) / sizeof(peers[0]),
+                                   &explicit_first);
     if (np == 0) {
         LOG_INFO(BBF_SUBSYS,
                  "no file-service seeds available (connect-only with no "
@@ -307,5 +504,53 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
         return false;
     }
 
+    /* Manifest commitment. Prefer a LOCAL <datadir>/bundles/directory.json (an
+     * operator hint, or one a prior discovery/resume persisted). On a truly fresh
+     * node it is absent — discover it from the seed set over the file-service RLS
+     * wire, requiring a >=2-seed quorum before trusting it. Either way the multi-
+     * GB bytes are swarmed + content-verified against the committed manifest and
+     * the install gate binds the result to the compiled checkpoint. */
+    char hint_path[PATH_MAX];
+    int hn = snprintf(hint_path, sizeof(hint_path),
+                      "%s/bundles/directory.json", datadir);
+    if (hn < 0 || (size_t)hn >= sizeof(hint_path))
+        return false;
+
+    struct rom_fetch_manifest m;
+    memset(&m, 0, sizeof(m));
+
+    char *body = bbf_read_text_file(hint_path, BBF_DIRECTORY_JSON_MAX);
+    if (body) {
+        bool picked = boot_bundle_pick_manifest(body, &m);
+        free(body);
+        if (!picked) {
+            LOG_WARN(BBF_SUBSYS,
+                     "manifest hint present at %s but no usable consensus-state "
+                     "artifact — skipping", hint_path);
+            return false;
+        }
+    } else {
+        LOG_INFO(BBF_SUBSYS,
+                 "no local bundle manifest at %s — attempting peer directory "
+                 "discovery over the file-service RLS wire", hint_path);
+        if (!bbf_discover_from_peers(datadir, peers, np, explicit_first, &m))
+            return false; /* fail-open: normal P2P IBD is the path */
+    }
+
     return boot_bundle_fetch_download(datadir, peers, np, &m);
 }
+
+#ifdef ZCL_TESTING
+/* Test surface: the pure baked-facts cross-check and quorum decision (see
+ * config/boot_bundle_fetch.h). Kept out of the production ABI. */
+bool boot_bundle_manifest_facts_ok_for_test(const struct rom_fetch_manifest *m)
+{
+    return bbf_manifest_facts_ok(m);
+}
+
+int boot_bundle_quorum_pick_for_test(const int *counts, const bool *has_explicit,
+                                     size_t ncand)
+{
+    return bbf_quorum_pick(counts, has_explicit, ncand);
+}
+#endif

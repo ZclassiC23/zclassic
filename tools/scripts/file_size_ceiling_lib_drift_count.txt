@@ -124,4 +124,14 @@
 # Rule C uses. Re-baselined in file_size_ceiling_lib_baseline.txt (2415);
 # count unchanged (download.c stays grandfathered, msgprocessor.c stays at
 # baseline).
+#
+# 2026-07-21 (wf/rls-auto-discovery, instant-on peer discovery): file_service.c
+# grew 1877 -> 2187 (the "RLS" ROM directory-listing serve opcode + handler,
+# sibling of the existing "RMF" per-chunk-manifest serve) and rom_fetch.c grew
+# 1520 -> 1622 (rom_fetch_get_directory, the clearnet client half — connect,
+# send RLS, MAC-verify the {"artifacts":[...]} body). Both are real,
+# shape-matching feature growth wiring peer directory discovery so a fresh
+# empty-datadir node finds the checkpoint bundle manifest with zero operator
+# input. Re-baselined in file_size_ceiling_lib_baseline.txt (2187, 1622); count
+# unchanged.
 13

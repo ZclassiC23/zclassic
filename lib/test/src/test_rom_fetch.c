@@ -1098,6 +1098,83 @@ static int test_bundle_handler_corrupted_refused(void)
     return failures;
 }
 
+/* RLS directory-listing round-trip: the real serve path answers a "RLS" request
+ * with its {"artifacts":[...]} catalog, and the client rom_fetch_get_directory
+ * receives + MAC-verifies it, parsing back to the exact registered artifact. */
+static int test_directory_discovery(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: RLS directory listing round-trips over the real fs serve") {
+        rom_seed_reset();
+        rom_seed_set_peer_bps_cap(1ull << 30);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_romfetch_rls_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size);
+        ASSERT(write_file(sdir, "consensus-state-bundle-rls.sqlite",
+                          content, size));
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-rls.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+
+        static const uint16_t cand_ports[] = { 18201, 18205, 18209 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        /* (1) Fetch + MAC-verify the listing, then parse it back to the exact
+         * registered artifact triple. */
+        char dir_body[4096];
+        ASSERT(rom_fetch_get_directory("127.0.0.1", port, dir_body,
+                                       sizeof(dir_body)));
+        struct rom_fetch_manifest arts[ROM_FETCH_MAX_ARTIFACTS];
+        memset(arts, 0, sizeof(arts));
+        int n = rom_fetch_parse_directory(dir_body, arts,
+                                          ROM_FETCH_MAX_ARTIFACTS);
+        ASSERT(n == 1);
+        ASSERT(memcmp(arts[0].chunk_root, art.chunk_root, 32) == 0);
+        ASSERT(memcmp(arts[0].whole_sha3, art.whole_sha3, 32) == 0);
+        ASSERT(arts[0].size_bytes == art.size_bytes);
+        ASSERT(arts[0].num_chunks == art.num_chunks);
+
+        /* (2) A cap smaller than the body rejects the over-cap reply (the
+         * bounded-read guard), rather than truncating. */
+        char tiny[16];
+        ASSERT(!rom_fetch_get_directory("127.0.0.1", port, tiny, sizeof(tiny)));
+
+        fs_server_stop();
+
+        /* (3) A dead peer (nothing listening) is a clean skip, not a crash. */
+        char dead_body[4096];
+        ASSERT(!rom_fetch_get_directory("127.0.0.1", port, dead_body,
+                                        sizeof(dead_body)));
+
+        free(content);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-rls.sqlite", sdir);
+        unlink(p);
+        rmdir(sdir);
+        rom_seed_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_rom_fetch(void)
 {
     int failures = 0;
@@ -1105,6 +1182,7 @@ int test_rom_fetch(void)
     failures += test_parse_directory();
     failures += test_verify_file();
     failures += test_loopback_e2e();
+    failures += test_directory_discovery();
     failures += test_rate_cap_retry();
     failures += test_parallel_download();
     failures += test_verified_multi_seeder();

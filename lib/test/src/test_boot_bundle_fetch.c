@@ -304,6 +304,152 @@ static int case_e2e(void)
     return failures;
 }
 
+/* ── (e) Baked-facts cross-check + quorum decision (pure) ────────────────── */
+
+static int case_baked_facts(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: baked-facts cross-check rejects off-shape manifests") {
+        struct rom_fetch_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.chunk_size = ROM_SEED_CHUNK_SIZE;
+        m.size_bytes = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
+        m.num_chunks = 2; /* ceil((CHUNK+4096)/CHUNK) */
+        ASSERT(boot_bundle_manifest_facts_ok_for_test(&m));
+
+        /* num_chunks != ceil(size/chunk). */
+        struct rom_fetch_manifest bad = m;
+        bad.num_chunks = 3;
+        ASSERT(!boot_bundle_manifest_facts_ok_for_test(&bad));
+
+        /* chunk_size != ROM_SEED_CHUNK_SIZE. */
+        bad = m;
+        bad.chunk_size = 1234;
+        ASSERT(!boot_bundle_manifest_facts_ok_for_test(&bad));
+
+        /* size below ROM_SEED_MIN_ARTIFACT_BYTES (num_chunks consistent). */
+        bad = m;
+        bad.size_bytes = 100;
+        bad.num_chunks = 1;
+        ASSERT(!boot_bundle_manifest_facts_ok_for_test(&bad));
+
+        ASSERT(!boot_bundle_manifest_facts_ok_for_test(NULL));
+    } _test_next:;
+    return failures;
+}
+
+static int case_quorum(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: quorum decision needs >=2 agree or an explicit seed") {
+        /* No candidates → no quorum. */
+        ASSERT(boot_bundle_quorum_pick_for_test(NULL, NULL, 0) == -1);
+
+        /* Lone non-explicit seed → refused (bandwidth-DoS guard). */
+        int c1[] = { 1 };
+        bool f_false[] = { false };
+        ASSERT(boot_bundle_quorum_pick_for_test(c1, f_false, 1) == -1);
+
+        /* Lone explicit -fileservice seed → accepted at quorum=1. */
+        bool f_true[] = { true };
+        ASSERT(boot_bundle_quorum_pick_for_test(c1, f_true, 1) == 0);
+
+        /* >=2 agree → accepted even when non-explicit. */
+        int c2[] = { 2 };
+        ASSERT(boot_bundle_quorum_pick_for_test(c2, f_false, 1) == 0);
+
+        /* Two candidates: the >=2-agreed one wins over a lone explicit. */
+        int cc[] = { 1, 2 };
+        bool ff[] = { true, false };
+        ASSERT(boot_bundle_quorum_pick_for_test(cc, ff, 2) == 1);
+
+        /* Tie on count → prefer the explicit-seed candidate. */
+        int tie[] = { 1, 1 };
+        bool tie_f[] = { false, true };
+        ASSERT(boot_bundle_quorum_pick_for_test(tie, tie_f, 2) == 1);
+    } _test_next:;
+    return failures;
+}
+
+/* ── (f) Absent-local-manifest → RLS discovery drives the whole path ─────── */
+
+static int case_discovery(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: no local hint → RLS discovery lands + persists it") {
+        rom_seed_reset();
+        rom_seed_set_peer_bps_cap(1ull << 30);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_bbf_disc_srv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        bbf_gen_content(content, size);
+        ASSERT(bbf_write_file(sdir, "consensus-state-bundle-3056758.sqlite",
+                              content, size));
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-3056758.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+
+        static const uint16_t cand_ports[] = { 18175, 18181, 18187 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        /* Fresh client datadir with NO bundles/directory.json hint. The explicit
+         * -fileservice peer + connect_only (no clearnet seeds) makes the lone
+         * reachable seed the operator-named one → quorum=1 accepted. */
+        char croot[] = "/tmp/zcl_bbf_disc_cli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        struct app_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.datadir = cdir;
+        char peer_hp[64];
+        snprintf(peer_hp, sizeof(peer_hp), "127.0.0.1:%u", (unsigned)port);
+        ctx.file_service_peer = peer_hp;
+        ctx.connect_only = true;
+
+        /* No local hint exists yet. */
+        char hint[512];
+        snprintf(hint, sizeof(hint), "%s/bundles/directory.json", cdir);
+        ASSERT(access(hint, F_OK) != 0);
+
+        ASSERT(boot_bundle_fetch_maybe(cdir, &ctx));
+
+        /* Discovery persisted the winning directory.json for resume/reseed. */
+        ASSERT(access(hint, F_OK) == 0);
+        /* And the content-verified bundle landed → autodetect installs it. */
+        char *auto_p = boot_autodetect_consensus_bundle(cdir);
+        ASSERT(auto_p != NULL);
+        free(auto_p);
+
+        fs_server_stop();
+        free(content);
+        test_rm_rf_recursive(cdir);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-3056758.sqlite", sdir);
+        unlink(p);
+        rmdir(sdir);
+        rom_seed_reset();
+    } _test_next:;
+    return failures;
+}
+
 int test_boot_bundle_fetch(void)
 {
     printf("\n=== boot_bundle_fetch ===\n");
@@ -311,6 +457,9 @@ int test_boot_bundle_fetch(void)
     failures += case_gate();
     failures += case_pick();
     failures += case_e2e();
+    failures += case_baked_facts();
+    failures += case_quorum();
+    failures += case_discovery();
     printf("=== boot_bundle_fetch: %d failure(s) ===\n", failures);
     return failures;
 }

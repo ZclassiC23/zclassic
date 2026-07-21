@@ -203,4 +203,16 @@ bool fs_parse_rom_request(const uint8_t *payload, uint32_t plen,
 bool fs_parse_rom_manifest_request(const uint8_t *payload, uint32_t plen,
                                    uint8_t root_out[32]);
 
+/* ROM directory-listing request (RLS): a sibling of the "ROM"/"RMF" requests
+ * that rides the same fs_session transport —
+ *   body = ["RLS"(3)]  (3 bytes)
+ * — and asks the seeder for its artifact catalog (the same {"artifacts":[...]}
+ * body the onion /directory.json path serves) so a fresh clearnet node can
+ * discover the checkpoint bundle manifest without the onion path. Recognized
+ * independently of the ROM/RMF/ALL/RNG paths; served FREE under the same
+ * rom_seed per-peer concurrency + byte-rate caps. Parsing is pure/testable;
+ * returns true on a well-formed listing request. */
+#define FS_ROM_LIST_REQUEST_SIZE 3
+bool fs_parse_rom_list_request(const uint8_t *payload, uint32_t plen);
+
 #endif

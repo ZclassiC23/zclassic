@@ -1082,6 +1082,108 @@ bool rom_fetch_get_manifest(const char *peer_addr, uint16_t port,
     return true;
 }
 
+/* ── Directory-listing fetch (clearnet peer discovery) ──────────────── */
+
+/* Must byte-match FS_ROM_LIST_MAC_TAG in file_service.c: the listing reply
+ * rides fs_send_chunk_fast's MAC scheme with this constant in the 32-byte
+ * binding slot. "RLS" + zero padding. */
+static const uint8_t RF_ROM_LIST_MAC_TAG[32] = { 'R', 'L', 'S' };
+
+bool rom_fetch_get_directory(const char *peer_addr, uint16_t port,
+                             char *buf, size_t cap)
+{
+    if (!peer_addr || !peer_addr[0] || !buf || cap == 0)
+        LOG_FAIL(RF_SUBSYS, "directory: null/empty arg");
+
+    int fd = rf_connect(peer_addr, port);
+    if (fd < 0)
+        return false; /* rf_connect logged; caller just skips this seed */
+
+    /* Short recv window: a legacy (RLS-unaware) seeder never replies, so a fast
+     * timeout is the fall-back signal rather than a 120 s stall. */
+    struct timeval tv = { .tv_sec = RF_MANIFEST_IO_TIMEOUT_SEC, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    struct fs_session s;
+    fs_session_init(&s, fd);
+    uint8_t zero_root[32];
+    memset(zero_root, 0, sizeof(zero_root));
+    if (!fs_handshake(&s, zero_root, true)) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: handshake failed with %s:%u — skipping "
+                 "seed", peer_addr, (unsigned)port);
+        return false;
+    }
+
+    /* Request: ["RLS"(3)]. */
+    uint8_t req[FS_ROM_LIST_REQUEST_SIZE];
+    memcpy(req, "RLS", 3);
+    if (!fs_send_frame(&s, FS_REQUEST, req, sizeof(req))) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: request send failed to %s:%u — skipping "
+                 "seed", peer_addr, (unsigned)port);
+        return false;
+    }
+
+    /* Reply: [4-byte size LE][body][32-byte MAC]. A refusal is an FS_DONE frame
+     * (64 KB) whose leading bytes parse as an implausible size here → skip. */
+    uint8_t hdr[4];
+    if (!rf_recv_exact(fd, hdr, 4)) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: no reply from %s:%u (legacy seeder?) — "
+                 "skipping seed", peer_addr, (unsigned)port);
+        return false;
+    }
+    uint32_t size = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+                    ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    /* Bounded by the caller's cap, leaving one byte for the NUL terminator. A
+     * zero-length body or one at/over cap (incl. the FS_DONE refusal) fails. */
+    if (size == 0 || size >= cap) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: implausible body size %u (cap %zu) from "
+                 "%s:%u — skipping seed", size, cap, peer_addr, (unsigned)port);
+        return false;
+    }
+    if (!rf_recv_exact(fd, (uint8_t *)buf, size)) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: body read failed from %s:%u — skipping "
+                 "seed", peer_addr, (unsigned)port);
+        return false;
+    }
+    uint8_t mac_wire[32];
+    if (!rf_recv_exact(fd, mac_wire, 32)) {
+        close(fd);
+        LOG_INFO(RF_SUBSYS, "directory: MAC read failed from %s:%u — skipping "
+                 "seed", peer_addr, (unsigned)port);
+        return false;
+    }
+    close(fd);
+
+    /* Transport MAC: SHA3(key || recv_counter || "RLS"tag || body), matching the
+     * serve side's fs_send_chunk_fast(body, tag). */
+    uint8_t mac_expect[32];
+    struct sha3_256_ctx mctx;
+    sha3_256_init(&mctx);
+    sha3_256_write(&mctx, s.key, 32);
+    sha3_256_write(&mctx, (const unsigned char *)&s.recv_counter, 8);
+    sha3_256_write(&mctx, RF_ROM_LIST_MAC_TAG, 32);
+    sha3_256_write(&mctx, (const uint8_t *)buf, size);
+    sha3_256_finalize(&mctx, mac_expect);
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++)
+        diff |= mac_wire[i] ^ mac_expect[i];
+    if (diff != 0) {
+        LOG_INFO(RF_SUBSYS, "directory: MAC mismatch from %s:%u — skipping seed",
+                 peer_addr, (unsigned)port);
+        return false;
+    }
+
+    buf[size] = '\0';
+    LOG_INFO(RF_SUBSYS, "directory: got %u-byte listing from %s:%u",
+             size, peer_addr, (unsigned)port);
+    return true;
+}
+
 /* ── Per-chunk-verified download with durable resume ────────────────── */
 
 struct rf_ver_job {
