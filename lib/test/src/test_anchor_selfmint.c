@@ -30,6 +30,7 @@
 #include "services/anchor_selfmint.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/snapshot_shielded.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"
 
@@ -164,6 +165,67 @@ int test_anchor_selfmint(void)
         SM_CHECK("(3) idempotent: file still present",
                  sb && sa && before.st_size == after.st_size &&
                  before.st_ino == after.st_ino);
+    }
+
+    /* (5) v3 ACCEPTANCE (regression guard): a valid v3 artifact carries the SAME
+     * coins set as the checkpoint PLUS a shielded section, so its FULL-BODY
+     * header SHA3 (coins+shielded) can NEVER equal the coins-only checkpoint
+     * hash. Admission must recompute the COINS-ONLY component and bind THAT to
+     * the checkpoint — not compare the full-body header hash (the old bug false-
+     * rejected every valid v3 snapshot as "sha3_or_format_mismatch"). The
+     * override is still the CORRECT root here (step 4 changes it below). */
+    {
+        char v3_path[400];
+        snprintf(v3_path, sizeof(v3_path), "%s/utxo-anchor-v3.snapshot", dir);
+        setenv("ZCL_MINT_ANCHOR_OUT", v3_path, 1);
+        unlink(v3_path);
+
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        /* One nullifier record forces the v3 on-disk format (nf_count > 0). */
+        uint8_t nf[32];
+        for (int j = 0; j < 32; j++) nf[j] = (uint8_t)(0xA0 + j);
+        uint8_t nf_rec[SNAPSHOT_NF_RECORD_BYTES];
+        snapshot_shielded_pack_nf(nf_rec, /*pool=*/0, nf, /*height=*/1);
+        struct snapshot_shielded sh;
+        memset(&sh, 0, sizeof(sh));
+        sh.nf_records = nf_rec;
+        sh.nf_count = 1;
+
+        uint8_t got_sha3[32] = {0};
+        uint64_t got_count = 0;
+        int64_t got_supply = 0;
+        bool wrote = coins_kv_snapshot_write(pdb, v3_path, cp->height,
+                                             cp->block_hash, &sh, got_sha3,
+                                             &got_count, &got_supply);
+        SM_CHECK("(5) v3 artifact written", wrote && sm_file_present(v3_path));
+        SM_CHECK("(5) v3 body sha3 != coins-only checkpoint",
+                 memcmp(got_sha3, cp->sha3_hash, 32) != 0);
+
+        /* The OLD predicate — uss_open(expected_sha3 = coins-only cp) — rejects
+         * the valid v3 artifact (proves this test exercises the real bug). */
+        {
+            char err[128] = {0};
+            struct uss_header vh;
+            struct uss_handle *bad =
+                uss_open(v3_path, /*verify_full_sha3=*/true, cp->sha3_hash, &vh,
+                         err, sizeof(err));
+            SM_CHECK("(5) old expected=cp predicate rejects v3", bad == NULL);
+            if (bad) uss_close(bad);
+        }
+
+        /* The CORRECTED status predicate ACCEPTS the valid v3 artifact. */
+        {
+            struct anchor_snapshot_status st;
+            bool ok = anchor_selfmint_snapshot_status(dir, &st);
+            SM_CHECK("(5) status ACCEPTS valid v3 artifact",
+                     ok && st.verified && st.sha3_match && st.count_match &&
+                     (int32_t)st.snapshot_height == TEST_ANCHOR &&
+                     strcmp(st.verification, "verified") == 0);
+        }
+
+        unlink(v3_path);
+        /* Restore the coins-only env path for the mismatch step below. */
+        setenv("ZCL_MINT_ANCHOR_OUT", snap_path, 1);
     }
 
     /* (4) MISMATCH: install a WRONG checkpoint root (same anchor height so the
