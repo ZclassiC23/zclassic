@@ -90,6 +90,27 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
  * wins (stable, deterministic). Pure discovery — installs nothing. */
 char *boot_autodetect_consensus_bundle(const char *datadir);
 
+/* Post-install fold-span gate — the call-site wiring around
+ * boot_refold_body_span_contiguous() (impl in config/src/boot_refold_staged.c,
+ * contract in config/boot.h), reused here (impl in config/src/
+ * boot_auto_install_bundle.c) after a successful complete-state install (1b/
+ * 1c above). When the local header chain already extends above the installed
+ * checkpoint height — the Move 2 self-heal case on an already-synced node —
+ * every body in (installed_height, local_tip] must already be on disk before
+ * the reducer folds over it; a missing/pruned body in that span would
+ * otherwise pin utxo_apply mid-fold with no named cause. On a gap this raises
+ * the NAMED blocker refold.body_gap at the first missing height so the
+ * reducer's body_fetch stage — already primed to resume at
+ * installed_height+1 by the forced stage cursors (consensus_state_snapshot_
+ * install_activate) — fills it, never a silent stall. A no-op when the local
+ * chain has not yet advanced past installed_height: the common fresh-install
+ * case, where body_fetch simply resumes at installed_height+1 and the tail
+ * arrives via normal P2P sync with nothing local left to check. Also a safe
+ * no-op when ms is NULL or installed_height < 0 (nothing to check yet). Never
+ * fails the boot — a detected gap only logs + raises the blocker. */
+void boot_post_install_fold_span_check(struct main_state *ms,
+                                       int32_t installed_height);
+
 /* ── Durable "install-on-next-boot" request (mirror of boot_auto_refold_*) ──
  * Top-level sentinel <datadir>/install_bundle_request holding
  * "<attempts>\n<bundle_path>\n", NEVER part of any derived-state wipe set.
