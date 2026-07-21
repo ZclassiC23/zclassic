@@ -150,10 +150,56 @@ loader extends that window forward to the PoW-proven header tip
 transparent-loader wedge. The artifact is **release-assisted borrowed state**:
 its payload digest authenticates bytes and the header match verifies chain
 location, but neither proves the UTXO/Sapling/Sprout/nullifier contents because
-ZClassic headers commit no such roots. The **sovereign cure**
-(`-refold-from-anchor`: fold forward from the verified checkpoint, then make it
-the default and delete the borrowed-seed machinery) is in flight — design
-`work/never-stuck-plan.md`, posture `HANDOFF.md`.
+ZClassic headers commit no such roots. The **fold-from-checkpoint** path
+below (`-refold-from-anchor` / `-load-verify-boot`) folds forward from the
+verified compiled checkpoint instead of accepting this loader's borrowed
+tip-height seed; making it the cold-start default and deleting the
+borrowed-seed machinery is still open work — design `work/never-stuck-plan.md`,
+posture `HANDOFF.md`.
+
+### Fold from checkpoint (skip the from-genesis reducer fold)
+
+A **verified** `utxo-anchor.snapshot` artifact (produced offline by the
+`-mint-anchor` ceremony, SHA3-bound to the compiled checkpoint) lets a fresh
+node skip folding the reducer from genesis. It requires a SOURCE datadir that
+already has headers *and* on-disk bodies — the two-step
+`--importblockindex` recipe above satisfies this — plus the verified
+`<DATADIR>/utxo-anchor.snapshot` file in place:
+
+```bash
+build/bin/zclassic23 --importblockindex "$HOME/.zclassic"   # headers + legacy body link
+build/bin/zclassic23 -refold-from-anchor                    # or -load-verify-boot to auto-detect
+```
+
+What happens: the loader re-seeds `coins_kv` from the snapshot and
+HARD-ASSERTs the result against the compiled checkpoint's SHA3 digest and
+UTXO count (`coins_kv_verify_against_checkpoint`) — a mismatch FATALs rather
+than silently falling back to a from-genesis fold. On success it forces all
+eight reducer-stage cursors (`header_admit`, `validate_headers`,
+`body_fetch`, `body_persist`, `script_validate`, `proof_validate`,
+`utxo_apply`, `tip_finalize`) to the checkpoint height instead of genesis, so
+the fold resumes at the checkpoint and climbs only the tail —
+`current header tip − checkpoint height` blocks — over on-disk bodies,
+instead of the full from-genesis span. The nightly anchor→tip replay canary
+(`tools/scripts/replay_canary.sh`) measures this tail fold at roughly 45
+minutes on the present chain length, versus hours for Method 2's full
+genesis fold.
+
+`-refold-from-anchor` is an explicit opt-in flag; `-load-verify-boot` reaches
+the same reset automatically on a normal boot when a matching verified
+snapshot is present and `coins_kv` is not already the proven authority —
+with no snapshot present, or a SHA3 mismatch, the predicate is false and the
+current boot path (cold-import seed) runs unchanged.
+
+**This path is transparent-state only.** It marks the Sprout and Sapling
+anchor/nullifier history below the checkpoint as empty rather than forging
+it, which raises both `utxo_apply.anchor_backfill_gap` and
+`utxo_apply.nullifier_backfill_gap` — see
+[`docs/RUNBOOK.md`](RUNBOOK.md) "Shielded-History Wedge" for the cure. The
+resulting posture is `release_assisted`, not the `sovereign`
+(`coins_kv_contains_refold_marker`) bit — the currently-proven sovereignty
+path is the complete consensus-state bundle install,
+[`docs/work/sovereign-cutover-runbook.md`](work/sovereign-cutover-runbook.md).
 
 Rules:
 - The import flags **only run on an empty datadir** (or one below the legacy
