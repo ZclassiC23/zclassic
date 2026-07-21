@@ -440,6 +440,11 @@ AGENT_IMPACT_RULE("lib/codeindex/*|lib/test/src/test_codeindex.c", "codeindex co
 /* Code navigator command surface: the `code` branch backed by lib/codeindex. */
 AGENT_IMPACT_RULE("lib/codeindex/*|config/commands/code.def|tools/command/native_code_command.c|tools/command/native_command.h|lib/test/src/test_code_impact.c", "codeindex code_capsule code_impact command_registry_catalog make_lint_gates")
 
+/* Content-addressed per-group test result cache (lib/test/src/testcache.c),
+ * keyed on codeindex_forward_closure() — editing the forward-closure engine or
+ * the cache module re-runs the cache's own contract test. */
+AGENT_IMPACT_RULE("lib/test/src/testcache.c|lib/test/include/test/testcache.h|lib/test/src/test_testcache.c|lib/codeindex/src/codeindex_impact.c", "testcache code_impact codeindex make_lint_gates")
+
 /* Wave 2.3 (2026-07-11): ZVCS dev-loop auto-anchor glue. */
 AGENT_IMPACT_RULE("lib/vcs/include/vcs/vcs_devloop.h|lib/vcs/src/vcs_devloop.c|lib/test/src/test_vcs_devloop.c", "vcs_devloop vcs_core dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("lib/vcs/src/vcs.c|lib/vcs/include/vcs/vcs.h|lib/vcs/src/vcs_commit.c|lib/test/src/test_vcs_core.c", "vcs_core vcs_devloop command_registry_catalog make_lint_gates")

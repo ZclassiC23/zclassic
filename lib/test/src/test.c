@@ -1457,6 +1457,7 @@ int main(int argc, char **argv)
     { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
     { extern int test_vcs_core(void); failures += test_vcs_core(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
+    { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();
     failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();

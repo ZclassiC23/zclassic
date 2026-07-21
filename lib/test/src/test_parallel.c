@@ -29,6 +29,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "test/testcache.h"
 #include "event/event.h"
 #include "util/signal_handler.h"
 
@@ -236,7 +237,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_db_migrate) \
     X(consensus_db_flip) \
     X(coins_kv) X(coins_ram) \
-    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_devloop) X(codeindex) \
+    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_devloop) X(codeindex) X(testcache) \
     X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
@@ -432,6 +433,7 @@ struct group_result {
     char out_path[128];  /* owned by the slot; copied here on reap */
     int skipped;         /* 1 if excluded by --only=SUBSTR (not run) */
     int skip_markers;    /* "SKIP (" sentinel lines in captured output */
+    int cached;          /* 1 if returned from the content-addressed cache */
 };
 
 static int get_nproc(void)
@@ -741,6 +743,13 @@ int main(int argc, char **argv)
     bool verbose = false;
     bool list_only = false;
     const char *only = NULL; /* --only=SUBSTR: run just matching groups */
+    /* Content-addressed test cache. Default OFF so the canonical push gate
+     * stays COLD (a cached SKIP never gates a push). --cache / ZCL_TEST_CACHE=1
+     * opt in for the inner dev loop; --no-cache forces off; --cold-audit runs
+     * everything fresh and asserts every cache HIT matches its fresh verdict. */
+    bool cli_cache = false;      /* --cache */
+    bool cli_no_cache = false;   /* --no-cache */
+    bool cli_cold_audit = false; /* --cold-audit */
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--jobs=", 7) == 0) {
@@ -759,13 +768,48 @@ int main(int argc, char **argv)
             list_only = true;
         } else if (strncmp(argv[i], "--only=", 7) == 0) {
             only = argv[i] + 7;
+        } else if (strcmp(argv[i], "--cache") == 0) {
+            cli_cache = true;
+        } else if (strcmp(argv[i], "--no-cache") == 0) {
+            cli_no_cache = true;
+        } else if (strcmp(argv[i], "--cold-audit") == 0) {
+            cli_cold_audit = true;
         } else {
             fprintf(stderr,
                     "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
-                    "[--list] [--only=SUBSTR]\n",
+                    "[--list] [--only=SUBSTR] [--cache|--no-cache] "
+                    "[--cold-audit]\n",
                     argv[0]);
             return 2;
         }
+    }
+
+    /* Diagnostic surface: ZCL_TEST_CACHE_DUMP=<group> prints the group's forward
+     * input closure, its content key, and its cacheability, then exits — the
+     * operator/proof lens onto what the cache would key on. */
+    const char *dump_group = getenv("ZCL_TEST_CACHE_DUMP");
+    if (dump_group && dump_group[0]) {
+        struct testcache *tc = testcache_open(NULL);
+        if (!tc) {
+            fprintf(stderr, "test_parallel: cache open failed for dump\n");
+            return 1;
+        }
+        testcache_dump_group(tc, dump_group);
+        testcache_close(tc);
+        return 0;
+    }
+
+    /* Resolve the cache mode. Precedence: --cold-audit > --no-cache >
+     * (--cache | ZCL_TEST_CACHE!=0) > OFF. OFF reproduces the historical
+     * behavior byte-for-byte (none of the cache code below runs). */
+    enum cache_mode { CACHE_OFF, CACHE_ON, CACHE_COLD_AUDIT } cache_mode;
+    {
+        const char *env = getenv("ZCL_TEST_CACHE");
+        bool env_on = env && env[0] && strcmp(env, "0") != 0;
+        if (cli_cold_audit)      cache_mode = CACHE_COLD_AUDIT;
+        else if (cli_no_cache)   cache_mode = CACHE_OFF;
+        else if (cli_cache || env_on) cache_mode = CACHE_ON;
+        else                     cache_mode = CACHE_OFF;
     }
 
     if (list_only) {
@@ -836,10 +880,57 @@ int main(int argc, char **argv)
                "(set ZCL_PARAMS_TESTS=1 or --only=<name> to run)\n",
                params_gated);
 
+    /* ── Content-addressed cache: probe every group's forward input closure,
+     * and in CACHE_ON mark the provable HITS as CACHED so they are never
+     * forked. Fail-safe: any open failure downgrades to CACHE_OFF (run all). */
+    struct testcache *tc = NULL;
+    struct testcache_probe *probes = NULL;
+    size_t cached_count = 0;
+    if (cache_mode != CACHE_OFF) {
+        tc = testcache_open(NULL);
+        if (!tc) {
+            fprintf(stderr, "test_parallel: cache open failed — "
+                            "running every group uncached\n");
+            cache_mode = CACHE_OFF;
+        }
+    }
+    if (cache_mode != CACHE_OFF) {
+        probes = calloc(g_num_groups, sizeof(*probes));
+        if (!probes) {
+            fprintf(stderr, "test_parallel: probe calloc failed — "
+                            "running every group uncached\n");
+            testcache_close(tc);
+            tc = NULL;
+            cache_mode = CACHE_OFF;
+        }
+    }
+    if (cache_mode != CACHE_OFF) {
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
+            testcache_probe_group(tc, g_groups[i].name, &probes[i]);
+        }
+        /* CACHE_ON: a provable stored PASS at the current key means the group
+         * cannot have changed — mark it CACHED (status 0 excludes it from
+         * dispatch; cached=1 records why). COLD_AUDIT never marks anything so
+         * every group runs fresh and is verified after. */
+        if (cache_mode == CACHE_ON) {
+            for (size_t i = 0; i < g_num_groups; i++) {
+                if (results[i].skipped) continue;
+                if (probes[i].cacheable && probes[i].hit) {
+                    results[i].status = 0;
+                    results[i].cached = 1;
+                    cached_count++;
+                }
+            }
+        }
+    }
+
     struct child_slot *slots =
         calloc((size_t)jobs, sizeof(*slots));
     if (!slots) {
         fprintf(stderr, "test_parallel: slot calloc failed\n");
+        testcache_close(tc);
+        free(probes);
         free(results);
         return 1;
     }
@@ -848,10 +939,11 @@ int main(int argc, char **argv)
     platform_time_monotonic_timespec(&t_start);
 
     pid_t parent_pid = getpid();
-    size_t reaped = pre_skipped;
+    /* pre_skipped (‑‑only / params) plus cache HITS are already accounted done. */
+    size_t reaped = pre_skipped + cached_count;
 
     for (size_t i = 0; i < g_num_groups; i++) {
-        if (results[i].skipped)
+        if (results[i].skipped || results[i].cached)
             continue;
         if (!group_requires_exclusive_repo(g_groups[i].name))
             continue;
@@ -1045,7 +1137,46 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ── Cache accounting: store fresh cacheable PASSes, report cached/ran,
+     * and (cold-audit) assert every stored PASS at a group's CURRENT key would
+     * have matched its fresh verdict. A cold-audit divergence is a closure/cache
+     * soundness bug and fails the run loudly (over and above the failing group
+     * already counting toward failed_groups). */
+    int audit_diverged = 0;
+    if (cache_mode != CACHE_OFF) {
+        size_t cached_n = 0, ran = 0, stored = 0, audit_hits = 0;
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
+            if (results[i].cached) { cached_n++; continue; }
+            ran++;
+            bool pass = !results[i].signaled && results[i].exit_code == 0;
+            if (pass && probes && probes[i].cacheable) {
+                testcache_store_pass(tc, probes[i].key);
+                stored++;
+            }
+            if (cache_mode == CACHE_COLD_AUDIT && probes &&
+                probes[i].cacheable && probes[i].hit) {
+                audit_hits++;
+                if (!pass) {
+                    audit_diverged++;
+                    printf("COLD-AUDIT DIVERGENCE: %s carried a cached PASS at "
+                           "its current key but FAILED a fresh run — the "
+                           "closure/cache is UNSOUND\n", g_groups[i].name);
+                }
+            }
+        }
+        printf("cached %zu / ran %zu%s\n", cached_n, ran,
+               cache_mode == CACHE_COLD_AUDIT ? " [cold-audit]" : "");
+        if (cache_mode == CACHE_COLD_AUDIT)
+            printf("cold-audit: %zu cache-hit(s) verified against fresh runs, "
+                   "%d divergence(s)\n", audit_hits, audit_diverged);
+        else if (stored > 0)
+            printf("cache: stored %zu fresh PASS verdict(s)\n", stored);
+        testcache_close(tc);
+        free(probes);
+    }
+
     free(slots);
     free(results);
-    return failed_groups == 0 ? 0 : 1;
+    return (failed_groups == 0 && audit_diverged == 0) ? 0 : 1;
 }
