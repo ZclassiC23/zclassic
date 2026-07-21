@@ -124,6 +124,22 @@ struct app_context {
                                  * path is unreachable on a running node. OFFLINE
                                  * PRODUCTION ONLY, fingerprint-gated, NEVER a
                                  * node-boot signature bypass. Default false. */
+    bool full_fold;            /* -full-fold : GENESIS-FOLD-TO-TIP. Same offline
+                                 * driver as -mint-anchor (genesis reset OR resume,
+                                 * reducer_kick_unbudgeted self-drive over on-disk
+                                 * BODIES, no P2P) EXCEPT the fold ceiling/target is
+                                 * the local header TIP (highest connected block
+                                 * with a body) instead of the compiled SHA3
+                                 * checkpoint, and it does NOT run the terminal
+                                 * checkpoint snapshot/assert/export ceremony (there
+                                 * is no baked checkpoint at the tip). Reaches tip on
+                                 * COMPLETE self-derived shielded state (Sprout/
+                                 * Sapling anchors + nullifiers folded by the real
+                                 * stages). Implies -mint-anchor (reuses every
+                                 * mint_anchor gate) but overrides its target +
+                                 * skips its ceremony. Resumable: continues from the
+                                 * persisted utxo_apply cursor; ZCL_FULL_FOLD_FROM_
+                                 * GENESIS=1 forces a genesis reset. Default false. */
     bool ratify_mint_anchor;   /* -ratify-mint-anchor : TERMINAL offline ratifier
                                  * for a COMPLETED full-validation mint producer
                                  * datadir (run against a COPY). Re-derives the
@@ -242,6 +258,15 @@ struct app_context {
                                  * sockets by design). Implies confine=true.
                                  * Default false. */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
+    bool no_legacy_utxo_import; /* -nolegacyutxoimport : NARROWER than
+                                 * -nolegacyimport — skip ONLY the legacy
+                                 * chainstate LevelDB→coins.db UTXO import
+                                 * (boot.c utxo_recovery_import_ldb), while KEEPING
+                                 * the block-body link/copy from ~/.zclassic. For a
+                                 * from-genesis fold (-full-fold), which builds the
+                                 * UTXO set itself: it wants the bodies present but
+                                 * must NOT be seeded with a borrowed transparent
+                                 * set. Implied by -full-fold. Default false. */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
                                  * the event-log block_index_projection instead of
                                  * the legacy flat/SQLite/LevelDB loaders,

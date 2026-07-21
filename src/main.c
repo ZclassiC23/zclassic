@@ -344,7 +344,12 @@ int main(int argc, char **argv)
      * historical one-FATAL-at-a-time surfacing (missing legacy block index ->
      * FATAL on one run; missing bodies -> silent stall on the next). Every
      * check is read-only; a failure here means app_init never runs. */
-    if (ctx.mint_anchor && !boot_mint_anchor_preflight_run_all(ctx.datadir, NULL))
+    /* -full-fold reuses ctx.mint_anchor but folds toward the local header tip,
+     * not the compiled checkpoint — the mint preflight's checkpoint/anchor-bound
+     * body-coverage checks would misfire. boot_full_fold_reset does its own
+     * header-tip presence check and the fold walls loud on a missing body. */
+    if (ctx.mint_anchor && !ctx.full_fold &&
+        !boot_mint_anchor_preflight_run_all(ctx.datadir, NULL))
         return 1;
 
     /* -sandbox=steady fail-closed: the node deny-set forbids execve, so the

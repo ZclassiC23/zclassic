@@ -43,6 +43,7 @@
  * mint resumable without it. */
 
 #include "config/boot.h"
+#include "config/boot_internal.h"  /* boot_full_fold_is_armed/_finish (-full-fold) */
 #include "config/mint_anchor_progress.h"
 #include "config/consensus_state_producer_receipt.h"
 #include "config/consensus_state_snapshot_export.h"  /* consensus_state_snapshot_export */
@@ -365,7 +366,11 @@ bool boot_mint_anchor_run(const char *datadir)
                     "mint_anchor no_compiled_checkpoint");
         _exit(EXIT_FAILURE);
     }
-    const int32_t anchor = cp->height;
+    /* -full-fold (boot_full_fold.c) overrides the target to the local header TIP
+     * and skips the checkpoint ceremony; disarmed → target == cp->height. */
+    int32_t ff_target = -1;
+    const bool full_fold = boot_full_fold_is_armed(&ff_target);
+    const int32_t anchor = full_fold ? ff_target : cp->height;
 
     sqlite3 *pdb = progress_store_db();
     if (!pdb) {
@@ -579,15 +584,11 @@ bool boot_mint_anchor_run(const char *datadir)
     int64_t count = coins_kv_count(pdb);
     boot_mint_anchor_progress_log_tick(progress_log, through, anchor, drive_start_us,
                            /*force=*/true);
-    fprintf(stderr,
-            "[mint-anchor] fold reached the anchor: applied-through=%d, "
-            "coins_kv count=%lld — writing the snapshot\n",
-            through, (long long)count);
 
-    /* Restore durability BEFORE any artifact derives from the DB: NORMAL
-     * first (set_sync_mode does not checkpoint), then wal_checkpoint(TRUNCATE)
-     * so every fold write is durably in the main db when the snapshot,
-     * receipt finalize, and bundle export read it. */
+    /* Restore durability BEFORE any artifact derives from the DB (shared by the
+     * mint ceremony AND the -full-fold early return): NORMAL first (set_sync_mode
+     * does not checkpoint), then wal_checkpoint(TRUNCATE) so every fold write is
+     * durably in the main db. */
     if (mint_sync_off) {
         progress_store_set_sync_mode(/*ibd=*/false);
         if (!progress_store_checkpoint())
@@ -595,14 +596,23 @@ bool boot_mint_anchor_run(const char *datadir)
                      "pre-export wal_checkpoint failed; artifact remains "
                      "SHA3-gated");
     }
-    /* Restore auto-checkpointing + a final TRUNCATE so every fold write is in
-     * the main db (not the WAL) before the snapshot/receipt/export read it.
-     * Independent of the sync-off restore above (wal_manual can be set with
-     * ZCL_MINT_PROGRESS_SYNC_OFF=0). */
+    /* Restore auto-checkpointing + a final TRUNCATE (independent of the sync-off
+     * restore — wal_manual can be set with ZCL_MINT_PROGRESS_SYNC_OFF=0). */
     if (wal_manual) {
         mint_wal_autocheckpoint(pdb, 1000);
         (void)progress_store_checkpoint();
     }
+
+    /* -full-fold: reached the local header TIP with COMPLETE self-derived
+     * shielded state — SKIP the cp->height-bound snapshot/assert/export ceremony
+     * and return the H* verdict (boot_full_fold.c). */
+    if (full_fold)
+        return boot_full_fold_finish(pdb, through, count, anchor, kStallLimit);
+
+    fprintf(stderr,
+            "[mint-anchor] fold reached the anchor: applied-through=%d, "
+            "coins_kv count=%lld — writing the snapshot\n",
+            through, (long long)count);
 
     /* (2) Write the snapshot artifact. Output path: $ZCL_MINT_ANCHOR_OUT, else
      * <datadir>/utxo-anchor.snapshot. */

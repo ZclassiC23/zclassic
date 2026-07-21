@@ -23,4 +23,4 @@
 # through the tier-2 load + mismatch-check blocks and calls the new
 # sapling_tree_verify_at_saved_height / sapling_tree_attempt_fold_forward
 # helpers instead of unconditionally deferring or full-rebuilding.
-config/src/boot.c app_init 2802
+config/src/boot.c app_init 2809

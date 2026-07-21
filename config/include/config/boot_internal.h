@@ -78,6 +78,30 @@ bool boot_index_reindex_replay_executable(struct main_state *ms,
 /* Fail-closed reset used only by the immutable anchor producer lane. */
 bool boot_mint_anchor_genesis_reset(struct node_db *ndb);
 
+/* -full-fold (GENESIS-FOLD-TO-TIP) setup. Runs at the boot.c mint-anchor reset
+ * site when ctx->full_fold. Determines the local header TIP (highest connected
+ * block that has a body on disk), sets the header_admit fold ceiling to it, and
+ * ARMS the mint driver's full-fold override (target=tip, skip the terminal
+ * checkpoint ceremony). Resumable by default: continues from the persisted
+ * utxo_apply cursor; ZCL_FULL_FOLD_FROM_GENESIS=1 forces a genesis reset first.
+ * No compiled-checkpoint requirement — the fold reaches whatever height local
+ * headers+bodies allow, naming a typed blocker if a body is missing. */
+void boot_full_fold_reset(struct node_db *ndb, struct main_state *state);
+
+/* full-fold driver override, consumed by boot_mint_anchor_run. When armed, the
+ * mint driver folds toward *out_target (the header tip) instead of the compiled
+ * SHA3 checkpoint and returns success at the target WITHOUT the checkpoint
+ * snapshot/assert/export ceremony. Default disarmed (a normal -mint-anchor run
+ * never calls _arm, so its behavior is unchanged). */
+void boot_full_fold_arm(int32_t tip_target);
+bool boot_full_fold_is_armed(int32_t *out_target);
+
+/* Terminal -full-fold verdict, called by boot_mint_anchor_run in place of the
+ * checkpoint ceremony (boot_full_fold.c). Returns true iff the fold reached the
+ * tip target; otherwise names the walled stage via the typed-blocker reporter. */
+bool boot_full_fold_finish(struct sqlite3 *pdb, int32_t through, int64_t count,
+                           int32_t target, int stall_limit);
+
 /* Seed a verified Sapling frontier after snapshot/refold reset. */
 void boot_seed_sapling_anchor_frontier_after_reset(struct main_state *state);
 
