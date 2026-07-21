@@ -261,7 +261,7 @@ AGENT_IMPACT_RULE("lib/sim/src/seed_tape.c|lib/sim/include/sim/seed_tape.h|lib/s
 AGENT_IMPACT_RULE("tools/postmortem_to_scenario.c|lib/test/src/test_postmortem_to_scenario.c|docs/CHAOS_HARNESS.md", "postmortem_to_scenario chaos_harness make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/*|lib/test/src/test_sapling*.c|lib/test/src/test_simnet_sapling*.c|lib/test/src/test_snark_kat.c|lib/test/src/test_shielded_*.c", "sapling sapling_tree sapling_ckpt_persist simnet_sapling_activation make_lint_gates")
 AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|lib/validation/include/validation/process_block.h|app/services/src/node_db_catchup_service.c|app/services/src/sapling_checkpoint_hook.c|app/services/include/services/sapling_checkpoint_hook.h", "sapling_ckpt_persist sapling_tree utxo_apply_stage sapling_anchor_frontier_condition make_lint_gates")
-AGENT_IMPACT_RULE("app/controllers/src/sync_controller_sapling_tree.c|app/controllers/src/sync_controller_sapling_tree_persist.c|app/controllers/src/sync_controller_blocks.c|app/controllers/src/wallet_rescan_controller_witness.c|lib/test/src/test_unclean_shutdown_advance.c", "unclean_shutdown_advance sapling_tree sapling_ckpt_persist syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/sync_controller_sapling_tree.c|app/controllers/src/sync_controller_sapling_tree_persist.c|app/controllers/src/sync_controller_blocks.c|app/controllers/src/wallet_rescan_controller_witness.c|lib/test/src/test_unclean_shutdown_advance.c|lib/test/src/test_shielded_sync_strength.c", "unclean_shutdown_advance sapling_tree sapling_ckpt_persist shielded_sync_strength syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_groth16_selfverify.c|lib/test/src/groth16_spend_oracle.c|lib/test/src/groth16_spend_parity.c|lib/test/src/groth16_spend_adversarial.c", "groth16_selfverify snark_kat make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/src/bls12_381.c|lib/test/src/test_bls12_381_adversarial.c", "bls12_381_adversarial snark_kat make_lint_gates")
 /* wf/sapling-proof-verify-batch-parallel: batch Groth16 verify on the
@@ -331,8 +331,8 @@ AGENT_IMPACT_RULE("lib/sync/src/sync_state.c|lib/sync/include/sync/sync_state.h|
 AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/services/zslp_command_service.h|app/controllers/src/zslp_controller.c", "slp store make_lint_gates")
 
 /* Durable shielded anchors (anchor_kv + utxo_apply_anchors). */
-AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all make_lint_gates")
-AGENT_IMPACT_RULE("lib/storage/src/anchor_kv.c|lib/storage/include/storage/anchor_kv.h", "coins_anchor_reconcile_all boot_coins_anchor_dual_store_recovery make_lint_gates")
+AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h|lib/test/src/test_shielded_sync_strength.c", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all sapling_anchor_frontier_condition shielded_sync_strength make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/anchor_kv.c|lib/storage/include/storage/anchor_kv.h", "coins_anchor_reconcile_all boot_coins_anchor_dual_store_recovery sapling_anchor_frontier_condition shielded_sync_strength make_lint_gates")
 /* consensus.db — dedicated consensus-kernel store + one-time integrity-verified
  * migration out of progress.kv (the reducer's private-WAL split). */
 AGENT_IMPACT_RULE("lib/storage/src/consensus_db.c|lib/storage/include/storage/consensus_db.h|lib/test/src/test_consensus_db_migrate.c", "consensus_db_migrate coins_kv nullifier_kv make_lint_gates")
