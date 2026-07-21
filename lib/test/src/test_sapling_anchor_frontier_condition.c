@@ -18,7 +18,9 @@
 #include "test/test_helpers.h"
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
+#include "config/consensus_state_install_runtime.h"
 #include "controllers/agent_controller.h"
+#include "controllers/shielded_gap_remedy_controller.h"
 #include "core/arith_uint256.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
@@ -28,6 +30,7 @@
 #include "json/json.h"
 #include "primitives/block.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "services/nullifier_backfill_service.h"
 #include "services/sync_monitor.h"
 #include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
@@ -39,6 +42,7 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define SAFC_CHECK(name, expr) do {                                   \
     printf("sapling_anchor_frontier_condition: %s... ", (name));      \
@@ -152,13 +156,13 @@ static bool safu_engine_setup(struct safu_engine_fixture *fx, const char *tag)
 
     sync_monitor_set_context(NULL, NULL, &fx->ms);
 
-    /* Canonical live datadir/lane: proves containment REFUSES live in-place
-     * apply (mirrors test_shielded_gap_remedy.c's LIVE case). */
-    const char *home = getenv("HOME");
-    char live_dir[600];
-    snprintf(live_dir, sizeof(live_dir), "%s/.zclassic-c23",
-             home && home[0] ? home : "/tmp");
-    rpc_agent_set_boot_context("canonical", "release", live_dir,
+    /* Canonical lane over the fixture's OWN isolated temp datadir (never the
+     * real ~/.zclassic-c23): a non-copy datadir still classifies refuses_live
+     * (eligibility requires the -COPY- marker), so the borrowed-import
+     * containment assertions hold, AND the sovereign self-heal ladder's Rung B
+     * (boot_install_bundle_request / boot_autodetect_consensus_bundle) can only
+     * ever touch <fx->dir>/bundles — hermetic, no live-datadir side effect. */
+    rpc_agent_set_boot_context("canonical", "release", fx->dir,
                                18232, 8033, 8443, 0);
 
     reducer_frontier_provable_tip_reset();
@@ -172,6 +176,9 @@ static bool safu_engine_setup(struct safu_engine_fixture *fx, const char *tag)
 
 static void safu_engine_teardown(struct safu_engine_fixture *fx)
 {
+    /* Clear the boot context so the about-to-be-deleted temp datadir never
+     * leaks into a later test's agent_runtime_context_datadir(). */
+    rpc_agent_set_boot_context("unknown", "unknown", "", 0, 0, 0, 0);
     sync_monitor_set_context(NULL, NULL, NULL);
     condition_engine_reset_for_testing();
     sapling_anchor_frontier_test_reset();
@@ -447,6 +454,141 @@ int test_sapling_anchor_frontier_condition(void)
                        got && !snap.currently_active);
             SAFC_CHECK("gap-cleared: cleared_count advanced",
                        got && snap.cleared_count >= 1);
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* ══ Move 2a — sovereign self-heal LADDER LOGIC (pure + hermetic) ══ */
+
+    /* (E) Pure rung selection matrix — Rung A fires when bodies present, Rung B
+     * when a bundle is present, Rung C otherwise; NONE when no gap. */
+    {
+        SAFC_CHECK("select: nullifier gap + local bodies -> Rung A(nullifier)",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_NULLIFIER_ONLY,
+                                                  true, false, false) ==
+                       SHIELDED_SELFHEAL_RUNG_A_NULLIFIER);
+        SAFC_CHECK("select: nullifier gap, no bodies, bundle -> Rung B",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_NULLIFIER_ONLY,
+                                                  false, false, true) ==
+                       SHIELDED_SELFHEAL_RUNG_B_INSTALL);
+        SAFC_CHECK("select: nullifier gap, no bodies, no bundle -> Rung C",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_NULLIFIER_ONLY,
+                                                  false, false, false) ==
+                       SHIELDED_SELFHEAL_RUNG_C_NAMED_NEED);
+        SAFC_CHECK("select: anchor gap + reachable refold -> Rung A(anchor)",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_ANCHOR_ONLY,
+                                                  false, true, false) ==
+                       SHIELDED_SELFHEAL_RUNG_A_ANCHOR);
+        SAFC_CHECK("select: BOTH + reachable refold -> Rung A(anchor)",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_BOTH, false, true,
+                                                 true) ==
+                       SHIELDED_SELFHEAL_RUNG_A_ANCHOR);
+        SAFC_CHECK("select: anchor gap, no refold, bundle -> Rung B",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_ANCHOR_ONLY,
+                                                  false, false, true) ==
+                       SHIELDED_SELFHEAL_RUNG_B_INSTALL);
+        SAFC_CHECK("select: BOTH, no refold, no bundle -> Rung C",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_BOTH, false, false,
+                                                 false) ==
+                       SHIELDED_SELFHEAL_RUNG_C_NAMED_NEED);
+        SAFC_CHECK("select: no gap -> Rung NONE",
+                   shielded_selfheal_select_rung(SHIELDED_GAP_NONE, true, true,
+                                                 true) ==
+                       SHIELDED_SELFHEAL_RUNG_NONE);
+    }
+
+    /* (F) Rung C named-need composition — the exact first missing height. */
+    {
+        SAFC_CHECK("named_need: neither known -> -1",
+                   shielded_selfheal_named_need(-1, -1) == -1);
+        SAFC_CHECK("named_need: nullifier only -> that height",
+                   shielded_selfheal_named_need(100, -1) == 100);
+        SAFC_CHECK("named_need: body only -> that height",
+                   shielded_selfheal_named_need(-1, 200) == 200);
+        SAFC_CHECK("named_need: both -> the lower (exact first missing)",
+                   shielded_selfheal_named_need(150, 120) == 120 &&
+                   shielded_selfheal_named_need(120, 150) == 120);
+    }
+
+    /* (G) Sovereign authorization is SEPARATE from the borrowed containment:
+     * refuses a throwaway -COPY- copy-prove datadir, authorizes a live one. */
+    {
+        char copy_dir[128];
+        snprintf(copy_dir, sizeof(copy_dir),
+                 "/tmp/.zclassic-c23-COPY-selfheal-test");
+        rpc_agent_set_boot_context("copy", "release", copy_dir,
+                                   18232, 8033, 8443, 0);
+        SAFC_CHECK("sovereign auth: -COPY- datadir NOT authorized (operator)",
+                   !shielded_selfheal_sovereign_authorized());
+        rpc_agent_set_boot_context("canonical", "release",
+                                   "/tmp/zcl-selfheal-live", 18232, 8033, 8443,
+                                   0);
+        SAFC_CHECK("sovereign auth: live (non-copy) datadir authorized",
+                   shielded_selfheal_sovereign_authorized());
+        rpc_agent_set_boot_context("unknown", "unknown", "", 0, 0, 0, 0);
+    }
+
+    /* (H) Rung B ARMS the durable install-on-next-boot request when a
+     * ROM-matching bundle is present — hermetic against the fixture's own temp
+     * datadir (never the live node). Drives the REAL remedy path: NULLIFIER_ONLY
+     * gap + no open node.db (Rung A skipped) + a bundle present -> Rung B arms. */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "rungB");
+        SAFC_CHECK("rungB fixture setup", ok);
+        if (ok) {
+            char bdir[320];
+            snprintf(bdir, sizeof(bdir), "%s/bundles", fx.dir);
+            mkdir(bdir, 0700);
+            char bpath[400];
+            snprintf(bpath, sizeof(bpath), "%s/complete-state.sqlite", bdir);
+            FILE *f = fopen(bpath, "wb");
+            if (f) { fputs("SQLite format 3\0stub-bundle", f); fclose(f); }
+
+            SAFC_CHECK("rungB: no install request pending before the heal",
+                       !boot_install_bundle_pending(fx.dir));
+
+            struct blocker_record r;
+            blocker_init(&r, UTXO_APPLY_NF_GAP_BLOCKER_ID, "utxo_apply",
+                        BLOCKER_PERMANENT, "test: nullifier history gap");
+            blocker_set(&r);
+            condition_engine_tick();   /* detect + remedy: Rung B arms */
+
+            SAFC_CHECK("rungB: remedy ran exactly once",
+                       sapling_anchor_frontier_test_remedy_calls() == 1);
+            SAFC_CHECK("rungB: install-on-next-boot request ARMED (hermetic)",
+                       boot_install_bundle_pending(fx.dir));
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* (I) The .progressing hook resets the budget WHILE the durable heal cursor
+     * advances, and returns false on a frozen cursor (so a genuinely stuck node
+     * still pages in bounded time and never re-spins). Drives the real hook via
+     * the nullifier backfill resume cursor. */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "progressing");
+        SAFC_CHECK("progressing fixture setup", ok);
+        if (ok) {
+            sqlite3 *pdb = progress_store_db();
+            progress_meta_table_ensure(pdb);
+            sapling_anchor_frontier_test_force_named_episode();
+
+            /* First observation snapshots the baseline (no advance claimed). */
+            progress_meta_set(pdb, NULLIFIER_BACKFILL_RESUME_KEY, "100", 3);
+            SAFC_CHECK("progressing: first observation snapshots (false)",
+                       !sapling_anchor_frontier_test_progressing());
+            /* Frozen cursor -> false (budget must still exhaust). */
+            SAFC_CHECK("progressing: frozen resume cursor -> false",
+                       !sapling_anchor_frontier_test_progressing());
+            /* Durable advance -> true (engine resets the attempt budget). */
+            progress_meta_set(pdb, NULLIFIER_BACKFILL_RESUME_KEY, "250", 3);
+            SAFC_CHECK("progressing: advancing resume cursor -> true",
+                       sapling_anchor_frontier_test_progressing());
+            /* Re-snapshotted at 250 -> a repeat with no further advance is false. */
+            SAFC_CHECK("progressing: re-snapshot then frozen -> false",
+                       !sapling_anchor_frontier_test_progressing());
         }
         safu_engine_teardown(&fx);
     }

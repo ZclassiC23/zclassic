@@ -368,8 +368,12 @@ AGENT_IMPACT_RULE("lib/bloom/src/merkle.c|lib/bloom/include/bloom/merkle.h|lib/t
 AGENT_IMPACT_RULE("lib/test/src/test_parity_lockin_anchor_membership.c", "parity_lockin_anchor_membership")
 AGENT_IMPACT_RULE("lib/test/src/test_sync_service.c", "sync_service")
 
-/* Wave 3 (2026-07-10): sapling anchor-frontier cure condition. */
-AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/conditions/include/conditions/sapling_anchor_frontier_unavailable.h", "sapling_anchor_frontier_condition condition_engine make_lint_gates")
+/* Wave 3 (2026-07-10): sapling anchor-frontier cure condition. Move 2a extends
+ * it with the sovereign shielded-gap self-heal ladder, so a change to the
+ * nullifier/anchor blocker bindings or the condition's own test also runs this
+ * group (the impact resolver UNIONS matching rules, so blocker_remedy_bindings.
+ * def still keeps its -confine mapping too). */
+AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/conditions/include/conditions/sapling_anchor_frontier_unavailable.h|app/conditions/src/shielded_selfheal_ladder.c|app/conditions/include/conditions/shielded_selfheal_ladder.h|app/conditions/include/conditions/blocker_remedy_bindings.def|lib/test/src/test_sapling_anchor_frontier_condition.c", "sapling_anchor_frontier_condition condition_engine make_lint_gates")
 
 /* Wave 3: agent test runner (native-triggerable focused tests/scenarios). */
 AGENT_IMPACT_RULE("app/controllers/src/agent_test_controller.c|app/controllers/include/controllers/agent_test_controller.h|lib/test/src/test_agent_test.c", "agent_test make_lint_gates")

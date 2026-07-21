@@ -119,7 +119,16 @@ ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_
  * (below) were the two most-cited instances in the 2026-07-10 hold-class
  * audit; the rest of this list is the FULL enumeration that audit warned
  * was needed for every already-typed hold, not just those two. */
-ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          OWNER) /* owner-gated populate-only walker: nullifier_backfill_service.c */
+/* Move 2a: the sovereign shielded-gap self-heal ladder now AUTO-drives the
+ * populate-only nullifier walker (nullifier_backfill_service.c) from local
+ * bodies — Rung A of remedy_named_gap() in
+ * app/conditions/src/sapling_anchor_frontier_unavailable.c, the same condition
+ * that heals the anchor half. It re-derives proven state (never borrows), so it
+ * routes to that healer instead of OWNER. The witness still requires the blocker
+ * cleared + H* climbed, and the .progressing hook bounds a multi-round backfill;
+ * a genuinely absent-body / no-bundle case self-terminates at Rung C's named
+ * page. */
+ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          sapling_anchor_frontier_unavailable)
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
