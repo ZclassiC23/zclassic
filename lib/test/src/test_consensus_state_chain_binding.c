@@ -144,6 +144,52 @@ static struct consensus_state_chain_binding_observation seeded_target_observatio
     return observation;
 }
 
+/* A headers-first ("instant-on") node: it has PoW-validated the FULL header
+ * chain (a selected header tip well above the checkpoint) but folded ZERO
+ * bodies — durable served H* is genesis (0). The block at the checkpoint height
+ * IS present on its selected chain carrying the baked block_hash and a durable
+ * validate_headers pass record (full Equihash PoW), but no body has connected so
+ * scripts are unvalidated. This is exactly the shape that must ADMIT the baked
+ * checkpoint via -4 path (b) WITHOUT a fold, and it is DISTINCT from the
+ * seeded_target shape above (there the checkpoint block is absent; here it is
+ * present-but-bodiless with served H* below the checkpoint). */
+static struct consensus_state_chain_binding_observation
+header_bootstrap_observation(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_checkpoint_authority *authority)
+{
+    struct consensus_state_chain_binding_observation observation;
+    memset(&observation, 0, sizeof(observation));
+    /* -3 frontier durability holds (the target frontier is durable/consistent). */
+    observation.before_frontier_consistent = true;
+    observation.after_frontier_consistent = true;
+    observation.frontier_unchanged = true;
+    /* Zero bodies folded: durable served H* is genesis, BELOW the checkpoint, so
+     * -4 path (a) cannot fire — only the header-bootstrap path (b) can. */
+    observation.durable_served_height = 0;
+    /* The checkpoint-height block is on the selected chain with the baked hash
+     * and a durable PoW pass record, but scripts are NOT validated (no body). */
+    observation.selected_bundle_known = true;
+    observation.selected_bundle_height = manifest->height;
+    memcpy(observation.selected_bundle_hash, manifest->block_hash, 32);
+    observation.selected_bundle_valid_scripts = false;
+    observation.selected_bundle_failure_free = true;
+    observation.bundle_header_pass_record = true;
+    /* Materialized selected header tip ABOVE the checkpoint with real work —
+     * -11 header-tip validity must still hold on the bootstrap path. */
+    observation.selected_header_known = true;
+    observation.selected_header_height = manifest->height + 20;
+    observation.selected_header_valid_tree = true;
+    observation.selected_header_failure_free = true;
+    for (size_t i = 0; i < 32; i++) {
+        observation.selected_header_hash[i] = (uint8_t)(49u + i);
+        observation.selected_header_chainwork[i] = (uint8_t)(81u + i);
+    }
+    if (authority)
+        observation.checkpoint_authority = *authority;
+    return observation;
+}
+
 int test_consensus_state_chain_binding(void)
 {
     int failures = 0;
@@ -360,6 +406,80 @@ int test_consensus_state_chain_binding(void)
                   &manifest, &materialized_inert_auth).ok &&
               !consensus_state_chain_binding_uses_checkpoint_authority(
                   &manifest, &materialized_inert_auth));
+
+    /* ── Header-bootstrap install (the instant-on keystone, FIX-B) ─────────
+     * A blank node fast-syncs the header chain (PoW-validated to tip) and then
+     * installs the baked checkpoint state WITHOUT first folding bodies through
+     * the checkpoint height (durable served H* = 0). -4 path (b) admits this iff
+     * — under compiled-checkpoint authority — the node has PoW-validated the
+     * header at EXACTLY the checkpoint height whose hash equals the baked
+     * block_hash (selected_bundle_* at the checkpoint height + a durable
+     * validate_headers pass record). Gated on cp_auth so a non-checkpoint bundle
+     * can never bootstrap; -3 and -11 stay enforced on the bootstrap path. */
+    struct consensus_state_chain_binding_observation bootstrap =
+        header_bootstrap_observation(&manifest, &authority);
+
+    /* (1) Headers-first bootstrap ADMITTED without a fold. */
+    CSB_CHECK("headers-first bootstrap admits install without a fold (H*=0)",
+              consensus_state_chain_binding_decide(&manifest, &bootstrap).ok);
+    CSB_CHECK("bootstrap admit reports checkpoint authority was used",
+              consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &bootstrap));
+
+    /* (2) Wrong block at the checkpoint height (hash != baked block_hash) →
+     * refused: the pass record no longer keys the baked value. */
+    struct consensus_state_chain_binding_observation bootstrap_wrong_block =
+        bootstrap;
+    bootstrap_wrong_block.selected_bundle_hash[0] ^= 1u;
+    struct zcl_result wrong_block = consensus_state_chain_binding_decide(
+        &manifest, &bootstrap_wrong_block);
+    CSB_CHECK("bootstrap wrong-block header refuses at -4",
+              !wrong_block.ok && wrong_block.code == -4);
+
+    /* (3) Header present + hash-matching but NOT PoW-validated (no durable
+     * validate_headers pass record) → refused at -4: the sovereign fact (full
+     * Equihash PoW pass at this exact height+hash) is absent. */
+    struct consensus_state_chain_binding_observation bootstrap_unvalidated =
+        bootstrap;
+    bootstrap_unvalidated.bundle_header_pass_record = false;
+    struct zcl_result unvalidated = consensus_state_chain_binding_decide(
+        &manifest, &bootstrap_unvalidated);
+    CSB_CHECK("bootstrap unvalidated header (no pass record) refuses at -4",
+              !unvalidated.ok && unvalidated.code == -4);
+
+    /* (4) NON-checkpoint bundle cannot bootstrap: cp_auth false (manifest does
+     * not byte-reproduce the baked checkpoint) → path (b) unavailable, and
+     * served H*=0 fails path (a) → refused at -4. */
+    struct consensus_state_checkpoint_authority non_checkpoint_auth = authority;
+    non_checkpoint_auth.block_hash[0] ^= 1u;  /* manifest != baked */
+    struct consensus_state_chain_binding_observation bootstrap_non_cp =
+        header_bootstrap_observation(&manifest, &non_checkpoint_auth);
+    struct zcl_result non_cp = consensus_state_chain_binding_decide(
+        &manifest, &bootstrap_non_cp);
+    CSB_CHECK("non-checkpoint bundle cannot bootstrap (refused at -4)",
+              !non_cp.ok && non_cp.code == -4 &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &bootstrap_non_cp));
+
+    /* And an unavailable authority (no checkpoint compiled) is likewise inert:
+     * the bootstrap path needs cp_auth, so served H*=0 refuses at -4. */
+    struct consensus_state_checkpoint_authority unavailable_boot = authority;
+    unavailable_boot.available = false;
+    struct consensus_state_chain_binding_observation bootstrap_no_auth =
+        header_bootstrap_observation(&manifest, &unavailable_boot);
+    struct zcl_result boot_no_auth = consensus_state_chain_binding_decide(
+        &manifest, &bootstrap_no_auth);
+    CSB_CHECK("bootstrap with unavailable authority refuses at -4",
+              !boot_no_auth.ok && boot_no_auth.code == -4);
+
+    /* (5) No regression: the state-replacement path (durable served H* >= the
+     * checkpoint height) still admits — path (a) is unchanged by path (b). */
+    struct consensus_state_chain_binding_observation bootstrap_replaced =
+        bootstrap;
+    bootstrap_replaced.durable_served_height = manifest.height;
+    CSB_CHECK("state-replacement path still admits (served H* >= height)",
+              consensus_state_chain_binding_decide(
+                  &manifest, &bootstrap_replaced).ok);
 
     printf("consensus_state_chain_binding: %s\n",
            failures ? "FAILED" : "ALL PASSED");

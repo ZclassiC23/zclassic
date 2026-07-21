@@ -121,16 +121,12 @@ struct zcl_result consensus_state_chain_binding_decide(
         return ZCL_ERR(-1, "chain binding: null manifest/observation");
     if (!manifest_is_complete_and_self_bound(manifest))
         return ZCL_ERR(-2, "chain binding: manifest is not complete/self-bound");
-    /* -3 and -4 are ALWAYS target-derived: the target's frontier must be
-     * durable and consistent, and its durable served H* must already cover the
-     * bundle height. Checkpoint-content authority never relaxes these. */
+    /* -3 is ALWAYS target-derived: the target's frontier must be durable and
+     * consistent. Checkpoint-content authority never relaxes it. */
     if (!observation->before_frontier_consistent ||
         !observation->after_frontier_consistent ||
         !observation->frontier_unchanged)
         return ZCL_ERR(-3, "chain binding: selected frontier changed or is not durable");
-    if (observation->durable_served_height < manifest->height)
-        return ZCL_ERR(-4, "chain binding: bundle height=%d exceeds durable H*=%d",
-                       manifest->height, observation->durable_served_height);
 
     /* Below-checkpoint predicates (-5/-6/-7/-8/-9/-10 and the -11 ancestry
      * links) reference the checkpoint block and its Sapling source, both AT OR
@@ -138,10 +134,51 @@ struct zcl_result consensus_state_chain_binding_decide(
      * above the checkpoint, so those blocks are never materialized there. When
      * the bundle is exactly the compiled checkpoint content, the compiled
      * checkpoint (a stronger, PoW-committed, independently re-derivable trust
-     * root) authorizes them in place of the absent target index. */
+     * root) authorizes them in place of the absent target index. The same
+     * authority also enables the -4 header-bootstrap (instant-on) path below. */
     bool cp_auth =
         consensus_state_chain_binding_uses_checkpoint_authority(manifest,
                                                                 observation);
+
+    /* -4 admits on EITHER of two sovereign paths:
+     *
+     *  (a) state-replacement: the target has already folded and durably served
+     *      bodies THROUGH the bundle height (durable H* >= bundle height) — it
+     *      re-derived and served the chain across the checkpoint itself.
+     *
+     *  (b) header-bootstrap (instant-on): under compiled-checkpoint authority
+     *      (cp_auth — the manifest byte-reproduces the baked ROM checkpoint:
+     *      block_hash + Sapling frontier root+height at exactly the checkpoint
+     *      height), a node that has independently PoW-validated the header at
+     *      EXACTLY the checkpoint height whose hash equals the baked block_hash
+     *      has established the SAME sovereign fact -4 was a proxy for — "the
+     *      baked checkpoint block is on my most-work PoW-validated chain" —
+     *      directly, and WITHOUT the expensive body fold. selected_bundle_* are
+     *      the checkpoint-height block on the node's selected chain and
+     *      bundle_header_pass_record is a durable validate_headers pass row
+     *      (full Equihash PoW + header validity, see
+     *      validate_headers_default_validator -> block_row_verify) for exactly
+     *      that (height, hash). Gated on cp_auth, so a NON-checkpoint bundle can
+     *      never bootstrap. To forge admission an attacker would need a most-
+     *      work Equihash chain through a DIFFERENT block at the checkpoint
+     *      height (the same 51% PoW cost as attacking the real chain) — and even
+     *      then the hash would not equal the baked value the pass record is
+     *      keyed on. -3 (frontier durability) and the -11 header-tip validity
+     *      below remain enforced on BOTH paths. */
+    bool served_covers_bundle =
+        observation->durable_served_height >= manifest->height;
+    bool header_bootstrap_bind =
+        cp_auth &&
+        observation->selected_bundle_known &&
+        observation->selected_bundle_height == manifest->height &&
+        memcmp(observation->selected_bundle_hash,
+               manifest->block_hash, 32) == 0 &&
+        observation->bundle_header_pass_record;
+    if (!served_covers_bundle && !header_bootstrap_bind)
+        return ZCL_ERR(-4,
+                       "chain binding: bundle height=%d exceeds durable H*=%d "
+                       "and no compiled-checkpoint header-bootstrap bind",
+                       manifest->height, observation->durable_served_height);
 
     if (!cp_auth) {
         if (!observation->selected_bundle_known ||
