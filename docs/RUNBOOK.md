@@ -335,6 +335,63 @@ build/bin/zclassic23 core network peers list
 
 ---
 
+## Shielded-History Wedge (anchor + nullifier backfill gap)
+
+**Symptoms:** `H*` holds flat below the header tip on a node seeded from a
+transparent-only artifact — the fold-from-checkpoint path
+(`-refold-from-anchor` / `-load-verify-boot`, [`docs/SYNC.md`](SYNC.md) "Fold
+from checkpoint") or a legacy `starterpack-<height>` release
+([`docs/BOOTSTRAPPING.md`](BOOTSTRAPPING.md)). Both mark shielded history
+below their seed height as empty rather than forging it, so a spend that
+references an older root has nothing to verify against.
+
+**Diagnose:**
+```bash
+build/bin/zclassic23 status
+build/bin/zclassic23 dumpstate blocker
+build/bin/zclassic23 dumpstate reducer_frontier
+```
+Both `utxo_apply.anchor_backfill_gap` and `utxo_apply.nullifier_backfill_gap`
+present together in `dumpstate blocker` confirm this diagnosis — the
+transparent coin set is fine, but the Sprout and/or Sapling anchor/nullifier
+history below the fold's activation cursor is incomplete.
+
+**Fix — `-import-complete-shielded` (the operational cure):**
+```bash
+# Requires a co-located, synced zclassicd on the same machine, left running
+# (see CLAUDE.md "Services" and docs/SYNC.md Method 3).
+build/bin/zclassic23 -datadir=<TARGET-COPY> \
+  -import-complete-shielded=<zclassicd-datadir>
+```
+This borrows the **complete** historical Sprout+Sapling anchor and nullifier
+set from the co-located `zclassicd` chainstate and, in one transaction,
+atomically flips both `anchor_kv`/`nullifier_kv` activation cursors to 0 and
+clears both blockers — `H*` then resumes climbing without a from-genesis
+fold. It never touches mining/spend eligibility. The resulting trust posture
+is `release_assisted`, not `sovereign`: Sapling's imported frontier is
+byte-verified against the header-committed `hashFinalSaplingRoot`, but
+Sprout has no header commitment and bottoms out at the operator's own
+`zclassicd` chainstate bytes. Full data model, trust-asymmetry detail, and
+`zclassicd`-source key layout:
+[`docs/work/shielded-history-importer.md`](work/shielded-history-importer.md).
+
+**Copy-prove first — never live surgery.** Prove the cure on a throwaway
+copy and gate on H\* climbing past the wedge height (both blockers absent,
+exact tip-hash parity vs `zclassicd`) before ever pointing the importer at a
+canonical datadir:
+```bash
+tools/scripts/import-copy-prove.sh --src=$HOME/.zclassic-c23 \
+  --chainstate-src=$HOME/.zclassic/chainstate
+```
+Only a green copy-prove run earns a re-run of the same importer against the
+live canonical datadir.
+
+**Prevention:** this wedge is the expected next step after a transparent-only
+seed, not a defect — run `-import-complete-shielded` once, right after the
+transparent fold reaches its held frontier.
+
+---
+
 ## Onion-Seed Bootstrap (extending peer-discovery-of-last-resort)
 
 **What it's for:** when DNS seeds (`nSeeds=0` today — see
