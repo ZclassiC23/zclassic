@@ -815,21 +815,27 @@ static int test_status_brief_composite_fails_closed(void)
     const struct zcl_command_registry *reg = zcl_command_catalog();
     const struct zcl_command_spec *s = find_spec(reg, "status");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status rejects RPC errors, schema skew, and wrong field types") {
+    TEST("root status rejects RPC errors, unrecognized schemas, and wrong "
+        "field types") {
         static const char *const cases[] = {
             "{\"code\":-32601,\"message\":\"Method not found\"}",
             "{\"error\":{\"code\":-32603,"
                 "\"message\":\"cannot connect to node\"}}",
-            "{\"schema\":\"zcl.public_status.v3\"}",
+            /* Outside the known zcl.public_status.* family entirely (not a
+             * version-skew case -- see
+             * test_status_brief_schema_skew_degrades_gracefully for a
+             * PRESENT-but-older/newer zcl.public_status.vN schema, which
+             * now degrades instead of failing closed). */
+            "{\"schema\":\"zcl.other_status.v1\"}",
             "{\"schema\":\"zcl.public_status.v2\","
                 "\"served_height\":\"3117073\"}",
         };
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
         /* RPC error objects (cases 0-1) surface the REAL transport/RPC
-         * reason verbatim ("node status unavailable: ..."); only genuine
-         * schema skew / field faults (cases 2-3) read as a v2 schema
-         * error. Both still fail closed. */
+         * reason verbatim ("node status unavailable: ..."); a completely
+         * unrecognized schema and a genuine field fault (cases 2-3) read as
+         * a v2 schema error. All four still fail closed. */
         static const char *const expect_msg[] = {
             "node status unavailable: Method not found",
             "node status unavailable: cannot connect to node",
@@ -846,6 +852,97 @@ static int test_status_brief_composite_fails_closed(void)
             ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
             ASSERT(strstr(out, expect_msg[i]) != NULL);
         }
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+/* wf/status-front-door: a PRESENT schema in the known zcl.public_status.*
+ * family that is not the exact version the strict validator checks (an
+ * older node's v1, a newer node's v3) used to fall into the SAME hard
+ * "invalid zcl.public_status.v2: missing/invalid field schema" error as
+ * genuine corruption -- indistinguishable from a real bug. It now degrades
+ * gracefully: whatever of the flat brief the differently-versioned document
+ * still carries is surfaced, with `partial_result`/`schema_skew` naming the
+ * mismatch, rather than failing the flagless `zclassic23 status` front
+ * door outright. A schema OUTSIDE the family, or one PRESENT-but-malformed
+ * exact v2 field, must still fail closed (test_status_brief_composite_fails_
+ * closed / test_status_brief_names_first_failing_field cover those). */
+static int test_status_brief_schema_skew_degrades_gracefully(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status degrades a present-but-different zcl.public_status.vN "
+        "schema instead of hard-failing") {
+        ASSERT(s != NULL);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+
+        /* An older node (v1) still carries the fields this CLI knows about
+         * under the SAME names -- those must come through untouched. */
+        static const char older[] =
+            "{\"schema\":\"zcl.public_status.v1\","
+            "\"served_height\":100,\"served_height_known\":true,"
+            "\"header_height\":101,\"header_height_known\":true,"
+            "\"gap\":1,\"sync_state\":\"syncing\",\"serving\":true,"
+            "\"healthy\":false,\"primary_blocker\":\"body_fetch.stalled\"}";
+        g_status_brief_agent_fixture = older;
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(strstr(out, "\"ok\":true") != NULL);
+        ASSERT(strstr(out, "missing/invalid field") == NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+        ASSERT_EQ(json_get_int(json_get(data, "hstar")), (int64_t)100);
+        ASSERT_EQ(json_get_int(json_get(data, "header_height")),
+                  (int64_t)101);
+        ASSERT_EQ(json_get_int(json_get(data, "gap")), (int64_t)1);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "sync_state")), "syncing");
+        ASSERT(json_get_bool(json_get(data, "serving")));
+        ASSERT(!json_get_bool(json_get(data, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "primary_blocker")),
+                      "body_fetch.stalled");
+        ASSERT(json_get_bool(json_get(data, "partial_result")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "schema_skew")),
+                      "zcl.public_status.v1");
+        json_free(&root);
+
+        /* A newer node (v3) whose document this CLI build recognizes
+         * nothing else about still degrades to an all-unknown-but-ok brief
+         * instead of failing. */
+        static const char newer[] = "{\"schema\":\"zcl.public_status.v3\"}";
+        g_status_brief_agent_fixture = newer;
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+        ASSERT(json_is_null(json_get(data, "hstar")));
+        ASSERT(json_is_null(json_get(data, "sync_state")));
+        ASSERT(!json_get_bool(json_get(data, "serving")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "schema_skew")),
+                      "zcl.public_status.v3");
+        json_free(&root);
+
+        /* An ENTIRELY ABSENT schema key is unchanged: still the harder
+         * "node binary predates the CLI contract" version-skew failure, not
+         * the new graceful degrade (which requires a schema value to name). */
+        static const char no_schema[] = "{\"served_height\":100}";
+        g_status_brief_agent_fixture = no_schema;
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT(strstr(out, "predates the CLI contract") != NULL);
+        ASSERT(strstr(out, "field schema") != NULL);
+
         PASS();
     } _test_next:;
     g_status_brief_agent_fixture = NULL;
@@ -2167,6 +2264,7 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_overdue_transient_surfaces();
     failures += test_status_brief_overdue_transient_absent_when_zero();
     failures += test_status_brief_composite_fails_closed();
+    failures += test_status_brief_schema_skew_degrades_gracefully();
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
     failures += test_status_brief_names_first_failing_field();

@@ -26,8 +26,24 @@ const char *node_rpc_client_datadir(void);
  * result value, or the error object on failure. */
 char *node_rpc_call(const char *method, const char *params_json);
 
-/* The default out-of-process HTTP backend (socket + JSON-RPC POST). */
+/* Same as node_rpc_call, but with an explicit connect/total deadline (in
+ * milliseconds) instead of the generic env-configurable defaults
+ * (ZCL_RPC_CONNECT_MS / ZCL_RPC_DEADLINE_MS, 2s/10s). For front doors that
+ * must always answer fast (e.g. core.status.brief's ~250ms budget) rather
+ * than tolerate a wedged/busy node for up to 10s. Both values are clamped
+ * to the same sane floor/ceiling as the env defaults. Honors the
+ * ZCL_TESTING hook exactly like node_rpc_call. */
+char *node_rpc_call_deadline(const char *method, const char *params_json,
+                             long connect_ms, long total_ms);
+
+/* The default out-of-process HTTP backend (socket + JSON-RPC POST), using
+ * the env-configurable defaults. */
 char *node_rpc_call_http(const char *method, const char *params_json);
+
+/* Same HTTP backend as node_rpc_call_http, with an explicit connect/total
+ * deadline. See node_rpc_call_deadline. */
+char *node_rpc_call_http_deadline(const char *method, const char *params_json,
+                                  long connect_ms, long total_ms);
 
 #ifdef ZCL_TESTING
 typedef char *(*node_rpc_test_fn)(const char *method,

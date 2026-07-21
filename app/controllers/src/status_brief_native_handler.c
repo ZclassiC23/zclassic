@@ -36,6 +36,51 @@ static bool status_schema_is(const struct json_value *obj,
     return schema && expected && strcmp(schema, expected) == 0;
 }
 
+#define ZCL_PUBLIC_STATUS_SCHEMA_FAMILY "zcl.public_status."
+
+/* True for any schema string in the known zcl.public_status.* family that is
+ * NOT the exact version this handler validates strictly (e.g. an older
+ * node's "zcl.public_status.v1", or a newer node's "...v3"). This is the
+ * present-but-different-version case: a real document from a real status
+ * producer, just not the one the CLI's strict validator was written
+ * against. See status_brief_build_schema_skew_body(). */
+static bool status_schema_known_family_mismatch(const struct json_value *obj,
+                                                 const char **schema_out)
+{
+    const char *schema = obj && obj->type == JSON_OBJ
+        ? json_get_str(json_get(obj, "schema")) : NULL;
+    if (!schema || !schema[0])
+        return false;
+    if (strcmp(schema, "zcl.public_status.v2") == 0)
+        return false;
+    if (strncmp(schema, ZCL_PUBLIC_STATUS_SCHEMA_FAMILY,
+               strlen(ZCL_PUBLIC_STATUS_SCHEMA_FAMILY)) != 0)
+        return false;
+    if (schema_out)
+        *schema_out = schema;
+    return true;
+}
+
+/* Front-door deadline for core.status.brief's one RPC ("agent"): the whole
+ * point of a flagless `zclassic23 status` is to answer almost immediately,
+ * even against a busy/wedged node — never ride the generic 10s
+ * (ZCL_RPC_DEADLINE_MS) ceiling every other command tolerates. Overridable
+ * for tests; clamped to a sane floor/ceiling like every other RPC deadline
+ * knob in rpc_client.c. */
+#define ZCL_STATUS_DEADLINE_MS_DEFAULT 250
+
+static long status_front_door_deadline_ms(void)
+{
+    const char *v = getenv("ZCL_STATUS_DEADLINE_MS");
+    if (v && v[0]) {
+        char *end = NULL;
+        long parsed = strtol(v, &end, 10);
+        if (end && *end == 0 && parsed >= 10 && parsed <= 60000)
+            return parsed;
+    }
+    return ZCL_STATUS_DEADLINE_MS_DEFAULT;
+}
+
 /* zcl.public_status.v2 carries a numeric sentinel beside an explicit
  * `<field>_known` bit.  The bit is authoritative: an unavailable height is a
  * valid status fact and projects as null, while `known=true` with a negative
@@ -141,6 +186,197 @@ static bool status_note_fail(struct status_validate *v, const char *field,
 #define SCHECK(v, field, missing, cond) \
     ((v)->failed ? false : ((cond) ? true : status_note_fail((v), (field), (missing))))
 
+/* ── Shared body composition ───────────────────────────────────────
+ *
+ * Both the strict zcl.public_status.v2 path and the degraded schema-skew
+ * path (a present-but-different-version schema, see
+ * status_schema_known_family_mismatch) end up emitting the same flat
+ * thirteen-field brief. This is that one shared composer, plus the typed-
+ * blocker-registry sub-read both paths reuse — the schema-skew path just
+ * populates every field with lenient/optional reads instead of the strict
+ * SCHECK() chain above. */
+
+struct status_brief_blocker_registry {
+    bool known;
+    int64_t active_blockers;
+    const char *head;      /* points into the source `agent` document */
+    bool overdue_known;
+    int64_t overdue_count;
+    const char *overdue_id; /* points into the source `agent` document */
+};
+
+/* Typed-blocker-registry head + count, from the same authority as
+ * `dumpstate blocker`. Read OPTIONALLY (an older node predating this
+ * contract simply omits the sub-object) so the two operator surfaces
+ * always agree on the registry head instead of naming disjoint truths. */
+static void status_brief_blocker_registry_read(
+    const struct json_value *agent,
+    struct status_brief_blocker_registry *out)
+{
+    *out = (struct status_brief_blocker_registry){0};
+    const struct json_value *blocker_registry =
+        json_get(agent, "blocker_registry");
+    if (!blocker_registry || blocker_registry->type != JSON_OBJ)
+        return;
+    out->known = status_read_nonnegative_int(blocker_registry,
+                                             "active_count",
+                                             &out->active_blockers);
+    const char *head =
+        json_get_str(json_get(blocker_registry, "dominant_id"));
+    if (head && head[0])
+        out->head = head;
+    /* POINT 3.4: overdue_transient_count surfaces the same registry truth
+     * for TRANSIENT/DEPENDENCY blockers stuck past their deadline/TTL (see
+     * agent_blocker_is_overdue_transient in event_agent_summary.c). A
+     * TRANSIENT never becomes `primary_blocker`, so without this an
+     * overdue transient could sit invisible behind a "healthy" brief. */
+    out->overdue_known = status_read_nonnegative_int(
+        blocker_registry, "overdue_transient_count", &out->overdue_count);
+    const char *odom = json_get_str(
+        json_get(blocker_registry, "overdue_transient_dominant_id"));
+    if (odom && odom[0] && strcmp(odom, "none") != 0)
+        out->overdue_id = odom;
+}
+
+struct status_brief_fields {
+    int64_t served_height; bool served_known;
+    int64_t header_height; bool header_known;
+    int64_t gap; bool gap_known;
+    int64_t peer_best; bool peer_best_known;
+    const char *sync_state;
+    bool serving;
+    bool healthy;
+    int64_t peer_count;
+    const char *primary_blocker;
+    int64_t active_conditions;
+    int64_t rss_mb; bool rss_known;
+    int64_t tip_advance_age_seconds; bool tip_age_known;
+    struct status_brief_blocker_registry registry;
+    /* NULL on the strict-v2 path; the mismatched schema string on the
+     * degraded schema-skew path — adds `partial_result`/`schema_skew` to
+     * the emitted body so the operator/AI can tell "old/new but fine"
+     * from "actually broken". */
+    const char *schema_skew;
+};
+
+static char *status_brief_compose_body(const struct status_brief_fields *f,
+                                       struct zcl_native_body_err *err)
+{
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    status_push_int_if_known(&root, "hstar", f->served_known,
+                             f->served_height);
+    status_push_int_if_known(&root, "header_height", f->header_known,
+                             f->header_height);
+    status_push_int_if_known(&root, "gap", f->gap_known, f->gap);
+    status_push_int_if_known(&root, "peer_best", f->peer_best_known,
+                             f->peer_best);
+    json_push_kv_str(&root, "sync_state", f->sync_state);
+    json_push_kv_bool(&root, "serving", f->serving);
+    json_push_kv_bool(&root, "healthy", f->healthy);
+    json_push_kv_int(&root, "peer_count", f->peer_count);
+    json_push_kv_str(&root, "primary_blocker", f->primary_blocker);
+    /* The full agent contract does not yet export the dominant blocker's
+     * capture age. Tip-stall age is a different fact and must not be passed
+     * off as blocker age. */
+    status_push_int_if_known(&root, "blocker_age_s", false, 0);
+    /* Registry head shown beside primary_blocker so the brief and
+     * `dumpstate blocker` never present disjoint truths. Both fields are
+     * OMITTED (never null) when the node predates the registry export —
+     * the documented optional-sub-object contract. */
+    if (f->registry.known)
+        json_push_kv_int(&root, "active_blockers", f->registry.active_blockers);
+    if (f->registry.head)
+        json_push_kv_str(&root, "blocker_head", f->registry.head);
+    if (f->registry.overdue_known)
+        json_push_kv_int(&root, "overdue_transient_count",
+                         f->registry.overdue_count);
+    if (f->registry.overdue_count > 0) {
+        char note[128];
+        (void)snprintf(note, sizeof(note),
+                      "%lld transient blockers overdue: %s",
+                      (long long)f->registry.overdue_count,
+                      f->registry.overdue_id ? f->registry.overdue_id
+                                             : "unknown");
+        json_push_kv_str(&root, "overdue_transient_note", note);
+    }
+    json_push_kv_int(&root, "active_conditions", f->active_conditions);
+    status_push_int_if_known(&root, "rss_mb", f->rss_known, f->rss_mb);
+    status_push_int_if_known(&root, "tip_advance_age_seconds",
+                             f->tip_age_known, f->tip_advance_age_seconds);
+    if (f->schema_skew) {
+        json_push_kv_bool(&root, "partial_result", true);
+        json_push_kv_str(&root, "schema_skew", f->schema_skew);
+    }
+
+    char *out = zcl_json_value_to_body(&root, "status_brief_body");
+    json_free(&root);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "status brief response");
+        LOG_NULL("native.ops", "malloc failed for %s", "status brief response");
+    }
+    return out;
+}
+
+/* A present schema in the known zcl.public_status.* family, but not the
+ * exact version the SCHECK() chain above validates strictly (an older
+ * node's v1, a newer node's v3, ...). Every field here is read LENIENTLY
+ * with the same optional-field readers the strict path uses for genuinely-
+ * optional sub-objects (status_read_known_height, status_read_nonnegative_int,
+ * status_json_bool, ...): a field that fails to parse is simply "unknown",
+ * never a hard fail. This is a best-effort degraded view of a document from
+ * a status contract this CLI build doesn't fully recognize — not the
+ * validated zcl.public_status.v2 contract, so it never enforces that
+ * contract's cross-field arithmetic (e.g. gap == header - served). */
+static char *status_brief_build_schema_skew_body(
+    const struct json_value *agent, const char *schema,
+    struct zcl_native_body_err *err)
+{
+    struct status_brief_fields f = {0};
+    f.served_height = -1;
+    f.header_height = -1;
+
+    (void)status_read_known_height(agent, "served_height",
+                                   "served_height_known", &f.served_height,
+                                   &f.served_known);
+    (void)status_read_known_height(agent, "header_height",
+                                   "header_height_known", &f.header_height,
+                                   &f.header_known);
+    (void)status_read_known_height(agent, "peer_best_height",
+                                   "peer_best_height_known", &f.peer_best,
+                                   &f.peer_best_known);
+    f.gap_known = status_read_nonnegative_int(agent, "gap", &f.gap);
+
+    const char *sync_state = json_get_str(json_get(agent, "sync_state"));
+    f.sync_state = status_machine_token(sync_state) ? sync_state : NULL;
+    const char *primary_blocker =
+        json_get_str(json_get(agent, "primary_blocker"));
+    f.primary_blocker = status_machine_token(primary_blocker)
+        ? primary_blocker : NULL;
+
+    f.serving = status_json_bool(agent, "serving", false);
+    f.healthy = status_json_bool(agent, "healthy", false);
+
+    (void)status_read_nonnegative_int(json_get(agent, "peers"), "total",
+                                      &f.peer_count);
+    (void)status_read_nonnegative_int(json_get(agent, "conditions"),
+                                      "active_count", &f.active_conditions);
+    (void)status_read_optional_nonnegative(json_get(agent, "resources"),
+                                           "rss_mb", &f.rss_mb,
+                                           &f.rss_known);
+    (void)status_read_optional_nonnegative(json_get(agent, "reducer"),
+                                           "tip_advance_age_seconds",
+                                           &f.tip_advance_age_seconds,
+                                           &f.tip_age_known);
+    status_brief_blocker_registry_read(agent, &f.registry);
+    f.schema_skew = schema;
+
+    return status_brief_compose_body(&f, err);
+}
+
 char *zcl_native_status_brief_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
@@ -148,10 +384,31 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     if (!err)
         LOG_NULL("native.status", "status brief missing error sink");
 
-    char *raw = node_rpc_call("agent", NULL);
+    /* The flagless front door: always answer fast, even against a busy/
+     * wedged node, rather than ride the generic 10s RPC ceiling every other
+     * command tolerates (see status_front_door_deadline_ms()). */
+    long deadline_ms = status_front_door_deadline_ms();
+    char *raw = node_rpc_call_deadline("agent", NULL, deadline_ms,
+                                       deadline_ms);
     struct json_value agent;
     json_init(&agent);
     bool parsed = status_parse_rpc_json(&agent, raw, JSON_OBJ);
+
+    /* A PRESENT schema that names the known zcl.public_status.* family but
+     * isn't the exact version validated below (an older node's v1, a
+     * newer node's v3, ...) is version skew, not corruption — degrade
+     * gracefully instead of hard-failing with "missing/invalid field
+     * schema". An ABSENT schema, or one outside the family entirely, falls
+     * through to the strict validator unchanged. */
+    const char *schema_skew = NULL;
+    if (parsed && status_schema_known_family_mismatch(&agent, &schema_skew)) {
+        char *out = status_brief_build_schema_skew_body(&agent, schema_skew,
+                                                         err);
+        json_free(&agent);
+        free(raw);
+        return out;
+    }
+
     const struct json_value *peers = parsed ? json_get(&agent, "peers") : NULL;
     const struct json_value *conditions =
         parsed ? json_get(&agent, "conditions") : NULL;
@@ -371,102 +628,29 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         : nullifier_gap ? "utxo_apply.nullifier_backfill_gap"
         : reported_blocker;
 
-    /* Typed-blocker-registry head + count, from the same authority as
-     * `dumpstate blocker`. Read OPTIONALLY (an older node predating this
-     * contract simply omits the sub-object) so the two operator surfaces
-     * always agree on the registry head instead of naming disjoint truths.
-     * `active_blockers`/`blocker_head` are emitted only when the node exports
-     * them; `blocker_head` still points into `agent`, which stays alive until
-     * after `root` is serialized below (json_push_kv_str copies the string). */
-    int64_t active_blockers = 0;
-    bool blocker_registry_known = false;
-    const char *blocker_head = NULL;
-    /* POINT 3.4: overdue_transient_count surfaces the same registry truth
-     * for TRANSIENT/DEPENDENCY blockers that are stuck past their deadline
-     * or TTL (see agent_blocker_is_overdue_transient in
-     * event_agent_summary.c). A TRANSIENT never becomes `primary_blocker`
-     * (PERMANENT/RESOURCE-only headline, unchanged here) so without this an
-     * overdue transient could sit invisible behind a "healthy" brief. Read
-     * OPTIONALLY, same as active_blockers/blocker_head above, so an older
-     * node predating this field simply omits it. */
-    int64_t overdue_transient_count = 0;
-    bool overdue_transient_known = false;
-    const char *overdue_transient_id = NULL;
-    const struct json_value *blocker_registry =
-        json_get(&agent, "blocker_registry");
-    if (blocker_registry && blocker_registry->type == JSON_OBJ) {
-        blocker_registry_known = status_read_nonnegative_int(
-            blocker_registry, "active_count", &active_blockers);
-        const char *head = json_get_str(
-            json_get(blocker_registry, "dominant_id"));
-        if (head && head[0])
-            blocker_head = head;
-        overdue_transient_known = status_read_nonnegative_int(
-            blocker_registry, "overdue_transient_count",
-            &overdue_transient_count);
-        const char *odom = json_get_str(
-            json_get(blocker_registry, "overdue_transient_dominant_id"));
-        if (odom && odom[0] && strcmp(odom, "none") != 0)
-            overdue_transient_id = odom;
-    }
+    struct status_brief_fields f = {
+        .served_height = served_height, .served_known = served_known,
+        .header_height = header_height, .header_known = header_known,
+        .gap = gap, .gap_known = gap_known,
+        .peer_best = peer_best, .peer_best_known = peer_best_known,
+        .sync_state = sync_state,
+        .serving = serving,
+        .healthy = healthy,
+        .peer_count = peer_count,
+        .primary_blocker = primary_blocker,
+        .active_conditions = active_conditions,
+        .rss_mb = rss_mb, .rss_known = rss_known,
+        .tip_advance_age_seconds = tip_advance_age_seconds,
+        .tip_age_known = tip_age_known,
+        .schema_skew = NULL,
+    };
+    /* `f.registry.head`/`overdue_id` point into `agent`, which stays alive
+     * until after status_brief_compose_body() serializes them below
+     * (json_push_kv_str copies the string). */
+    status_brief_blocker_registry_read(&agent, &f.registry);
 
-    struct json_value root;
-    json_init(&root);
-    json_set_object(&root);
-    status_push_int_if_known(&root, "hstar", served_known, served_height);
-    status_push_int_if_known(&root, "header_height", header_known,
-                             header_height);
-    status_push_int_if_known(&root, "gap", gap_known, gap);
-    status_push_int_if_known(&root, "peer_best", peer_best_known, peer_best);
-    json_push_kv_str(&root, "sync_state", sync_state);
-    json_push_kv_bool(&root, "serving", serving);
-    json_push_kv_bool(&root, "healthy", healthy);
-    json_push_kv_int(&root, "peer_count", peer_count);
-    json_push_kv_str(&root, "primary_blocker", primary_blocker);
-    /* The full agent contract does not yet export the dominant blocker's
-     * capture age. Tip-stall age is a different fact and must not be passed
-     * off as blocker age. */
-    status_push_int_if_known(&root, "blocker_age_s", false, 0);
-    /* Registry head shown beside primary_blocker so the brief and
-     * `dumpstate blocker` never present disjoint truths. Both fields are
-     * OMITTED (never null) when the node predates the registry export —
-     * the documented optional-sub-object contract. */
-    if (blocker_registry_known)
-        json_push_kv_int(&root, "active_blockers", active_blockers);
-    if (blocker_head)
-        json_push_kv_str(&root, "blocker_head", blocker_head);
-    /* POINT 3.4: overdue TRANSIENT/DEPENDENCY count, so the compact brief
-     * alone shows the registry truth even though such a blocker never
-     * becomes `primary_blocker`. Omitted (never null/zero-fabricated) when
-     * the node predates the field, matching active_blockers/blocker_head.
-     * The note is emitted only when the count is actually positive so a
-     * healthy node never grows an empty/zero note field. */
-    if (overdue_transient_known)
-        json_push_kv_int(&root, "overdue_transient_count",
-                         overdue_transient_count);
-    if (overdue_transient_count > 0) {
-        char note[128];
-        (void)snprintf(note, sizeof(note),
-                      "%lld transient blockers overdue: %s",
-                      (long long)overdue_transient_count,
-                      overdue_transient_id ? overdue_transient_id
-                                           : "unknown");
-        json_push_kv_str(&root, "overdue_transient_note", note);
-    }
-    json_push_kv_int(&root, "active_conditions", active_conditions);
-    status_push_int_if_known(&root, "rss_mb", rss_known, rss_mb);
-    status_push_int_if_known(&root, "tip_advance_age_seconds", tip_age_known,
-                             tip_advance_age_seconds);
-
-    char *out = zcl_json_value_to_body(&root, "status_brief_body");
-    json_free(&root);
+    char *out = status_brief_compose_body(&f, err);
     json_free(&agent);
     free(raw);
-    if (!out) {
-        err->status = ZCL_NATIVE_BODY_INTERNAL;
-        snprintf(err->message, sizeof(err->message),
-                 "malloc failed for %s", "status brief response");
-        LOG_NULL("native.ops", "malloc failed for %s", "status brief response");
-    }
     return out;
 }
