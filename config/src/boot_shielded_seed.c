@@ -129,6 +129,56 @@ static bool reset_shielded_history_incomplete_in_tx(struct sqlite3 *db,
            nullifier_kv_reset_mark_empty_below_in_tx(db, seed_h);
 }
 
+/* Co-commit the initial Sapling frontier row for a v2 snapshot (Sapling
+ * frontier only — no v3 Sprout/nullifier section) in the SAME transaction as
+ * reset_shielded_history_incomplete_in_tx above.  This closes the birth-defect
+ * gap the sapling_anchor_frontier_unavailable condition guards: without it the
+ * v2 path committed anchor_kv_reset_mark_empty_below_in_tx(seed_h) with an
+ * EMPTY sapling_anchors table, so the reset and the frontier row lived in two
+ * different transactions (the row was only seeded later by the separate
+ * boot_seed_sapling_anchor_frontier_after_reset backstop) — an interruption
+ * between them, or an unloaded in-RAM tree, left the empty-below cursor over an
+ * empty table and the first shielded-output block above the seed wedged
+ * fail-closed.  Seeding it here makes the invariant "reset-mark-empty-below
+ * always co-commits the frontier row it marks-empty-below" hold atomically.
+ *
+ * Fail-SAFE and consensus-neutral: anchor_kv_seed_frontier_row recomputes the
+ * frontier's own root and REFUSES (writes nothing, logs) unless it equals the
+ * header-committed hashFinalSaplingRoot at seed_h, so an absent / unparseable /
+ * misaligned frontier is a clean no-op that defers to the existing
+ * after-reset + runtime-condition backstop.  Best-effort by contract: a false
+ * return here never fails the outer seed (the reset already succeeded and the
+ * backstops remain), so callers ignore it. */
+static void seed_v2_sapling_frontier_row_in_tx(
+    struct sqlite3 *rpdb, struct main_state *ms, int seed_h,
+    const uint8_t *sapling, uint32_t sapling_len)
+{
+    if (!rpdb || !ms || !sapling || sapling_len == 0)
+        return;
+    const struct block_index *seed_bi = active_chain_at(&ms->chain_active,
+                                                        seed_h);
+    static const uint8_t zeros32[32] = {0};
+    if (!seed_bi ||
+        memcmp(seed_bi->hashFinalSaplingRoot.data, zeros32, 32) == 0)
+        return;   /* header root unknown at seed_h — cannot verify; defer */
+
+    struct incremental_merkle_tree tree;
+    sapling_tree_init(&tree);
+    struct byte_stream ss;
+    stream_init_from_data(&ss, sapling, sapling_len);
+    if (!incremental_tree_deserialize(&tree, &ss))
+        return;   /* unparseable frontier — defer to the backstop */
+
+    if (anchor_kv_seed_frontier_row(rpdb, ANCHOR_POOL_SAPLING, &tree, seed_h,
+                                    &seed_bi->hashFinalSaplingRoot))
+        LOG_INFO("boot", "[boot] seed_shielded: co-committed the root-verified "
+                 "v2 Sapling frontier row at seed h=%d (reset + frontier atomic "
+                 "— no empty-table stall on the first shielded block above the "
+                 "seed)", seed_h);
+    /* On any mismatch anchor_kv_seed_frontier_row already logged and wrote
+     * nothing; the after-reset seed / runtime condition stay the backstop. */
+}
+
 /* Install v3's current frontiers/nullifier rows in the caller's transaction.
  * v3 contains no proof that its historical anchor set or nullifier prefix is
  * complete: the Sapling frontier root is checked against the local header, but
@@ -214,8 +264,17 @@ bool boot_shielded_cure_or_reset_in_tx(
 {
     bool seed_current = shielded_v3 && sapling_verified && sapling &&
                         sapling_len > 0;
-    if (!seed_current)
-        return reset_shielded_history_incomplete_in_tx(rpdb, seed_h);
+    if (!seed_current) {
+        if (!reset_shielded_history_incomplete_in_tx(rpdb, seed_h))
+            return false;
+        /* v2 snapshot (Sapling frontier only): co-commit the verified frontier
+         * row in THIS transaction so the empty-below cursor is never committed
+         * without its initial frontier row.  Fail-safe no-op when the frontier
+         * is absent/unaligned (see seed_v2_sapling_frontier_row_in_tx). */
+        seed_v2_sapling_frontier_row_in_tx(rpdb, ms, seed_h, sapling,
+                                           sapling_len);
+        return true;
+    }
 
     const struct block_index *seed_bi =
         ms ? active_chain_at(&ms->chain_active, seed_h) : NULL;

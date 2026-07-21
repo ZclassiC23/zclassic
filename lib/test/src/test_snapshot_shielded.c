@@ -26,6 +26,7 @@
 
 #include "test/test_helpers.h"
 
+#include "chain/chain.h"
 #include "chain/utxo_snapshot_loader.h"
 #include "config/boot_shielded_seed.h"
 #include "core/serialize.h"
@@ -37,6 +38,8 @@
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "storage/snapshot_shielded.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -350,6 +353,62 @@ int test_snapshot_shielded(void)
                  anchor_kv_get(db, ANCHOR_POOL_SAPLING, &sap_root, NULL, NULL)
                      == ANCHOR_KV_HISTORY_INCOMPLETE);
         if (db) sqlite3_close(db);
+    }
+
+    /* ── v2 seed CO-COMMITS the frontier row (birth-defect CURE at source) ─
+     * The producer fix: boot_shielded_cure_or_reset_in_tx for a v2 snapshot
+     * (Sapling frontier only, shielded_v3=false) now seeds the root-verified
+     * Sapling frontier row in the SAME transaction as the empty-below reset, so
+     * a snapshot-seeded node NEVER commits the empty-below cursor over an empty
+     * sapling_anchors table. Proven at the exact seam anchor_kv_latest_tree
+     * gates, without a 3M-block boot: after the seed, latest_tree(SAPLING) is
+     * FOUND (not HISTORY_INCOMPLETE) yet the adoption cursor stays at seed_h
+     * (historical prefix remains honestly incomplete). */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 bh;
+        sv_u256(&bh, 0x5a);
+        struct block_index *bi =
+            chainstate_insert_block_index((struct chainstate *)&ms, &bh);
+        bool have_bi = bi != NULL;
+        if (have_bi) {
+            bi->nHeight = SEED_H;
+            bi->hashFinalSaplingRoot = sap_root;   /* header commits the seed root */
+            have_bi = active_chain_install_tip_slot(&ms.chain_active, bi);
+        }
+        SV_CHECK("v2 fixture: seed block_index at SEED_H with header root",
+                 have_bi &&
+                 active_chain_at(&ms.chain_active, SEED_H) == bi);
+
+        sqlite3 *db = NULL;
+        bool ok = have_bi && sqlite3_open(":memory:", &db) == SQLITE_OK &&
+                  sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) ==
+                      SQLITE_OK &&
+                  boot_shielded_cure_or_reset_in_tx(
+                      db, &ms, SEED_H,
+                      /*sapling_verified=*/false, /*shielded_v3=*/false,
+                      sap_bs.data, (uint32_t)sap_bs.size,
+                      NULL, 0, NULL, 0) &&
+                  sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+        SV_CHECK("v2 cure_or_reset commits (frontier co-committed)", ok);
+
+        struct incremental_merkle_tree lt; struct uint256 lroot; int64_t lh = -1;
+        enum anchor_kv_lookup_result lr = ok ?
+            anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &lt, &lroot, &lh)
+            : ANCHOR_KV_ERROR;
+        SV_CHECK("CURE: v2 seed makes Sapling frontier FOUND at seed_h "
+                 "(no empty-table stall)",
+                 ok && lr == ANCHOR_KV_FOUND &&
+                 uint256_eq(&lroot, &sap_root) && lh == SEED_H);
+        int64_t sap_cursor = -1; bool sap_found = false;
+        SV_CHECK("v2 seed keeps the historical prefix incomplete "
+                 "(adoption cursor == seed_h)",
+                 ok && anchor_kv_activation_cursor(db, ANCHOR_POOL_SAPLING,
+                                                   &sap_cursor, &sap_found) &&
+                 sap_found && sap_cursor == SEED_H);
+        if (db) sqlite3_close(db);
+        main_state_free(&ms);
     }
 
     /* ── PRODUCER: snapshot_shielded_collect_from_db round-trips ─────────
