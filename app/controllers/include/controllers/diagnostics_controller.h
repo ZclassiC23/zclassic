@@ -17,6 +17,8 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <sqlite3.h>
 
 struct rpc_table;
 struct main_state;
@@ -41,5 +43,24 @@ bool diag_rpc_statecatalog(const struct json_value *params, bool help,
  * diagnostics_dumpers.def automatically propagates here. Truncates on
  * overflow; returns the unclamped length (snprintf-style). */
 int diagnostics_subsystems_csv(char *out, size_t out_sz);
+
+/* Shared SELECT-only executor behind `dbquery` / core.storage.query
+ * (app/controllers/src/dbquery_controller.c). Validates SELECT-only, no
+ * semicolons, no DDL/DML keywords, no wallet secret-material reference,
+ * auto-appends LIMIT if missing, enforces the 2 s wall-clock budget and the
+ * 100-row hard cap, then fills `result` with
+ * {columns,rows,row_count,truncated,interrupted,elapsed_ms,sql_executed} on
+ * success. On any validation or execution failure, sets `result` to a plain
+ * error string (not an object) and returns false — mirrors the `dbquery` RPC
+ * method's own error-body contract.
+ *
+ * `db` is any already-open SQLite handle: the live node's node.db (via
+ * app_runtime_node_db(), as diag_rpc_dbquery uses it), or an ad hoc
+ * SQLITE_OPEN_READONLY handle opened against a copied/stopped datadir's
+ * node.db — exactly what core.storage.query.offline
+ * (tools/command/native_offline_query.c) does so a fixture datadir can be
+ * inspected without booting a node or reaching a running node's RPC. */
+bool dbquery_execute(sqlite3 *db, const char *sql_in, int64_t limit,
+                     struct json_value *result);
 
 #endif /* ZCL_DIAGNOSTICS_CONTROLLER_H */

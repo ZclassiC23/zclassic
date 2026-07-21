@@ -357,6 +357,22 @@ void zcl_native_handle_core_node_bootwait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* core.storage.query.offline / core.sync.frontier.offline
+ * (tools/command/native_offline_query.c) — the OFFLINE_COPY scope: inspect a
+ * STOPPED or COPIED datadir's SQLite stores directly, with NO node contact
+ * and NO RPC. `core.storage.query` and `dumpstate reducer_frontier` both
+ * require a running node's RPC; these are the same SELECT-only primitives
+ * (dbquery_execute, reducer_frontier_compute_hstar) run against an ad hoc
+ * handle opened straight at `--datadir=<path>` — the typed replacement for
+ * `build/bin/sqlq <db> <SELECT>` (tools/sqlq.c) plus hand-known table names.
+ * Bound by config/src/command_catalog.c. */
+void zcl_native_handle_core_storage_query_offline(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_sync_frontier_offline(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* app.auth.* / app.account.* — the multi-user-server identity surface
  * (app/controllers/src/account_controller.c), mounted under the `app` root.
  * app.auth.challenge/app.auth.verify are PUBLIC (no capability):

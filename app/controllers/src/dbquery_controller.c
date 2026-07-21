@@ -14,6 +14,7 @@
  */
 
 #include "platform/time_compat.h"
+#include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 
 #include "json/json.h"
@@ -132,25 +133,14 @@ static const char *dbq_secret_hit(const char *sql)
     return NULL;
 }
 
-bool diag_rpc_dbquery(const struct json_value *params, bool help,
-                      struct json_value *result)
+/* See controllers/diagnostics_controller.h for the contract. Shared by
+ * diag_rpc_dbquery (live node.db via app_runtime_node_db()) and the
+ * core.storage.query.offline native handler (an ad hoc SQLITE_OPEN_READONLY
+ * handle against a copied/stopped datadir's node.db) — identical validation
+ * and execution either way; only where `db` comes from differs. */
+bool dbquery_execute(sqlite3 *db, const char *sql_in, int64_t limit,
+                     struct json_value *result)
 {
-    RPC_HELP(help, result,
-        "dbquery <sql> [limit=10]\n"
-        "\nRead-only SELECT passthrough against node.db. Hard limits:\n"
-        "  - must start with SELECT (case-insensitive)\n"
-        "  - no semicolons anywhere in the query\n"
-        "  - DDL/DML keywords rejected (INSERT, UPDATE, DELETE, etc.)\n"
-        "  - wallet secret material denied (wallet_keys, "
-        "wallet_sapling_keys, wallet_seed, privkey/xsk/seed/etc.)\n"
-        "  - LIMIT auto-appended if missing\n"
-        "  - 2 s wall-clock budget enforced\n"
-        "  - 100-row hard cap regardless of LIMIT\n"
-        "\nResult: { columns, rows, elapsed_ms, truncated, sql_executed }");
-
-    const char *sql_in = json_get_str(json_at(params, 0));
-    int64_t limit = json_at(params, 1) ?
-        json_get_int(json_at(params, 1)) : DBQUERY_DEFAULT_LIMIT;
     if (limit < 1) limit = 1;
     if (limit > DBQUERY_HARD_ROW_CAP) limit = DBQUERY_HARD_ROW_CAP;
 
@@ -204,8 +194,7 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
                  secret_hit);
     }
 
-    struct node_db *ndb = app_runtime_node_db();
-    if (!ndb || !ndb->db) {
+    if (!db) {
         json_set_str(result, "dbquery: node_db not available");
         LOG_FAIL("diag", "dbquery: node_db not available");
     }
@@ -223,12 +212,12 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
         .start_ms = now_ms(),
         .budget_ms = DBQUERY_BUDGET_MS,
     };
-    sqlite3_progress_handler(ndb->db, DBQUERY_PROGRESS_OPS_TICK,
+    sqlite3_progress_handler(db, DBQUERY_PROGRESS_OPS_TICK,
                              dbq_progress_cb, &pctx);
 
     sqlite3_stmt *stmt = NULL;
-    if (!node_db_prepare_readonly_query(ndb, executed, &stmt)) {
-        sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+    if (!node_db_prepare_readonly_stmt(db, executed, &stmt)) {
+        sqlite3_progress_handler(db, 0, NULL, NULL);
         json_set_str(result, "dbquery: prepare failed");
         LOG_FAIL("diag", "dbquery: prepare failed");
     }
@@ -260,9 +249,9 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
         if (rc == SQLITE_DONE) break;
         if (rc == SQLITE_INTERRUPT) { interrupted = true; break; }
         if (rc != SQLITE_ROW) {
-            const char *err = sqlite3_errmsg(ndb->db);
+            const char *err = sqlite3_errmsg(db);
             sqlite3_finalize(stmt);
-            sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+            sqlite3_progress_handler(db, 0, NULL, NULL);
             json_set_str(result, "dbquery: step failed");
             LOG_FAIL("diag", "dbquery: step failed (rc=%d): %s",
                      rc, err ? err : "(null)");
@@ -317,7 +306,7 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
 
     int64_t elapsed = now_ms() - pctx.start_ms;
     sqlite3_finalize(stmt);
-    sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+    sqlite3_progress_handler(db, 0, NULL, NULL);
 
     json_push_kv(result, "rows", &rows_arr);
     json_free(&rows_arr);
@@ -327,4 +316,28 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
     json_push_kv_int(result, "elapsed_ms", elapsed);
     json_push_kv_str(result, "sql_executed", executed);
     return true;
+}
+
+bool diag_rpc_dbquery(const struct json_value *params, bool help,
+                      struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "dbquery <sql> [limit=10]\n"
+        "\nRead-only SELECT passthrough against node.db. Hard limits:\n"
+        "  - must start with SELECT (case-insensitive)\n"
+        "  - no semicolons anywhere in the query\n"
+        "  - DDL/DML keywords rejected (INSERT, UPDATE, DELETE, etc.)\n"
+        "  - wallet secret material denied (wallet_keys, "
+        "wallet_sapling_keys, wallet_seed, privkey/xsk/seed/etc.)\n"
+        "  - LIMIT auto-appended if missing\n"
+        "  - 2 s wall-clock budget enforced\n"
+        "  - 100-row hard cap regardless of LIMIT\n"
+        "\nResult: { columns, rows, elapsed_ms, truncated, sql_executed }");
+
+    const char *sql_in = json_get_str(json_at(params, 0));
+    int64_t limit = json_at(params, 1) ?
+        json_get_int(json_at(params, 1)) : DBQUERY_DEFAULT_LIMIT;
+
+    struct node_db *ndb = app_runtime_node_db();
+    return dbquery_execute(ndb ? ndb->db : NULL, sql_in, limit, result);
 }
