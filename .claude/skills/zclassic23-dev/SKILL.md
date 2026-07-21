@@ -171,9 +171,16 @@ restart zclassic23` correctly relaunches it (a `stopgap-loader.conf` drop-in ove
 
 ## Parallel-worktree workflow
 
-Main repo orchestrates; `wt2`/`wt3` are workers (`cp -a` vendor static libs from main first — fresh
-worktrees can't link without the gitignored `vendor/lib/*.a`). When fanning out work across lanes, give
-each lane a disjoint file set, prove each on its own datadir copy, and merge in dependency order. See
+Main repo orchestrates; `wt2`/`wt3` are workers. Run **`make worktree-prime`** once per fresh
+worktree before any other `make` target — it `cp -a`s `vendor/lib/*.a` from the primary checkout
+(auto-detected via `git rev-parse --git-common-dir`; override with `SRC=<path>` for a non-primary
+source) instead of paying the vendor-bootstrap rule's from-pinned-source rebuild (measured ~57s
+on this host for a from-empty `vendor/lib`, vs ~1s to copy). This formalizes what used to be
+tribal knowledge (manual `cp -a` vendor static libs from main — fresh worktrees can't link without
+the gitignored `vendor/lib/*.a`). Compiled `.o` object caching (`ccache`/`sccache`) is already
+cross-worktree for free — see docs/BUILD.md's "already cross-worktree, not just cross-edit" note —
+so no extra step is needed there. When fanning out work across lanes, give each lane a disjoint
+file set, prove each on its own datadir copy, and merge in dependency order. See
 `docs/work/README.md` + `docs/work/agent-protocol.md`.
 
 ## The discipline that matters most

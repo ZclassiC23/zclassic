@@ -38,6 +38,14 @@ ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out
 ZCL_HOTSWAP_DEPFILE_LEAN_GOALS := $(ZCL_HOTSWAP_LOOP_GOALS) hotswap-module-so
 ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_DEPFILE_LEAN_GOALS),$(MAKECMDGOALS))),,1),)
 
+# worktree-prime's whole point is to supply vendor/lib/*.a by copy instead of
+# the vendor-bootstrap rule's from-pinned-source rebuild (measured ~57s for a
+# from-empty vendor/lib on this host; `cp -a` is sub-second) — so on a fresh
+# worktree (vendor/lib empty) it must run BEFORE the -include below can see
+# missing archives and force that rebuild as a parse-time side effect. Same
+# exemption shape as ZCL_HOTSWAP_LOOP_ONLY above.
+ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out worktree-prime,$(MAKECMDGOALS))),,1),)
+
 # Linked vendor archives are part of the exact source identity. On a fresh
 # clone they do not exist until the vendor builder runs, so Make must cross a
 # parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
@@ -53,9 +61,11 @@ VENDOR_MISSING_INPUTS := $(filter-out $(wildcard $(VENDOR_LIBS)),$(VENDOR_LIBS))
 VENDOR_REPAIR_GOALS := vendor-ready deploy install
 VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
+ifneq ($(ZCL_WORKTREE_PRIME_ONLY),1)
 ifneq ($(strip $(VENDOR_MISSING_INPUTS) $(VENDOR_REPAIR_REQUESTED)),)
 ifeq ($(strip $(MAKE_RESTARTS)),)
 -include $(VENDOR_BOOTSTRAP_MK)
+endif
 endif
 endif
 endif
@@ -716,6 +726,42 @@ $(VENDOR_BOOTSTRAP_MK): vendor-ready
 	trap - EXIT HUP INT TERM
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
+
+.PHONY: worktree-prime
+# Formalizes the "cp -a vendor/lib before a fresh worktree can link" tribal
+# knowledge (docs/work/README.md, the zclassic23-dev skill's Parallel-worktree
+# section): copies already-built vendor/lib/*.a from a sibling checkout
+# instead of paying `make vendor`'s from-pinned-source rebuild in every new
+# worktree. Source defaults to this worktree's primary checkout (derived from
+# `git rev-parse --git-common-dir`, which every `git worktree add` lane shares
+# with its origin checkout); override with SRC=<path-to-a-primed-checkout>
+# for wt2/wt3-style siblings that are not the primary checkout.
+worktree-prime:
+	@set -eu; \
+	src="$(SRC)"; \
+	if [ -z "$$src" ]; then \
+	  gcd="$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; \
+	  case "$$gcd" in \
+	    */.git) src="$${gcd%/.git}" ;; \
+	    *) src="" ;; \
+	  esac; \
+	fi; \
+	if [ -z "$$src" ]; then \
+	  echo "worktree-prime: could not derive a primary checkout; pass SRC=<path>" >&2; \
+	  exit 1; \
+	fi; \
+	if [ ! -d "$$src/vendor/lib" ] || [ -z "$$(ls -A "$$src/vendor/lib" 2>/dev/null)" ]; then \
+	  echo "worktree-prime: $$src/vendor/lib is missing or empty (run 'make vendor' there, or pass SRC=<a primed checkout>)" >&2; \
+	  exit 1; \
+	fi; \
+	if [ "$$(cd "$$src" && pwd -P)" = "$$(pwd -P)" ]; then \
+	  echo "worktree-prime: this checkout ($$src) IS the source — nothing to do"; \
+	  exit 0; \
+	fi; \
+	mkdir -p vendor/lib; \
+	cp -a "$$src/vendor/lib/." vendor/lib/; \
+	n=$$(ls vendor/lib | wc -l); \
+	echo "worktree-prime: copied $$n vendor archive(s) from $$src/vendor/lib"
 
 # Auto-vendor: if any required archive is absent, build it.  The per-archive
 # rule lets `make zclassic23` pull in `make vendor` transparently on a fresh
