@@ -319,6 +319,7 @@ int test_block_source_policy(void);
 int test_block_source_policy_status_json(void);
 int test_snapshot_sync_service(void);
 int test_snapshot_serve_loopback(void);
+int test_block_swarm_loopback(void);
 int test_file_controller(void);
 int test_file_ops(void);
 int test_integrity(void);
