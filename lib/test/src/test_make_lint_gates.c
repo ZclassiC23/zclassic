@@ -1310,6 +1310,9 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define IMPORT_COPY_PROVE_SELFTEST_REL \
     "tools/scripts/import-copy-prove-selftest.sh"
 #define IMPORT_COPY_PROVE_SELFTEST_TIMEOUT_SECS "180"
+#define FRESH_BOOT_WELD_PROVE_SELFTEST_REL \
+    "tools/scripts/fresh-boot-weld-prove-selftest.sh"
+#define FRESH_BOOT_WELD_PROVE_SELFTEST_TIMEOUT_SECS "180"
 /* Gate E14 — condition cooldown re-arm (the 2026-07-13 27h-page bug class).
  * The script's own selftest plants an isolated tmp-dir fixture (never the
  * real app/conditions/src tree) proving a network-dependent COND_CRITICAL
@@ -2165,6 +2168,27 @@ static int t_import_copy_prove_selftest(void)
          "correctly (hermetic)") {
         ASSERT(run_gate_script_timeout(IMPORT_COPY_PROVE_SELFTEST_REL,
                                        IMPORT_COPY_PROVE_SELFTEST_TIMEOUT_SECS)
+               == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* tools/scripts/fresh-boot-weld-prove-selftest.sh — hermetic proof that the
+ * zero-flag cold-boot weld copy-prove driver
+ * (tools/scripts/fresh-boot-weld-prove.sh) classifies every boot outcome
+ * (install+climb, tamper-refused, chain-binding-blocked, installed-but-frozen,
+ * RPC-never-answers, a denylisted work dir) into the correct verdict and exit
+ * code, using a faked $ZCL_NODE_BIN fixture script: no real node binary, no
+ * real chain state, no live checkpoint bundle. Mirrors
+ * t_import_copy_prove_selftest's run_gate_script_timeout convention. */
+static int t_fresh_boot_weld_prove_selftest(void)
+{
+    int failures = 0;
+    TEST("[tooling] fresh-boot-weld-prove driver gates the zero-flag weld "
+         "boot outcomes correctly (hermetic)") {
+        ASSERT(run_gate_script_timeout(FRESH_BOOT_WELD_PROVE_SELFTEST_REL,
+                                       FRESH_BOOT_WELD_PROVE_SELFTEST_TIMEOUT_SECS)
                == 0);
         PASS();
     } _test_next:;
@@ -8652,6 +8676,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_systemd_memory_budget),
     S_(t_quality_job_guard),
     R_(t_import_copy_prove_selftest),            /* selftest under `timeout` */
+    R_(t_fresh_boot_weld_prove_selftest),        /* selftest under `timeout` */
     S_(t_e14_condition_cooldown_gate),
     R_(t_markdown_links_gate),                   /* git ls-files */
     R_(t_git_hooks_gate_enforces_tracked_pre_push),  /* .git/hooks */
