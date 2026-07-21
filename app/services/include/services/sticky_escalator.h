@@ -104,6 +104,14 @@ const char *sticky_rung_name(enum sticky_rung r);
  * witness window without moving the needle. Complements the per-rung windows
  * and the absent-precondition FAILED returns; it never repeats the stuck rung. */
 #define STICKY_LIVELOCK_MAX_PASSES    8
+/* Blocker-aware HOLD (defect D5): while a PERMANENT-class blocker owned by the
+ * sync/chain reducer domain this ladder drives is active, the escalator HOLDS
+ * (no rung advance, no rung dispatch) — a permanent-class cause means the state
+ * itself is incomplete (e.g. missing shielded history) or a consensus reject,
+ * which NO rung (resnapshot/reindex/refold) can cure; churning them wastes hours
+ * and can destroy useful state. This is the min interval between the throttled
+ * "escalation held" WARNs while such a blocker persists. */
+#define STICKY_HOLD_WARN_MIN_INTERVAL_SECS 300
 
 #ifdef ZCL_TESTING
 void sticky_escalator_test_reset(void);
@@ -126,6 +134,11 @@ uint64_t sticky_escalator_test_widen_kicks(void);
 /* Livelock backstop test seam: count of times a rung was force-advanced by the
  * per-episode zero-progress assertion (STICKY_LIVELOCK_MAX_PASSES). */
 uint64_t sticky_escalator_test_livelock_force_advances(void);
+
+/* Blocker-aware HOLD test seams (defect D5): whether the last drive HELD on a
+ * permanent sync-domain blocker, and the monotonic count of held drives. */
+bool     sticky_escalator_test_held_by_permanent(void);
+uint64_t sticky_escalator_test_permanent_hold_fires(void);
 #endif
 
 #endif /* SERVICES_STICKY_ESCALATOR_H */

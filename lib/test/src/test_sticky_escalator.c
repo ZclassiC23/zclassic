@@ -1366,6 +1366,134 @@ int test_sticky_escalator(void)
         reducer_frontier_provable_tip_reset();
     }
 
+    /* ── T17: a PERMANENT sync-domain blocker HOLDS the ladder ───────────────
+     * The live 2026-07-21 defect: a shielded-history-less node held two
+     * permanent utxo_apply blockers (anchor_backfill_gap + nullifier_backfill_
+     * gap) while the escalator churned resnapshot -> reindex against a cause NO
+     * rung can cure. With the blocker registered, the ladder must NOT advance
+     * off its rung (or dispatch a destructive one) — it HOLDS and surfaces the
+     * hold state, re-checking each cadence. */
+    {
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        blocker_reset_for_testing();
+
+        struct blocker_record perm;
+        SE_CHECK("T17: init permanent utxo_apply blocker",
+                 blocker_init(&perm, "utxo_apply.anchor_backfill_gap",
+                              "utxo_apply", BLOCKER_PERMANENT,
+                              "shielded anchor history incomplete (test)"));
+        SE_CHECK("T17: register the permanent blocker",
+                 blocker_set(&perm) == 0);
+
+        sticky_escalator_note_stall("test_permanent_hold");
+        SE_CHECK("T17: armed at retry", sticky_escalator_test_armed());
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        /* Past the retry window: WITHOUT the hold this advances to
+         * targeted_rederive (T1). The permanent-blocker hold keeps it on retry
+         * and dispatches nothing. tip==entry (1000) so no episode clear. */
+        SE_CHECK("T17: permanent blocker HOLDS the ladder on retry (no advance)",
+                 sticky_escalator_test_drive(1000, t + 31) == STICKY_RUNG_RETRY);
+        SE_CHECK("T17: held-by-permanent state surfaced",
+                 sticky_escalator_test_held_by_permanent());
+        SE_CHECK("T17: the hold fired",
+                 sticky_escalator_test_permanent_hold_fires() >= 1);
+        /* Far past EVERY rung window: still held on retry — never reaches a
+         * destructive resnapshot/reindex/refold rung. */
+        SE_CHECK("T17: still held far past every rung window",
+                 sticky_escalator_test_drive(1000, t + 5000) ==
+                     STICKY_RUNG_RETRY &&
+                 sticky_escalator_test_held_by_permanent());
+
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+    }
+
+    /* ── T18: a TRANSIENT blocker does NOT hold escalation ───────────────────
+     * A transient blocker (even in the sync domain) is the EXPECTED shape during
+     * a normal stall — the shallower rungs' remedies are exactly what should
+     * run. Only PERMANENT holds; advancement must be unchanged. */
+    {
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        blocker_reset_for_testing();
+
+        struct blocker_record tr;
+        SE_CHECK("T18: init transient utxo_apply blocker",
+                 blocker_init(&tr, "utxo_apply.body_read_failed", "utxo_apply",
+                              BLOCKER_TRANSIENT, "transient body read (test)"));
+        SE_CHECK("T18: register the transient blocker",
+                 blocker_set(&tr) == 0);
+
+        sticky_escalator_note_stall("test_transient_no_hold");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T18: transient blocker does NOT hold — retry advances normally",
+                 sticky_escalator_test_drive(1000, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T18: not held by permanent",
+                 !sticky_escalator_test_held_by_permanent());
+        SE_CHECK("T18: no hold fired",
+                 sticky_escalator_test_permanent_hold_fires() == 0);
+
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+    }
+
+    /* ── T19: clearing the permanent blocker RESUMES escalation ──────────────
+     * The hold must release the moment the blocker clears/retires — the ladder
+     * resumes advancing on the normal cadence, no restart needed. */
+    {
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        blocker_reset_for_testing();
+
+        struct blocker_record perm;
+        SE_CHECK("T19: register a permanent utxo_apply blocker",
+                 blocker_init(&perm, "utxo_apply.nullifier_backfill_gap",
+                              "utxo_apply", BLOCKER_PERMANENT,
+                              "nullifier history incomplete (test)") &&
+                 blocker_set(&perm) == 0);
+
+        sticky_escalator_note_stall("test_hold_then_clear");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T19: held on retry while the blocker is active",
+                 sticky_escalator_test_drive(1000, t + 31) == STICKY_RUNG_RETRY &&
+                 sticky_escalator_test_held_by_permanent());
+
+        /* Owner-gated clear (a backfill completed / operator cleared it). */
+        blocker_clear("utxo_apply.nullifier_backfill_gap");
+        SE_CHECK("T19: after clear, the ladder resumes advancing",
+                 sticky_escalator_test_drive(1000, t + 62) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T19: hold state released",
+                 !sticky_escalator_test_held_by_permanent());
+
+        /* An UNRELATED permanent blocker must NOT re-hold the sync ladder. */
+        struct blocker_record other;
+        SE_CHECK("T19: register an unrelated permanent blocker",
+                 blocker_init(&other, "consensus_bundle_export.write_failed",
+                              "consensus_bundle_export", BLOCKER_PERMANENT,
+                              "unrelated export fault (test)") &&
+                 blocker_set(&other) == 0);
+        SE_CHECK("T19: unrelated permanent blocker does NOT hold sync recovery",
+                 !sticky_escalator_test_held_by_permanent());
+        /* targeted_rederive has no db/ms here -> FAILs and advances honestly,
+         * proving the unrelated blocker did not freeze the ladder. */
+        SE_CHECK("T19: ladder still advances past the unrelated blocker",
+                 sticky_escalator_test_drive(1000, t + 63) ==
+                     STICKY_RUNG_RESNAPSHOT &&
+                 !sticky_escalator_test_held_by_permanent());
+
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+    }
+
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
 
     printf("sticky_escalator: %d failures\n", failures);

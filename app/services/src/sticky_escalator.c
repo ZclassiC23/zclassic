@@ -76,6 +76,18 @@ static _Atomic int64_t  g_livelock_last_tip           = -1;
 static _Atomic int      g_livelock_last_rung          = -1;
 static _Atomic uint64_t g_livelock_force_advances     = 0;
 
+/* Blocker-aware HOLD state (defect D5). While a PERMANENT-class blocker owned by
+ * the sync/chain reducer domain this ladder drives is active, the escalator
+ * HOLDS: it advances/dispatches NO rung (no reindex/refold can conjure missing
+ * shielded history or clear a consensus reject), only re-checks each cadence so
+ * the hold releases the instant the blocker clears/retires. Live 2026-07-21: a
+ * shielded-history-less node held two permanent utxo_apply blockers
+ * (anchor_backfill_gap + nullifier_backfill_gap) while the ladder churned
+ * resnapshot->reindex against a cause no rung can fix. */
+static _Atomic bool     g_held_by_permanent    = false; /* current hold state */
+static _Atomic uint64_t g_hold_permanent_fires = 0;     /* held drives, monotonic */
+static _Atomic int64_t  g_last_hold_warn_unix  = 0;     /* throttle stamp */
+
 /* Pluggable rung actions; NULL = default stub (advance). */
 static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
 
@@ -179,6 +191,87 @@ extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
 extern bool reducer_frontier_nearest_loadable_self_verified_base(
     int32_t at_or_below, bool compiled_checkpoint_loadable,
     int32_t *base_height_out, const char **base_kind_out);
+
+/* ── Blocker-aware hold predicate (defect D5) ──────────────────────────────
+ *
+ * The escalator drives the reducer-frontier / chain-tip SYNC stall (H* not
+ * climbing). A PERMANENT-class blocker OWNED BY that same domain is an
+ * incomplete-STATE cause — missing shielded history, an unresolvable prevout, a
+ * consensus reject — that NO ladder rung can cure: resnapshot/reindex/refold
+ * re-derive from bodies the node already has, they cannot conjure history that
+ * was never seeded. So while such a blocker is active the ladder must HOLD, not
+ * churn expensive/destructive remedies against a wall.
+ *
+ * This allowlist is deliberately NARROW — only the reducer-pipeline / chain
+ * subsystems whose PERMANENT blockers actually pin H*. It must NOT blanket-hold
+ * on an unrelated permanent blocker (export/publish/install/wallet/mint tooling,
+ * a consensus-bundle gate, etc.): those do not pin the sync tip, and freezing
+ * sync recovery on them would itself be a wedge. A blocker matches when its
+ * owner_subsystem is in the list OR its id's leading dotted segment is (the
+ * reducer stages name blockers "<stage>.<symptom>"; the header_admit stage names
+ * its blocker id "header_admit" with an owner of the specific fault). */
+static const char *const g_sync_domain_owners[] = {
+    "utxo_apply",       /* anchor_backfill_gap, nullifier_backfill_gap,
+                         * apply_failed, fatal_store, commit-invariants */
+    "script_validate",  /* script_validate.prevout_unresolved */
+    "proof_validate",   /* proof_validate.internal_error */
+    "header_admit",     /* header_admit (missing_parent linkage) */
+    "validate_headers",
+    "body_fetch",
+    "body_persist",
+    "tip_finalize",
+    "stage_repair",     /* reducer_frontier.script_undetermined */
+    "reducer_frontier",
+    "coin_backfill",    /* stage_repair coin backfill permanent tuple */
+    "chain",
+};
+
+/* True if `s` exactly equals one of the sync-domain owner tokens. */
+static bool sync_domain_token(const char *s, size_t len)
+{
+    if (!s || len == 0)
+        return false;
+    for (size_t i = 0; i < sizeof(g_sync_domain_owners) /
+                           sizeof(g_sync_domain_owners[0]); i++) {
+        const char *w = g_sync_domain_owners[i];
+        if (strlen(w) == len && strncmp(s, w, len) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* True if this blocker belongs to the sync/chain reducer domain the escalator
+ * drives — by owner_subsystem, or by the leading dotted segment of its id. */
+static bool blocker_in_sync_domain(const struct blocker_snapshot *b)
+{
+    if (sync_domain_token(b->owner_subsystem, strlen(b->owner_subsystem)))
+        return true;
+    const char *dot = strchr(b->id, '.');
+    size_t seg = dot ? (size_t)(dot - b->id) : strlen(b->id);
+    return sync_domain_token(b->id, seg);
+}
+
+/* Returns true (and, if `id_out` non-NULL, copies the blocker id) when a
+ * PERMANENT-class blocker owned by the sync/chain domain is currently active.
+ * Only class == PERMANENT holds escalation; TRANSIENT/DEPENDENCY/RESOURCE
+ * blockers are expected during normal stalls and never hold. */
+static bool permanent_sync_blocker_active(char id_out[BLOCKER_ID_MAX])
+{
+    if (id_out)
+        id_out[0] = '\0';
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (snaps[i].class != BLOCKER_PERMANENT)
+            continue;
+        if (!blocker_in_sync_domain(&snaps[i]))
+            continue;
+        if (id_out)
+            snprintf(id_out, BLOCKER_ID_MAX, "%s", snaps[i].id);
+        return true;
+    }
+    return false;
+}
 
 /* ── Default rung actions ──────────────────────────────────────────────
  *
@@ -854,6 +947,12 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_rederive_last_repair_unix, 0);
     atomic_store(&g_rederive_flat_repairs, 0);
     atomic_store(&g_widen_last_kick_unix, 0);
+    /* Release the blocker-aware hold state (defect D5): the tip climbed, so the
+     * episode genuinely cleared. The fires counter stays monotonic (diagnostic);
+     * reset the current-state bool + warn throttle so a fresh episode warns at
+     * once. */
+    atomic_store(&g_held_by_permanent, false);
+    atomic_store(&g_last_hold_warn_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
     livelock_reset();
     withdraw_stale_reindex_request(tip);
@@ -928,6 +1027,43 @@ static void apply_drive(int64_t tip, int64_t now)
     if (entry >= 0 && tip >= entry + STICKY_PROGRESS_MARGIN) {
         clear_episode(now, tip);
         return;
+    }
+
+    /* Blocker-aware HOLD (defect D5): a PERMANENT-class blocker owned by the
+     * sync/chain reducer domain this ladder drives is an incomplete-STATE cause
+     * that NO rung can cure. Churning resnapshot/reindex/refold against it wastes
+     * hours and can destroy useful state (live 2026-07-21: the ladder logged
+     * "rung 'resnapshot' made no progress — advancing to 'reindex'" while two
+     * permanent utxo_apply gap blockers were active). HOLD: advance/dispatch NO
+     * rung; re-check on the normal cadence so the hold releases the instant the
+     * blocker clears/retires. Only PERMANENT holds — TRANSIENT/DEPENDENCY/
+     * RESOURCE blockers are expected during normal stalls and their remedies are
+     * exactly what the shallower rungs run. */
+    {
+        char held_id[BLOCKER_ID_MAX];
+        if (permanent_sync_blocker_active(held_id)) {
+            atomic_store(&g_held_by_permanent, true);
+            atomic_fetch_add(&g_hold_permanent_fires, 1u);
+            enum sticky_rung held_rung = (enum sticky_rung)atomic_load(&g_rung);
+            int64_t last = atomic_load(&g_last_hold_warn_unix);
+            if (last == 0 || now - last >= STICKY_HOLD_WARN_MIN_INTERVAL_SECS) {
+                atomic_store(&g_last_hold_warn_unix, now);
+                LOG_WARN("sticky_escalator",
+                         "[sticky_escalator] escalation held: permanent blocker "
+                         "'%s' owns this stall — rungs cannot cure incomplete "
+                         "state (holding at rung '%s', re-checking each cadence)",
+                         held_id, sticky_rung_name(held_rung));
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "action=sticky-escalation-held blocker=%s rung=%s "
+                            "terminal=0 recoverable=1",
+                            held_id, sticky_rung_name(held_rung));
+            }
+            /* A hold is not a zero-progress rung spin; keep the livelock tracker
+             * from counting held passes so it never force-advances past a wall. */
+            livelock_reset();
+            return;
+        }
+        atomic_store(&g_held_by_permanent, false);
     }
 
     enum sticky_rung cur = (enum sticky_rung)atomic_load(&g_rung);
@@ -1111,6 +1247,17 @@ bool sticky_escalator_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "unresolved_conditions",
                      condition_engine_get_unresolved_count());
 
+    /* Blocker-aware hold (defect D5): current hold state, held-drive count, and
+     * the id of the permanent sync-domain blocker owning the stall (recomputed
+     * live from the registry so it reflects a clear/retire immediately). */
+    char held_id[BLOCKER_ID_MAX];
+    bool held_now = permanent_sync_blocker_active(held_id);
+    json_push_kv_bool(out, "held_by_permanent_blocker", held_now);
+    json_push_kv_str(out, "permanent_hold_blocker_id",
+                     held_now ? held_id : "");
+    json_push_kv_int(out, "permanent_hold_fires",
+                     (int64_t)atomic_load(&g_hold_permanent_fires));
+
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
@@ -1149,6 +1296,9 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_livelock_last_tip, (int64_t)-1);
     atomic_store(&g_livelock_last_rung, -1);
     atomic_store(&g_livelock_force_advances, 0u);
+    atomic_store(&g_held_by_permanent, false);
+    atomic_store(&g_hold_permanent_fires, 0u);
+    atomic_store(&g_last_hold_warn_unix, (int64_t)0);
     atomic_store(&g_test_suppress_refold_restart, false);
     atomic_store(&g_test_refold_artifact_override, -1);
     atomic_store(&g_test_widen_kicks, 0u);
@@ -1181,4 +1331,10 @@ uint64_t sticky_escalator_test_widen_kicks(void)
 
 uint64_t sticky_escalator_test_livelock_force_advances(void)
 { return atomic_load(&g_livelock_force_advances); }
+
+bool sticky_escalator_test_held_by_permanent(void)
+{ return atomic_load(&g_held_by_permanent); }
+
+uint64_t sticky_escalator_test_permanent_hold_fires(void)
+{ return atomic_load(&g_hold_permanent_fires); }
 #endif
