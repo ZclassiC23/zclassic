@@ -335,9 +335,28 @@ static void staged_stage_stall_escalation_apply(const char *dotted_name,
         if (blocker_init(&r, id, "staged_sync_supervisor",
                          BLOCKER_TRANSIENT, reason)) {
             (void)blocker_set(&r);
+            /* Edge-triggered: make the escalation audible in node.log exactly
+             * once per continuous freeze (the false->true edge), so a stage
+             * crossing the M-window threshold is a NAMED blocker in the log
+             * stream, not only a registry fact a `dumpstate blocker` call must
+             * surface. blocker_set() is self-rate-limiting, so the repeat 2s
+             * ticks stay quiet — this WARN never spams. The named blocker is
+             * exactly the empty-escape class blocker_stall_meta_detector.c
+             * backstops with the always-terminating recovery ladder. */
+            if (escalated && !*escalated)
+                LOG_WARN("supervisor",
+                         "[supervisor] escalated %s to typed blocker '%s' after "
+                         "%d quiet window(s) — %s",
+                         dotted_name, id, windows, reason);
             if (escalated) *escalated = true;
         }
     } else if (escalated && *escalated) {
+        /* Falling edge: the stage advanced again — name the clear so the
+         * recovery is as audible as the escalation was, never a silent
+         * disappearance of the typed blocker from the registry. */
+        LOG_WARN("supervisor",
+                 "[supervisor] %s progress resumed — cleared typed blocker '%s'",
+                 dotted_name, id);
         blocker_clear(id);
         *escalated = false;
     }
