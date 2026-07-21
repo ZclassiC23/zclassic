@@ -98,6 +98,16 @@ native `code` command branch.
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path; it carries the current ordered priority, not this file. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md).
 
+**Executor entry point — play the game:** run **`make arch-score`** (0-100
+mechanical completion of the sync architecture). It names the highest-value
+unfinished quest and points to **[`docs/ARCH_QUEST_BOARD.md`](./docs/ARCH_QUEST_BOARD.md)**
+(exact move + un-cheatable win-proof per quest) over
+**[`docs/ARCHITECTURE_NORTH_STAR.md`](./docs/ARCHITECTURE_NORTH_STAR.md)** (the
+theory: one canonical ledger per domain, single writer per frontier). The loop
+is: `make arch-score` → open the top ✗ quest → make the move in a worktree →
+copy-prove → confirm the score rose → `make lint && make test-parallel` →
+commit → repeat to 100. **Never edit the scorer to win.**
+
 **The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 
 **Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
