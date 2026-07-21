@@ -2268,6 +2268,26 @@ rom-bundle-replicate: $(BIN_DIR)/rom_bundle_sha3
 	    --receipt="$(RECEIPT)" --dest="$(DEST)" \
 	    $(if $(BINARY),--binary="$(BINARY)",)
 
+# bundle-bootstrap: BYTE DELIVERY ONLY — stage a release-shipped
+# consensus-state bundle into <datadir>/bundles/ so a fresh node's zero-flag
+# cold-boot autodetect (boot_autodetect_consensus_bundle,
+# config/src/boot_auto_install_bundle.c) finds it with no further operator
+# action at boot time (deploy/zclassic23-bundle-bootstrap.sh; see
+# docs/ROM_DELIVERY.md "Local bundle bootstrap"). Idempotent: a no-op if
+# <datadir>/bundles/ already holds a *.sqlite or the datadir already has an
+# installed-bundle marker. Never a trust decision — that stays entirely at
+# INSTALL time (RECEIPT/CHECKPOINT_ROM/CHECKPOINT_CONTENT authority).
+#   make bundle-bootstrap SOURCE=path/to/consensus-state-bundle-H.sqlite \
+#       [DATADIR=/path/to/datadir]
+.PHONY: bundle-bootstrap
+bundle-bootstrap: $(BIN_DIR)/rom_bundle_sha3
+	@if [ -z "$(SOURCE)" ]; then \
+	    echo "usage: make bundle-bootstrap SOURCE=... [DATADIR=...]"; \
+	    exit 2; fi
+	deploy/zclassic23-bundle-bootstrap.sh --source="$(SOURCE)" \
+	    --sha3-tool="$(BIN_DIR)/rom_bundle_sha3" \
+	    $(if $(DATADIR),--datadir="$(DATADIR)",)
+
 # gen_utxo_snapshot: build-time tool that walks a legacy zclassicd
 # chainstate LevelDB and emits a canonical UTXO sidecar file ready
 # for runtime mmap+SHA3-verify+bulk-INSERT (Stage J of fast-sync

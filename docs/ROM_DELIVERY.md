@@ -199,3 +199,98 @@ A node that never finds a peer serving these artifacts falls back to the
 legacy two-step `--importblockindex` + boot recovery path (see the
 Tenacity section of the repo's `CLAUDE.md`) — ROM delivery is an
 acceleration, not a hard dependency.
+
+## Local bundle bootstrap — byte delivery for a fresh datadir today
+
+> Not to be confused with the legacy, transparent-only starter pack
+> (`block_index.bin` + `utxo-seed-<height>.snapshot`,
+> [`docs/BOOTSTRAPPING.md`](./BOOTSTRAPPING.md)) — a different artifact on a
+> different autodetect loader (`boot_autodetect_bundle_snapshot`, not
+> `boot_autodetect_consensus_bundle`). This section is about the
+> **complete-state** `zcl.consensus_state_bundle.v1` artifact this whole page
+> covers.
+
+The recipe above needs a peer that is both reachable and already serving the
+artifact. Today's P2P fetch client (`lib/net/src/rom_fetch.c`,
+`ops.debug.rom_fetch.bundle`) is operator-driven by design: it commits to a
+`(chunk_root, whole_sha3, size)` triple **before** requesting a single byte,
+either from explicit operator input or a manifest parsed out of a peer's
+`/directory.json` — see the trust-model note in
+[`docs/work/wt-rom-fetch-engine.md`](./work/wt-rom-fetch-engine.md) ("do not
+create a third activation door"). Automatic discovery of *which* manifest to
+trust with zero prior operator input is explicitly still on that lane's "Next
+(not done yet)" list. Until it lands, a genuinely first-boot node — no peers
+proven yet, no digest an operator has committed to — has nothing in
+`<datadir>/bundles/` for the zero-flag cold-boot autodetect
+(`boot_autodetect_consensus_bundle`, `config/src/boot_auto_install_bundle.c`)
+to find, and folds from genesis or waits on an operator to run the manual
+fetch command.
+
+**`deploy/zclassic23-bundle-bootstrap.sh`** closes that gap the simplest way
+available without opening any new activation door: it is a plain courier that
+copies an operator/packaging-designated bundle straight into
+`<datadir>/bundles/` so the *existing*, already-wired autodetect finds it with
+no flags and no manual command at boot. It is not, and does not need to be, a
+peer-fetch client — the bytes can come from anywhere (a bundle you exported
+yourself, one copied off another node you operate, a future signed release
+artifact once stable publication is unsealed — see `tools/release.sh`) because
+this script establishes **zero** trust in them:
+
+- it never opens, parses, or interprets the bundle as SQLite or as consensus
+  content;
+- its own SHA3-256 re-hash after copying (`build/bin/rom_bundle_sha3`, falling
+  back to `openssl dgst -sha3-256` on a checkout that hasn't built that tool
+  yet) is a **copy-integrity** check only — "did the bytes I just wrote match
+  the bytes I just read" — not a content trust decision, exactly analogous to
+  the copy-verify step in `tools/scripts/rom-bundle-replicate.sh`;
+- the one and only trust boundary stays exactly where it already is: the
+  RECEIPT / CHECKPOINT_ROM / CHECKPOINT_CONTENT authority resolved at INSTALL
+  time
+  (`config/src/consensus_state_snapshot_install_checkpoint_authority.c`),
+  which independently re-derives the bundle's coins/anchor/nullifier content
+  digests against the compiled-in checkpoint
+  (`core/chainparams/src/checkpoints.c`) before ever lifting admission
+  containment. A bundle this script stages is exactly as untrusted, until that
+  gate passes, as one fetched cold from a stranger over ROM delivery above.
+
+It is also fail-safe and idempotent, so it is safe to run unconditionally on
+every boot: it no-ops (exit 0) when `<datadir>/bundles/` already holds a
+`*.sqlite`, when the datadir already carries the durable
+`consensus-bundle-installed.marker` (this datadir is already sovereign —
+never stage bytes over or alongside installed state), or when no source was
+given at all (the common case on a machine with no bundle of its own yet —
+the node just falls back to normal sync, silently and correctly). A missing/
+unreadable source or a post-copy digest mismatch fails closed (exit 1) with
+nothing left half-written — copy-then-atomic-rename inside
+`<datadir>/bundles/`, never visible at its final name until proven
+byte-identical to the source. It also `chmod 0444`s the staged file before
+that rename: the installer's immutable-admission check
+(`config/src/consensus_state_snapshot_install.c`) refuses any bundle with a
+write bit set for anyone, so this is required for the auto-install to ever
+accept the staged file, not merely defense in depth.
+
+**Usage** — one-shot, from the CLI:
+
+```bash
+make bundle-bootstrap SOURCE=/path/to/consensus-state-bundle-3056758.sqlite \
+    [DATADIR=/path/to/datadir]   # DATADIR defaults to ~/.zclassic-c23
+```
+
+**Usage** — wired for every boot, zero manual steps thereafter: set
+`ZCL_CHECKPOINT_BUNDLE_SOURCE=/path/to/consensus-state-bundle-<height>.sqlite`
+in `~/.config/zclassic23/env` (see `deploy/zclassic23.env.example`).
+`deploy/zclassic23.service`'s `ExecStartPre` then runs the bootstrap script
+before every node start; leaving the variable unset (the default) makes the
+step a no-op, so a fresh `~/.config/zclassic23/env` with nothing configured
+behaves exactly as it does today.
+
+**Where a bundle source comes from today:** the canonical producer is the
+receipt-owning `-mint-anchor` full-validation fold, whose successful
+finalization immediately invokes the contained exporter
+(`docs/work/CONSENSUS-STATE-BUNDLE.md`); an operator running a second node
+can also point `SOURCE` at a copy pulled from a first node they already
+operate (optionally via `tools/scripts/rom-bundle-replicate.sh` for a
+verified second-disk copy first). This is packaging/fleet plumbing, not a new
+distribution channel — it complements peer-fetch (above) rather than
+competing with it, and needs no change to the install/activation path either
+way.

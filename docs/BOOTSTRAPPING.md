@@ -1,5 +1,18 @@
 # Assisted bootstrap artifact (legacy starter pack)
 
+> **Not the same thing as the complete-state consensus bundle.** This page
+> covers the legacy, **transparent-only** starter pack
+> (`block_index.bin` + `utxo-seed-<height>.snapshot`,
+> `boot_autodetect_bundle_snapshot`) — assisted state, no shielded
+> anchor/nullifier history, distributed today via `gh release download`. The
+> **complete-state, sovereign** `consensus-state-bundle-<height>.sqlite`
+> (`boot_autodetect_consensus_bundle`, `<datadir>/bundles/`) is a different
+> artifact on a different loader — see
+> [`docs/ROM_DELIVERY.md`](./ROM_DELIVERY.md) "Local bundle bootstrap" for how
+> a fresh datadir gets one with zero flags, and
+> [`docs/work/CONSENSUS-STATE-BUNDLE.md`](./work/CONSENSUS-STATE-BUNDLE.md)
+> for its contract. Do not point one loader's drop-in files at the other.
+
 A freshly built `zclassic23` node can use a release-assisted starter pack: a
 prebuilt block index plus a digest-verified state snapshot. This is an assisted
 readiness path, not a sovereign or consensus proof.
