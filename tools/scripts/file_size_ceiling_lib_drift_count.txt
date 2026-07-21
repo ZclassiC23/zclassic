@@ -96,4 +96,12 @@
 # the new function scores PEER_OFFENCE_INVALID_PROOF and names a typed
 # blocker on mismatch. Re-baselined in file_size_ceiling_lib_baseline.txt
 # (1746); count unchanged.
+#
+# 2026-07-21 (lane wf/disruption-resume, G4): simnet_chaos_faults.c grew
+# 2038 -> 2290 lines adding fault (m), chaos_fault_peer_disconnect_mid_body_
+# download() — the P2P block-body download/resume disruption fault (the
+# real download_manager + syncsvc_collect_needed_blocks(), distinct from
+# the (g)-(l) rom_journal/artifact matrix already in this file). Real
+# growth, mirroring the file's own established (a)-(l) shape. Re-baselined
+# in file_size_ceiling_lib_baseline.txt (2290); count unchanged.
 13
