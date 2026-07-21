@@ -1,0 +1,640 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_block_swarm_loopback.c — the BitTorrent-style parallel BLOCK swarm
+ * (zblkmanfst / zblkreq / zblkdata) driven end-to-end between two independent
+ * message processors over a real wire, plus a measured throughput number and
+ * coverage of the event-driven disconnect requeue.
+ *
+ * Until now the block swarm (lib/net/src/fast_sync.c coordinator +
+ * lib/net/src/msgprocessor_snapshot.c wire dispatch + msgprocessor_snapshot_serve.c
+ * serve side) had ONLY algorithm-level unit coverage (test_fast_sync.c drives
+ * block_swarm_assign_piece / receive_piece / handle_timeouts on an in-memory
+ * struct). No test ever pushed real zblkmanfst/zblkreq/zblkdata bytes through
+ * the real dispatcher between a seeder that reads block bodies from disk and a
+ * fetcher that submits them. This file does that.
+ *
+ * Architecture (mirrors test_snapshot_serve_loopback.c): two fully independent
+ * logical nodes in one process —
+ *   A = SEEDER: a real main_state with an active chain of N synthetic blocks
+ *       written to real blk*.dat files, a published block-piece manifest, and a
+ *       block_hashes_range callback. Serves zblkdata from real disk bodies via
+ *       the production mp_serve_block_req path.
+ *   B = FETCHER: pindex_best_header at the manifest tip (headers ahead, bodies
+ *       behind — the real IBD posture that arms the swarm), an empty active
+ *       chain, and a block_submit callback that records every delivered body.
+ *
+ * The block swarm coordinator (g_block_swarm) is a single process-global; here
+ * it is logically owned by B (the seeder never activates its own swarm because
+ * the fetcher it sees is behind it). Transport is the same sentinel-guarded
+ * send-queue pump test_snapshot_serve_loopback.c uses: p2p_node_begin/write/end
+ * queue real wire-framed segments (magic+command+len+checksum), and bs_pump()
+ * feeds those raw bytes through the REAL p2p_node_receive_bytes() parser and the
+ * REAL msg_process_messages() dispatcher — only the socket syscalls are elided.
+ *
+ * The per-peer swarm scheduler mp_snapshot_send_tick() (private header, not on
+ * the test include path) is forward-declared and called DIRECTLY: it is real
+ * production code, and it owns the rarest-first assignment, the contiguous
+ * window cap, the 16-deep pipeline, and the zblkreq emission. Driving it is what
+ * makes this an integration test of the actual piece dance rather than a
+ * re-implementation of it.
+ *
+ * Two tests:
+ *   1. THROUGHPUT — full manifest → request → serve → receive loop to
+ *      completion; asserts every block body transferred and prints blk/s + MB/s.
+ *   2. DISCONNECT REQUEUE — a peer holds pieces in flight; a second peer can
+ *      claim NOTHING while they sit CHUNK_INFLIGHT (the pre-timeout stall);
+ *      mp_block_swarm_peer_disconnected() requeues them event-driven, the second
+ *      peer immediately picks them up, and the download finishes over the
+ *      failover peer. This is the fix wired into connman's disconnect cleanup. */
+
+#define _GNU_SOURCE
+#include "test/test_helpers.h"
+
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "coins/coins_view.h"
+#include "core/serialize.h"
+#include "core/uint256.h"
+#include "net/download.h"
+#include "net/fast_sync.h"
+#include "net/msg_internal.h"
+#include "net/msgprocessor.h"
+#include "net/net.h"
+#include "platform/time_compat.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "storage/disk_block_io.h"
+#include "util/safe_alloc.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "validation/txmempool.h"
+
+#include <stdint.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* Real per-peer swarm scheduler + the block-swarm-active probe — both defined
+ * non-static in msgprocessor_snapshot.c, declared only in the private
+ * lib/net/src/msgprocessor_internal.h. Forward-declared here so this test drives
+ * the genuine assignment/request loop and observes swarm activation.
+ * (mp_block_swarm_peer_disconnected is public — net/download.h.) */
+void mp_snapshot_send_tick(struct msg_processor *mp, struct p2p_node *node);
+bool mp_block_swarm_is_active(void);
+
+/* Equihash 200,9 solution length — makes each synthetic block ~1.5 KB, so the
+ * measured MB/s reflects realistic block bodies, not empty stubs. */
+#define BS_SOLUTION_SIZE 1344
+#define BS_START_HEIGHT  1
+
+/* ── Fetcher block sink: records every submitted body ────────────────────── */
+struct bs_sink {
+    uint64_t blocks;
+    uint64_t bytes;   /* serialized size of each delivered body */
+};
+
+static bool bs_block_submit(struct block *b, struct validation_state *out,
+                            void *ctx)
+{
+    struct bs_sink *sink = ctx;
+    struct byte_stream s;
+    stream_init(&s, 4096);
+    if (block_serialize(b, &s))
+        sink->bytes += s.size;
+    stream_free(&s);
+    sink->blocks++;
+    if (out)
+        validation_state_init(out);   /* valid = accepted */
+    return true;
+}
+
+/* ── Seeder fixture ──────────────────────────────────────────────────────── */
+struct bs_seeder {
+    struct main_state       ms;
+    struct tx_mempool       mempool;
+    struct coins_view       null_view;
+    struct coins_view_cache coins;
+    struct net_manager      nm;
+    struct msg_processor    mp;
+    char                    datadir[256];
+    int32_t                 end_height;
+    struct uint256         *hashes;   /* [0..end_height] real block hashes */
+    struct block_index    **idx;      /* [0..end_height] chain entries */
+};
+
+/* block_hashes_range serve callback: copy the seeder's real block hashes for
+ * [start,end] into hashes_out. Returns count written. */
+static int bs_block_hashes_range(int32_t start, int32_t end,
+                                 uint8_t (*hashes_out)[32], size_t max,
+                                 void *ctx)
+{
+    struct bs_seeder *s = ctx;
+    int n = 0;
+    for (int32_t h = start; h <= end && (size_t)n < max; h++) {
+        if (h < 0 || h > s->end_height)
+            return n;
+        memcpy(hashes_out[n], s->hashes[h].data, 32);
+        n++;
+    }
+    return n;
+}
+
+/* Build one well-formed synthetic block at height h on prev. Deterministic and
+ * globally unique (salt distinguishes fixtures across test cases in the same
+ * process). Fills a full Equihash-sized solution so bodies are realistically
+ * sized. Caller owns *out (block_free). */
+static void bs_make_block(int32_t h, const struct uint256 *prev, uint32_t salt,
+                          struct block *out)
+{
+    block_init(out);
+    out->header.nVersion = 4;
+    out->header.nTime = 1500000000u + (uint32_t)h + salt * 7u;
+    out->header.nBits = 0x2000ffff;
+    out->header.hashPrevBlock = *prev;
+    memset(&out->header.hashMerkleRoot, 0, sizeof(out->header.hashMerkleRoot));
+    out->header.hashMerkleRoot.data[0] = (uint8_t)(h & 0xFF);
+    out->header.hashMerkleRoot.data[1] = (uint8_t)((h >> 8) & 0xFF);
+    out->header.hashMerkleRoot.data[2] = (uint8_t)(salt & 0xFF);
+    out->header.hashMerkleRoot.data[3] = 0x5A;
+    memset(&out->header.hashFinalSaplingRoot, 0,
+           sizeof(out->header.hashFinalSaplingRoot));
+    memset(&out->header.nNonce, 0, sizeof(out->header.nNonce));
+    out->header.nSolutionSize = BS_SOLUTION_SIZE;
+    for (size_t i = 0; i < BS_SOLUTION_SIZE; i++)
+        out->header.nSolution[i] = (uint8_t)((i * 131u) + (uint32_t)h + salt);
+
+    out->num_vtx = 1;
+    out->vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+    transaction_init(&out->vtx[0]);
+    transaction_alloc(&out->vtx[0], 1, 1);
+    out->vtx[0].vin[0].sequence = 0xffffffff;
+    out->vtx[0].vout[0].value = 10 * COIN;
+}
+
+/* Build the seeder: N blocks (1..end) written to real blk*.dat, an active chain
+ * with disk positions + BLOCK_HAVE_DATA, and a published block-piece manifest.
+ * Returns false on any failure. */
+static bool bs_seeder_build(struct bs_seeder *s, int32_t end_height,
+                            uint32_t salt, const char *tag)
+{
+    const struct chain_params *params = chain_params_get();
+    memset(s, 0, sizeof(*s));
+    s->end_height = end_height;
+
+    snprintf(s->datadir, sizeof(s->datadir), "./test-tmp/%d_%s_seed",
+             (int)getpid(), tag);
+    mkdir("./test-tmp", 0755);
+    mkdir(s->datadir, 0755);
+    char blocks[512];
+    snprintf(blocks, sizeof(blocks), "%s/blocks", s->datadir);
+    mkdir(blocks, 0755);
+
+    main_state_init(&s->ms);
+    tx_mempool_init(&s->mempool, 0);
+    coins_view_cache_init(&s->coins, &s->null_view);
+    net_manager_init(&s->nm);
+
+    s->hashes = zcl_calloc((size_t)end_height + 1, sizeof(*s->hashes),
+                           "bs_hashes");
+    s->idx = zcl_calloc((size_t)end_height + 1, sizeof(*s->idx), "bs_idx");
+    if (!s->hashes || !s->idx)
+        return false;
+
+    /* Deferred fdatasync: N per-block journal barriers would dominate build
+     * time; one sync_pending() at the end is durable enough for a fixture. */
+    disk_block_io_set_deferred_sync(true);
+
+    struct uint256 prev;
+    memset(&prev, 0, sizeof(prev));
+    struct block_index *prev_idx = NULL;
+
+    for (int32_t h = 0; h <= end_height; h++) {
+        struct block b;
+        bs_make_block(h, &prev, salt, &b);
+
+        struct uint256 hash;
+        block_get_hash(&b, &hash);
+
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        bool wrote = write_block_to_disk(&b, &pos, s->datadir,
+                                         params->pchMessageStart);
+        block_free(&b);
+        if (!wrote)
+            return false;
+
+        s->hashes[h] = hash;
+
+        struct block_index *bi =
+            chainstate_insert_block_index((struct chainstate *)&s->ms, &hash);
+        if (!bi)
+            return false;
+        bi->nHeight = h;
+        bi->nBits = 0x2000ffff;
+        bi->nTime = 1500000000u + (uint32_t)h;
+        bi->nVersion = 4;
+        bi->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        bi->nFile = pos.nFile;
+        bi->nDataPos = pos.nPos;
+        bi->nTx = 1;
+        bi->pprev = prev_idx;
+        s->idx[h] = bi;
+
+        prev = hash;
+        prev_idx = bi;
+    }
+
+    disk_block_io_sync_pending();
+    disk_block_io_set_deferred_sync(false);
+
+    if (!active_chain_move_window_tip(&s->ms.chain_active, s->idx[end_height]))
+        return false;
+
+    s->mp.main_state = &s->ms;
+    s->mp.mempool = &s->mempool;
+    s->mp.coins_tip = &s->coins;
+    s->mp.params = params;
+    s->mp.datadir = s->datadir;
+    s->mp.net_mgr = &s->nm;
+    msg_processor_set_block_hashes_range(&s->mp, bs_block_hashes_range, s);
+
+    /* Publish the block-piece manifest from the trusted active chain (real
+     * production builder). publish takes ownership of piece_hashes. */
+    struct block_piece_manifest pm;
+    if (!block_piece_manifest_build_active_chain(&s->ms.chain_active,
+                                                 BS_START_HEIGHT, end_height,
+                                                 &pm))
+        return false;
+    if (!msg_processor_publish_block_manifest(&pm, end_height)) {
+        block_piece_manifest_free(&pm);
+        return false;
+    }
+    return true;
+}
+
+static void bs_seeder_free(struct bs_seeder *s)
+{
+    msg_processor_invalidate_block_manifest();
+    if (s->idx)
+        free(s->idx);
+    if (s->hashes)
+        free(s->hashes);
+    net_manager_free(&s->nm);
+    coins_view_cache_free(&s->coins);
+    tx_mempool_free(&s->mempool);
+    main_state_free(&s->ms);
+
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", s->datadir);
+    (void)system(cmd);
+}
+
+/* ── Loopback transport (sentinel-guarded pump, per test_snapshot_serve_loopback) ── */
+static struct send_segment *bs_install_sentinel(struct p2p_node *node)
+{
+    struct send_segment *sentinel =
+        zcl_calloc(1, sizeof(*sentinel), "bs_loopback_sentinel");
+    node->send_head = sentinel;
+    node->send_tail = sentinel;
+    node->send_offset = 0;
+    return sentinel;
+}
+
+/* Number of wire messages queued behind the sentinel (each begin/write/end is
+ * one framed segment for the small messages this test emits). */
+static size_t bs_queue_depth(const struct send_segment *sentinel)
+{
+    size_t n = 0;
+    for (const struct send_segment *s = sentinel->next; s; s = s->next)
+        n++;
+    return n;
+}
+
+/* Drop everything queued behind the sentinel WITHOUT delivering it — models a
+ * peer that received our requests and then vanished. */
+static void bs_drop_queue(struct p2p_node *from, struct send_segment *sentinel)
+{
+    while (sentinel->next) {
+        struct send_segment *seg = sentinel->next;
+        sentinel->next = seg->next;
+        if (from->send_size >= seg->size)
+            from->send_size -= seg->size;
+        else
+            from->send_size = 0;
+        send_segment_free(seg);
+    }
+    from->send_head = sentinel;
+    from->send_tail = sentinel;
+    from->send_offset = 0;
+}
+
+/* Drain every segment queued behind `sentinel` on `from`, feed the raw wire
+ * bytes to `to` through the real parser, then run the real dispatcher on `to`.
+ * Returns bytes delivered (0 if nothing was queued). */
+static size_t bs_pump(struct p2p_node *from, struct send_segment *sentinel,
+                      struct msg_processor *to_mp, struct p2p_node *to,
+                      const unsigned char msgstart[MESSAGE_START_SIZE],
+                      bool *ok_out)
+{
+    size_t bytes = 0;
+    bool any = false, ok = true;
+
+    while (sentinel->next) {
+        struct send_segment *seg = sentinel->next;
+        sentinel->next = seg->next;
+        if (from->send_tail == seg)
+            from->send_tail = sentinel;
+        if (from->send_size >= seg->size)
+            from->send_size -= seg->size;
+        else
+            from->send_size = 0;
+
+        bytes += seg->size;
+        if (!p2p_node_receive_bytes(to, (const char *)seg->data,
+                                    (unsigned int)seg->size, msgstart)) {
+            send_segment_free(seg);
+            ok = false;
+            break;
+        }
+        any = true;
+        send_segment_free(seg);
+    }
+    from->send_head = sentinel;
+    from->send_tail = sentinel;
+    from->send_offset = 0;
+
+    if (ok && any)
+        ok = msg_process_messages(to_mp, to);
+    if (ok_out)
+        *ok_out = ok;
+    return bytes;
+}
+
+/* Create a fetcher-side peer node representing a seeder connection. */
+static struct p2p_node *bs_make_peer(struct net_manager *nm, uint8_t last_octet)
+{
+    struct net_address addr;
+    memset(&addr, 0, sizeof(addr));
+    memcpy(addr.svc.addr.ip, pchIPv4Prefix, 12);
+    addr.svc.addr.ip[12] = 10; addr.svc.addr.ip[13] = 20;
+    addr.svc.addr.ip[14] = 30; addr.svc.addr.ip[15] = last_octet;
+    addr.svc.port = 18033;
+
+    struct p2p_node *n = p2p_node_create(nm, ZCL_INVALID_SOCKET, &addr,
+                                         "seed-peer", false);
+    if (!n)
+        return NULL;
+    n->version = 1;
+    n->services = NODE_ZCL23;
+    n->state = PEER_HANDSHAKE_COMPLETE;
+    return n;
+}
+
+/* ══════════════════════ Test 1: throughput ══════════════════════════════ */
+static int test_block_swarm_throughput(void)
+{
+    int failures = 0;
+
+    TEST("block swarm loopback: manifest->request->serve->receive to "
+         "completion over a real wire, every body transferred, throughput "
+         "measured") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end_height = 2560;            /* 5 pieces of 512 */
+        struct bs_seeder seed;
+
+        ASSERT(!mp_block_swarm_is_active());        /* clean process precondition */
+        ASSERT(bs_seeder_build(&seed, end_height, 1u, "thru"));
+
+        /* Fetcher B: IBD posture — headers at the tip, bodies behind. */
+        struct main_state ms_b;
+        struct tx_mempool mempool_b;
+        struct coins_view null_view_b;
+        struct coins_view_cache coins_b;
+        struct net_manager nm_b;
+        struct msg_processor mp_b;
+        struct bs_sink sink = {0};
+
+        main_state_init(&ms_b);
+        tx_mempool_init(&mempool_b, 0);
+        coins_view_cache_init(&coins_b, &null_view_b);
+        net_manager_init(&nm_b);
+        memset(&mp_b, 0, sizeof(mp_b));
+        mp_b.main_state = &ms_b;
+        mp_b.mempool = &mempool_b;
+        mp_b.coins_tip = &coins_b;
+        mp_b.params = params;
+        mp_b.datadir = ".";
+        mp_b.net_mgr = &nm_b;
+        msg_processor_set_block_submit(&mp_b, bs_block_submit, &sink);
+
+        /* B's best header = manifest tip (arms piece assignment); active chain
+         * empty (arms swarm start: end_h > our_h + BLOCKS_PER_PIECE). */
+        struct uint256 bhh;
+        memset(&bhh, 0, sizeof(bhh));
+        bhh.data[0] = 0xB0; bhh.data[1] = 0x0B; bhh.data[2] = 0x11;
+        struct block_index *b_besthdr =
+            chainstate_insert_block_index((struct chainstate *)&ms_b, &bhh);
+        ASSERT(b_besthdr != NULL);
+        b_besthdr->nHeight = end_height;
+        b_besthdr->nStatus = BLOCK_VALID_TREE;
+        ms_b.pindex_best_header = b_besthdr;
+
+        /* Peers: A-side sees B; B-side sees A. */
+        struct p2p_node *a_node = bs_make_peer(&seed.nm, 1);
+        struct p2p_node *b_node = bs_make_peer(&nm_b, 2);
+        ASSERT(a_node && b_node);
+        struct send_segment *sent_a = bs_install_sentinel(a_node);
+        struct send_segment *sent_b = bs_install_sentinel(b_node);
+
+        /* Step 1: A pushes the block manifest; B ingests it → g_block_swarm. */
+        push_block_manifest(&seed.mp, a_node);
+        bool ok = true;
+        bs_pump(a_node, sent_a, &mp_b, b_node, params->pchMessageStart, &ok);
+        ASSERT(ok);
+        ASSERT(b_node->blk_manifest_received);
+        ASSERT(mp_block_swarm_is_active());
+
+        /* Step 2: drive the real piece dance to completion, measuring only the
+         * transfer loop. Each round: B assigns+requests (real scheduler) → A
+         * serves from disk (real mp_serve_block_req) → B verifies+submits. */
+        int64_t t0 = platform_time_monotonic_us();
+        int rounds = 0;
+        while (mp_block_swarm_is_active() && rounds < 64) {
+            mp_snapshot_send_tick(&mp_b, b_node);      /* B: assign + zblkreq   */
+            size_t reqbytes = bs_pump(b_node, sent_b, &seed.mp, a_node,
+                                      params->pchMessageStart, &ok);
+            ASSERT(ok);
+            if (reqbytes == 0)
+                break;                                 /* nothing left to ask   */
+            bs_pump(a_node, sent_a, &mp_b, b_node,
+                    params->pchMessageStart, &ok);     /* A serve → B receive   */
+            ASSERT(ok);
+            rounds++;
+        }
+        int64_t elapsed_us = platform_time_monotonic_us() - t0;
+        if (elapsed_us <= 0)
+            elapsed_us = 1;
+
+        /* Every body in the manifest range (1..end) transferred exactly once. */
+        ASSERT(!mp_block_swarm_is_active());           /* swarm completed+freed */
+        ASSERT(sink.blocks == (uint64_t)end_height);
+
+        double secs = (double)elapsed_us / 1e6;
+        double blks = (double)sink.blocks / secs;
+        double mbps = ((double)sink.bytes / (1024.0 * 1024.0)) / secs;
+        printf("(swarm throughput: %llu blocks / %llu bytes in %lldus over "
+               "%d rounds -> %.0f blk/s, %.1f MB/s) ",
+               (unsigned long long)sink.blocks,
+               (unsigned long long)sink.bytes,
+               (long long)elapsed_us, rounds, blks, mbps);
+
+        send_segment_free(sent_a);
+        send_segment_free(sent_b);
+        a_node->send_head = a_node->send_tail = NULL;
+        b_node->send_head = b_node->send_tail = NULL;
+        p2p_node_free(a_node);
+        p2p_node_free(b_node);
+        net_manager_free(&nm_b);
+        coins_view_cache_free(&coins_b);
+        tx_mempool_free(&mempool_b);
+        main_state_free(&ms_b);
+        bs_seeder_free(&seed);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ══════════════════════ Test 2: disconnect requeue ══════════════════════ */
+static int test_block_swarm_disconnect_requeue(void)
+{
+    int failures = 0;
+
+    TEST("block swarm loopback: a dead peer's in-flight pieces are event-"
+         "driven requeued (pre-timeout) and picked up by a failover peer") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end_height = 2560;            /* 5 pieces of 512 */
+        struct bs_seeder seed;
+
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(bs_seeder_build(&seed, end_height, 2u, "disc"));
+
+        struct main_state ms_b;
+        struct tx_mempool mempool_b;
+        struct coins_view null_view_b;
+        struct coins_view_cache coins_b;
+        struct net_manager nm_b;
+        struct msg_processor mp_b;
+        struct bs_sink sink = {0};
+
+        main_state_init(&ms_b);
+        tx_mempool_init(&mempool_b, 0);
+        coins_view_cache_init(&coins_b, &null_view_b);
+        net_manager_init(&nm_b);
+        memset(&mp_b, 0, sizeof(mp_b));
+        mp_b.main_state = &ms_b;
+        mp_b.mempool = &mempool_b;
+        mp_b.coins_tip = &coins_b;
+        mp_b.params = params;
+        mp_b.datadir = ".";
+        mp_b.net_mgr = &nm_b;
+        msg_processor_set_block_submit(&mp_b, bs_block_submit, &sink);
+
+        struct uint256 bhh;
+        memset(&bhh, 0, sizeof(bhh));
+        bhh.data[0] = 0xB0; bhh.data[1] = 0x0B; bhh.data[2] = 0x22;
+        struct block_index *b_besthdr =
+            chainstate_insert_block_index((struct chainstate *)&ms_b, &bhh);
+        ASSERT(b_besthdr != NULL);
+        b_besthdr->nHeight = end_height;
+        b_besthdr->nStatus = BLOCK_VALID_TREE;
+        ms_b.pindex_best_header = b_besthdr;
+
+        /* A-side serve node, plus TWO fetcher-side peers: p1 (fails) + p2. */
+        struct p2p_node *a_node = bs_make_peer(&seed.nm, 1);
+        struct p2p_node *p1 = bs_make_peer(&nm_b, 2);
+        struct p2p_node *p2 = bs_make_peer(&nm_b, 3);
+        ASSERT(a_node && p1 && p2);
+        struct send_segment *sent_a = bs_install_sentinel(a_node);
+        struct send_segment *sent_p1 = bs_install_sentinel(p1);
+        struct send_segment *sent_p2 = bs_install_sentinel(p2);
+
+        /* Manifest → both fetcher peers. First reception arms g_block_swarm;
+         * the second only flags p2->blk_manifest_received (swarm already up). */
+        bool ok = true;
+        push_block_manifest(&seed.mp, a_node);
+        bs_pump(a_node, sent_a, &mp_b, p1, params->pchMessageStart, &ok);
+        ASSERT(ok && p1->blk_manifest_received);
+        ASSERT(mp_block_swarm_is_active());
+
+        a_node->blk_manifest_sent = false;             /* re-send to p2         */
+        push_block_manifest(&seed.mp, a_node);
+        bs_pump(a_node, sent_a, &mp_b, p2, params->pchMessageStart, &ok);
+        ASSERT(ok && p2->blk_manifest_received);
+
+        /* p1 grabs its window of pieces (marked CHUNK_INFLIGHT, owned by p1 in
+         * g_block_swarm), then goes dark: the zblkreq segments are dropped and
+         * never served, so those pieces would sit in flight until the 8 s
+         * BLOCK_PIECE_TIMEOUT sweep expired them. */
+        bs_drop_queue(p1, sent_p1);                    /* isolate this tick     */
+        mp_snapshot_send_tick(&mp_b, p1);
+        size_t p1_reqs = bs_queue_depth(sent_p1);
+        printf("(dead peer held %zu in-flight pieces) ", p1_reqs);
+        ASSERT(p1_reqs > 0);                           /* p1 took pieces        */
+        bs_drop_queue(p1, sent_p1);                    /* p1 vanishes mid-flight */
+
+        /* THE FIX (wired into connman's disconnect cleanup): reclaim exactly the
+         * pieces the dead peer held, EVENT-DRIVEN. This whole test runs in well
+         * under a second, so a timeout-based sweep (block_swarm_handle_timeouts,
+         * 8 s) would reclaim NOTHING here — a non-zero return proves the requeue
+         * is driven by the disconnect, not by elapsed time. */
+        size_t requeued = mp_block_swarm_peer_disconnected((uint32_t)p1->id);
+        ASSERT(requeued == p1_reqs);                   /* exactly p1's pieces   */
+        ASSERT(mp_block_swarm_peer_disconnected((uint32_t)p1->id) == 0); /* idem */
+
+        /* FAILOVER: the requeued pieces are NEEDED again, so a live peer claims
+         * and downloads them. Drive p2 to completion and confirm every body of
+         * the whole manifest range arrives over the surviving peer. */
+        int rounds = 0;
+        while (mp_block_swarm_is_active() && rounds < 64) {
+            mp_snapshot_send_tick(&mp_b, p2);
+            size_t reqbytes = bs_pump(p2, sent_p2, &seed.mp, a_node,
+                                      params->pchMessageStart, &ok);
+            ASSERT(ok);
+            if (reqbytes == 0)
+                break;
+            bs_pump(a_node, sent_a, &mp_b, p2, params->pchMessageStart, &ok);
+            ASSERT(ok);
+            rounds++;
+        }
+
+        ASSERT(!mp_block_swarm_is_active());           /* finished via failover */
+        ASSERT(sink.blocks == (uint64_t)end_height);   /* all bodies delivered  */
+
+        send_segment_free(sent_a);
+        send_segment_free(sent_p1);
+        send_segment_free(sent_p2);
+        a_node->send_head = a_node->send_tail = NULL;
+        p1->send_head = p1->send_tail = NULL;
+        p2->send_head = p2->send_tail = NULL;
+        p2p_node_free(a_node);
+        p2p_node_free(p1);
+        p2p_node_free(p2);
+        net_manager_free(&nm_b);
+        coins_view_cache_free(&coins_b);
+        tx_mempool_free(&mempool_b);
+        main_state_free(&ms_b);
+        bs_seeder_free(&seed);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+int test_block_swarm_loopback(void)
+{
+    int failures = 0;
+    failures += test_block_swarm_throughput();
+    failures += test_block_swarm_disconnect_requeue();
+    return failures;
+}

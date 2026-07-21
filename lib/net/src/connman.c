@@ -1570,10 +1570,14 @@ static void *thread_socket_handler(void *arg)
                             node->misbehavior);
                 peer_lifecycle_note_disconnected(node, "cleanup");
 
-                /* Re-queue any in-flight blocks from this peer */
+                /* Re-queue any in-flight blocks from this peer — both the
+                 * legacy download manager AND the parallel block swarm.
+                 * (g_block_swarm requeue is event-driven here; otherwise a
+                 * dead peer's pieces sit until the 8 s BLOCK_PIECE_TIMEOUT.) */
                 {
                     dl_peer_disconnected(msg_get_download_mgr(),
                                           (uint32_t)node->id);
+                    mp_block_swarm_peer_disconnected((uint32_t)node->id);
                 }
 
                 /* Force disconnect — bypass transition validator since this

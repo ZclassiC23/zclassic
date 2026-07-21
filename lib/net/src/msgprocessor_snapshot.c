@@ -616,6 +616,47 @@ bool mp_block_swarm_is_active(void)
     return atomic_load(&g_block_swarm_active);
 }
 
+/* Event-driven block-swarm requeue on peer disconnect. connman's cleanup
+ * sweep already calls dl_peer_disconnected() to reclaim the legacy download
+ * manager's in-flight blocks; this reclaims the parallel block-swarm pieces
+ * the same peer was assigned. A piece left CHUNK_INFLIGHT with its owning
+ * peer gone is unassignable to anyone else until block_swarm_handle_timeouts()
+ * expires it after BLOCK_PIECE_TIMEOUT_SECS (8 s); at the swarm's contiguous
+ * assignment window that stalls forward progress for up to a full timeout per
+ * dead peer. Resetting the peer's inflight pieces to CHUNK_NEEDED here lets the
+ * next send tick hand them straight to a live peer. Returns pieces re-queued. */
+size_t mp_block_swarm_peer_disconnected(uint32_t peer_id)
+{
+    if (!atomic_load(&g_block_swarm_active))
+        return 0;
+
+    size_t requeued = 0;
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    struct block_swarm *bs = &g_block_swarm;
+    if (bs->piece_states && bs->piece_peer) {
+        for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
+            if (bs->piece_states[i] == CHUNK_INFLIGHT &&
+                bs->piece_peer[i] == (int)peer_id) {
+                bs->piece_states[i] = CHUNK_NEEDED;
+                bs->piece_peer[i] = -1;
+                if (bs->piece_request_time)
+                    bs->piece_request_time[i] = 0;
+                if (bs->pieces_inflight > 0)
+                    bs->pieces_inflight--;
+                requeued++;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+
+    if (requeued)
+        LOG_INFO("net",
+                 "block swarm: requeued %zu in-flight piece(s) from "
+                 "disconnected peer %u (event-driven, pre-timeout)",
+                 requeued, peer_id);
+    return requeued;
+}
+
 bool mp_snapshot_check_stall(void)
 {
     return snapsync_check_stall();

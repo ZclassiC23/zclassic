@@ -264,6 +264,15 @@ size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id);
  * Call from connman when a peer is disconnected. Returns count re-queued. */
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);
 
+/* Block-swarm sibling of dl_peer_disconnected: event-driven requeue of any
+ * BitTorrent-style block pieces the disconnecting peer had in flight in the
+ * process-global g_block_swarm coordinator (lib/net/src/msgprocessor_snapshot.c).
+ * Without this, a dead peer's in-flight pieces stay CHUNK_INFLIGHT — no other
+ * peer can claim them — until the 8 s BLOCK_PIECE_TIMEOUT sweep. Called from
+ * connman's disconnect cleanup right after dl_peer_disconnected. A no-op
+ * (returns 0) when no block swarm is active. Returns pieces re-queued. */
+size_t mp_block_swarm_peer_disconnected(uint32_t peer_id);
+
 /* NET-2: current per-peer EWMA bandwidth score (0..255, 0 = none measured).
  * Read at session close to bank the peer's final reputation. */
 uint32_t dl_peer_bandwidth_score(struct download_manager *dm, uint32_t peer_id);
