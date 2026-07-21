@@ -48,6 +48,17 @@
 /* Per-peer accounting table size (bounds memory under an IP flood). */
 #define ROM_SEED_PEER_TABLE_CAP   256u
 
+/* The ONE datadir subdirectory rom_seed reaches one level into (besides the
+ * datadir root): where config/src/boot_bundle_fetch.c lands verified swarm
+ * downloads, and where the unified installer deliberately RETAINS the source
+ * .sqlite after install (it only ever unlinks a stale prior-generation OUTPUT
+ * artifact, never the source it read from). rom_seed_scan_datadir() recurses
+ * into it and rom_seed_register()/rom_filename_ok accept a filename shaped
+ * "ROM_SEED_BUNDLES_SUBDIR/<basename>" for exactly this reason: a bundle this
+ * node fetched (or installed from) keeps seeding the swarm afterward — BitTorrent-
+ * style swarm widening with zero operator input. */
+#define ROM_SEED_BUNDLES_SUBDIR   "bundles"
+
 /* Sane default caps (generous but bounded). Overridable via the setters. */
 #define ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER  2u
 #define ROM_SEED_DEFAULT_PEER_BPS_CAP   (8ull * 1024 * 1024)   /*  8 MB/s / peer  */
@@ -105,15 +116,26 @@ bool rom_seed_kind_content_ok(enum rom_artifact_kind kind,
  * from the bytes on disk in one bounded pass. If `expected_whole_sha3` is
  * non-NULL it must match the computed whole-file digest or registration is
  * refused as ROM_REG_ERR_CORRUPT. On ROM_REG_OK the artifact is in the registry
- * and (if `out` non-NULL) copied out. `filename` must be a bare basename. */
+ * and (if `out` non-NULL) copied out. `filename` must be a bare basename, OR
+ * "ROM_SEED_BUNDLES_SUBDIR/<basename>" (i.e. "bundles/<basename>") naming a
+ * file one level under `datadir` — the ONLY subdirectory shape accepted; any
+ * other separator or a second '/' is refused. Either way `datadir` + `/` +
+ * `filename` is the file actually opened, hashed, and later re-opened by
+ * rom_seed_read_chunk, so the registered artifact always serves the exact
+ * bytes it was registered from. */
 enum rom_register_result rom_seed_register(const char *datadir,
                                            const char *filename,
                                            const uint8_t *expected_whole_sha3,
                                            struct rom_artifact *out);
 
 /* Bounded datadir scan: register every entry matching a known artifact kind
- * (today: consensus-state-bundle-*.sqlite). Returns the number registered.
- * Bounded by ROM_SEED_MAX_ARTIFACTS and a fixed directory-entry ceiling. */
+ * (today: consensus-state-bundle-*.sqlite) found directly under `datadir`,
+ * PLUS one level into `datadir`/ROM_SEED_BUNDLES_SUBDIR ("bundles/") — where
+ * boot_bundle_fetch.c lands verified swarm downloads and the installer leaves
+ * the source bundle after install, so a bundle this node fetched keeps
+ * seeding the swarm. Returns the number registered (both locations combined).
+ * Bounded by ROM_SEED_MAX_ARTIFACTS and a fixed per-directory entry ceiling.
+ * An absent bundles/ subdirectory is normal, not an error. */
 int rom_seed_scan_datadir(const char *datadir);
 
 /* Supervised, single-shot background scan of `datadir`: registers matching
