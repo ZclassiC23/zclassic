@@ -87,6 +87,14 @@ struct staged_stage_desc {
     int       (*drain)(int max_steps);
     uint64_t  (*cursor)(void);
     int         batch;              /* max steps drained per tick */
+    /* Per-step fan-out: how many units of consensus work one step_once of this
+     * stage verifies. 1 for every stage except validate_headers, whose
+     * step_once verifies up to VH_BATCH_SIZE Equihash solutions per step. Used
+     * by stage_effective_batch() so an accelerated catch-up batch does not
+     * multiply by this factor inside ONE commit held under
+     * progress_store_tx_lock (which would stall every other supervised child
+     * — incl. the dumpstate/status front door — each sweep). */
+    int         per_step_fanout;
     void      (*log_stall)(void);   /* per-stage stall LOG_WARN body */
     /* The immediately-preceding pipeline stage, wired explicitly (not
      * derived via pointer arithmetic into g_stages, which would be
@@ -175,10 +183,11 @@ static void tip_finalize_log_stall(void)
  * its upstream stage's name + cursor reader (NULL/NULL for header_admit,
  * the pipeline head). The register-failure WARN, period=2s, and the shared
  * quiet window are uniform and applied by the generic helper below. */
-#define INIT_DESC(NM, FAILMSG, PFX, BATCH, UPNAME, UPCURSOR)  \
+#define INIT_DESC(NM, FAILMSG, PFX, BATCH, FANOUT, UPNAME, UPCURSOR)  \
     { .name = (NM), .init_fail_msg = (FAILMSG),         \
       .init = PFX##_stage_init, .drain = PFX##_stage_drain, \
       .cursor = PFX##_stage_cursor, .batch = (BATCH),   \
+      .per_step_fanout = (FANOUT),                      \
       .log_stall = PFX##_log_stall,                     \
       .upstream_name = (UPNAME), .upstream_cursor = (UPCURSOR), \
       .id = SUPERVISOR_INVALID_ID, .ms = NULL }
@@ -186,35 +195,38 @@ static void tip_finalize_log_stall(void)
 static struct staged_stage_desc g_stages[] = {
     INIT_DESC("staged.header_admit",
               "[supervisor] WARN staged.header_admit init failed — " "stage not running this boot",
-              header_admit, HEADER_ADMIT_BATCH_PER_TICK,
+              header_admit, HEADER_ADMIT_BATCH_PER_TICK, 1,
               NULL, NULL),
+    /* validate_headers fans out VH_BATCH_SIZE Equihash verifications per
+     * step_once (see STAGE_DRAIN_IMPL + validate_headers_stage.c). Its fanout
+     * caps the accelerated catch-up batch so per-commit work stays bounded. */
     INIT_DESC("staged.validate_headers",
               "[supervisor] WARN staged.validate_headers init failed — " "validator not running this boot",
-              validate_headers, VH_BATCH_PER_TICK,
+              validate_headers, VH_BATCH_PER_TICK, VH_BATCH_SIZE,
               "staged.header_admit", header_admit_stage_cursor),
     INIT_DESC("staged.body_fetch",
               "[supervisor] WARN staged.body_fetch init failed — " "fetch not running this boot",
-              body_fetch, BODY_FETCH_BATCH_PER_TICK,
+              body_fetch, BODY_FETCH_BATCH_PER_TICK, 1,
               "staged.validate_headers", validate_headers_stage_cursor),
     INIT_DESC("staged.body_persist",
               "[supervisor] WARN staged.body_persist init failed — " "persist not running this boot",
-              body_persist, BODY_PERSIST_BATCH_PER_TICK,
+              body_persist, BODY_PERSIST_BATCH_PER_TICK, 1,
               "staged.body_fetch", body_fetch_stage_cursor),
     INIT_DESC("staged.script_validate",
               "[supervisor] WARN staged.script_validate init failed — " "script validation not running this boot",
-              script_validate, SCRIPT_VALIDATE_BATCH_PER_TICK,
+              script_validate, SCRIPT_VALIDATE_BATCH_PER_TICK, 1,
               "staged.body_persist", body_persist_stage_cursor),
     INIT_DESC("staged.proof_validate",
               "[supervisor] WARN staged.proof_validate init failed — " "proof validation not running this boot",
-              proof_validate, PROOF_VALIDATE_BATCH_PER_TICK,
+              proof_validate, PROOF_VALIDATE_BATCH_PER_TICK, 1,
               "staged.script_validate", script_validate_stage_cursor),
     INIT_DESC("staged.utxo_apply",
               "[supervisor] WARN staged.utxo_apply init failed — " "UTXO apply not running this boot",
-              utxo_apply, UTXO_APPLY_BATCH_PER_TICK,
+              utxo_apply, UTXO_APPLY_BATCH_PER_TICK, 1,
               "staged.proof_validate", proof_validate_stage_cursor),
     INIT_DESC("staged.tip_finalize",
               "[supervisor] WARN staged.tip_finalize init failed — " "tip finalize not running this boot",
-              tip_finalize, TIP_FINALIZE_BATCH_PER_TICK,
+              tip_finalize, TIP_FINALIZE_BATCH_PER_TICK, 1,
               "staged.utxo_apply", utxo_apply_stage_cursor),
 };
 
@@ -371,12 +383,27 @@ static void staged_stage_stall_escalation_apply(const char *dotted_name,
  * live catch-up (peers connected, gap >= threshold) get to raise the batch
  * to catchup_cadence's 500. Neither override touches the shared 2s tick
  * period. */
-static int stage_effective_batch(int normal_batch)
+static int stage_effective_batch(int normal_batch, int per_step_fanout)
 {
     int refold_batch = refold_cadence_drain_batch(normal_batch);
     if (refold_batch != normal_batch)
         return refold_batch;
-    return catchup_cadence_drain_batch(normal_batch);
+    int catchup_batch = catchup_cadence_drain_batch(normal_batch);
+    /* Fan-out cap (A12): a stage whose step_once verifies per_step_fanout units
+     * of consensus work (validate_headers: VH_BATCH_SIZE Equihash solutions per
+     * step) would, at an accelerated step count, run per_step_fanout * batch
+     * verifications inside ONE commit held under progress_store_tx_lock —
+     * stalling every other supervised child (incl. the dumpstate/status front
+     * door) for the whole sweep (catchup_cadence.h:37-44 does not model this).
+     * Scale the accelerated target back down by the fan-out, never below the
+     * stage's own normal batch. No-op when the override is inactive
+     * (catchup_batch == normal_batch) or the stage does not fan out — the live
+     * hot path is left untouched. */
+    if (per_step_fanout > 1 && catchup_batch > normal_batch) {
+        int scaled = catchup_batch / per_step_fanout;
+        catchup_batch = scaled > normal_batch ? scaled : normal_batch;
+    }
+    return catchup_batch;
 }
 
 /* Generic per-stage tick: drain a bounded batch each tick — keeps
@@ -435,7 +462,7 @@ static void staged_stage_tick(struct liveness_contract *c)
      * in progress) it returns ZCL_CATCHUP_DRAIN_BATCH (default 500). Batch
      * size never changes WHAT a stage folds — only the commit cadence and
      * latency. */
-    (void)d->drain(stage_effective_batch(d->batch));
+    (void)d->drain(stage_effective_batch(d->batch, d->per_step_fanout));
 
     /* Effective per-child tick period for the NEXT sweep: refold_cadence
      * wins over catchup_cadence when both could apply (same precedence as
@@ -675,5 +702,11 @@ int64_t staged_sync_supervisor_test_run_stage_tick(
     if (period_us_out) *period_us_out = atomic_load(&d.contract.period_us);
     supervisor_unregister(d.id);
     return marker;
+}
+
+int staged_sync_supervisor_test_effective_batch(int normal_batch,
+                                                 int per_step_fanout)
+{
+    return stage_effective_batch(normal_batch, per_step_fanout);
 }
 #endif
