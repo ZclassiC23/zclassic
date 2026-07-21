@@ -1009,6 +1009,7 @@ int main(int argc, char **argv)
       failures += test_utxo_snapshot_loader(); }
     failures += test_snapshot_apply_coins_kv();
     failures += test_consensus_state_snapshot_install();
+    failures += test_checkpoint_rom_authority();
     failures += test_consensus_state_snapshot_export();
     { extern int test_ratify_mint_anchor(void);
       failures += test_ratify_mint_anchor(); }
