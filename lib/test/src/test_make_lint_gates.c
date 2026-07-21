@@ -4884,19 +4884,19 @@ static int t_agent_fast_ci_contract(void)
 
         ASSERT(repo_path(path, sizeof(path), "docs/GETTING_STARTED.md") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "public first-run path for a fresh machine")
+        ASSERT(strstr(buf, "generic, fresh-machine setup guide")
                != NULL);
         ASSERT(strstr(buf, "make vendor") != NULL);
         ASSERT(strstr(buf, "make -j\"$(nproc)\"") != NULL);
-        ASSERT(strstr(buf, "make dev-bin") != NULL);
+        ASSERT(strstr(buf, "make fast-rebuild") != NULL);
         ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" status")
+        ASSERT(strstr(buf, "build/bin/zclassic23 status")
                != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" discover help")
+        ASSERT(strstr(buf, "build/bin/zclassic23 discover help")
                != NULL);
-        ASSERT(strstr(buf, "dumpstate <subsystem>") != NULL);
+        ASSERT(strstr(buf, "dumpstate reducer_frontier") != NULL);
         ASSERT(strstr(buf, "docs/BOOTSTRAPPING.md") != NULL);
-        ASSERT(strstr(buf, "operator_needed=false") != NULL);
+        ASSERT(strstr(buf, "core sync diagnose") != NULL);
         ASSERT(strstr(buf, "docs/HANDOFF.md") != NULL);
         free(buf);
         buf = NULL;
