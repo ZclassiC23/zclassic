@@ -45,6 +45,36 @@ operator-specific peers. Copy and adapt before installing:
   (127.0.0.1:8034) via `-addnode` for bodies — the one real peer, read-only.
 - `zclassic23-replay-canary-onfailure@.service` — templated `OnFailure=`
   arm; logs `CANARY FAILED` to the journal (`journalctl -t replay-canary`).
+- `zcl-stopwatch-peer.service` — dedicated minimal serving peer (ports
+  39070-39073) that the two stopwatch gates below dial as a read-only P2P
+  client, kept separate from the canonical `zclassic23.service` (port 8033)
+  so the 6-hourly stopwatch timers can never contend with or churn the
+  live node.
+- `zcl-c3-stopwatch-run@.service` / `zcl-c3-stopwatch.timer` — the C3
+  wall-clock evidence collector: `tools/scripts/c3_stopwatch_run_and_record.sh`
+  runs `tools/scripts/cold_start_to_tip_stopwatch.sh` (a genuinely-wiped
+  `/tmp` datadir dialing `zcl-stopwatch-peer.service`) and appends one JSON
+  line to `~/.local/state/zclassic23-c3-stopwatch/history.jsonl`. Same
+  collect/judge split as the soak evidence collector: the wrapper always
+  exits 0 once the ledger append succeeds, regardless of the run's own
+  PASS/FAIL/SKIP/SEAM/STALLED-NAMED verdict; `make c3-stopwatch-report`
+  judges the ledger's last line via `tools/scripts/stopwatch_evidence_judge.sh`.
+  `OnFailure=` fires only on a lock/append failure.
+- `zcl-netdisrupt-run@.service` / `zcl-netdisrupt-stopwatch.timer` —
+  PROOF B, the network-disruption recovery collector:
+  `tools/scripts/netdisrupt_stopwatch_run_and_record.sh` runs
+  `tools/scripts/network_disruption_recovery_stopwatch.sh` against an
+  already-running, already-at-tip client and a controllable upstream peer
+  (SIGSTOP the peer, sleep `--cut-secs`, SIGCONT it, time the client's H*
+  recovery back to `network_tip`), appending one JSON line to
+  `~/.local/state/zclassic23-netdisrupt-stopwatch/history.jsonl`. Neither
+  unit spawns a node — point the instance's optional
+  `~/.config/zclassic23-stopwatch/<instance>.env` `EnvironmentFile=` at the
+  client/upstream fixtures under test. `make netdisrupt-stopwatch-report`
+  judges the ledger. The upstream is ALWAYS `SIGCONT`'d on exit (the
+  script's own trap), even on a hard failure.
+- `zcl-stopwatch-onfailure.service` — shared `OnFailure=` arm for both
+  stopwatch run units; logs to the journal (`journalctl -t stopwatch-gate`).
 
 ## Replay-canary operational notes
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=ZClassic23 C3 Stopwatch Timer — every 6h
+
+[Timer]
+# Every 6h (00/06/12/18) with jitter — cheap enough (a wiped /tmp datadir
+# dialing a dedicated loopback fixture peer) to run far more often than
+# the 168h soak-evidence window it complements. Persistent=true fires a
+# catch-up run after suspend/downtime so a collector outage shows up as
+# ONE bounded gap, not a silent stretch of nothing (the judge's
+# --max-age-secs staleness rung is the backstop either way).
+OnCalendar=*-*-* 0/6:00:00
+RandomizedDelaySec=180
+Persistent=true
+Unit=zcl-c3-stopwatch-run@default.service
+
+[Install]
+WantedBy=timers.target

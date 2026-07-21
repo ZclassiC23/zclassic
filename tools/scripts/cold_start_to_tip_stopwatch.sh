@@ -112,12 +112,41 @@ json_number_or_null() {
     esac
 }
 
+# capture_failure_bundle — on any non-pass verdict, snapshot the live
+# diagnostic state a human/agent needs to root-cause the run WITHOUT
+# re-running the harness: frontier.json (dumpstate reducer_frontier),
+# blocker.json (dumpstate blocker), ops.log.tail.txt (the typed `ops logs`
+# command if the node is still alive/RPC-reachable, else a plain tail of
+# node.log). Sets BUNDLE_CAPTURE_FAILED=true if ANY piece could not be
+# captured — a dropped bundle piece is RECORDED, never silently missing.
+# Safe to call before NODE_BIN/DATADIR/PID are ever set (an early
+# binary-absent/peer-unreachable skip has nothing to capture from).
+capture_failure_bundle() {
+    BUNDLE_CAPTURE_FAILED="false"
+    local got_frontier=0 got_blocker=0 got_logs=0
+    if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_frontier \
+            >"$ARTIFACT_DIR/frontier.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate blocker \
+            >"$ARTIFACT_DIR/blocker.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/blocker.json" ] && got_blocker=1
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" ops logs \
+            --pattern='.' --since_secs=3600 --max_lines=500 --level=all \
+            >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && [ -s "$ARTIFACT_DIR/ops.log.tail.txt" ] && got_logs=1
+    fi
+    if [ "$got_logs" = 0 ] && [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
+        tail -200 "$DATADIR/node.log" >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && got_logs=1
+    fi
+    [ "$got_frontier" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] || BUNDLE_CAPTURE_FAILED="true"
+}
+
 write_artifact() {
     verdict="$1"; rc="$2"; reason="${3:-}"
     captured_at="$(date +%s)"
     elapsed=0
     [ "${start:-0}" -gt 0 ] && elapsed=$((captured_at - start))
     mkdir -p "$ARTIFACT_DIR" 2>/dev/null || return 0
+    BUNDLE_CAPTURE_FAILED="false"
+    [ "$verdict" != "pass" ] && capture_failure_bundle
     {
         printf '{\n'
         printf '  "schema": "zcl.c3_stopwatch_artifact.v1",\n'
@@ -134,7 +163,8 @@ write_artifact() {
         printf '  "final_network_tip": %s,\n' "$(json_number_or_null "$last_network_tip")"
         printf '  "reached_network_tip": %s,\n' "$([ "$verdict" = "pass" ] && printf true || printf false)"
         printf '  "scratch_datadir": %s,\n' "$(json_string "${DATADIR:-}")"
-        printf '  "scratch_datadir_removed": true\n'
+        printf '  "scratch_datadir_removed": true,\n'
+        printf '  "bundle_capture_failed": %s\n' "$BUNDLE_CAPTURE_FAILED"
         printf '}\n'
     } >"$ARTIFACT_DIR/proof.json"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then

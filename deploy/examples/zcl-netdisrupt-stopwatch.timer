@@ -1,0 +1,13 @@
+[Unit]
+Description=ZClassic23 Network-Disruption Recovery Stopwatch Timer — every 6h, offset 30m from the C3 stopwatch
+
+[Timer]
+# Same 6h cadence as zcl-c3-stopwatch.timer, offset by 30 minutes so the
+# two gates never SIGSTOP/dial the same fixture peer at the same instant.
+OnCalendar=*-*-* 0/6:30:00
+RandomizedDelaySec=180
+Persistent=true
+Unit=zcl-netdisrupt-run@default.service
+
+[Install]
+WantedBy=timers.target
