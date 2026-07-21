@@ -662,7 +662,7 @@ uint32_t dl_mark_received(struct download_manager *dm,
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     if (ps) {
         ps->blocks_received++;
-        ps->last_block_time = (int64_t)platform_time_wall_time_t();
+        ps->last_body_received_time = (int64_t)platform_time_wall_time_t();
         int64_t delivery_us = delivery * 1000000;
         if (ps->avg_delivery_us == 0)
             ps->avg_delivery_us = delivery_us;
@@ -756,6 +756,25 @@ void dl_peer_body_progress(struct download_manager *dm, uint32_t peer_id,
         if (requested) *requested = ps->blocks_requested;
         if (received)  *received  = ps->blocks_received;
         if (timed_out) *timed_out = ps->blocks_timed_out;
+    }
+    zcl_mutex_unlock(&dm->cs);
+}
+
+void dl_peer_body_staleness(struct download_manager *dm, uint32_t peer_id,
+                            uint64_t *received, uint64_t *timed_out,
+                            int64_t *last_body_time)
+{
+    if (received)       *received       = 0;
+    if (timed_out)      *timed_out      = 0;
+    if (last_body_time) *last_body_time = 0;
+    if (!dm)
+        return;
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
+    if (ps) {
+        if (received)       *received       = ps->blocks_received;
+        if (timed_out)      *timed_out      = ps->blocks_timed_out;
+        if (last_body_time) *last_body_time = ps->last_body_received_time;
     }
     zcl_mutex_unlock(&dm->cs);
 }
@@ -1355,7 +1374,7 @@ void dl_peer_block_received(struct download_manager *dm,
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     if (ps) {
         ps->blocks_received++;
-        ps->last_block_time = (int64_t)platform_time_wall_time_t();
+        ps->last_body_received_time = (int64_t)platform_time_wall_time_t();
         if (ps->avg_delivery_us == 0)
             ps->avg_delivery_us = delivery_us;
         else

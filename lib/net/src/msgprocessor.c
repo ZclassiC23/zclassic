@@ -67,6 +67,16 @@
 #include <string.h>
 #include <time.h>
 
+/* The delivered-then-dark body-stall rule (Rule D, below) enforces the
+ * download manager's own stall constant, which was previously
+ * defined-but-unenforced. The sync-layer window it evicts on
+ * (SYNC_BODY_STALL_TIMEOUT_SECS) MUST equal DL_STALL_TIMEOUT_SECS so the
+ * "no body for the download-manager stall window" contract is a single
+ * value, not two that can silently drift apart. */
+_Static_assert(DL_STALL_TIMEOUT_SECS == SYNC_BODY_STALL_TIMEOUT_SECS,
+               "delivered-then-dark eviction window must match the "
+               "download-manager stall constant DL_STALL_TIMEOUT_SECS");
+
 /* ── Download manager singleton ─────────────────────────────────── */
 static struct download_manager g_download_mgr;
 static bool g_download_mgr_init = false;
@@ -2036,6 +2046,38 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (unsigned long long)body_timeout,
                        (long long)(now_send - (node->time_connected
                            ? node->time_connected : now_send)));
+                node->disconnect = true;
+                return true;
+            }
+        }
+
+        /* ── Rule D: delivered-then-dark body stall — the complement of
+         * Rule C. Rule C exempts any peer with body_received > 0, so a peer
+         * that serves a few bodies and then goes silent holds its outbound
+         * slot forever while the body cursor never advances again (and
+         * DL_STALL_TIMEOUT_SECS, the download manager's own stall constant,
+         * was defined-but-unenforced). This evicts it once its last body is
+         * >= the stall window old AND it has accrued the same timed-out floor
+         * Rule C uses, so connman fails over to a peer that keeps serving
+         * bodies. The body_received > 0 (Rule D) vs == 0 (Rule C) split makes
+         * the two mutually exclusive — no peer is double-evicted. Same
+         * trusted/loopback/inbound exemptions as rules A/B/C. */
+        if (!mp_swarm_is_active() && !snapshot_active && !stall_peer_trusted &&
+            !node->inbound && node->state >= PEER_SYNCING_HEADERS) {
+            uint64_t dark_recv = 0, dark_timeout = 0;
+            int64_t dark_last_body = 0;
+            dl_peer_body_staleness(get_download_mgr(), (uint32_t)node->id,
+                                   &dark_recv, &dark_timeout, &dark_last_body);
+            if (syncsvc_should_disconnect_body_dark_peer(
+                    node, our_height, dark_recv, dark_timeout,
+                    dark_last_body, now_send)) {
+                printf("BODY DARK: peer %s delivered %llu block bodies then "
+                       "went silent %llds (%llu getdata timed out), "
+                       "disconnecting\n",
+                       node->addr_name,
+                       (unsigned long long)dark_recv,
+                       (long long)(now_send - dark_last_body),
+                       (unsigned long long)dark_timeout);
                 node->disconnect = true;
                 return true;
             }

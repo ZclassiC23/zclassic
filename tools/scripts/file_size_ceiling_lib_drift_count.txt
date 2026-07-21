@@ -113,4 +113,15 @@
 # over off it by disconnecting so connman dials a peer that will serve
 # bodies. Re-baselined in file_size_ceiling_lib_baseline.txt (2373); count
 # unchanged.
+#
+# 2026-07-21 (wf/body-stall-dark): msgprocessor.c grew 2373 -> 2415 adding
+# Rule D (delivered-then-dark body-download stall disconnect) — the complement
+# of Rule C. Rule C exempts any peer with body_received > 0, so a peer that
+# serves a few bodies then goes silent holds its outbound slot forever while
+# the body cursor never advances again; DL_STALL_TIMEOUT_SECS sat
+# defined-but-unenforced. The new call site evicts such a peer once its last
+# body is >= the stall window old AND it has accrued the same timed-out floor
+# Rule C uses. Re-baselined in file_size_ceiling_lib_baseline.txt (2415);
+# count unchanged (download.c stays grandfathered, msgprocessor.c stays at
+# baseline).
 13

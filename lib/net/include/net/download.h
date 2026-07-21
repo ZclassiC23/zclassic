@@ -76,7 +76,16 @@ struct dl_peer_stats {
     uint32_t blocks_requested;
     uint32_t blocks_received;
     uint32_t blocks_timed_out;
-    int64_t  last_block_time;       /* when last block arrived */
+    int64_t  last_body_received_time; /* wall-clock epoch seconds of the most
+                                       * recent block body credited to this
+                                       * peer; 0 until the first body arrives.
+                                       * Feeds the delivered-then-dark body-
+                                       * stall rule (dl_peer_body_staleness ->
+                                       * syncsvc_should_disconnect_body_dark_peer):
+                                       * a peer that delivered >=1 body and then
+                                       * went silent lets this cursor go stale
+                                       * while blocks_received stays > 0, the
+                                       * exact case Rule C exempts. */
     int64_t  avg_delivery_us;       /* rolling average delivery time (EWMA) */
     uint32_t bandwidth_score;       /* adaptive score: higher = faster peer */
     bool     active;
@@ -269,6 +278,20 @@ size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id);
 void dl_peer_body_progress(struct download_manager *dm, uint32_t peer_id,
                            uint64_t *requested, uint64_t *received,
                            uint64_t *timed_out);
+
+/* Delivered-then-dark staleness snapshot — the complement of
+ * dl_peer_body_progress(). Reports `received` (bodies this peer delivered),
+ * `timed_out` (its getdata requests that expired unfilled), and
+ * `last_body_time` (wall-clock epoch seconds of the most recent block body
+ * credited to it; 0 if it never delivered one). The body-download stall
+ * discipline feeds these to syncsvc_should_disconnect_body_dark_peer() to
+ * fail over off a peer that delivered >=1 body and THEN went silent — the
+ * case syncsvc_should_disconnect_body_stalled_peer() (Rule C) deliberately
+ * exempts. Any out-pointer may be NULL; all are zeroed when the peer is
+ * untracked. Thread-safe. */
+void dl_peer_body_staleness(struct download_manager *dm, uint32_t peer_id,
+                            uint64_t *received, uint64_t *timed_out,
+                            int64_t *last_body_time);
 
 /* Handle peer disconnect — re-queue all in-flight blocks from this peer.
  * Call from connman when a peer is disconnected. Returns count re-queued. */
