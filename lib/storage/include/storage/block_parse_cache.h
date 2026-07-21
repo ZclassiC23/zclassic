@@ -35,6 +35,17 @@
 struct block;
 struct block_index;
 
+/* Cache capacity: the number of (height,hash) -> parsed-body slots. Must be
+ * >= the refold batch size (currently 2000) so a full batch of bodies
+ * survives across all five staged-sync consumers (body_persist,
+ * script_validate, proof_validate, utxo_apply, tip_finalize_post_step)
+ * without body_persist's own writes evicting entries the later stages in
+ * the SAME batch still need to read — see block_parse_cache.c for the full
+ * rationale. Exported here (rather than left as a private .c constant) so
+ * every capacity-sensitive caller, including tests, derives it instead of
+ * hardcoding a duplicate that can silently drift out of sync. */
+#define BLOCK_PARSE_CACHE_CAPACITY 2048
+
 /* Fetch the block body for (height, block_hash) into `out` (which the caller
  * MUST have block_init'd) as an independent deep copy the caller owns and frees
  * with block_free. On a cache miss the body is read from disk via

@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Tests for block_parse_cache (lib/storage/src/block_parse_cache.c), the
- * 16-entry (height, block_hash) LRU that feeds the consensus fold via
+ * BLOCK_PARSE_CACHE_CAPACITY-entry (height, block_hash) LRU that feeds the
+ * consensus fold via
  * stage_read_block() (app/jobs/include/jobs/stage_helpers.h:102-113). The
  * contract (block_parse_cache.h:21-27): every consumer receives a COMPLETE,
  * INDEPENDENT deep clone — a block_serialize<->block_deserialize round-trip
@@ -15,7 +16,8 @@
  *       and the cache entry unaffected),
  *   (b) no (height,hash) key collision (same height/diff hash, same hash/diff
  *       height both return their own bytes),
- *   (c) LRU eviction (>16 distinct keys; oldest evicted, recents still hit).
+ *   (c) LRU eviction (> BLOCK_PARSE_CACHE_CAPACITY distinct keys; oldest
+ *       evicted, recents still hit).
  *   (d) sealed segment source below the frontier (see test_segment_backed_read).
  *   (e) a MISS whose body does NOT hash to the requested key is never
  *       installed into the cache (verify-before-store) — a bad disk read at
@@ -300,14 +302,17 @@ done:
 
 /* ── Test (c): LRU eviction ───────────────────────────────────── */
 
-#define BPC_CAP 16
+/* Derived from the production constant (block_parse_cache.h) rather than a
+ * duplicated magic number, so this test always exercises the REAL capacity
+ * boundary instead of silently drifting out of sync with it. */
+#define BPC_CAP BLOCK_PARSE_CACHE_CAPACITY
 
 static int test_lru_eviction(const char *datadir)
 {
     int failures = 0;
     block_parse_cache_clear();
 
-    TEST("bpc: >16 keys evict oldest; recents hit; re-get of evicted re-reads") {
+    TEST("bpc: >BPC_CAP keys evict oldest; recents hit; re-get of evicted re-reads") {
         /* CAP+1 distinct fixtures. Insert 0..CAP in order (each a miss). The
          * first inserted (idx 0) is the LRU victim once the CAP+1th lands. */
         const int N = BPC_CAP + 1;
