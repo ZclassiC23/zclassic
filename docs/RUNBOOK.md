@@ -386,9 +386,27 @@ tools/scripts/import-copy-prove.sh --src=$HOME/.zclassic-c23 \
 Only a green copy-prove run earns a re-run of the same importer against the
 live canonical datadir.
 
+**Precondition — the bind guard needs a height coincidence, and it can be
+unsatisfiable.** The importer's bind guard requires the `zclassicd` source's
+**persisted on-disk** chainstate best-block to equal the target node's coins
+island root *exactly*. `zclassicd` flushes its LevelDB chainstate only
+periodically, so its persisted best-block usually lags its live RPC tip by tens
+of thousands of blocks. If the wedged node's island root sits *below* the
+`zclassicd` live tip but the persisted chainstate has already moved *past* it
+(or never lands on it), the guard refuses (`bind guard REFUSAL: tip bind
+h=<persisted> != fold-resume anchor h=<island>`) — correctly, since binding the
+shielded frontier at the wrong height would re-wedge. When this happens the
+cure is **not applicable to that datadir**; do not force it. The reliable path
+is then a **fresh full-history rebuild** (two-step `--importblockindex` +
+genesis body-fold, which builds complete anchor+nullifier state with no gap)
+and a service cutover to the fresh datadir — see [`docs/SYNC.md`](SYNC.md)
+Method 3.
+
 **Prevention:** this wedge is the expected next step after a transparent-only
 seed, not a defect — run `-import-complete-shielded` once, right after the
-transparent fold reaches its held frontier.
+transparent fold reaches its held frontier (while the height coincidence above
+still holds); or seed from a v3 snapshot / full body-fold that carries complete
+shielded state from the start.
 
 ---
 
