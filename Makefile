@@ -3014,6 +3014,14 @@ c3-stopwatch-report:
 	 fi; \
 	 exit "$$rc"'
 
+.PHONY: arch-score
+# Mechanical completion score for the ARCHITECTURE NORTH STAR
+# (docs/ARCHITECTURE_NORTH_STAR.md). Run as you work — the score rises only when
+# a real invariant is satisfied or an outcome gate passes. Lowest-weight-last =
+# "chase these next". This is the LLM's on-track compass toward instant-on.
+arch-score:
+	@bash tools/scripts/arch_score.sh
+
 .PHONY: netdisrupt-stopwatch-report
 netdisrupt-stopwatch-report:
 	@bash -c 'set -uo pipefail; \
