@@ -18,8 +18,8 @@
 #   dial (unlike the C3 stopwatch), so the field is repurposed to name the
 #   node under test, keeping the ledger schema close enough to
 #   c3_stopwatch_run_and_record.sh's for one shared judge script.
-#   verdict is one of pass|fail|skip|seam|stalled-named|error, mapped from
-#   the underlying script's exit code (0/1/2/3/4/other).
+#   verdict is one of pass|fail|skip|seam|stalled-named|frontier-busy-timeout|
+#   error, mapped from the underlying script's exit code (0/1/2/3/4/5/other).
 #
 # Env (forwarded straight through to network_disruption_recovery_stopwatch.sh):
 #   ZCL_ND_NODE_BIN            client CLI binary (default $REPO_ROOT/build/bin/zclassic23)
@@ -83,6 +83,7 @@ case "$rc" in
     2) verdict="skip" ;;
     3) verdict="seam" ;;
     4) verdict="stalled-named" ;;
+    5) verdict="frontier-busy-timeout" ;;
 esac
 
 wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*\)$/\1/p' | tail -1)"

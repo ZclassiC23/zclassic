@@ -292,6 +292,79 @@ static int car_test_autodiscover_picks_matching_fixture(const char *home)
     return failures;
 }
 
+/* D4 (wf/cli-harness-honesty): the live incident this closes — TWO or more
+ * sibling datadirs recording the SAME rpcport (stale fixtures from
+ * separate runs commonly reuse a fixed test port; `.zclassic-c23-
+ * fullbuild-test` and three OTHER sibling datadirs on the reporting host
+ * all recorded port 39072 from earlier, no-longer-live runs). Picking
+ * "first match in sorted order" answered from a datadir that was NOT the
+ * instance actually listening on the requested port. Auto-discovery must
+ * refuse outright on ambiguity, never guess. */
+static int car_test_autodiscover_ambiguous_port_refuses(const char *home)
+{
+    int failures = 0;
+    TEST("cli auth: -rpcport=<N> with no -datadir= REFUSES (never guesses) "
+         "when two or more sibling datadirs record the same port N") {
+        char dir_a[700], dir_b[700];
+        snprintf(dir_a, sizeof(dir_a), "%s/.zclassic-c23-caramba", home);
+        snprintf(dir_b, sizeof(dir_b), "%s/.zclassic-c23-carambb", home);
+
+        uint16_t shared_port = car_reserve_port();
+        ASSERT(shared_port != 0);
+        car_write_dead_fixture(dir_a, shared_port, "usera:passa");
+        car_write_dead_fixture(dir_b, shared_port, "userb:passb");
+
+        char rpcport_flag[32];
+        snprintf(rpcport_flag, sizeof(rpcport_flag), "-rpcport=%u",
+                 shared_port);
+        char *argv[] = {
+            (char *)CAR_BIN, rpcport_flag,
+            (char *)"zcl_test_no_such_method_xyz", NULL,
+        };
+        char out[16384] = {0};
+        int rc = car_run(argv, car_build_envp(home, NULL), out, sizeof(out));
+
+        ASSERT(!car_contains(out, "auto-discovered datadir"));
+        ASSERT(car_contains(out, "error=PORT_AMBIGUOUS"));
+        ASSERT(car_contains(out, "-datadir=DIR"));
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_INVALID);
+
+        car_rm_shallow_dir(dir_a);
+        car_rm_shallow_dir(dir_b);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* D4: zero sibling datadirs recording the requested port must ALSO refuse
+ * (never silently fall through to the systemctl-default-service datadir —
+ * that reintroduces the exact pre-E4 footgun for every unmatched port). */
+static int car_test_autodiscover_no_match_refuses(const char *home)
+{
+    int failures = 0;
+    TEST("cli auth: -rpcport=<N> with no -datadir= REFUSES when no sibling "
+         "datadir records port N (never falls through to a default lane)") {
+        uint16_t unmatched_port = car_reserve_port();
+        ASSERT(unmatched_port != 0);
+
+        char rpcport_flag[32];
+        snprintf(rpcport_flag, sizeof(rpcport_flag), "-rpcport=%u",
+                 unmatched_port);
+        char *argv[] = {
+            (char *)CAR_BIN, rpcport_flag,
+            (char *)"zcl_test_no_such_method_xyz", NULL,
+        };
+        char out[16384] = {0};
+        int rc = car_run(argv, car_build_envp(home, NULL), out, sizeof(out));
+
+        ASSERT(!car_contains(out, "auto-discovered datadir"));
+        ASSERT(car_contains(out, "error=PORT_NOT_FOUND"));
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_INVALID);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int car_test_explicit_datadir_wins(const char *home,
                                           const char *live_dir,
                                           uint16_t live_port)
@@ -483,6 +556,8 @@ int test_cli_auth_robust(void)
     car_mkdir_p(home);
 
     failures += car_test_autodiscover_picks_matching_fixture(home);
+    failures += car_test_autodiscover_ambiguous_port_refuses(home);
+    failures += car_test_autodiscover_no_match_refuses(home);
 
     /* Shared live+decoy fixtures for the remaining cases (each needs an
      * authenticatable target and a wrong-cookie source). */

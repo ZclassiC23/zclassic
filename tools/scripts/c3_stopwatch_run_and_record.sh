@@ -12,8 +12,8 @@
 #
 # Ledger line: {ts, verdict, exit_code, wall_clock_seconds, budget_seconds,
 #               peer, node_bin, build_commit, artifact_dir}
-#   verdict is one of pass|fail|skip|seam|stalled-named|error, mapped from
-#   the underlying stopwatch's exit code (0/1/2/3/4/other).
+#   verdict is one of pass|fail|skip|seam|stalled-named|frontier-busy-timeout|
+#   error, mapped from the underlying stopwatch's exit code (0/1/2/3/4/5/other).
 #
 # Env:
 #   ZCL_BIN               node binary to time (default $REPO_ROOT/build/bin/zclassic23)
@@ -69,6 +69,7 @@ case "$rc" in
     2) verdict="skip" ;;
     3) verdict="seam" ;;
     4) verdict="stalled-named" ;;
+    5) verdict="frontier-busy-timeout" ;;
 esac
 
 wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*\)$/\1/p' | tail -1)"
