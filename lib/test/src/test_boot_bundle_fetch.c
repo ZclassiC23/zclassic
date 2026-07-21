@@ -70,21 +70,6 @@ static bool bbf_write_file(const char *dir, const char *name,
     return ok;
 }
 
-/* Fill a committed manifest from a serve-side registered artifact (like
- * test_rom_fetch's helper). */
-static void bbf_manifest_from_artifact(const struct rom_artifact *a,
-                                       struct rom_fetch_manifest *m)
-{
-    memset(m, 0, sizeof(*m));
-    m->used = true;
-    snprintf(m->filename, sizeof(m->filename), "%s", a->filename);
-    m->size_bytes = a->size_bytes;
-    m->chunk_size = a->chunk_size;
-    m->num_chunks = a->num_chunks;
-    memcpy(m->chunk_root, a->chunk_root, 32);
-    memcpy(m->whole_sha3, a->whole_sha3, 32);
-}
-
 /* Wrap the serve-side artifacts array (rom_seed_directory_json) into the full
  * /directory.json object shape the parser expects ({"artifacts":[...]}). */
 static void bbf_directory_json(char *out, size_t cap)
