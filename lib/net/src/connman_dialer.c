@@ -202,9 +202,14 @@ size_t connman_gather_dial_candidates(struct connman *cm,
     }
 
     /* (2) addnode / addrman via the existing selector. Bound the draws so a
-     * pool that keeps returning saturated/duplicate picks can't spin. */
+     * pool that keeps returning saturated/duplicate picks can't spin, but
+     * budget enough draws that a batch still fills with DISTINCT live
+     * candidates when a large fraction of addrman is in failure-aware backoff
+     * (each returned-but-cooling address is skipped, so too tight a cap could
+     * return a short batch and leave the outbound floor unfilled while live
+     * candidates remained undrawn). */
     size_t draws = 0;
-    const size_t draw_cap = max * 4 + 8;
+    const size_t draw_cap = max * 8 + 16;
     while (n < max && draws < draw_cap) {
         draws++;
         struct addr_info info;
@@ -316,12 +321,25 @@ static void connman_record_dial_failure(struct connman *cm,
 {
     char ipbuf[64];
     net_addr_to_string(&c->addr.svc.addr, ipbuf, sizeof(ipbuf));
-    if (c->source == CONNMAN_TARGET_ADDNODE)
+    if (c->source == CONNMAN_TARGET_ADDNODE) {
         connman_record_addnode_attempt(cm, c->addnode_index, false);
-    else if (c->source == CONNMAN_TARGET_ADDRMAN)
-        addrman_attempt(&cm->manager.addrman, &c->addr.svc,
-                        (int64_t)platform_time_wall_time_t());
-    /* ANCHOR / feeler carry no durable per-address failure ledger. */
+    } else if (c->source == CONNMAN_TARGET_ADDRMAN) {
+        /* A NON-feeler addrman candidate was already charged exactly one
+         * attempt at pick time (connman_pick_next_outbound_target ->
+         * addrman_attempt). Charging a second one here double-counted every
+         * TCP-refused dial, so a refused address escalated its backoff twice
+         * as fast as a dead-on-arrival peer that connects TCP then stalls
+         * pre-handshake (charged only once, at pick) — backwards, since the
+         * stalling peer wastes far MORE of an outbound slot. Charge here ONLY
+         * for feelers, which skip the pick-time path and would otherwise carry
+         * no durable per-address failure ledger at all. One dial now == one
+         * attempt for every source, so the failure-aware backoff ramp escalates
+         * on a true consecutive-failure count. */
+        if (c->is_feeler)
+            addrman_attempt(&cm->manager.addrman, &c->addr.svc,
+                            (int64_t)platform_time_wall_time_t());
+    }
+    /* ANCHOR carries no durable per-address failure ledger. */
     event_emitf(EV_TCP_CONNECT_FAILED, 0, "%s:%u", ipbuf, c->addr.svc.port);
 }
 

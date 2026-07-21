@@ -48,6 +48,31 @@ static struct p2p_node *add_test_peer(struct connman *cm,
     return node;
 }
 
+/* Force an addrman entry (matched by its IPv4 first octet ip[12], which is
+ * unique per address in the dialer-backoff test below) into a chosen
+ * consecutive-failure state: `attempts` drives connman_addrman_retry_cooldown,
+ * `last_try` places the entry inside or outside its cooldown window. Returns
+ * true iff an entry with that octet was found. Direct field pokes are the
+ * standard fixture idiom in this file (see "addrman repeated failures cool
+ * down"): they set the exact ledger state a real run reaches after N failed
+ * dials without needing to actually drive N dials. */
+static bool test_addrman_set_fail(struct connman *cm, uint8_t first_octet,
+                                  int attempts, int64_t last_try)
+{
+    for (int i = 0; i < cm->manager.addrman.id_count; i++) {
+        struct addr_info *info = &cm->manager.addrman.entries[i];
+        if (!info->used || !net_addr_is_ipv4(&info->addr.svc.addr))
+            continue;
+        if (info->addr.svc.addr.ip[12] == first_octet) {
+            info->attempts = attempts;
+            info->last_try = last_try;
+            info->last_success = 0;   /* never handshook = dead-on-arrival */
+            return true;
+        }
+    }
+    return false;
+}
+
 int test_connman_addnode_fallback(void)
 {
     int failures = 0;
@@ -590,6 +615,82 @@ int test_connman_addnode_fallback(void)
             ok = ok && net_addr_is_ipv4(&pick.addr.svc.addr);
             ok = ok && pick.addr.svc.addr.ip[12] == 81;
             ok = ok && pick.addr.svc.addr.ip[13] == 214;
+        }
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: failure-aware backoff gathers DISTINCT "
+           "live candidates and skips recently-dead ones... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct net_addr src;
+        memset(&sigs, 0, sizeof(sigs));
+        net_addr_init(&src);
+        bool ok = connman_init(&cm, params, &sigs);
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+
+        /* Four addrman addresses, each in a DISTINCT /16 so the /16 diversity
+         * cap never rejects them: two "dead-on-arrival" (accumulated failures,
+         * last try just now → inside their backoff window) and two "live"
+         * (never failed, immediately dialable). */
+        if (ok) {
+            struct net_address addr;
+            test_set_ipv4(&addr, 45, 33, 1, 1, 8033);   /* dead A */
+            addr.nTime = (uint32_t)now;
+            ok = ok && addrman_add(&cm.manager.addrman, &addr, &src, 0);
+            test_set_ipv4(&addr, 51, 178, 1, 1, 8033);  /* dead B */
+            addr.nTime = (uint32_t)now;
+            ok = ok && addrman_add(&cm.manager.addrman, &addr, &src, 0);
+            test_set_ipv4(&addr, 47, 88, 1, 1, 8033);   /* live C */
+            addr.nTime = (uint32_t)now;
+            ok = ok && addrman_add(&cm.manager.addrman, &addr, &src, 0);
+            test_set_ipv4(&addr, 66, 70, 1, 1, 8033);   /* live D */
+            addr.nTime = (uint32_t)now;
+            ok = ok && addrman_add(&cm.manager.addrman, &addr, &src, 0);
+        }
+
+        /* A: 5 consecutive failures → 3600 s cooldown; B: 2 → 300 s. Both
+         * tried "just now", so both are firmly inside their backoff windows. */
+        ok = ok && test_addrman_set_fail(&cm, 45, 5, now);
+        ok = ok && test_addrman_set_fail(&cm, 51, 2, now);
+
+        /* One gather asks for a full 4-candidate batch. Only the two LIVE
+         * addresses may come back — the dead ones are in failure-aware
+         * backoff — and the two returned candidates must be DISTINCT. */
+        struct connman_dial_candidate batch[8];
+        size_t n = 0;
+        if (ok) {
+            n = connman_gather_dial_candidates(&cm, batch, 4);
+            ok = ok && n == 2;
+        }
+        bool saw_c = false, saw_d = false, saw_dead = false;
+        for (size_t i = 0; ok && i < n; i++) {
+            uint8_t oct = batch[i].addr.svc.addr.ip[12];
+            if (oct == 47) saw_c = true;
+            else if (oct == 66) saw_d = true;
+            else saw_dead = true;   /* 45 or 51 must never appear */
+        }
+        ok = ok && saw_c && saw_d && !saw_dead;
+        /* Distinct: two different services, never the same slot twice. */
+        if (ok && n == 2)
+            ok = ok && !net_service_eq(&batch[0].addr.svc, &batch[1].addr.svc);
+
+        /* REFILL: B's backoff expires (last try older than its 300 s window).
+         * A stays dead (3600 s window intact) and C/D were charged one attempt
+         * each by the gather above (60 s cooldown, tried just now), so the only
+         * candidate that may refill the floor now is B. */
+        ok = ok && test_addrman_set_fail(&cm, 51, 2, now - 400);
+        if (ok) {
+            size_t n2 = connman_gather_dial_candidates(&cm, batch, 4);
+            ok = ok && n2 == 1;
+            ok = ok && batch[0].addr.svc.addr.ip[12] == 51;
         }
 
         connman_free(&cm);
