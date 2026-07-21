@@ -636,10 +636,10 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     struct agent_fast_snapshot health;
     agent_fast_collect(&health, &first_call_budget);
     /* posture is the ONLY DB-touching input to this otherwise in-memory summary;
-     * collect() itself routes around a busy connection and reports whether it
-     * served from its in-memory snapshot. */
+     * the bounded front below (agent_summary_posture_cache.c) routes around a
+     * busy/contended connection and reports whether it served from cache. */
     struct agent_security_posture posture;
-    agent_security_posture_collect(&posture, NULL);
+    agent_summary_posture_collect_bounded(&posture);
     const char *db_maint_op = NULL;
     int64_t db_maint_elapsed_ms = 0;
     bool db_busy = node_db_long_op_active(&db_maint_op, &db_maint_elapsed_ms);

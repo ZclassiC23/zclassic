@@ -1240,6 +1240,91 @@ static int test_status_brief_names_first_failing_field(void)
     return failures;
 }
 
+/* Lane S1 regression: the very first command a new user runs
+ * (`zclassic23 status`) must come back ok:true, schema-valid, and well
+ * under its latency budget -- both on a healthy caught-up node and on a
+ * fresh node that has not synced anything yet. The live bug this guards
+ * against surfaced as "invalid zcl.public_status.v2: missing/invalid field
+ * schema" together with an elapsed_ms far past budget_ms; assert all three
+ * properties together, on both fixtures, rather than leaving them scattered
+ * across the other status_brief_* tests above. */
+static int test_status_ok_schema_valid_under_budget_healthy_and_fresh(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char fixture[2048];
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+
+    TEST("status is ok:true, schema-valid, and well under budget on both a "
+         "healthy node and a fresh not-yet-synced node") {
+        ASSERT(s != NULL);
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+
+        /* Case 1: healthy, at tip (status_brief_mock_rpc's default fixture). */
+        {
+            g_status_brief_agent_fixture = NULL;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(out, "\"ok\":true") != NULL);
+
+            struct json_value root;
+            ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+            ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                          "zcl.result.v1");
+            ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "passed");
+            int64_t budget_ms = json_get_int(json_get(&root, "budget_ms"));
+            int64_t elapsed_ms = json_get_int(json_get(&root, "elapsed_ms"));
+            ASSERT(budget_ms > 0);
+            ASSERT(elapsed_ms >= 0 && elapsed_ms < budget_ms);
+            ASSERT(!json_get_bool(json_get(&root, "budget_exceeded")));
+            const struct json_value *data = json_get(&root, "data");
+            ASSERT(data != NULL && data->type == JSON_OBJ);
+            ASSERT(json_get_bool(json_get(data, "healthy")));
+            json_free(&root);
+        }
+
+        /* Case 2: brand-new datadir -- nothing served, no header/peer-height
+         * evidence, chain evidence not yet consistent -- every fact honestly
+         * unknown rather than fabricated, but still a complete, valid
+         * document that must degrade gracefully, never error. */
+        {
+            status_brief_fixture_write(
+                fixture, sizeof(fixture), 0, false, -1, false, -1, false,
+                0, false, 0, false, -1, false, true,
+                false, false, false, false, false);
+            g_status_brief_agent_fixture = fixture;
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(out, "\"ok\":true") != NULL);
+
+            struct json_value root;
+            ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+            ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                          "zcl.result.v1");
+            ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "passed");
+            int64_t budget_ms = json_get_int(json_get(&root, "budget_ms"));
+            int64_t elapsed_ms = json_get_int(json_get(&root, "elapsed_ms"));
+            ASSERT(budget_ms > 0);
+            ASSERT(elapsed_ms >= 0 && elapsed_ms < budget_ms);
+            ASSERT(!json_get_bool(json_get(&root, "budget_exceeded")));
+            const struct json_value *data = json_get(&root, "data");
+            ASSERT(data != NULL && data->type == JSON_OBJ);
+            ASSERT(json_is_null(json_get(data, "hstar")));
+            ASSERT(!json_get_bool(json_get(data, "serving")));
+            ASSERT(!json_get_bool(json_get(data, "healthy")));
+            json_free(&root);
+        }
+        PASS();
+    } _test_next:;
+
+    g_status_brief_agent_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_planned_fail_closed(void)
 {
     int failures = 0;
@@ -2170,6 +2255,7 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
     failures += test_status_brief_names_first_failing_field();
+    failures += test_status_ok_schema_valid_under_budget_healthy_and_fresh();
     failures += test_bridge_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();

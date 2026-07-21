@@ -159,4 +159,12 @@ void agent_summary_push_detail_json(struct json_value *result,
                                     const struct agent_fast_snapshot *health,
                                     bool partial_result);
 
+/* Bounded/cached front for agent_security_posture_collect(), used by
+ * rpc_agent_summary(); implemented in agent_summary_posture_cache.c (split
+ * out so its own growth stays off event_agent_summary.c's line-count
+ * ceiling). See that file for the TTL-cache rationale. */
+struct agent_security_posture;
+void agent_summary_posture_collect_bounded(
+    struct agent_security_posture *out);
+
 #endif
