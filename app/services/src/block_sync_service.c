@@ -518,3 +518,51 @@ void syncsvc_free_stall_recovery(struct sync_stall_recovery *recovery)
     recovery->alt_heights = NULL;
     recovery->alt_count = 0;
 }
+
+/* Rule D — delivered-then-dark body-download stall (the complement of Rule C,
+ * syncsvc_should_disconnect_body_stalled_peer in header_sync_service.c). Rule C
+ * exempts any peer with body_received > 0, so a peer that serves a few block
+ * bodies and then goes silent holds its outbound slot forever while the body
+ * cursor never advances again. This lives beside the block-download planners
+ * (its concern is block bodies, not headers) rather than growing the
+ * header-sync file; the decision itself is pure, mirroring Rule C. See the
+ * contract in sync/sync_planner.h. */
+bool syncsvc_should_disconnect_body_dark_peer(const struct p2p_node *node,
+                                              int our_height,
+                                              uint64_t body_received,
+                                              uint64_t body_timed_out,
+                                              int64_t last_body_time,
+                                              int64_t now_seconds)
+{
+    if (!node)
+        return false;
+    /* IBD-gated, exactly like Rule C: at/near tip a peer legitimately
+     * delivers no body for long stretches (block cadence ~150s), so the
+     * discipline only runs while we still NEED bodies. */
+    if (!syncsvc_is_initial_block_download(node, our_height))
+        return false; // raw-return-ok:IBD-gate — pure keep-peer decision, not an error
+    if (node->state < PEER_HANDSHAKE_COMPLETE)
+        return false;
+
+    /* Complement of Rule C: this rule owns ONLY the delivered-then-dark
+     * case. A peer that never delivered a body is Rule C's job; keying on
+     * body_received > 0 here (Rule C keys on == 0) makes the two mutually
+     * exclusive, so no peer is ever judged by both — no double-eviction. */
+    if (body_received == 0)
+        return false;
+
+    /* Defensive: body_received > 0 implies a real body timestamp, but never
+     * judge on a zero/unknown cursor. */
+    if (last_body_time <= 0)
+        return false;
+
+    /* Minimum-demand floor (mirrors Rule C): only judge a peer we have
+     * genuinely asked AND waited on. A peer with requests still legitimately
+     * in flight has not timed them out, so it is not a deadbeat — we key on
+     * timed_out, not the raw request count. */
+    if (body_timed_out < SYNC_BODY_STALL_MIN_TIMEOUTS)
+        return false;
+
+    /* Genuine staleness: no body for a full stall window. */
+    return (now_seconds - last_body_time) >= SYNC_BODY_STALL_TIMEOUT_SECS;
+}

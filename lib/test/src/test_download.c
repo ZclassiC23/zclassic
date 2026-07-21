@@ -734,6 +734,64 @@ static int test_dl_peer_body_progress(void)
     return failures;
 }
 
+static int test_dl_peer_body_staleness(void)
+{
+    int failures = 0;
+    TEST("dl_peer_body_staleness tracks the last-body cursor across going dark") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        uint64_t recv = 9, to = 9;
+        int64_t last_body = 9;
+        /* Untracked peer zeroes every out-pointer. */
+        dl_peer_body_staleness(&dm, 42, &recv, &to, &last_body);
+        ASSERT(recv == 0 && to == 0 && last_body == 0);
+
+        int64_t before = (int64_t)platform_time_wall_time_t();
+
+        /* Peer 7 delivers one body: assign h1 then mark it received. */
+        struct uint256 h1 = make_hash(31);
+        ASSERT(dl_mark_requested(&dm, &h1, 200, 7));
+        ASSERT(dl_mark_received(&dm, &h1) == 7);
+
+        /* After a delivered body: received > 0 and the body cursor is set
+         * to ~now (non-zero, not in the future). */
+        dl_peer_body_staleness(&dm, 7, &recv, &to, &last_body);
+        int64_t after = (int64_t)platform_time_wall_time_t();
+        ASSERT(recv == 1);
+        ASSERT(to == 0);
+        ASSERT(last_body >= before && last_body <= after);
+        int64_t pinned = last_body;
+
+        /* Now the peer goes dark: two further getdata expire unfilled. The
+         * body cursor stays pinned at the last delivery — exactly the
+         * delivered-then-dark staleness signal Rule D keys on (received
+         * stays > 0, so Rule C keeps exempting this peer). */
+        struct uint256 h2 = make_hash(32);
+        struct uint256 h3 = make_hash(33);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ASSERT(dl_mark_requested(&dm, &h2, 201, 7));
+        ASSERT(dl_mark_requested(&dm, &h3, 202, 7));
+        ASSERT(dl_check_timeouts(&dm, now + timeout + 1) == 2);
+
+        dl_peer_body_staleness(&dm, 7, &recv, &to, &last_body);
+        ASSERT(recv == 1);            /* still 1 — dark after the first body */
+        ASSERT(to == 2);              /* two getdata expired unfilled */
+        ASSERT(last_body == pinned);  /* cursor did NOT advance while dark */
+
+        /* NULL out-pointers and NULL dm are tolerated. */
+        dl_peer_body_staleness(&dm, 7, NULL, NULL, NULL);
+        recv = 9; to = 9; last_body = 9;
+        dl_peer_body_staleness(NULL, 7, &recv, &to, &last_body);
+        ASSERT(recv == 0 && to == 0 && last_body == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_diagnostics(void)
 {
     int failures = 0;
@@ -1537,6 +1595,7 @@ int test_download(void)
     failures += test_dl_timeout_retry_failover_peer_zero();
     failures += test_dl_timeout_retry_avoid_expiry();
     failures += test_dl_peer_body_progress();
+    failures += test_dl_peer_body_staleness();
     failures += test_dl_diagnostics();
     failures += test_gap_fill_timeout_sweep();
     failures += test_gap_fill_timeout_wakes_dispatcher();

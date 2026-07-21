@@ -514,6 +514,76 @@ static int test_sync_service_body_stall_disconnect(void)
     return failures;
 }
 
+static int test_sync_service_body_dark_disconnect(void)
+{
+    int failures = 0;
+
+    TEST("body-dark discipline disconnects a peer that delivered then went silent") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 6;
+        node.state = PEER_SYNCING_HEADERS;
+        node.starting_height = 200000;   /* far ahead: we still need bodies */
+        int our_height = 100000;         /* < starting_height - 144 ⇒ IBD */
+        int64_t now = 1000000;
+        /* Its most recent body arrived a full stall window + 5s ago (dark). */
+        int64_t last_body = now - (SYNC_BODY_STALL_TIMEOUT_SECS + 5);
+
+        /* Delivered >= 1 body, then SYNC_BODY_STALL_MIN_TIMEOUTS getdata
+         * expired unfilled while the body cursor sat stale past the window:
+         * fail over off it. This is the exact delivered-then-dark case
+         * Rule C (syncsvc_should_disconnect_body_stalled_peer) exempts. */
+        ASSERT(syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, /*received=*/5,
+                   /*timed_out=*/SYNC_BODY_STALL_MIN_TIMEOUTS, last_body, now));
+
+        /* Complement of Rule C: a peer that NEVER delivered a body is Rule
+         * C's case, not this one. received == 0 ⇒ this predicate stays
+         * false, guaranteeing the two never both fire on one peer (no
+         * double-eviction). */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, /*received=*/0,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS, last_body, now));
+
+        /* Legitimately in-flight requests (below the timed-out floor) ⇒ the
+         * peer is not a deadbeat; keep it even though its cursor is stale. */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, 5,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS - 1, last_body, now));
+
+        /* Body cursor still fresh (a body arrived within the window) ⇒ the
+         * peer is actively serving; keep it regardless of timeouts. */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, 5, SYNC_BODY_STALL_MIN_TIMEOUTS,
+                   now - (SYNC_BODY_STALL_TIMEOUT_SECS - 1), now));
+
+        /* Zero/unknown cursor is never judged (defensive). */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, 5, SYNC_BODY_STALL_MIN_TIMEOUTS, 0, now));
+
+        /* At/near tip (not IBD) a peer legitimately delivers no bodies. */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, /*our_height=*/199999, 5,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS, last_body, now));
+
+        /* Pre-handshake peer is never judged. */
+        node.state = PEER_VERSION_SENT;
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   &node, our_height, 5, SYNC_BODY_STALL_MIN_TIMEOUTS,
+                   last_body, now));
+        node.state = PEER_SYNCING_HEADERS;
+
+        /* Null node is a safe no-op. */
+        ASSERT(!syncsvc_should_disconnect_body_dark_peer(
+                   NULL, our_height, 5, SYNC_BODY_STALL_MIN_TIMEOUTS,
+                   last_body, now));
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_collects_needed_blocks_oldest_first(void)
 {
     int failures = 0;
@@ -1970,6 +2040,7 @@ int test_sync_service(void)
     failures += test_sync_service_block_assignment_plan();
     failures += test_sync_service_assigns_peer_blocks();
     failures += test_sync_service_body_stall_disconnect();
+    failures += test_sync_service_body_dark_disconnect();
     failures += test_sync_service_collects_needed_blocks_oldest_first();
     failures += test_sync_service_collects_needed_blocks_activation();
     failures += test_sync_service_collects_needed_blocks_rejects_forks();

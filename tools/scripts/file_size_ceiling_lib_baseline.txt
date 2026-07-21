@@ -36,7 +36,7 @@ lib/net/src/file_service.c 1877
 lib/net/src/https_server.c 920
 lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1148
-lib/net/src/msgprocessor.c 2373
+lib/net/src/msgprocessor.c 2415
 lib/net/src/msgprocessor_snapshot.c 1787
 lib/net/src/msgprocessor_snapshot_serve.c 1108
 lib/net/src/net.c 1666

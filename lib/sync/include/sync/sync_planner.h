@@ -368,6 +368,31 @@ bool syncsvc_should_disconnect_body_stalled_peer(const struct p2p_node *node,
                                                   uint64_t body_received,
                                                   uint64_t body_timed_out,
                                                   int64_t now_seconds);
+
+/* Complement of Rule C (above): a peer that delivered >= 1 body and THEN went
+ * dark. Rule C exempts any peer with body_received > 0, so a peer that serves
+ * a handful of bodies and then stops holds its outbound slot forever while the
+ * body cursor never advances again (and DL_STALL_TIMEOUT_SECS, the download
+ * manager's own stall constant, sat defined-but-unenforced). This rule evicts
+ * it during IBD once ALL of:
+ *   - it delivered >= 1 body (body_received > 0 — the exact case Rule C skips;
+ *     this split makes the two predicates mutually exclusive so no peer is
+ *     ever judged by both on one tick, i.e. never double-evicted);
+ *   - its most recent body arrived >= SYNC_BODY_STALL_TIMEOUT_SECS ago
+ *     (genuine staleness, measured from `last_body_time`, the epoch-seconds
+ *     cursor from dl_peer_body_staleness()); and
+ *   - at least SYNC_BODY_STALL_MIN_TIMEOUTS of its getdata requests expired
+ *     unfilled (the minimum-demand floor — a peer with requests still
+ *     legitimately in flight has NOT timed them out, so it is never punished).
+ * IBD-gated and handshake-gated exactly like Rule C; trusted/loopback/inbound
+ * peers are exempt at the call site. Net policy only — touches no block/tx/
+ * header VALIDITY predicate. */
+bool syncsvc_should_disconnect_body_dark_peer(const struct p2p_node *node,
+                                              int our_height,
+                                              uint64_t body_received,
+                                              uint64_t body_timed_out,
+                                              int64_t last_body_time,
+                                              int64_t now_seconds);
 bool syncsvc_is_header_sync_stalled(enum sync_state state,
                                     int best_header_height,
                                     int64_t last_advance_time,
