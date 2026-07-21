@@ -27,9 +27,11 @@
 #include "test/test_helpers.h"
 
 #include "jobs/catchup_cadence.h"
+#include "jobs/validate_headers_stage.h"   /* VH_BATCH_SIZE, VH_BATCH_PER_TICK */
 #include "net/connman.h"
 #include "net/protocol.h"
 #include "services/sync_monitor.h"
+#include "supervisors/staged_sync_supervisor.h" /* test_effective_batch (A12) */
 #include "util/sync.h"
 
 #include <stdio.h>
@@ -224,6 +226,62 @@ static int case_active_then_restore(void)
     return failures;
 }
 
+/* (A12) The supervisor's per-tick effective batch must be FAN-OUT aware: a
+ * stage whose step_once verifies per_step_fanout units of consensus work
+ * (validate_headers: VH_BATCH_SIZE Equihash solutions per step) must not have
+ * an accelerated catch-up batch multiplied by that fan-out inside one commit
+ * held under progress_store_tx_lock. stage_effective_batch (exposed here for
+ * test) caps the accelerated target back down for such a stage while leaving
+ * non-fanning stages fully accelerated, and stays byte-identical when the
+ * override is inactive. Drives catch-up active via the same connman/log_head
+ * fixture the cases above use. */
+static int case_fanout_capped_under_catchup(void)
+{
+    int failures = 0;
+    struct connman cm;
+    struct p2p_node peer;
+    cc_reset(&cm);
+
+    /* --- inactive (no peers): byte-identical, fan-out or not. --- */
+    CC_CHECK("A12 inactive: fanout stage batch unchanged",
+             staged_sync_supervisor_test_effective_batch(
+                 VH_BATCH_PER_TICK, VH_BATCH_SIZE) == VH_BATCH_PER_TICK);
+    CC_CHECK("A12 inactive: non-fanout stage batch unchanged",
+             staged_sync_supervisor_test_effective_batch(100, 1) == 100);
+
+    /* --- catch-up ACTIVE (peers + gap >= threshold). --- */
+    cc_add_peer(&cm, &peer, 100000);
+    catchup_cadence_test_set_log_head_override(0); /* gap = 100000, active */
+    CC_CHECK("A12 active precondition", catchup_cadence_active());
+
+    /* A non-fanning stage IS accelerated to the full catch-up batch (500). */
+    int nonfan = staged_sync_supervisor_test_effective_batch(100, 1);
+    CC_CHECK("A12 active: non-fanout stage accelerated to 500",
+             nonfan == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
+
+    /* A fanning stage (validate_headers) is CAPPED: its per-commit work
+     * (batch * VH_BATCH_SIZE) must stay ~baseline, not ~8x. Concretely the
+     * effective batch must never exceed the accelerated target / fan-out, and
+     * must not regress below the stage's own normal batch. */
+    int fan = staged_sync_supervisor_test_effective_batch(
+        VH_BATCH_PER_TICK, VH_BATCH_SIZE);
+    CC_CHECK("A12 active: fanout stage NOT raised to 500",
+             fan < CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
+    CC_CHECK("A12 active: fanout stage batch <= accel/fanout",
+             fan <= CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH / VH_BATCH_SIZE
+                    || fan == VH_BATCH_PER_TICK);
+    CC_CHECK("A12 active: fanout stage not below its normal batch",
+             fan >= VH_BATCH_PER_TICK);
+    /* The load-bearing property: per-commit Equihash volume stays the
+     * documented order of magnitude (baseline 512, NOT ~4000). */
+    CC_CHECK("A12 active: per-commit fanned work stays ~baseline order",
+             (long)fan * VH_BATCH_SIZE
+                 <= 2L * VH_BATCH_PER_TICK * VH_BATCH_SIZE);
+
+    cc_cleanup();
+    return failures;
+}
+
 int test_catchup_cadence(void)
 {
     int failures = 0;
@@ -232,6 +290,7 @@ int test_catchup_cadence(void)
     failures += case_gap_just_under_threshold_inert();
     failures += case_active_when_gap_exceeds_threshold();
     failures += case_active_then_restore();
+    failures += case_fanout_capped_under_catchup();
     if (failures == 0)
         printf("test_catchup_cadence: ALL PASSED\n");
     else

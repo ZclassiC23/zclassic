@@ -52,6 +52,22 @@ bool utxo_apply_log_ensure_schema(sqlite3 *db)
     if (!add_column_if_missing(db,
             "ALTER TABLE utxo_apply_log ADD COLUMN itag BLOB"))
         return false;
+    /* Partial index for the dump-state "lowest ok=0 row" query
+     * (utxo_apply_stage_dump.c: WHERE ok=0 ORDER BY height ASC LIMIT 1). Without
+     * it that SELECT full-scans ~3.18M rows on a healthy node (ok is nowhere in
+     * the PRIMARY KEY), so a single `dumpstate utxo_apply` walks the whole log.
+     * A partial index keyed on height WHERE ok=0 serves both the filter and the
+     * ORDER BY from a tiny (usually empty) index, turning the scan into an
+     * indexed lookup. Idempotent; advisory-perf only, so a create failure is
+     * logged but does not fail schema-ensure. */
+    char *ierr = NULL;
+    if (sqlite3_exec(db,
+            "CREATE INDEX IF NOT EXISTS idx_utxo_apply_log_ok0 "
+            "  ON utxo_apply_log(height) WHERE ok = 0",
+            NULL, NULL, &ierr) != SQLITE_OK)
+        LOG_WARN("utxo_apply", "[utxo_apply] ok=0 index create failed: %s",
+                 ierr ? ierr : "(no message)");
+    if (ierr) sqlite3_free(ierr);
     return stage_row_itag_backfill(db, "utxo_apply_log");
 }
 

@@ -28,12 +28,12 @@
  * mirroring the validate_headers_report failure-summary query convention.
  * The reason kind is utxo_apply's first_failure_kind (e.g. lookup_spend,
  * spend_unknown_utxo); the txid|vout is decoded from the 36-byte detail
- * blob. No-op if the db is unavailable or there is no failing row. Takes
- * its own tx lock since dump_state runs outside any stage txn. */
+ * blob. No-op if the db is unavailable or there is no failing row. The caller
+ * holds the (recursive) progress-store lock — acquired non-blocking at the dump
+ * entry — for the whole db section, so this helper does not lock itself. */
 static void dump_first_failure(struct json_value *out, sqlite3 *db)
 {
     if (!db) return;
-    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT height, COALESCE(status,''), "
@@ -64,7 +64,6 @@ static void dump_first_failure(struct json_value *out, sqlite3 *db)
         json_push_kv_int(out, "first_failure_vout", vout);
     }
     sqlite3_finalize(st);
-    progress_store_tx_unlock();
 }
 
 bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
@@ -147,6 +146,22 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str (out, "select_idle_reason",
                       utxo_apply_select_idle_reason_name(
                           (enum utxo_apply_select_idle_reason)select_reason));
+
+    /* Every field below is db-backed and needs the progress-store lock. During
+     * catch-up the reducer owns that lock around bulk folds; a blocking acquire
+     * here queues the RPC worker behind the fold and makes `dumpstate utxo_apply`
+     * / status disappear exactly when the node is busiest. Acquire non-blocking
+     * (recursive lock, held across the whole db section so the helpers below need
+     * not re-lock) and emit the same busy/retryable marker reducer_frontier_dump
+     * uses when the fold owns the lock. The lock-free counters above are always
+     * present. */
+    if (db && !progress_store_tx_trylock()) {
+        json_push_kv_bool(out, "snapshot_complete", false);
+        json_push_kv_str (out, "snapshot_status", "progress_store_busy");
+        json_push_kv_bool(out, "retryable", true);
+        stage_dump_counters(out, stage);
+        return true;
+    }
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
@@ -169,6 +184,7 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                           (uint64_t)frontier == ua_cursor);
     }
     dump_first_failure(out, db);
+    if (db) progress_store_tx_unlock();
     stage_dump_counters(out, stage);
     return true;
 }

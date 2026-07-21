@@ -23,13 +23,13 @@
 
 /* Surface the lowest ok=0 row (status/proof_type/txid) into `out`, mirroring
  * the validate_headers_report failure-summary query convention. No-op if the
- * db is unavailable or there is no failing row. Takes its own tx lock since
- * dump_state runs outside any stage txn. */
+ * db is unavailable or there is no failing row. The caller holds the (recursive)
+ * progress-store lock — acquired non-blocking at the dump entry — for the whole
+ * db section, so this helper does not lock itself. */
 static void dump_first_failure(struct json_value *out, sqlite3 *db)
 {
     if (!db)
         return;
-    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT height, COALESCE(status,''), "
@@ -56,7 +56,6 @@ static void dump_first_failure(struct json_value *out, sqlite3 *db)
         json_push_kv_str(out, "first_failure_txid", hex);
     }
     sqlite3_finalize(st);
-    progress_store_tx_unlock();
 }
 
 bool proof_validate_dump_state_json(struct json_value *out, const char *key)
@@ -107,10 +106,27 @@ bool proof_validate_dump_state_json(struct json_value *out, const char *key)
                      last > 0 ? now - last : -1);
     json_push_kv_int(out, "last_blocked_unix",
                      proof_validate_stage_last_blocked_unix());
+
+    /* The fields below are db-backed and need the progress-store lock. During
+     * catch-up the reducer owns that lock around bulk folds; a blocking acquire
+     * here queues the RPC worker behind the fold and makes `dumpstate
+     * proof_validate` / status disappear exactly when the node is busiest.
+     * Acquire non-blocking (recursive lock, held across the whole db section so
+     * the helper below need not re-lock) and emit the same busy/retryable marker
+     * reducer_frontier_dump uses when the fold owns the lock. */
+    if (db && !progress_store_tx_trylock()) {
+        json_push_kv_bool(out, "snapshot_complete", false);
+        json_push_kv_str(out, "snapshot_status", "progress_store_busy");
+        json_push_kv_bool(out, "retryable", true);
+        stage_dump_counters(out, stage);
+        stage_dump_health(out, STAGE_NAME, stage);
+        return true;
+    }
     json_push_kv_int(out, "log_rows",
                      db ? stage_log_row_count(db, STAGE_NAME,
                                               "proof_validate_log") : 0);
     dump_first_failure(out, db);
+    if (db) progress_store_tx_unlock();
     stage_dump_counters(out, stage);
     stage_dump_health(out, STAGE_NAME, stage);
     return true;

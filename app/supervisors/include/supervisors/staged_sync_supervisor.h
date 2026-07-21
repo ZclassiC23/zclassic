@@ -74,6 +74,15 @@ int64_t staged_sync_supervisor_test_run_stage_tick(
     int (*drain)(int max_steps), uint64_t (*cursor)(void),
     uint64_t (*upstream_cursor)(void),
     struct main_state *ms, bool *stall_escalated_inout);
+
+/* Direct entry to the pure per-tick effective-batch decision (A12): given a
+ * stage's normal batch and its per-step fan-out, returns the batch the tick
+ * would actually drain, applying the refold/catch-up cadence overrides and the
+ * fan-out cap. No clock, no contract. Exposed so a test can assert that an
+ * active catch-up does NOT multiply a fan-out stage's per-commit work, and
+ * that an inactive cadence returns the normal batch untouched. */
+int staged_sync_supervisor_test_effective_batch(int normal_batch,
+                                                 int per_step_fanout);
 #endif
 
 #endif /* ZCL_STAGED_SYNC_SUPERVISOR_H */

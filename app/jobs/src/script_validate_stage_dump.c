@@ -30,8 +30,9 @@
  * status + first_failure_* columns persisted by step_validate and composes
  * the full typed reason (e.g. "prevout_unresolved tx=<hex> vin=<n>"), so
  * `zclassic23 dumpstate script_validate` answers why the pipeline is stuck.
- * No-op (emits blocking_height=-1) when nothing is blocking. Mirrors the
- * sqlite access already used by body_persist_log_at in the stage file. */
+ * No-op (emits blocking_height=-1) when nothing is blocking. The caller holds
+ * the (recursive) progress-store lock — acquired non-blocking at the dump entry
+ * — for the whole db section, so this helper does not lock itself. */
 static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
 {
     if (!db) {
@@ -39,7 +40,6 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
         return;
     }
 
-    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT height, status, first_failure_txid, first_failure_vin, "
@@ -50,7 +50,6 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
         LOG_WARN("script_validate",
                  "[script_validate] dump blocking prepare failed: %s",
                  sqlite3_errmsg(db));
-        progress_store_tx_unlock();
         json_push_kv_int(out, "blocking_height", -1);
         return;
     }
@@ -58,7 +57,6 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc != SQLITE_ROW) {
         sqlite3_finalize(st);
-        progress_store_tx_unlock();
         json_push_kv_int(out, "blocking_height", -1);
         return;
     }
@@ -109,7 +107,6 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
     json_push_kv_int(out, "blocking_serror", have_serror ? serror_code : -1);
     json_push_kv_str(out, "blocking_serror_string", serror_str);
     sqlite3_finalize(st);
-    progress_store_tx_unlock();
 }
 
 bool script_validate_dump_state_json(struct json_value *out, const char *key)
@@ -150,12 +147,29 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
                      last > 0 ? now - last : -1);
     json_push_kv_int(out, "last_blocked_unix",
                      script_validate_stage_last_blocked_unix());
+
+    /* The fields below are db-backed and need the progress-store lock. During
+     * catch-up the reducer owns that lock around bulk folds; a blocking acquire
+     * here queues the RPC worker behind the fold and makes `dumpstate
+     * script_validate` / status disappear exactly when the node is busiest.
+     * Acquire non-blocking (recursive lock, held across the whole db section so
+     * the helper below need not re-lock) and emit the same busy/retryable marker
+     * reducer_frontier_dump uses when the fold owns the lock. */
+    if (db && !progress_store_tx_trylock()) {
+        json_push_kv_bool(out, "snapshot_complete", false);
+        json_push_kv_str(out, "snapshot_status", "progress_store_busy");
+        json_push_kv_bool(out, "retryable", true);
+        stage_dump_counters(out, stage);
+        stage_dump_health(out, STAGE_NAME, stage);
+        return true;
+    }
     json_push_kv_int(out, "log_rows",
                      db ? stage_log_row_count(db, STAGE_NAME,
                                               "script_validate_log") : 0);
     /* "Why is the pipeline stuck": surface the lowest ok=0 row's typed
      * reason (status + txid + vin) so dumpstate pinpoints the blocker. */
     dump_blocking_failure(out, db);
+    if (db) progress_store_tx_unlock();
     stage_dump_counters(out, stage);
     stage_dump_health(out, STAGE_NAME, stage);
     return true;
