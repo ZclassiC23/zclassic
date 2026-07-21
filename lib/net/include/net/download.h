@@ -260,6 +260,16 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now);
 /* Get number of in-flight blocks for a specific peer. */
 size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id);
 
+/* Per-peer body-download progress snapshot (any out-pointer may be NULL).
+ * `requested` = block getdata slots assigned to this peer, `received` =
+ * bodies it delivered, `timed_out` = its requests that expired unfilled.
+ * Zeroes every out-pointer when the peer is untracked. Used by the
+ * body-download stall discipline to fail over off a peer that accepts
+ * getdata but never returns a block body. Thread-safe. */
+void dl_peer_body_progress(struct download_manager *dm, uint32_t peer_id,
+                           uint64_t *requested, uint64_t *received,
+                           uint64_t *timed_out);
+
 /* Handle peer disconnect — re-queue all in-flight blocks from this peer.
  * Call from connman when a peer is disconnected. Returns count re-queued. */
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);

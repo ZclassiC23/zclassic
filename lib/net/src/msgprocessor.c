@@ -2012,6 +2012,35 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         }
         skip_stall_disconnect:;
 
+        /* ── Rule C: body-download stall — disconnect a peer that serves
+         * headers but never delivers block bodies. It passes rules A/B (it
+         * keeps delivering headers, so total_headers_delivered climbs and
+         * last_useful_headers_time refreshes) yet holds an outbound slot
+         * forever while the body cursor never advances — the measured
+         * "connected peer delivers no block data" wedge. Trusted/loopback
+         * peers (the co-located zclassicd lifeline) and inbound peers are
+         * exempt, exactly like rules A/B. Disconnecting lets connman fail
+         * over to a peer that will serve bodies. Fires only after the peer
+         * has had SYNC_BODY_STALL_MIN_TIMEOUTS block requests time out with
+         * zero bodies delivered over a full stall window (predicate). */
+        if (!mp_swarm_is_active() && !snapshot_active && !stall_peer_trusted &&
+            !node->inbound && node->state >= PEER_SYNCING_HEADERS) {
+            uint64_t body_recv = 0, body_timeout = 0;
+            dl_peer_body_progress(get_download_mgr(), (uint32_t)node->id,
+                                  NULL, &body_recv, &body_timeout);
+            if (syncsvc_should_disconnect_body_stalled_peer(
+                    node, our_height, body_recv, body_timeout, now_send)) {
+                printf("BODY STALL: peer %s delivered 0 block bodies "
+                       "(%llu getdata timed out) in %llds, disconnecting\n",
+                       node->addr_name,
+                       (unsigned long long)body_timeout,
+                       (long long)(now_send - (node->time_connected
+                           ? node->time_connected : now_send)));
+                node->disconnect = true;
+                return true;
+            }
+        }
+
         /* Re-request headers aggressively during IBD (10s), slower at tip (60s).
          * This is critical: legacy zclassicd sends at most 2000 headers per
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */

@@ -96,4 +96,13 @@
 # the new function scores PEER_OFFENCE_INVALID_PROOF and names a typed
 # blocker on mismatch. Re-baselined in file_size_ceiling_lib_baseline.txt
 # (1746); count unchanged.
+#
+# 2026-07-21 (wf/net-body-flow, N2): msgprocessor.c grew 2344 -> 2373 adding
+# Rule C (body-download stall disconnect) — a peer that serves headers but
+# returns zero block bodies passes every header-stall check yet holds an
+# outbound slot forever while the body cursor never advances (the measured
+# "connected peer delivers no block data" wedge); the new call site fails
+# over off it by disconnecting so connman dials a peer that will serve
+# bodies. Re-baselined in file_size_ceiling_lib_baseline.txt (2373); count
+# unchanged.
 13

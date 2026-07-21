@@ -687,6 +687,53 @@ static int test_dl_timeout_retry_avoid_expiry(void)
     return failures;
 }
 
+static int test_dl_peer_body_progress(void)
+{
+    int failures = 0;
+    TEST("dl_peer_body_progress reports per-peer requested/received/timeouts") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        uint64_t req = 9, recv = 9, to = 9;
+        /* Untracked peer zeroes every out-pointer. */
+        dl_peer_body_progress(&dm, 42, &req, &recv, &to);
+        ASSERT(req == 0 && recv == 0 && to == 0);
+
+        /* Assign two bodies to peer 7; both time out unfilled (the stalling
+         * peer the body-stall discipline must fail over from). */
+        struct uint256 h1 = make_hash(21);
+        struct uint256 h2 = make_hash(22);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ASSERT(dl_mark_requested(&dm, &h1, 100, 7));
+        ASSERT(dl_mark_requested(&dm, &h2, 101, 7));
+        ASSERT(dl_check_timeouts(&dm, now + timeout + 1) == 2);
+
+        dl_peer_body_progress(&dm, 7, &req, &recv, &to);
+        ASSERT(req == 2);   /* two block getdata slots assigned */
+        ASSERT(recv == 0);  /* zero bodies delivered */
+        ASSERT(to == 2);    /* both requests expired unfilled */
+
+        /* A delivered body is credited to received and clears the deadbeat
+         * signal used by the stall predicate. Requeue h1 to a fresh peer 8
+         * (h1 avoids peer 7 after the timeout), then deliver it. */
+        struct uint256 out[1];
+        ASSERT(dl_assign_to_peer(&dm, 8, out, 1) == 1);
+        ASSERT(dl_mark_received(&dm, &out[0]) == 8);
+        dl_peer_body_progress(&dm, 8, NULL, &recv, NULL);
+        ASSERT(recv == 1);
+
+        /* NULL out-pointers are tolerated. */
+        dl_peer_body_progress(&dm, 7, NULL, NULL, NULL);
+        dl_peer_body_progress(NULL, 7, &req, &recv, &to);
+        ASSERT(req == 0 && recv == 0 && to == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_diagnostics(void)
 {
     int failures = 0;
@@ -1421,6 +1468,7 @@ int test_download(void)
     failures += test_dl_timeout_retry_failover();
     failures += test_dl_timeout_retry_failover_peer_zero();
     failures += test_dl_timeout_retry_avoid_expiry();
+    failures += test_dl_peer_body_progress();
     failures += test_dl_diagnostics();
     failures += test_gap_fill_timeout_sweep();
     failures += test_gap_fill_timeout_wakes_dispatcher();

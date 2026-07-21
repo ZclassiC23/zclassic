@@ -769,6 +769,40 @@ bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
     return (now_seconds - ref_time) >= HEADER_STALL_TIMEOUT_SECS;
 }
 
+bool syncsvc_should_disconnect_body_stalled_peer(const struct p2p_node *node,
+                                                  int our_height,
+                                                  uint64_t body_received,
+                                                  uint64_t body_timed_out,
+                                                  int64_t now_seconds)
+{
+    if (!node)
+        return false;
+    /* Only when we still NEED bodies. At/near tip a peer legitimately
+     * delivers no body for long stretches (block cadence ~150s), so the
+     * discipline is IBD-gated exactly like the stale-header rule. */
+    if (!syncsvc_is_initial_block_download(node, our_height))
+        return false;
+    if (node->state < PEER_HANDSHAKE_COMPLETE)
+        return false;
+
+    /* Delivered at least one body ⇒ the peer CAN serve bodies; keep it. */
+    if (body_received > 0)
+        return false;
+
+    /* Judge only a peer we have genuinely asked AND waited on: at least
+     * SYNC_BODY_STALL_MIN_TIMEOUTS block requests were assigned to it and
+     * every one expired unfilled. A peer with requests still legitimately
+     * in flight (assigned but not yet timed out) is not a deadbeat, so we
+     * key on timed_out, not on the raw request count. */
+    if (body_timed_out < SYNC_BODY_STALL_MIN_TIMEOUTS)
+        return false;
+
+    /* Grace: never judge a peer inside its first stall window. */
+    int64_t ref_time = node->time_connected ? node->time_connected
+                                            : now_seconds;
+    return (now_seconds - ref_time) >= SYNC_BODY_STALL_TIMEOUT_SECS;
+}
+
 bool syncsvc_is_header_sync_stalled(enum sync_state state,
                                     int best_header_height,
                                     int64_t last_advance_time,

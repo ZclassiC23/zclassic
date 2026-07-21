@@ -456,6 +456,64 @@ static int test_sync_service_assigns_peer_blocks(void)
     return failures;
 }
 
+static int test_sync_service_body_stall_disconnect(void)
+{
+    int failures = 0;
+
+    TEST("body-stall discipline disconnects a header-only peer with no bodies") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 5;
+        node.state = PEER_SYNCING_HEADERS;
+        node.starting_height = 200000;   /* far ahead: we still need bodies */
+        int our_height = 100000;         /* < starting_height - 144 ⇒ IBD */
+        int64_t now = 1000000;
+        node.time_connected = now - (SYNC_BODY_STALL_TIMEOUT_SECS + 5);
+
+        /* A peer that served headers but returned zero bodies while
+         * SYNC_BODY_STALL_MIN_TIMEOUTS block requests expired unfilled,
+         * connected past the stall window: fail over off it. */
+        ASSERT(syncsvc_should_disconnect_body_stalled_peer(
+                   &node, our_height, /*received=*/0,
+                   /*timed_out=*/SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+
+        /* Delivered at least one body ⇒ the peer can serve; keep it. */
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   &node, our_height, /*received=*/1,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+
+        /* Not enough requests have timed out yet ⇒ not a deadbeat. */
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   &node, our_height, 0,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS - 1, now));
+
+        /* Inside the grace window (freshly connected) ⇒ keep it. */
+        node.time_connected = now - (SYNC_BODY_STALL_TIMEOUT_SECS - 1);
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   &node, our_height, 0, SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+        node.time_connected = now - (SYNC_BODY_STALL_TIMEOUT_SECS + 5);
+
+        /* At/near tip (not IBD) a peer legitimately delivers no bodies. */
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   &node, /*our_height=*/199999, 0,
+                   SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+
+        /* Pre-handshake peer is never judged. */
+        node.state = PEER_VERSION_SENT;
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   &node, our_height, 0, SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+        node.state = PEER_SYNCING_HEADERS;
+
+        /* Null node is a safe no-op. */
+        ASSERT(!syncsvc_should_disconnect_body_stalled_peer(
+                   NULL, our_height, 0, SYNC_BODY_STALL_MIN_TIMEOUTS, now));
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_collects_needed_blocks_oldest_first(void)
 {
     int failures = 0;
@@ -1911,6 +1969,7 @@ int test_sync_service(void)
     failures += test_sync_service_block_file_scan_trigger();
     failures += test_sync_service_block_assignment_plan();
     failures += test_sync_service_assigns_peer_blocks();
+    failures += test_sync_service_body_stall_disconnect();
     failures += test_sync_service_collects_needed_blocks_oldest_first();
     failures += test_sync_service_collects_needed_blocks_activation();
     failures += test_sync_service_collects_needed_blocks_rejects_forks();
