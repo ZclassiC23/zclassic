@@ -30,6 +30,8 @@
 #include "storage/coins_kv.h"
 #include "models/database.h"
 #include "core/uint256.h"
+#include "config/boot.h"          /* boot_refold_from_anchor_reset/_artifact_available (W1-L1) */
+#include "jobs/refold_progress.h" /* refold_progress_mark_started_from_anchor (W1-L1) */
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -534,6 +536,71 @@ static bool cold_import_set_applied_if_behind(sqlite3 *db, int32_t want)
     if (err) sqlite3_free(err);
     progress_store_tx_unlock();
     return ok;
+}
+
+/* SYNC-STRENGTH W1-L1 — cold-start auto-seed from an imported block index.
+ * Contract + rationale in services/block_index_loader.h. Fail-closed: any
+ * missing precondition returns false and the caller runs the UNCHANGED
+ * genesis fold. Consensus math is untouched — only WHERE the reducer cursors
+ * start changes, and only after the anchor set re-verifies against the baked
+ * checkpoint (the installer HARD-ASSERTS it, FATAL on mismatch). */
+int block_index_loader_arm_cold_start_from_index(struct main_state *ms,
+                                                 struct node_db *ndb,
+                                                 struct sqlite3 *progress_db)
+{
+    if (!ms || !ndb || !progress_db)
+        return 0;
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp)
+        return 0;  /* no baked anchor to seed from — genesis fold unchanged */
+
+    /* (1) COLD-START SIGNATURE: coins_kv is EMPTY. A healthy/synced node holds
+     *     a live coin set (count > 0) and MUST take the normal path — never
+     *     re-seed over a populated authority. -1 (read error) is treated as
+     *     "not empty" (conservative: never reset on an unreadable count). */
+    if (coins_kv_count(progress_db) != 0)
+        return 0;
+
+    /* (2) INDEX IMPORTED PAST THE ANCHOR: the loaded block index must CONTAIN
+     *     the checkpoint block at exactly the checkpoint height — binds "the
+     *     header chain was imported" to a real header we hold at the anchor. A
+     *     pure-P2P fresh node that has not synced headers to the anchor lacks
+     *     this block → decline → normal header sync + genesis fold. */
+    struct uint256 cph;
+    memcpy(cph.data, cp->block_hash, sizeof(cph.data));
+    struct block_index *anchor_bi = block_map_find(&ms->map_block_index, &cph);
+    if (!anchor_bi || anchor_bi->nHeight != cp->height)
+        return 0;
+
+    /* (3) VERIFIED ANCHOR SNAPSHOT REACHABLE (W1-L3 gate). Fail-closed: no
+     *     verified artifact → decline; the genesis fold runs unchanged. This is
+     *     a legitimate decline (no error), so a bare return is correct here. */
+    int32_t anchor_h = -1;
+    if (!boot_refold_from_anchor_artifact_available(ndb, &anchor_h))
+        return 0; // raw-return-ok:no-verified-snapshot-decline-to-genesis-fold
+
+    /* Resume ceiling = the imported header tip (the fold climbs to it). The
+     * off-the-drive reconcile tick raises it to the live tip each pass via
+     * refold_progress_bump_target, so the header tip read here is a safe floor,
+     * never a stale cap that could fire the clear edge early. */
+    int32_t resume_target = ms->pindex_best_header
+        ? ms->pindex_best_header->nHeight
+        : active_chain_height(&ms->chain_active);
+    if (resume_target < cp->height)
+        resume_target = cp->height;
+
+    /* Route through the EXISTING atomic anchor installer. It FATALs internally
+     * if the re-seeded anchor set fails the SHA3/count assert, so reaching the
+     * mark below means a PROVEN checkpoint set was installed. */
+    boot_refold_from_anchor_reset(ndb);
+    (void)refold_progress_mark_started_from_anchor(progress_db, resume_target);
+    fprintf(stderr, // obs-ok:boot-stage-trace-marker
+            "[boot] cold-start: installed checkpoint snapshot at h=%d, folding "
+            "tail (imported header tip=%d; SHA3-verified anchor set re-seeded "
+            "and hard-asserted vs the compiled checkpoint)\n",
+            cp->height, resume_target);
+    return 1;
 }
 
 int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
