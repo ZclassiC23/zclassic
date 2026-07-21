@@ -2,6 +2,7 @@
 
 #include "conditions/utxo_drift_detected.h"
 #include "util/log_macros.h"
+#include "util/blocker.h"
 #include "framework/condition.h"
 
 #include "config/runtime.h"
@@ -127,7 +128,23 @@ static enum condition_remedy_result remedy_utxo_drift_detected(void)
 
     /* UTXO drift is consensus-critical. Until the repair job lands, keep the
      * condition unresolved so the engine pages instead of pretending a
-     * destructive wipe/reimport was safe to run automatically. */
+     * destructive wipe/reimport was safe to run automatically. This remedy
+     * is a DELIBERATE no-op — never auto-run a destructive wipe/reimport —
+     * but a no-op remedy that never touches the blocker registry is
+     * invisible to blocker_stall_meta_detector and the rest of the
+     * safety net. Name a typed, retry-forever DEPENDENCY blocker so the
+     * unresolved drift surfaces in `dumpstate blocker` / the supervisor
+     * tree even though nothing here attempts a repair. */
+    char blocker_reason[BLOCKER_REASON_MAX];
+    snprintf(blocker_reason, sizeof(blocker_reason),
+             "utxo_drift_detected: height=%" PRId64 " local_sha3=%s "
+             "remote_sha3=%s — no automatic repair (destructive "
+             "wipe/reimport requires operator action)",
+             atomic_load(&g_height_at_detect),
+             local[0] ? local : "-", remote[0] ? remote : "-");
+    blocker_name_dependency("utxo.parity_bh_drift", "utxo_drift_detected",
+                            blocker_reason);
+
     return COND_REMEDY_FAILED;
 }
 

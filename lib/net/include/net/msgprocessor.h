@@ -348,6 +348,17 @@ bool msgprocessor_test_swarm_try_claim(void);
 void msgprocessor_test_swarm_release(void);
 bool msgprocessor_test_swarm_is_active(void);
 
+/* test hook (D1): drive the swarm's aggregate SHA3 UTXO-snapshot verify
+ * + reaction (peer offence + typed blocker on mismatch) directly,
+ * without needing a full byte-stream MSG_CHUNK_DATA dispatch. Returns
+ * true (PASSED, sync trusted-complete) when local_root == expected_root,
+ * false (FAILED, sync NOT complete) otherwise. */
+bool msgprocessor_test_swarm_utxo_sha3_verify(struct msg_processor *mp,
+                                              struct p2p_node *node,
+                                              const uint8_t local_root[32],
+                                              const uint8_t expected_root[32],
+                                              uint64_t local_count);
+
 /* test hook: swap the allocator process_mempool uses for its
  * scratch hash buffer. Pass NULL to restore the default zcl_malloc
  * path; pass a function that returns NULL to simulate OOM. Only

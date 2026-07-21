@@ -88,4 +88,12 @@
 # growth, not incidental. Re-baselined in file_size_ceiling_lib_baseline.txt
 # (2038), which removes its grown-past-baseline entry from the live count
 # (nothing else changed). Live drift measured at 12. Ratchet lowered 13 -> 12.
+#
+# 2026-07-21 (wf/snapshot-silent-accept, D1): msgprocessor_snapshot.c grew
+# 1705 -> 1746 adding msg_swarm_utxo_sha3_verify() — the swarm chunk-sync
+# aggregate SHA3 mismatch used to fall through into the same cleanup as a
+# PASSED verify with no peer offence and no blocker (invisible-fault seam);
+# the new function scores PEER_OFFENCE_INVALID_PROOF and names a typed
+# blocker on mismatch. Re-baselined in file_size_ceiling_lib_baseline.txt
+# (1746); count unchanged.
 13
