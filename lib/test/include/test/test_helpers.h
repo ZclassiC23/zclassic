@@ -714,6 +714,7 @@ int test_utxo_snapshot_inmem(void);
 int test_snapshot_apply_coins_kv(void);
 int test_consensus_state_snapshot_install(void);
 int test_checkpoint_rom_authority(void);
+int test_consensus_state_install_runtime(void);
 int test_consensus_state_snapshot_export(void);
 int test_consensus_state_producer_receipt(void);
 int test_consensus_state_chain_binding(void);

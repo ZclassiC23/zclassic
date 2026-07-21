@@ -45,6 +45,7 @@
 #include "storage/utxo_reimport_flag.h"
 #include "storage/boot_auto_reindex.h"   /* #6 B1: terminal mark on dead-end */
 #include "storage/boot_auto_refold.h"    /* A1: consume the escalator's armed refold */
+#include "config/consensus_state_install_runtime.h" /* 1b/1c: sovereign complete-state install */
 #include "config/boot_crashonly.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
@@ -3774,19 +3775,15 @@ sapling_tree_boot_check_done:
      * the loader AND hard-asserts the re-seeded set, so a mismatched/forged
      * snapshot can NEVER seed coins_kv and a from-genesis re-fold is never reached
      * as a silent fallback. */
-    /* A1 — the sticky escalator's TERMINAL refold rung arms a durable one-shot
-     * boot_auto_refold_request + self-respawn on a wedged-but-alive node; THIS
-     * boot consumes it to run the same boot_refold_from_anchor_reset. Consume
-     * increments a bounded, fsync-durable attempt count so a FATAL-looping anchor
-     * is capped then boots normally (never an unbounded crash-loop). */
-    bool consumed_auto_refold = false;
-    if (!ctx->refold_from_anchor && boot_auto_refold_pending(ctx->datadir))
-        consumed_auto_refold = boot_auto_refold_consume(ctx->datadir);
-    bool do_from_anchor =
-        ctx->refold_from_anchor ||
-        consumed_auto_refold ||
-        (ctx->load_verify_boot &&
-         boot_load_verify_snapshot_eligible(&g_node_db, progress_store_db()));
+    /* 1b/1c + A1 + from-anchor selection — boot_select_state_source (in
+     * config/src/boot_auto_install_bundle.c): install a complete-state bundle
+     * (a durable request OR <datadir>/bundles/<name>.sqlite) via the atomic installer,
+     * which SUPERSEDES the transparent-only from-anchor reset; then consume any
+     * armed refold request and compute do_from_anchor. Fail-closed + marker-guarded. */
+    struct boot_state_source_selection ssel;
+    boot_select_state_source(&g_node_db, &g_state, ctx, &ssel);
+    bool consumed_auto_refold = ssel.consumed_auto_refold;
+    bool do_from_anchor = ssel.do_from_anchor;
     if (do_from_anchor) {
         /* B2 — reset the staged reducer to the SHA3 anchor (FULL coins_kv reset +
          * re-seed + HARD-ASSERT; FATALs inside on a mismatch), then mark the

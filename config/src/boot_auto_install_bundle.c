@@ -1,0 +1,432 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * boot_auto_install_bundle.c — the BOOT WIRINGS around the non-terminal install
+ * engine (config/src/consensus_state_install_runtime.c). Contract in
+ * config/consensus_state_install_runtime.h.
+ *
+ *   1b. Zero-flag cold-boot autodetect of a complete-state bundle under
+ *       <datadir>/bundles/<name>.sqlite, installed BEFORE the transparent-only
+ *       from-anchor path (which would leave shielded state empty → the
+ *       anchor_backfill_gap wedge).
+ *   1c. A durable "install-on-next-boot" request, modeled EXACTLY on the proven
+ *       boot_auto_refold_* self-respawn pattern: a bounded, fsync-durable
+ *       request boot consumes and runs through the same installer, then clears.
+ *       This is the entry point the shielded-gap self-heal (Move 2) arms; Move 2
+ *       itself is deliberately NOT wired here.
+ *
+ * Plus boot_select_state_source — the app_init seam composing the three booleans
+ * (auto_installed_bundle / consumed_auto_refold / do_from_anchor) that select the
+ * boot's state source, kept here so app_init stays a thin caller. A complete
+ * install SUPERSEDES the transparent-only from-anchor reset. Fail-closed
+ * everywhere; a durable marker prevents re-installing over sovereign state. */
+
+#include "config/consensus_state_install_runtime.h"
+
+#include "config/boot.h"                       /* app_context, boot_refold_body_span_contiguous,
+                                                 * boot_load_verify_snapshot_eligible, active_chain_* */
+#include "config/boot_consensus_bundle_marker.h"
+#include "storage/boot_auto_refold.h"          /* A1: consume the escalator's armed refold */
+#include "storage/progress_store.h"            /* progress_store_db */
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"                   /* zcl_malloc */
+#include "validation/chainstate.h"             /* active_chain_height */
+#include "validation/main_state.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define ICB_SUBSYS "install_consensus_bundle"
+
+/* ── 1b — Autodetect a complete-state bundle under <datadir>/bundles/ ───────── */
+
+char *boot_autodetect_consensus_bundle(const char *datadir)
+{
+    if (!datadir || !datadir[0])
+        return NULL;
+
+    /* Never re-install over already-sovereign state. */
+    if (boot_consensus_bundle_marker_exists(datadir))
+        return NULL;
+
+    char dirpath[PATH_MAX];
+    int dn = snprintf(dirpath, sizeof(dirpath), "%s/bundles", datadir);
+    if (dn < 0 || (size_t)dn >= sizeof(dirpath))
+        return NULL;
+
+    DIR *d = opendir(dirpath);
+    if (!d)
+        return NULL; /* no bundles/ directory → nothing to auto-install */
+
+    static const char SFX[] = ".sqlite";
+    const size_t slen = sizeof(SFX) - 1;
+    char best_name[256] = {0};
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        const char *nm = ent->d_name;
+        size_t len = strlen(nm);
+        if (len <= slen || len >= sizeof(best_name))
+            continue;
+        if (strcmp(nm + len - slen, SFX) != 0)
+            continue;
+        /* Never-stuck: a prior boot that failed installing THIS bundle wrote a
+         * sibling "<name>.failed" marker. Skip such a bundle so a bad /
+         * incompatible / contained bundle degrades to normal boot on the next
+         * (systemd Restart=always) boot instead of retrying forever — no human
+         * needed to delete it. */
+        char failp[PATH_MAX];
+        int fpn = snprintf(failp, sizeof(failp), "%s/%s.failed", dirpath, nm);
+        if (fpn > 0 && (size_t)fpn < sizeof(failp) && access(failp, F_OK) == 0)
+            continue;
+        /* Lexicographically-greatest name wins — stable + deterministic. */
+        if (best_name[0] == '\0' || strcmp(nm, best_name) > 0)
+            snprintf(best_name, sizeof(best_name), "%s", nm);
+    }
+    closedir(d);
+
+    if (best_name[0] == '\0')
+        return NULL; /* no installable *.sqlite bundle present */
+
+    char *outp = zcl_malloc(PATH_MAX, "autodetect_consensus_bundle");
+    if (!outp)
+        return NULL;
+    int on = snprintf(outp, PATH_MAX, "%s/%s", dirpath, best_name);
+    if (on < 0 || on >= PATH_MAX) {
+        free(outp);
+        return NULL;
+    }
+    return outp;
+}
+
+/* Write a sibling "<bundle_path>.failed" never-stuck marker (best-effort). */
+static void csir_write_failed_marker(const char *bundle_path)
+{
+    char failp[PATH_MAX];
+    int n = snprintf(failp, sizeof(failp), "%s.failed", bundle_path);
+    if (n < 0 || (size_t)n >= sizeof(failp))
+        return;
+    int fd = open(failp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        LOG_WARN(ICB_SUBSYS, "could not write never-stuck marker %s: %s", failp,
+                 strerror(errno));
+        return;
+    }
+    (void)close(fd);
+}
+
+/* ── 1c — Durable "install-on-next-boot" request (mirror of boot_auto_refold_*) */
+
+static void ibr_path(const char *datadir, char *out, size_t n)
+{
+    snprintf(out, n, "%s/install_bundle_request", datadir);
+}
+
+/* Read the on-disk (attempts, path). Returns true iff a well-formed request was
+ * read (a numeric attempts line + a non-empty path line). On any miss *attempts
+ * is 0 and bundle_out is empty. When bundle_out is provided the path must fit in
+ * cap (a would-truncate path fails closed). */
+static bool ibr_read(const char *path, int *attempts, char *bundle_out,
+                     size_t cap)
+{
+    *attempts = 0;
+    if (bundle_out && cap)
+        bundle_out[0] = '\0';
+    FILE *r = fopen(path, "r");
+    if (!r)
+        return false;
+    int a = 0;
+    if (fscanf(r, "%d", &a) != 1) {
+        fclose(r);
+        return false;
+    }
+    int sep = fgetc(r); /* consume the single separating newline */
+    if (sep != '\n') {
+        fclose(r);
+        return false;
+    }
+    char buf[PATH_MAX];
+    if (!fgets(buf, sizeof(buf), r)) {
+        fclose(r);
+        return false;
+    }
+    fclose(r);
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+        buf[--len] = '\0';
+    if (len == 0)
+        return false; /* a request must carry its bundle path */
+    if (bundle_out) {
+        if (len >= cap)
+            return false;
+        memcpy(bundle_out, buf, len + 1);
+    }
+    *attempts = a;
+    return true;
+}
+
+/* fsync-durable write of "<attempts>\n<bundle_path>\n". Returns true on success. */
+static bool ibr_write(const char *datadir, const char *path, int attempts,
+                      const char *bundle_path)
+{
+    char buf[PATH_MAX + 32];
+    int len = snprintf(buf, sizeof(buf), "%d\n%s\n", attempts, bundle_path);
+    if (len < 0 || len >= (int)sizeof(buf))
+        return false;
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        LOG_WARN(ICB_SUBSYS, "install_bundle_request: open(%s) failed: %s", path,
+                 strerror(errno));
+        return false;
+    }
+    ssize_t w = write(fd, buf, (size_t)len);
+    int sync_rc = fsync(fd); /* the budget MUST survive a crash mid-install */
+    int close_rc = close(fd);
+    if (w != (ssize_t)len || sync_rc != 0 || close_rc != 0) {
+        LOG_WARN(ICB_SUBSYS, "install_bundle_request: write/fsync(%s) failed", path);
+        return false;
+    }
+    /* fsync the directory so the file's existence is durable across a crash. */
+    int dfd = open(datadir, O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
+    return true;
+}
+
+int boot_install_bundle_request(const char *datadir, const char *bundle_path)
+{
+    if (!datadir || !datadir[0] || !bundle_path || !bundle_path[0])
+        return 0;
+    if (strchr(bundle_path, '\n')) /* one line only — the codec is line-oriented */
+        return 0;
+
+    char path[512];
+    ibr_path(datadir, path, sizeof(path));
+
+    int cur_attempts = 0;
+    char cur_bundle[PATH_MAX];
+    bool have = ibr_read(path, &cur_attempts, cur_bundle, sizeof(cur_bundle));
+
+    /* TERMINAL already written: the budget was exhausted and the operator paged.
+     * Do NOT re-arm — that is exactly the unbounded crash-loop this exists to
+     * prevent. */
+    if (have && cur_attempts == BOOT_INSTALL_BUNDLE_TERMINAL)
+        return BOOT_INSTALL_BUNDLE_TERMINAL;
+
+    /* Already armed (not terminal): leave it — attempts bump at consume time so a
+     * re-arming caller cannot inflate the budget. Report the current count. */
+    if (have && cur_attempts >= 0)
+        return cur_attempts > 0 ? cur_attempts : 1;
+
+    /* Fresh arm: attempts=0 (armed, not yet attempted by any boot). */
+    if (!ibr_write(datadir, path, 0, bundle_path))
+        return 0;
+    return 1;
+}
+
+bool boot_install_bundle_pending(const char *datadir)
+{
+    if (!datadir)
+        return false;
+    char path[512];
+    ibr_path(datadir, path, sizeof(path));
+    if (access(path, F_OK) != 0)
+        return false;
+    int a = 0;
+    char b[PATH_MAX];
+    if (ibr_read(path, &a, b, sizeof(b)) && a == BOOT_INSTALL_BUNDLE_TERMINAL)
+        return false; /* terminal: present-but-not-pending */
+    return true;
+}
+
+bool boot_install_bundle_consume(const char *datadir, char *out_path,
+                                 size_t out_cap)
+{
+    if (out_path && out_cap)
+        out_path[0] = '\0';
+    if (!datadir || !out_path || !out_cap)
+        return false;
+
+    char path[512];
+    ibr_path(datadir, path, sizeof(path));
+
+    int attempts = 0;
+    char bundle[PATH_MAX];
+    if (!ibr_read(path, &attempts, bundle, sizeof(bundle)))
+        return false; /* no / malformed request */
+    if (attempts == BOOT_INSTALL_BUNDLE_TERMINAL)
+        return false; /* budget already spent */
+
+    if (attempts >= BOOT_INSTALL_BUNDLE_MAX) {
+        /* Budget exhausted: persist the terminal marker (do NOT delete — a delete
+         * would let the next boot re-arm a fresh count and loop) and refuse so the
+         * node boots normally + the escalator/operator sees it. */
+        (void)ibr_write(datadir, path, BOOT_INSTALL_BUNDLE_TERMINAL, bundle);
+        LOG_WARN(ICB_SUBSYS,
+                 "install-on-next-boot request for %s exhausted the bounded budget "
+                 "(max=%d) — marking TERMINAL, booting normally", bundle,
+                 BOOT_INSTALL_BUNDLE_MAX);
+        return false;
+    }
+
+    if (strlen(bundle) >= out_cap)
+        return false; /* caller buffer too small — fail closed */
+
+    /* Count this boot's attempt BEFORE running the install, so a FATAL-exit mid
+     * install still burns the budget. */
+    if (!ibr_write(datadir, path, attempts + 1, bundle))
+        return false;
+    snprintf(out_path, out_cap, "%s", bundle);
+    return true;
+}
+
+void boot_install_bundle_clear(const char *datadir)
+{
+    if (!datadir)
+        return;
+    char path[512];
+    ibr_path(datadir, path, sizeof(path));
+    (void)remove(path);
+}
+
+/* ── The 1b + 1c orchestrator ──────────────────────────────────────────────── */
+
+bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
+                                              struct main_state *ms,
+                                              const char *datadir)
+{
+    if (!datadir || !datadir[0])
+        return false;
+
+    /* Never re-install over already-sovereign state. */
+    if (boot_consensus_bundle_marker_exists(datadir))
+        return false;
+
+    bool installed = false;
+    int32_t installed_height = -1;
+
+    /* (1c) A durable install-on-next-boot request (the Move 2 self-heal) takes
+     * precedence over the passive autodetect. Consume bumps the bounded attempt
+     * count so a persistently-failing bundle degrades to a normal boot instead
+     * of crash-looping. */
+    char req_path[PATH_MAX];
+    if (boot_install_bundle_pending(datadir) &&
+        boot_install_bundle_consume(datadir, req_path, sizeof(req_path))) {
+        struct consensus_state_install_runtime_result rr;
+        struct zcl_result r =
+            consensus_state_install_from_bundle(ndb, ms, req_path, datadir, &rr);
+        if (r.ok) {
+            boot_install_bundle_clear(datadir);
+            installed = true;
+            installed_height = rr.height;
+            LOG_INFO(ICB_SUBSYS,
+                     "install-on-next-boot request installed %s (H*=%d)", req_path,
+                     rr.hstar);
+        } else if (rr.state_installed) {
+            /* Landed durably but a post-install step failed. Do NOT clear the
+             * request or fall through to a wipe: the swapped state is on disk, a
+             * retry re-runs activate+invalidation (idempotent), the bounded budget
+             * caps retries, and the boot loader's own Sapling/coins gates are the
+             * backstop. Never-silent. */
+            LOG_ERROR(ICB_SUBSYS,
+                      "install-on-next-boot request for %s landed durably but a "
+                      "post-install step failed (%s) — retrying under the bounded "
+                      "budget on the next boot", req_path, rr.reason);
+        } else {
+            LOG_ERROR(ICB_SUBSYS,
+                      "install-on-next-boot request for %s did not install: %s",
+                      req_path, rr.reason);
+        }
+    }
+
+    /* (1b) Passive autodetect of a <datadir>/bundles/<name>.sqlite starter bundle. */
+    if (!installed) {
+        char *auto_bundle = boot_autodetect_consensus_bundle(datadir);
+        if (auto_bundle) {
+            struct consensus_state_install_runtime_result rr;
+            struct zcl_result r = consensus_state_install_from_bundle(
+                ndb, ms, auto_bundle, datadir, &rr);
+            if (r.ok) {
+                installed = true;
+                installed_height = rr.height;
+                LOG_INFO(ICB_SUBSYS, "autodetected consensus bundle installed %s "
+                                     "(H*=%d)", auto_bundle, rr.hstar);
+            } else if (rr.state_installed) {
+                LOG_ERROR(ICB_SUBSYS,
+                          "autodetected bundle %s landed durably but a "
+                          "post-install step failed (%s) — retrying on the next "
+                          "boot (not marked .failed: the state is on disk)",
+                          auto_bundle, rr.reason);
+            } else {
+                /* Genuine pre-activate refusal (bad / incompatible / contained
+                 * bundle): mark .failed so the next boot degrades to normal
+                 * behavior (never-stuck). */
+                csir_write_failed_marker(auto_bundle);
+                LOG_ERROR(ICB_SUBSYS,
+                          "autodetected bundle %s did not install (marked .failed "
+                          "→ normal boot next time): %s", auto_bundle, rr.reason);
+            }
+            free(auto_bundle);
+        }
+    }
+
+    /* Reuse boot_refold_body_span_contiguous: after a successful install, if the
+     * local header chain already extends above the installed height (the Move 2
+     * self-heal case on an already-synced node), NAME any body gap in the
+     * fold-forward span so the reducer's body-fetch fills it rather than the fold
+     * silently stalling. Non-fatal — the install is durable; this only raises the
+     * typed blocker refold.body_gap so the stall is never silent. */
+    if (installed && ms && installed_height >= 0) {
+        int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
+        if (resume_target > installed_height) {
+            int32_t first_missing = -1;
+            if (!boot_refold_body_span_contiguous(ms, installed_height,
+                                                  resume_target, &first_missing,
+                                                  /*raise_blocker=*/true))
+                LOG_WARN(ICB_SUBSYS,
+                         "post-install fold span (%d..%d] has a missing body at "
+                         "h=%d — named blocker refold.body_gap raised; the "
+                         "reducer's body-fetch fills it before the fold advances",
+                         installed_height, resume_target, first_missing);
+        }
+    }
+
+    return installed;
+}
+
+/* ── The app_init selection seam ───────────────────────────────────────────── */
+
+void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
+                              struct app_context *ctx,
+                              struct boot_state_source_selection *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!ctx)
+        return;
+
+    /* 1b/1c — a complete-state install (durable request OR autodetected bundle)
+     * SUPERSEDES the transparent-only from-anchor reset (which leaves shielded
+     * state empty → the anchor_backfill_gap wedge). */
+    out->auto_installed_bundle =
+        boot_maybe_auto_install_consensus_bundle(ndb, ms, ctx->datadir);
+
+    /* A1 — consume the sticky escalator's armed refold (bumps its bounded,
+     * fsync-durable attempt budget) unless a complete install already fired. */
+    if (!out->auto_installed_bundle && !ctx->refold_from_anchor &&
+        boot_auto_refold_pending(ctx->datadir))
+        out->consumed_auto_refold = boot_auto_refold_consume(ctx->datadir);
+
+    out->do_from_anchor =
+        !out->auto_installed_bundle &&
+        (ctx->refold_from_anchor || out->consumed_auto_refold ||
+         (ctx->load_verify_boot &&
+          boot_load_verify_snapshot_eligible(ndb, progress_store_db())));
+}
