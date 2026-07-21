@@ -310,6 +310,16 @@ void consensus_state_snapshot_install_activate_test_fail_seed_once(void);
 /* One-shot failure after the seed has written its log/meta witnesses but before
  * terminal verification/COMMIT. Proves those writes join the cutover rollback. */
 void consensus_state_snapshot_install_activate_test_fail_after_seed_once(void);
+/* Resolve the CONTENT-bound ACTIVATE authority (CHECKPOINT_ROM then
+ * CHECKPOINT_CONTENT) for a SYNTHETIC manifest+request, bypassing the
+ * evidence/receipt gate, and return the authority NAME ("checkpoint_rom",
+ * "checkpoint_content", or "none"). Lets a focused unit test assert the
+ * shielded-ROM keystone binding (paired with
+ * checkpoints_set_rom_state_override_for_test) with no bundle file, datadir, or
+ * replay receipt. Never returns "receipt". */
+const char *consensus_state_activate_resolve_content_authority_name_for_test(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_activate_request *request);
 #endif
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_INSTALL_H */

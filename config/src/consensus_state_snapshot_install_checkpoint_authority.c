@@ -6,7 +6,7 @@
  * decides WHICH authority, if any, may lift ACTIVATE containment. The atomic
  * cutover engine lives in install_activate.c; this file never touches state.
  *
- * Two independent authorities can lift containment, each binding the bundle to
+ * Three independent authorities can lift containment, each binding the bundle to
  * something OUTSIDE the bundle's own self-asserted digests. ZClassic headers do
  * not commit the transparent/shielded state sets, so the bundle's self-recomputed
  * digests cannot authorize a live state replacement even when every internal
@@ -17,20 +17,39 @@
  *   bundle whole-file digest + artifact + anchor + component digests + the
  *   running binary image (config/consensus_state_replay_receipt.h).
  *
+ *   CHECKPOINT_ROM — the bundle's manifest reproduces EVERY component of the
+ *   compiled-in shielded ROM state checkpoint (g_rom_state_checkpoint) at the
+ *   checkpoint height: transparent coins (utxo_root/count/supply) PLUS the
+ *   Sprout/Sapling anchor history, both commitment-tree frontier roots+heights,
+ *   and the full nullifier history. The admission validator already re-derives
+ *   the installed rows against these same manifest digests, so binding the
+ *   manifest to the compiled keystone transitively binds the installed state to
+ *   the sovereign keystone. This needs NO peer and NO validated header — it is
+ *   the complete-state extension of the transparent SHA3 checkpoint, the same
+ *   sovereign trust model the transparent -refold-from-anchor path already uses,
+ *   and it closes the hole where the historical Sprout anchors and the full
+ *   nullifier set were unbound under CHECKPOINT_CONTENT (which binds only coins +
+ *   the Sapling tip frontier root).
+ *
  *   CHECKPOINT_CONTENT — the bundle's coins reproduce the compiled SHA3 UTXO
  *   checkpoint (sha3 + count at the checkpoint height) AND its Sapling tip
  *   frontier Pedersen-roots to the caller's validated-header committed
  *   hashFinalSaplingRoot. Bound to the compiled binary + PoW, this is
  *   cryptographically STRONGER than a fold-process receipt — the state's
  *   authority is the compiled checkpoint content, not a producer attestation.
+ *   Retained as the fallback for header-carrying nodes and for candidates that
+ *   are not at the ROM checkpoint height.
  *
- * Precedence: RECEIPT first (unchanged byte-for-byte), then CHECKPOINT_CONTENT.
- * Without either the install stays VERIFIED_CONTAINED and writes nothing. */
+ * Precedence: RECEIPT first (unchanged byte-for-byte), then CHECKPOINT_ROM
+ * (header-independent, at the checkpoint height), then CHECKPOINT_CONTENT.
+ * Without any of the three the install stays VERIFIED_CONTAINED and writes
+ * nothing. */
 
 #include "consensus_state_snapshot_install_internal.h"
 
 #include "config/consensus_state_replay_receipt.h" /* replay-receipt authority */
-#include "chain/checkpoints.h"           /* get_sha3_utxo_checkpoint */
+#include "chain/checkpoints.h"           /* get_sha3_utxo_checkpoint,
+                                          * get_rom_state_checkpoint */
 #include "storage/consensus_state_bundle_codec.h"
 
 #include <stdatomic.h>
@@ -43,6 +62,8 @@ const char *consensus_state_activate_authority_name(
     switch (authority) {
     case CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT:
         return "receipt";
+    case CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_ROM:
+        return "checkpoint_rom";
     case CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT:
         return "checkpoint_content";
     default:
@@ -132,19 +153,82 @@ activate_checkpoint_content_evaluate(
     return ACTIVATE_CC_ACTIVATE;
 }
 
-enum consensus_state_activate_authority
-consensus_state_activate_resolve_authority(
-    const struct consensus_state_artifact_evidence *evidence, int datadir_fd,
+/* An all-zero transparent OR shielded component means the compiled ROM keystone
+ * is an UNBAKED placeholder (a dev build that has not yet baked the shielded
+ * fold). Such a checkpoint is not a trust root: component-wise equality against a
+ * zeroed field would falsely "match" an empty/crafted bundle. Mirror the
+ * admission validator's rom_keystone_is_placeholder guard and grant no ROM
+ * authority in that case (fail-closed). */
+static bool activate_rom_checkpoint_is_placeholder(
+    const struct rom_state_checkpoint *rom)
+{
+    static const uint8_t zero32[32] = {0};
+    return memcmp(rom->utxo_root, zero32, 32) == 0 ||
+           memcmp(rom->anchor_digest, zero32, 32) == 0 ||
+           memcmp(rom->sprout_frontier_root, zero32, 32) == 0 ||
+           memcmp(rom->sapling_frontier_root, zero32, 32) == 0 ||
+           memcmp(rom->nullifier_digest, zero32, 32) == 0 ||
+           memcmp(rom->rom_state_root, zero32, 32) == 0;
+}
+
+/* CHECKPOINT_ROM authority — does the content-bound manifest reproduce EVERY
+ * component of the compiled shielded ROM keystone at the checkpoint height?
+ *
+ * This is the complete-state extension of activate_checkpoint_content_evaluate:
+ * CHECKPOINT_CONTENT binds only the transparent coins + the Sapling tip frontier
+ * root (and needs a validated header for the latter); CHECKPOINT_ROM binds ALL
+ * of the transparent coins (utxo_root/count/supply), the Sprout+Sapling anchor
+ * history, both commitment-tree frontier roots+heights, and the full nullifier
+ * history to the compiled keystone. The admission validator
+ * (consensus_state_bundle_validate) re-derived these manifest digests from the
+ * bundle's OWN rows, and install_activate.c's activate_verify_destination
+ * independently re-folds the INSTALLED destination against the same manifest
+ * values before COMMIT, so matching the manifest to the compiled keystone
+ * transitively binds the live installed COMPLETE state to the sovereign compiled
+ * checkpoint — with no peer and no PoW header. Component-wise equality (not a
+ * re-folded rom_state_root hash) keeps the binding auditable field by field and
+ * needs no second digest implementation.
+ *
+ * Returns true ONLY on a full, byte-for-byte component match at the checkpoint
+ * height against a fully-baked keystone; false (fail-closed) otherwise — no baked
+ * ROM, a height off the checkpoint, an unbaked placeholder, or any single
+ * component mismatch. block_hash is bound separately (the activate request's
+ * expected_block_hash and the admission keystone binding both pin it). */
+static bool activate_rom_checkpoint_content_evaluate(
+    const struct consensus_state_bundle_manifest *manifest)
+{
+    const struct rom_state_checkpoint *rom = get_rom_state_checkpoint();
+    if (!rom || manifest->height != rom->height)
+        return false; /* not the checkpoint-height candidate: nothing to bind */
+    if (activate_rom_checkpoint_is_placeholder(rom))
+        return false; /* an unbaked dev keystone is never a trust root */
+    return manifest->utxo_count == rom->utxo_count &&
+           manifest->total_supply == rom->total_supply &&
+           manifest->anchor_count == rom->anchor_count &&
+           manifest->sprout_frontier_height == rom->sprout_frontier_height &&
+           manifest->sapling_frontier_height == rom->sapling_frontier_height &&
+           manifest->nullifier_count == rom->nullifier_count &&
+           memcmp(manifest->utxo_root, rom->utxo_root, 32) == 0 &&
+           memcmp(manifest->anchor_digest, rom->anchor_digest, 32) == 0 &&
+           memcmp(manifest->sprout_frontier_root,
+                  rom->sprout_frontier_root, 32) == 0 &&
+           memcmp(manifest->sapling_frontier_root,
+                  rom->sapling_frontier_root, 32) == 0 &&
+           memcmp(manifest->nullifier_digest, rom->nullifier_digest, 32) == 0;
+}
+
+/* Resolve the CONTENT-bound ACTIVATE authority (everything after the RECEIPT
+ * gate): CHECKPOINT_ROM (header-independent, at the checkpoint height) first,
+ * then CHECKPOINT_CONTENT (coins + validated-header Sapling root). Fills
+ * contained_reason on a NONE verdict. */
+static enum consensus_state_activate_authority
+activate_resolve_content_authority(
     const struct consensus_state_bundle_manifest *manifest,
     const struct consensus_state_activate_request *request,
     char *contained_reason, size_t reason_cap)
 {
-    if (contained_reason && reason_cap)
-        contained_reason[0] = '\0';
-    if (!evidence || !manifest || !request)
-        return CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE;
-    if (activate_receipt_authority_available(evidence, datadir_fd, manifest))
-        return CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT;
+    if (activate_rom_checkpoint_content_evaluate(manifest))
+        return CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_ROM;
 
     switch (activate_checkpoint_content_evaluate(manifest, request)) {
     case ACTIVATE_CC_ACTIVATE:
@@ -162,10 +246,50 @@ consensus_state_activate_resolve_authority(
     default:
         if (contained_reason && reason_cap)
             snprintf(contained_reason, reason_cap,
-                     "no independent replay-derived receipt or checkpoint-"
-                     "content proof authorizes this bundle; run "
-                     "-verify-consensus-bundle against a datadir folded to the "
-                     "anchor first (install stays contained)");
+                     "no independent replay-derived receipt, shielded-ROM "
+                     "keystone match, or checkpoint-content proof authorizes "
+                     "this bundle; run -verify-consensus-bundle against a datadir "
+                     "folded to the anchor first (install stays contained)");
         return CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE;
     }
 }
+
+enum consensus_state_activate_authority
+consensus_state_activate_resolve_authority(
+    const struct consensus_state_artifact_evidence *evidence, int datadir_fd,
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_activate_request *request,
+    char *contained_reason, size_t reason_cap)
+{
+    if (contained_reason && reason_cap)
+        contained_reason[0] = '\0';
+    if (!evidence || !manifest || !request)
+        return CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE;
+    if (activate_receipt_authority_available(evidence, datadir_fd, manifest))
+        return CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT;
+    return activate_resolve_content_authority(manifest, request,
+                                              contained_reason, reason_cap);
+}
+
+#ifdef ZCL_TESTING
+/* Test seam: resolve the CONTENT-bound ACTIVATE authority (CHECKPOINT_ROM then
+ * CHECKPOINT_CONTENT) for a SYNTHETIC manifest+request, bypassing the
+ * evidence/receipt gate, and return the authority NAME ("checkpoint_rom",
+ * "checkpoint_content", or "none"). Lets a focused unit test assert the
+ * shielded-ROM keystone binding (paired with
+ * checkpoints_set_rom_state_override_for_test) without standing up a bundle
+ * file, datadir, or replay receipt. Never returns "receipt" — the receipt gate
+ * is intentionally not exercised here. */
+const char *consensus_state_activate_resolve_content_authority_name_for_test(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_activate_request *request)
+{
+    char contained_reason[192];
+    if (!manifest || !request)
+        return consensus_state_activate_authority_name(
+            CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE);
+    return consensus_state_activate_authority_name(
+        activate_resolve_content_authority(manifest, request, contained_reason,
+                                           sizeof(contained_reason)));
+}
+#endif

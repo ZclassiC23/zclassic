@@ -66,6 +66,15 @@ enum consensus_state_activate_authority {
     CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE = 0,
     /* Independent replay-derived receipt on this datadir. */
     CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT,
+    /* The bundle's manifest reproduces EVERY component of the compiled-in
+     * shielded ROM state checkpoint (g_rom_state_checkpoint) byte-for-byte:
+     * transparent coins (utxo_root/count/supply) PLUS the Sprout/Sapling anchor
+     * history, both frontier roots+heights, and the full nullifier history. The
+     * installer re-derives the installed rows against these same manifest
+     * digests, so binding the manifest to the compiled keystone transitively
+     * binds the installed state to the sovereign keystone WITHOUT any peer or
+     * PoW-header input — header-independent, fail-closed. */
+    CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_ROM,
     /* The bundle's coins reproduce the compiled SHA3 UTXO checkpoint AND its
      * Sapling tip frontier Pedersen-roots to the caller's validated-header
      * hashFinalSaplingRoot — bound to the compiled binary + PoW. */
@@ -77,9 +86,11 @@ const char *consensus_state_activate_authority_name(
 
 /* Resolve the ACTIVATE authority from the admitted `evidence` (whole-file digest
  * → replay-receipt lookup on `datadir_fd`) and the content-bound `manifest`.
- * RECEIPT takes precedence (byte-unchanged), then CHECKPOINT_CONTENT. When no
- * authority applies the return is CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE and
- * contained_reason is filled with a typed VERIFIED_CONTAINED explanation. */
+ * Precedence: RECEIPT (byte-unchanged) → CHECKPOINT_ROM (manifest reproduces the
+ * compiled shielded ROM keystone, header-independent) → CHECKPOINT_CONTENT
+ * (coins reproduce the SHA3 UTXO checkpoint + a validated-header Sapling root).
+ * When no authority applies the return is CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE
+ * and contained_reason is filled with a typed VERIFIED_CONTAINED explanation. */
 enum consensus_state_activate_authority
 consensus_state_activate_resolve_authority(
     const struct consensus_state_artifact_evidence *evidence, int datadir_fd,
