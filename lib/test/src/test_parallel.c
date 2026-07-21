@@ -261,7 +261,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_cadence) X(refold_premature_clear) \
     X(rom_compile_status) X(rom_watch_loop) \
-    X(refold_from_anchor_fatal) X(refold_auto_arm) X(anchor_selfmint) \
+    X(refold_from_anchor_fatal) X(refold_from_anchor_artifact_reachable) \
+    X(refold_auto_arm) X(anchor_selfmint) \
     X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) X(boot_snapshot_drop_bodiless) \
     X(boot_datadir_lock) X(boot_shutdown_marker) X(boot_stale_locks) \
     X(boot_blocktree_cleanup) X(boot_legacy_blocks) X(boot_flyclient) \
