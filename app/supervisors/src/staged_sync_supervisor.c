@@ -27,6 +27,7 @@
 #include "platform/time_compat.h"  /* platform_time_monotonic_us */
 #include "util/supervisor.h"
 #include "jobs/refold_cadence.h"   /* accelerated drain batch + tick, mint/refold only */
+#include "jobs/catchup_cadence.h"  /* accelerated drain batch, live catch-up only */
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -342,6 +343,23 @@ static void staged_stage_stall_escalation_apply(const char *dotted_name,
     }
 }
 
+/* Effective drain batch for one tick: refold_cadence wins over
+ * catchup_cadence when both could apply. refold_cadence_drain_batch is
+ * contractually a no-op (returns normal_batch unchanged) whenever
+ * refold_cadence_active() is false, so this precedence check is trivially
+ * correct — an offline from-anchor/genesis refold keeps its proven
+ * 2000/250ms values untouched, and only when no refold is in progress does a
+ * live catch-up (peers connected, gap >= threshold) get to raise the batch
+ * to catchup_cadence's 500. Neither override touches the shared 2s tick
+ * period. */
+static int stage_effective_batch(int normal_batch)
+{
+    int refold_batch = refold_cadence_drain_batch(normal_batch);
+    if (refold_batch != normal_batch)
+        return refold_batch;
+    return catchup_cadence_drain_batch(normal_batch);
+}
+
 /* Generic per-stage tick: drain a bounded batch each tick — keeps
  * progress.kv churn low and avoids starving other supervisor children —
  * then publish the cursor and heartbeat. Recovers its stage from the
@@ -390,13 +408,15 @@ static void staged_stage_tick(struct liveness_contract *c)
     }
     if (d->drive_skip_logged) d->drive_skip_logged = false;
 
-    /* Drain batch: the stage default (d->batch) on a normal live node —
-     * refold_cadence_drain_batch returns its argument unchanged when
-     * refold_cadence_active() is false, so the live hot path is unchanged.
-     * During a -mint-anchor/-refold-* fold it returns the accelerated
-     * ZCL_REFOLD_DRAIN_BATCH (default 2000). Batch size never changes WHAT a
-     * stage folds — only the commit cadence and latency. */
-    (void)d->drain(refold_cadence_drain_batch(d->batch));
+    /* Drain batch: the stage default (d->batch) on a normal at-tip live
+     * node — stage_effective_batch() returns its argument unchanged unless
+     * either accelerated cadence is active. During a -mint-anchor/-refold-*
+     * fold it returns the accelerated ZCL_REFOLD_DRAIN_BATCH (default 2000);
+     * during a live catch-up (peers connected, gap >= threshold, no refold
+     * in progress) it returns ZCL_CATCHUP_DRAIN_BATCH (default 500). Batch
+     * size never changes WHAT a stage folds — only the commit cadence and
+     * latency. */
+    (void)d->drain(stage_effective_batch(d->batch));
     uint64_t cur = d->cursor();
     supervisor_progress(d->id, (int64_t)cur);
     supervisor_tick(d->id);
