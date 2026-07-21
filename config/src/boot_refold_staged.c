@@ -67,30 +67,6 @@ void boot_refold_staged_init(bool refold_staged)
     (void)refold_progress_boot_init(progress_store_db(), refold_staged);
 }
 
-/* ── B2 anchor-SET SOURCE: the minted snapshot ──────────────────────────────
- *
- * Derive the anchor-snapshot path the SAME way the -mint-anchor driver wrote it
- * (boot_mint_anchor.c): $ZCL_MINT_ANCHOR_OUT, else <datadir>/utxo-anchor.snapshot,
- * where <datadir> is node.db's directory. */
-static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
-{
-    const char *env_out = getenv("ZCL_MINT_ANCHOR_OUT");
-    if (env_out && env_out[0]) {
-        int n = snprintf(buf, cap, "%s", env_out);
-        return n > 0 && (size_t)n < cap;
-    }
-    const char *dbpath = sqlite3_db_filename(ndb->db, "main");
-    if (!dbpath || !dbpath[0]) return false;
-    /* Strip the trailing "/node.db" to get the datadir. */
-    char dir[1024];
-    int n = snprintf(dir, sizeof(dir), "%s", dbpath);
-    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
-    char *slash = strrchr(dir, '/');
-    if (slash) *slash = '\0'; else snprintf(dir, sizeof(dir), ".");
-    int m = snprintf(buf, cap, "%s/utxo-anchor.snapshot", dir);
-    return m > 0 && (size_t)m < cap;
-}
-
 /* Blocks-less bundle repair (the v2 snapshot judge bundle: block_index.bin +
  * snapshot, NO blocks/ dir). block_index.bin carries each entry's nStatus
  * INCLUDING BLOCK_HAVE_DATA plus the SOURCE datadir's (nFile, nDataPos). When
@@ -228,52 +204,6 @@ size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
                                                            trust_existing_block_files);
 }
 #endif
-/* Read-only probe: is a fully integrity-checked legacy anchor artifact
- * reachable for THIS transparent checkpoint? True iff the file has an exact,
- * fully body-SHA3-verified layout and its independently recomputed UTXO
- * height/hash/root/count/supply all equal the compiled checkpoint. This exact
- * predicate is shared by boot_anchor_seed_from_snapshot and
- * boot_load_verify_snapshot_eligible before they trust a
- * snapshot — factored here so the from-anchor AUTO-ARM can DECLINE (instead of
- * falling into the node.db reseed + FATAL) when no verified snapshot exists. No
- * coins_kv mutation: mmaps read-only, closes immediately. */
-static bool anchor_snapshot_verified_reachable(struct node_db *ndb,
-                                               const struct sha3_utxo_checkpoint *cp)
-{
-    if (!ndb || !cp)
-        return false;
-    char path[1100];
-    if (!mint_snapshot_path(ndb, path, sizeof(path)))
-        return false;
-    char err[256] = {0};
-    struct uss_header hdr;
-    struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
-                                    /*expected_sha3=*/NULL,
-                                    &hdr, err, sizeof(err));
-    if (!h)
-        return false;  /* absent OR malformed/body-SHA3 mismatch */
-    bool ok = boot_legacy_uss_matches_checkpoint(
-        h, &hdr, cp, err, sizeof(err));
-    uss_close(h);
-    return ok;
-}
-
-/* Public gate for the runtime refold rung (config/boot.h): the compiled
- * checkpoint AND its verified minted snapshot must both be reachable so
- * boot_refold_from_anchor_reset can load a proven anchor set (it FATAL-refuses
- * otherwise). Reports the checkpoint height so the rung can name the anchor. */
-bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
-                                                int32_t *anchor_height_out)
-{
-    if (anchor_height_out)
-        *anchor_height_out = -1;
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    if (!cp)
-        return false;
-    if (anchor_height_out)
-        *anchor_height_out = cp->height;
-    return anchor_snapshot_verified_reachable(ndb, cp);
-}
 
 /* uss_iter callback: insert one snapshot record into coins_kv. The caller holds
  * the kernel-store (consensus.db) handle in an open BEGIN IMMEDIATE so every
@@ -368,7 +298,7 @@ static bool boot_anchor_seed_from_snapshot(struct node_db *ndb, sqlite3 *rpdb,
 {
     if (present) *present = false;
     char path[1100];
-    if (!mint_snapshot_path(ndb, path, sizeof(path)))
+    if (!boot_anchor_snapshot_path_resolve(ndb, path, sizeof(path)))
         return false;
 
     char err[256] = {0};
@@ -1735,7 +1665,7 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
         return false;
 
     char path[1100];
-    if (!mint_snapshot_path(ndb, path, sizeof(path)))
+    if (!boot_anchor_snapshot_path_resolve(ndb, path, sizeof(path)))
         return false;
 
     /* (1)+(2) Present + verified: first bind every byte and the exact legacy

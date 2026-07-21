@@ -425,9 +425,66 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
  * snapshot). On true, *anchor_height_out (when non-NULL) receives the checkpoint
  * height. Used by the sticky escalator's terminal refold rung to gate: fire only
  * when an anchor artifact exists, else name the missing clue. No coins_kv
- * mutation. */
+ * mutation.
+ *
+ * DISCOVERY (no explicit flag required to CALL this — any caller may probe it
+ * at any time): the candidate path is resolved by mint_snapshot_path()
+ * (config/src/boot_refold_staged.c) in this order: (1) $ZCL_MINT_ANCHOR_OUT
+ * verbatim when set (the exact path the -mint-anchor ceremony/test fixtures
+ * write to — preserved unconditionally for that producer contract); else (2)
+ * $ZCL_ANCHOR_SNAPSHOT_PATH when set AND it resolves to an existing regular
+ * file (a general operator/deploy override, e.g. for a shared cache location,
+ * distinct from (1)'s narrower producer-output semantics — falls through to
+ * (3) rather than pointing every caller at a dead path if the env var is
+ * stale/unset); else (3) the default <datadir>/utxo-anchor.snapshot, which is
+ * also the exact path tools/seed_anchor_snapshot.sh stages into. This is a
+ * LOCAL-path-only search — no network fetch. */
 bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
                                                 int32_t *anchor_height_out);
+
+/* Typed reasons boot_refold_from_anchor_artifact_available_ex can fail with —
+ * a bare bool only tells a caller "not usable", never WHY, which makes an
+ * operator-facing rejection message impossible to write from the return value
+ * alone. Every rejection path in anchor_snapshot_verified_reachable_ex logs
+ * one of these at LOG_WARN alongside the resolved path. */
+enum anchor_snapshot_reject_reason {
+    ANCHOR_SNAPSHOT_OK = 0,
+    ANCHOR_SNAPSHOT_NO_CHECKPOINT,       /* no compiled sha3_utxo_checkpoint —
+                                          * nothing to bind a snapshot against */
+    ANCHOR_SNAPSHOT_ABSENT,              /* no regular file at the resolved
+                                          * candidate path */
+    ANCHOR_SNAPSHOT_MALFORMED,           /* uss_open failed: bad magic/version,
+                                          * truncated body, or the file's OWN
+                                          * declared sha3_hash does not match
+                                          * its own re-hashed body (internal
+                                          * self-consistency failure, checked
+                                          * BEFORE any comparison to the baked
+                                          * checkpoint) */
+    ANCHOR_SNAPSHOT_CHECKPOINT_MISMATCH, /* opened + internally self-consistent,
+                                          * but the independently recomputed
+                                          * height / anchor_block_hash / count /
+                                          * total_supply / UTXO-only-component
+                                          * SHA3 does not equal the BAKED
+                                          * sha3_utxo_checkpoint — rejected
+                                          * fail-closed regardless of how close
+                                          * a mismatch is; never operator- or
+                                          * header-attested */
+};
+
+/* Stable string for logs/introspection; never NULL. */
+const char *anchor_snapshot_reject_reason_str(enum anchor_snapshot_reject_reason r);
+
+/* Same predicate as boot_refold_from_anchor_artifact_available, plus the
+ * typed rejection reason and (on success) the exact path that verified — the
+ * one detail-carrying form the other lanes (cold-start install, recovery
+ * base, the shielded-frontier work) should call when they want to log or
+ * branch on WHY a snapshot isn't usable, not just whether. path_out/path_cap
+ * may be NULL/0 to skip the path copy; reason_out may be NULL to skip the
+ * reason. No coins_kv mutation. */
+bool boot_refold_from_anchor_artifact_available_ex(
+    struct node_db *ndb, int32_t *anchor_height_out,
+    char *path_out, size_t path_cap,
+    enum anchor_snapshot_reject_reason *reason_out);
 
 /* -load-snapshot-at-own-height=PATH (impl in config/src/boot_refold_staged.c):
  * EXPLICIT-ONLY recovery loader. Sibling of boot_refold_from_anchor_reset EXCEPT
