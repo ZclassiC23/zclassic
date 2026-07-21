@@ -28,13 +28,19 @@
 #include "dev_failure_store.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "controllers/rpc_client.h"
+#include "controllers/status_native_handlers.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -565,6 +571,178 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
     return failures;
 }
 
+/* ── wf/status-front-door ─────────────────────────────────────────
+ *
+ * The flagless `zclassic23 status` front door (core.status.brief,
+ * status_brief_native_handler.c) must always answer truthfully and fast.
+ * Two contracts, tested directly against zcl_native_status_brief_body
+ * (below the command-registry envelope, which test_command_registry_
+ * catalog.c's test_status_brief_* already covers):
+ *
+ *   - schema-skew tolerance: a PRESENT schema in the known
+ *     zcl.public_status.* family that isn't the exact version validated
+ *     strictly (an older node's v1, a newer node's v3) degrades to a
+ *     best-effort brief instead of the old one-size-fits-all "invalid
+ *     zcl.public_status.v2" error; an ABSENT schema, or a genuinely
+ *     malformed field on a MATCHING v2 document, still fails closed.
+ *   - the ~250ms front-door deadline: a peer that accepts the TCP
+ *     connection but never answers must not be able to hold the call for
+ *     the generic 10s RPC ceiling. */
+
+static const char *g_status_body_rpc_fixture;
+
+static char *status_body_mock_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "agent") == 0 && g_status_body_rpc_fixture)
+        return strdup(g_status_body_rpc_fixture);
+    return strdup("null");
+}
+
+static int test_status_brief_body_schema_skew_tolerance(void)
+{
+    int failures = 0;
+    TEST("zcl_native_status_brief_body: present-but-older schema degrades "
+        "gracefully; absent schema and matching-v2-malformed still fail "
+        "closed") {
+        node_rpc_client_set_test_hook(status_body_mock_rpc);
+
+        /* (a) An older node (v1) still carries the fields this CLI knows
+         * under the same names -- those must surface, ok:true, not a hard
+         * schema error. */
+        static const char older[] =
+            "{\"schema\":\"zcl.public_status.v1\","
+            "\"served_height\":42,\"served_height_known\":true,"
+            "\"serving\":true,\"healthy\":true,"
+            "\"primary_blocker\":\"none\"}";
+        g_status_body_rpc_fixture = older;
+        struct zcl_native_body_err err = {0};
+        char *body = zcl_native_status_brief_body(NULL, &err);
+        ASSERT(body != NULL);
+        struct json_value data;
+        ASSERT(json_read(&data, body, strlen(body)) &&
+              data.type == JSON_OBJ);
+        ASSERT_EQ(json_get_int(json_get(&data, "hstar")), (int64_t)42);
+        ASSERT(json_get_bool(json_get(&data, "serving")));
+        ASSERT(json_get_bool(json_get(&data, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&data, "primary_blocker")),
+                      "none");
+        ASSERT(json_get_bool(json_get(&data, "partial_result")));
+        ASSERT_STR_EQ(json_get_str(json_get(&data, "schema_skew")),
+                      "zcl.public_status.v1");
+        json_free(&data);
+        free(body);
+
+        /* (b) An entirely ABSENT schema key is unaffected by the new
+         * tolerance (there is no schema value to match against the known
+         * family) -- still the pre-existing version-skew hard failure. */
+        static const char no_schema[] = "{\"served_height\":42}";
+        g_status_body_rpc_fixture = no_schema;
+        err = (struct zcl_native_body_err){0};
+        body = zcl_native_status_brief_body(NULL, &err);
+        ASSERT(body == NULL);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT(strstr(err.message, "predates the CLI contract") != NULL);
+
+        /* (c) A MATCHING v2 schema with a genuinely malformed field must
+         * still fail closed -- schema-skew tolerance never weakens strict
+         * validation of the exact contract version this build targets. */
+        static const char malformed_v2[] =
+            "{\"schema\":\"zcl.public_status.v2\","
+            "\"served_height\":\"not-an-int\","
+            "\"served_height_known\":true}";
+        g_status_body_rpc_fixture = malformed_v2;
+        err = (struct zcl_native_body_err){0};
+        body = zcl_native_status_brief_body(NULL, &err);
+        ASSERT(body == NULL);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT(strstr(err.message, "invalid zcl.public_status.v2") != NULL);
+        ASSERT(strstr(err.message, "predates the CLI contract") == NULL);
+
+        PASS();
+    } _test_next:;
+    g_status_body_rpc_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_status_brief_body_front_door_deadline(void)
+{
+    int failures = 0;
+    char *dir = NULL;
+    int blackhole = -1;
+    TEST("zcl_native_status_brief_body: a peer that accepts the connection "
+        "but never answers is bounded by the ~250ms front-door deadline, "
+        "not the generic 10s RPC ceiling") {
+        /* Force the REAL out-of-process HTTP path -- no test hook -- so
+         * this proves the actual socket-level deadline plumbing, not a
+         * mock. */
+        node_rpc_client_set_test_hook(NULL);
+
+        /* A bound+listening socket completes the client's connect() via the
+         * kernel accept queue with nobody ever calling accept() -- exactly
+         * "TCP up, nobody home to answer" (see rpc_client.c's "node
+         * accepted the connection but did not answer" branch, and the same
+         * pattern in test_cli_auth_robust.c). */
+        blackhole = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT(blackhole >= 0);
+        struct sockaddr_in addr = { 0 };
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(0);
+        int reuse = 1;
+        setsockopt(blackhole, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                  sizeof(reuse));
+        ASSERT(bind(blackhole, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+        socklen_t alen = sizeof(addr);
+        ASSERT(getsockname(blackhole, (struct sockaddr *)&addr, &alen) == 0);
+        uint16_t port = ntohs(addr.sin_port);
+        ASSERT(listen(blackhole, 1) == 0);
+
+        char dir_template[] = "/tmp/zcl-status-frontdoor-XXXXXX";
+        dir = strdup(mkdtemp(dir_template));
+        ASSERT(dir != NULL);
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        FILE *cf = fopen(cookie_path, "w");
+        ASSERT(cf != NULL);
+        (void)fprintf(cf, "dummyuser:dummypass\n");
+        (void)fclose(cf);
+
+        node_rpc_client_init(dir, (int)port);
+        ASSERT(setenv("ZCL_STATUS_DEADLINE_MS", "200", 1) == 0);
+
+        int64_t t0 = platform_time_monotonic_ms();
+        struct zcl_native_body_err err = {0};
+        char *body = zcl_native_status_brief_body(NULL, &err);
+        int64_t elapsed_ms = platform_time_monotonic_ms() - t0;
+
+        (void)unsetenv("ZCL_STATUS_DEADLINE_MS");
+
+        /* Well under the generic 10s (ZCL_RPC_DEADLINE_MS default) ceiling
+         * -- proves the ~200ms front-door budget actually bounds the call
+         * rather than falling back to the env-wide default. Generous
+         * margin against CI scheduling jitter. */
+        ASSERT(elapsed_ms < 3000);
+        ASSERT(body == NULL);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT(strstr(err.message, "did not answer within the deadline") !=
+              NULL);
+        PASS();
+    } _test_next:;
+    if (blackhole >= 0)
+        close(blackhole);
+    if (dir) {
+        char rmcmd[512];
+        (void)snprintf(rmcmd, sizeof(rmcmd), "rm -rf %s", dir);
+        (void)system(rmcmd);
+        free(dir);
+    }
+    node_rpc_client_set_test_hook(NULL);
+    node_rpc_client_init("", 0);
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
@@ -574,6 +752,8 @@ int test_native_api_contract(void)
     failures += test_missing_required_input_fails_closed_structured();
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
+    failures += test_status_brief_body_schema_skew_tolerance();
+    failures += test_status_brief_body_front_door_deadline();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;
 }

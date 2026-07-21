@@ -64,6 +64,17 @@ static long rpc_total_ms(void)
     return rpc_env_ms("ZCL_RPC_DEADLINE_MS", RPC_TOTAL_MS_DEFAULT, 1, 600000);
 }
 
+/* Callers that pass explicit deadlines (e.g. the ~250ms status front door)
+ * bypass the env-only defaults above but must still be bounded to the same
+ * sane floor/ceiling — an unclamped caller-supplied 0 or negative value
+ * would otherwise busy-spin or silently mean "no timeout". */
+static long rpc_clamp_ms(long v, long lo, long hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
 static int64_t rpc_now_ms(void)
 {
     return platform_time_monotonic_ms();
@@ -216,8 +227,18 @@ const char *node_rpc_client_datadir(void)
     return g_datadir;
 }
 
-char *node_rpc_call_http(const char *method, const char *params_json)
+/* Shared implementation behind both the env-defaulted node_rpc_call_http
+ * and the explicit-deadline node_rpc_call_http_deadline. `connect_ms`/
+ * `total_ms` are already-resolved budgets (env defaults or a caller's tight
+ * front-door budget) — clamped here to the same sane floor/ceiling either
+ * way so no caller can accidentally request an unbounded wait. */
+static char *node_rpc_call_http_impl(const char *method,
+                                     const char *params_json,
+                                     long connect_ms, long total_ms)
 {
+    connect_ms = rpc_clamp_ms(connect_ms, 1, 60000);
+    total_ms = rpc_clamp_ms(total_ms, 1, 600000);
+
     /* Fail fast with an actionable message rather than sending an empty
      * credential that the node would reject with a cryptic 401. */
     if (!read_cookie())
@@ -234,7 +255,7 @@ char *node_rpc_call_http(const char *method, const char *params_json)
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}",
             method);
 
-    const int64_t deadline_ms = rpc_now_ms() + rpc_total_ms();
+    const int64_t deadline_ms = rpc_now_ms() + total_ms;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
@@ -248,7 +269,7 @@ char *node_rpc_call_http(const char *method, const char *params_json)
 
     /* Bound the connect so a firewalled/hung local port cannot block the whole
      * command. Never wait past the overall deadline. */
-    long connect_budget = rpc_connect_ms();
+    long connect_budget = connect_ms;
     long remaining = (long)(deadline_ms - rpc_now_ms());
     if (remaining < 1)
         remaining = 1;
@@ -378,6 +399,24 @@ char *node_rpc_call_http(const char *method, const char *params_json)
     return buf;
 }
 
+/* The default out-of-process HTTP backend, using the env-configurable
+ * defaults (ZCL_RPC_CONNECT_MS / ZCL_RPC_DEADLINE_MS). */
+char *node_rpc_call_http(const char *method, const char *params_json)
+{
+    return node_rpc_call_http_impl(method, params_json, rpc_connect_ms(),
+                                   rpc_total_ms());
+}
+
+/* Same HTTP backend, but with the caller's own connect/total budget instead
+ * of the generic env-configurable defaults — for front doors (e.g.
+ * core.status.brief) that must answer far faster than the 10s generic
+ * ceiling tolerates. */
+char *node_rpc_call_http_deadline(const char *method, const char *params_json,
+                                  long connect_ms, long total_ms)
+{
+    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms);
+}
+
 /* Public entry every controller and the diagnostics dumper call. Routes to
  * the HTTP backend; the test hook lets controller tests stub the node. */
 char *node_rpc_call(const char *method, const char *params_json)
@@ -387,4 +426,18 @@ char *node_rpc_call(const char *method, const char *params_json)
         return g_test_rpc_hook(method, params_json);
 #endif
     return node_rpc_call_http(method, params_json);
+}
+
+/* Same as node_rpc_call (including the ZCL_TESTING hook, so tests can stub
+ * a deadline-aware caller too) but with an explicit connect/total budget —
+ * see node_rpc_call_http_deadline. */
+char *node_rpc_call_deadline(const char *method, const char *params_json,
+                             long connect_ms, long total_ms)
+{
+#ifdef ZCL_TESTING
+    if (g_test_rpc_hook)
+        return g_test_rpc_hook(method, params_json);
+#endif
+    return node_rpc_call_http_deadline(method, params_json, connect_ms,
+                                       total_ms);
 }
