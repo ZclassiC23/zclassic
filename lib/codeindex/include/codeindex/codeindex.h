@@ -196,4 +196,35 @@ int codeindex_impact_closure(struct codeindex *ci,
                              int max_depth,
                              char (*out)[256], int cap, bool *truncated);
 
+/* ── Forward (callee) input-closure query — the content-addressed test cache
+ * key input (symmetric mirror of codeindex_impact_closure) ──────────────
+ *
+ * Given a ROOT SYMBOL (e.g. a test entry point "test_<name>"), compute the set
+ * of in-tree source FILES whose byte content can change the behavior reachable
+ * from that symbol: every file that DEFINES a symbol transitively reachable via
+ * the FORWARD callee graph (refs.enclosing walk), PLUS every in-tree header
+ * those definition files include (compiler-depfile edges — sound + complete for
+ * the include dimension). This is the INPUT closure a caller content-addresses
+ * to decide whether re-running the symbol is necessary.
+ *
+ * Where codeindex_impact_closure answers "who is impacted when X changes"
+ * (reverse callers, a conservative test-selection superset), this answers "what
+ * does X depend on" (forward callees, the input set). The two walk the same
+ * call graph in opposite directions and share its one intrinsic limit: an edge
+ * that source scanning never recorded (an indirect/function-pointer/dlopen
+ * dispatch) is invisible to both. A SOUNDNESS-sensitive caller (a result cache)
+ * MUST therefore treat a *truncated result as UNCACHEABLE and MUST back the
+ * cache with a cold-audit path that never trusts it — see lib/test/src/test_cache.c.
+ *
+ * Output is DETERMINISTIC (unique, sorted by path) and filled up to `cap` rows.
+ * *truncated is set true iff the closure hit an internal size cap, a per-symbol
+ * callee fan-out cap, overflowed `cap`, OR the depth ceiling was reached with
+ * the frontier still non-empty — i.e. the returned set may be INCOMPLETE.
+ * *root_found (may be NULL) is set false iff root_symbol is not a known in-tree
+ * symbol (then the closure is empty — the caller cannot bound the inputs, so it
+ * too is UNCACHEABLE). Returns the file count (>=0), -1 on hard error. */
+int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
+                              char (*out)[256], int cap,
+                              bool *truncated, bool *root_found);
+
 #endif /* ZCL_CODEINDEX_H */

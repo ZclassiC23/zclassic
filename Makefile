@@ -1171,10 +1171,13 @@ test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
 # false-failure source, not just a build-object collision. Always foreground
 # (the watcher never calls this target — it runs test_parallel through
 # `make ff`, which is itself checkout-locked).
+# TEST_PARALLEL_ARGS is empty by default, so the canonical gate is byte-for-byte
+# the historical cold run; pass e.g. TEST_PARALLEL_ARGS=--cold-audit (verify the
+# content cache) or --no-cache (force cold with ZCL_TEST_CACHE set).
 test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE)'
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
 
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
@@ -2331,7 +2334,7 @@ $(BIN_DIR)/zcl-blog: tools/zcl-blog
 test: $(TEST_PARALLEL_REL_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE)'
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
 
 test-full: test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)
@@ -3616,8 +3619,15 @@ $(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) $(BUILD_E
 # The dev object tree also needs the identity TU refreshed when its stamp changes.
 $(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
+# The content-addressed test cache (lib/test/src/testcache.c) folds the
+# toolchain fingerprint into every per-group key so a compiler/flags change busts
+# the whole cache. Reuse the already-computed, already-validated 64-hex compiler
+# id (no extra shell); injected per-object so only testcache.o carries it.
+TESTCACHE_TOOLKEY_CPPFLAGS = -DZCL_TESTCACHE_TOOLKEY=\"$(BUILD_COMPILER_ID)\"
+
 TEST_FAST_OBJECT_CFLAGS = $(TEST_FAST_CFLAGS)
 $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: TEST_FAST_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(TEST_FAST_OBJ_DIR)/lib/test/src/testcache.o: TEST_FAST_OBJECT_CFLAGS += $(TESTCACHE_TOOLKEY_CPPFLAGS)
 $(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_FAST_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
@@ -3632,6 +3642,7 @@ $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # records the complete include closure inside the exact epoch — no false green.
 TEST_REL_OBJECT_CFLAGS = $(TEST_REL_CFLAGS)
 $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: TEST_REL_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(TEST_REL_OBJ_DIR)/lib/test/src/testcache.o: TEST_REL_OBJECT_CFLAGS += $(TESTCACHE_TOOLKEY_CPPFLAGS)
 $(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_REL_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \

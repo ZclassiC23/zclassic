@@ -40,8 +40,8 @@ Grounded in and building ON (never duplicating):
   resolver), and counts on `code group`.
 
 The four category namespaces are today **disconnected**: directory-groups
-(codeindex), the 8 shapes, ~580 test groups (`g_groups[]` in
-`lib/test/src/test_parallel.c:333`, built from `TEST_LIST`/`SPEC_LIST` X-macros),
+(codeindex), the 8 shapes, ~720 test groups (`g_groups[]` in
+`lib/test/src/test_parallel.c`, built from `TEST_LIST`/`SPEC_LIST` X-macros),
 and command branches/layers (`config/commands/*.def` — 6 files: apps, code,
 core, dev, ops, root). The only cross-links are the impact rules
 (`agent_impact_rules.def`) + a few parity tests. The palace **joins** them with
@@ -137,7 +137,7 @@ bounded JSON document (same 4096-byte budget as the other `code` leaves):
 | `shape` | the 8 shapes | derive from `codeindex_file()` → `finfo.group`; if it begins `app/` the second component is the shape (`k_app_shapes[]`, `codeindex_group.c:31`) |
 | `purpose` | self-description | `finfo.purpose` (§1) |
 | `group` + `neighbors` | directory-groups | `codeindex_file()` for the group; `codeindex_files_in_group()` for siblings (both already in `codeindex.h`) |
-| `tests[]` | ~580 test groups | `agent_impact_apply_shared_rules(path, acc)` (`agent_impact_rules.c:86`) — the same resolver Phase-1 `code tests` uses |
+| `tests[]` | ~720 test groups | `agent_impact_apply_shared_rules(path, acc)` (`agent_impact_rules.c:86`) — the same resolver Phase-1 `code tests` uses |
 | `commands[]` | command branches | see 2.1 — a one-token macro add resolves owning command(s) |
 
 So `code room app/jobs/src/utxo_apply_stage.c` returns: *shape = jobs; purpose =

@@ -171,6 +171,7 @@ struct ci_closure_ctx {
     struct ci_strlist files;       /* impacted files (unsorted; deduped) */
     struct ci_ref    *refbuf;      /* CI_CLOSURE_QUERY_BATCH rows */
     struct ci_symbol *symbuf;      /* CI_CLOSURE_QUERY_BATCH rows */
+    char            (*incbuf)[256];/* CI_CLOSURE_QUERY_BATCH include rows (fwd) */
 };
 
 static void ci_closure_ctx_free(struct ci_closure_ctx *c)
@@ -180,6 +181,7 @@ static void ci_closure_ctx_free(struct ci_closure_ctx *c)
     ci_strlist_free(&c->files);
     free(c->refbuf);
     free(c->symbuf);
+    free(c->incbuf);
 }
 
 /* Record an impacted file (dedup). *hit_cap=true if the file cap is exceeded. */
@@ -328,5 +330,162 @@ done:
     ci_closure_ctx_free(&c);
     if (rc < 0)
         LOG_ERR("codeindex", "closure traversal failed");
+    return rc;
+}
+
+/* ── forward (callee) input closure ─────────────────────────────────────
+ *
+ * The mirror of the reverse walk above: from a root SYMBOL, collect every
+ * in-tree file whose bytes the symbol's behavior can transitively depend on.
+ * Files are recorded at DISCOVERY time (not pop time) so a depth-bounded walk
+ * never silently drops the last level's definition files — depth exhaustion
+ * with a non-empty frontier is instead reported as *truncated.
+ *
+ * A generous depth ceiling: real call chains from a test entry point are far
+ * shallower. Hitting it means the frontier never emptied within the ceiling,
+ * which we report as truncated so the caller treats the group as uncacheable. */
+#define CI_FWD_DEPTH_CEIL 256
+
+/* Record `sym`'s definition file and that file's in-tree include closure.
+ * A symbol that resolves to no in-tree definition (a libc/external call) has
+ * no file to hash and is silently skipped — it cannot change under the tree.
+ * *hit_cap is raised through ci_closure_add_file / an include fan-out overflow. */
+static bool ci_fwd_record_symbol_file(struct ci_closure_ctx *c,
+                                      struct codeindex *ci, const char *sym,
+                                      bool *hit_cap)
+{
+    struct ci_symbol s;
+    bool found = false;
+    if (!codeindex_symbol(ci, sym, &s, &found))
+        return false;
+    if (!found || !s.def_path[0])
+        return true;  /* external/undefined: nothing in-tree to hash */
+
+    if (!ci_closure_add_file(c, s.def_path, hit_cap))
+        return false;
+
+    int ni = codeindex_includes_of_file(ci, s.def_path, c->incbuf,
+                                        CI_CLOSURE_QUERY_BATCH);
+    if (ni < 0)
+        LOG_FAIL("codeindex", "includes_of_file failed for %s", s.def_path);
+    if (ni == CI_CLOSURE_QUERY_BATCH)
+        *hit_cap = true;  /* more includes than one batch — closure incomplete */
+    for (int i = 0; i < ni; i++) {
+        if (!ci_closure_add_file(c, c->incbuf[i], hit_cap))
+            return false;
+    }
+    return true;
+}
+
+int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
+                              char (*out)[256], int cap,
+                              bool *truncated, bool *root_found)
+{
+    if (truncated) *truncated = false;
+    if (root_found) *root_found = false;
+    if (!ci || !ci->store || !root_symbol || !out || cap <= 0 || !truncated)
+        LOG_ERR("codeindex", "bad args to codeindex_forward_closure");
+
+    struct ci_closure_ctx c = {0};
+    int rc = -1;
+    if (!ci_strset_init(&c.seen_syms, 1024) ||
+        !ci_strset_init(&c.seen_files, 1024)) {
+        ci_closure_ctx_free(&c);
+        LOG_ERR("codeindex", "forward closure set init failed");
+    }
+    c.refbuf = zcl_malloc(sizeof(*c.refbuf) * CI_CLOSURE_QUERY_BATCH,
+                          "ci_fwd_refbuf");
+    c.incbuf = zcl_malloc(sizeof(*c.incbuf) * CI_CLOSURE_QUERY_BATCH,
+                          "ci_fwd_incbuf");
+    if (!c.refbuf || !c.incbuf) {
+        ci_closure_ctx_free(&c);
+        LOG_ERR("codeindex", "forward closure batch alloc failed");
+    }
+
+    /* The root must resolve to a known in-tree symbol; otherwise its inputs
+     * cannot be bounded (the caller treats this as UNCACHEABLE). */
+    struct ci_symbol rs;
+    bool found = false;
+    if (!codeindex_symbol(ci, root_symbol, &rs, &found)) {
+        ci_closure_ctx_free(&c);
+        LOG_ERR("codeindex", "root symbol lookup failed");
+    }
+    if (!found) {
+        if (root_found) *root_found = false;
+        ci_closure_ctx_free(&c);
+        return 0;  /* empty closure, not an error */
+    }
+    if (root_found) *root_found = true;
+
+    struct ci_strlist frontier = {0};
+    struct ci_strlist next = {0};
+
+    bool added = false;
+    if (!ci_strset_add(&c.seen_syms, root_symbol, &added))
+        goto done;
+    if (!ci_fwd_record_symbol_file(&c, ci, root_symbol, truncated))
+        goto done;
+    if (!ci_strlist_push(&frontier, root_symbol))
+        goto done;
+
+    for (int d = 0; d < CI_FWD_DEPTH_CEIL && frontier.len > 0; d++) {
+        qsort(frontier.items, frontier.len, sizeof(*frontier.items),
+              ci_str_cmp);
+        for (size_t i = 0; i < frontier.len; i++) {
+            int nc = codeindex_callees(ci, frontier.items[i], c.refbuf,
+                                       CI_CLOSURE_QUERY_BATCH);
+            if (nc < 0) {
+                ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR,
+                    "[codeindex] %s:%d %s(): callees failed for %s\n",
+                    __FILE__, __LINE__, __func__, frontier.items[i]);
+                goto done;  /* rc stays -1; cleanup below runs */
+            }
+            if (nc == CI_CLOSURE_QUERY_BATCH)
+                *truncated = true;  /* more callees than one batch */
+            for (int j = 0; j < nc; j++) {
+                const char *callee = c.refbuf[j].callee;
+                if (!callee[0])
+                    continue;
+                if (c.seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
+                    *truncated = true;
+                    continue;
+                }
+                bool new_sym = false;
+                if (!ci_strset_add(&c.seen_syms, callee, &new_sym))
+                    goto done;
+                if (!new_sym)
+                    continue;
+                /* Record the callee's file at DISCOVERY so depth bounding can
+                 * never drop it. */
+                if (!ci_fwd_record_symbol_file(&c, ci, callee, truncated))
+                    goto done;
+                if (!ci_strlist_push(&next, callee))
+                    goto done;
+            }
+        }
+        ci_strlist_free(&frontier);
+        frontier = next;
+        memset(&next, 0, sizeof(next));
+    }
+    if (frontier.len > 0)
+        *truncated = true;  /* depth ceiling hit with the frontier non-empty */
+
+    qsort(c.files.items, c.files.len, sizeof(*c.files.items), ci_str_cmp);
+    int n = 0;
+    for (size_t i = 0; i < c.files.len && n < cap; i++) {
+        memset(out[n], 0, sizeof(out[n]));
+        snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        n++;
+    }
+    if ((size_t)n < c.files.len)
+        *truncated = true;  /* caller's cap could not hold the full set */
+    rc = n;
+
+done:
+    ci_strlist_free(&frontier);
+    ci_strlist_free(&next);
+    ci_closure_ctx_free(&c);
+    if (rc < 0)
+        LOG_ERR("codeindex", "forward closure traversal failed");
     return rc;
 }
