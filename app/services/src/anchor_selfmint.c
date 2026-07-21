@@ -122,7 +122,13 @@ bool anchor_selfmint_snapshot_status(const char *datadir,
         anchor_hex32(hdr.anchor_block_hash, out->snapshot_block_hash_hex);
         out->height_match = (int32_t)hdr.height == cp->height;
         out->count_match = hdr.count == cp->utxo_count;
-        out->sha3_match = memcmp(hdr.sha3_hash, cp->sha3_hash, 32) == 0;
+        /* sha3_match is NOT a header-hash compare: the compiled checkpoint pins
+         * the COINS-ONLY commitment, while hdr.sha3_hash is the artifact's OWN
+         * full-body hash (coins-only for a v1 artifact, coins+shielded for a v3
+         * one). A direct compare here false-rejects every valid v3 snapshot. It
+         * is set below from the recomputed coins-only component vs cp->sha3_hash
+         * (the value the checkpoint actually pins), mirroring
+         * boot_legacy_uss_matches_checkpoint. Left at its zeroed default here. */
         out->block_hash_match =
             memcmp(hdr.anchor_block_hash, cp->block_hash, 32) == 0;
         uss_close(peek);
@@ -136,22 +142,58 @@ bool anchor_selfmint_snapshot_status(const char *datadir,
         return true;
     }
 
+    /* Admission is the SAME two-step predicate the cold-start gate uses
+     * (boot_legacy_uss_matches_checkpoint via anchor_snapshot_verified_reachable):
+     *   1. uss_open(verify_full_sha3=true, expected_sha3=NULL) — bind the WHOLE
+     *      artifact (coins + any v3 shielded section) to its OWN header hash;
+     *      NULL so we do NOT compare that full-body hash to the checkpoint.
+     *   2. uss_utxo_component_compute() — recompute the COINS-ONLY commitment and
+     *      bind THAT to cp->sha3_hash, the value the compiled checkpoint pins.
+     * Passing cp->sha3_hash as expected_sha3 in step 1 was the bug: for a v3
+     * artifact the header carries the coins+shielded hash, so it could NEVER
+     * equal the coins-only checkpoint and every valid v3 snapshot was rejected
+     * as "sha3_or_format_mismatch". Verification is NOT weakened — the coins
+     * commitment still must equal the checkpoint exactly; only WHICH hash is
+     * compared is corrected. */
     err[0] = '\0';
     struct uss_header verified_hdr;
     memset(&verified_hdr, 0, sizeof(verified_hdr));
     struct uss_handle *h = uss_open(out->path, /*verify_full_sha3=*/true,
-                                    cp->sha3_hash, &verified_hdr, err,
+                                    /*expected_sha3=*/NULL, &verified_hdr, err,
                                     sizeof(err));
     if (h) {
-        bool count_ok = verified_hdr.count == cp->utxo_count;
+        struct uss_utxo_component comp;
+        char cerr[256] = {0};
+        bool comp_ok =
+            uss_utxo_component_compute(h, &comp, cerr, sizeof(cerr));
         uss_close(h);
-        out->verified = count_ok;
+        bool sha3_ok = comp_ok && memcmp(comp.sha3_hash, cp->sha3_hash, 32) == 0;
+        bool count_ok = comp_ok && comp.count == cp->utxo_count;
+        out->sha3_match = sha3_ok;
+        out->count_match = count_ok;
+        out->verified = sha3_ok && count_ok;
         if (out->verified) {
             snprintf(out->verification, sizeof(out->verification),
                      "verified");
             snprintf(out->next_action, sizeof(out->next_action),
                      "run repro-on-copy with -refold-from-anchor and "
                      "CLIMB_PAST=%d", cp->height);
+        } else if (!comp_ok) {
+            snprintf(out->verification, sizeof(out->verification),
+                     "component_unreadable");
+            snprintf(out->error, sizeof(out->error), "%s",
+                     cerr[0] ? cerr : "coins-only component recompute failed");
+            snprintf(out->next_action, sizeof(out->next_action),
+                     "replace %s with a checkpoint-matching minted snapshot",
+                     out->path);
+        } else if (!sha3_ok) {
+            snprintf(out->verification, sizeof(out->verification),
+                     "sha3_mismatch");
+            snprintf(out->error, sizeof(out->error),
+                     "coins-only commitment does not match checkpoint");
+            snprintf(out->next_action, sizeof(out->next_action),
+                     "replace %s with a snapshot minted at checkpoint height %d",
+                     out->path, cp->height);
         } else {
             snprintf(out->verification, sizeof(out->verification),
                      "count_mismatch");

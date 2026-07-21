@@ -96,9 +96,14 @@ void anchor_selfmint_hook_in_tx(struct sqlite3 *db, const char *datadir,
 bool anchor_selfmint_resolve_path(const char *datadir, char *buf, size_t cap);
 
 /* Read-only readiness probe for the self-verified UTXO anchor rebuild. This is
- * the same predicate used before trusting a snapshot: stat the resolved
- * candidate, inspect its header, then call uss_open(verify_full_sha3=true,
- * expected_sha3=checkpoint). No coins_kv mutation. */
+ * the same predicate used before trusting a snapshot (and the same one
+ * boot_legacy_uss_matches_checkpoint applies on the cold path): stat the
+ * resolved candidate, inspect its header, uss_open(verify_full_sha3=true,
+ * expected_sha3=NULL) to bind the whole artifact to its own header hash, then
+ * uss_utxo_component_compute() to bind the COINS-ONLY commitment to the compiled
+ * checkpoint. This accepts a v1 (coins-only) OR v3 (coins+shielded) artifact —
+ * the checkpoint pins the coins commitment, never the v3 full-body hash. No
+ * coins_kv mutation. */
 bool anchor_selfmint_snapshot_status(const char *datadir,
                                      struct anchor_snapshot_status *out);
 
