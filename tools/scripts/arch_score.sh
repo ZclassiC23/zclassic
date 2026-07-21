@@ -135,7 +135,11 @@ printf '%s\n' "${ROWS[@]}" | sort -t/ -k1 -rn | while IFS='|' read -r sc slug no
   printf "  [%5s] %-28s %s  %s\n" "$sc" "$slug" "$mark" "$note"
 done
 echo "────────────────────────────────────────────────────────────────"
-echo "  CHASE NEXT: the ✗/◐ rows above, highest weight first."
-echo "  Full spec: docs/ARCHITECTURE_NORTH_STAR.md"
+# name the single highest-weight unfinished quest as the concrete next move
+NEXT=$(printf '%s\n' "${ROWS[@]}" | awk -F'|' '{split($1,a,"/"); if(a[1]<a[2]) print (a[2]-a[1])"\t"$2}' \
+        | sort -rn | head -1 | cut -f2)
+echo "  ▶ NEXT QUEST: ${NEXT:-none — 100/100, you win}"
+echo "  ▶ PLAY: docs/ARCH_QUEST_BOARD.md  (exact move + win-proof per quest)"
+echo "  ▶ RULES: don't edit this scorer to win; consensus frozen; copy-prove."
 # exit code = 100 - pct so CI/loops can gate on a threshold
 exit 0
