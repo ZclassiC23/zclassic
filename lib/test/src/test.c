@@ -1507,6 +1507,8 @@ int main(int argc, char **argv)
       failures += test_stage_anchor_frontier_cap(); }
     { extern int test_sapling_anchor_frontier_condition(void);
       failures += test_sapling_anchor_frontier_condition(); }
+    { extern int test_shielded_sync_strength(void);
+      failures += test_shielded_sync_strength(); }
     { extern int test_stage_repair_script_refill(void);
       failures += test_stage_repair_script_refill(); }
     { extern int test_stage_repair_tipfin_backfill(void);
