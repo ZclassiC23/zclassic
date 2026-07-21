@@ -7,6 +7,8 @@
 #include "json/json.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/reducer_frontier.h"
+/* src-private: the current-tip-missing observe helper under test (Task A #11). */
+#include "../../../app/jobs/src/tip_finalize_stage_observe.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -1943,6 +1945,34 @@ int test_tip_finalize_stage(void)
         TF_CHECK("seed_cold_import_row_gap: H+1 is the published tip",
                  tip_finalize_stage_last_height() == 4);
         tf_teardown(dir, &ms, &sc);
+    }
+
+    /* Task A #11 — current-tip-missing names a typed blocker. Previously this
+     * anomaly (the block finalize extends FROM resolvable from NEITHER the
+     * active-chain window, NOR the durable finalized-hash table, NOR the
+     * best-header ancestry) set only the internal g_blocked_class counter — no
+     * registry-visible blocker, so the stall-meta safety net could not see it.
+     * note_tip_missing now raises a TRANSIENT "tip_finalize.current_tip_missing"
+     * (height in reason), and the clear helper (called once old_tip resolves)
+     * removes it. */
+    {
+        blocker_clear("tip_finalize.current_tip_missing");
+        tip_finalize_observe_note_tip_missing(3162166);
+        struct blocker_snapshot sn[32];
+        int nn = blocker_snapshot_all(sn, 32);
+        bool found = false;
+        for (int k = 0; k < nn; k++) {
+            if (strcmp(sn[k].id, "tip_finalize.current_tip_missing") == 0) {
+                found = sn[k].class == BLOCKER_TRANSIENT &&
+                        strstr(sn[k].reason, "height=3162166") != NULL;
+                break;
+            }
+        }
+        TF_CHECK("tip_missing: note raises typed TRANSIENT blocker with height",
+                 found);
+        tip_finalize_observe_clear_tip_missing();
+        TF_CHECK("tip_missing: clear helper removes it on resolve",
+                 !blocker_exists("tip_finalize.current_tip_missing"));
     }
 
     printf("tip_finalize_stage tests: %s\n",

@@ -1731,6 +1731,51 @@ int test_validate_headers_stage(void)
 
         vh_teardown(dir, &ms, &sc);
     }
+
+    /* ── Task A #12: hash-mismatch recheck row with no repair pins the floor ──
+     * A "header-source-hash-mismatch" failed row whose repair table entry is
+     * NOT yet present is a recheck candidate but not recheck-ready. Before the
+     * fix its `continue` left first_unresolved unset, so when it was the ONLY
+     * selected recheck row the n==0 idle_floor jumped to validated_cursor —
+     * skipping the recheck PAST a height whose failed-row mask is still
+     * unrepaired. The floor must instead pin AT that unresolved height.
+     * Constructed with tip_finalize/body_fetch cursors at 0 so the durable-
+     * frontier anchor does not mask the in-process floor (frontier<=0 path). */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("recheck-floor-pin: setup",
+                 vh_setup("recheck_floor_pin", 5, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+
+        /* One unrepaired hash-mismatch row at h=2, no repair header seeded so
+         * vh_hash_mismatch_recheck_ready() stays false. validate cursor at 5
+         * makes it the only selectable recheck candidate; tip_finalize and
+         * body_fetch cursors left at 0 so frontier<=0 and start = the in-process
+         * floor (g_failure_recheck_cursor, reset to 0 on init). */
+        VH_CHECK("recheck-floor-pin: seed unrepaired hash-mismatch row at h=2",
+                 seed_failed_vh_row(db, 2, sc.blocks[2].phashBlock,
+                                    "header-source-hash-mismatch"));
+        VH_CHECK("recheck-floor-pin: set validate cursor to 5",
+                 set_stage_cursor(db, "validate_headers", 5));
+        VH_CHECK("recheck-floor-pin: floor starts at 0",
+                 validate_headers_stage_recheck_floor_for_test() == 0);
+
+        /* Forward step is IDLE (header_admit floor), so the recheck runs; the
+         * lone candidate is skipped (not repair-ready) → n==0 idle_floor. */
+        VH_CHECK("recheck-floor-pin: recheck holds (row not repair-ready)",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+
+        /* THE FIX: the floor is pinned at the still-unresolved height (2), NOT
+         * skipped forward to validated_cursor (5). Pre-fix this read 5, and the
+         * next pass would never revisit h=2 after its repair landed. */
+        VH_CHECK("recheck-floor-pin: floor pinned at unresolved height (2)",
+                 validate_headers_stage_recheck_floor_for_test() == 2);
+        VH_CHECK("recheck-floor-pin: floor did NOT skip to validated_cursor (5)",
+                 validate_headers_stage_recheck_floor_for_test() != 5);
+
+        vh_teardown(dir, &ms, &sc);
+    }
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

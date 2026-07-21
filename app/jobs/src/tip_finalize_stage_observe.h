@@ -38,6 +38,17 @@ void tip_finalize_observe_mark_blocked(
     enum tip_finalize_blocked_class cls);
 void tip_finalize_observe_note_cursor_gap(int next_h, uint64_t uv_cursor);
 void tip_finalize_observe_clear_cursor_gap(void);
+
+/* Current-tip-missing anomaly (Task A #11): the block AT next_h that finalize
+ * must extend FROM could not be resolved from the active-chain window, the
+ * durable finalized-hash table, OR the best-header ancestry — a genuine
+ * data-availability anomaly, not the healthy at-tip wait. Previously this set
+ * only the internal g_blocked_class counter; now it ALSO names a
+ * registry-visible TRANSIENT blocker so blocker_stall_meta_detector's safety
+ * net and `core sync blockers` see it. `_clear` is called once old_tip
+ * resolves. */
+void tip_finalize_observe_note_tip_missing(int next_h);
+void tip_finalize_observe_clear_tip_missing(void);
 void tip_finalize_observe_note_reorg_rewind(void);
 void tip_finalize_observe_record_precondition_block(int height,
                                                     const char *reason);

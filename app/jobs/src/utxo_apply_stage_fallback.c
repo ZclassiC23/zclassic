@@ -15,6 +15,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -28,6 +29,53 @@
 
 static struct { int64_t h; int64_t reason; uint64_t reps; }
     g_select_idle_warn = { .h = -1, .reason = UA_SELECT_IDLE_NONE };
+
+/* Registry-visible typed blocker for a REAL apply-candidate anomaly (as
+ * opposed to a legitimate window-lag wait). See the lane/stall-taxonomy audit
+ * (Task A): utxo_apply_select_apply_block returning NULL previously folded
+ * BOTH the legitimate backpressure classes (active-chain window lag,
+ * no-script-hash yet) AND the genuine anomalies (the block map / durable
+ * parent / on-disk body disagreeing with the height-keyed verdict) into one
+ * silent JOB_IDLE — no typed blocker, so the self-healing Conditions that key
+ * off the blocker registry never armed and only the generic 60 s
+ * reducer_drive_watchdog fired, naming nothing specific. The anomaly class now
+ * names THIS blocker so blocker_stall_meta_detector's safety net and
+ * `zclassic23 core sync blockers` both see the exact reason. TRANSIENT (mirror
+ * stage_body_read_hold): the candidate can become resolvable as the window /
+ * repair table catches up. */
+#define UA_APPLY_ANOMALY_BLOCKER_ID "utxo_apply.apply_candidate_anomaly"
+
+/* True iff `reason` is a GENUINE anomaly — the block map, the durable/visible
+ * parent, or the on-disk body actively DISAGREE with the ok-bound height-keyed
+ * verdict — rather than a legitimate wait for the active-chain window / repair
+ * table to catch up. Only anomalies name UA_APPLY_ANOMALY_BLOCKER_ID; the wait
+ * classes stay a silent hold (the pipeline is simply ahead of this stage). */
+static bool ua_select_idle_reason_is_anomaly(
+        enum utxo_apply_select_idle_reason reason)
+{
+    switch (reason) {
+    case UA_SELECT_IDLE_INDEXED_BODY_READ_FAILED:
+    case UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH:
+    case UA_SELECT_IDLE_BLOCK_MAP_MISS:
+    case UA_SELECT_IDLE_HEIGHT_MISMATCH:
+    case UA_SELECT_IDLE_PARENT_MISMATCH:
+        return true;
+    case UA_SELECT_IDLE_NONE:
+    case UA_SELECT_IDLE_NO_MAIN_STATE:
+    case UA_SELECT_IDLE_ACTIVE_CHAIN_MISSING:
+    case UA_SELECT_IDLE_ACTIVE_CHAIN_BODILESS:
+    case UA_SELECT_IDLE_NO_SCRIPT_HASH:
+    case UA_SELECT_IDLE_INDEXED_BODY_MISSING:
+    case UA_SELECT_IDLE_STAGE_READ_FAILED:
+        return false;
+    }
+    return false;
+}
+
+void utxo_apply_select_idle_blocker_clear(void)
+{
+    blocker_clear(UA_APPLY_ANOMALY_BLOCKER_ID);
+}
 
 const char *utxo_apply_select_idle_reason_name(
         enum utxo_apply_select_idle_reason reason)
@@ -68,6 +116,29 @@ void utxo_apply_select_idle_note(int height,
     atomic_fetch_add(&g_ua_select_idle_total, 1);
     atomic_store(&g_ua_select_idle_height, (int64_t)height);
     atomic_store(&g_ua_select_idle_reason, (int64_t)reason);
+
+    /* Split wait-reasons from anomaly-reasons (Task A). A genuine anomaly names
+     * a registry-visible TRANSIENT blocker every tick (blocker_set's token
+     * bucket dedups the re-fires); a legitimate wait clears it so a
+     * just-resolved anomaly does not leave a stale claim. Done BEFORE the WARN
+     * throttle below so the blocker is refreshed on the steady-state hold, not
+     * only on the first (changed) tick. */
+    if (ua_select_idle_reason_is_anomaly(reason)) {
+        char reason_buf[BLOCKER_REASON_MAX];
+        snprintf(reason_buf, sizeof(reason_buf),
+                 "height=%d reason=%s: the apply candidate could not be "
+                 "selected because the block map / durable-or-visible parent / "
+                 "on-disk body disagrees with the ok-bound height-keyed "
+                 "verdict (a REAL anomaly, not window lag); utxo_apply holds "
+                 "its cursor below this height until the disagreement resolves",
+                 height, utxo_apply_select_idle_reason_name(reason));
+        struct blocker_record rec;
+        if (blocker_init(&rec, UA_APPLY_ANOMALY_BLOCKER_ID, "utxo_apply",
+                         BLOCKER_TRANSIENT, reason_buf))
+            (void)blocker_set(&rec);
+    } else {
+        utxo_apply_select_idle_blocker_clear();
+    }
 
     bool changed = g_select_idle_warn.h != (int64_t)height ||
                    g_select_idle_warn.reason != (int64_t)reason;
@@ -220,8 +291,10 @@ struct block_index *utxo_apply_select_apply_block(
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, height);
-    if (bi && (bi->nStatus & BLOCK_HAVE_DATA))
+    if (bi && (bi->nStatus & BLOCK_HAVE_DATA)) {
+        utxo_apply_select_idle_blocker_clear();
         return bi;
+    }
 
     atomic_fetch_add(&g_ua_window_miss_total, 1);
     atomic_store(&g_ua_window_miss_height, (int64_t)height);
@@ -238,5 +311,6 @@ struct block_index *utxo_apply_select_apply_block(
 
     atomic_fetch_add(&g_ua_hash_bound_fallback_total, 1);
     atomic_store(&g_ua_hash_bound_fallback_height, (int64_t)height);
+    utxo_apply_select_idle_blocker_clear();
     return fallback;
 }

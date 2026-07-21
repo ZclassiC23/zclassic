@@ -31,6 +31,9 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+/* src-private: the select-idle reason enum + note fn under test (Task A #1). */
+#include "../../../app/jobs/src/utxo_apply_stage_internal.h"
+
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -2169,6 +2172,67 @@ int test_utxo_apply_stage(void)
 
         utxo_apply_batch_commit_reset_for_test();
         uv_teardown(dir, &ms, &sc);
+    }
+
+    /* Task A #1 — apply-candidate anomaly is split from legitimate window lag.
+     * utxo_apply_select_apply_block returning NULL used to fold BOTH classes
+     * into one silent JOB_IDLE with no typed blocker. Now a REAL anomaly
+     * (block map / durable-or-visible parent / on-disk body disagreeing with
+     * the ok-bound verdict) names "utxo_apply.apply_candidate_anomaly"
+     * (TRANSIENT, height in reason) so the safety net keyed off the blocker
+     * registry sees it; a legitimate wait clears the blocker. Exercised
+     * directly against utxo_apply_select_idle_note (the classification), which
+     * is what every NULL-return in select_apply_block routes through. */
+    {
+        blocker_clear("utxo_apply.apply_candidate_anomaly");
+
+        /* Each anomaly reason must raise the typed blocker. */
+        enum utxo_apply_select_idle_reason anomalies[] = {
+            UA_SELECT_IDLE_INDEXED_BODY_READ_FAILED,
+            UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH,
+            UA_SELECT_IDLE_BLOCK_MAP_MISS,
+            UA_SELECT_IDLE_HEIGHT_MISMATCH,
+            UA_SELECT_IDLE_PARENT_MISMATCH,
+        };
+        bool all_anom_raise = true;
+        for (size_t i = 0; i < sizeof(anomalies) / sizeof(anomalies[0]); i++) {
+            blocker_clear("utxo_apply.apply_candidate_anomaly");
+            utxo_apply_select_idle_note(4242 + (int)i, anomalies[i], NULL);
+            struct blocker_snapshot sn[32];
+            int nn = blocker_snapshot_all(sn, 32);
+            bool found = false;
+            for (int k = 0; k < nn; k++) {
+                if (strcmp(sn[k].id, "utxo_apply.apply_candidate_anomaly") == 0) {
+                    char needle[32];
+                    snprintf(needle, sizeof(needle), "height=%d", 4242 + (int)i);
+                    found = sn[k].class == BLOCKER_TRANSIENT &&
+                            strstr(sn[k].reason, needle) != NULL &&
+                            strstr(sn[k].reason,
+                                   utxo_apply_select_idle_reason_name(
+                                       anomalies[i])) != NULL;
+                    break;
+                }
+            }
+            if (!found) all_anom_raise = false;
+        }
+        UV_CHECK("candidate_anomaly: every anomaly reason names the typed "
+                 "TRANSIENT blocker with height + reason", all_anom_raise);
+
+        /* A legitimate wait-reason clears it (a just-resolved anomaly must not
+         * leave a stale claim behind). */
+        utxo_apply_select_idle_note(4242, UA_SELECT_IDLE_ACTIVE_CHAIN_MISSING,
+                                    NULL);
+        UV_CHECK("candidate_anomaly: window-lag wait clears the blocker",
+                 !blocker_exists("utxo_apply.apply_candidate_anomaly"));
+
+        /* The explicit clear helper (called on the success paths in
+         * utxo_apply_select_apply_block) is a no-op-safe clear. */
+        utxo_apply_select_idle_note(4242, UA_SELECT_IDLE_BLOCK_MAP_MISS, NULL);
+        UV_CHECK("candidate_anomaly: re-raised before clear helper",
+                 blocker_exists("utxo_apply.apply_candidate_anomaly"));
+        utxo_apply_select_idle_blocker_clear();
+        UV_CHECK("candidate_anomaly: clear helper removes it",
+                 !blocker_exists("utxo_apply.apply_candidate_anomaly"));
     }
 
     printf("utxo_apply_stage tests: %s\n", failures ? "FAILED" : "PASSED");
