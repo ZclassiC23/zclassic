@@ -297,6 +297,34 @@ void boot_install_bundle_clear(const char *datadir)
     (void)remove(path);
 }
 
+/* Reuse boot_refold_body_span_contiguous: after a successful install, if the
+ * local header chain already extends above the installed height (the Move 2
+ * self-heal case on an already-synced node), NAME any body gap in the
+ * fold-forward span so the reducer's body-fetch fills it rather than the fold
+ * silently stalling. Non-fatal — the install is durable; this only raises the
+ * typed blocker refold.body_gap so the stall is never silent. Extracted as its
+ * own entry point (contract in consensus_state_install_runtime.h) so the
+ * "catch the tail" wiring is directly unit-testable without a full bundle
+ * install. */
+void boot_post_install_fold_span_check(struct main_state *ms,
+                                       int32_t installed_height)
+{
+    if (!ms || installed_height < 0)
+        return;
+    int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
+    if (resume_target <= installed_height)
+        return; /* fresh install: no local advance yet — body_fetch resumes at
+                  * installed_height+1 and the tail arrives via normal P2P */
+    int32_t first_missing = -1;
+    if (!boot_refold_body_span_contiguous(ms, installed_height, resume_target,
+                                          &first_missing, /*raise_blocker=*/true))
+        LOG_WARN(ICB_SUBSYS,
+                 "post-install fold span (%d..%d] has a missing body at "
+                 "h=%d — named blocker refold.body_gap raised; the "
+                 "reducer's body-fetch fills it before the fold advances",
+                 installed_height, resume_target, first_missing);
+}
+
 /* ── The 1b + 1c orchestrator ──────────────────────────────────────────────── */
 
 bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
@@ -378,26 +406,10 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
         }
     }
 
-    /* Reuse boot_refold_body_span_contiguous: after a successful install, if the
-     * local header chain already extends above the installed height (the Move 2
-     * self-heal case on an already-synced node), NAME any body gap in the
-     * fold-forward span so the reducer's body-fetch fills it rather than the fold
-     * silently stalling. Non-fatal — the install is durable; this only raises the
-     * typed blocker refold.body_gap so the stall is never silent. */
-    if (installed && ms && installed_height >= 0) {
-        int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
-        if (resume_target > installed_height) {
-            int32_t first_missing = -1;
-            if (!boot_refold_body_span_contiguous(ms, installed_height,
-                                                  resume_target, &first_missing,
-                                                  /*raise_blocker=*/true))
-                LOG_WARN(ICB_SUBSYS,
-                         "post-install fold span (%d..%d] has a missing body at "
-                         "h=%d — named blocker refold.body_gap raised; the "
-                         "reducer's body-fetch fills it before the fold advances",
-                         installed_height, resume_target, first_missing);
-        }
-    }
+    /* Post-install "catch the tail" check — see boot_post_install_fold_span_
+     * check's contract above / in the header for the full rationale. */
+    if (installed)
+        boot_post_install_fold_span_check(ms, installed_height);
 
     return installed;
 }

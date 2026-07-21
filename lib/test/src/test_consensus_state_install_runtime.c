@@ -19,12 +19,28 @@
  *       consume (path matches, budget bumps) → clear → not pending, and the
  *       bounded budget marks TERMINAL after BOOT_INSTALL_BUNDLE_MAX attempts and
  *       is never re-armed.
+ *   (d) boot_post_install_fold_span_check — the "catch the tail" wiring reused
+ *       from boot_refold_body_span_contiguous after a successful install:
+ *       a fresh install with no local chain advance past installed_height is a
+ *       no-op (the common case: body_fetch resumes at installed_height+1 and
+ *       the tail arrives via normal P2P sync); a local chain that already
+ *       extends past installed_height with every body present (the Move 2
+ *       self-heal case) is ALSO a no-op (no false-positive blocker); a local
+ *       chain that extends past installed_height with a body GAP raises the
+ *       NAMED blocker refold.body_gap at the first missing height rather than
+ *       letting the fold walk silently into a hole; ms==NULL / negative
+ *       installed_height are safe no-ops.
  */
 
 #include "test/test_helpers.h"
 
+#include "chain/chain.h"
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h"
+#include "core/uint256.h"
+#include "util/blocker.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -226,6 +242,120 @@ static int case_durable_request(void)
     return failures;
 }
 
+/* (d) boot_post_install_fold_span_check — the post-install "catch the tail"
+ * wiring. Synthetic block_index construction mirrors
+ * test_refold_body_span_contiguous.c's bsc_install: heights are inserted via
+ * chainstate_insert_block_index and installed ascending with
+ * active_chain_install_tip_slot (each install accumulates lower slots; a
+ * skipped height or a have_data=false slot is the hole). No datadir, no disk
+ * block bodies — the gate reads only the BLOCK_HAVE_DATA bit. */
+#define CSIR_INSTALLED_H 5000
+
+static void csir_hash_for(int h, struct uint256 *out)
+{
+    memset(out->data, 0, 32);
+    out->data[0] = (uint8_t)(h & 0xFF);
+    out->data[1] = (uint8_t)((h >> 8) & 0xFF);
+    out->data[31] = 0xc7;
+}
+
+static bool csir_install(struct main_state *ms, int height, bool have_data)
+{
+    struct uint256 h;
+    csir_hash_for(height, &h);
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, &h);
+    if (!bi)
+        return false;
+    bi->nHeight = height;
+    bi->nStatus = BLOCK_VALID_TREE | (have_data ? BLOCK_HAVE_DATA : 0);
+    bi->nFile = have_data ? 0 : -1;
+    bi->nDataPos = 0;
+    return active_chain_install_tip_slot(&ms->chain_active, bi);
+}
+
+static int case_post_install_fold_span_check(void)
+{
+    int failures = 0;
+
+    /* (d1) ms==NULL is a safe no-op — no crash, no blocker. */
+    blocker_reset_for_testing();
+    boot_post_install_fold_span_check(NULL, CSIR_INSTALLED_H);
+    CSIR_CHECK("fold-span-check: ms==NULL is a safe no-op",
+               !blocker_exists("refold.body_gap"));
+
+    /* (d2) installed_height<0 is a safe no-op even with a real ms. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        blocker_reset_for_testing();
+        boot_post_install_fold_span_check(&ms, -1);
+        CSIR_CHECK("fold-span-check: installed_height<0 is a safe no-op",
+                   !blocker_exists("refold.body_gap"));
+        main_state_free(&ms);
+    }
+
+    /* (d3) Fresh install, no local advance past installed_height yet (the
+     * common case: only the checkpoint height itself is on the local chain) —
+     * a no-op. body_fetch simply resumes at installed_height+1 and pulls the
+     * tail via normal P2P; nothing local to check yet. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        CSIR_CHECK("fold-span-check: seed only the checkpoint height",
+                   csir_install(&ms, CSIR_INSTALLED_H, true));
+        blocker_reset_for_testing();
+        boot_post_install_fold_span_check(&ms, CSIR_INSTALLED_H);
+        CSIR_CHECK("fold-span-check: no local advance -> no-op, no blocker",
+                   !blocker_exists("refold.body_gap"));
+        main_state_free(&ms);
+    }
+
+    /* (d4) Local chain already extends past installed_height with EVERY body
+     * present (the Move 2 self-heal case on an already-synced node) — passes,
+     * no false-positive blocker. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        bool seeded = true;
+        for (int h = CSIR_INSTALLED_H; h <= CSIR_INSTALLED_H + 10; h++)
+            seeded = seeded && csir_install(&ms, h, /*have_data=*/true);
+        CSIR_CHECK("fold-span-check: self-heal chain (contiguous) installed",
+                   seeded);
+        blocker_reset_for_testing();
+        boot_post_install_fold_span_check(&ms, CSIR_INSTALLED_H);
+        CSIR_CHECK("fold-span-check: contiguous tail -> no-op, no blocker",
+                   !blocker_exists("refold.body_gap"));
+        main_state_free(&ms);
+    }
+
+    /* (d5) Local chain extends past installed_height but a body is MISSING
+     * partway through the span — the NAMED blocker refold.body_gap fires
+     * (never a silent fold-into-a-hole); the reducer's body_fetch (already
+     * resuming at installed_height+1 via the forced stage cursors) is named
+     * as the dependency that fills it. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        const int hole = CSIR_INSTALLED_H + 4;
+        bool seeded = true;
+        for (int h = CSIR_INSTALLED_H; h <= CSIR_INSTALLED_H + 10; h++)
+            seeded = seeded && csir_install(&ms, h, /*have_data=*/(h != hole));
+        CSIR_CHECK("fold-span-check: self-heal chain with one body hole "
+                   "installed", seeded);
+        blocker_reset_for_testing();
+        boot_post_install_fold_span_check(&ms, CSIR_INSTALLED_H);
+        CSIR_CHECK("fold-span-check: body gap -> NAMED blocker refold.body_gap "
+                   "raised", blocker_exists("refold.body_gap"));
+        CSIR_CHECK("fold-span-check: blocker class is DEPENDENCY",
+                   blocker_class_for("refold.body_gap") == BLOCKER_DEPENDENCY);
+        main_state_free(&ms);
+        blocker_reset_for_testing();
+    }
+
+    return failures;
+}
+
 int test_consensus_state_install_runtime(void)
 {
     printf("\n=== consensus_state_install_runtime ===\n");
@@ -233,6 +363,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_autodetect();
     failures += case_runtime_returns();
     failures += case_durable_request();
+    failures += case_post_install_fold_span_check();
     printf("=== consensus_state_install_runtime: %d failure(s) ===\n", failures);
     return failures;
 }
