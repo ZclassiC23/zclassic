@@ -89,6 +89,22 @@ bool rom_fetch_manifest_sane(const struct rom_fetch_manifest *m);
 int rom_fetch_parse_directory(const char *json_body,
                               struct rom_fetch_manifest *out, size_t max);
 
+/* Fetch a peer's directory listing over the file-service wire (the "RLS"
+ * request) into `buf` (NUL-terminated on success, bounded by `cap`). The reply
+ * is the same {"artifacts":[...]} body the onion /directory.json path serves —
+ * feed it straight to rom_fetch_parse_directory / boot_bundle_pick_manifest.
+ * This is the clearnet counterpart of the onion directory fetch: a fresh node
+ * with an empty datadir uses it to discover WHO seeds WHAT with zero operator
+ * input. Transport-MAC-verified against an "RLS"-tagged MAC; the manifest
+ * digests inside remain untrusted (trust binds only at install). Returns false
+ * (a clean skip-discovery signal, not a peer offence) on connect/handshake/
+ * transport/MAC failure or an implausible/over-cap reply — e.g. a legacy seeder
+ * that does not know RLS replies FS_DONE, which surfaces here as a size-cap or
+ * read failure. One short-lived connection per call; fast (15 s) recv timeout so
+ * an unaware seeder falls back promptly. */
+bool rom_fetch_get_directory(const char *peer_addr, uint16_t port,
+                             char *buf, size_t cap);
+
 /* ── Verified chunk fetch ───────────────────────────────────────────── */
 
 /* Fetch chunk `idx` of the artifact keyed by `chunk_root` from

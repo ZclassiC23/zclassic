@@ -71,13 +71,27 @@ bool boot_bundle_fetch_download(const char *datadir,
                                 const struct rom_fetch_manifest *m);
 
 /* The production entry point wired into boot_select_state_source (before the
- * autodetect+install). Runs boot_bundle_fetch_should_run; reads the manifest
- * commitment at <datadir>/bundles/directory.json (the publisher's small,
- * auditable /directory.json — the big bytes are swarmed + verified against it);
- * assembles the file-service seed set from ctx (ctx->file_service_peer, which
- * may carry a host[:port], plus the hardcoded clearnet file-service seeds unless
- * ctx->connect_only); and downloads. Best-effort: any miss returns false and
- * boot proceeds unchanged. Returns true iff a verified bundle landed this boot. */
+ * autodetect+install). Runs boot_bundle_fetch_should_run; assembles the
+ * file-service seed set from ctx (ctx->file_service_peer, which may carry a
+ * host[:port], plus the hardcoded clearnet file-service seeds unless
+ * ctx->connect_only); then obtains the manifest commitment. It prefers a LOCAL
+ * <datadir>/bundles/directory.json (an operator hint, or one a prior discovery
+ * persisted); when that is absent — the truly fresh node — it DISCOVERS the
+ * manifest from the seed set over the file-service "RLS" wire, requiring >=2
+ * independent seeds to return a byte-identical (chunk_root, whole_sha3, size)
+ * triple before trusting it (quorum=1 accepted only for the operator's explicit
+ * -fileservice seed), persisting the winner as the local hint, then downloads.
+ * The big bytes are always swarmed + content-verified against the committed
+ * manifest, and the install path binds the result to the compiled checkpoint.
+ * Best-effort: any miss returns false and boot proceeds unchanged (P2P IBD).
+ * Returns true iff a verified bundle landed this boot. */
 bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx);
+
+#ifdef ZCL_TESTING
+/* Test surface (implemented in config/src/boot_bundle_fetch.c). */
+bool boot_bundle_manifest_facts_ok_for_test(const struct rom_fetch_manifest *m);
+int  boot_bundle_quorum_pick_for_test(const int *counts, const bool *has_explicit,
+                                      size_t ncand);
+#endif
 
 #endif /* ZCL_CONFIG_BOOT_BUNDLE_FETCH_H */

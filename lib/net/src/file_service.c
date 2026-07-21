@@ -704,6 +704,16 @@ bool fs_parse_rom_manifest_request(const uint8_t *payload, uint32_t plen,
     return true;
 }
 
+/* ROM directory-listing request (RLS) — pure/testable sibling of
+ * fs_parse_rom_request. body = ["RLS"(3)], no root: the directory is a
+ * whole-node catalog, not per-artifact. */
+bool fs_parse_rom_list_request(const uint8_t *payload, uint32_t plen)
+{
+    if (!payload || plen < FS_ROM_LIST_REQUEST_SIZE)
+        return false;
+    return memcmp(payload, "RLS", 3) == 0;
+}
+
 enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
                                         const uint8_t peer_token[32],
                                         uint8_t out_seed[32], int *out_bits,
@@ -1047,6 +1057,70 @@ static void fs_serve_rom_manifest(struct fs_session *session,
     rom_seed_peer_release(client_ip);
 }
 
+/* Domain-separation tag bound into a ROM directory-listing reply's MAC —
+ * "RLS" + zero padding, distinct from the chunk (per-chunk sha3) and manifest
+ * ("RMF") tags so a listing blob is un-confusable with either on the wire. The
+ * client (rom_fetch_get_directory) re-derives the identical MAC. */
+static const uint8_t FS_ROM_LIST_MAC_TAG[32] = { 'R', 'L', 'S' };
+
+/* Buffers for the artifact catalog: at most ROM_SEED_MAX_ARTIFACTS (8) small
+ * entries (~200 B each) from rom_seed_directory_json, wrapped in the
+ * {"artifacts":[...]} object rom_fetch_parse_directory consumes. */
+#define FS_ROM_LIST_ARTS_MAX  2560u
+#define FS_ROM_LIST_BODY_MAX  (FS_ROM_LIST_ARTS_MAX + 64u)
+
+/* Serve one FREE ROM directory listing ("RLS" request). Rides the same
+ * fs_session transport and the same rom_seed per-peer concurrency + byte-rate
+ * caps as a chunk/manifest serve — never the PoW/ALL gate. Reply is
+ * [4-byte size LE][body][32-byte MAC] with the body =
+ * {"artifacts":<rom_seed_directory_json>} — the exact shape the onion
+ * /directory.json path serves and rom_fetch_parse_directory parses. On any
+ * refusal (seeding disabled, conn budget/concurrency/rate cap tripped, body
+ * overflow) it sends FS_DONE — identical offence handling to a malformed ROM
+ * chunk request (a legacy client reads the FS_DONE as "no listing" and skips
+ * discovery). */
+static void fs_serve_rom_list(struct fs_session *session,
+                              const uint8_t client_ip[16])
+{
+    if (!rom_seed_enabled()) {
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!fs_conn_budget_ok(session->bytes_sent, session->start_time,
+                           (int64_t)platform_time_wall_time_t())) {
+        fs_gate_log_throttled("rom_list_conn_budget_exceeded", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!rom_seed_peer_acquire(client_ip)) {
+        fs_gate_log_throttled("rom_list_concurrency_refused", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+
+    char arts[FS_ROM_LIST_ARTS_MAX];
+    size_t an = rom_seed_directory_json(arts, sizeof(arts));
+    char body[FS_ROM_LIST_BODY_MAX];
+    int bn = snprintf(body, sizeof(body), "{\"artifacts\":%s}",
+                      an > 0 ? arts : "[]");
+    if (bn <= 0 || (size_t)bn >= sizeof(body)) {
+        rom_seed_peer_release(client_ip);
+        fs_gate_log_throttled("rom_list_body_overflow", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    if (!rom_seed_rate_charge(client_ip, (size_t)bn,
+                              (int64_t)platform_time_wall_time_t())) {
+        rom_seed_peer_release(client_ip);
+        fs_gate_log_throttled("rom_list_rate_exceeded", 0);
+        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        return;
+    }
+    (void)fs_send_chunk_fast(session, (const uint8_t *)body, (uint32_t)bn,
+                             FS_ROM_LIST_MAC_TAG);
+    rom_seed_peer_release(client_ip);
+}
+
 /* Per-client handler run on a bounded worker pool. */
 static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
 {
@@ -1103,6 +1177,13 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
             uint8_t rmf_root[32];
             if (fs_parse_rom_manifest_request(payload, plen, rmf_root)) {
                 fs_serve_rom_manifest(&session, client_ip, rmf_root);
+                continue;
+            }
+            /* ROM directory-listing request (RLS) — serve the artifact catalog
+             * so a fresh clearnet node can discover the bundle manifest without
+             * the onion path; same rom_seed caps as chunk/manifest serving. */
+            if (fs_parse_rom_list_request(payload, plen)) {
+                fs_serve_rom_list(&session, client_ip);
                 continue;
             }
         }
