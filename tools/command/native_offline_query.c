@@ -23,6 +23,7 @@
 
 #include "command/native_command.h"
 
+#include "chain/chainparams.h"
 #include "controllers/diagnostics_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
@@ -174,6 +175,17 @@ void zcl_native_handle_core_sync_frontier_offline(
                                kernel_path);
         return;
     }
+
+    /* A one-shot native CLI process has no app_init(): reducer_frontier_
+     * compute_hstar() reads the compiled anchor via chain_params_get(),
+     * which asserts pCurrentParams non-NULL — fatal if nothing ever called
+     * chain_params_select() (the RPC bridge path selects it in
+     * bridge_ensure_rpc_client(); this OFFLINE_COPY path never goes through
+     * the bridge, so it must select for itself). Idempotent — safe even if
+     * something upstream already selected. Mainnet-only: the offline-copy
+     * story targets mainnet datadirs; a testnet/regtest copy would need a
+     * network hint this leaf does not yet accept. */
+    chain_params_select(CHAIN_MAIN);
 
     /* Refresh the process-wide refold-in-progress cache from THIS datadir's
      * OWN persisted progress_meta before folding — without this the cache
