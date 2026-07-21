@@ -34,19 +34,41 @@
  * This is the load-bearing safety property, pinned by test_catchup_cadence:
  * normal mode MUST stay batch=<stage default>.
  *
- * NO TICK-PERIOD OVERRIDE is exposed here on purpose — see the module
- * comment above. Widening the per-drain batch only widens the commit window
- * of the existing per-batch SAVEPOINT/BEGIN IMMEDIATE (one COMMIT per 500
- * instead of per 100); correctness is unchanged and a crash resumes
- * idempotently from the last durable cursor, same as always. The bounded
- * risk is one run_due_ticks() pass taking longer wall-clock while active:
+ * Widening the per-drain batch only widens the commit window of the
+ * existing per-batch SAVEPOINT/BEGIN IMMEDIATE (one COMMIT per 500 instead
+ * of per 100); correctness is unchanged and a crash resumes idempotently
+ * from the last durable cursor, same as always. The bounded risk is one
+ * run_due_ticks() pass taking longer wall-clock while active:
  * Σ(500 * per-block cost) over the 4 tail stages, with utxo_apply the
  * slowest at ~0.2-1.4ms/block, so ~500 * ~1ms ~= 0.5s per stage — well
  * under the multi-minute quiet windows other supervisor domains tolerate.
  *
+ * TICK-PERIOD OVERRIDE — catchup_cadence_tick_period_us() — shortens the
+ * PER-CHILD tick period for the eight staged-sync children ONLY, from the
+ * shared 2s default down to 1s (clamped [1000,2000] ms), while
+ * catchup_cadence_active() holds. This looked unsafe in an earlier revision
+ * of this comment ("shortening the period would starve everything else")
+ * but that concern was about lowering the GLOBAL supervisor sweep wake
+ * (g_tick_ms, supervisor_request_min_tick_ms() in lib/util/src/supervisor.c
+ * — monotonic-DOWN-only, NEVER touched by this module). A per-child
+ * `period_us` is a completely different knob (lib/util/src/supervisor.c's
+ * sweep: `period_window_us = period_us > 0 ? period_us : period_secs *
+ * 1000000`) — it only changes how often THIS child's on_tick is marked due;
+ * every other supervisor child keeps its own period untouched. The sweep's
+ * default wake (g_tick_ms) is already 1000ms, i.e. >= our 1s floor, so a
+ * 1s-2s per-child period needs no change to the global wake at all — unlike
+ * refold_cadence's 250ms period, which genuinely does need
+ * supervisor_request_min_tick_ms() to fire on time. Doubling the per-child
+ * tick rate roughly doubles catch-up throughput on top of the drain-batch
+ * widening above (2 * ~250 blk/s ceiling -> ~500 blk/s), still gated
+ * entirely on catchup_cadence_active() so a normal at-tip node is
+ * byte-for-byte unchanged (period_us resets to 0 the instant the cadence
+ * deactivates — see staged_sync_supervisor.c's staged_stage_tick).
+ *
  * TUNABLE (only while active):
- *   ZCL_CATCHUP_GAP_THRESHOLD  blocks   default  500  clamp [1,100000000]
- *   ZCL_CATCHUP_DRAIN_BATCH    blocks   default  500  clamp [1,1000000]
+ *   ZCL_CATCHUP_GAP_THRESHOLD  blocks   default  500   clamp [1,100000000]
+ *   ZCL_CATCHUP_DRAIN_BATCH    blocks   default  500   clamp [1,1000000]
+ *   ZCL_CATCHUP_TICK_MS        ms       default  1000  clamp [1000,2000]
  */
 
 #ifndef ZCL_JOBS_CATCHUP_CADENCE_H
@@ -61,6 +83,7 @@
  * magic number. */
 #define CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH 500
 #define CATCHUP_CADENCE_DEFAULT_GAP_THRESHOLD 500
+#define CATCHUP_CADENCE_DEFAULT_TICK_MS 1000
 
 /* True iff the node has connected peers AND is at least
  * ZCL_CATCHUP_GAP_THRESHOLD blocks behind the max peer-reported height.
@@ -73,6 +96,13 @@ bool catchup_cadence_active(void);
 /* Per-stage drain batch. Returns `normal_batch` UNCHANGED when inactive;
  * when active, returns ZCL_CATCHUP_DRAIN_BATCH (default 500, clamped). */
 int catchup_cadence_drain_batch(int normal_batch);
+
+/* Per-child supervisor tick period in microseconds. Returns 0 when inactive
+ * (=> the caller uses its normal period_secs, unchanged); when active,
+ * returns ZCL_CATCHUP_TICK_MS * 1000 (default 1000ms, clamped [1000,2000]).
+ * See the TICK-PERIOD OVERRIDE section above for why this is safe without
+ * touching the global supervisor min-tick. */
+int64_t catchup_cadence_tick_period_us(void);
 
 #ifdef ZCL_TESTING
 /* Force the log_head (tip_finalize) cursor reader to return `v` instead of

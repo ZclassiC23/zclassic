@@ -46,6 +46,7 @@ static void cc_clear_env(void)
 {
     unsetenv("ZCL_CATCHUP_DRAIN_BATCH");
     unsetenv("ZCL_CATCHUP_GAP_THRESHOLD");
+    unsetenv("ZCL_CATCHUP_TICK_MS");
 }
 
 static void cc_reset(struct connman *cm)
@@ -88,6 +89,9 @@ static int case_no_peers_inert(void)
     CC_CHECK("no peers: not active", !catchup_cadence_active());
     CC_CHECK("no peers: batch 100 unchanged", catchup_cadence_drain_batch(100) == 100);
     CC_CHECK("no peers: batch 64 unchanged", catchup_cadence_drain_batch(64) == 64);
+    /* The critical pin: inactive -> tick period 0 (caller keeps its
+     * unmodified 2s period_secs, byte-identical at tip). */
+    CC_CHECK("no peers: tick period 0", catchup_cadence_tick_period_us() == 0);
 
     cc_cleanup();
     return failures;
@@ -113,10 +117,16 @@ static int case_small_gap_inert(void)
     CC_CHECK("small gap: not active", !catchup_cadence_active());
     CC_CHECK("small gap: batch 100 unchanged", catchup_cadence_drain_batch(100) == 100);
     CC_CHECK("small gap: batch 500 unchanged", catchup_cadence_drain_batch(500) == 500);
+    CC_CHECK("small gap: tick period 0", catchup_cadence_tick_period_us() == 0);
 
     setenv("ZCL_CATCHUP_DRAIN_BATCH", "9999", 1);
     CC_CHECK("small gap: drain-batch env ignored while inactive",
              catchup_cadence_drain_batch(100) == 100);
+    cc_clear_env();
+
+    setenv("ZCL_CATCHUP_TICK_MS", "1500", 1);
+    CC_CHECK("small gap: tick-ms env ignored while inactive",
+             catchup_cadence_tick_period_us() == 0);
     cc_clear_env();
 
     cc_cleanup();
@@ -138,6 +148,8 @@ static int case_gap_just_under_threshold_inert(void)
     CC_CHECK("gap 499 < threshold 500: not active", !catchup_cadence_active());
     CC_CHECK("gap 499 < threshold 500: batch unchanged",
              catchup_cadence_drain_batch(100) == 100);
+    CC_CHECK("gap 499 < threshold 500: tick period 0",
+             catchup_cadence_tick_period_us() == 0);
 
     cc_cleanup();
     return failures;
@@ -160,6 +172,21 @@ static int case_active_when_gap_exceeds_threshold(void)
              catchup_cadence_drain_batch(100) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
     CC_CHECK("active: default batch applies regardless of caller's arg",
              catchup_cadence_drain_batch(64) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
+    CC_CHECK("active: default tick period 1,000,000us (1s)",
+             catchup_cadence_tick_period_us() ==
+                 (int64_t)CATCHUP_CADENCE_DEFAULT_TICK_MS * 1000);
+
+    /* Env override + clamp [1000,2000] ms. */
+    setenv("ZCL_CATCHUP_TICK_MS", "1500", 1);
+    CC_CHECK("active: env tick period 1500ms",
+             catchup_cadence_tick_period_us() == (int64_t)1500 * 1000);
+    setenv("ZCL_CATCHUP_TICK_MS", "1", 1); /* below floor -> clamp to 1000 */
+    CC_CHECK("active: tick period clamp low (1000ms floor)",
+             catchup_cadence_tick_period_us() == (int64_t)1000 * 1000);
+    setenv("ZCL_CATCHUP_TICK_MS", "999999", 1); /* above ceiling -> 2000 */
+    CC_CHECK("active: tick period clamp high (2000ms ceiling)",
+             catchup_cadence_tick_period_us() == (int64_t)2000 * 1000);
+    cc_clear_env();
 
     /* Exactly AT the threshold (gap == 500) also activates (>=, not >). */
     catchup_cadence_test_set_log_head_override(500); /* gap = 500 */
@@ -205,12 +232,17 @@ static int case_active_then_restore(void)
     CC_CHECK("restore: active before catch-up", catchup_cadence_active());
     CC_CHECK("restore: batch 500 while active",
              catchup_cadence_drain_batch(100) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
+    CC_CHECK("restore: tick period 1s while active",
+             catchup_cadence_tick_period_us() ==
+                 (int64_t)CATCHUP_CADENCE_DEFAULT_TICK_MS * 1000);
 
     /* Backlog drains: log_head catches up to network_tip. */
     catchup_cadence_test_set_log_head_override(1000); /* gap = 0 */
     CC_CHECK("restore: not active once caught up", !catchup_cadence_active());
     CC_CHECK("restore: batch 100 unchanged once caught up",
              catchup_cadence_drain_batch(100) == 100);
+    CC_CHECK("restore: tick period resets to 0 once caught up",
+             catchup_cadence_tick_period_us() == 0);
 
     /* Peers then disconnect entirely: still inert. */
     catchup_cadence_test_set_log_head_override(0);
@@ -219,6 +251,8 @@ static int case_active_then_restore(void)
              !catchup_cadence_active());
     CC_CHECK("restore: batch unchanged with no peers",
              catchup_cadence_drain_batch(100) == 100);
+    CC_CHECK("restore: tick period 0 with no peers",
+             catchup_cadence_tick_period_us() == 0);
 
     cc_cleanup();
     return failures;
