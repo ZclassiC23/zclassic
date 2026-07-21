@@ -8,7 +8,17 @@
  * invariant, never a new repair rung" — this file is the standing proof
  * that both halves of that doctrine hold. No production .c changes.
  *
- * Three groups:
+ * Four groups:
+ *
+ *   G4 never-wedge — the mission property end-to-end across TWO real
+ *      production layers (staged_sync_supervisor.c + blocker_stall_meta_
+ *      detector.c) with no mocks: a frozen reducer stage escalates into the
+ *      exact typed `stage_stalled_*` blocker the generic always-terminating
+ *      backstop detects, remedies (arms the recovery ladder + pages naming
+ *      the offender), and witnesses to a terminal verdict on an H* climb —
+ *      and the supervisor's own falling edge clears the blocker when the
+ *      stage resumes. Proves "a stall is ALWAYS a named blocker whose remedy
+ *      runs to a terminal verdict; a silent halt is unrepresentable."
  *
  *   G1 stage_rederive_range — the universal primitive. Design-only on this
  *      branch (§0c names it `stage_rederive_range(db, ms, lowest_stage,
@@ -55,14 +65,17 @@
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
+#include "conditions/blocker_stall_meta_detector.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "json/json.h"
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
+#include "supervisors/staged_sync_supervisor.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -70,6 +83,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ASH_CHECK(name, expr) do { \
@@ -784,6 +798,175 @@ static int ash_test_lcc_refuses_incoherent_raise(void)
     return failures;
 }
 
+/* ── G4 — a stalled stage becomes a named blocker the backstop cures ──────
+ * The mission property end-to-end, through TWO real production layers with
+ * ZERO mocks: a frozen reducer stage escalates into the exact typed blocker
+ * (staged_sync_supervisor.c) that the generic always-terminating backstop
+ * (blocker_stall_meta_detector.c) detects, remedies, and witnesses to a
+ * terminal verdict. test_supervisor_production_tree.c proves the supervisor's
+ * escalation/clear in isolation and test_blocker_meta_detector.c proves the
+ * backstop on a SYNTHETIC `fixture.empty_escape` blocker; neither proves the
+ * two halves compose on the ACTUAL `stage_stalled_*` blocker the production
+ * supervisor emits. This does — closing the "silent halt" gap end to end:
+ *   detect (stall) -> name (typed blocker at a known height) -> remedy runs
+ *   (recovery ladder armed) -> witness (H* climbs) -> terminal verdict, and
+ *   the supervisor's own falling edge clears the blocker when progress
+ *   resumes (no ghost fact outliving the stall). */
+
+/* Read the meta-detector's detail-dumped first_offender_id from the real
+ * engine state dump — the name the operator page carries. "" when absent. */
+static const char *ash_meta_offender(struct json_value *dump)
+{
+    const struct json_value *conds = json_get(dump, "conditions");
+    if (!conds)
+        return "";
+    for (size_t i = 0; i < json_size(conds); i++) {
+        const struct json_value *c = json_at(conds, i);
+        const struct json_value *n = c ? json_get(c, "name") : NULL;
+        if (!n || strcmp(json_get_str(n),
+                         BLOCKER_STALL_META_CONDITION_NAME) != 0)
+            continue;
+        const struct json_value *d = json_get(c, "detail");
+        const struct json_value *o = d ? json_get(d, "first_offender_id") : NULL;
+        return o ? json_get_str(o) : "";
+    }
+    return "";
+}
+
+/* Find our blocker in a fresh snapshot; returns false if absent. */
+static bool ash_snap_blocker(const char *id, struct blocker_snapshot *out)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].id, id) == 0) {
+            *out = snaps[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+static int ash_test_stall_named_blocker_cured(void)
+{
+    int failures = 0;
+    printf("\n--- G4: never-wedge — a stalled stage is named + backstop-cured ---\n");
+
+    blocker_module_init();
+    condition_engine_reset_for_testing();
+    blocker_reset_for_testing();
+    reducer_frontier_provable_tip_reset();
+    sticky_escalator_test_reset();
+    blocker_stall_meta_detector_test_reset();
+
+    /* Pin M=2 so the escalation boundary is deterministic regardless of any
+     * ambient ZCL_STAGE_STALL_ESCALATE_WINDOWS in the environment. */
+    setenv("ZCL_STAGE_STALL_ESCALATE_WINDOWS", "2", 1);
+    const int64_t window = staged_sync_supervisor_test_quiet_window_us();
+    const char *BID = "stage_stalled_utxo_apply";
+    const uint64_t frozen_cursor = 3176325;   /* the documented live wedge H* */
+    const uint64_t upstream_cursor = frozen_cursor + 50;
+    bool escalated = false;
+
+    /* ── Grace: below the M-window threshold names nothing (no premature
+     * page for a legitimately-idle stage). ─────────────────────────────── */
+    staged_sync_supervisor_test_apply_stall_escalation(
+        "staged.utxo_apply", "staged.proof_validate", frozen_cursor,
+        upstream_cursor, /*have_upstream=*/true, /*quiet_us=*/window - 1,
+        &escalated);
+    ASH_CHECK("G4: 1 quiet window (< M=2) does not escalate — no premature page",
+             !escalated && !blocker_exists(BID));
+
+    /* ── Stall: M windows of a frozen cursor NAME a typed blocker at a known
+     * height — the "silent halt" is now impossible by construction. ────── */
+    staged_sync_supervisor_test_apply_stall_escalation(
+        "staged.utxo_apply", "staged.proof_validate", frozen_cursor,
+        upstream_cursor, /*have_upstream=*/true, /*quiet_us=*/2 * window + 1,
+        &escalated);
+    ASH_CHECK("G4: 2 quiet windows (>= M=2) NAME the typed blocker", escalated);
+
+    struct blocker_snapshot bs;
+    bool have = ash_snap_blocker(BID, &bs);
+    ASH_CHECK("G4: the stall is a real registry-visible typed blocker", have);
+    /* The named blocker states the exact frozen height (never a metaphor). */
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%llu", (unsigned long long)frozen_cursor);
+    ASH_CHECK("G4: the blocker reason names the frozen cursor height",
+             have && strstr(bs.reason, needle) != NULL);
+    ASH_CHECK("G4: the blocker names its upstream stage (known dataflow point)",
+             have && strstr(bs.reason, "proof_validate") != NULL);
+    /* It is exactly the class the meta-detector backstops: TRANSIENT + empty
+     * escape_action. This is what ties the supervisor to the always-
+     * terminating remedy below. */
+    ASH_CHECK("G4: blocker is TRANSIENT with an EMPTY escape_action "
+             "(the exact class the meta-detector backstops)",
+             have && bs.class == BLOCKER_TRANSIENT &&
+             bs.escape_action[0] == '\0');
+
+    /* ── Remedy RUNS: the generic backstop detects THIS production blocker
+     * (not a synthetic fixture), arms the always-terminating recovery ladder,
+     * and pages naming the offender. H* is held frozen at the stall height. */
+    reducer_frontier_provable_tip_set((int32_t)frozen_cursor);
+    register_blocker_stall_meta_detector();
+    ASH_CHECK("G4: backstop condition registered in the engine",
+             condition_engine_has_registered(BLOCKER_STALL_META_CONDITION_NAME));
+
+    const int64_t t0 = 1000000;
+    blocker_stall_meta_detector_test_set_clock_us(t0);
+    condition_engine_tick();      /* prime: first H* sample stamps the window */
+    ASH_CHECK("G4: no fire before the frozen-H* window elapses",
+             condition_engine_get_active_count() == 0 &&
+             !sticky_escalator_test_armed());
+
+    const int64_t meta_win_us = (int64_t)BLOCKER_STALL_META_DEFAULT_SECS * 1000000;
+    blocker_stall_meta_detector_test_set_clock_us(t0 + meta_win_us + 1000000);
+    for (int i = 0; i < 8; i++) {
+        blocker_stall_meta_detector_test_clear_cadence();
+        condition_engine_tick();
+    }
+    ASH_CHECK("G4: backstop DETECTED the stall (condition active)",
+             condition_engine_get_active_count() == 1);
+    ASH_CHECK("G4: the always-terminating recovery ladder is ARMED "
+             "(remedy actually ran)",
+             sticky_escalator_test_armed() &&
+             blocker_stall_meta_detector_test_remedy_calls() >= 1);
+
+    struct json_value dump;
+    json_init(&dump);
+    json_set_object(&dump);
+    ASH_CHECK("G4: the operator page names the production blocker id",
+             condition_engine_dump_state_json(&dump, NULL) &&
+             strcmp(ash_meta_offender(&dump), BID) == 0);
+    json_free(&dump);
+
+    /* ── Terminal verdict: H* climbing past the frozen height is the sole
+     * clear-edge; the episode resolves (never latches on a recoverable
+     * cause). ─────────────────────────────────────────────────────────── */
+    reducer_frontier_provable_tip_set((int32_t)frozen_cursor + 1);
+    condition_engine_tick();
+    ASH_CHECK("G4: H* climb witnesses the backstop clear (terminal verdict)",
+             condition_engine_get_active_count() == 0 &&
+             condition_engine_get_unresolved_count() == 0);
+
+    /* ── The supervisor's own falling edge: once the stage advances, the
+     * typed blocker is CLEARED — a named blocker is never a ghost fact that
+     * outlives the stall. ─────────────────────────────────────────────── */
+    staged_sync_supervisor_test_apply_stall_escalation(
+        "staged.utxo_apply", "staged.proof_validate", frozen_cursor + 1,
+        upstream_cursor, /*have_upstream=*/true, /*quiet_us=*/window - 1,
+        &escalated);
+    ASH_CHECK("G4: stage progress clears the typed blocker (no ghost fact)",
+             !escalated && !blocker_exists(BID));
+
+    unsetenv("ZCL_STAGE_STALL_ESCALATE_WINDOWS");
+    condition_engine_reset_for_testing();
+    reducer_frontier_provable_tip_reset();
+    sticky_escalator_test_reset();
+    blocker_reset_for_testing();
+    printf("always_sync_selfheal: G4 %d failures\n", failures);
+    return failures;
+}
+
 int test_always_sync_selfheal(void);
 int test_always_sync_selfheal(void)
 {
@@ -793,6 +976,7 @@ int test_always_sync_selfheal(void)
     failures += ash_test_stage_rederive_range();
     failures += ash_test_ladder_cycles_never_gives_up();
     failures += ash_test_lcc_refuses_incoherent_raise();
+    failures += ash_test_stall_named_blocker_cured();
     printf("always_sync_selfheal: %d total failures\n", failures);
     return failures;
 }
