@@ -35,6 +35,30 @@
 # genesis..checkpoint fold; the only real lever is avoiding the network
 # body-fetch, which this script does by folding over an already-bodied copy.
 #
+# -mint-anchor-fast, NOT plain -mint-anchor: proven live against the real
+# archived serve1 datadir (config/src/mint_anchor_progress.c
+# mint_anchor_producer_lane_bind) — a datadir that already fully synced to
+# tip carries "pre-lane" script_validate_log/proof_validate_log rows from
+# BEFORE the producer-lane-profile tracking existed, with no recorded proof
+# of their original crypto mode, and boot_mint_anchor_require_producer_lane
+# refuses to promote that ambiguous legacy state to a "full" producer lane
+# (it fails BEFORE the genesis reset, so no partial/wrong state is ever
+# written). The documented, intended recourse is exactly what this script
+# does: "-mint-anchor-fast" (the checkpoint_fold lane), which
+# boot_mint_anchor_reset always accepts for pre-lane legacy state. This does
+# NOT weaken the artifact's own verification: -fast only passes
+# script_validate/proof_validate THROUGH during the offline state fold (the
+# blocks are already a fully-validated canonical chain — that is precisely
+# why the archived source is trustworthy to fold from); the UTXO-set
+# derivation and BOTH hard-asserts (transparent SHA3+count vs
+# sha3_utxo_checkpoint, shielded digest vs rom_state_checkpoint) are
+# byte-for-byte identical to the full-crypto path and still unlink+_exit(1)
+# on any mismatch. -fast only additionally skips the SEPARATE
+# consensus-state-bundle export at the end (a different artifact this
+# script does not produce), which is correctly marked non-canonical for a
+# checkpoint_fold profile — the utxo-anchor.snapshot verification is
+# unaffected either way.
+#
 # VERIFICATION: two independent passes.
 #   (1) PRIMARY / authoritative — -mint-anchor's own internal hard-assert
 #       (config/src/boot_mint_anchor.c:669-704 recomputes coins SHA3+count vs
@@ -92,6 +116,13 @@ MINT_LOG="$WORK_DATADIR/produce-anchor-snapshot-mint.log"
 VERIFY_LOG="$WORK_DATADIR/produce-anchor-snapshot-secondary-verify.log"
 OUT_SNAPSHOT="$WORK_DATADIR/utxo-anchor.snapshot"
 CHECKPOINT_HEIGHT=3056758
+# -mint-anchor -mint-anchor-fast (the checkpoint_fold lane; -fast is honored
+# ONLY together with -mint-anchor, per src/main.c) — see the PRODUCTION PATH
+# comment above for why plain -mint-anchor alone refuses against pre-lane
+# legacy state. Override only if you know the source datadir already carries
+# a matching "full" producer-lane marker (a fresh, never-before-minted
+# source) and want full crypto re-validation instead.
+MINT_FLAGS="${ZCL_PAS_MINT_FLAGS:--mint-anchor -mint-anchor-fast}"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { echo "[$(ts)] [produce-anchor-snapshot] $*"; }
@@ -160,11 +191,12 @@ fi
 # marker — config/include/config/mint_anchor_progress.h). Foreground: this
 # script is meant to run under a durable systemd --user unit, so blocking for
 # hours here is correct, not a bug. ─────────────────────────────────────────
-log "driving -mint-anchor against $WORK_DATADIR"
+log "driving $MINT_FLAGS against $WORK_DATADIR"
 log "on-disk fold progress: $WORK_DATADIR/mint-progress.log ; full log: $MINT_LOG"
-"$BINARY" -datadir="$WORK_DATADIR" -mint-anchor >>"$MINT_LOG" 2>&1
+# shellcheck disable=SC2086
+"$BINARY" -datadir="$WORK_DATADIR" $MINT_FLAGS >>"$MINT_LOG" 2>&1
 MINT_RC=$?
-log "mint-anchor exited rc=$MINT_RC"
+log "$MINT_FLAGS exited rc=$MINT_RC"
 
 if [ "$MINT_RC" -ne 0 ]; then
     verdict_fail "mint-anchor exited non-zero ($MINT_RC) — see $MINT_LOG"
