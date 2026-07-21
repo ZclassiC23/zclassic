@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Deterministic content: SQLite magic in the first 16 bytes (or 0xEE garbage
@@ -366,6 +367,129 @@ static int test_scan_and_directory(void)
     return failures;
 }
 
+/* ── (e) bundles/ subdir scan — swarm-widening reseed (Lane A2) ────────
+ *
+ * boot_bundle_fetch.c lands verified downloads under <datadir>/bundles/, and
+ * the installer deliberately RETAINS the source .sqlite there after install.
+ * rom_seed_scan_datadir must find it (registering it as "bundles/<name>" so
+ * rom_seed_read_chunk resolves it), while still ignoring a non-artifact file
+ * placed alongside it and serving byte-identical chunks with the same
+ * chunk_root a direct rom_seed_register of the same bytes would produce. */
+
+static int test_bundles_subdir_scan(void)
+{
+    int failures = 0;
+    TEST("rom_seed: bundles/ subdir scan registers a fetched bundle, "
+         "ignores non-artifacts, same chunk_root as direct register") {
+        rom_seed_reset();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "romseed_bundlesdir", "ok");
+
+        char bundles[320];
+        snprintf(bundles, sizeof(bundles), "%s/bundles", dir);
+        ASSERT(mkdir(bundles, 0700) == 0);
+
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096; /* 2 chunks */
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size, true);
+        ASSERT(write_file(bundles, "consensus-state-bundle-500.sqlite",
+                          content, size));
+        /* A non-artifact file placed alongside it must be ignored. */
+        ASSERT(write_file(bundles, "directory.json",
+                          (const uint8_t *)"{}", 2));
+
+        int reg = rom_seed_scan_datadir(dir);
+        ASSERT(reg == 1); /* only the bundle, not directory.json */
+        ASSERT(rom_seed_count() == 1);
+
+        struct rom_artifact all[ROM_SEED_MAX_ARTIFACTS];
+        int n = rom_seed_list(all, ROM_SEED_MAX_ARTIFACTS);
+        ASSERT(n == 1);
+        struct rom_artifact scanned = all[0];
+        ASSERT(scanned.kind == ROM_ARTIFACT_CONSENSUS_BUNDLE);
+        ASSERT(strcmp(scanned.filename, "bundles/consensus-state-bundle-500.sqlite")
+               == 0);
+        ASSERT(scanned.size_bytes == size);
+        ASSERT(scanned.num_chunks == 2);
+
+        /* Serving via the registry-recorded filename resolves to the SAME
+         * bytes on disk (rom_seed_read_chunk builds "<datadir>/<filename>",
+         * which must land on <dir>/bundles/consensus-state-bundle-500.sqlite,
+         * not <dir>/consensus-state-bundle-500.sqlite). */
+        uint8_t *rbuf = malloc(ROM_SEED_CHUNK_SIZE);
+        ASSERT(rbuf != NULL);
+        uint32_t rsz = 0;
+        ASSERT(rom_seed_read_chunk(&scanned, dir, 0, rbuf, ROM_SEED_CHUNK_SIZE,
+                                   &rsz));
+        ASSERT(rsz == ROM_SEED_CHUNK_SIZE);
+        ASSERT(memcmp(rbuf, content, ROM_SEED_CHUNK_SIZE) == 0);
+        free(rbuf);
+
+        /* Byte-identical to a direct register() of the same bytes: registering
+         * the exact same content straight (no bundles/ prefix) under a fresh
+         * registry entry must derive the SAME chunk_root — the swarm-served
+         * artifact is not distinguishable-by-content from any other seeder's
+         * copy of the identical bundle. */
+        rom_seed_reset();
+        struct rom_artifact direct;
+        ASSERT(rom_seed_register(bundles, "consensus-state-bundle-500.sqlite",
+                                 NULL, &direct) == ROM_REG_OK);
+        ASSERT(memcmp(direct.chunk_root, scanned.chunk_root, 32) == 0);
+        ASSERT(memcmp(direct.whole_sha3, scanned.whole_sha3, 32) == 0);
+
+        free(content);
+        rom_seed_reset();
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* A bundles/-shaped filename with anything other than the exact
+ * ROM_SEED_BUNDLES_SUBDIR prefix, a second '/', or a leading '/' is refused —
+ * rom_seed never reaches more than one level into exactly "bundles/". */
+static int test_bundles_path_shape_refused(void)
+{
+    int failures = 0;
+    TEST("rom_seed: only a one-level 'bundles/<name>' path is accepted") {
+        rom_seed_reset();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "romseed_pathshape", "ok");
+
+        size_t size = 64 * 1024;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size, true);
+
+        char sub[320];
+        snprintf(sub, sizeof(sub), "%s/other", dir);
+        ASSERT(mkdir(sub, 0700) == 0);
+        ASSERT(write_file(sub, "consensus-state-bundle-501.sqlite",
+                          content, size));
+        /* Wrong subdir name. */
+        ASSERT(rom_seed_register(dir, "other/consensus-state-bundle-501.sqlite",
+                                 NULL, NULL) == ROM_REG_ERR_ARGS);
+
+        /* Two levels deep under bundles/ — still refused. */
+        ASSERT(rom_seed_register(dir,
+                                 "bundles/deeper/consensus-state-bundle-501.sqlite",
+                                 NULL, NULL) == ROM_REG_ERR_ARGS);
+
+        /* A leading '/' (absolute-shaped) is refused. */
+        ASSERT(rom_seed_register(dir, "/consensus-state-bundle-501.sqlite",
+                                 NULL, NULL) == ROM_REG_ERR_ARGS);
+
+        ASSERT(rom_seed_count() == 0);
+
+        free(content);
+        rom_seed_reset();
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_rom_seed(void)
 {
     int failures = 0;
@@ -374,5 +498,7 @@ int test_rom_seed(void)
     failures += test_caps();
     failures += test_corrupt_refused();
     failures += test_scan_and_directory();
+    failures += test_bundles_subdir_scan();
+    failures += test_bundles_path_shape_refused();
     return failures;
 }

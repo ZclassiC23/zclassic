@@ -238,6 +238,30 @@ static int case_e2e(void)
         snprintf(landed, sizeof(landed), "%s/bundles/%s", cdir, m.filename);
         ASSERT(rom_fetch_verify_file(landed, &m));
 
+        /* Reseed (Lane A2): the just-landed bundle is registered with rom_seed
+         * IMMEDIATELY on download success — no restart, no scan needed — so
+         * this node is already a swarm source for it. Assert via the rom_seed
+         * catalog API (rom_seed_list) that a "bundles/<filename>" entry exists
+         * with the SAME chunk_root the source artifact carries. */
+        {
+            char want[ROM_SEED_NAME_MAX];
+            snprintf(want, sizeof(want), "%s/%s", ROM_SEED_BUNDLES_SUBDIR,
+                     m.filename);
+            struct rom_artifact cat[ROM_SEED_MAX_ARTIFACTS];
+            int cn = rom_seed_list(cat, ROM_SEED_MAX_ARTIFACTS);
+            bool reseed_found = false;
+            for (int i = 0; i < cn; i++) {
+                if (strcmp(cat[i].filename, want) != 0)
+                    continue;
+                reseed_found = true;
+                ASSERT(memcmp(cat[i].chunk_root, art.chunk_root, 32) == 0);
+                ASSERT(cat[i].size_bytes == m.size_bytes);
+                ASSERT(cat[i].num_chunks == m.num_chunks);
+                break;
+            }
+            ASSERT(reseed_found);
+        }
+
         /* Install FIRES: the autodetect now finds the downloaded bundle. */
         char *auto_path = boot_autodetect_consensus_bundle(cdir);
         ASSERT(auto_path != NULL);
@@ -265,6 +289,10 @@ static int case_e2e(void)
         char *bad_auto = boot_autodetect_consensus_bundle(cdir2);
         ASSERT(bad_auto == NULL); /* nothing installable landed */
         free(bad_auto);
+        /* Nothing landed on disk for cdir2 at all, so there is nothing rom_seed
+         * could have (re-)registered for it either — the reseed call only runs
+         * on the success path, guarded by boot_bundle_fetch_download's own
+         * `if (!ok) return false;` above the reseed block. */
 
         /* (d) Production entry: a directory.json hint + -fileservice peer drives
          * the whole gate → pick → seed-assembly → download → land path. */
@@ -292,6 +320,23 @@ static int case_e2e(void)
         char *auto3 = boot_autodetect_consensus_bundle(cdir3);
         ASSERT(auto3 != NULL);
         free(auto3);
+        /* The production entry point reseeds too (it drives the same
+         * boot_bundle_fetch_download core). */
+        {
+            char want3[ROM_SEED_NAME_MAX];
+            snprintf(want3, sizeof(want3), "%s/%s", ROM_SEED_BUNDLES_SUBDIR,
+                     m.filename);
+            struct rom_artifact cat3[ROM_SEED_MAX_ARTIFACTS];
+            int cn3 = rom_seed_list(cat3, ROM_SEED_MAX_ARTIFACTS);
+            bool reseed_found3 = false;
+            for (int i = 0; i < cn3; i++) {
+                if (strcmp(cat3[i].filename, want3) == 0) {
+                    reseed_found3 = true;
+                    break;
+                }
+            }
+            ASSERT(reseed_found3);
+        }
 
         fs_server_stop();
         free(content);

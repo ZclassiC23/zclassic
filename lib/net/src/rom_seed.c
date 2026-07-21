@@ -79,8 +79,12 @@ static uint64_t g_unique_peers_served = 0;
 
 /* ── Small helpers ──────────────────────────────────────────────────── */
 
-/* A registerable filename is a bare basename: no separators, no traversal,
- * non-empty, and short enough to store. */
+/* A registerable filename is a bare basename — no separators, no traversal,
+ * non-empty, short enough to store — OR a one-level-deep
+ * "ROM_SEED_BUNDLES_SUBDIR/<basename>" (i.e. "bundles/<basename>") relative
+ * path: the ONE subdirectory rom_seed ever reaches into (see the constant's
+ * doc comment). Any other separator shape — a leading '/', a second '/', or a
+ * different subdir name — is refused exactly like today's bare-basename rule. */
 static bool rom_filename_ok(const char *filename)
 {
     if (!filename || !filename[0])
@@ -88,11 +92,22 @@ static bool rom_filename_ok(const char *filename)
     size_t n = strlen(filename);
     if (n >= ROM_SEED_NAME_MAX)
         return false;
-    if (strchr(filename, '/'))
-        return false;
-    if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0)
-        return false;
     if (strstr(filename, ".."))
+        return false;
+
+    const char *slash = strchr(filename, '/');
+    const char *base = filename;
+    if (slash) {
+        static const char subdir[] = ROM_SEED_BUNDLES_SUBDIR;
+        size_t prefix_len = (size_t)(slash - filename);
+        if (prefix_len != strlen(subdir) ||
+            strncmp(filename, subdir, prefix_len) != 0)
+            return false;
+        base = slash + 1;
+        if (!base[0] || strchr(base, '/'))
+            return false;
+    }
+    if (strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
         return false;
     return true;
 }
@@ -116,10 +131,16 @@ enum rom_artifact_kind rom_seed_classify(const char *filename)
 {
     if (!filename || !filename[0])
         return ROM_ARTIFACT_UNKNOWN;
-    if (str_has_prefix(filename, "consensus-state-bundle-") &&
-        str_has_suffix(filename, ".sqlite"))
+    /* Classify on the basename: a caller may pass a bare name (the datadir-
+     * root scan) or a "bundles/<name>" relative path (the bundles/ subdir
+     * scan / a freshly fetched bundle) — the artifact kind rules are
+     * identical either way. */
+    const char *base = strrchr(filename, '/');
+    base = base ? base + 1 : filename;
+    if (str_has_prefix(base, "consensus-state-bundle-") &&
+        str_has_suffix(base, ".sqlite"))
         return ROM_ARTIFACT_CONSENSUS_BUNDLE;
-    if (strcmp(filename, "block_index.bin") == 0)
+    if (strcmp(base, "block_index.bin") == 0)
         return ROM_ARTIFACT_HEADER_SEED;
     return ROM_ARTIFACT_UNKNOWN;
 }
@@ -330,6 +351,55 @@ enum rom_register_result rom_seed_register(const char *datadir,
     return ROM_REG_OK;
 }
 
+/* Bounded scan of <datadir>/ROM_SEED_BUNDLES_SUBDIR ("bundles/"): register
+ * every entry whose bare basename classifies as a known artifact kind,
+ * storing the registered filename as "bundles/<name>" so rom_seed_read_chunk's
+ * "<datadir>/<filename>" resolution finds it on disk. This is where
+ * boot_bundle_fetch.c lands verified swarm downloads and where the unified
+ * installer deliberately RETAINS the source .sqlite after install (its only
+ * unlinkat removes a stale prior-generation OUTPUT artifact, never the
+ * source) — so a bundle this node fetched or installed from keeps seeding the
+ * swarm. Absence of the bundles/ subdirectory (most nodes, most of the time)
+ * is normal, not an error — no LOG_WARN on ENOENT. Bounded by the same
+ * per-directory entry cap + ROM_SEED_MAX_ARTIFACTS as the root scan. */
+static int rom_seed_scan_bundles_subdir(const char *datadir)
+{
+    char dirpath[1024];
+    int dn = snprintf(dirpath, sizeof(dirpath), "%s/%s", datadir,
+                      ROM_SEED_BUNDLES_SUBDIR);
+    if (dn <= 0 || (size_t)dn >= sizeof(dirpath))
+        return 0;
+
+    DIR *d = opendir(dirpath);
+    if (!d)
+        return 0; /* no bundles/ subdir yet — normal, not an error */
+
+    int registered = 0;
+    unsigned seen = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (atomic_load(&g_scan_cancel))
+            break;
+        if (++seen > ROM_SEED_SCAN_ENTRY_CAP)
+            break;
+        if (rom_seed_classify(e->d_name) == ROM_ARTIFACT_UNKNOWN)
+            continue;
+        if (rom_seed_count() >= (int)ROM_SEED_MAX_ARTIFACTS)
+            break;
+
+        char relname[ROM_SEED_NAME_MAX];
+        int rn = snprintf(relname, sizeof(relname), "%s/%s",
+                          ROM_SEED_BUNDLES_SUBDIR, e->d_name);
+        if (rn <= 0 || (size_t)rn >= sizeof(relname))
+            continue;
+
+        if (rom_seed_register(datadir, relname, NULL, NULL) == ROM_REG_OK)
+            registered++;
+    }
+    closedir(d);
+    return registered;
+}
+
 int rom_seed_scan_datadir(const char *datadir)
 {
     if (!datadir || !datadir[0]) {
@@ -358,6 +428,9 @@ int rom_seed_scan_datadir(const char *datadir)
             registered++;
     }
     closedir(d);
+
+    /* One level into <datadir>/bundles/ — see rom_seed_scan_bundles_subdir. */
+    registered += rom_seed_scan_bundles_subdir(datadir);
 
     if (registered > 0)
         LOG_INFO(ROM_SUBSYS, "scan: registered %d artifact(s) in '%s'",

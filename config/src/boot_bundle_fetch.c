@@ -177,6 +177,47 @@ bool boot_bundle_fetch_download(const char *datadir,
              "instant-on bundle fetch landed %s/%s (%u chunks, content-verified) "
              "— the autodetect installs it under the CHECKPOINT_ROM authority",
              bundles, m->filename, m->num_chunks);
+
+    /* Reseed the swarm: register the just-landed, content-verified bundle
+     * with rom_seed IMMEDIATELY so this node starts serving it to other
+     * downloaders within the same boot, with no restart needed — BitTorrent-
+     * style swarm widening with zero operator input.
+     *
+     * rom_seed_register is pure registry state (a mutex + static tables); it
+     * has no dependency on the file-service thread, rom_seed_start_scan, or
+     * any other boot stage having run yet, so it is always safe to call here
+     * — even though, in production, this function runs from
+     * boot_select_state_source, which fires BEFORE boot_rom_seed_start /
+     * fs_server_start (config/src/boot_auto_install_bundle.c). That ordering
+     * is exactly why this call cannot simply gate on "is the file service
+     * running": at this point in a fresh boot it never is yet. A failure
+     * here (registry full, path overflow) is logged and non-fatal — it never
+     * blocks or fails boot — because rom_seed_scan_datadir now recurses into
+     * <datadir>/bundles/ (net/rom_seed.c) and will register the same file
+     * the next time it runs: this same boot's own rom_seed_start_scan (which
+     * starts moments later, once the frontend services init), or a later
+     * boot if seeding was disabled this run. */
+    char reseed_name[ROM_SEED_NAME_MAX];
+    int rnn = snprintf(reseed_name, sizeof(reseed_name), "%s/%s",
+                       ROM_SEED_BUNDLES_SUBDIR, m->filename);
+    if (rnn > 0 && (size_t)rnn < sizeof(reseed_name)) {
+        enum rom_register_result rrc =
+            rom_seed_register(datadir, reseed_name, m->whole_sha3, NULL);
+        if (rrc == ROM_REG_OK)
+            LOG_INFO(BBF_SUBSYS,
+                     "reseed: registered fetched bundle '%s' with rom_seed — "
+                     "this node now serves it to the swarm", reseed_name);
+        else
+            LOG_WARN(BBF_SUBSYS,
+                     "reseed: could not register fetched bundle '%s' (rc=%d) "
+                     "— the next rom_seed scan will pick it up", reseed_name,
+                     (int)rrc);
+    } else {
+        LOG_WARN(BBF_SUBSYS,
+                 "reseed: bundle relative name overflow — the next rom_seed "
+                 "scan will pick it up");
+    }
+
     return true;
 }
 
