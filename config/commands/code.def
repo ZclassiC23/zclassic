@@ -146,6 +146,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_refs)
 
 ZCL_COMMAND_READY_READ(
+    "code.impact", "code", "",
+    "Show the reverse-dependency closure (blast radius) of one changed file",
+    "The reverse-dependency closure of one changed file — every file "
+    "transitively downstream via the call graph (codeindex_impact_closure) — "
+    "plus the downstream focused test groups from the same shared-rule "
+    "resolver code.tests uses; capped and truncation-flagged, so an "
+    "incomplete closure is never silently trusted.", ZCL_COMMAND_LIST_BUDGET,
+    "code,impact,blast,radius,dependency,closure", "zcl.code_path_input.v1",
+    "zcl.code_impact.v1", "path", "path",
+    "zclassic23 code impact lib/util/include/util/safe_alloc.h",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_impact)
+
+ZCL_COMMAND_READY_READ(
     "code.find", "code", "",
     "Rank at most N symbols by name, with a one-line context per hit",
     "At most `limit` symbols ranked by name match, one context line each, from "

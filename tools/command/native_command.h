@@ -167,6 +167,14 @@ void zcl_native_handle_code_tests(
 void zcl_native_handle_code_room(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* code.impact — the blast-radius leaf: the reverse-dependency closure of one
+ * changed file (codeindex_impact_closure) plus the downstream focused test
+ * groups (the same agent_impact_apply_shared_rules() resolver code.tests
+ * uses) and two quick depth-1 fan-out numbers (direct_includes,
+ * direct_callers). See native_code_command.c for the cap+truncated contract. */
+void zcl_native_handle_code_impact(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* Resolve the focused-test proof group for a changed source `path`, mirroring
  * tools/dev/devloop_plan.c:171-185 so `code tests` and `dev test plan` never

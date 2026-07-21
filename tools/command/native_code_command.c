@@ -46,6 +46,12 @@ enum {
     CODE_CAPSULE_CALLER_CAP = 10,
     CODE_CAPSULE_CALLEE_CAP = 10,
     CODE_CAPSULE_INC_CAP    = 10,
+    CODE_IMPACT_CAP     = 120, /* max impacted_files rendered by code.impact
+                                * (list budget; the engine's own cap+truncated
+                                * contract, not a second layer of paging) */
+    CODE_IMPACT_INC_CAP = 32,  /* direct_includes fan-out cap */
+    CODE_IMPACT_SYM_CAP = 64,  /* symbols-in-file cap when summing direct_callers */
+    CODE_IMPACT_REF_CAP = 256, /* per-symbol callers cap when summing direct_callers */
 };
 
 /* Bounded copy of at most `max` visible chars of `src` into dst[cap]; appends
@@ -1101,6 +1107,106 @@ void zcl_native_handle_code_room(const struct zcl_command_request *request,
     (void)snprintf(summary, sizeof(summary),
                    "%s: shape=%s group=%s neighbors=%d tests→`%s`%s", path,
                    shape[0] ? shape : "-", group[0] ? group : "-", shown, route,
+                   crisk ? " (consensus surface)" : "");
+    (void)json_push_kv_str(&reply->data, "summary", summary);
+
+    codeindex_close(ci);
+}
+
+/* ── code.impact ────────────────────────────────────────────────────────── */
+/* The blast-radius leaf: given one changed FILE, the reverse-dependency
+ * closure — every file that transitively depends on it, so an agent can SEE
+ * "what breaks if I touch this" before editing. Entirely reuses the existing
+ * engine: codeindex_impact_closure (lib/codeindex/src/codeindex_impact.c) for
+ * the file->symbol->reverse-caller walk, and the SAME
+ * agent_impact_apply_shared_rules() resolver code.tests/devloop_plan.c use
+ * (via code_emit_route) for the downstream focused test groups — no graph
+ * walk is reimplemented here.
+ *
+ * `impacted_files`/`count`/`truncated` mirror the engine's own cap+truncated
+ * contract directly (CODE_IMPACT_CAP is the query cap, not a second display
+ * cap over a larger true answer): a capped, truncated=true result means "at
+ * least this many, more exist" — the same fail-safe meaning documented on
+ * codeindex_impact_closure itself. `direct_includes` (this file's own
+ * in-tree #include fan-out) and `direct_callers` (call sites directly
+ * referencing a symbol this file defines, summed over its symbol table) are
+ * cheap depth-1 numbers for a quick glance, distinct from the full closure. */
+void zcl_native_handle_code_impact(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    const char *path = code_str(request, "path");
+    if (!path) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
+                               "normalize", false, false,
+                               "code impact requires a repo-relative path", "");
+        return;
+    }
+    struct codeindex *ci = code_open(request, reply);
+    if (!ci) return;
+
+    char changed[1][256];
+    memset(changed[0], 0, sizeof(changed[0]));
+    (void)snprintf(changed[0], sizeof(changed[0]), "%s", path);
+
+    static char impacted[CODE_IMPACT_CAP][256];
+    bool truncated = false;
+    int n = codeindex_impact_closure(ci, changed, 1, 0, impacted,
+                                     CODE_IMPACT_CAP, &truncated);
+    if (n < 0) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "CLOSURE_FAILED",
+                               "dispatch", true, false,
+                               "impact closure traversal failed", path);
+        codeindex_close(ci);
+        return;
+    }
+
+    struct json_value arr;
+    json_init(&arr); json_set_array(&arr);
+    for (int i = 0; i < n; i++) code_push_line(&arr, impacted[i]);
+    (void)json_push_kv_str(&reply->data, "path", path);
+    (void)json_push_kv(&reply->data, "impacted_files", &arr);
+    (void)json_push_kv_int(&reply->data, "count", n);
+    (void)json_push_kv_bool(&reply->data, "truncated", truncated);
+    json_free(&arr);
+
+    /* direct_includes: this file's own forward in-tree #include fan-out
+     * (codeindex_includes_of_file) — a quick depth-1 number, not the closure. */
+    static char incs[CODE_IMPACT_INC_CAP][256];
+    int ninc = codeindex_includes_of_file(ci, path, incs, CODE_IMPACT_INC_CAP);
+    if (ninc < 0) ninc = 0;
+    (void)json_push_kv_int(&reply->data, "direct_includes", ninc);
+
+    /* direct_callers: call sites directly referencing a symbol DEFINED in this
+     * file, summed over its symbol table (codeindex_symbols_in_file +
+     * codeindex_callers per symbol) — the depth-1 fan-out the closure walk
+     * would expand from first, reported before that expansion. */
+    static struct ci_symbol syms[CODE_IMPACT_SYM_CAP];
+    int nsym = codeindex_symbols_in_file(ci, path, syms, CODE_IMPACT_SYM_CAP);
+    if (nsym < 0) nsym = 0;
+    static struct ci_ref callerbuf[CODE_IMPACT_REF_CAP];
+    int direct_callers = 0;
+    for (int i = 0; i < nsym; i++) {
+        int nc = codeindex_callers(ci, syms[i].name, callerbuf,
+                                   CODE_IMPACT_REF_CAP);
+        if (nc > 0) direct_callers += nc;
+    }
+    (void)json_push_kv_int(&reply->data, "direct_callers", direct_callers);
+
+    /* test_groups + route + consensus_risk + matched — the SAME shared-rule
+     * resolver code.tests/code.room/devloop_plan.c use, so a blast-radius
+     * check and a test plan never disagree on what a change to `path` routes
+     * to downstream. */
+    bool crisk = false;
+    const char *route = code_emit_route(reply, path, &crisk);
+
+    char summary[256];
+    (void)snprintf(summary, sizeof(summary),
+                   "%s: %d impacted file(s)%s, %d direct include(s), %d "
+                   "direct caller(s), routes to `%s`%s",
+                   path, n, truncated ? " (capped; more exist)" : "", ninc,
+                   direct_callers, route,
                    crisk ? " (consensus surface)" : "");
     (void)json_push_kv_str(&reply->data, "summary", summary);
 
