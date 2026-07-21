@@ -1069,6 +1069,16 @@ struct candidate_retained_writer_hook {
     bool ran;
 };
 
+static int candidate_retained_writer_dup_floor(void)
+{
+    long limit = sysconf(_SC_OPEN_MAX);
+    if (limit > 1024)
+        return 1024;
+    if (limit > 16)
+        return (int)(limit / 2);
+    return 3;
+}
+
 struct activate_retained_writer_hook {
     int writer_fd;
     bool ran;
@@ -1112,7 +1122,8 @@ static void candidate_retain_staging_writer(void *opaque)
         if(flags<0||(flags&O_ACCMODE)!=O_RDWR||fstat(fd,&st)!=0||
            !S_ISREG(st.st_mode)||st.st_nlink!=0||st.st_dev!=dir_st.st_dev)
             continue;
-        hook->writer_fd=fcntl(fd,F_DUPFD_CLOEXEC,1024);
+        hook->writer_fd=fcntl(fd,F_DUPFD_CLOEXEC,
+                              candidate_retained_writer_dup_floor());
         break;
     }
 }

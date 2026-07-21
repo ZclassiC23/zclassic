@@ -72,6 +72,21 @@ struct cse_retained_writer_fixture {
     bool ran;
 };
 
+/* Keep the retained alias above the ordinary low-fd set so the production
+ * /proc/self/fd scan proves it is unbounded. Some hermetic runners cap
+ * RLIMIT_NOFILE at exactly 1024, where F_DUPFD_CLOEXEC(min=1024) cannot
+ * succeed; on those hosts use a high valid descriptor below the cap so the
+ * same retained-writer refusal is still exercised. */
+static int cse_retained_writer_dup_floor(void)
+{
+    long limit = sysconf(_SC_OPEN_MAX);
+    if (limit > 1024)
+        return 1024;
+    if (limit > 16)
+        return (int)(limit / 2);
+    return 3;
+}
+
 static void cse_final_race_after_create(void *opaque)
 {
     struct cse_final_race_fixture *f = opaque;
@@ -122,7 +137,8 @@ static void cse_retain_staging_writer(void *opaque)
             fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
             st.st_nlink != 0 || st.st_dev != dir_st.st_dev)
             continue;
-        f->writer_fd = fcntl(fd, F_DUPFD_CLOEXEC, 1024);
+        f->writer_fd = fcntl(fd, F_DUPFD_CLOEXEC,
+                             cse_retained_writer_dup_floor());
         break;
     }
 }
