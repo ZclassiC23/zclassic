@@ -346,6 +346,28 @@ bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
                                                   int our_height,
                                                   int best_header_height,
                                                   int64_t now_seconds);
+
+/* Body-download stall discipline (the sibling of the header-stall rules).
+ * A peer that accepts block getdata but returns zero bodies passes every
+ * header-stall check — it may keep delivering headers — yet holds an
+ * outbound slot forever while the body cursor never advances (the
+ * "connected peer delivers no block data" wedge: a header-only/legacy peer
+ * that serves headers and no bodies). When such a peer has had at least
+ * SYNC_BODY_STALL_MIN_TIMEOUTS block requests expire unfilled, delivered no
+ * body, and been connected at least SYNC_BODY_STALL_TIMEOUT_SECS, it should
+ * be disconnected so connman fails over to a peer that will serve bodies.
+ * Only fires while we still NEED bodies (IBD, behind the header frontier);
+ * trusted/loopback peers (the co-located zclassicd lifeline) are exempt at
+ * the call site, exactly like the header-stall rules. `body_received` and
+ * `body_timed_out` come from dl_peer_body_progress(). Net policy only —
+ * touches no block/tx/header VALIDITY predicate. */
+#define SYNC_BODY_STALL_TIMEOUT_SECS 120
+#define SYNC_BODY_STALL_MIN_TIMEOUTS 64
+bool syncsvc_should_disconnect_body_stalled_peer(const struct p2p_node *node,
+                                                  int our_height,
+                                                  uint64_t body_received,
+                                                  uint64_t body_timed_out,
+                                                  int64_t now_seconds);
 bool syncsvc_is_header_sync_stalled(enum sync_state state,
                                     int best_header_height,
                                     int64_t last_advance_time,

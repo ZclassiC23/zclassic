@@ -741,6 +741,25 @@ size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id)
     return count;
 }
 
+void dl_peer_body_progress(struct download_manager *dm, uint32_t peer_id,
+                           uint64_t *requested, uint64_t *received,
+                           uint64_t *timed_out)
+{
+    if (requested) *requested = 0;
+    if (received)  *received  = 0;
+    if (timed_out) *timed_out = 0;
+    if (!dm)
+        return;
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
+    if (ps) {
+        if (requested) *requested = ps->blocks_requested;
+        if (received)  *received  = ps->blocks_received;
+        if (timed_out) *timed_out = ps->blocks_timed_out;
+    }
+    zcl_mutex_unlock(&dm->cs);
+}
+
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
 {
     zcl_mutex_lock(&dm->cs);

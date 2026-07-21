@@ -104,4 +104,13 @@
 # the (g)-(l) rom_journal/artifact matrix already in this file). Real
 # growth, mirroring the file's own established (a)-(l) shape. Re-baselined
 # in file_size_ceiling_lib_baseline.txt (2290); count unchanged.
+#
+# 2026-07-21 (wf/net-body-flow, N2): msgprocessor.c grew 2344 -> 2373 adding
+# Rule C (body-download stall disconnect) — a peer that serves headers but
+# returns zero block bodies passes every header-stall check yet holds an
+# outbound slot forever while the body cursor never advances (the measured
+# "connected peer delivers no block data" wedge); the new call site fails
+# over off it by disconnecting so connman dials a peer that will serve
+# bodies. Re-baselined in file_size_ceiling_lib_baseline.txt (2373); count
+# unchanged.
 13
