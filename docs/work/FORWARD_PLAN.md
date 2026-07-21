@@ -51,7 +51,15 @@
    with durable resume (`rom_fetch_download_verified_parallel`). What remains
    for C3 is the end-to-end timed proof itself: sync a second, genuinely fresh
    zclassic23 node against the serve node (not `zclassicd`) and confirm the
-   <10 min bar.
+   <10 min bar. The harness for that proof is wired:
+   `make mvp-coldstart-to-tip-stopwatch` (`tools/scripts/cold_start_to_tip_stopwatch.sh`)
+   wipes a `/tmp` datadir, boots the target binary with NO snapshot/bundle/import
+   flags at all (`ZCL_BIN=`/`--bin=` points it at any built binary), dials a real
+   serving peer, and gates on `dumpstate reducer_frontier`'s `hstar` reaching
+   `network_tip` — never on the sync FSM's `at_tip` claim — printing a real
+   `WALL_CLOCK_SECONDS=<n>` on PASS. It has not yet run-passed end-to-end (needs a
+   synced peer + the full 10-minute budget on a host with the binary built); once
+   it does, C3 promotes the same way `mvp-coldstart-to-tip-local` would.
 4. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
    parallel read-only auditors covering integrity/trust/repair-consolidation/
    pipeline-simplification, memory
