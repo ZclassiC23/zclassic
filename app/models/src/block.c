@@ -559,6 +559,97 @@ bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
     return true;
 }
 
+/* ── Raw header read (quarantine evidence) ─────────────────────── */
+
+/* Column layout of BLOCK_RAW_HEADER_SEL: hash(0) version(1) prev_hash(2)
+ * merkle_root(3) sapling_root(4) time(5) bits(6) nonce(7) solution(8). NO
+ * status filter, NO hash-bind gate — the caller classifies the row. */
+#define BLOCK_RAW_HEADER_SEL_COLS \
+    "hash,version,prev_hash,merkle_root,sapling_root,time,bits,nonce,solution"
+
+/* Reconstruct a canonical block_header from a BLOCK_RAW_HEADER_SEL row exactly
+ * as stored. Returns false only when the Equihash solution column is
+ * missing/empty/oversize (a header we cannot re-hash); every other field is a
+ * fixed 32-byte / integer column read verbatim, so a poisoned value survives
+ * into `out` for the caller's block_row_verify() to reject. sapling_root is a
+ * nullable projection column — a NULL/short value leaves the field zero (which
+ * only hash-binds for a genuinely pre-Sapling block; a post-Sapling row with a
+ * dropped root then fails the caller's hash-bind, never silently passes). */
+static bool block_raw_header_from_row(sqlite3_stmt *s, struct block_header *out,
+                                      uint8_t out_stored_hash[32])
+{
+    if (out_stored_hash)
+        AR_READ_BLOB(s, 0, out_stored_hash, 32);
+
+    int sol_len = AR_COL_BYTES(s, 8);
+    const void *sol = sqlite3_column_blob(s, 8);
+    if (!sol || sol_len <= 0 || sol_len > MAX_SOLUTION_SIZE) {
+        if (sol_len > MAX_SOLUTION_SIZE)
+            LOG_WARN("block", "load_raw_header: oversize solution len=%d",
+                     sol_len);
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = (int32_t)AR_COL_INT(s, 1);
+    AR_READ_BLOB(s, 2, out->hashPrevBlock.data, 32);
+    AR_READ_BLOB(s, 3, out->hashMerkleRoot.data, 32);
+    AR_READ_BLOB(s, 4, out->hashFinalSaplingRoot.data, 32);
+    out->nTime = (uint32_t)AR_COL_INT(s, 5);
+    out->nBits = (uint32_t)AR_COL_INT(s, 6);
+    AR_READ_BLOB(s, 7, out->nNonce.data, 32);
+    memcpy(out->nSolution, sol, (size_t)sol_len);
+    out->nSolutionSize = (size_t)sol_len;
+    return true;
+}
+
+bool db_block_load_raw_header_by_hash(struct node_db *ndb,
+                                      const uint8_t hash[32],
+                                      struct block_header *out)
+{
+    if (!ndb || !ndb->open || !hash || !out) {
+        LOG_WARN("block", "load_raw_header_by_hash: null arg / closed db");
+        return false;
+    }
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT " BLOCK_RAW_HEADER_SEL_COLS " FROM blocks WHERE hash=? LIMIT 1",
+        false);
+    AR_BIND_BLOB(s, 1, hash, 32);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    bool ok = block_raw_header_from_row(s, out, NULL);
+    AR_FINALIZE(s);
+    return ok;
+}
+
+bool db_block_load_raw_header_by_height(struct node_db *ndb, int height,
+                                        struct block_header *out,
+                                        uint8_t out_stored_hash[32])
+{
+    if (out_stored_hash)
+        memset(out_stored_hash, 0, 32);
+    if (!ndb || !ndb->open || !out) {
+        LOG_WARN("block", "load_raw_header_by_height: null arg / closed db "
+                 "(height=%d)", height);
+        return false;
+    }
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT " BLOCK_RAW_HEADER_SEL_COLS " FROM blocks WHERE height=? "
+        "LIMIT 1", false);
+    AR_BIND_INT(s, 1, height);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    bool ok = block_raw_header_from_row(s, out, out_stored_hash);
+    AR_FINALIZE(s);
+    return ok;
+}
+
 /* ── Delete ────────────────────────────────────────────────────── */
 
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])

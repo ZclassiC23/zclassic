@@ -8,6 +8,7 @@
 #include "controllers/diagnostics_internal.h"
 
 #include "chain/chain.h"
+#include "jobs/stage_repair.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "json/json.h"
@@ -218,6 +219,13 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
      * block_index entry. */
     json_push_kv_int(out, "blocks_hydrate_quarantined",
                      block_index_blocks_hydrate_quarantined());
+
+    /* Lane B3 RUNTIME poisoned-row quarantine tally (process-monotonic): poisoned
+     * `blocks` rows purged by stage_repair_quarantine_blocks_row while syncing,
+     * distinct from the boot-time blocks-hydrate tally above. Global, not
+     * per-block. */
+    json_push_kv_int(out, "runtime_row_quarantined",
+                     stage_repair_runtime_row_quarantined());
 
     /* block_index.bin flat per-row PoW-target quarantine tally
      * (process-monotonic). Global, not per-block. */

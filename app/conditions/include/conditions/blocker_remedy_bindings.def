@@ -157,6 +157,14 @@ ZCL_BLOCKER_REMEDY(validate_headers.window_resolve_miss,       OWNER)
  * cure is ordinary forward sync, not a named remedy), so OWNER is the honest
  * binding — it flags that a quarantine happened, visible via dumpstate. */
 ZCL_BLOCKER_REMEDY(block_index.blocks_hydrate_quarantine,      OWNER)
+/* Lane B3 RUNTIME per-row quarantine: a poisoned durable `blocks` row at the
+ * frontier is purged (stage_repair_quarantine_blocks_row) by the
+ * stale_validate_headers_repair remedy at ladder exhaustion. That SAME condition
+ * owns the clear: its H*-advance witness fires once the purged height re-fetches
+ * a clean body and the reducer frontier advances past it, and the TRANSIENT
+ * blocker is re-raised ONLY while the poison persists — so the condition that
+ * raises it is exactly the one whose driven state retires it. */
+ZCL_BLOCKER_REMEDY(block_index.runtime_row_quarantine,         stale_validate_headers_repair)
 /* Flat-cache (block_index.bin) per-row admission quarantine: a flat entry whose
  * stored hash no longer meets its own PoW target was dropped from the map during
  * load_block_index_flat rather than admitted below PoW strength; the height is

@@ -2,6 +2,7 @@
 
 #include "framework/condition.h"
 
+#include "config/runtime.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/block_header_emit.h"
 #include "jobs/stage_repair.h"
@@ -47,6 +48,85 @@ static struct log_throttle g_stale_repair_defer_log = LOG_THROTTLE_INIT;
  * retry, so this never latches into a human dead-end on a recoverable cause. */
 #define STALE_HEADER_NO_SOURCE_BLOCKER_ID "header_repair_no_source"
 
+/* ── Lane B3: bounded runtime poisoned-`blocks`-row escalation ────────────────
+ * The refetch-only ladder above can NEVER win when the DURABLE `blocks` row at
+ * the frontier is itself poisoned: each attempt re-fetches a body, overwrites
+ * the header_solution side-table, but leaves the poisoned durable row in place,
+ * so the same poison re-hits forever. At ladder EXHAUSTION (the attempt that
+ * reaches max_attempts) we escalate ONCE to stage_repair_quarantine_blocks_row,
+ * which purges the durable row IFF it fails the frozen block_row_verify. The
+ * escalation fires AT MOST ONCE per target height per process: a fixed
+ * remembered-height set gates re-fire, so a second exhaustion at the same height
+ * falls through to the existing operator page (never a delete loop). The
+ * remembered set is process-scoped (survives condition cooldown re-arms; cleared
+ * only by test_reset). */
+#define RUNTIME_QUARANTINE_FIRED_MAX 64
+static _Atomic int g_runtime_quarantine_fired[RUNTIME_QUARANTINE_FIRED_MAX];
+static _Atomic int g_runtime_quarantine_fired_count = 0;
+/* Test observability: count of quarantine ESCALATIONS actually invoked (the
+ * helper was called), independent of node_db availability. */
+static _Atomic int g_runtime_quarantine_escalations = 0;
+
+#ifdef ZCL_TESTING
+/* Test-only node_db override so a hermetic fixture can inject a seeded handle
+ * (production wiring is app_runtime_node_db()). NULL => use the runtime handle. */
+static struct node_db *g_test_node_db;
+void stale_validate_headers_repair_test_set_node_db(struct node_db *ndb);
+void stale_validate_headers_repair_test_set_node_db(struct node_db *ndb)
+{
+    g_test_node_db = ndb;
+}
+int stale_validate_headers_repair_test_quarantine_escalations(void);
+int stale_validate_headers_repair_test_quarantine_escalations(void)
+{
+    return atomic_load(&g_runtime_quarantine_escalations);
+}
+#endif
+
+static struct node_db *runtime_row_quarantine_node_db(void)
+{
+#ifdef ZCL_TESTING
+    if (g_test_node_db)
+        return g_test_node_db;
+#endif
+    return app_runtime_node_db();
+}
+
+static bool runtime_quarantine_already_fired(int height)
+{
+    int n = atomic_load(&g_runtime_quarantine_fired_count);
+    if (n > RUNTIME_QUARANTINE_FIRED_MAX)
+        n = RUNTIME_QUARANTINE_FIRED_MAX;
+    for (int i = 0; i < n; i++)
+        if (atomic_load(&g_runtime_quarantine_fired[i]) == height)
+            return true;
+    return false;
+}
+
+static void runtime_quarantine_mark_fired(int height)
+{
+    /* Single-threaded (condition-engine tick), but atomic to match the file. */
+    int idx = atomic_fetch_add(&g_runtime_quarantine_fired_count, 1);
+    if (idx < RUNTIME_QUARANTINE_FIRED_MAX)
+        atomic_store(&g_runtime_quarantine_fired[idx], height);
+    /* else: set full (>64 distinct runtime quarantines this process) — the
+     * per-episode operator page remains the terminal backstop. */
+}
+
+/* True on the remedy attempt that will REACH max_attempts. condition.c
+ * increments attempts AFTER the remedy returns, so the current attempt number is
+ * snap.attempts + 1; exhaustion is when that reaches max_attempts. Read via the
+ * public snapshot API (no recursive registry lock — remedy runs outside it). */
+static bool runtime_quarantine_escalation_due(void)
+{
+    struct condition_runtime_snapshot snap;
+    if (!condition_engine_get_registered_snapshot(
+            "stale_validate_headers_repair", &snap))
+        return false;
+    int max = snap.max_attempts > 0 ? snap.max_attempts : 1;
+    return snap.attempts + 1 >= max;
+}
+
 #ifdef ZCL_TESTING
 /* Test-only override of the connected-peer count seen by the P2P fallback, so
  * a hermetic fixture can exercise both the peers-available and the
@@ -67,6 +147,10 @@ void stale_validate_headers_repair_test_set_peer_count(int n)
  * Returns the count of connected peers available to serve the re-fetch (0 =>
  * missing input), or -1 if the height is unindexed (nothing to re-fetch). */
 static int cure_request_peer_refetch(int height);
+
+/* Lane B3 — bounded, once-per-height escalation (defined after the remedy). */
+static void maybe_escalate_runtime_row_quarantine(
+    int target, const struct uint256 *canon, struct main_state *ms);
 
 static void raise_stale_header_no_source_blocker(int height)
 {
@@ -314,6 +398,13 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
                          "operator page) (repeats=%llu)", target, peers,
                          (unsigned long long)defer_reps);
         }
+
+        /* Lane B3 — at ladder EXHAUSTION, if the refetch-only loop has been
+         * non-advancing the whole ladder, the DURABLE `blocks` row may itself
+         * be poisoned; escalate ONCE per target height to purge it (evidence-
+         * gated). The H*-advance witness still governs the clear; a second
+         * exhaustion at the same height falls through to the operator page. */
+        maybe_escalate_runtime_row_quarantine(target, canon, ms0);
         return COND_REMEDY_SKIP;
     }
 
@@ -391,6 +482,55 @@ static int cure_request_peer_refetch(int height)
         peers = ov;
 #endif
     return peers;
+}
+
+/* Lane B3 — bounded runtime poisoned-`blocks`-row escalation. Fires ONLY at
+ * ladder exhaustion (runtime_quarantine_escalation_due) and AT MOST ONCE per
+ * target height per process (runtime_quarantine_*_fired set). Requires the
+ * canonical hash (a frontier row to address) and a node_db handle. The purge
+ * itself is evidence-gated inside stage_repair_quarantine_blocks_row — a row
+ * that verifies OK is refused there, so this is safe to call whenever exhausted;
+ * the once-per-height gate only bounds the delete/refuse ATTEMPTS. */
+static void maybe_escalate_runtime_row_quarantine(
+    int target, const struct uint256 *canon, struct main_state *ms)
+{
+    if (!canon || target < 0)
+        return;
+    if (!runtime_quarantine_escalation_due())
+        return;
+    if (runtime_quarantine_already_fired(target))
+        return;
+
+    /* Mark BEFORE the attempt so a second exhaustion at this height can never
+     * re-enter — one attempt per height, whatever its outcome. */
+    runtime_quarantine_mark_fired(target);
+    atomic_fetch_add(&g_runtime_quarantine_escalations, 1);
+
+    struct node_db *ndb = runtime_row_quarantine_node_db();
+    if (!ndb) {
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] runtime row "
+                 "quarantine escalation h=%d: no node_db handle — skipped "
+                 "(refetch ladder + operator page remain)", target);
+        return;
+    }
+
+    struct stage_repair_row_quarantine_result qr;
+    bool purged = stage_repair_quarantine_blocks_row(
+        ndb, ms, (int64_t)target, canon, &qr);
+    if (purged)
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] EXHAUSTION h=%d: "
+                 "purged poisoned durable `blocks` row (verdict=%d) — header "
+                 "sync + body_fetch will re-request a clean body", target,
+                 qr.verdict);
+    else
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] EXHAUSTION h=%d: "
+                 "runtime row quarantine did NOT purge (attempted=%d "
+                 "refused_clean=%d row_absent=%d no_params=%d verdict=%d) — "
+                 "operator page remains the backstop", target, qr.attempted,
+                 qr.refused_clean, qr.row_absent, qr.no_params, qr.verdict);
 }
 
 static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
@@ -486,9 +626,15 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
     atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
+    /* Lane B3: drop the per-process quarantine bookkeeping so a fresh fixture
+     * starts with an empty remembered-height set. (In production this set is
+     * deliberately process-scoped — it survives condition cooldown re-arms.) */
+    atomic_store(&g_runtime_quarantine_fired_count, 0);
+    atomic_store(&g_runtime_quarantine_escalations, 0);
 #ifdef ZCL_TESTING
     atomic_store(&g_test_hstar_override, -1);
     atomic_store(&g_test_peer_count_override, -1);
+    g_test_node_db = NULL;
 #endif
     clear_stale_header_no_source_blocker();
     log_throttle_reset(&g_stale_repair_defer_log);

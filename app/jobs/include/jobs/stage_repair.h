@@ -65,6 +65,47 @@ struct stage_repair_body_fetch_gap {
     int body_fetch_cursor;
 };
 
+struct node_db;
+
+/* Outcome of one runtime poisoned-blocks-row quarantine attempt
+ * (stage_repair_quarantine_blocks_row). Exactly one of quarantined /
+ * refused_clean / row_absent / no_params is the operative result on a given
+ * call; `verdict` carries the enum block_row_verify_result the frozen verify
+ * produced. */
+struct stage_repair_row_quarantine_result {
+    bool attempted;      /* the evidence gate ran (a candidate row was read) */
+    bool quarantined;    /* row FAILED the frozen verify AND was purged */
+    bool refused_clean;  /* row PASSED the frozen verify — deliberately NOT deleted */
+    bool row_absent;     /* no addressable `blocks` row at (hash | height) */
+    bool no_params;      /* chain params unavailable — cannot prove evidence, refused */
+    bool deleted_by_height; /* purge used db_block_delete_by_height (hash unusable) */
+    int  height;
+    int  verdict;        /* enum block_row_verify_result */
+};
+
+/* Runtime cure (Lane B3): purge a poisoned `blocks`-table row at `height` whose
+ * durable header/solution the frozen verify REJECTS, so header sync + body_fetch
+ * re-request a clean body instead of the repair loop re-hitting the same poison
+ * forever. Evidence-gated and conservative: the row is read RAW and run through
+ * block_row_verify() against the canonical `hash`; the DELETE fires ONLY on a
+ * concrete failure verdict (hash-bind / high-hash / bad-Equihash). A row that
+ * verifies OK is REFUSED (never "row looks odd"). On a fired quarantine it also
+ * clears BLOCK_HAVE_DATA on the in-memory canonical block_index entry (via `ms`,
+ * best-effort) and re-emits the header event so the cleared re-fetch state is
+ * durable, bumps the process counter (stage_repair_runtime_row_quarantined), and
+ * raises a TRANSIENT typed blocker naming height+hash+verdict. Never touches
+ * tip_finalize_log, never lowers the served floor. `out` may be NULL. Returns
+ * true iff a row was purged. */
+bool stage_repair_quarantine_blocks_row(
+    struct node_db *ndb, struct main_state *ms, int64_t height,
+    const struct uint256 *hash,
+    struct stage_repair_row_quarantine_result *out);
+
+/* Process-monotonic tally of poisoned `blocks` rows purged by the RUNTIME
+ * quarantine above (distinct from the boot-time blocks-hydrate tally). Surfaced
+ * by diag_block_index_dump_state_json. Reentrant/lock-free. */
+int64_t stage_repair_runtime_row_quarantined(void);
+
 enum stage_repair_header_solution_poison
 stage_repair_header_solution_poison_mode(struct sqlite3 *db, int height);
 
