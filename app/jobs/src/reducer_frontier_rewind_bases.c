@@ -242,6 +242,13 @@ void reducer_frontier_push_rewind_bases_json(struct json_value *out,
 
 struct select_ctx {
     int32_t at_or_below;
+    /* When false, the compiled SHA3 checkpoint (a proven HASH, not loadable
+     * STATE) is EXCLUDED from candidacy — its verified snapshot artifact is
+     * absent, so it cannot be rewound to. The struct selector leaves this true
+     * (the checkpoint is always an O(delta) rewind height for stage_rederive_
+     * range, which re-derives from on-disk bodies + the intact delta chain);
+     * the gated wrapper passes the real artifact availability. */
+    bool compiled_checkpoint_loadable;
     struct reducer_frontier_rewind_base sv;       /* best self_derived=true */
     struct reducer_frontier_rewind_base borrowed; /* best self_derived=false */
     bool have_sv;
@@ -274,6 +281,13 @@ static void select_visit(void *vctx, const char *kind, int32_t height,
     if (height > c->at_or_below)
         return; /* above the requested ceiling — not a candidate */
 
+    /* Gate the compiled SHA3 checkpoint on artifact loadability: absent its
+     * verified snapshot the checkpoint is a proven hash with no materializable
+     * state, so a gated caller must not treat it as a reachable rewind base. */
+    if (!c->compiled_checkpoint_loadable &&
+        strcmp(kind, "compiled_checkpoint") == 0)
+        return;
+
     if (self_derived) {
         if (!c->have_sv || height > c->sv.height) {
             select_copy(&c->sv, kind, height, self_derived, ratified,
@@ -298,6 +312,12 @@ bool reducer_frontier_nearest_self_verified_base(
 
     struct select_ctx c = {0};
     c.at_or_below = at_or_below;
+    /* This selector treats the compiled checkpoint as an always-usable O(delta)
+     * rewind HEIGHT: its consumer (stage_rederive_range) re-derives from on-disk
+     * bodies + the intact delta chain and never loads the snapshot artifact, so
+     * artifact availability is not this selector's concern. Recovery rungs that
+     * must RELOAD checkpoint state use the _loadable_ variant below. */
+    c.compiled_checkpoint_loadable = true;
     enumerate_rewind_bases(select_visit, &c);
 
     /* SELF-VERIFIED FIRST: a genuinely self-verified rung always beats a
@@ -312,4 +332,34 @@ bool reducer_frontier_nearest_self_verified_base(
         return true;
     }
     return false; // raw-return-ok:no-base-at-or-below-ceiling
+}
+
+bool reducer_frontier_nearest_loadable_self_verified_base(
+    int32_t at_or_below, bool compiled_checkpoint_loadable,
+    int32_t *base_height_out, const char **base_kind_out)
+{
+    if (base_height_out)
+        *base_height_out = -1;
+    if (base_kind_out)
+        *base_kind_out = "none";
+
+    struct select_ctx c = {0};
+    c.at_or_below = at_or_below;
+    c.compiled_checkpoint_loadable = compiled_checkpoint_loadable;
+    enumerate_rewind_bases(select_visit, &c);
+
+    /* Self-verified ONLY (borrowed roots are never a recovery-rung base) and
+     * FAIL-CLOSED: no self-verified base -> false, so a genuinely absent verified
+     * base surfaces as a real blocker upstream rather than a faked success. */
+    if (!c.have_sv)
+        return false; // raw-return-ok:fail-closed-no-self-verified-base
+    if (base_height_out)
+        *base_height_out = c.sv.height;
+    if (base_kind_out)
+        /* Map to a static literal (c.sv.kind is stack-local and dies with this
+         * frame). Only these two self_derived kinds reach here. */
+        *base_kind_out = strcmp(c.sv.kind, "compiled_checkpoint") == 0
+                             ? "compiled_checkpoint"
+                             : "sealed_coins_sha3";
+    return true;
 }

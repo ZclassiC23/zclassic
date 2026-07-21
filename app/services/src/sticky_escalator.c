@@ -35,7 +35,6 @@
 #include "storage/boot_auto_refold.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
-#include "storage/seal_kv.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -171,6 +170,15 @@ extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
                                  int from_height, int to_height,
                                  struct stage_rederive_range_result *out)
     __attribute__((weak));
+
+/* The ONE canonical nearest-self-verified-base selector (app/jobs/src/reducer_
+ * frontier_rewind_bases.c), reached via the same private-jobs-symbol extern
+ * idiom this file already uses for stage_rederive_range. The _loadable_ variant
+ * gates the compiled checkpoint on artifact availability and returns
+ * self-verified bases only (never a borrowed root). */
+extern bool reducer_frontier_nearest_loadable_self_verified_base(
+    int32_t at_or_below, bool compiled_checkpoint_loadable,
+    int32_t *base_height_out, const char **base_kind_out);
 
 /* ── Default rung actions ──────────────────────────────────────────────
  *
@@ -321,11 +329,10 @@ static void name_dependency_blocker(const char *id, const char *reason)
 
 static enum sticky_rung_result rung_resnapshot_default(void)
 {
-    /* In-process re-derivation from the nearest SELF-VERIFIED rewind base — the
-     * newest ratified seal, else the compiled anchor. This is emphatically NOT
-     * a borrowed-state snapshot pull (that would reinstate the exact trust root
-     * the sovereign cure deletes, docs/work/self-verified-tip-plan.md): the base
-     * is a locally-verified checkpoint and the forward stages re-fold the SAME
+    /* In-process re-derivation from the nearest SELF-VERIFIED rewind base.
+     * Emphatically NOT a borrowed-state snapshot pull (that would reinstate the
+     * trust root the sovereign cure deletes, docs/work/self-verified-tip-plan.md):
+     * the base is locally verified and the forward stages re-fold the SAME
      * on-disk bodies to the SAME verdicts (consensus parity preserved). */
     sqlite3 *db = progress_store_db();
     struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
@@ -337,47 +344,45 @@ static enum sticky_rung_result rung_resnapshot_default(void)
         return STICKY_RUNG_FAILED;
     }
 
-    /* Nearest self-verified rewind base: a ratified seal (SHA3-committed coins
-     * set at a 1000-block grid point) beats the compiled anchor. */
+    /* Nearest self-verified rewind base via the ONE canonical enumerator
+     * (reducer_frontier_rewind_bases) — the SAME source of truth the JSON
+     * observability and the generic rewind driver fold over. Self-verified
+     * FIRST (a self-valid seal beats the compiled checkpoint by nearness); a
+     * BORROWED root is never returned. The compiled SHA3 checkpoint is a proven
+     * HASH, not loadable STATE — so it is a usable base ONLY when its verified
+     * snapshot artifact is on disk: reachable whenever the artifact is present,
+     * fail-closed excluded when absent. A self-valid seal needs no artifact. */
+    int32_t anchor_h = -1;
+    bool artifact =
+        boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
+                                                   &anchor_h);
     int32_t base_h = -1;
     const char *base_kind = "none";
-    struct seal_record seal;
-    bool found = false;
-    if (seal_kv_newest_ratified(db, &seal, &found) && found) {
-        base_h = seal.height;
-        base_kind = "ratified_seal";
-    } else {
-        int32_t anchor_h = -1;
-        if (boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
-                                                       &anchor_h)) {
-            base_h = anchor_h;
-            base_kind = "compiled_anchor";
-        }
-    }
+    bool have_base = reducer_frontier_nearest_loadable_self_verified_base(
+        INT32_MAX, artifact, &base_h, &base_kind);
 
-    if (base_h < 0) {
-        /* Precondition absent: no reachable self-verified base. Name the clue
-         * and defer to the durable from-bodies rungs (reindex / self_mint_refold
-         * / refold_from_anchor) which re-derive without a rewind base. */
+    if (!have_base) {
+        /* Precondition absent: no reachable self-verified base (no self-valid
+         * seal; compiled checkpoint unusable because its artifact is absent).
+         * FAIL-CLOSED — name the clue and defer to the durable from-bodies rungs
+         * (reindex / self_mint_refold / refold_from_anchor). Never a faked
+         * "done": a missing verified base is a real blocker. */
         name_dependency_blocker(
             "sticky_escalator.resnapshot_no_base",
-            "resnapshot: no self-verified rewind base reachable (no ratified "
-            "seal, no compiled-anchor artifact) — deferring to the durable "
-            "reindex/refold re-derivation");
+            "resnapshot: no self-verified rewind base reachable (no self-valid "
+            "seal, no verified compiled-anchor snapshot artifact) — deferring "
+            "to the durable reindex/refold re-derivation");
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=sticky-resnapshot-skip reason=no_verified_base");
         return STICKY_RUNG_FAILED;
     }
 
-    /* If the in-process range re-derivation primitive is linked, run it from the
-     * base: it rewinds the stage cursors to base_h and re-derives forward from
-     * PoW-verified on-disk bodies. Detected at runtime via the weak symbol. */
+    /* If the in-process range re-derivation primitive is linked (weak symbol,
+     * detected at runtime), run it from the base. */
     if (stage_rederive_range) {
-        /* Rewind to the self-verified base and re-derive [base_h, tip] from
-         * PoW-verified on-disk bodies. from_height=base_h, to_height=the tip we
-         * observed (H* / active height); the primitive refuses cleanly if the
-         * tip is not above the base. out=NULL: we only need the ran/refused
-         * signal, which the boolean return carries. */
+        /* Rewind to base_h and re-derive [base_h, observed tip] from
+         * PoW-verified on-disk bodies; the primitive refuses cleanly if the tip
+         * is not above the base. out=NULL: only the ran/refused signal is used. */
         bool ran = stage_rederive_range(db, ms, base_h, (int)observe_tip(),
                                         NULL);
         LOG_WARN("sticky_escalator",
@@ -391,10 +396,9 @@ static enum sticky_rung_result rung_resnapshot_default(void)
         return ran ? STICKY_RUNG_PROGRESSING : STICKY_RUNG_FAILED;
     }
 
-    /* Base reachable but no in-process rewind consumer wired yet: name the base
-     * + the missing consumer and defer to the durable from-bodies rungs. Honest
-     * (a reachable base is real progress toward the cure) — never a borrowed
-     * pull, never a faked "done". */
+    /* Base reachable but no in-process rewind consumer linked: name the base +
+     * missing consumer and defer to the durable from-bodies rungs (never a
+     * borrowed pull, never a faked "done"). */
     {
         char reason[BLOCKER_REASON_MAX];
         snprintf(reason, sizeof(reason),
