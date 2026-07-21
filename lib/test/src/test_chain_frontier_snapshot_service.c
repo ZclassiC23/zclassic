@@ -232,6 +232,133 @@ static int t_consistent_failure_free_gate(void)
     return failures;
 }
 
+/* ── chain_frontier_snapshot_clean_genesis ────────────────────────── */
+
+/* A clean-genesis snapshot: every _consistent gate EXCEPT the durable-authority
+ * one, plus served H* = genesis (0) under a RUNTIME authority. This is what
+ * chain_frontier_snapshot_collect produces on a never-folded node after the
+ * install-time runtime authority warm. */
+static void clean_genesis_snapshot(struct chain_frontier_snapshot *s)
+{
+    baseline_snapshot(s);
+    s->durable_authority_known = false; /* no fold → no durable finalization */
+    s->authority_source = CHAIN_FRONTIER_AUTHORITY_RUNTIME_PUBLICATION;
+    s->served.height = 0;               /* H* is genesis */
+}
+
+static int t_clean_genesis_baseline_true(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: clean genesis true") {
+        clean_genesis_snapshot(&s);
+        ASSERT(chain_frontier_snapshot_clean_genesis(&s));
+        /* And the strict _consistent predicate is FALSE for the same snapshot
+         * (durable authority missing) — proving the two are distinct gates. */
+        ASSERT(!chain_frontier_snapshot_consistent(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_requires_height_zero(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: served H*>0 (mid-fold) "
+              "false") {
+        clean_genesis_snapshot(&s);
+        s.served.height = 1; /* any fold above genesis is not clean-genesis */
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_requires_runtime_authority(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: durable-source authority "
+              "false") {
+        clean_genesis_snapshot(&s);
+        s.authority_source = CHAIN_FRONTIER_AUTHORITY_DURABLE_TIP_FINALIZE_LOG;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_rejects_none_authority(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: NONE-source authority "
+              "false") {
+        clean_genesis_snapshot(&s);
+        s.authority_source = CHAIN_FRONTIER_AUTHORITY_NONE;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_inherits_bindings_gate(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: inherits bindings_known "
+              "gate") {
+        clean_genesis_snapshot(&s);
+        s.served.binding_known = false;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_authority_mismatch_gate(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: authority mismatch "
+              "false") {
+        clean_genesis_snapshot(&s);
+        s.authority_matches_served = false;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_work_monotone_gate(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: work not monotone "
+              "false") {
+        clean_genesis_snapshot(&s);
+        s.work_monotone = false;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_failure_free_gate(void)
+{
+    int failures = 0;
+    struct chain_frontier_snapshot s;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: not failure_free false") {
+        clean_genesis_snapshot(&s);
+        s.failure_free = false;
+        ASSERT(!chain_frontier_snapshot_clean_genesis(&s));
+    } TEST_END
+    return failures;
+}
+
+static int t_clean_genesis_null_false(void)
+{
+    int failures = 0;
+    TEST_CASE("chain_frontier_snapshot_clean_genesis: NULL false") {
+        ASSERT(!chain_frontier_snapshot_clean_genesis(NULL));
+    } TEST_END
+    return failures;
+}
+
 /* ── chain_frontier_snapshot_equal ────────────────────────────────── */
 
 static int t_equal_identical_true(void)
@@ -357,6 +484,16 @@ int test_chain_frontier_snapshot_service(void)
     failures += t_consistent_work_monotone_gate();
     failures += t_consistent_validity_sufficient_gate();
     failures += t_consistent_failure_free_gate();
+
+    failures += t_clean_genesis_baseline_true();
+    failures += t_clean_genesis_requires_height_zero();
+    failures += t_clean_genesis_requires_runtime_authority();
+    failures += t_clean_genesis_rejects_none_authority();
+    failures += t_clean_genesis_inherits_bindings_gate();
+    failures += t_clean_genesis_authority_mismatch_gate();
+    failures += t_clean_genesis_work_monotone_gate();
+    failures += t_clean_genesis_failure_free_gate();
+    failures += t_clean_genesis_null_false();
 
     failures += t_equal_identical_true();
     failures += t_equal_top_level_scalar_diff();

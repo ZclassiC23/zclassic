@@ -481,6 +481,99 @@ int test_consensus_state_chain_binding(void)
               consensus_state_chain_binding_decide(
                   &manifest, &bootstrap_replaced).ok);
 
+    /* ── Fresh-genesis instant-on bootstrap (the -3 relaxation, this lane) ─────
+     * A genuinely fresh (never-folded) node has NO durable tip_finalize authority
+     * yet, so before/after_frontier_consistent are FALSE — today it refuses at -3
+     * BEFORE the -4 header-bootstrap bind is even reached. This lane relaxes -3
+     * for exactly one case: a clean, quiescent genesis node (fresh_genesis_
+     * bootstrap set by evidence_build from a coherent RUNTIME frontier at H*=0
+     * with no partial fold state), and ONLY under compiled-checkpoint authority.
+     * The -4 crypto anchor and -11 header-tip validity stay fully enforced. The
+     * six adversarial cases below are the lane's acceptance bar. */
+
+    /* A fresh-genesis node: durable frontier consistency is FALSE (no durable
+     * authority), but the clean-genesis eligibility flag is set and the compiled
+     * checkpoint authority matches. Everything else mirrors the header-bootstrap
+     * shape (H*=0, checkpoint header present with baked hash + PoW pass record). */
+    struct consensus_state_chain_binding_observation fresh_genesis = bootstrap;
+    fresh_genesis.before_frontier_consistent = false;
+    fresh_genesis.after_frontier_consistent = false;
+    fresh_genesis.frontier_unchanged = true;
+    fresh_genesis.fresh_genesis_bootstrap = true;
+
+    /* (A1) Clean genesis (served H*=0, checkpoint header==baked, PoW pass record,
+     * cp_auth) → ADMIT even though the durable frontier is not yet consistent. */
+    CSB_CHECK("fresh-genesis: clean quiescent genesis ADMITs the checkpoint",
+              consensus_state_chain_binding_decide(
+                  &manifest, &fresh_genesis).ok);
+    CSB_CHECK("fresh-genesis: admit reports checkpoint authority was used",
+              consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &fresh_genesis));
+
+    /* (A2) Mid-fold / partial-state node: NOT clean genesis (flag false) and the
+     * durable frontier is not consistent → still REFUSE at -3. */
+    struct consensus_state_chain_binding_observation midfold = fresh_genesis;
+    midfold.fresh_genesis_bootstrap = false;
+    struct zcl_result midfold_r =
+        consensus_state_chain_binding_decide(&manifest, &midfold);
+    CSB_CHECK("fresh-genesis: mid-fold (no clean-genesis flag) refuses at -3",
+              !midfold_r.ok && midfold_r.code == -3);
+
+    /* (A3) Wrong block at the checkpoint height (hash != baked) on a clean-genesis
+     * node → -3 is relaxed but the -4 header-bootstrap bind refuses on the hash. */
+    struct consensus_state_chain_binding_observation fg_wrong_block =
+        fresh_genesis;
+    fg_wrong_block.selected_bundle_hash[0] ^= 1u;
+    struct zcl_result fg_wrong =
+        consensus_state_chain_binding_decide(&manifest, &fg_wrong_block);
+    CSB_CHECK("fresh-genesis: wrong-block checkpoint header refuses at -4",
+              !fg_wrong.ok && fg_wrong.code == -4);
+
+    /* (A4) No durable validate_headers pass record → the crypto anchor is absent,
+     * -4 refuses (the PoW pass at this exact height+hash is the sovereign fact). */
+    struct consensus_state_chain_binding_observation fg_no_pass = fresh_genesis;
+    fg_no_pass.bundle_header_pass_record = false;
+    struct zcl_result fg_pass =
+        consensus_state_chain_binding_decide(&manifest, &fg_no_pass);
+    CSB_CHECK("fresh-genesis: missing PoW pass record refuses at -4",
+              !fg_pass.ok && fg_pass.code == -4);
+
+    /* (A5) Non-checkpoint bundle: cp_auth false → the -3 fresh-genesis relaxation
+     * is unavailable, so the durable-frontier gate refuses at -3 (the instant-on
+     * path is exclusively for the compiled checkpoint). */
+    struct consensus_state_checkpoint_authority fg_non_cp_auth = authority;
+    fg_non_cp_auth.block_hash[0] ^= 1u; /* manifest no longer byte-reproduces baked */
+    struct consensus_state_chain_binding_observation fg_non_cp = fresh_genesis;
+    fg_non_cp.checkpoint_authority = fg_non_cp_auth;
+    struct zcl_result fg_non_cp_r =
+        consensus_state_chain_binding_decide(&manifest, &fg_non_cp);
+    CSB_CHECK("fresh-genesis: non-checkpoint bundle refuses at -3 (no cp_auth)",
+              !fg_non_cp_r.ok && fg_non_cp_r.code == -3 &&
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &fg_non_cp));
+
+    /* (A6) No regression: a fully-folded target (durable frontier consistent,
+     * served H* >= checkpoint) still admits via the normal path even with the
+     * fresh-genesis flag left false. */
+    struct consensus_state_chain_binding_observation fg_replaced = fresh_genesis;
+    fg_replaced.fresh_genesis_bootstrap = false;
+    fg_replaced.before_frontier_consistent = true;
+    fg_replaced.after_frontier_consistent = true;
+    fg_replaced.durable_served_height = manifest.height;
+    CSB_CHECK("fresh-genesis: state-replacement path unaffected (still admits)",
+              consensus_state_chain_binding_decide(
+                  &manifest, &fg_replaced).ok);
+
+    /* (A7) The relaxation touches ONLY -3: a clean-genesis node whose frontier
+     * MOVED between samples (frontier_unchanged false) still refuses at -3 — the
+     * determinism gate is never relaxed. */
+    struct consensus_state_chain_binding_observation fg_moved = fresh_genesis;
+    fg_moved.frontier_unchanged = false;
+    struct zcl_result fg_moved_r =
+        consensus_state_chain_binding_decide(&manifest, &fg_moved);
+    CSB_CHECK("fresh-genesis: a moving frontier still refuses at -3",
+              !fg_moved_r.ok && fg_moved_r.code == -3);
+
     printf("consensus_state_chain_binding: %s\n",
            failures ? "FAILED" : "ALL PASSED");
     return failures;

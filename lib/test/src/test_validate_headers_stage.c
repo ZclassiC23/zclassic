@@ -60,6 +60,13 @@ extern struct block_tree_db *g_active_block_tree;
  * sibling-private header). */
 void validate_headers_validator_set_node_db(struct node_db *ndb);
 
+/* Gap C seam (ZCL_TESTING-only, validate_headers_validator.c): override the
+ * validator that validate_headers_stage_ensure_pass_record runs, so the focused
+ * test can drive its pass/fail branches without a mined Equihash header.
+ * Production always uses the real default validator. NULL restores the default. */
+void validate_headers_ensure_set_validator_for_test(vh_validator_fn fn,
+                                                    void *user);
+
 /* W1 seam: the default header validator (PoW + Equihash from the ordered
  * source resolver) — declared in the sibling-private internal header. The
  * W1 resolver tests call it DIRECTLY to exercise the repair-table source
@@ -1776,6 +1783,74 @@ int test_validate_headers_stage(void)
 
         vh_teardown(dir, &ms, &sc);
     }
+
+    /* ── Gap C: on-demand single-header pass-record (the instant-on seam) ───
+     * validate_headers_stage_ensure_pass_record resolves the header at a height,
+     * runs the configured validator (the stage's g_validator, else the default),
+     * and durably records a PASS row on success — the mechanism that gives a
+     * headers-first (--importblockindex) substrate the checkpoint-header pass
+     * record the -4 header-bootstrap bind needs, without running the whole
+     * forward stage. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("ensure-pass: setup",
+                 vh_setup("ensure_pass_record", 8, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        /* Drive ensure_pass_record's validator branch with the passing stub. */
+        validate_headers_ensure_set_validator_for_test(stub_pass, NULL);
+        sqlite3 *db = progress_store_db();
+
+        VH_CHECK("ensure-pass: h=5 has no pass record initially",
+                 !validate_headers_stage_has_pass_record(5, &sc.hashes[5]));
+        VH_CHECK("ensure-pass: ensure_pass_record(h=5) -> true",
+                 validate_headers_stage_ensure_pass_record(&ms, 5));
+        VH_CHECK("ensure-pass: h=5 pass record now present",
+                 validate_headers_stage_has_pass_record(5, &sc.hashes[5]));
+        int rows_after = log_row_count(db);
+        VH_CHECK("ensure-pass: exactly one row written",
+                 rows_after == 1);
+
+        /* Idempotent: a second call returns true and writes no extra row. */
+        VH_CHECK("ensure-pass: idempotent second call -> true",
+                 validate_headers_stage_ensure_pass_record(&ms, 5));
+        VH_CHECK("ensure-pass: idempotent -> no extra log row",
+                 log_row_count(db) == rows_after);
+
+        /* Absent height (above the header tip, no header index) -> false. */
+        VH_CHECK("ensure-pass: absent height -> false",
+                 !validate_headers_stage_ensure_pass_record(&ms, 999));
+        /* Null ms / negative height fail closed. */
+        VH_CHECK("ensure-pass: null ms -> false",
+                 !validate_headers_stage_ensure_pass_record(NULL, 5));
+        VH_CHECK("ensure-pass: negative height -> false",
+                 !validate_headers_stage_ensure_pass_record(&ms, -1));
+
+        validate_headers_ensure_set_validator_for_test(NULL, NULL);
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* A FAILING validator (wrong-block / PoW-invalid header) writes NO pass
+     * record and returns false — the header-bootstrap bind then still refuses. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 4;
+        ctx.reason = "stub-injected-failure";
+        VH_CHECK("ensure-fail: setup",
+                 vh_setup("ensure_pass_fail", 8, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_ensure_set_validator_for_test(stub_fail_at, &ctx);
+        VH_CHECK("ensure-fail: failing validator -> false",
+                 !validate_headers_stage_ensure_pass_record(&ms, 4));
+        VH_CHECK("ensure-fail: failing validator wrote no pass record",
+                 !validate_headers_stage_has_pass_record(4, &sc.hashes[4]));
+        VH_CHECK("ensure-fail: no rows written at all",
+                 log_row_count(progress_store_db()) == 0);
+        validate_headers_ensure_set_validator_for_test(NULL, NULL);
+        vh_teardown(dir, &ms, &sc);
+    }
+
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

@@ -28,6 +28,7 @@
 #include "framework/condition.h"                     /* condition_engine_*_main_state */
 #include "jobs/reducer_frontier.h"                    /* reducer_frontier_provable_tip_reset */
 #include "jobs/tip_finalize_stage.h"                 /* tip_finalize_stage_warm_authority_caches */
+#include "jobs/validate_headers_stage.h"             /* validate_headers_stage_ensure_pass_record */
 #include "models/database.h"                          /* node_db_state_delete */
 #include "services/consensus_state_chain_binding_service.h"
 #include "services/consensus_state_publication_cas.h"
@@ -458,6 +459,26 @@ struct zcl_result consensus_state_install_from_bundle(
         memcpy(chain_req.checkpoint_authority.sapling_frontier_root,
                rom_cp->sapling_frontier_root, 32);
     }
+
+    /* (3d) Gap C — instant-on checkpoint-header pass record. A headers-first
+     * (--importblockindex / fast-sync) substrate bulk-loads the block index but
+     * never runs the forward reducer, so validate_headers_log carries no pass
+     * records. The -4 header-bootstrap crypto anchor requires a full-Equihash-PoW
+     * pass record at EXACTLY the checkpoint height, so — under compiled-checkpoint
+     * authority only — genuinely PoW-validate the ONE imported checkpoint header
+     * now and durably record the pass, exactly as a P2P node's stage would have.
+     * Idempotent + fail-open: a node that already validated it (real P2P), or one
+     * whose checkpoint header is absent / wrong-block / PoW-invalid, is unchanged
+     * here and the chain-binding gate below still refuses. A non-checkpoint
+     * bundle (authority unavailable) never triggers this. */
+    if (chain_req.checkpoint_authority.available && ms &&
+        !validate_headers_stage_ensure_pass_record(
+            ms, chain_req.checkpoint_authority.height))
+        LOG_INFO(ICB_SUBSYS,
+                 "instant-on checkpoint-header pass record not established at "
+                 "h=%d (header absent / already-present miss / validate failed) "
+                 "— chain-binding gate decides", chain_req.checkpoint_authority.height);
+
     struct consensus_state_chain_evidence *chain_evidence = NULL;
     struct zcl_result chain_built =
         consensus_state_chain_evidence_build(&chain_req, &chain_evidence);

@@ -21,6 +21,10 @@
 #include "storage/progress_store.h"
 #include "services/block_row_verify.h"
 #include "validation/check_block.h"
+#include "validation/chainstate.h"          /* active_chain_at */
+#include "validation/main_state.h"          /* struct main_state */
+#include "validate_headers_log_store.h"     /* validate_headers_log_insert */
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -571,4 +575,90 @@ bool validate_headers_default_validator(const struct block_index *bi,
     if (had_hash_mismatch)
         snprintf(out_reason, out_reason_size, "header-source-hash-mismatch");
     return false;
+}
+
+/* ── On-demand single-header pass record (the instant-on seam) ──────────────
+ * See jobs/validate_headers_stage.h for the full contract. This is the
+ * single-header form of the reducer stage's per-height validation, kept here in
+ * the validator TU (a validation concern) so the Job file stays under its size
+ * ceiling. It resolves the header index (active_chain_at, then the header-tip
+ * ancestor walk — the same resolution the batched step uses), runs the FULL
+ * canonical validator, and durably records a validate_headers_log PASS row on
+ * success. Production ALWAYS uses validate_headers_default_validator (the real
+ * PoW + Equihash pipeline); the ZCL_TESTING override below lets the focused unit
+ * test drive the pass/fail branches without a mined Equihash header. */
+#ifdef ZCL_TESTING
+static vh_validator_fn g_ensure_validator_override = NULL;
+static void           *g_ensure_validator_override_user = NULL;
+void validate_headers_ensure_set_validator_for_test(vh_validator_fn fn,
+                                                    void *user);
+void validate_headers_ensure_set_validator_for_test(vh_validator_fn fn,
+                                                    void *user)
+{
+    g_ensure_validator_override = fn;
+    g_ensure_validator_override_user = user;
+}
+#endif
+
+bool validate_headers_stage_ensure_pass_record(struct main_state *ms,
+                                               int32_t height)
+{
+    if (!ms || height < 0)
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
+    /* Resolve the header at `height`: the connected chain first, then the
+     * header-tip ancestor walk (read-only — chain_active is never mutated).
+     * Works before validate_headers_stage_init: no Job state is touched. */
+    struct block_index *bi = active_chain_at(&ms->chain_active, height);
+    if (!bi && ms->pindex_best_header &&
+        height <= ms->pindex_best_header->nHeight)
+        bi = block_index_get_ancestor(ms->pindex_best_header, height);
+    if (!bi || !bi->phashBlock)
+        return false;
+
+    /* Idempotent: a P2P node's forward stage, or a prior call, already wrote it
+     * — never re-run the Equihash work. */
+    if (validate_headers_stage_has_pass_record(height, bi->phashBlock))
+        return true;
+
+    if (!validate_headers_log_ensure_schema(db))
+        return false; // raw-return-ok:schema-ensure-logs-internally
+
+    vh_validator_fn validator = validate_headers_default_validator;
+    void *validator_user = NULL;
+#ifdef ZCL_TESTING
+    if (g_ensure_validator_override) {
+        validator = g_ensure_validator_override;
+        validator_user = g_ensure_validator_override_user;
+    }
+#endif
+    /* FULL canonical validation: PoW target + Equihash solution. A wrong-block or
+     * PoW-invalid header at `height` fails here → NO pass row is written → the
+     * downstream header-bootstrap bind still refuses. */
+    char reason[VH_MAX_REASON];
+    reason[0] = '\0';
+    if (!validator(bi, NULL, reason, sizeof(reason), validator_user)) {
+        LOG_WARN("validate_headers",
+                 "on-demand checkpoint-header validate FAILED h=%d reason=%s",
+                 height, reason[0] ? reason : "(none)");
+        return false;
+    }
+
+    progress_store_tx_lock();
+    bool wrote =
+        validate_headers_log_insert(db, height, bi->phashBlock, true, NULL);
+    progress_store_tx_unlock();
+    if (!wrote) {
+        LOG_WARN("validate_headers",
+                 "on-demand checkpoint-header pass-record insert failed h=%d",
+                 height);
+        return false;
+    }
+    LOG_INFO("validate_headers",
+             "on-demand checkpoint-header PASS record written h=%d (full "
+             "Equihash PoW verified)", height);
+    return validate_headers_stage_has_pass_record(height, bi->phashBlock);
 }
