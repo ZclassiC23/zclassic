@@ -761,15 +761,25 @@ static bool connman_addr_is_advertised_external(
     return port == 0 || addr->svc.port == port;
 }
 
+/* Failure-aware dial backoff for an addrman candidate, keyed on its
+ * consecutive-failure count. A first miss recovers fast (may be transient); a
+ * persistently dead-on-arrival address (refuses TCP, or accepts it yet never
+ * handshakes, so addrman_good() — which zeroes attempts — never fires) ramps to
+ * a 6 h ceiling instead of the old 1 h, so a large stale peers.dat stops
+ * re-dialing every known-dead address up to 24x/day and spends each batch slot
+ * on a DISTINCT live candidate. Safe for recovery: a peer that ever handshook
+ * has attempts reset to 0, and fresh/harvested/seed addresses (attempts==0) are
+ * always dialable, so ONLY never-worked addresses are backed off. */
 static int connman_addrman_retry_cooldown(const struct addr_info *info)
 {
     if (!info || info->attempts <= 0)
         return 0;
-    if (info->attempts >= 6)
-        return 3600;
-    if (info->attempts >= 3)
-        return 900;
-    return 60;
+    if (info->attempts >= 10) return 21600;  /* 6 h  — effectively dead */
+    if (info->attempts >= 7)  return 7200;   /* 2 h  */
+    if (info->attempts >= 5)  return 3600;   /* 1 h  */
+    if (info->attempts >= 3)  return 900;    /* 15 m */
+    if (info->attempts >= 2)  return 300;    /* 5 m  */
+    return 60;                               /* 1 m  — first miss */
 }
 
 static bool connman_addrman_candidate_usable(struct connman *cm,
