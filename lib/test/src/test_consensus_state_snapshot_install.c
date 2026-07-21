@@ -3326,6 +3326,152 @@ int test_consensus_state_snapshot_install(void)
         test_cleanup_tmpdir(cc_dir);
     }
 
+    /* ── CHECKPOINT_ROM ACTIVATE authority (full-install integration) ───────
+     * The SOVEREIGN, header-independent ignition path: a bundle whose manifest
+     * reproduces EVERY component of the compiled shielded ROM state checkpoint
+     * (g_rom_state_checkpoint) byte-for-byte lifts ACTIVATE containment with NO
+     * peer, NO validated header, and NO independent replay receipt — bound to a
+     * fingerprint baked into the binary. The resolver and admission bindings are
+     * unit-tested (test_checkpoint_rom_authority, rom_keystone_binding_tests);
+     * this proves the FULL atomic install end-to-end:
+     *   (i)  no matching keystone at the bundle height -> the ADMIT-worthy bundle
+     *        resolves NO ignition authority and stays VERIFIED_CONTAINED, writing
+     *        NOTHING (the fail-closed posture for an unmatched bundle / peer tip);
+     *   (ii) a keystone reproducing the bundle byte-for-byte at the checkpoint
+     *        height -> the atomic install PROCEEDS, commits, and NAMES
+     *        authority=checkpoint_rom. */
+    {
+        b.anchors[0].height = b.height;
+        b.anchors[1].height = b.height;
+        char rom_dir[320];
+        snprintf(rom_dir, sizeof(rom_dir), "%s/ckpt-rom", dir);
+        CSI_CHECK("checkpoint-rom: datadir", mkdir(rom_dir, 0700) == 0);
+        CSI_CHECK("checkpoint-rom: live progress store opens",
+                  progress_store_open(rom_dir));
+        sqlite3 *pdb = progress_store_db();
+        int rom_dir_fd = open(rom_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        reducer_frontier_test_set_compiled_anchor(0);
+
+        uint8_t borrowed_txid[32];
+        memset(borrowed_txid, 0x5a, sizeof(borrowed_txid));
+        const uint8_t borrowed_script[] = {0x51};
+        CSI_CHECK("checkpoint-rom: wedged store seeds (borrowed coin, empty "
+                  "anchors, positive activation cursor)",
+                  pdb && coins_kv_ensure_schema(pdb) &&
+                  progress_meta_table_ensure(pdb) &&
+                  anchor_kv_ensure_schema(pdb) &&
+                  nullifier_kv_ensure_schema(pdb) &&
+                  anchor_kv_initialize_history(pdb, b.height) &&
+                  nullifier_kv_initialize_history(pdb, b.height) &&
+                  coins_kv_add(pdb, borrowed_txid, 0, 4242, b.height, false,
+                               borrowed_script, sizeof(borrowed_script)) &&
+                  hs_seed_current_frontier(pdb, b.height, b.block_hash));
+
+        CSI_CHECK("checkpoint-rom: valid complete bundle writes",
+                  write_bundle(&b, CSI_VALID));
+
+        /* Build the ADMIT decision + exact receipt binding activate requires,
+         * exactly as the boot adapter would. */
+        struct consensus_state_activate_request areq;
+        memset(&areq, 0, sizeof(areq));
+        areq.bundle_path = b.path;
+        areq.expected_height = b.height;
+        memcpy(areq.expected_block_hash, b.block_hash, 32);
+        areq.datadir_fd = rom_dir_fd;
+        areq.datadir_display = rom_dir;
+
+        struct consensus_state_artifact_evidence *rev = NULL;
+        struct zcl_result revr =
+            consensus_state_artifact_evidence_open(b.path, -1, &rev);
+        struct consensus_state_publication_cas_inputs rin;
+        memset(&rin, 0, sizeof(rin));
+        bool rin_ok = revr.ok && rev &&
+            consensus_state_artifact_evidence_manifest_copy(rev, &rin.manifest) &&
+            consensus_state_artifact_evidence_digest(
+                rev, rin.artifact_logical_digest) &&
+            consensus_state_artifact_evidence_receipt_digest(
+                rev, rin.artifact_receipt_digest);
+        rin.chain_evidence_present = true;
+        rin.chain_bound_to_artifact = true;
+        memset(rin.chain_evidence_digest, 0xa5, 32);
+        rin.source_receipt_present = true;
+        rin.source_receipt = b.receipt;
+        rin.target_lane = CONSENSUS_STATE_TARGET_LANE_COPY_PROOF;
+        rin.frontier_known = true;
+        memcpy(rin.frontier_hash, b.block_hash, 32);
+        rin.frontier_height = b.height;
+        struct consensus_state_publication_decision_record rdec;
+        consensus_state_publication_cas_decide(&rin, &rdec);
+        struct consensus_state_publication_decision_record rom_decision;
+        memset(&rom_decision, 0, sizeof(rom_decision));
+        CSI_CHECK("checkpoint-rom: complete bundle CAS-decides ADMIT",
+                  rin_ok && rdec.decision == CONSENSUS_PUBLICATION_ADMIT);
+        rom_decision = rdec;
+        memcpy(areq.expected_artifact_receipt_digest,
+               rdec.artifact_receipt_digest, 32);
+        areq.publication_decision = &rom_decision;
+        if (rev)
+            consensus_state_artifact_evidence_free(rev);
+
+        /* CHECKPOINT_ROM is header-independent: no validated-header Sapling root,
+         * no SHA3 override, and the ZCL_TESTING replay hook is OFF — the compiled
+         * keystone is the ONLY authority that can lift containment here. */
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            false);
+        struct consensus_state_activate_result rom_ares;
+
+        /* (i) NEGATIVE — with NO matching keystone at the bundle height (the
+         * compiled production keystone is inert at this small fixture height),
+         * the ADMIT-worthy bundle resolves NO ignition authority and stays
+         * VERIFIED_CONTAINED, writing nothing. This is precisely the fail-closed
+         * posture the ignition whitelist enforces for an unmatched bundle. */
+        checkpoints_reset_rom_state_override_for_test();
+        sqlite3_int64 rom_contained_changes = sqlite3_total_changes64(pdb);
+        int rom_contained_backups = prior_generation_count(rom_dir);
+        CSI_CHECK("checkpoint-rom: no matching keystone stays CONTAINED (nothing "
+                  "written)",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &rom_ares) &&
+                  !rom_ares.activated &&
+                  rom_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  rom_ares.prior_generation_path[0] == '\0' &&
+                  sqlite3_total_changes64(pdb) == rom_contained_changes &&
+                  prior_generation_count(rom_dir) == rom_contained_backups &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (ii) POSITIVE — a keystone reproducing the bundle byte-for-byte at the
+         * checkpoint height lifts containment via CHECKPOINT_ROM with NO header
+         * and NO receipt: the atomic install proceeds, commits, cures the wedge,
+         * and names the authority. */
+        struct rom_state_checkpoint rom;
+        rom_keystone_from_fixture(&b, &rom);
+        checkpoints_set_rom_state_override_for_test(&rom);
+        CSI_CHECK("checkpoint-rom: full component match activates with NO "
+                  "receipt/header (authority=checkpoint_rom)",
+                  consensus_state_snapshot_install_activate(pdb, &areq,
+                                                            &rom_ares) &&
+                  rom_ares.activated &&
+                  rom_ares.status == CONSENSUS_INSTALL_ACTIVATED &&
+                  rom_ares.height == b.height && rom_ares.utxo_count == 2 &&
+                  rom_ares.anchor_count == 2 && rom_ares.nullifier_count == 2 &&
+                  rom_ares.hstar == b.height &&
+                  rom_ares.coins_applied_height == b.height + 1 &&
+                  strstr(rom_ares.reason,
+                         "authority=checkpoint_rom") != NULL);
+        CSI_CHECK("checkpoint-rom: installed coins/anchors/nullifiers match the "
+                  "bundle with COMPLETE (cursor 0) history",
+                  active_is(pdb, &b));
+        if (rom_ares.prior_generation_path[0])
+            (void)unlink(rom_ares.prior_generation_path);
+
+        checkpoints_reset_rom_state_override_for_test();
+        reducer_frontier_test_set_compiled_anchor(-1);
+        if (rom_dir_fd >= 0)
+            (void)close(rom_dir_fd);
+        progress_store_close();
+        test_cleanup_tmpdir(rom_dir);
+    }
+
     failures += install_verify_receipt_tests(dir);
     failures += rom_keystone_binding_tests(dir);
 

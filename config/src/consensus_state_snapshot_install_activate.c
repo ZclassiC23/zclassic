@@ -970,15 +970,15 @@ bool consensus_state_snapshot_install_activate(
 
     result->height = manifest.height;
 
-    /* 3b. ACTIVATE authority gate: a replay-derived RECEIPT or a
-     *     CHECKPOINT_CONTENT proof lifts containment (lattice + rationale in
-     *     *_checkpoint_authority.c); else VERIFIED_CONTAINED, nothing written. */
+    /* 3b. Fail-closed ignition whitelist (contract: header + authority.c). */
     char contained_reason[192];
     enum consensus_state_activate_authority authority =
         consensus_state_activate_resolve_authority(
             evidence, request->datadir_fd, &manifest, request,
             contained_reason, sizeof(contained_reason));
-    if (authority == CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE) {
+    if (authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT &&
+        authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_ROM &&
+        authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT) {
         consensus_state_artifact_evidence_free(evidence);
         return activate_fail(result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
                              "%s", contained_reason);

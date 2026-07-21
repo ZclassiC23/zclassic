@@ -184,15 +184,22 @@ bool consensus_state_snapshot_install(
 
 /* ── ACTIVATE mode (the sovereign shielded-state cure — consumer side) ──────
  *
- * PRODUCTION CONTAINMENT: this transaction engine is currently enabled only
- * under ZCL_TESTING for hermetic copy-proof. A bundle's producer/source fields
- * and receipt digests are carried by that same untrusted bundle; selected-chain
- * H/hash/Sapling-frontier binding does not authenticate UTXOs, Sprout history,
- * historical Sapling anchors, or nullifiers because ZClassic headers commit
- * none of those sets. Production calls therefore return
- * VERIFIED_CONTAINED before touching the store. Remove that containment only
- * after an independently replay-bound receipt outside the artifact is wired
- * and adversarially tested.
+ * ACTIVATE IGNITION (authority-gated, fail-closed): this transaction engine
+ * installs state ONLY when consensus_state_activate_resolve_authority binds the
+ * bundle to a sovereign authority OUTSIDE the bundle's own self-asserted digests
+ * — an independent replay-derived RECEIPT on this datadir (bound to the running
+ * binary image), a CHECKPOINT_ROM manifest that reproduces the compiled
+ * g_rom_state_checkpoint byte-for-byte (header-independent), or a
+ * CHECKPOINT_CONTENT match (coins reproduce the compiled SHA3 UTXO checkpoint +
+ * a validated-header Sapling root). A bundle's producer/source fields and
+ * receipt digests are carried by that same untrusted bundle, and ZClassic
+ * headers commit none of the UTXO/Sprout/Sapling/nullifier sets, so selected-
+ * chain H/hash/Sapling-frontier binding alone never authorizes a live state
+ * replacement. Every un-authorized bundle (AUTHORITY_NONE) — and every peer-
+ * offered tip, which has no baked digest and is contained upstream at
+ * snapsync_activate_verified_tip — returns VERIFIED_CONTAINED before touching
+ * the store (fail-closed positive whitelist). The authority lattice lives in
+ * config/src/consensus_state_snapshot_install_checkpoint_authority.c.
  *
  * Atomically install a complete, history-complete bundle's coins + Sprout/
  * Sapling anchors + nullifiers + the 8 reducer stage cursors into the LIVE
