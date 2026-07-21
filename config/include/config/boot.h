@@ -549,6 +549,48 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             struct main_state *ms,
                                             bool trust_existing_block_files);
 
+/* D1 gate (PURE, no side effects — unit-testable). A "shieldless" seed is a v1
+ * transparent-only USS snapshot (version < 2): it carries NO Sapling frontier,
+ * anchors, or nullifiers. Seeding one on a chain past Sapling activation and
+ * folding forward is a guaranteed DELAYED wedge — the first block above the seed
+ * that touches shielded state hits utxo_apply.{anchor,nullifier}_backfill_gap
+ * and pins permanently. Returns true when (version < 2) AND a valid
+ * sapling_activation is known AND seed_height >= sapling_activation, so the
+ * caller can refuse UP FRONT (in the first millisecond, off a header peek)
+ * instead of after ~33 blocks. v2 (Sapling frontier) and v3 (full shielded)
+ * seeds return false — that is the live/dev-lane format. sapling_activation < 0
+ * (unknown / disabled) also returns false (defer, never a false refusal). */
+bool boot_seed_is_shieldless_past_sapling(uint32_t version, int64_t seed_height,
+                                          int64_t sapling_activation);
+
+/* D3 gate (PURE, no side effects — unit-testable). The seed one-shot
+ * (-coldstart-seed-oneshot) has no P2P/IBD: it can only seed at a height whose
+ * header is already present in the imported block index. Returns true when the
+ * imported header tip reaches the snapshot seed height (header_tip >=
+ * seed_height), i.e. the prerequisite is met; false means "import the header
+ * chain first". Answerable the instant the block index is loaded — long before
+ * the seed reset — so the caller can fail fast with a named prerequisite rather
+ * than burning a full boot. */
+bool boot_seed_oneshot_headers_ready(int64_t header_tip, int64_t seed_height);
+
+/* D1 refusal (config/src/boot_seed_gate.c). Peek the snapshot header (cheap, no
+ * full-body SHA3) and _exit() with a named refusal when it is a transparent-only
+ * seed past Sapling — see boot_seed_is_shieldless_past_sapling. Called from
+ * boot_load_snapshot_at_own_height_reset before any coin is stamped; a no-op
+ * (returns) for a v2/v3 seed, a below-activation seed, or an unopenable file
+ * (the verified open downstream reports that). */
+void boot_seed_refuse_shieldless_or_die(const char *path);
+
+/* D3 preflight (config/src/boot_seed_gate.c). For the seed one-shot
+ * (-coldstart-seed-oneshot), confirm the imported header chain reaches the
+ * snapshot height NOW (block index just loaded). Returns true to proceed, false
+ * (after a named prerequisite) so app_init fails fast. No-op returning true when
+ * ctx is not a seed one-shot. */
+struct app_context;
+struct main_state;
+bool boot_seed_oneshot_headers_preflight(const struct app_context *ctx,
+                                         const struct main_state *ms);
+
 /* -install-consensus-bundle=PATH (impl in config/src/boot_install_consensus_bundle.c):
  * the A2 consumer of the sovereign shielded-state cure. TERMINAL: this NEVER
  * returns — it _exit()s after printing a named terminal (installed + cursors

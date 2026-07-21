@@ -930,6 +930,12 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     }
     boot_snapshot_install_require_chain_context(ms);
 
+    /* D1: refuse a SHIELDLESS (v1 transparent-only) seed past Sapling activation
+     * UP FRONT (config/src/boot_seed_gate.c) — otherwise it seeds, climbs a few
+     * dozen blocks, then wedges permanently on utxo_apply.{anchor,nullifier}_
+     * backfill_gap at the first shielded tx. v2/v3 seeds pass. */
+    boot_seed_refuse_shieldless_or_die(path);
+
     /* RESUME-FAST declines to wipe independently accepted local authority; the
      * read-only snapshot peek does not authenticate its state contents. */
     {

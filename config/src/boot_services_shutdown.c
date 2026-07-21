@@ -312,3 +312,30 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     /* Closes the last stage, cancels the alarm, writes the CLEAN receipt. */
     shutdown_stagewatch_complete_clean();
 }
+
+/* D2 fix: the OFFLINE teardown (app_shutdown_offline, boot.c) sibling of the
+ * straggler guard above. thread_registry_request_shutdown() only SETS a flag;
+ * some background workers spawned during boot — notably the deferred Sapling-
+ * tree rebuild (sapling_tree_rebuild_start_deferred), which the seed one-shot
+ * arms on a root-mismatch and which replays h≈activation..tip reading g_state /
+ * g_node_db WITHOUT polling that flag — are still live here. Running the
+ * destructive frees (main_state_free / node_db_close / progress_store_close)
+ * while such a worker reads that state is a use-after-free (SIGSEGV) — the crash
+ * observed exiting the -coldstart-seed-oneshot mode. Bounded-join every
+ * registered worker; if a straggler survives, the seed state is already
+ * WAL-committed (app_init committed it before returning), so write the clean
+ * marker and _exit(0) WITHOUT the frees — the OS reclaims the rest and releases
+ * the datadir lock on exit. Returns only when every worker joined (frees safe).
+ * Mirrors app_shutdown_svc's straggler guard for the whole worker class, not
+ * just this one rebuild. */
+void boot_offline_join_workers_or_exit(const char *datadir)
+{
+    if (thread_registry_join_all(2) <= 0)
+        return;
+    fprintf(stderr, "[shutdown] background thread(s) still finishing; seed state "
+                    "is already saved, exiting now\n");
+    boot_shutdown_marker_write_clean(datadir);
+    fflush(stdout);
+    fflush(stderr);
+    _exit(0);
+}
