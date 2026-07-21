@@ -13,7 +13,7 @@
  * bundle installer (config/src/consensus_state_snapshot_install_activate.c) now
  * lifts ACTIVATE containment under a binary-baked authority (a replay-derived
  * RECEIPT or a CHECKPOINT_ROM manifest that reproduces the compiled
- * g_rom_state_checkpoint byte-for-byte). That path installs a bundle ONLY when
+ * g_rom_state_checkpoint bit-for-bit). That path installs a bundle ONLY when
  * it matches a fingerprint baked into THIS binary. A PEER-OFFERED TIP carries no
  * such baked digest — its height/hash/root are the peer's own assertions, not a
  * sovereign fingerprint — so there is nothing here to bind, and this boundary
