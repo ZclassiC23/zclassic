@@ -62,6 +62,12 @@ struct rom_fetch_manifest {
     uint32_t num_chunks;
     uint8_t  chunk_root[32];               /* serve-request key            */
     uint8_t  whole_sha3[32];               /* whole-file digest            */
+    /* Artifact kind parsed from the directory.json "kind" token (untrusted,
+     * cosmetic to the download — the digests are the trust anchor). Lets the
+     * boot picker select the consensus bundle vs the header-chain seed by kind
+     * rather than by size alone. ROM_ARTIFACT_UNKNOWN when the directory entry
+     * carried no (or an unrecognized) kind — the back-compat legacy shape. */
+    enum rom_artifact_kind kind;
 };
 
 /* Progress callback for rom_fetch_download: called after each chunk lands

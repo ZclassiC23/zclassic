@@ -145,6 +145,18 @@ enum rom_artifact_kind rom_seed_classify(const char *filename)
     return ROM_ARTIFACT_UNKNOWN;
 }
 
+enum rom_artifact_kind rom_seed_kind_from_name(const char *name)
+{
+    if (!name || !name[0])
+        return ROM_ARTIFACT_UNKNOWN;
+    /* Mirror the tokens kind_name() emits in rom_seed_directory_json. */
+    if (strcmp(name, "consensus_bundle") == 0)
+        return ROM_ARTIFACT_CONSENSUS_BUNDLE;
+    if (strcmp(name, "header_seed") == 0)
+        return ROM_ARTIFACT_HEADER_SEED;
+    return ROM_ARTIFACT_UNKNOWN;
+}
+
 bool rom_seed_kind_content_ok(enum rom_artifact_kind kind,
                               const uint8_t *header, size_t n,
                               uint64_t size_bytes)

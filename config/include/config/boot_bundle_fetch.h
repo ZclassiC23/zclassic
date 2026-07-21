@@ -56,6 +56,16 @@ bool boot_bundle_fetch_should_run(const char *datadir,
 bool boot_bundle_pick_manifest(const char *directory_json,
                                struct rom_fetch_manifest *out);
 
+/* Parse a ROM /directory.json body and pick the header-chain seed manifest: the
+ * ROM_ARTIFACT_HEADER_SEED-kinded entry (selected by kind ONLY, never by size —
+ * a legacy directory that emits no kind cannot advertise a header seed).
+ * directory.json entries carry no filename, so `out->filename` is assigned the
+ * canonical "block_index.bin" that rom_seed_classify (serve + re-seed) and the
+ * flat loader (boot_header_seed_import) accept. Returns true iff a usable
+ * header-seed manifest was picked. Pure — no IO, no network. */
+bool boot_bundle_pick_header_seed_manifest(const char *directory_json,
+                                           struct rom_fetch_manifest *out);
+
 /* Download the committed bundle `m` from the file-service `peers` (npeers>=1)
  * into <datadir>/bundles/, content-verified. Prefers the per-chunk-verified
  * swarm path (rom_fetch_download_verified_parallel) when a reachable seeder

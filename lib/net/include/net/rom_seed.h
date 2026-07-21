@@ -105,6 +105,12 @@ enum rom_register_result {
 /* Classify an artifact kind from its basename (no I/O). */
 enum rom_artifact_kind rom_seed_classify(const char *filename);
 
+/* Inverse of the wire "kind" string (the token rom_seed_directory_json emits:
+ * "consensus_bundle" / "header_seed"). Returns ROM_ARTIFACT_UNKNOWN for a NULL
+ * or unrecognized name — the back-compat default a legacy directory (no kind
+ * field) parses to. Pure, no I/O. */
+enum rom_artifact_kind rom_seed_kind_from_name(const char *name);
+
 /* Structural content check for a kind, given the first `n` header bytes and the
  * total file size. Pure — this is what makes a corrupt/truncated file fail
  * registration BEFORE it is ever offered. */

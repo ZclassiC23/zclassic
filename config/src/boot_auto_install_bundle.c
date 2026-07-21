@@ -25,6 +25,7 @@
 #include "config/boot.h"                       /* app_context, boot_refold_body_span_contiguous,
                                                  * boot_load_verify_snapshot_eligible, active_chain_* */
 #include "config/boot_bundle_fetch.h"          /* THE WELD: download-before-autodetect */
+#include "config/boot_header_seed_import.h"    /* headers-as-artifact in-process import */
 #include "config/boot_consensus_bundle_marker.h"
 #include "storage/boot_auto_refold.h"          /* A1: consume the escalator's armed refold */
 #include "storage/progress_store.h"            /* progress_store_db */
@@ -455,6 +456,15 @@ void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
      * only — it NEVER installs; the autodetect + CHECKPOINT_ROM authority is the
      * sole sovereignty gate and is not weakened here. */
     (void)boot_bundle_fetch_maybe(ctx->datadir, ctx);
+
+    /* Import the swarm-downloaded header-chain seed (block_index.bin) into the
+     * header index IN-PROCESS so pindex_best_header climbs to the artifact tip
+     * THIS boot — the checkpoint-bundle install below defers on the header chain
+     * reaching the checkpoint, and this replaces the serial ~4.7 GB P2P header
+     * crawl that otherwise gates it. Verified flat load + header-only clamp; a
+     * miss is fail-open (headers still arrive via P2P). No-op unless a fresh
+     * node actually downloaded the artifact above. */
+    (void)boot_header_seed_import_maybe(ctx->datadir, ms);
 
     /* 1b/1c — a complete-state install (durable request OR autodetected bundle)
      * SUPERSEDES the transparent-only from-anchor reset (which leaves shielded

@@ -135,13 +135,13 @@
 # input. Re-baselined in file_size_ceiling_lib_baseline.txt (2187, 1622); count
 # unchanged.
 #
-# 2026-07-21 (wf/reseed-widening, fetched-bundle swarm reseed): rom_seed.c grew
-# 892 -> 965 (rom_seed_scan_bundles_subdir + the bundles/-shaped one-level
-# relative-path allowance in rom_filename_ok/rom_seed_classify — the scan now
-# also recurses into <datadir>/bundles/, where boot_bundle_fetch.c lands
-# verified downloads and the installer deliberately retains the source
-# .sqlite, so every node that swarm-downloaded the checkpoint bundle becomes a
-# seeder of it too). Real, shape-matching feature growth, same file, same
-# module boundary. Re-baselined in file_size_ceiling_lib_baseline.txt (965);
-# count unchanged.
+# 2026-07-21 (wf/headers-artifact, Lane A3 headers-as-artifact fast path):
+# rom_seed.c grew 892 -> 904 adding rom_seed_kind_from_name() (the inverse of
+# the directory.json "kind" wire token, so the boot picker selects the header
+# seed vs the consensus bundle by kind rather than size); rom_fetch.c grew
+# 1622 -> 1626 parsing that "kind" field in rom_fetch_parse_directory. Both are
+# small, shape-matching wiring for the swarm-downloaded block_index.bin header
+# seed. Re-baselined in file_size_ceiling_lib_baseline.txt (904, 1626); count
+# unchanged. (NOTE: integration/instant-on-3fleet later merged wf/reseed-widening
+# which also grows rom_seed.c — the merge reconciles the two baseline bumps.)
 13

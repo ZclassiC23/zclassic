@@ -173,6 +173,13 @@ ZCL_BLOCKER_REMEDY(block_index.runtime_row_quarantine,         stale_validate_he
  * not a named remedy, so OWNER (the whole-file SHA3 envelope + reindex ladder is
  * the outer bound for gross corruption). Visible via dumpstate. */
 ZCL_BLOCKER_REMEDY(block_index.flat_row_quarantine,            OWNER)
+/* Headers-as-artifact import (config/src/boot_header_seed_import.c): the
+ * swarm-downloaded block_index.bin header seed failed to stage/load, or the
+ * imported chain does not own the baked checkpoint block hash. All TRANSIENT
+ * and self-clearing — the header chain still arrives via the always-running
+ * P2P header sync, so the cure is ordinary forward sync, not a named remedy
+ * (OWNER). Visible via dumpstate. */
+ZCL_BLOCKER_REMEDY(header_seed.*,                              OWNER)
 /* A header re-validates clean (unchanged PoW+Equihash) but its block_index
  * entry carries a stale BLOCK_FAILED mask (set by the getheaders serve path for
  * a locally missing/corrupt solution) that mark_valid_header refuses. The stage
