@@ -129,5 +129,66 @@ int test_loader_owns_seed_gate(void)
                    boot_snapshot_anchor_hash_matches(a, NULL) == false);
     }
 
+    /* ── D1: boot_seed_is_shieldless_past_sapling ───────────────────────
+     * A v1 (transparent-only) seed on a chain past Sapling activation is a
+     * guaranteed delayed wedge (utxo_apply.{anchor,nullifier}_backfill_gap at the
+     * first shielded tx). The loader refuses it up front. v2/v3 (live/dev-lane
+     * format) carry shielded state and pass. Mainnet Sapling activation = 476969.
+     * REGRESSION: weaken the gate to always-false and case (a)/(c) flip -> the
+     * shieldless-seed footgun returns (delayed permanent wedge). */
+    {
+        const int64_t SAPLING = 476969;
+        const int64_t PAST    = 3189353;  /* real near-tip height */
+        const int64_t BELOW   = 1000;     /* below Sapling activation */
+
+        /* (a) v1 past Sapling -> refuse. */
+        LOSG_CHECK("d1: v1 seed past Sapling -> true (refuse)",
+                   boot_seed_is_shieldless_past_sapling(1, PAST, SAPLING) == true);
+        /* (b) v1 BELOW Sapling -> allow (no shielded history to miss). */
+        LOSG_CHECK("d1: v1 seed below Sapling -> false (allow)",
+                   boot_seed_is_shieldless_past_sapling(1, BELOW, SAPLING) == false);
+        /* (c) v1 exactly AT activation -> refuse (>=). */
+        LOSG_CHECK("d1: v1 seed at Sapling activation -> true (refuse)",
+                   boot_seed_is_shieldless_past_sapling(1, SAPLING, SAPLING) == true);
+        /* (d) v2 (Sapling frontier) past Sapling -> allow (live/dev-lane format). */
+        LOSG_CHECK("d1: v2 seed past Sapling -> false (allow)",
+                   boot_seed_is_shieldless_past_sapling(2, PAST, SAPLING) == false);
+        /* (e) v3 (full shielded) past Sapling -> allow. */
+        LOSG_CHECK("d1: v3 seed past Sapling -> false (allow)",
+                   boot_seed_is_shieldless_past_sapling(3, PAST, SAPLING) == false);
+        /* (f) version 0 (malformed/unknown) past Sapling -> refuse (fail-safe). */
+        LOSG_CHECK("d1: v0 seed past Sapling -> true (refuse, fail-safe)",
+                   boot_seed_is_shieldless_past_sapling(0, PAST, SAPLING) == true);
+        /* (g) unknown/disabled Sapling activation (-1) -> never a false refusal. */
+        LOSG_CHECK("d1: activation unknown -> false (defer, never false-refuse)",
+                   boot_seed_is_shieldless_past_sapling(1, PAST, -1) == false);
+    }
+
+    /* ── D3: boot_seed_oneshot_headers_ready ────────────────────────────
+     * The seed one-shot (-coldstart-seed-oneshot) has no P2P/IBD: it can only
+     * seed at a height whose header the imported block index already holds.
+     * Answerable the instant the block index is loaded, so the loader fails FAST
+     * with a named prerequisite instead of burning a full boot then FATAL-ing.
+     * REGRESSION: invert the comparison and a fresh (no-header) datadir would be
+     * declared "ready" -> burns the boot then FATALs deep in the seed reset. */
+    {
+        const int64_t SEED = 3189353;
+
+        /* header tip reaches the seed height -> prerequisite met. */
+        LOSG_CHECK("d3: header tip == seed -> true (ready)",
+                   boot_seed_oneshot_headers_ready(SEED, SEED) == true);
+        LOSG_CHECK("d3: header tip above seed -> true (ready)",
+                   boot_seed_oneshot_headers_ready(SEED + 10, SEED) == true);
+        /* one header short -> not ready (import more headers first). */
+        LOSG_CHECK("d3: header tip one short -> false (prerequisite unmet)",
+                   boot_seed_oneshot_headers_ready(SEED - 1, SEED) == false);
+        /* fresh datadir: header tip pinned at genesis (0) -> not ready. */
+        LOSG_CHECK("d3: fresh datadir (tip=0) -> false",
+                   boot_seed_oneshot_headers_ready(0, SEED) == false);
+        /* no best_header at all (tip = -1) -> not ready, no crash. */
+        LOSG_CHECK("d3: no best_header (tip=-1) -> false",
+                   boot_seed_oneshot_headers_ready(-1, SEED) == false);
+    }
+
     return failures;
 }

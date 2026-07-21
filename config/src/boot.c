@@ -3032,7 +3032,7 @@ bool app_init(struct app_context *ctx)
     }
 
     t_reconcile_sub = boot_submark("blkidx.restore_tip", t_reconcile_sub);
-
+    if (!boot_seed_oneshot_headers_preflight(ctx, &g_state)) return false; /* D3: seed one-shot headers-prereq fast-fail, boot_seed_gate.c */
     /* Repair block index from SQLite.
      * After legacy import, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS
      * (they were validated by zclassicd but our index doesn't know that).
@@ -4307,6 +4307,7 @@ void app_shutdown_offline(void)
     boot_stop_platform_services();
     boot_stop_db_service_kernel();
     staged_sync_supervisor_shutdown_stages();
+    boot_offline_join_workers_or_exit(g_datadir); /* D2: join bg workers or _exit before frees */
     coins_view_cache_free(&g_coins_tip);
     coins_view_sqlite_close(&g_coins_sqlite);
     if (g_wallet_sqlite.open) {
