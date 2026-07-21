@@ -172,6 +172,79 @@ static int case_pick(void)
     return failures;
 }
 
+/* ── (b2) Kind-aware selection: bundle vs header seed ───────────────────── */
+
+static int case_pick_kinds(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: kind-aware pick separates bundle from header seed") {
+        uint64_t bundle_size = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096; /* 2 chunks */
+        uint64_t hs_size = 3ull * (uint64_t)ROM_SEED_CHUNK_SIZE;     /* 3 chunks, LARGER */
+
+        /* A directory advertising BOTH artifacts, header seed LARGER than the
+         * bundle — proves selection is by KIND, not size. */
+        char body[1024];
+        snprintf(body, sizeof(body),
+                 "{\"artifacts\":["
+                 "{\"kind\":\"consensus_bundle\",\"digest\":\"%064d\","
+                 "\"whole_sha3\":\"%064d\",\"size\":%llu,\"chunk_size\":%u,"
+                 "\"chunks\":2},"
+                 "{\"kind\":\"header_seed\",\"digest\":\"%064d\","
+                 "\"whole_sha3\":\"%064d\",\"size\":%llu,\"chunk_size\":%u,"
+                 "\"chunks\":3}]}",
+                 1, 2, (unsigned long long)bundle_size,
+                 (unsigned)ROM_SEED_CHUNK_SIZE,
+                 3, 4, (unsigned long long)hs_size,
+                 (unsigned)ROM_SEED_CHUNK_SIZE);
+
+        /* Bundle pick returns the consensus bundle (the SMALLER artifact) and a
+         * classifiable *.sqlite name — never the larger header seed. */
+        struct rom_fetch_manifest bm;
+        memset(&bm, 0, sizeof(bm));
+        ASSERT(boot_bundle_pick_manifest(body, &bm));
+        ASSERT(bm.size_bytes == bundle_size);
+        ASSERT(bm.kind == ROM_ARTIFACT_CONSENSUS_BUNDLE);
+        ASSERT(strncmp(bm.filename, "consensus-state-bundle-", 23) == 0);
+
+        /* Header-seed pick returns the header seed with the block_index.bin name. */
+        struct rom_fetch_manifest hm;
+        memset(&hm, 0, sizeof(hm));
+        ASSERT(boot_bundle_pick_header_seed_manifest(body, &hm));
+        ASSERT(hm.size_bytes == hs_size);
+        ASSERT(hm.kind == ROM_ARTIFACT_HEADER_SEED);
+        ASSERT(strcmp(hm.filename, "block_index.bin") == 0);
+        ASSERT(rom_fetch_manifest_sane(&hm));
+
+        /* Legacy back-compat: a directory with NO kind field → bundle pick
+         * still returns the (largest) artifact; header-seed pick returns false
+         * (a header seed cannot be advertised without the kind token). */
+        char legacy[512];
+        snprintf(legacy, sizeof(legacy),
+                 "{\"artifacts\":[{\"digest\":\"%064d\",\"whole_sha3\":\"%064d\","
+                 "\"size\":%llu,\"chunk_size\":%u,\"chunks\":2}]}",
+                 5, 6, (unsigned long long)bundle_size,
+                 (unsigned)ROM_SEED_CHUNK_SIZE);
+        struct rom_fetch_manifest lm;
+        memset(&lm, 0, sizeof(lm));
+        ASSERT(boot_bundle_pick_manifest(legacy, &lm));
+        ASSERT(lm.size_bytes == bundle_size);
+        struct rom_fetch_manifest lh;
+        memset(&lh, 0, sizeof(lh));
+        ASSERT(!boot_bundle_pick_header_seed_manifest(legacy, &lh));
+
+        /* A bundle-only directory → header-seed pick returns false. */
+        struct rom_fetch_manifest none;
+        memset(&none, 0, sizeof(none));
+        ASSERT(!boot_bundle_pick_header_seed_manifest(
+                   "{\"artifacts\":[{\"kind\":\"consensus_bundle\","
+                   "\"digest\":\"" "0000000000000000000000000000000000000000000000000000000000000001"
+                   "\",\"whole_sha3\":\"" "0000000000000000000000000000000000000000000000000000000000000002"
+                   "\",\"size\":8192,\"chunk_size\":4194304,\"chunks\":1}]}",
+                   &none));
+    } _test_next:;
+    return failures;
+}
+
 /* ── (c)+(d) E2E against the real serve path ────────────────────────────── */
 
 static int case_e2e(void)
@@ -456,6 +529,7 @@ int test_boot_bundle_fetch(void)
     int failures = 0;
     failures += case_gate();
     failures += case_pick();
+    failures += case_pick_kinds();
     failures += case_e2e();
     failures += case_baked_facts();
     failures += case_quorum();

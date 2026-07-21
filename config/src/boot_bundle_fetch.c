@@ -77,13 +77,26 @@ bool boot_bundle_pick_manifest(const char *directory_json,
     if (n <= 0)
         return false;
 
-    /* The complete-state bundle is the largest artifact a seeder advertises. */
+    /* Kind-aware bundle selection. Pass 1: prefer an explicitly consensus-
+     * bundle-kinded artifact (largest such). Pass 2 (legacy back-compat): a
+     * directory that carries no "kind" field parses every entry to
+     * ROM_ARTIFACT_UNKNOWN, so fall back to the LARGEST non-header-seed
+     * artifact — today's "the bundle is the big one" behavior — while never
+     * mis-picking the header-chain seed as a .sqlite bundle. */
     int best = -1;
     for (int i = 0; i < n; i++) {
-        if (!arts[i].used)
+        if (!arts[i].used || arts[i].kind != ROM_ARTIFACT_CONSENSUS_BUNDLE)
             continue;
         if (best < 0 || arts[i].size_bytes > arts[best].size_bytes)
             best = i;
+    }
+    if (best < 0) {
+        for (int i = 0; i < n; i++) {
+            if (!arts[i].used || arts[i].kind == ROM_ARTIFACT_HEADER_SEED)
+                continue;
+            if (best < 0 || arts[i].size_bytes > arts[best].size_bytes)
+                best = i;
+        }
     }
     if (best < 0)
         return false;
@@ -104,6 +117,46 @@ bool boot_bundle_pick_manifest(const char *directory_json,
 
     /* Re-check with the assigned filename (rom_fetch_manifest_sane also enforces
      * the filename is a bare basename — it is). */
+    if (!rom_fetch_manifest_sane(out))
+        return false;
+    return true;
+}
+
+bool boot_bundle_pick_header_seed_manifest(const char *directory_json,
+                                           struct rom_fetch_manifest *out)
+{
+    if (!directory_json || !out)
+        return false;
+
+    struct rom_fetch_manifest arts[ROM_FETCH_MAX_ARTIFACTS];
+    memset(arts, 0, sizeof(arts));
+    int n = rom_fetch_parse_directory(directory_json, arts,
+                                      ROM_FETCH_MAX_ARTIFACTS);
+    if (n <= 0)
+        return false;
+
+    /* The header-chain seed is the ROM_ARTIFACT_HEADER_SEED-kinded entry. It is
+     * selected by kind ONLY (never by size) — a legacy directory that emits no
+     * kind cannot advertise a header seed, and must not have some other artifact
+     * mistaken for one. */
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        if (!arts[i].used || arts[i].kind != ROM_ARTIFACT_HEADER_SEED)
+            continue;
+        if (best < 0 || arts[i].size_bytes > arts[best].size_bytes)
+            best = i;
+    }
+    if (best < 0)
+        return false;
+
+    *out = arts[best];
+
+    /* directory.json entries carry no filename; assign the canonical
+     * block_index.bin so rom_seed_classify (serve + re-seed) and the flat loader
+     * (boot_header_seed_import) accept the downloaded file. */
+    snprintf(out->filename, sizeof(out->filename), "block_index.bin");
+    out->used = true;
+
     if (!rom_fetch_manifest_sane(out))
         return false;
     return true;
@@ -262,12 +315,35 @@ static bool bbf_manifest_facts_ok(const struct rom_fetch_manifest *m)
            m->num_chunks == expect;
 }
 
-/* Persist a discovered manifest as the canonical <datadir>/bundles/directory.json
- * hint so a resume/reseed reads it locally without re-querying peers. Emits the
- * minimal {"artifacts":[...]} object rom_fetch_parse_directory / pick consume;
- * writes via a .tmp + rename so a crash never leaves a truncated hint. */
+/* Emit one {"kind":..,"digest":..,"whole_sha3":..,"size":..,"chunk_size":..,
+ * "chunks":..} object into `dst` (capacity `cap`). `kind` is the wire token
+ * rom_seed_kind_from_name round-trips ("consensus_bundle" / "header_seed").
+ * Returns the byte count, or 0 on overflow. */
+static int bbf_emit_artifact_obj(char *dst, size_t cap, const char *kind,
+                                 const struct rom_fetch_manifest *m)
+{
+    char digest_hex[65], whole_hex[65];
+    HexStr(m->chunk_root, 32, false, digest_hex, sizeof(digest_hex));
+    HexStr(m->whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
+    int wn = snprintf(dst, cap,
+        "{\"kind\":\"%s\",\"digest\":\"%s\",\"whole_sha3\":\"%s\","
+        "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}",
+        kind, digest_hex, whole_hex, (unsigned long long)m->size_bytes,
+        m->chunk_size, m->num_chunks);
+    if (wn <= 0 || (size_t)wn >= cap)
+        return 0;
+    return wn;
+}
+
+/* Persist the discovered manifest(s) as the canonical
+ * <datadir>/bundles/directory.json hint so a resume/reseed reads them locally
+ * without re-querying peers. Emits the {"artifacts":[...]} object
+ * rom_fetch_parse_directory / pick consume — the consensus bundle plus, when
+ * `hs` is non-NULL, the header-chain seed. Writes via a .tmp + rename so a
+ * crash never leaves a truncated hint. */
 static bool bbf_write_directory_hint(const char *datadir,
-                                     const struct rom_fetch_manifest *m)
+                                     const struct rom_fetch_manifest *m,
+                                     const struct rom_fetch_manifest *hs)
 {
     if (!datadir || !datadir[0] || !m)
         LOG_FAIL(BBF_SUBSYS, "write hint: null arg");
@@ -281,16 +357,30 @@ static bool bbf_write_directory_hint(const char *datadir,
         LOG_FAIL(BBF_SUBSYS, "write hint: mkdir(%s) failed: %s", bundles,
                  strerror(errno));
 
-    char digest_hex[65], whole_hex[65];
-    HexStr(m->chunk_root, 32, false, digest_hex, sizeof(digest_hex));
-    HexStr(m->whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
-
-    char body[1024];
-    int wn = snprintf(body, sizeof(body),
-        "{\"artifacts\":[{\"kind\":\"consensus_state\",\"digest\":\"%s\","
-        "\"whole_sha3\":\"%s\",\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}]}",
-        digest_hex, whole_hex, (unsigned long long)m->size_bytes,
-        m->chunk_size, m->num_chunks);
+    char body[2048];
+    int off = snprintf(body, sizeof(body), "{\"artifacts\":[");
+    if (off <= 0 || (size_t)off >= sizeof(body))
+        LOG_FAIL(BBF_SUBSYS, "write hint: directory.json body overflow");
+    int en = bbf_emit_artifact_obj(body + off, sizeof(body) - (size_t)off,
+                                   "consensus_bundle", m);
+    if (en == 0)
+        LOG_FAIL(BBF_SUBSYS, "write hint: bundle artifact object overflow");
+    off += en;
+    if (hs) {
+        int cn = snprintf(body + off, sizeof(body) - (size_t)off, ",");
+        if (cn <= 0 || (size_t)(off + cn) >= sizeof(body))
+            LOG_FAIL(BBF_SUBSYS, "write hint: directory.json separator overflow");
+        off += cn;
+        en = bbf_emit_artifact_obj(body + off, sizeof(body) - (size_t)off,
+                                   "header_seed", hs);
+        if (en == 0)
+            LOG_FAIL(BBF_SUBSYS, "write hint: header-seed artifact object overflow");
+        off += en;
+    }
+    int cn = snprintf(body + off, sizeof(body) - (size_t)off, "]}");
+    if (cn <= 0 || (size_t)(off + cn) >= sizeof(body))
+        LOG_FAIL(BBF_SUBSYS, "write hint: directory.json close overflow");
+    int wn = off + cn;
     if (wn <= 0 || (size_t)wn >= sizeof(body))
         LOG_FAIL(BBF_SUBSYS, "write hint: directory.json body overflow");
 
@@ -394,72 +484,118 @@ static int bbf_quorum_pick(const int *counts, const bool *has_explicit,
     return -1;
 }
 
-/* Query each seed for its directory listing over the FS "RLS" wire, pick the
- * bundle manifest each advertises, and require >=2 independent seeds returning a
- * byte-identical (chunk_root, whole_sha3, size) triple before trusting the
- * discovered manifest — a bandwidth-DoS / lone-liar guard: trust binds at
- * install, not here. quorum=1 is accepted ONLY when the lone seed is the
- * operator's explicit -fileservice peer. On acceptance *out holds the winning
- * manifest and the winning directory.json is persisted for resume. Returns false
- * (fail-open to normal IBD) when no quorum forms. */
+/* Tally one picked manifest into a candidate list, merging on a byte-identical
+ * (chunk_root, whole_sha3, size) triple. Bounded by `ccap`. */
+static void bbf_tally_cand(struct bbf_disc_cand *cands, size_t *ncand,
+                           size_t ccap, const struct rom_fetch_manifest *m,
+                           bool is_explicit)
+{
+    for (size_t c = 0; c < *ncand; c++) {
+        if (cands[c].m.size_bytes == m->size_bytes &&
+            memcmp(cands[c].m.chunk_root, m->chunk_root, 32) == 0 &&
+            memcmp(cands[c].m.whole_sha3, m->whole_sha3, 32) == 0) {
+            cands[c].count++;
+            cands[c].has_explicit = cands[c].has_explicit || is_explicit;
+            return;
+        }
+    }
+    if (*ncand < ccap) {
+        cands[*ncand].m = *m;
+        cands[*ncand].count = 1;
+        cands[*ncand].has_explicit = is_explicit;
+        (*ncand)++;
+    }
+}
+
+/* Apply the quorum rule to a tallied candidate list. Returns true (and fills
+ * *out) when a candidate wins; false = no quorum. */
+static bool bbf_quorum_winner(const struct bbf_disc_cand *cands, size_t ncand,
+                              struct rom_fetch_manifest *out)
+{
+    int counts[ROM_FETCH_MAX_WORKERS];
+    bool flags[ROM_FETCH_MAX_WORKERS];
+    for (size_t c = 0; c < ncand && c < ROM_FETCH_MAX_WORKERS; c++) {
+        counts[c] = cands[c].count;
+        flags[c] = cands[c].has_explicit;
+    }
+    int best = bbf_quorum_pick(counts, flags, ncand);
+    if (best < 0)
+        return false;
+    *out = cands[best].m;
+    return true;
+}
+
+/* One discovered directory: the required consensus bundle plus the optional
+ * header-chain seed. */
+struct bbf_discovery {
+    struct rom_fetch_manifest bundle;
+    struct rom_fetch_manifest header_seed;
+    bool have_bundle;
+    bool have_header_seed;
+};
+
+/* Query each seed for its directory listing over the FS "RLS" wire, pick both
+ * the consensus-bundle and header-seed manifests each advertises, and require
+ * >=2 independent seeds returning a byte-identical (chunk_root, whole_sha3,
+ * size) triple before trusting EACH manifest — a bandwidth-DoS / lone-liar
+ * guard: trust binds at install, not here. quorum=1 is accepted ONLY when the
+ * lone seed is the operator's explicit -fileservice peer. The bundle is
+ * REQUIRED (no bundle quorum → fail-open to IBD); the header seed is OPTIONAL
+ * (its absence just means the header chain still arrives via P2P). On success
+ * *out holds the winning manifest(s) and the winning directory.json (both
+ * artifacts) is persisted for resume. Returns false when no bundle quorum
+ * forms. */
 static bool bbf_discover_from_peers(const char *datadir,
                                     const struct rom_fetch_peer *peers,
                                     size_t np, bool explicit_first,
-                                    struct rom_fetch_manifest *out)
+                                    struct bbf_discovery *out)
 {
+    memset(out, 0, sizeof(*out));
+
     char *body = zcl_malloc(BBF_DIRECTORY_JSON_MAX + 1, "bbf_disc_body");
     if (!body)
         LOG_FAIL(BBF_SUBSYS, "discovery: OOM allocating listing buffer");
 
-    struct bbf_disc_cand cands[ROM_FETCH_MAX_WORKERS];
-    memset(cands, 0, sizeof(cands));
-    size_t ncand = 0;
-    const size_t ccap = sizeof(cands) / sizeof(cands[0]);
+    struct bbf_disc_cand bundle_cands[ROM_FETCH_MAX_WORKERS];
+    struct bbf_disc_cand hs_cands[ROM_FETCH_MAX_WORKERS];
+    memset(bundle_cands, 0, sizeof(bundle_cands));
+    memset(hs_cands, 0, sizeof(hs_cands));
+    size_t nbundle = 0, nhs = 0;
+    const size_t ccap = sizeof(bundle_cands) / sizeof(bundle_cands[0]);
 
     for (size_t i = 0; i < np; i++) {
         if (!rom_fetch_get_directory(peers[i].addr, peers[i].port, body,
                                      BBF_DIRECTORY_JSON_MAX + 1))
             continue;
+        bool is_explicit = explicit_first && i == 0;
+
         struct rom_fetch_manifest m;
         memset(&m, 0, sizeof(m));
-        if (!boot_bundle_pick_manifest(body, &m))
-            continue;
-        if (!bbf_manifest_facts_ok(&m)) {
-            LOG_WARN(BBF_SUBSYS, "discovery: seed %s:%u advertised a manifest "
-                     "that fails the baked-facts cross-check — ignoring",
-                     peers[i].addr, (unsigned)peers[i].port);
-            continue;
+        if (boot_bundle_pick_manifest(body, &m)) {
+            if (bbf_manifest_facts_ok(&m))
+                bbf_tally_cand(bundle_cands, &nbundle, ccap, &m, is_explicit);
+            else
+                LOG_WARN(BBF_SUBSYS, "discovery: seed %s:%u advertised a bundle "
+                         "manifest that fails the baked-facts cross-check — "
+                         "ignoring", peers[i].addr, (unsigned)peers[i].port);
         }
-        bool is_explicit = explicit_first && i == 0;
-        bool merged = false;
-        for (size_t c = 0; c < ncand; c++) {
-            if (cands[c].m.size_bytes == m.size_bytes &&
-                memcmp(cands[c].m.chunk_root, m.chunk_root, 32) == 0 &&
-                memcmp(cands[c].m.whole_sha3, m.whole_sha3, 32) == 0) {
-                cands[c].count++;
-                cands[c].has_explicit = cands[c].has_explicit || is_explicit;
-                merged = true;
-                break;
-            }
-        }
-        if (!merged && ncand < ccap) {
-            cands[ncand].m = m;
-            cands[ncand].count = 1;
-            cands[ncand].has_explicit = is_explicit;
-            ncand++;
+
+        struct rom_fetch_manifest hm;
+        memset(&hm, 0, sizeof(hm));
+        if (boot_bundle_pick_header_seed_manifest(body, &hm)) {
+            if (bbf_manifest_facts_ok(&hm))
+                bbf_tally_cand(hs_cands, &nhs, ccap, &hm, is_explicit);
+            else
+                LOG_WARN(BBF_SUBSYS, "discovery: seed %s:%u advertised a header-"
+                         "seed manifest that fails the baked-facts cross-check "
+                         "— ignoring", peers[i].addr, (unsigned)peers[i].port);
         }
     }
     free(body);
 
-    int counts[ROM_FETCH_MAX_WORKERS];
-    bool flags[ROM_FETCH_MAX_WORKERS];
-    for (size_t c = 0; c < ncand; c++) {
-        counts[c] = cands[c].count;
-        flags[c] = cands[c].has_explicit;
-    }
-    int best = bbf_quorum_pick(counts, flags, ncand);
-    if (best < 0) {
-        if (ncand == 0)
+    out->have_bundle = bbf_quorum_winner(bundle_cands, nbundle, &out->bundle);
+    if (!out->have_bundle) {
+        if (nbundle == 0)
             LOG_INFO(BBF_SUBSYS, "discovery: no reachable seed served a usable "
                      "bundle manifest — skipping instant-on fetch");
         else
@@ -469,25 +605,55 @@ static bool bbf_discover_from_peers(const char *datadir,
         return false;
     }
 
-    if (cands[best].count >= 2)
-        LOG_INFO(BBF_SUBSYS, "discovery: %d seeds agree on the bundle manifest "
-                 "(size=%llu) — proceeding with quorum", cands[best].count,
-                 (unsigned long long)cands[best].m.size_bytes);
-    else
-        LOG_WARN(BBF_SUBSYS, "discovery: only ONE seed served a bundle manifest "
-                 "and it is the explicit -fileservice peer — proceeding with "
-                 "quorum=1 (operator-named seed)");
+    out->have_header_seed = bbf_quorum_winner(hs_cands, nhs, &out->header_seed);
 
-    *out = cands[best].m;
-    if (!bbf_write_directory_hint(datadir, out))
+    LOG_INFO(BBF_SUBSYS, "discovery: bundle manifest quorum reached (size=%llu); "
+             "header-seed manifest %s — proceeding",
+             (unsigned long long)out->bundle.size_bytes,
+             out->have_header_seed ? "also reached quorum (headers arrive as an "
+             "artifact)" : "not advertised/quorum (header chain via P2P)");
+
+    if (!bbf_write_directory_hint(datadir, &out->bundle,
+                                  out->have_header_seed ? &out->header_seed
+                                                        : NULL))
         LOG_WARN(BBF_SUBSYS, "discovery: could not persist the discovered "
                  "directory.json hint — resume will re-discover");
     return true;
 }
 
+/* Is the header-chain seed artifact still WANTED on this datadir? True on a
+ * fresh, non-sovereign node that has neither imported it (<datadir>/
+ * block_index.bin at the root) nor already downloaded it (<datadir>/bundles/
+ * block_index.bin). Independent of the bundle gate: a datadir with a staged
+ * bundle but no header chain STILL needs the seed so the install can bind. */
+static bool bbf_header_seed_needed(const char *datadir,
+                                   const struct app_context *ctx)
+{
+    if (!datadir || !datadir[0])
+        return false;
+    if (ctx && ctx->no_file_sync)
+        return false;
+    if (getenv("ZCL_NO_BUNDLE_FETCH"))
+        return false;
+    if (boot_consensus_bundle_marker_exists(datadir))
+        return false;
+
+    char path[PATH_MAX];
+    struct stat st;
+    int pn = snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
+    if (pn > 0 && (size_t)pn < sizeof(path) && stat(path, &st) == 0)
+        return false; /* already imported (or a legacy flat cache present) */
+    pn = snprintf(path, sizeof(path), "%s/bundles/block_index.bin", datadir);
+    if (pn > 0 && (size_t)pn < sizeof(path) && stat(path, &st) == 0)
+        return false; /* already downloaded — import consumes it, no re-fetch */
+    return true;
+}
+
 bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
 {
-    if (!boot_bundle_fetch_should_run(datadir, ctx))
+    bool bundle_needed = boot_bundle_fetch_should_run(datadir, ctx);
+    bool header_needed = bbf_header_seed_needed(datadir, ctx);
+    if (!bundle_needed && !header_needed)
         return false;
 
     /* Assemble the file-service seed set once — both discovery and the download
@@ -516,28 +682,52 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
     if (hn < 0 || (size_t)hn >= sizeof(hint_path))
         return false;
 
-    struct rom_fetch_manifest m;
-    memset(&m, 0, sizeof(m));
+    struct bbf_discovery disc;
+    memset(&disc, 0, sizeof(disc));
 
     char *body = bbf_read_text_file(hint_path, BBF_DIRECTORY_JSON_MAX);
     if (body) {
-        bool picked = boot_bundle_pick_manifest(body, &m);
+        disc.have_bundle = boot_bundle_pick_manifest(body, &disc.bundle);
+        disc.have_header_seed =
+            boot_bundle_pick_header_seed_manifest(body, &disc.header_seed);
         free(body);
-        if (!picked) {
+        if (!disc.have_bundle && !disc.have_header_seed) {
             LOG_WARN(BBF_SUBSYS,
-                     "manifest hint present at %s but no usable consensus-state "
-                     "artifact — skipping", hint_path);
+                     "manifest hint present at %s but no usable artifact "
+                     "— skipping", hint_path);
             return false;
         }
     } else {
         LOG_INFO(BBF_SUBSYS,
                  "no local bundle manifest at %s — attempting peer directory "
                  "discovery over the file-service RLS wire", hint_path);
-        if (!bbf_discover_from_peers(datadir, peers, np, explicit_first, &m))
+        if (!bbf_discover_from_peers(datadir, peers, np, explicit_first, &disc))
             return false; /* fail-open: normal P2P IBD is the path */
     }
 
-    return boot_bundle_fetch_download(datadir, peers, np, &m);
+    /* Headers FIRST: the bundle install DEFERS on the header chain reaching the
+     * checkpoint (checkpoint_bundle_install_ready), so the header seed is on the
+     * critical path — download it before the (larger) bundle so the in-process
+     * import that follows can climb pindex_best_header this boot. Both rides the
+     * same content-verified swarm path; a header-seed miss is non-fatal (the
+     * chain still arrives via P2P, just slower). */
+    bool any = false;
+    if (header_needed && disc.have_header_seed) {
+        if (boot_bundle_fetch_download(datadir, peers, np, &disc.header_seed)) {
+            any = true;
+            LOG_INFO(BBF_SUBSYS, "instant-on: header-chain seed landed — the "
+                     "in-process import climbs the header frontier (no serial "
+                     "P2P header crawl before install)");
+        } else {
+            LOG_WARN(BBF_SUBSYS, "instant-on: header-chain seed fetch did not "
+                     "complete — header chain falls back to P2P sync");
+        }
+    }
+
+    if (bundle_needed && disc.have_bundle)
+        any = boot_bundle_fetch_download(datadir, peers, np, &disc.bundle) || any;
+
+    return any;
 }
 
 #ifdef ZCL_TESTING

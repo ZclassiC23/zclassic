@@ -163,6 +163,10 @@ int rom_fetch_parse_directory(const char *json_body,
         m.size_bytes = (uint64_t)size;
         m.chunk_size = (uint32_t)csize;
         m.num_chunks = (uint32_t)chunks;
+        /* Optional "kind" token (untrusted, cosmetic — the digests are the
+         * trust anchor). Absent/unrecognized → ROM_ARTIFACT_UNKNOWN, the legacy
+         * back-compat shape the size-based picker still handles. */
+        m.kind = rom_seed_kind_from_name(json_get_str(json_get(e, "kind")));
         if (!rom_fetch_manifest_sane(&m))
             continue;
         m.used = true;
