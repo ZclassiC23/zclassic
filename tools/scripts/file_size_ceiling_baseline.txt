@@ -45,13 +45,12 @@ app/views/src/explorer_pages_view.c 823
 # lane/confine (-confine sandbox entry) + lane/sapling-tree-persist
 # (height-aware Sapling tree verify-and-fold-forward helper) both grow
 # boot.c; baseline is the merged wc -l.
-# 2026-07-21 (Task D/E, #7 node.db-open-failure gate): the fix itself was
-# extracted to a new file (boot_node_db_gate.c) to avoid growing boot.c;
-# the net +1 line here is only the non-static boot_park_until_shutdown
-# signature + its updated comment (now shared via config/boot_internal.h
-# with the new file), not new inline logic.
-config/src/boot.c 4339
+# 2026-07-21: two merged changes — #7 node.db-open-failure gate (Task D/E, +1:
+# shared boot_park_until_shutdown signature; fix itself extracted to
+# boot_node_db_gate.c) and -full-fold boot mode (+7: boot_full_fold dispatch).
+config/src/boot.c 4346
 config/src/boot_index.c 853
+config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2034
 config/src/boot_services.c 1456
 config/src/consensus_state_producer_receipt.c 805

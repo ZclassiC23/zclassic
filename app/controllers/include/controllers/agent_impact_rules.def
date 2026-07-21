@@ -129,6 +129,9 @@ AGENT_IMPACT_RULE("app/jobs/include/jobs/mint_skip_crypto.h|app/jobs/src/mint_sk
  * mint_preflight dumpstate registration is covered by the diagnostics_*.c
  * rule near the top of this file). */
 AGENT_IMPACT_RULE("lib/test/src/test_mint_anchor_preflight.c", "mint_anchor_preflight make_lint_gates")
+/* -full-fold (GENESIS-FOLD-TO-TIP) reuses the offline mint driver targeting the
+ * header tip; its files touch the mint driver + reducer fold + boot dispatch. */
+AGENT_IMPACT_RULE("config/src/boot_full_fold.c|config/src/boot_mint_anchor.c", "mint mint_skip_crypto mint_fold_livelock reducer_frontier load_verify_boot make_lint_gates")
 AGENT_IMPACT_RULE("config/src/boot_sapling_anchor.c", "load_verify_boot snapshot_shielded stage_anchor_frontier_cap make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_contaminated_coin_above_anchor.c", "contaminated_coin_above_anchor make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_reducer_frontier_reconcile_light.c", "reducer_frontier_reconcile_light make_lint_gates")

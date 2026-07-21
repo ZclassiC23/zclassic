@@ -239,6 +239,21 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         }
         else if (strcmp(argv[i], "-mint-anchor") == 0) ctx->mint_anchor = true;
         else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx->mint_anchor_fast = true;
+        else if (strcmp(argv[i], "-full-fold") == 0) {
+            /* GENESIS-FOLD-TO-TIP: reuse the whole -mint-anchor offline driver
+             * (genesis reset OR resume, reducer_kick_unbudgeted self-drive, no
+             * P2P) but target the local header TIP instead of the compiled SHA3
+             * checkpoint, and skip the terminal checkpoint ceremony. full_fold
+             * IMPLIES mint_anchor so every existing mint_anchor gate fires; the
+             * target override + ceremony skip live behind ctx->full_fold. */
+            ctx->full_fold = true;
+            ctx->mint_anchor = true;
+            /* Defect A: skip ONLY the legacy LevelDB UTXO seed import (the fold
+             * builds the set from genesis), while KEEPING the ~/.zclassic body
+             * link so a fresh datadir gets its bodies. Narrower than
+             * -nolegacyimport, which would also drop the body link. */
+            ctx->no_legacy_utxo_import = true;
+        }
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx->reindex_explorer = true;
         else if (strcmp(argv[i], "-backfill-zslp") == 0) ctx->backfill_zslp = true;
         else if (strcmp(argv[i], "-backfill-nullifiers") == 0) ctx->backfill_nullifiers = true;
@@ -338,6 +353,7 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
             hotswap_set_activate_flag(true);
         }
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx->no_legacy_auto_import = true;
+        else if (strcmp(argv[i], "-nolegacyutxoimport") == 0) ctx->no_legacy_utxo_import = true;
         else if (strcmp(argv[i], "-allow-plaintext-wallet") == 0) {
             /* Explicit, loud opt-in to a plaintext wallet at rest. Read
              * by the wallet at-rest creation policy at boot (see
