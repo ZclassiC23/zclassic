@@ -3197,6 +3197,47 @@ mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
 	 fi; \
 	 exit $$rc'
 
+# ── mvp-coldstart-to-tip-stopwatch (C3 the GENUINE wipe -> tip stopwatch) ─
+#
+# mvp-coldstart-to-tip-local above is an ASSISTED proof: it pre-seeds a local
+# operator bundle (block_index.bin + utxo-seed-*.snapshot) into the fresh
+# datadir before boot. This target is the harness FORWARD_PLAN.md §1 item 3
+# calls the remaining C3 gap: a genuinely WIPED/empty datadir, no bundle, no
+# snapshot flag, no import flag — just the target binary's own boot pipeline
+# (today's compiled-in checkpoint-ROM authority fold; transparently the
+# checkpoint/weld path once that lands, no harness change needed) dialing a
+# real serving zclassic23 peer over P2P and folding forward. It gates on the
+# actual MVP claim — H* (dumpstate reducer_frontier's "hstar", the reducer's
+# provable authoritative tip) reaching "network_tip" (the best height any
+# handshake-complete peer advertised) — never on "the FSM says at_tip", which
+# is all the ~7s in-process stub (lib/test/src/test_cold_start_sync.c,
+# already in ci-mvp-gates) proves. Prints a real WALL_CLOCK_SECONDS=<n> line
+# on PASS — the published wipe-to-tip stopwatch number FORWARD_PLAN.md says
+# does not exist yet.
+#
+# Binary-path argument: ZCL_BIN=/path/to/zclassic23 make
+# mvp-coldstart-to-tip-stopwatch points the stopwatch at any built binary
+# (e.g. an orchestrator's freshly-integrated candidate) without editing this
+# file or the script. ZCL_PEER=HOST:PORT overrides the default local peer
+# (127.0.0.1:8033). Isolated /tmp datadir + non-live ports (39170-39173);
+# dials the peer as a read-only P2P client only — never touches its datadir
+# or systemd. SKIPs (exit 2 -> 0) when the binary is absent or no peer is
+# reachable; exit 3 (SEAM, real forward progress but budget expired) and
+# exit 4 (STALLED-NAMED, a named blocker explains a stall) are both honest
+# non-SKIP verdicts and propagate as a failing recipe, same discipline as
+# mvp-coldstart-to-tip-local's exit 3.
+.PHONY: mvp-coldstart-to-tip-stopwatch
+mvp-coldstart-to-tip-stopwatch: zclassic23
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C3 STOPWATCH (real): wiped datadir -> checkpoint/fold -> peer tip, real wall-clock ══"; \
+	 bash tools/scripts/cold_start_to_tip_stopwatch.sh \
+	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),); rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-coldstart-to-tip-stopwatch: SKIP (binary absent / no reachable serving peer — run on a host with a synced zclassic23 peer)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
 # ── mvp-verify: ONE-COMMAND local verification of the real MVP claims ──
 #
 # The operator's local counterpart to the hermetic `make ci` gate. It runs the
