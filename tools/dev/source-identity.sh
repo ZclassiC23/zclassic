@@ -31,6 +31,19 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 }
 cd "$ROOT"
 
+# Optional host-local, per-Make-invocation memoization for capture-record and
+# verify-record (see capture_record_cached() below). One plain `make
+# build-only` or `make t-fast` calls one of those two modes 4-5 times even
+# with zero source changes (Makefile parse-time BUILD_SOURCE_RECORD, the
+# mutation/identity stamps, and every build-epoch-session.sh acquire/verify),
+# and each call is a full git-ls-files+find+sha256 walk of every build input.
+# A caller opts in by setting ZCL_SOURCE_IDENTITY_SESSION to a `pid:start`
+# token identifying the ONE live Make process driving the whole invocation
+# (Make's own pid plus its /proc start-time in clock ticks, so a later
+# process that reuses the same pid never collides with a stale entry). Unset
+# or malformed disables memoization for that call -- always safe, just slower.
+ZCL_SOURCE_IDENTITY_SESSION="${ZCL_SOURCE_IDENTITY_SESSION:-}"
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-source-identity.XXXXXX")" || exit 2
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
@@ -588,6 +601,72 @@ capture_record()
     printf '%s %s %s\n' "$identity" "$clean" "$mutation_after"
 }
 
+# See ZCL_SOURCE_IDENTITY_SESSION above. Returns the cache file path for a
+# token, or fails (caller falls back to an uncached capture) when the token is
+# unset or does not match the exact `pid:start` shape this script mints --
+# never trust an unrecognized shape as a cache key.
+session_cache_path()
+{
+    local token="$1"
+    [[ "$token" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
+    printf '%s/build/identity/.session-cache/capture.%s.record' \
+        "$ROOT" "${token/:/.}"
+}
+
+# A session's cache entry outlives the Make process that minted it (a new
+# token every invocation), so entries for dead sessions would otherwise
+# accumulate forever. Prune any entry whose encoded pid is no longer the
+# exact live process that token identifies -- the same liveness test
+# tools/dev/build-epoch-session.sh uses for its epoch leases.
+prune_session_cache()
+{
+    local dir="$1" f base token pid start actual
+    [ -d "$dir" ] || return 0
+    for f in "$dir"/capture.*.record; do
+        [ -e "$f" ] || continue
+        base="$(basename -- "$f")"
+        token="${base#capture.}"
+        token="${token%.record}"
+        pid="${token%%.*}"
+        start="${token#*.}"
+        actual=""
+        if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [[ "$start" =~ ^[0-9]+$ ]]; then
+            actual="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || actual=""
+        fi
+        [ -n "$actual" ] && [ "$actual" = "$start" ] && continue
+        rm -f -- "$f" 2>/dev/null || true
+    done
+}
+
+# Read-through memoization wrapper around capture_record(). The FIRST call in
+# a given ZCL_SOURCE_IDENTITY_SESSION pays the full walk and caches it; every
+# later call in the SAME session (the same live Make process) reads the cache
+# instead of re-walking. A new session (a new `make` invocation) always misses
+# and re-derives from scratch, so this never weakens cross-invocation
+# supersession detection -- it only removes repeat work within one process.
+capture_record_cached()
+{
+    local cache tmp record
+    cache="$(session_cache_path "$ZCL_SOURCE_IDENTITY_SESSION")" || {
+        capture_record
+        return
+    }
+    if [ -f "$cache" ]; then
+        cat -- "$cache"
+        return
+    fi
+    record="$(capture_record)" || return $?
+    if mkdir -p "$(dirname -- "$cache")" 2>/dev/null; then
+        prune_session_cache "$(dirname -- "$cache")"
+        tmp="$(mktemp "$(dirname -- "$cache")/.tmp.XXXXXX" 2>/dev/null)" || tmp=""
+        if [ -n "$tmp" ]; then
+            printf '%s\n' "$record" > "$tmp" && mv -f -- "$tmp" "$cache" ||
+                rm -f -- "$tmp"
+        fi
+    fi
+    printf '%s\n' "$record"
+}
+
 case "$MODE" in
     paths)
         emit_paths
@@ -596,7 +675,7 @@ case "$MODE" in
         capture
         ;;
     capture-record)
-        capture_record
+        capture_record_cached
         ;;
     inventory-token)
         inventory_token
@@ -617,7 +696,7 @@ case "$MODE" in
             fail "verify-record requires v2 capture-completeness bit 1"
         [[ "$EXPECTED_MUTATION" =~ ^[0-9a-fA-F]{64}$ ]] ||
             fail "verify-record requires a 64-hex mutation token"
-        actual_record="$(capture_record)" || exit $?
+        actual_record="$(capture_record_cached)" || exit $?
         read -r actual actual_clean actual_mutation <<< "$actual_record"
         if [ "${actual,,}" != "${EXPECTED,,}" ] ||
            [ "$actual_clean" != "$EXPECTED_CLEAN" ] ||

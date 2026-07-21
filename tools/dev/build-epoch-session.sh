@@ -100,13 +100,28 @@ if [ "$MODE" = check ]; then
     exit 0
 fi
 
+# Every acquire/verify call re-derives and re-checks the full authority
+# (compiler fingerprint + compile epoch + source record) via verify_authority
+# below -- that check itself is unchanged. What we skip is redundant *work*:
+# OWNER_PID identifies the one live Make process driving this whole
+# invocation, and tools/dev/source-identity.sh capture-record/verify-record is
+# a full git-ls-files+find+sha256 walk of every build input. A single `make
+# build-only`/`make t-fast` calls into this script's acquire/verify path
+# several times per invocation even with zero source changes, so hand the
+# VERIFY_TOOL call inside verify_authority a session token (this pid + its
+# /proc start-time, computed once, here, before the first of those calls) so
+# it can reuse whichever call in this same session already paid for the walk
+# instead of repeating it. A pid gets reused eventually; the start-time half
+# of the token means a dead process's cache entry never matches a new one.
+OWNER_START="$(awk '{print $22}' "/proc/$OWNER_PID/stat" 2>/dev/null)" ||
+    fail 'could not identify live Make owner process'
+[[ "$OWNER_START" =~ ^[0-9]+$ ]] || fail 'invalid Make owner start time'
+export ZCL_SOURCE_IDENTITY_SESSION="$OWNER_PID:$OWNER_START"
+
 verify_authority
 [ "$MODE" = verify ] && { check_stamp; exit 0; }
 
 command -v flock >/dev/null 2>&1 || fail 'flock is required for epoch leases'
-OWNER_START="$(awk '{print $22}' "/proc/$OWNER_PID/stat" 2>/dev/null)" ||
-    fail 'could not identify live Make owner process'
-[[ "$OWNER_START" =~ ^[0-9]+$ ]] || fail 'invalid Make owner start time'
 
 mkdir -p "$OBJECT_ROOT/epochs/$EPOCH/.leases"
 exec 9> "$OBJECT_ROOT/.epoch-gc.lock"

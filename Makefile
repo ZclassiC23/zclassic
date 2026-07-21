@@ -97,6 +97,27 @@ endif
 # only command-line provenance here: an ambient environment variable cannot
 # suppress capture.  Artifact sessions still verify-record before compilation
 # and again before aggregate/candidate publication.
+#
+# BUILD_EPOCH_CLEAN_ONLY / BUILD_INVOCATION_* are pulled forward from their
+# original home down near the epoch-lease definitions so a session token
+# exists before the FIRST source-identity.sh call below. capture-record/
+# verify-record are each a full git-ls-files+find+sha256 walk of every build
+# input (~1.2s measured on this tree), and one plain `make build-only` or
+# `make t-fast` invocation calls one of them 4-5 times over (this parse-time
+# capture, the mutation/identity stamps further down, and every
+# build-epoch-session.sh acquire/verify) even with zero source changes.
+# ZCL_SOURCE_IDENTITY_SESSION lets every one of those calls within THIS live
+# Make process -- keyed by its own pid + kernel start-time, so a reused pid
+# from an already-dead Make never matches -- reuse the ONE walk any of them
+# already paid for instead of repeating it. A new `make` invocation always
+# derives a new token, so cross-invocation supersession detection (a real
+# source edit between two separate builds) is untouched; see the session
+# cache in tools/dev/source-identity.sh.
+BUILD_EPOCH_CLEAN_ONLY := $(if $(ZCL_STANDALONE_CLEAN)$(ZCL_HOTSWAP_LOOP_ONLY),1,)
+BUILD_INVOCATION_PID := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell printf '%s' $$PPID)))
+BUILD_INVOCATION_START := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell awk '{print $$22}' /proc/$(BUILD_INVOCATION_PID)/stat 2>/dev/null)))
+BUILD_INVOCATION_ID := $(if $(BUILD_EPOCH_CLEAN_ONLY),clean,$(strip $(shell printf '%s\0%s' '$(BUILD_INVOCATION_PID)' '$(BUILD_INVOCATION_START)' | sha256sum | awk '{print $$1}')))
+ZCL_SOURCE_IDENTITY_SESSION := $(BUILD_INVOCATION_PID):$(BUILD_INVOCATION_START)
 ifneq ($(origin BUILD_SOURCE_RECORD),command line)
 ifeq ($(ZCL_STANDALONE_CLEAN),1)
 BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
@@ -105,7 +126,7 @@ else ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
 # authoritative nested make; the zero record is never stamped into an artifact.
 BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
 else
-BUILD_SOURCE_RECORD := $(shell tools/dev/source-identity.sh capture-record 2>/dev/null || echo unknown 0 unknown)
+BUILD_SOURCE_RECORD := $(shell ZCL_SOURCE_IDENTITY_SESSION='$(ZCL_SOURCE_IDENTITY_SESSION)' tools/dev/source-identity.sh capture-record 2>/dev/null || echo unknown 0 unknown)
 endif
 endif
 BUILD_SOURCE_ID := $(word 1,$(BUILD_SOURCE_RECORD))
@@ -115,7 +136,6 @@ BUILD_MUTATION := $(word 3,$(BUILD_SOURCE_RECORD))
 # been removed. Every target that can create an artifact remains fail-closed.
 # The hot-swap loop goals join this epoch/identity-free parse: their recipes
 # touch no compile epoch, lease, or identity stamp.
-BUILD_EPOCH_CLEAN_ONLY := $(if $(ZCL_STANDALONE_CLEAN)$(ZCL_HOTSWAP_LOOP_ONLY),1,)
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 BUILD_SOURCE_RECORD_VALID := yes
 else
@@ -142,7 +162,7 @@ BUILD_MUTATION_STAMP := $(BUILD_DIR)/identity/mutation.$(BUILD_MUTATION).stamp
 $(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
-	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	ZCL_SOURCE_IDENTITY_SESSION='$(ZCL_SOURCE_IDENTITY_SESSION)' tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	tmp="$$(mktemp "$(dir $@).stamp.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	printf '%s\n' 'mutation=$(BUILD_MUTATION)' > "$$tmp"; \
@@ -153,7 +173,7 @@ BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).
 $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
-	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	ZCL_SOURCE_IDENTITY_SESSION='$(ZCL_SOURCE_IDENTITY_SESSION)' tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	tmp="$$(mktemp "$(dir $@).stamp.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	printf '%s\n' \
@@ -570,9 +590,9 @@ DEV_TSAN_BIN = $(BIN_DIR)/zclassic23-dev-tsan
 DEV_TSAN_PROFILE = dev-tsan-v2
 DEV_TSAN_SESSION = $(DEV_TSAN_OBJ_DIR)/.build-session
 DEV_TSAN_LEASE = $(DEV_TSAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
-BUILD_INVOCATION_PID := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell printf '%s' $$PPID)))
-BUILD_INVOCATION_START := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell awk '{print $$22}' /proc/$(BUILD_INVOCATION_PID)/stat 2>/dev/null)))
-BUILD_INVOCATION_ID := $(if $(BUILD_EPOCH_CLEAN_ONLY),clean,$(strip $(shell printf '%s\0%s' '$(BUILD_INVOCATION_PID)' '$(BUILD_INVOCATION_START)' | sha256sum | awk '{print $$1}')))
+# BUILD_INVOCATION_PID/START/ID moved up next to BUILD_EPOCH_CLEAN_ONLY (near
+# BUILD_SOURCE_RECORD above) so ZCL_SOURCE_IDENTITY_SESSION exists before the
+# first source-identity.sh call in this parse.
 
 BUILD_ONLY_PROFILE = build-only-v2
 DEV_PROFILE = dev-v2
@@ -746,7 +766,7 @@ TEST_PARALLEL_FAST_BIN = $(BIN_DIR)/test_parallel_fast
 TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
 TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g -DZCL_TESTING \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
-TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
 TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
 TEST_FAST_EPOCH_LINK_FLAGS := $(strip $(TEST_FAST_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
