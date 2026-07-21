@@ -47,10 +47,29 @@ struct consensus_state_install_runtime_result {
     enum consensus_state_install_status status;
     bool     state_installed; /* the atomic activate committed the swap */
     bool     marker_written;  /* the durable sovereign-install marker was written */
+    /* RETRIABLE WAIT, not a rejection: a compiled-checkpoint bundle refused ONLY
+     * because this node's validated header chain has not yet reached the
+     * checkpoint height (the fresh-boot / mid-header-sync case). The bundle is
+     * good — the node simply has not caught up — so the boot seam must NOT
+     * permanently .fail it; a later attempt (this session's retry condition OR a
+     * future boot) installs it once the checkpoint header arrives on-chain. A
+     * genuine byte-mismatch / bad-content refusal leaves this false (→ .fail). */
+    bool     retriable_headers_not_ready;
     int32_t  height;          /* installed bundle height (−1 until known) */
     int32_t  hstar;           /* durable H* after install (−1 until known) */
     char     reason[ZCL_RESULT_MSG_MAX];
 };
+
+/* True iff this node's validated header chain genuinely OWNS the compiled SHA3
+ * UTXO checkpoint block: the header frontier (ms->pindex_best_header) is at or
+ * above the checkpoint height AND the header-chain ancestor at the checkpoint
+ * height carries exactly the compiled checkpoint block hash. This is the exact
+ * precondition the compiled-checkpoint chain-binding gate (-4 header-bootstrap,
+ * Gap B/C) needs before a checkpoint bundle can bind — used both to DEFER a
+ * premature boot-time install (fail-open wait, not a rejection) and to arm the
+ * retry only once the header chain has actually reached the checkpoint. Pure,
+ * read-only, no locks taken; false on any NULL / absent / mismatched input. */
+bool consensus_state_checkpoint_header_ready(struct main_state *ms);
 
 /* NON-TERMINAL install core. Runs the identical fail-closed pipeline as the
  * -install-consensus-bundle verb (containment classify → admit+validate →

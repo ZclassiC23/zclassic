@@ -35,9 +35,13 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
+#include "chain/checkpoints.h"
+#include "conditions/checkpoint_bundle_install_ready.h"
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h"
 #include "core/uint256.h"
+#include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -163,6 +167,11 @@ static int case_runtime_returns(void)
     CSIR_CHECK("bogus bundle -> reason names admission",
                strstr(rr.reason, "admission") != NULL ||
                    strstr(rr.reason, "bundle") != NULL);
+    /* A GENUINE refusal (admission failure — the flip-a-byte / corrupt-bundle
+     * class) must NOT be flagged retriable: it is a real rejection the boot seam
+     * SHOULD mark .failed, not a "headers not yet at checkpoint" wait. */
+    CSIR_CHECK("bogus bundle -> NOT flagged retriable (boot seam .fails it)",
+               !rr.retriable_headers_not_ready);
 
     /* Empty path/datadir also fail closed without dereferencing anything. */
     struct consensus_state_install_runtime_result rr2;
@@ -356,6 +365,204 @@ static int case_post_install_fold_span_check(void)
     return failures;
 }
 
+/* ── (e) Deferral / retry — the fresh-boot install-timing seam ─────────────── */
+
+/* Install a temporary SHA3 checkpoint override at `height` whose block_hash is
+ * csir_hash_for(height) — so a fixture header at that height byte-matches it. */
+static void cbir_set_override(int height)
+{
+    static struct sha3_utxo_checkpoint cp; /* borrowed by the seam; keep static */
+    struct uint256 h;
+    csir_hash_for(height, &h);
+    memset(&cp, 0, sizeof(cp));
+    cp.height = height;
+    memcpy(cp.block_hash, h.data, 32);
+    checkpoints_set_sha3_override_for_test(&cp);
+}
+
+/* Insert a pprev-linked block chain [lo..hi] into ms and return the tip. The
+ * links let block_index_get_ancestor walk from a higher header down to the
+ * checkpoint height (the real above-checkpoint case). */
+static struct block_index *cbir_link_chain(struct main_state *ms, int lo, int hi)
+{
+    struct block_index *prev = NULL, *tip = NULL;
+    for (int h = lo; h <= hi; h++) {
+        struct uint256 hh;
+        csir_hash_for(h, &hh);
+        struct block_index *bi =
+            chainstate_insert_block_index((struct chainstate *)ms, &hh);
+        if (!bi)
+            return NULL;
+        bi->nHeight = h;
+        bi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        bi->pprev = prev;
+        prev = bi;
+        tip = bi;
+    }
+    return tip;
+}
+
+/* (e1) consensus_state_checkpoint_header_ready — the exact discriminator between
+ * a retriable WAIT (headers below / not owning the checkpoint) and a genuine
+ * "ready to bind" chain. */
+static int case_checkpoint_header_ready(void)
+{
+    int failures = 0;
+    const int CP = 5000;
+    cbir_set_override(CP);
+
+    CSIR_CHECK("ready: ms==NULL -> false",
+               !consensus_state_checkpoint_header_ready(NULL));
+
+    /* Header frontier BELOW the checkpoint -> WAIT (the fresh-boot case). */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        ms.pindex_best_header = cbir_link_chain(&ms, CP - 50, CP - 1);
+        CSIR_CHECK("ready: header frontier below checkpoint -> false (wait)",
+                   ms.pindex_best_header &&
+                       !consensus_state_checkpoint_header_ready(&ms));
+        main_state_free(&ms);
+    }
+
+    /* Header frontier EXACTLY at the checkpoint with the matching hash -> ready. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        ms.pindex_best_header = cbir_link_chain(&ms, CP - 3, CP);
+        CSIR_CHECK("ready: header frontier at checkpoint (hash matches) -> true",
+                   ms.pindex_best_header &&
+                       consensus_state_checkpoint_header_ready(&ms));
+        main_state_free(&ms);
+    }
+
+    /* Header frontier ABOVE the checkpoint, ancestor at CP matches -> ready. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        ms.pindex_best_header = cbir_link_chain(&ms, CP - 3, CP + 6);
+        CSIR_CHECK("ready: header frontier above checkpoint (ancestor matches) "
+                   "-> true",
+                   ms.pindex_best_header &&
+                       consensus_state_checkpoint_header_ready(&ms));
+        main_state_free(&ms);
+    }
+
+    /* Header at the checkpoint height but the compiled checkpoint expects a
+     * DIFFERENT block hash there (a different chain) -> not ready. */
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        ms.pindex_best_header = cbir_link_chain(&ms, CP - 3, CP);
+        static struct sha3_utxo_checkpoint bad;
+        struct uint256 other;
+        csir_hash_for(CP, &other);
+        other.data[7] ^= 0xFF; /* checkpoint expects a hash the chain does not have */
+        memset(&bad, 0, sizeof(bad));
+        bad.height = CP;
+        memcpy(bad.block_hash, other.data, 32);
+        checkpoints_set_sha3_override_for_test(&bad);
+        CSIR_CHECK("ready: checkpoint-height hash mismatch -> false",
+                   ms.pindex_best_header &&
+                       !consensus_state_checkpoint_header_ready(&ms));
+        cbir_set_override(CP); /* restore the matching override */
+        main_state_free(&ms);
+    }
+
+    checkpoints_reset_sha3_override_for_test();
+    return failures;
+}
+
+/* (e2) The retry condition (checkpoint_bundle_install_ready): detect gates on
+ * headers-reached-checkpoint + a staged bundle + still-below-checkpoint H*, and
+ * the remedy arms the bounded install-on-next-boot request without a retry-storm. */
+static int case_retry_condition(void)
+{
+    int failures = 0;
+    const int CP = 5000;
+    cbir_set_override(CP);
+    reducer_frontier_provable_tip_reset(); /* H* unknown/0 -> below checkpoint */
+    checkpoint_bundle_install_ready_test_reset();
+    checkpoint_bundle_install_ready_test_suppress_restart(true);
+
+    struct main_state ms;
+    main_state_init(&ms);
+    /* Header chain owns the checkpoint block (ready). */
+    ms.pindex_best_header = cbir_link_chain(&ms, CP - 3, CP + 4);
+    checkpoint_bundle_install_ready_test_set_main_state(&ms);
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "cbir_cond", "ok");
+    char bundles[320];
+    snprintf(bundles, sizeof(bundles), "%s/bundles", dir);
+    CSIR_CHECK("cond: mkdir bundles/", mkdir(bundles, 0700) == 0);
+    CSIR_CHECK("cond: stage bundle", csir_touch(bundles, "consensus-state-bundle-5000.sqlite"));
+    checkpoint_bundle_install_ready_test_set_datadir(dir);
+
+    /* detect FIRES: headers ready + bundle staged + H* below checkpoint. */
+    CSIR_CHECK("cond: detect fires when headers reach checkpoint + bundle staged",
+               checkpoint_bundle_install_ready_test_detect());
+
+    /* H* already at/above the checkpoint -> the node owns its own state; never
+     * pull it back onto a bundle. */
+    reducer_frontier_provable_tip_set(CP);
+    CSIR_CHECK("cond: detect suppressed once H* >= checkpoint",
+               !checkpoint_bundle_install_ready_test_detect());
+    reducer_frontier_provable_tip_reset();
+
+    /* Header frontier below the checkpoint -> WAIT (no premature fire). */
+    {
+        struct main_state below;
+        main_state_init(&below);
+        below.pindex_best_header = cbir_link_chain(&below, CP - 50, CP - 1);
+        checkpoint_bundle_install_ready_test_set_main_state(&below);
+        CSIR_CHECK("cond: detect waits while header frontier below checkpoint",
+                   !checkpoint_bundle_install_ready_test_detect());
+        checkpoint_bundle_install_ready_test_set_main_state(&ms);
+        main_state_free(&below);
+    }
+
+    /* remedy ARMS the durable install-on-next-boot request (bounded budget). */
+    CSIR_CHECK("cond: fresh datadir not pending", !boot_install_bundle_pending(dir));
+    CSIR_CHECK("cond: remedy -> OK (armed)",
+               checkpoint_bundle_install_ready_test_remedy() == (int)COND_REMEDY_OK);
+    CSIR_CHECK("cond: request now pending", boot_install_bundle_pending(dir));
+
+    /* No retry-storm: repeated remedy ticks are idempotent (the attempt count
+     * only bumps at CONSUME/boot), never inflating the budget. */
+    CSIR_CHECK("cond: remedy again -> OK (idempotent arm, no storm)",
+               checkpoint_bundle_install_ready_test_remedy() == (int)COND_REMEDY_OK);
+    CSIR_CHECK("cond: still pending (budget not inflated)",
+               boot_install_bundle_pending(dir));
+
+    /* Once the bounded budget is spent the request is TERMINAL and the remedy
+     * REFUSES to respawn (operator paged) — the durable end-to-end bound. */
+    for (int i = 0; i < BOOT_INSTALL_BUNDLE_MAX; i++) {
+        char b[512];
+        (void)boot_install_bundle_consume(dir, b, sizeof(b));
+    }
+    (void)boot_install_bundle_consume(dir, (char[512]){0}, 512); /* trip TERMINAL */
+    CSIR_CHECK("cond: remedy over TERMINAL budget -> FAILED (no respawn storm)",
+               checkpoint_bundle_install_ready_test_remedy() == (int)COND_REMEDY_FAILED);
+
+    /* Sovereign-install marker present -> autodetect returns NULL -> detect
+     * clears (the bundle installed; nothing to retry). */
+    {
+        struct uint256 dg;
+        memset(&dg, 0x5a, sizeof(dg));
+        (void)boot_consensus_bundle_marker_write(dir, CP, dg.data);
+        CSIR_CHECK("cond: detect clears once sovereign marker exists",
+                   !checkpoint_bundle_install_ready_test_detect());
+    }
+
+    test_rm_rf_recursive(dir);
+    checkpoint_bundle_install_ready_test_reset();
+    reducer_frontier_provable_tip_reset();
+    checkpoints_reset_sha3_override_for_test();
+    main_state_free(&ms);
+    return failures;
+}
+
 int test_consensus_state_install_runtime(void)
 {
     printf("\n=== consensus_state_install_runtime ===\n");
@@ -364,6 +571,8 @@ int test_consensus_state_install_runtime(void)
     failures += case_runtime_returns();
     failures += case_durable_request();
     failures += case_post_install_fold_span_check();
+    failures += case_checkpoint_header_ready();
+    failures += case_retry_condition();
     printf("=== consensus_state_install_runtime: %d failure(s) ===\n", failures);
     return failures;
 }

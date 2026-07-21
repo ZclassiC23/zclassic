@@ -54,6 +54,28 @@
 #define ICB_SUBSYS "install_consensus_bundle"
 #define ICB_DECISION_RECORD_NAME "consensus_state_publication_decision.v1"
 
+/* ── Checkpoint-header readiness (deferral / retry precondition) ────────────── */
+
+bool consensus_state_checkpoint_header_ready(struct main_state *ms)
+{
+    if (!ms)
+        return false;
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp || cp->height < 0)
+        return false;
+    /* The header FRONTIER, not the served/active tip: on a fresh (or
+     * genesis-reset) node the active tip sits at genesis with coins empty, but
+     * the checkpoint bundle binds against the validated HEADER chain (the -4
+     * header-bootstrap / Gap B walk reads pindex_best_header). Mirror that exact
+     * read here so this predicate answers the same question the gate asks. */
+    struct block_index *hdr = ms->pindex_best_header;
+    if (!hdr || hdr->nHeight < cp->height)
+        return false;
+    struct block_index *at = block_index_get_ancestor(hdr, (int)cp->height);
+    return at && at->phashBlock &&
+           memcmp(at->phashBlock->data, cp->block_hash, 32) == 0;
+}
+
 /* ── Containment classification (verbatim from the terminal verb) ──────────── */
 
 static bool icb_same_directory(int target_fd, const char *candidate, bool *same)
@@ -396,6 +418,38 @@ struct zcl_result consensus_state_install_from_bundle(
     if (!consensus_state_artifact_evidence_manifest_copy(artifact, &manifest)) {
         rc = ZCL_ERR(-1, "artifact evidence became stale after admission");
         goto done;
+    }
+
+    /* (2b) Deferral gate — distinguish a RETRIABLE WAIT from a genuine refusal.
+     * The bundle has already passed strict admission (byte integrity + manifest
+     * self-bind) above, so a flipped-byte / corrupt bundle never reaches here.
+     * When this is the compiled-checkpoint bundle (manifest sits at exactly the
+     * compiled checkpoint height) BUT this node's validated header chain has not
+     * yet reached the checkpoint block, the below-checkpoint chain-binding
+     * predicates cannot bind yet — NOT because the bundle is bad, but because the
+     * node has not caught up. Refuse WITHOUT the state_installed flag and mark it
+     * retriable so the boot seam does not permanently .fail a good bundle; the
+     * install retries (this session's condition OR a future boot) once the
+     * checkpoint header is genuinely on-chain. A non-checkpoint bundle, or one
+     * whose header IS present, falls through to the unchanged full gate. */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        const struct rom_state_checkpoint *rom = get_rom_state_checkpoint();
+        bool checkpoint_bundle =
+            cp && rom && cp->height == rom->height &&
+            manifest.height == (int32_t)cp->height;
+        if (checkpoint_bundle && ms &&
+            !consensus_state_checkpoint_header_ready(ms)) {
+            out->retriable_headers_not_ready = true;
+            int hdr_h = (ms->pindex_best_header)
+                            ? ms->pindex_best_header->nHeight : -1;
+            rc = ZCL_ERR(-2,
+                         "checkpoint bundle deferred: validated header chain has "
+                         "not yet reached checkpoint height %d (header frontier "
+                         "h=%d) — retriable wait, not a bundle rejection",
+                         (int)cp->height, hdr_h);
+            goto done;
+        }
     }
 
     /* (3) Read the producer source receipt from the pinned bundle handle. */

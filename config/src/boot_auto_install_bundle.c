@@ -369,6 +369,15 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
                       "install-on-next-boot request for %s landed durably but a "
                       "post-install step failed (%s) — retrying under the bounded "
                       "budget on the next boot", req_path, rr.reason);
+        } else if (rr.retriable_headers_not_ready) {
+            /* Defensive: the retry condition only arms this request once the
+             * header chain has reached the checkpoint, and the header chain is
+             * durable, so a consume should find headers ready. If it does not
+             * (a torn/rewound header index), the bounded consume budget still
+             * caps the retries — just log the wait rather than a hard error. */
+            LOG_INFO(ICB_SUBSYS,
+                     "install-on-next-boot request for %s deferred: %s",
+                     req_path, rr.reason);
         } else {
             LOG_ERROR(ICB_SUBSYS,
                       "install-on-next-boot request for %s did not install: %s",
@@ -394,6 +403,16 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
                           "post-install step failed (%s) — retrying on the next "
                           "boot (not marked .failed: the state is on disk)",
                           auto_bundle, rr.reason);
+            } else if (rr.retriable_headers_not_ready) {
+                /* RETRIABLE WAIT (fresh boot / mid-header-sync): the validated
+                 * header chain has not yet reached the checkpoint height. The
+                 * bundle is GOOD — the node has not caught up — so do NOT mark
+                 * .failed. It is re-detected on the next boot, and the
+                 * checkpoint_bundle_install_ready condition arms the install the
+                 * moment the header chain reaches the checkpoint this session. */
+                LOG_INFO(ICB_SUBSYS,
+                         "autodetected bundle %s deferred (NOT marked .failed): "
+                         "%s", auto_bundle, rr.reason);
             } else {
                 /* Genuine pre-activate refusal (bad / incompatible / contained
                  * bundle): mark .failed so the next boot degrades to normal
