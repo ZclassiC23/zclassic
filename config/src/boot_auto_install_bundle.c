@@ -24,6 +24,7 @@
 
 #include "config/boot.h"                       /* app_context, boot_refold_body_span_contiguous,
                                                  * boot_load_verify_snapshot_eligible, active_chain_* */
+#include "config/boot_bundle_fetch.h"          /* THE WELD: download-before-autodetect */
 #include "config/boot_consensus_bundle_marker.h"
 #include "storage/boot_auto_refold.h"          /* A1: consume the escalator's armed refold */
 #include "storage/progress_store.h"            /* progress_store_db */
@@ -411,6 +412,18 @@ void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
     memset(out, 0, sizeof(*out));
     if (!ctx)
         return;
+
+    /* THE WELD (instant-on linchpin): on a fresh, marker-less datadir with no
+     * local *.sqlite bundle, swarm-download the content-verified checkpoint
+     * bundle into <datadir>/bundles/ so the autodetect below installs it under
+     * the EXISTING fail-closed CHECKPOINT_ROM guards. Default-on for a fresh
+     * datadir; opt out with -nofilesync or ZCL_NO_BUNDLE_FETCH=1. Best-effort +
+     * fail-open: an absent manifest hint, no reachable seeder, or a failed /
+     * byte-mismatched download lands nothing and leaves boot on its unchanged
+     * path (P2P IBD / the operator bundle remain the fallback). Downloads bytes
+     * only — it NEVER installs; the autodetect + CHECKPOINT_ROM authority is the
+     * sole sovereignty gate and is not weakened here. */
+    (void)boot_bundle_fetch_maybe(ctx->datadir, ctx);
 
     /* 1b/1c — a complete-state install (durable request OR autodetected bundle)
      * SUPERSEDES the transparent-only from-anchor reset (which leaves shielded
