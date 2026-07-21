@@ -1,0 +1,16 @@
+[Unit]
+Description=ZClassic23 Stopwatch Gate failure notifier
+# OnFailure= arm for zcl-c3-stopwatch-run@.service and
+# zcl-netdisrupt-run@.service (same pattern as
+# zclassic23-soak-evidence-onfailure.service). Fires ONLY when a
+# run-and-record wrapper itself fails HARD — could not lock or append its
+# ledger line (see tools/scripts/c3_stopwatch_run_and_record.sh /
+# netdisrupt_stopwatch_run_and_record.sh). A legitimate FAIL/SKIP/SEAM/
+# STALLED-NAMED run verdict is NOT a unit failure — it is recorded in the
+# ledger and judged by `make c3-stopwatch-report` /
+# `make netdisrupt-stopwatch-report`. This unit just makes a broken
+# collector loud.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'logger -t stopwatch-gate "ZCLASSIC23 STOPWATCH RUN FAILED unit=%N — see $HOME/.local/state/zclassic23-c3-stopwatch/ and $HOME/.local/state/zclassic23-netdisrupt-stopwatch/"'

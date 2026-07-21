@@ -2944,6 +2944,42 @@ soak-evidence-selftest:
 	 fi; \
 	 echo "soak-evidence-selftest: PASS"'
 
+# ── stopwatch gates (opt-in; wall-clock evidence ledgers) ────────────
+#
+# c3-stopwatch-report / netdisrupt-stopwatch-report judge the LAST line of
+# the ledgers appended by tools/scripts/c3_stopwatch_run_and_record.sh /
+# tools/scripts/netdisrupt_stopwatch_run_and_record.sh (deploy/examples/
+# zcl-c3-stopwatch.timer / zcl-netdisrupt-stopwatch.timer run those every
+# 6h) via tools/scripts/stopwatch_evidence_judge.sh — a point-in-time
+# judge (PASS/FAIL/STALE), not a windowed accrual judge like
+# soak-evidence-report. Same false-green guard discipline: the judge MUST
+# print a VERDICT= line or the recipe fails loud regardless of its own
+# exit code. DELIBERATELY excluded from `make ci` — these read a LEDGER
+# file under $HOME/.local/state, not hermetic fixtures.
+.PHONY: c3-stopwatch-report
+c3-stopwatch-report:
+	@bash -c 'set -uo pipefail; \
+	 hist="$${ZCL_C3_STOPWATCH_HISTORY:-$$HOME/.local/state/zclassic23-c3-stopwatch/history.jsonl}"; \
+	 set +e; out=$$(bash tools/scripts/stopwatch_evidence_judge.sh "$$hist" $${ZCL_STOPWATCH_JUDGE_ARGS:-}); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if ! echo "$$out" | grep -q "stopwatch-judge: VERDICT="; then \
+	     echo "c3-stopwatch-report: FALSE-GREEN GUARD — judge printed no VERDICT line (rc=$$rc)"; \
+	     exit 1; \
+	 fi; \
+	 exit "$$rc"'
+
+.PHONY: netdisrupt-stopwatch-report
+netdisrupt-stopwatch-report:
+	@bash -c 'set -uo pipefail; \
+	 hist="$${ZCL_NETDISRUPT_STOPWATCH_HISTORY:-$$HOME/.local/state/zclassic23-netdisrupt-stopwatch/history.jsonl}"; \
+	 set +e; out=$$(bash tools/scripts/stopwatch_evidence_judge.sh "$$hist" $${ZCL_STOPWATCH_JUDGE_ARGS:-}); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if ! echo "$$out" | grep -q "stopwatch-judge: VERDICT="; then \
+	     echo "netdisrupt-stopwatch-report: FALSE-GREEN GUARD — judge printed no VERDICT line (rc=$$rc)"; \
+	     exit 1; \
+	 fi; \
+	 exit "$$rc"'
+
 # Always-fresh end-to-end test.
 #
 # Some in-suite tests fork the real `build/bin/zclassic23` binary and assert
@@ -3234,6 +3270,41 @@ mvp-coldstart-to-tip-stopwatch: zclassic23
 	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),); rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then \
 	     echo "mvp-coldstart-to-tip-stopwatch: SKIP (binary absent / no reachable serving peer — run on a host with a synced zclassic23 peer)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
+# ── mvp-netdisrupt-recovery-stopwatch (PROOF B: network-disruption recovery) ─
+#
+# The sibling wall-clock gate to mvp-coldstart-to-tip-stopwatch above, but
+# for RECOVERY instead of first sync: an already-at-tip client node survives
+# an upstream peer outage (SIGSTOP the peer, sleep, SIGCONT it) and the
+# harness times how long the client's H* takes to re-catch network_tip.
+# Gates on the same real claim — `dumpstate reducer_frontier`'s "hstar"
+# reaching "network_tip" — never "the FSM says at_tip".
+#
+# This target does NOT spawn either node: point it at an already-running,
+# already-synced client (ZCL_ND_CLIENT_RPCPORT/ZCL_ND_CLIENT_DATADIR) and a
+# controllable upstream peer process (ZCL_ND_UPSTREAM_PID_FILE or a bare
+# ZCL_ND_UPSTREAM_PID). SKIPs (exit 2 -> 0) when any fixture is absent or the
+# client is not already at tip before the cut starts — same SKIP-mapping
+# discipline as mvp-coldstart-to-tip-stopwatch above. Exit 3 (SEAM) and exit
+# 4 (STALLED-NAMED) are both honest non-SKIP verdicts and propagate as a
+# failing recipe.
+.PHONY: mvp-netdisrupt-recovery-stopwatch
+mvp-netdisrupt-recovery-stopwatch: zclassic23
+	@bash -c 'set -uo pipefail; \
+	 echo "══ PROOF B STOPWATCH (real): upstream SIGSTOP -> SIGCONT -> client H* re-catches network_tip, real wall-clock ══"; \
+	 ZCL_ND_UPSTREAM_PID="$(ZCL_ND_UPSTREAM_PID)" \
+	 bash tools/scripts/network_disruption_recovery_stopwatch.sh \
+	     $(if $(ZCL_ND_NODE_BIN),--bin=$(ZCL_ND_NODE_BIN),) \
+	     $(if $(ZCL_ND_UPSTREAM_PID_FILE),--upstream-pid-file=$(ZCL_ND_UPSTREAM_PID_FILE),) \
+	     $(if $(ZCL_ND_CLIENT_RPCPORT),--client-rpc=$(ZCL_ND_CLIENT_RPCPORT),) \
+	     $(if $(ZCL_ND_CLIENT_DATADIR),--client-datadir=$(ZCL_ND_CLIENT_DATADIR),) \
+	     $(if $(ZCL_ND_CUT_SECS),--cut-secs=$(ZCL_ND_CUT_SECS),) \
+	     $(if $(ZCL_ND_BUDGET_SECS),--budget=$(ZCL_ND_BUDGET_SECS),); rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-netdisrupt-recovery-stopwatch: SKIP (fixture absent — client not at tip / client RPC unreachable / upstream pid not a live process / binary absent — run against a live already-at-tip client + a controllable upstream peer)"; \
 	     exit 0; \
 	 fi; \
 	 exit $$rc'
