@@ -26,8 +26,17 @@
  * advancing first) primed.
  *
  * Single mutex; LRU via a monotonically increasing use-stamp. Capacity is
- * small (16) — the working set is the few heights in flight across the five
- * stages, never the whole chain.
+ * BLOCK_PARSE_CACHE_CAPACITY (2048, see block_parse_cache.h) — sized for the
+ * offline refold's batch cadence, not the small live in-flight window this
+ * cache was originally tuned for. The refold drives all five stages
+ * (body_persist, script_validate, proof_validate, utxo_apply,
+ * tip_finalize_post_step) across the SAME batch of up to 2000 heights before
+ * advancing; with the old capacity of 16, body_persist (the producer, which
+ * runs first) evicted its own entries ~125x over before the last downstream
+ * stage ever reached the same range, so four of the five stages re-read and
+ * re-parsed every block from disk anyway. Capacity must stay >= the refold
+ * batch size so a full batch survives across all five stages; live/steady-
+ * state operation (a handful of in-flight heights) is unaffected either way.
  */
 #include "storage/block_parse_cache.h"
 
@@ -45,7 +54,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BPC_CAPACITY 16
+#define BPC_CAPACITY BLOCK_PARSE_CACHE_CAPACITY
 
 struct bpc_entry {
     bool          used;       /* slot occupied */
