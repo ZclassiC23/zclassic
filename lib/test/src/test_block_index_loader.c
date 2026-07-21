@@ -13,6 +13,8 @@
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_repair.h"
+#include "services/block_row_verify.h"
 #include "util/blocker.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -1386,6 +1388,176 @@ int test_block_index_loader(void)
         block_map_free(&ms.map_block_index);
         if (ndb.db) sqlite3_close(ndb.db);
         free(hashes);
+    }
+
+    /* ── 16d. RUNTIME poisoned-blocks-row quarantine (Lane B3):
+     *        stage_repair_quarantine_blocks_row purges a row that FAILS the
+     *        frozen block_row_verify, clears its in-memory HAVE_DATA, bumps the
+     *        process counter + typed blocker; REFUSES a clean row; and falls
+     *        back to db_block_delete_by_height for a row whose stored `hash`
+     *        column does not match the canonical hash. CHAIN_MAIN is already
+     *        selected above (case 14), so chain_params_get() != NULL. ──────── */
+    {
+        const int N = 5;
+        const int POISON_H = 2;
+        struct uint256 hashes[5];
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        bool ok = (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        ok = ok && bih_create_blocks_table(ndb.db);
+
+        struct uint256 zero;
+        memset(&zero, 0, sizeof(zero));
+        for (int h = 0; ok && h < N; h++) {
+            const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+            ok = bih_insert_header_row(ndb.db, h, prev, &hashes[h]);
+        }
+
+        /* Active chain over the SAME hashes; HAVE_DATA set on the poison row so
+         * the quarantine's in-memory clear is observable. */
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        struct block_index *bi_arr[5] = {0};
+        for (int h = 0; ok && h < N; h++) {
+            struct block_index *bi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ok = ok && (bi != NULL);
+            if (bi) {
+                bi->nHeight = h;
+                bi->nStatus = (unsigned)BLOCK_VALID_TREE |
+                    (h == POISON_H ? (unsigned)BLOCK_HAVE_DATA : 0u);
+                if (h > 0)
+                    bi->pprev = bi_arr[h - 1];
+                bi_arr[h] = bi;
+            }
+        }
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, bi_arr[N - 1]);
+
+        /* Poison the durable row at POISON_H: rewrite merkle_root so the stored
+         * header no longer hash-binds to its `hash` column (== canonical). */
+        if (ok) {
+            uint8_t bad[32];
+            memset(bad, 0xEE, sizeof(bad));
+            sqlite3_stmt *u = NULL;
+            ok = (sqlite3_prepare_v2(ndb.db,
+                    "UPDATE blocks SET merkle_root=? WHERE height=?",
+                    -1, &u, NULL) == SQLITE_OK && u);
+            if (ok) {
+                sqlite3_bind_blob(u, 1, bad, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_int(u, 2, POISON_H);
+                ok = (sqlite3_step(u) == SQLITE_DONE);
+                sqlite3_finalize(u);
+            }
+        }
+
+        blocker_clear("block_index.runtime_row_quarantine");
+        int64_t q0 = stage_repair_runtime_row_quarantined();
+
+        struct stage_repair_row_quarantine_result qr;
+        memset(&qr, 0, sizeof(qr));
+        bool purged = ok && stage_repair_quarantine_blocks_row(
+            &ndb, &ms, POISON_H, &hashes[POISON_H], &qr);
+        int64_t q_delta = stage_repair_runtime_row_quarantined() - q0;
+
+        bool gone_db = false;
+        if (ndb.db) {
+            sqlite3_stmt *c = NULL;
+            if (sqlite3_prepare_v2(ndb.db,
+                    "SELECT COUNT(*) FROM blocks WHERE height=?",
+                    -1, &c, NULL) == SQLITE_OK && c) {
+                sqlite3_bind_int(c, 1, POISON_H);
+                if (sqlite3_step(c) == SQLITE_ROW)
+                    gone_db = (sqlite3_column_int(c, 0) == 0);
+                sqlite3_finalize(c);
+            }
+        }
+        bool have_data_cleared = bi_arr[POISON_H] &&
+            !(block_index_status_load(bi_arr[POISON_H]) & BLOCK_HAVE_DATA);
+        bool blocker_ok =
+            blocker_exists("block_index.runtime_row_quarantine");
+
+        BIL_CHECK("bil/B3: runtime quarantine purges poisoned row (counter+1, "
+                  "blocker set, HAVE_DATA cleared, row gone)",
+                  purged && qr.quarantined && q_delta == 1 && gone_db &&
+                  have_data_cleared && blocker_ok);
+
+        /* REFUSE a clean row: calling on a still-valid neighbour must NOT delete
+         * it and must NOT bump the counter (verdict OK). */
+        int64_t q1 = stage_repair_runtime_row_quarantined();
+        struct stage_repair_row_quarantine_result qr2;
+        memset(&qr2, 0, sizeof(qr2));
+        bool purged2 = ok && stage_repair_quarantine_blocks_row(
+            &ndb, &ms, 1, &hashes[1], &qr2);
+        bool clean_present = false;
+        if (ndb.db) {
+            sqlite3_stmt *c = NULL;
+            if (sqlite3_prepare_v2(ndb.db,
+                    "SELECT COUNT(*) FROM blocks WHERE height=?",
+                    -1, &c, NULL) == SQLITE_OK && c) {
+                sqlite3_bind_int(c, 1, 1);
+                if (sqlite3_step(c) == SQLITE_ROW)
+                    clean_present = (sqlite3_column_int(c, 0) == 1);
+                sqlite3_finalize(c);
+            }
+        }
+        BIL_CHECK("bil/B3: runtime quarantine REFUSES a clean row (no delete, "
+                  "verdict OK)",
+                  !purged2 && qr2.refused_clean &&
+                  qr2.verdict == (int)BLOCK_ROW_VERIFY_OK &&
+                  (stage_repair_runtime_row_quarantined() - q1) == 0 &&
+                  clean_present);
+
+        /* by_height FALLBACK: a poisoned row at height 4 whose stored `hash`
+         * column is REWRITTEN to a non-canonical value X. Read-by-canonical-hash
+         * finds nothing → the helper reads by height, verifies the stored header
+         * against the canonical hash (mismatch), and deletes by height. */
+        int64_t q2 = stage_repair_runtime_row_quarantined();
+        bool okh = ok;
+        if (okh) {
+            uint8_t xhash[32];
+            memset(xhash, 0x77, sizeof(xhash));
+            uint8_t bad[32];
+            memset(bad, 0xAB, sizeof(bad));
+            sqlite3_stmt *u = NULL;
+            okh = (sqlite3_prepare_v2(ndb.db,
+                    "UPDATE blocks SET hash=?, merkle_root=? WHERE height=?",
+                    -1, &u, NULL) == SQLITE_OK && u);
+            if (okh) {
+                sqlite3_bind_blob(u, 1, xhash, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_blob(u, 2, bad, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_int(u, 3, 4);
+                okh = (sqlite3_step(u) == SQLITE_DONE);
+                sqlite3_finalize(u);
+            }
+        }
+        struct stage_repair_row_quarantine_result qr3;
+        memset(&qr3, 0, sizeof(qr3));
+        bool purged3 = okh && stage_repair_quarantine_blocks_row(
+            &ndb, &ms, 4, &hashes[4], &qr3);
+        bool gone4 = false;
+        if (ndb.db) {
+            sqlite3_stmt *c = NULL;
+            if (sqlite3_prepare_v2(ndb.db,
+                    "SELECT COUNT(*) FROM blocks WHERE height=?",
+                    -1, &c, NULL) == SQLITE_OK && c) {
+                sqlite3_bind_int(c, 1, 4);
+                if (sqlite3_step(c) == SQLITE_ROW)
+                    gone4 = (sqlite3_column_int(c, 0) == 0);
+                sqlite3_finalize(c);
+            }
+        }
+        BIL_CHECK("bil/B3: runtime quarantine falls back to delete-by-height for "
+                  "a non-canonical-hash poisoned row",
+                  purged3 && qr3.quarantined && qr3.deleted_by_height &&
+                  gone4 && (stage_repair_runtime_row_quarantined() - q2) == 1);
+
+        blocker_clear("block_index.runtime_row_quarantine");
+        block_map_free(&ms.map_block_index);
+        if (ndb.db) sqlite3_close(ndb.db);
     }
 
     /* ── 16c. Repair-storm throttle: N rapid SAME-key failures collapse to a

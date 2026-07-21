@@ -5,6 +5,9 @@
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "models/database.h"
+#include "chain/chainparams.h"
+#include "chain/chainparamsbase.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -26,6 +29,9 @@ void stale_validate_headers_repair_test_clear_backoff(void);
 void stale_validate_headers_repair_test_set_hstar_override(int height);
 int stale_validate_headers_repair_test_repair_target(sqlite3 *db);
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
+void stale_validate_headers_repair_test_set_peer_count(int n);
+void stale_validate_headers_repair_test_set_node_db(struct node_db *ndb);
+int stale_validate_headers_repair_test_quarantine_escalations(void);
 
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
@@ -297,6 +303,74 @@ static bool seed_repair_header_hash(sqlite3 *db, int height,
 static bool seed_repair_header(sqlite3 *db, int height)
 {
     return seed_repair_header_hash(db, height, NULL);
+}
+
+/* Open an in-memory node_db with a `blocks` table holding ONE poisoned row
+ * keyed by `canon` — arbitrary header fields that do NOT hash-bind to `canon`,
+ * so the runtime quarantine's block_row_verify() returns HASH_BIND_MISMATCH and
+ * authorizes the purge. Returns false on any SQLite error. */
+static bool seed_poisoned_node_db(struct node_db *ndb, const struct uint256 *canon)
+{
+    memset(ndb, 0, sizeof(*ndb));
+    if (sqlite3_open(":memory:", &ndb->db) != SQLITE_OK)
+        return false;
+    ndb->open = true;
+    if (sqlite3_exec(ndb->db,
+            "CREATE TABLE blocks("
+            "hash BLOB PRIMARY KEY,height INTEGER NOT NULL,"
+            "prev_hash BLOB NOT NULL,version INTEGER NOT NULL,"
+            "merkle_root BLOB NOT NULL,time INTEGER NOT NULL,"
+            "bits INTEGER NOT NULL,nonce BLOB NOT NULL,"
+            "solution BLOB NOT NULL,chain_work BLOB NOT NULL,"
+            "status INTEGER NOT NULL DEFAULT 0,"
+            "file_num INTEGER,data_pos INTEGER,undo_pos INTEGER,"
+            "num_tx INTEGER NOT NULL DEFAULT 0,"
+            "sapling_root BLOB,sprout_root BLOB,"
+            "sapling_value INTEGER DEFAULT 0,"
+            "sprout_value INTEGER DEFAULT 0)",
+            NULL, NULL, NULL) != SQLITE_OK)
+        return false;
+
+    uint8_t z32[32] = {0}, m32[32], n32[32], sol[32];
+    memset(m32, 0x22, sizeof(m32));   /* arbitrary merkle → header hash != canon */
+    memset(n32, 0x33, sizeof(n32));
+    memset(sol, 0x11, sizeof(sol));
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT INTO blocks(hash,height,prev_hash,version,merkle_root,"
+            "time,bits,nonce,solution,chain_work,status,file_num,data_pos,"
+            "undo_pos,num_tx,sapling_root,sprout_root,sapling_value,"
+            "sprout_value) VALUES(?,2,?,4,?,12345,?,?,?,?,3,0,0,0,1,?,?,0,0)",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_blob(s, 1, canon->data, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 2, z32, 32, SQLITE_TRANSIENT);          /* prev_hash */
+    sqlite3_bind_blob(s, 3, m32, 32, SQLITE_TRANSIENT);          /* merkle_root */
+    sqlite3_bind_int64(s, 4, 0x1f07ffff);                        /* bits */
+    sqlite3_bind_blob(s, 5, n32, 32, SQLITE_TRANSIENT);          /* nonce */
+    sqlite3_bind_blob(s, 6, sol, 32, SQLITE_TRANSIENT);          /* solution */
+    sqlite3_bind_blob(s, 7, z32, 32, SQLITE_TRANSIENT);          /* chain_work */
+    sqlite3_bind_blob(s, 8, z32, 32, SQLITE_TRANSIENT);          /* sapling_root */
+    sqlite3_bind_blob(s, 9, z32, 32, SQLITE_TRANSIENT);          /* sprout_root */
+    bool ok = (sqlite3_step(s) == SQLITE_DONE);
+    sqlite3_finalize(s);
+    return ok;
+}
+
+static int node_db_block_count(struct node_db *ndb)
+{
+    if (!ndb->db)
+        return -1;
+    sqlite3_stmt *c = NULL;
+    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM blocks",
+                           -1, &c, NULL) != SQLITE_OK || !c)
+        return -1;
+    int n = -1;
+    if (sqlite3_step(c) == SQLITE_ROW)
+        n = sqlite3_column_int(c, 0);
+    sqlite3_finalize(c);
+    return n;
 }
 
 static void setup_main_state(struct main_state *ms,
@@ -715,6 +789,95 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
         SVHR_CHECK("forward reducer frontier advance witnesses the clear "
                    "(remedy not re-run)", ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    /* ── Lane B3: at ladder EXHAUSTION on a non-advancing validate poison whose
+     * durable `blocks` row is itself poisoned, the remedy escalates ONCE to the
+     * runtime row quarantine (purging the poisoned row); a SECOND exhaustion at
+     * the same height (reached via the first cooldown re-arm) does NOT re-fire —
+     * the once-per-height bookkeeping survives the re-arm and there is no delete
+     * loop. Faithful end-to-end: a real seeded node_db is injected so the helper
+     * genuinely deletes the poisoned row and bumps the runtime counter. ─────── */
+    {
+        chain_params_select(CHAIN_MAIN);  /* block_row_verify needs cp != NULL */
+
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
+        bool ok = setup_condition_case("b3_row_quarantine", dir, sizeof(dir),
+                                       &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+
+        /* Extend to a 3-block chain so target=2 (H*+1) is ON the active chain
+         * and canon = active_chain_at(2) is non-NULL (the escalation needs a
+         * frontier hash to address). */
+        struct block_index block2;
+        struct uint256 hash2;
+        block_index_init(&block2);
+        memset(&hash2, 0, sizeof(hash2));
+        hash2.data[0] = 2;
+        hash2.data[1] = 0xA7;
+        block2.phashBlock = &hash2;
+        block2.nHeight = 2;
+        block2.nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        block2.pprev = &blocks[1];
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &block2);
+
+        /* Seed the durable poisoned `blocks` row keyed by canon (hash2) and
+         * inject the handle; force 0 peers so cure_request_peer_refetch takes
+         * the deterministic no-peers branch. */
+        struct node_db ndb;
+        ok = ok && seed_poisoned_node_db(&ndb, &hash2);
+        stale_validate_headers_repair_test_set_node_db(&ndb);
+        stale_validate_headers_repair_test_set_peer_count(0);
+
+        /* Solutionless poison at 2, NO repair header → the remedy falls through
+         * to the P2P fallback (where the escalation lives) every tick. */
+        ok = ok && seed_cursors(db, 5, 5);
+
+        int64_t rq_before = stage_repair_runtime_row_quarantined();
+
+        /* Ticks 1-5: climb to the first exhaustion → escalation fires ONCE. */
+        for (int i = 0; i < 5; i++) {
+            ok = ok && seed_poison_rows(
+                db, 2, "'no-header-solution-backfill-required'", 0);
+            stale_validate_headers_repair_test_clear_backoff();
+            condition_engine_tick();
+        }
+
+        int esc_after_first = stale_validate_headers_repair_test_quarantine_escalations();
+        int64_t rq_after_first = stage_repair_runtime_row_quarantined();
+        int rows_after_first = node_db_block_count(&ndb);
+
+        ok = ok && esc_after_first == 1;
+        ok = ok && (rq_after_first - rq_before) == 1;   /* poisoned row purged */
+        ok = ok && rows_after_first == 0;               /* gone from `blocks` */
+
+        /* Ticks 6-10: the first cooldown re-arm (last_cooldown==0) resets the
+         * ladder, so a SECOND exhaustion is reached at the SAME height. The
+         * once-per-height set (which SURVIVED the re-arm) blocks a re-fire: no
+         * new escalation, no second delete. */
+        for (int i = 0; i < 5; i++) {
+            ok = ok && seed_poison_rows(
+                db, 2, "'no-header-solution-backfill-required'", 0);
+            stale_validate_headers_repair_test_clear_backoff();
+            condition_engine_tick();
+        }
+
+        int esc_after_second = stale_validate_headers_repair_test_quarantine_escalations();
+        int64_t rq_after_second = stage_repair_runtime_row_quarantined();
+
+        ok = ok && esc_after_second == 1;               /* still exactly once */
+        ok = ok && (rq_after_second - rq_before) == 1;  /* no re-delete */
+
+        SVHR_CHECK("B3 exhaustion escalates to runtime row quarantine EXACTLY "
+                   "ONCE; second exhaustion at same height does not re-delete "
+                   "(bookkeeping survives cooldown re-arm)", ok);
+
+        stale_validate_headers_repair_test_set_node_db(NULL);
+        if (ndb.db) sqlite3_close(ndb.db);
         teardown_condition_case(dir, &ms);
     }
 

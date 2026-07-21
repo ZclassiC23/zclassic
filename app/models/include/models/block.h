@@ -71,6 +71,28 @@ bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
                                          const uint8_t hash[32],
                                          struct block_header *out);
 
+/* Quarantine evidence read: load the RAW stored header (fixed fields + the
+ * Equihash solution) for the `blocks` row addressed by `hash` (…_by_hash) or by
+ * `height` (…_by_height), with NO status filter and NO hash-bind gate. Unlike
+ * db_block_load_header_by_hash_height above — which returns false the moment a
+ * row fails to hash-bind and so HIDES the very poison the caller needs to see —
+ * these return the header exactly as stored so the caller can run
+ * block_row_verify() itself and OBSERVE a hash-bind / PoW / Equihash failure.
+ * Used by the runtime poisoned-row quarantine (jobs/stage_repair_row_quarantine).
+ *
+ * Returns true iff a row exists at that key AND its fixed header fields plus the
+ * Equihash solution are structurally usable (solution present, 0 < len <=
+ * MAX_SOLUTION_SIZE); false on a closed db, no row, or an empty/oversize
+ * solution. …_by_height writes the row's own `hash` column to `out_stored_hash`
+ * (zeroed on every non-row path) so the caller can tell a wrong-block row from
+ * the canonical one. */
+bool db_block_load_raw_header_by_hash(struct node_db *ndb,
+                                      const uint8_t hash[32],
+                                      struct block_header *out);
+bool db_block_load_raw_header_by_height(struct node_db *ndb, int height,
+                                        struct block_header *out,
+                                        uint8_t out_stored_hash[32]);
+
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
 
 /* Delete a `blocks` row by height, for the pathological case where the row's
