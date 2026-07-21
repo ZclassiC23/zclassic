@@ -10,7 +10,7 @@
 
 #include "models/database.h"
 #include "models/principal.h"
-#include "services/authz_policy.h"
+#include "models/authz_policy.h"
 
 #include <stdio.h>
 #include <string.h>

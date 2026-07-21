@@ -90,6 +90,7 @@ gate_command() {
         check-rpc-registrar)               echo './tools/scripts/check_rpc_registrar.sh' ;;
         check-lag-slo-observable)          echo './tools/scripts/check_lag_slo_observable.sh' ;;
         check-lib-layering)                echo './tools/scripts/check_lib_layering.sh' ;;
+        check-shape-include-direction)     echo './tools/scripts/check_shape_include_direction.sh' ;;
         check-domain-purity)               echo './tools/scripts/check_domain_purity.sh' ;;
         check-core-include-boundary)       echo './tools/scripts/check_core_include_boundary.sh' ;;
         check-core-seal)                   echo '__core_seal__' ;;

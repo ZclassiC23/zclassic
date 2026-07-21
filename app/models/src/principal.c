@@ -10,7 +10,7 @@
 #include "util/log_macros.h"
 #include "models/principal.h"
 #include "models/model_text.h"
-#include "services/authz_policy.h"
+#include "models/authz_policy.h"
 #include "config/runtime.h"
 #include "json/json.h"
 #include <string.h>

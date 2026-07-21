@@ -290,6 +290,23 @@ assert green).
   remediated). Override `// lib-layer-ok:<tag>`. Impl:
   `tools/scripts/check_lib_layering.sh`.
 
+- **Gate #49: `check-shape-include-direction`** (RATCHET) — the eight app/
+  shapes include DOWNWARD only (`controllers -> services -> models ->
+  lib/core`). Flags any `#include "services/…"` or `"controllers/…"` from an
+  `app/models/**` file, and any `#include "controllers/…"` from an
+  `app/services/**` file. Baseline
+  `tools/scripts/shape_include_direction_baseline.txt`: zero on the
+  models/ -> services/controllers edge (its two originals — `principal.c` ->
+  `services/authz_policy.h` and `db_txn.c` -> `services/disk_monitor.h` —
+  were fixed at gate-introduction: the authz policy table moved down into
+  `app/models/`, and db_txn's disk-critical check now goes through a
+  registered callback, `db_txn_set_disk_critical_probe`, wired from
+  `disk_monitor_start()` itself (`app/services/src/disk_monitor.c`); 13
+  pre-existing entries grandfathered on the services/ -> controllers/ edge
+  (undiscovered until this gate existed).
+  Override `// shape-layer-ok:<tag>`. Impl:
+  `tools/scripts/check_shape_include_direction.sh`.
+
 - **Gate #45: `check-domain-purity`** (HARD) — `domain/` is the innermost
   layer. A `domain/**/*.c|.h` file (outside `*/test/*`) may only `#include` its
   own `"domain/…"` headers, C/system `<…>` headers, bare domain-local sibling
@@ -576,6 +593,7 @@ add/remove a gate.
 - `check-silent-errors-conditions`
 - `check-silent-errors-controllers`
 - `check-silent-errors-jobs`
+- `check-shape-include-direction`
 - `check-shape-includes-header`
 - `check-silent-errors-services`
 - `check-stage-advances-or-blocks`
@@ -641,6 +659,7 @@ mechanically hold:
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
+| `// shape-layer-ok:<tag>` | line in `app/models/` that includes a `services/`/`controllers/` header, or in `app/services/` that includes a `controllers/` header | `check-shape-include-direction` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
 | `// supervised:<child>` | a `thread_registry_spawn(` call site whose thread IS on the supervisor tree; names the watching contract | `check-thread-supervision` |

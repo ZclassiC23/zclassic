@@ -12,7 +12,7 @@
 // (auth_login_signable_hash) is a pure, total pre-image codec, not a service op.
 
 #include "services/auth_login_service.h"
-#include "services/authz_policy.h"
+#include "models/authz_policy.h"
 #include "models/auth_challenge.h"
 
 #include "platform/time_compat.h"

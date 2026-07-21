@@ -422,7 +422,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md
 
 /* Multi-user-server identity overlay (principals + auth + authority ceiling). */
 AGENT_IMPACT_RULE("app/models/src/principal.c|app/models/include/models/principal.h|app/models/src/auth_challenge.c|app/models/include/models/auth_challenge.h", "principal_authz auth_login command_authority models make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/authz_policy.c|app/services/include/services/authz_policy.h|app/services/src/auth_login_service.c|app/services/include/services/auth_login_service.h", "principal_authz auth_login command_authority make_lint_gates")
+AGENT_IMPACT_RULE("app/models/src/authz_policy.c|app/models/include/models/authz_policy.h|app/services/src/auth_login_service.c|app/services/include/services/auth_login_service.h", "principal_authz auth_login command_authority make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/account_controller.c|config/commands/accounts.def", "command_authority command_registry_catalog native_api_contract make_lint_gates")
 AGENT_IMPACT_RULE("lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h", "command_authority command_registry_catalog native_api_contract command_handler_snapshot hotswap_module make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_principal_authz.c", "principal_authz make_lint_gates")

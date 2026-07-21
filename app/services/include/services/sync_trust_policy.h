@@ -25,7 +25,7 @@
  * compact display/derivation label; `enum sync_posture` is the display-only
  * posture that authorizes NOTHING.
  *
- * Pure/deterministic: no clock, RNG, or IO. Mirrors app/services/authz_policy.h. */
+ * Pure/deterministic: no clock, RNG, or IO. Mirrors app/models/authz_policy.h. */
 
 #ifndef ZCL_SERVICES_SYNC_TRUST_POLICY_H
 #define ZCL_SERVICES_SYNC_TRUST_POLICY_H

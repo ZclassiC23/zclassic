@@ -166,7 +166,7 @@ Invariants:
   descriptions so wording changes cannot alter permission policy.
 
 Concrete files: `lib/kernel/src/command_registry.c`,
-`app/services/src/authz_policy.c`,
+`app/models/src/authz_policy.c`,
 `lib/test/src/test_rpc_auth_hardening.c`,
 `app/controllers/include/controllers/file_controller.h`,
 `app/controllers/src/wallet_controller.c`.

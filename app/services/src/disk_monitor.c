@@ -22,6 +22,7 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "models/db_txn.h"  /* db_txn_set_disk_critical_probe wiring */
 #include "supervisors/domains.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -282,6 +283,15 @@ static void *dm_thread_fn(void *arg)
 
 struct zcl_result disk_monitor_start(const struct disk_monitor_config *cfg)
 {
+    /* Wire the models/db_txn.h hexagonal seam here (not in config/src/boot.c)
+     * so app/models/ never needs to #include app/services/disk_monitor.h
+     * directly (see check_shape_include_direction.sh) — the service arms its
+     * own probe as part of its own start lifecycle, unconditionally, before
+     * any of the validation below. db_txn_begin's probe call is a no-op
+     * until this registration runs, matching the pre-seam behavior of a
+     * direct disk_monitor_is_critical() call. */
+    db_txn_set_disk_critical_probe(disk_monitor_is_critical);
+
     if (!cfg || !cfg->datadir)
         return ZCL_ERR(-1, "start called with null config or datadir");
 

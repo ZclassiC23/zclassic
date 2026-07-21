@@ -24,7 +24,6 @@
 
 #include "event/event.h"
 #include "platform/time_compat.h"
-#include "services/disk_monitor.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -72,6 +71,16 @@ static void emit_leaked(const char *label)
     event_emitf(EV_DB_TXN_LEAKED, 0, "label=%s", label ? label : "");
 }
 
+/* ── Disk-critical probe (hexagonal seam) ──────────────────────
+ * See db_txn_set_disk_critical_probe() in the header for the rationale
+ * (models/ must not #include services/disk_monitor.h directly). */
+static db_txn_disk_critical_probe_fn g_disk_critical_probe;
+
+void db_txn_set_disk_critical_probe(db_txn_disk_critical_probe_fn fn)
+{
+    g_disk_critical_probe = fn;
+}
+
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 struct db_txn *db_txn_begin(struct node_db *db, const char *label)
@@ -90,12 +99,13 @@ struct db_txn *db_txn_begin(struct node_db *db, const char *label)
      * transaction so we stop adding bytes to a near-full filesystem. This is a
      * NAMED refuse (EV_DB_TXN_REJECTED reason=disk_critical), never a silent
      * stall — callers already handle a NULL begin. It clears automatically the
-     * instant disk_monitor_is_critical() goes false: the disk_full_pause
-     * remedy reclaims derived bytes (WAL truncate + *.tmp sweep), so writes
-     * resume without operator action. disk_monitor_is_critical() is a lock-free
-     * atomic read and returns false whenever the watchdog is not running, so
-     * this is a no-op on nodes/tests without the monitor. */
-    if (disk_monitor_is_critical()) {
+     * instant the probe goes false: the disk_full_pause remedy reclaims
+     * derived bytes (WAL truncate + *.tmp sweep), so writes resume without
+     * operator action. The probe (registered by disk_monitor_start() with
+     * disk_monitor_is_critical, a lock-free atomic read) returns false
+     * whenever it is unset or the watchdog is not running, so this is a
+     * no-op on nodes/tests without the monitor. */
+    if (g_disk_critical_probe && g_disk_critical_probe()) {
         emit_rejected(label, "disk_critical");
         LOG_NULL("db",
                  "db_txn: REJECTED label='%s' — disk CRITICAL (free below "

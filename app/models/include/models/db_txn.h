@@ -105,6 +105,20 @@ void db_txn_rollback(struct db_txn *txn);
  * Helper for __attribute__((cleanup)). Not for direct calls. */
 void db_txn_auto_rollback(struct db_txn **p);
 
+/* ── Disk-critical probe (hexagonal seam) ────────────────────────
+ * db_txn_begin refuses to open a NEW write transaction while the disk
+ * free-space watchdog (app/services/disk_monitor.c) reports CRITICAL, so a
+ * near-full filesystem never accumulates more write pressure. models/ must
+ * not #include services/ directly (see check_shape_include_direction.sh), so
+ * the probe is a registered function pointer instead of a direct call —
+ * mirrors node_db_set_quick_check_skip_probe() in models/database.h. Default
+ * (unset) = never critical, identical to prior behavior on nodes/tests
+ * without the disk monitor running. Registered by disk_monitor_start()
+ * itself (app/services/src/disk_monitor.c) as part of its own start
+ * lifecycle, to keep app/models decoupled from app/services. */
+typedef bool (*db_txn_disk_critical_probe_fn)(void);
+void db_txn_set_disk_critical_probe(db_txn_disk_critical_probe_fn fn);
+
 /* DB_TXN_SCOPE(name, db, label)
  *
  * Expands to a `struct db_txn *name` local that is auto-cleaned up

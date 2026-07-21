@@ -4,7 +4,7 @@
  * authenticated to this node. The address (base58check(hash160(pubkey))) is
  * the primary key; `role` is the single authorization input and
  * `granted_capabilities` is a DERIVED cache recomputed from `role` through the
- * authz policy table (app/services/.../authz_policy.h) in before_validate — a
+ * authz policy table (models/authz_policy.h) in before_validate — a
  * caller can therefore NEVER persist a capability mask that exceeds its role.
  * App-layer overlay only: `sybil_proof_height` is bookkeeping and is never
  * consulted by consensus. */

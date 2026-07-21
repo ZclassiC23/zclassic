@@ -12,7 +12,7 @@
 #include "models/principal.h"
 #include "models/auth_challenge.h"
 #include "services/auth_login_service.h"
-#include "services/authz_policy.h"
+#include "models/authz_policy.h"
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"

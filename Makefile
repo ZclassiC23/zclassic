@@ -4710,6 +4710,16 @@ check-lib-layering:
 	@echo "══ LINT: lib/ layer purity ══"
 	@./tools/scripts/check_lib_layering.sh
 
+# Inter-shape include direction: the eight app/ shapes include DOWNWARD only
+# (controllers -> services -> models -> lib/core). Flags app/models/** files
+# including "services/..." or "controllers/...", and app/services/** files
+# including "controllers/...". Baseline
+# tools/scripts/shape_include_direction_baseline.txt grandfathers pre-existing
+# debt; override with `// shape-layer-ok:<tag>`.
+check-shape-include-direction:
+	@echo "══ LINT: inter-shape include direction ══"
+	@./tools/scripts/check_shape_include_direction.sh
+
 # domain/ source purity: the innermost layer may only #include its own
 # domain headers, C/system headers, bare domain-local siblings, and the 12
 # allowed lib subsystems (bloom chain coins consensus core crypto keys
@@ -5256,6 +5266,7 @@ LINT_GATES := \
     check-rpc-registrar \
     check-lag-slo-observable \
     check-lib-layering \
+    check-shape-include-direction \
     check-domain-purity \
     check-core-include-boundary \
     check-core-seal \

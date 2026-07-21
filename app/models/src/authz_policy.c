@@ -1,8 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Authorization policy table (single source of truth). See authz_policy.h.
- * The model recompute and the login-session minter both call these two
- * functions, so role -> (caps, ceiling) is defined in exactly one place.
+ * Authorization policy table (single source of truth). See authz_policy.h
+ * for why this lives in models/ rather than services/. The model recompute
+ * and the login-session minter both call these two functions, so role ->
+ * (caps, ceiling) is defined in exactly one place.
+ *
+ * ar-validate-skip:pure-total-policy-lookup
+ *   Not a row record — a stateless total table lookup (role -> mask /
+ *   ceiling) with no DB-backed fields, so the AR validates_* lifecycle does
+ *   not apply.
  *
  * one-result-type-ok:pure-total-policy-lookup — these are total, infallible
  * table lookups (role -> mask / ceiling) that cannot fail; a zcl_result would
@@ -10,7 +16,7 @@
 
 // one-result-type-ok:pure-total-policy-lookup — total infallible role->mask/
 // ceiling table lookups; a zcl_result would be noise (fail closed on unknown).
-#include "services/authz_policy.h"
+#include "models/authz_policy.h"
 
 /* Capability mask by role. Every entry is a strict superset of the one below
  * it. These are app-layer overlay capabilities only — none is consensus

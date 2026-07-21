@@ -1348,6 +1348,12 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
  * carrying a forbidden include; clean tree → exit 0, fixture → exit != 0. */
 #define DOMAIN_PURITY_SCRIPT_REL  "tools/scripts/check_domain_purity.sh"
 #define DOMAIN_PURITY_FIXTURE_DST "domain/wallet/src/_domain_purity_fixture_tmp.c"
+/* Gate #49 — inter-shape include direction (RATCHET). The fixture is an
+ * app/models/src/ file with an upward #include "services/..."; clean tree
+ * (13 pre-existing services/ -> controllers/ entries grandfathered in the
+ * baseline) -> exit 0, fixture -> exit != 0. */
+#define SHAPE_DIR_SCRIPT_REL  "tools/scripts/check_shape_include_direction.sh"
+#define SHAPE_DIR_FIXTURE_DST "app/models/src/_shape_dir_fixture_tmp.c"
 #define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
 #define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
 #define E6_SCRIPT_REL    "tools/scripts/check_one_write_path.sh"
@@ -3255,6 +3261,39 @@ static int t_domain_purity(void)
         ASSERT(trip_lib_rc != 0);
         ASSERT(planted_sib == 0);
         ASSERT(sibling_rc == 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #49 — check-shape-include-direction RATCHET: a models/ file with an
+ * upward #include "services/..." trips the gate; removing it restores
+ * green. (The services/ -> controllers/ edge already carries 13
+ * grandfathered baseline entries — see shape_include_direction_baseline.txt
+ * — so this fixture targets the models/ edge instead, which is the one
+ * this gate's own introduction paid down to zero.) */
+static int t_shape_include_direction(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+
+    unlink_rel(SHAPE_DIR_FIXTURE_DST);
+    int baseline_rc = run_gate_script(SHAPE_DIR_SCRIPT_REL, NULL);
+
+    int planted = (repo_path(path, sizeof(path), SHAPE_DIR_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include \"services/foo.h\"\n"
+                       "int shape_dir_fixture;\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(SHAPE_DIR_SCRIPT_REL, NULL) : -1;
+    unlink_rel(SHAPE_DIR_FIXTURE_DST);
+    int recover_rc = run_gate_script(SHAPE_DIR_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] #49 shape-include-direction RATCHET: clean, trips models->services include, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
@@ -8636,6 +8675,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_e3_shape_includes_header),
     S_(t_e4_projections_pure),
     S_(t_domain_purity),
+    S_(t_shape_include_direction),
     S_(t_e5_stage_advances_or_blocks),
     S_(t_e6_one_write_path),
     S_(t_e7_no_authoritative_ram_state),
