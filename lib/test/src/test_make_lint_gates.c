@@ -8814,6 +8814,10 @@ int test_make_lint_gates(void)
     if (!real_root)
         return lint_run_all_serial();
 
+    /* Reap any sandbox base leaked by a hard-killed prior run before we make
+     * ours (best-effort; only this group ever creates that sibling name). */
+    lint_purge_stale_sandboxes(real_root);
+
     /* Sandbox base lives OUTSIDE the worktree (a sibling, same filesystem so
      * hardlinks work) so a real-worktree `git grep --untracked` can never see
      * a worker's planted fixture. */
