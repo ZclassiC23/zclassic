@@ -145,10 +145,14 @@ static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
              (long long)elapsed);
     if (!blocker_init(&c->blocker, "proof_validate.internal_error",
                       STAGE_NAME, BLOCKER_PERMANENT, reason)) {
+        /* The internal_error anomaly is ALREADY detected (the budget lapsed and
+         * the transient proof-verify fault did not clear) — not a legitimate
+         * wait. Failing OPEN to JOB_IDLE would name nothing; latch JOB_FATAL so
+         * the halt is surfaced via the fatal/operator-needed path (Task A #9). */
         LOG_WARN("proof_validate",
                  "[proof_validate] could not name internal_error blocker "
-                 "height=%d — degrading to idle", height);
-        return JOB_IDLE;
+                 "height=%d — latching JOB_FATAL rather than failing open", height);
+        return JOB_FATAL;
     }
     c->blocker.retry_budget = -1;
     /* Page the operator exactly once per held height (EXACTLY ONE escalation). */
@@ -334,11 +338,17 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * blocker, so no blocker_clear is needed. */
         if (!blocker_exists("params_missing"))
             return JOB_IDLE; /* transient load window; re-derive next tick */
+        /* The loader ALREADY declared params_missing PERMANENT (a genuine
+         * corrupt/parse failure — an anomaly, still registry-visible here).
+         * Re-surfacing it as this stage's blocker cannot fail on the literal
+         * id/owner, but if it ever did, failing OPEN to JOB_IDLE would silently
+         * spin on an unvalidatable shielded block; latch JOB_FATAL instead so
+         * the permanent params_missing halt is surfaced (Task A #9). */
         if (!blocker_init(&c->blocker, "params_missing", "crypto.params",
                           BLOCKER_PERMANENT,
                           "zk verification keys not loaded; shielded-proof block "
                           "cannot be validated"))
-            return JOB_IDLE; /* blocker_init logged the reason; degrade to idle */
+            return JOB_FATAL; /* blocker_init logged the reason; latch fatal */
         return JOB_BLOCKED;
     }
 

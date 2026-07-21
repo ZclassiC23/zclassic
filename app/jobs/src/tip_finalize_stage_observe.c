@@ -29,6 +29,13 @@
  * matching tip_finalize rewind. See tip_finalize_observe_note_cursor_gap. */
 #define TF_CURSOR_GAP_BLOCKER_ID "tip_finalize.uv_cursor_gap"
 
+/* Typed blocker id for the current-tip-missing anomaly (Task A #11): after the
+ * active-chain window, the durable finalized-hash table, AND the best-header
+ * ancestry all fail to resolve the block at next_h that finalize extends FROM,
+ * the finalize is genuinely wedged on missing data — this names it so the
+ * safety net does not rely on the generic reducer_drive_watchdog alone. */
+#define TF_TIP_MISSING_BLOCKER_ID "tip_finalize.current_tip_missing"
+
 static _Atomic uint64_t g_finalized_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_reorg_detected_total = 0;
@@ -190,6 +197,32 @@ void tip_finalize_observe_note_cursor_gap(int next_h, uint64_t uv_cursor)
 void tip_finalize_observe_clear_cursor_gap(void)
 {
     blocker_clear(TF_CURSOR_GAP_BLOCKER_ID);
+}
+
+void tip_finalize_observe_note_tip_missing(int next_h)
+{
+    tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_TIP_MISSING);
+
+    /* Registry-visible typed blocker (JOB_IDLE at the call site — tip_finalize
+     * cannot itself manufacture the missing block; it heals once the body/
+     * header for next_h connects). TRANSIENT so the supervisor sweep retires a
+     * stale claim once the anomaly clears and stops re-firing. */
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d: the current tip block finalize must extend FROM could "
+             "not be resolved from the active-chain window, the durable "
+             "finalized-hash table, or the best-header ancestry — a "
+             "data-availability anomaly, not the healthy at-tip wait; holding "
+             "the cursor until the block at this height connects", next_h);
+    struct blocker_record rec;
+    if (blocker_init(&rec, TF_TIP_MISSING_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_TRANSIENT, reason))
+        (void)blocker_set(&rec);
+}
+
+void tip_finalize_observe_clear_tip_missing(void)
+{
+    blocker_clear(TF_TIP_MISSING_BLOCKER_ID);
 }
 
 void tip_finalize_observe_note_reorg_rewind(void)

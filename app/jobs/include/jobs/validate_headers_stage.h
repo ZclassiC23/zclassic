@@ -118,6 +118,10 @@ uint64_t validate_headers_stage_failed_total(void);
  * a value that stays 1 while many JOB_IDLE steps run proves the storm is gone. */
 int64_t validate_headers_stage_mark_fail_warn_count(void);
 
+/* Test-only: the current failure-recheck floor (lowest height the recheck pass
+ * revisits). See the Task A #12 floor-pin regression test. */
+int64_t validate_headers_stage_recheck_floor_for_test(void);
+
 bool validate_headers_stage_has_pass_record(int32_t height,
                                             const struct uint256 *hash);
 

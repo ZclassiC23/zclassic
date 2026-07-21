@@ -26,9 +26,9 @@ app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 807
 app/jobs/src/reducer_frontier_replay.c 813
 app/jobs/src/stage_repair_reducer_frontier.c 840
-app/jobs/src/tip_finalize_stage.c 807
+app/jobs/src/tip_finalize_stage.c 809
 app/jobs/src/utxo_apply_stage.c 911
-app/jobs/src/validate_headers_stage.c 1005
+app/jobs/src/validate_headers_stage.c 1024
 app/services/src/block_index_loader.c 876
 app/services/src/block_index_loader_rebuild.c 840
 app/services/src/node_db_catchup_service.c 886

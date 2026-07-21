@@ -124,6 +124,7 @@ ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    reducer_frontier_reconcile_light) /* TRANSIENT: the height-keyed script_validate/proof_validate verdict row is hash-bound to a foreign block; the reconcile dry-run purges the non-canonical residue row + re-derives the correct verdict, so the next apply attempt matches and the raiser's own utxo_apply_label_splice_healed() blocker_clear() fires (utxo_apply_stage.c:354) — same self-clear class as utxo_apply.apply_failed */
+ZCL_BLOCKER_REMEDY(utxo_apply.apply_candidate_anomaly,         reducer_frontier_reconcile_light) /* Task A: a REAL apply-candidate-selection anomaly (block map / durable-or-visible parent / on-disk body disagreeing with the ok-bound height-keyed verdict) that HOLDS utxo_apply's cursor — same self-clear class as utxo_apply.apply_failed / .label_splice: the held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the contiguous frontier + re-drives selection, and the raiser's own utxo_apply_select_idle_blocker_clear() fires on the next resolved candidate (utxo_apply_stage_fallback.c) */
 ZCL_BLOCKER_REMEDY(utxo_apply.upstream_evidence_mode,          OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.stale_upstream_hash,             OWNER)
 ZCL_BLOCKER_REMEDY(proof_validate.internal_error,              OWNER) /* D2 */
@@ -171,6 +172,7 @@ ZCL_BLOCKER_REMEDY(utxo_ladder_mismatch,                        OWNER)
 ZCL_BLOCKER_REMEDY(chain.tip_behind_header_chain,               ESCAPE(activation_drive_connect))
 ZCL_BLOCKER_REMEDY(sha3_window_mismatch,                        OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.uv_cursor_gap,                  OWNER)
+ZCL_BLOCKER_REMEDY(tip_finalize.current_tip_missing,            OWNER) /* Task A: the block finalize must extend FROM is absent from the active-chain window, the durable finalized-hash table, AND the best-header ancestry — a data-availability anomaly cured by the body/header for that height connecting via normal net download (no condition drives it), same honest OWNER shape as tip_finalize.uv_cursor_gap; the raiser self-clears via tip_finalize_observe_clear_tip_missing() once old_tip resolves */
 ZCL_BLOCKER_REMEDY(tip_finalize.validation_evidence,            OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.rewind_churn,                   OWNER)
 ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               tip_label_divergence) /* window_rebuild seam wired: tip_label_divergence.c remedy re-derives [refuse_from_h, tip] via stage_rederive_range + releases the linkage holds; a persistent divergence re-raises at the first offending connect (witness reads still-present) */

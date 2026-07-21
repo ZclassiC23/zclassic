@@ -102,6 +102,12 @@ void utxo_apply_select_idle_note(int height,
         enum utxo_apply_select_idle_reason reason,
         const struct block_index *bi);
 
+/* Clear the typed apply-candidate-anomaly blocker
+ * ("utxo_apply.apply_candidate_anomaly", Task A). No-op if never raised —
+ * safe to call unconditionally on any path that resolves a valid apply
+ * candidate (mirrors stage_body_read_hold_clear's clear-on-resolve contract). */
+void utxo_apply_select_idle_blocker_clear(void);
+
 /* The live stage handle (NULL before init / after shutdown). The dump reads
  * it lock-free. */
 stage_t *utxo_apply_stage_handle(void);

@@ -268,10 +268,15 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
              (long long)elapsed, cause);
     if (!blocker_init(&c->blocker, "script_validate.prevout_unresolved",
                       STAGE_NAME, BLOCKER_PERMANENT, reason)) {
+        /* The prevout anomaly is ALREADY detected (the budget lapsed and the
+         * body still cannot re-derive the prevout) — this is not a legitimate
+         * wait. Failing OPEN to JOB_IDLE here would name nothing and leave only
+         * the generic watchdog; latch JOB_FATAL (the fatal path emits
+         * EV_OPERATOR_NEEDED) so the halt is at least surfaced (Task A #9). */
         LOG_WARN("script_validate",
                  "[script_validate] could not name prevout_unresolved blocker "
-                 "height=%d — degrading to idle", height);
-        return JOB_IDLE;
+                 "height=%d — latching JOB_FATAL rather than failing open", height);
+        return JOB_FATAL;
     }
     c->blocker.retry_budget = -1;
     /* Root-cause chaining (lane E4's typed caused_by/cause_detail, see

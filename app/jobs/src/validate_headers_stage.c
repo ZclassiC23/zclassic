@@ -409,7 +409,17 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             /* Hash-source disagreement is only actionable once the repair
              * table holds a hash-bound header for the canonical candidate.
              * Until then the condition engine owns backfill/refetch; re-running
-             * the full validator just recreates the same warn storm. */
+             * the full validator just recreates the same warn storm.
+             *
+             * PIN THE FLOOR at this still-unresolved height (mirror the !bi
+             * branch above). A bare `continue` here left first_unresolved unset,
+             * so if this row was the ONLY selected recheck candidate (n==0 at
+             * the bottom) idle_floor jumped to validated_cursor — skipping the
+             * recheck PAST a height whose failed-row mask is still unrepaired
+             * (Task A #12). Hold the floor at/below it so the next pass retries. */
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+            if (first_unresolved < 0)
+                first_unresolved = h64;
             continue;
         }
         vh_job_bind_block(db, &jobs[n], bi, (int)h64);
@@ -908,6 +918,15 @@ void validate_headers_stage_shutdown(void)
 int64_t validate_headers_stage_mark_fail_warn_count(void)
 {
     return atomic_load(&g_mark_fail_warn_total);
+}
+
+/* Test-only: the current failure-recheck floor (g_failure_recheck_cursor) —
+ * the lowest height recheck_failed_rows will revisit. Exposed so the Task A #12
+ * floor-pin regression (a hash-mismatch row with no repair entry must NOT let
+ * the floor skip past it) can be asserted directly. */
+int64_t validate_headers_stage_recheck_floor_for_test(void)
+{
+    return atomic_load(&g_failure_recheck_cursor);
 }
 
 uint64_t validate_headers_stage_cursor(void)

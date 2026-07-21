@@ -389,10 +389,12 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;
     }
-    if (!old_tip || !old_tip->phashBlock) {
-        tip_finalize_observe_mark_blocked(TIP_FINALIZE_BLOCKED_TIP_MISSING);
+    if (!old_tip || !old_tip->phashBlock) {  /* ANOMALY: names a typed blocker — see tip_finalize_observe_note_tip_missing */
+        tip_finalize_observe_note_tip_missing(next_h);
         return JOB_IDLE;
     }
+    /* old_tip (and new_tip above) resolved — clear any stale tip-missing claim. */
+    tip_finalize_observe_clear_tip_missing();
 
     bool anchor_row_compatible = upstream.is_anchor ||
         upstream.evidence == MINT_VALIDATION_EVIDENCE_VERIFIED;
