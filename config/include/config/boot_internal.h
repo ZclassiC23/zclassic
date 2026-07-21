@@ -416,4 +416,15 @@ struct block_index_projection *boot_ensure_block_index_projection(
  */
 void app_shutdown_svc(struct boot_svc_ctx *svc);
 
+/* ── config/src/boot_anchor_snapshot_reachability.c ─────────────────────── *
+ * Shared between it and boot_refold_staged.c's real loaders/AUTO-ARM so path
+ * resolution and reachability can never disagree about which file/checkpoint
+ * they mean. See config/boot.h for the public predicate
+ * (boot_refold_from_anchor_artifact_available[_ex]) these two back. */
+bool boot_anchor_snapshot_path_resolve(struct node_db *ndb, char *buf,
+                                       size_t cap);
+struct sha3_utxo_checkpoint;
+bool anchor_snapshot_verified_reachable(struct node_db *ndb,
+                                        const struct sha3_utxo_checkpoint *cp);
+
 #endif
