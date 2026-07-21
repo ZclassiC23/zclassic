@@ -60,6 +60,19 @@ bool chain_frontier_snapshot_bindings_known(
     const struct chain_frontier_snapshot *snapshot);
 bool chain_frontier_snapshot_consistent(
     const struct chain_frontier_snapshot *snapshot);
+/* Clean-genesis instant-on variant of chain_frontier_snapshot_consistent: it is
+ * identical in EVERY gate EXCEPT that the durable tip_finalize authority
+ * requirement is replaced by a genuine RUNTIME authority for served H* = genesis
+ * (0). A node that has folded ZERO bodies has no durable finalized tip yet, but
+ * genesis finality is a compiled constant, so a runtime (not-yet-durable)
+ * authority for genesis is sound where it would not be at any H* > 0. Every
+ * other consistency gate (bindings, authority_matches_served, ancestry,
+ * work-monotone, validity, failure-free) is still required in full, and any
+ * served H* > 0 (a mid-fold node) returns false. This is the frontier-coherence
+ * half of the -3 fresh-genesis-bootstrap admission; the caller still gates on
+ * compiled-checkpoint authority and the full -4 header-bootstrap crypto anchor. */
+bool chain_frontier_snapshot_clean_genesis(
+    const struct chain_frontier_snapshot *snapshot);
 const char *chain_frontier_authority_source_name(
     enum chain_frontier_authority_source source);
 

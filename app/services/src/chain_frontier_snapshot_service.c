@@ -256,6 +256,26 @@ bool chain_frontier_snapshot_consistent(
         snapshot->validity_sufficient && snapshot->failure_free;
 }
 
+bool chain_frontier_snapshot_clean_genesis(
+    const struct chain_frontier_snapshot *snapshot)
+{
+    /* Mirror chain_frontier_snapshot_consistent gate-for-gate, swapping the
+     * durable-authority requirement for a genuine RUNTIME authority at served
+     * H* = genesis (0). Genesis finality is a compiled constant, so a runtime
+     * (not-yet-durable) authority for it is sound; a mid-fold node (H* > 0) or a
+     * NONE/DURABLE-sourced authority is never clean-genesis here. */
+    return snapshot && snapshot->served.height_known &&
+        snapshot->served.height == 0 &&
+        chain_frontier_snapshot_bindings_known(snapshot) &&
+        snapshot->authority_pair_known && snapshot->authority_matches_served &&
+        snapshot->authority_source ==
+            CHAIN_FRONTIER_AUTHORITY_RUNTIME_PUBLICATION &&
+        snapshot->ancestry_known && snapshot->served_ancestor_indexed &&
+        snapshot->indexed_ancestor_header && snapshot->work_known &&
+        snapshot->work_monotone && snapshot->validity_known &&
+        snapshot->validity_sufficient && snapshot->failure_free;
+}
+
 const char *chain_frontier_authority_source_name(
     enum chain_frontier_authority_source source)
 {

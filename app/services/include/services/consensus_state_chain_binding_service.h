@@ -59,6 +59,20 @@ struct consensus_state_chain_binding_observation {
     bool frontier_unchanged;
     int32_t durable_served_height;
 
+    /* Clean-genesis instant-on eligibility (the -3 fresh-genesis-bootstrap
+     * relaxation input). True ONLY on a genuinely quiescent PRE-FOLD node:
+     * served H* is genesis (0) under a coherent RUNTIME authority (no durable
+     * finalization has run because zero bodies folded) AND there is no partial
+     * fold state (no durable finalized tip; coins not applied above genesis).
+     * A mid-fold / drifted / partial-state node has this false and refuses at -3
+     * exactly as before. decide() additionally gates the relaxation on
+     * compiled-checkpoint authority (cp_auth), and the -4 header-bootstrap bind
+     * (the full-Equihash-PoW crypto anchor) plus the -11 header-tip validity
+     * remain fully enforced — this field ONLY relaxes -3's durable-frontier gate,
+     * never the crypto anchor. Collected by consensus_state_chain_evidence_build
+     * from the two frontier samples + the durable tip / coins frontier. */
+    bool fresh_genesis_bootstrap;
+
     bool selected_bundle_known;
     int32_t selected_bundle_height;
     uint8_t selected_bundle_hash[32];

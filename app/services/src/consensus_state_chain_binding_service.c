@@ -11,9 +11,11 @@
 #include "core/arith_uint256.h"
 #include "crypto/sha3.h"
 #include "framework/condition.h"
+#include "jobs/tip_finalize_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "services/chain_frontier_snapshot_service.h"
 #include "services/chain_state_service.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/safe_alloc.h"
 #include "validation/main_state.h"
@@ -121,12 +123,6 @@ struct zcl_result consensus_state_chain_binding_decide(
         return ZCL_ERR(-1, "chain binding: null manifest/observation");
     if (!manifest_is_complete_and_self_bound(manifest))
         return ZCL_ERR(-2, "chain binding: manifest is not complete/self-bound");
-    /* -3 is ALWAYS target-derived: the target's frontier must be durable and
-     * consistent. Checkpoint-content authority never relaxes it. */
-    if (!observation->before_frontier_consistent ||
-        !observation->after_frontier_consistent ||
-        !observation->frontier_unchanged)
-        return ZCL_ERR(-3, "chain binding: selected frontier changed or is not durable");
 
     /* Below-checkpoint predicates (-5/-6/-7/-8/-9/-10 and the -11 ancestry
      * links) reference the checkpoint block and its Sapling source, both AT OR
@@ -135,10 +131,31 @@ struct zcl_result consensus_state_chain_binding_decide(
      * the bundle is exactly the compiled checkpoint content, the compiled
      * checkpoint (a stronger, PoW-committed, independently re-derivable trust
      * root) authorizes them in place of the absent target index. The same
-     * authority also enables the -4 header-bootstrap (instant-on) path below. */
+     * authority also enables the -4 header-bootstrap (instant-on) path and the
+     * -3 fresh-genesis-bootstrap relaxation below. */
     bool cp_auth =
         consensus_state_chain_binding_uses_checkpoint_authority(manifest,
                                                                 observation);
+
+    /* -3 selected-frontier durability. The target's frontier must be durable and
+     * consistent across the two samples (before AND after). The ONE relaxation is
+     * the clean-genesis instant-on bootstrap: a node that has folded ZERO bodies
+     * has no durable tip_finalize authority yet, but genesis finality is a
+     * compiled constant, so a coherent RUNTIME authority at served H* = 0 with no
+     * partial fold state (fresh_genesis_bootstrap, collected below) is
+     * admissible — ONLY under compiled-checkpoint authority (cp_auth). The
+     * frontier must STILL be byte-unchanged across the two samples (determinism)
+     * on both paths, and the relaxation touches ONLY -3's durable-frontier gate:
+     * the -4 header-bootstrap crypto anchor and -11 header-tip validity below are
+     * re-established in full. A mid-fold / drifted / partial-state node has
+     * fresh_genesis_bootstrap false and refuses here exactly as before. */
+    bool frontier_durable = observation->before_frontier_consistent &&
+                            observation->after_frontier_consistent;
+    bool fresh_genesis_admissible =
+        cp_auth && observation->fresh_genesis_bootstrap;
+    if ((!frontier_durable && !fresh_genesis_admissible) ||
+        !observation->frontier_unchanged)
+        return ZCL_ERR(-3, "chain binding: selected frontier changed or is not durable");
 
     /* -4 admits on EITHER of two sovereign paths:
      *
@@ -298,6 +315,19 @@ static void capture_binding_predicates(
         observation->checkpoint_authority = *authority;
     struct block_index *bundle = view ? view->window.requested : NULL;
     struct block_index *header = view ? view->header_tip : NULL;
+    /* Gap B — headers-first fallback. active_chain_capture_window only returns a
+     * bundle slot for heights AT OR BELOW the connected chain tip. On a headers-
+     * first (--importblockindex / fast-sync) node the bundle height sits far
+     * above the connected tip (which may be genesis), so window.requested is
+     * NULL even though the checkpoint-height block IS present as a header-only
+     * entry on the selected header chain. Resolve it by a READ-ONLY ancestor walk
+     * from the header tip (never mutating chain_active, so the -3 frontier
+     * snapshot is untouched) so selected_bundle_* / bundle_header_pass_record
+     * populate for the -4 header-bootstrap bind. The walk is deterministic, so
+     * the before/after samples stay byte-identical. */
+    if (!bundle && header && manifest->height >= 0 &&
+        header->nHeight >= manifest->height)
+        bundle = block_index_get_ancestor(header, (int)manifest->height);
     struct block_index *sapling_source = bundle
         ? block_index_get_ancestor(
               bundle, (int)manifest->sapling_frontier_height)
@@ -346,6 +376,28 @@ static void capture_binding_predicates(
         index_descends_from(header, bundle);
     observation->bundle_descends_from_sapling_source =
         index_descends_from(bundle, sapling_source);
+}
+
+/* Gap A — the "no partial fold state" half of fresh_genesis_bootstrap. A clean
+ * pre-fold node must have (1) no durable finalized tip at all (nothing has been
+ * folded/finalized), and (2) coins not applied above genesis (applied is the
+ * NEXT height to apply, so <= 1 means at most the genesis coinbase). A mid-fold /
+ * partially-folded node fails one of these, so it is NEVER eligible for the -3
+ * relaxation even if its runtime frontier momentarily reads H*=0. Caller holds
+ * progress_store_tx_lock(); both reads are SELECT-only and lock-reentrant. */
+static bool fresh_genesis_quiescent(sqlite3 *db)
+{
+    if (!db)
+        return false;
+    int durable_h = -1;
+    uint8_t durable_hash[32];
+    if (tip_finalize_stage_resolve_durable_tip(db, &durable_h, durable_hash))
+        return false; /* a durable finalized tip exists → not pre-fold */
+    int32_t applied = -1;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &found))
+        return false; // raw-return-ok:eligibility-probe-fails-closed-refuses-at-minus3
+    return !found || applied <= 1;
 }
 
 static void evidence_digest_build(
@@ -471,6 +523,17 @@ struct zcl_result consensus_state_chain_evidence_build(
         capture_matches_frontier(&view_before, &frontier_before) &&
         capture_matches_frontier(&view_after, &frontier_after) &&
         predicates_unchanged;
+    /* Gap A — clean-genesis instant-on eligibility. True ONLY when BOTH frontier
+     * samples are clean-genesis-coherent (served H*=0 under a genuine runtime
+     * authority, every other consistency gate satisfied) AND the store carries no
+     * partial fold state. decide() gates this on cp_auth and re-enforces the -4
+     * crypto anchor, so this never bypasses the checkpoint PoW bind. Computed
+     * under the still-held progress lock so it reflects the same store generation
+     * as the two frontier samples. */
+    observation.fresh_genesis_bootstrap =
+        chain_frontier_snapshot_clean_genesis(&frontier_before) &&
+        chain_frontier_snapshot_clean_genesis(&frontier_after) &&
+        fresh_genesis_quiescent(progress_store_db());
 
     struct zcl_result decision = consensus_state_chain_binding_decide(
         manifest, &observation);

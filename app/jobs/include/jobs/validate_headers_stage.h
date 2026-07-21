@@ -125,6 +125,28 @@ int64_t validate_headers_stage_recheck_floor_for_test(void);
 bool validate_headers_stage_has_pass_record(int32_t height,
                                             const struct uint256 *hash);
 
+/* On-demand, single-header form of the reducer stage's per-height validation.
+ * Resolves the block index at `height` (active_chain_at, then the header-tip
+ * ancestor walk — the SAME resolver the batched stage uses), runs the FULL
+ * canonical validator (PoW target + Equihash solution), and on pass durably
+ * records a validate_headers_log PASS row at (height, that header's own hash).
+ * Idempotent: a no-op returning true when a pass row already exists. Returns
+ * true iff a durable pass record is present after the call.
+ *
+ * This is the instant-on seam: a headers-first (--importblockindex / fast-sync)
+ * substrate bulk-loads the block index but never runs the forward reducer, so it
+ * carries NO validate_headers_log pass records. Before binding the compiled
+ * checkpoint (the -4 header-bootstrap crypto anchor needs a full-Equihash pass
+ * record at exactly the checkpoint height), the install path calls this for the
+ * ONE checkpoint header — genuinely PoW-validating the real imported header,
+ * exactly as a P2P node's stage would have. NOT a bypass: a wrong-block or
+ * PoW-invalid header at the checkpoint height fails the validator (no record
+ * written) and the bind still refuses. Standalone — safe to call before
+ * validate_headers_stage_init (uses only the progress store + `ms` + the
+ * canonical validator + the log store). Requires progress_store_open first. */
+bool validate_headers_stage_ensure_pass_record(struct main_state *ms,
+                                               int32_t height);
+
 struct validate_headers_window_report {
     bool available;
     bool complete;
