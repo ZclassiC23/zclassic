@@ -40,8 +40,11 @@
 #
 # Usage:
 #   tools/scripts/cold_start_to_tip_stopwatch.sh [--bin=PATH] [--peer=HOST:PORT]
-#       [--budget=SECS] [--sample=SECS]
+#       [--file-peer=HOST:PORT] [--budget=SECS] [--sample=SECS]
 #   ZCL_CS_NODE_BIN=/path/to/zclassic23 ZCL_CS_PEER=127.0.0.1:8033 \
+#       ZCL_CS_FILE_PEER=127.0.0.1:18034 \
+#       ZCL_CS_HEADER_SOURCE=/path/to/zclassicd-datadir-copy \
+#       ZCL_CS_BUNDLE_PATH=/path/to/consensus-state-bundle.sqlite \
 #       tools/scripts/cold_start_to_tip_stopwatch.sh
 #
 # Exit codes:
@@ -74,6 +77,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 NODE_BIN="${ZCL_CS_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 PEER="${ZCL_CS_PEER:-127.0.0.1:8033}"
+FILE_PEER="${ZCL_CS_FILE_PEER:-}"
+HEADER_SOURCE="${ZCL_CS_HEADER_SOURCE:-}"
+BUNDLE_PATH="${ZCL_CS_BUNDLE_PATH:-}"
 BUDGET="${ZCL_CS_BUDGET_SECS:-600}"     # 10-minute MVP C3 target
 SAMPLE_SECS="${ZCL_CS_SAMPLE_SECS:-10}"
 ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
@@ -83,7 +89,7 @@ ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
 # is_busy_response()/rpc_frontier() comment below).
 FRONTIER_BUSY_TIMEOUT_SECS="${ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS:-120}"
 
-# ── argv: --bin=PATH / --peer=H:P / --budget=N / --sample=N /
+# ── argv: --bin=PATH / --peer=H:P / --file-peer=H:P / --budget=N / --sample=N /
 #    --busy-timeout=N / --selftest, or bare positionals (bin, peer) for quick
 #    manual use. Flags win over env vars; env vars win over the defaults
 #    above. --selftest runs the hermetic busy-JSON classification self-check
@@ -94,6 +100,7 @@ for arg in "$@"; do
     case "$arg" in
         --bin=*)    NODE_BIN="${arg#--bin=}" ;;
         --peer=*)   PEER="${arg#--peer=}" ;;
+        --file-peer=*) FILE_PEER="${arg#--file-peer=}" ;;
         --budget=*) BUDGET="${arg#--budget=}" ;;
         --sample=*) SAMPLE_SECS="${arg#--sample=}" ;;
         --busy-timeout=*) FRONTIER_BUSY_TIMEOUT_SECS="${arg#--busy-timeout=}" ;;
@@ -229,6 +236,9 @@ write_artifact() {
         printf '  "wall_clock_seconds": %s,\n' "$(json_number_or_null "$elapsed")"
         printf '  "budget_seconds": %s,\n' "$(json_number_or_null "$BUDGET")"
         printf '  "peer": %s,\n' "$(json_string "$PEER")"
+        printf '  "file_peer": %s,\n' "$(json_string "$FILE_PEER")"
+        printf '  "header_source": %s,\n' "$(json_string "$HEADER_SOURCE")"
+        printf '  "staged_bundle": %s,\n' "$(json_string "$BUNDLE_PATH")"
         printf '  "node_bin": %s,\n' "$(json_string "$NODE_BIN")"
         printf '  "first_hstar": %s,\n' "$(json_number_or_null "${first_hstar:-}")"
         printf '  "max_hstar": %s,\n' "$(json_number_or_null "$max_hstar")"
@@ -260,6 +270,21 @@ peer_port="${PEER##*:}"
 if ! timeout 3 bash -c "exec 3<>/dev/tcp/$peer_host/$peer_port" 2>/dev/null; then
     skip "serving peer not reachable: $PEER"
 fi
+if [ -n "$FILE_PEER" ]; then
+    file_peer_host="${FILE_PEER%:*}"
+    file_peer_port="${FILE_PEER##*:}"
+    [ -n "$file_peer_host" ] && [ -n "$file_peer_port" ] && \
+        [ "$file_peer_host" != "$file_peer_port" ] \
+        || skip "invalid file-service peer address: $FILE_PEER"
+    if ! timeout 3 bash -c \
+        "exec 3<>/dev/tcp/$file_peer_host/$file_peer_port" 2>/dev/null; then
+        skip "file-service peer not reachable: $FILE_PEER"
+    fi
+fi
+[ -z "$HEADER_SOURCE" ] || [ -d "$HEADER_SOURCE" ] \
+    || skip "header-source copy absent: $HEADER_SOURCE"
+[ -z "$BUNDLE_PATH" ] || [ -f "$BUNDLE_PATH" ] \
+    || skip "bundle fixture absent: $BUNDLE_PATH"
 
 DATADIR="$(mktemp -d /tmp/zcl-c3-stopwatch.XXXXXX)" || die "mktemp datadir failed"
 ISO_HOME="$DATADIR-home"
@@ -279,11 +304,29 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "cold-start-wipe-stopwatch: bin=$NODE_BIN peer=$PEER budget=${BUDGET}s sample=${SAMPLE_SECS}s"
-echo "cold-start-wipe-stopwatch: datadir=$DATADIR (freshly wiped, empty, no bundle/snapshot)"
+echo "cold-start-wipe-stopwatch: file_peer=${FILE_PEER:-<none>}"
+echo "cold-start-wipe-stopwatch: header_source=${HEADER_SOURCE:-<autonomous>} staged_bundle=${BUNDLE_PATH:-<autonomous>}"
+echo "cold-start-wipe-stopwatch: datadir=$DATADIR (freshly wiped)"
 echo "cold-start-wipe-stopwatch: iso-home=$ISO_HOME (no .zclassic legacy dir — genuinely fresh machine)"
 
 start=$(date +%s)
-setsid env HOME="$ISO_HOME" "$NODE_BIN" \
+if [ -n "$BUNDLE_PATH" ]; then
+    mkdir -p "$DATADIR/bundles" || die "mkdir bundle staging dir failed"
+    bundle_name="$(basename -- "$BUNDLE_PATH")"
+    cp --reflink=auto -p -- "$BUNDLE_PATH" \
+        "$DATADIR/bundles/$bundle_name" \
+        || die "staging checkpoint bundle failed"
+    echo "cold-start-wipe-stopwatch: staged bundle=$DATADIR/bundles/$bundle_name"
+fi
+if [ -n "$HEADER_SOURCE" ]; then
+    echo "cold-start-wipe-stopwatch: importing frozen-validated headers from datadir COPY"
+    if ! env HOME="$ISO_HOME" "$NODE_BIN" --importblockindex \
+        "$HEADER_SOURCE" "$DATADIR/node.db" >>"$DATADIR/node.log" 2>&1; then
+        die "header import from datadir COPY failed"
+    fi
+    echo "cold-start-wipe-stopwatch: header import complete"
+fi
+node_args=(
     -datadir="$DATADIR" \
     -port=$P2P \
     -rpcport=$RPC \
@@ -293,8 +336,13 @@ setsid env HOME="$ISO_HOME" "$NODE_BIN" \
     -connect="$PEER" \
     -nolegacyimport \
     -nobgvalidation \
-    -showmetrics=0 \
-    >"$DATADIR/node.log" 2>&1 &
+    -showmetrics=0
+)
+[ -n "$FILE_PEER" ] && node_args+=( -fileservice="$FILE_PEER" )
+
+setsid env HOME="$ISO_HOME" "$NODE_BIN" \
+    "${node_args[@]}" \
+    >>"$DATADIR/node.log" 2>&1 &
 PID=$!
 echo "cold-start-wipe-stopwatch: launched pid=$PID"
 

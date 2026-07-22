@@ -60,4 +60,10 @@ bool bundle_exporter_register_service(struct zcl_service_kernel *kernel,
 struct json_value;
 bool bundle_exporter_dump_state_json(struct json_value *out, const char *key);
 
+#ifdef ZCL_TESTING
+/* Pure qualification-rung probe: producer authority is a lowercase 64-hex
+ * SHA-256 source identity, never a Git object ID or display trace. */
+bool bundle_exporter_source_identity_is_exact_for_test(const char *source_id);
+#endif
+
 #endif /* ZCL_CONFIG_BUNDLE_EXPORTER_H */

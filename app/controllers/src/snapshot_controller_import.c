@@ -19,10 +19,11 @@
 #include "config/file_ops.h"
 #include "controllers/legacy_import.h"
 #include "controllers/sync_controller.h"
+#include "snapshot_import_chain_select.h"
+#include "snapshot_import_row_verify.h"
 #include "storage/dbwrapper.h"
 #include "storage/block_index_db.h"
 #include "storage/coins_db.h"
-#include "services/block_row_verify.h"
 #include "chain/chain.h"   /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO */
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"  /* get_rom_state_checkpoint (re-derive floor) */
@@ -58,33 +59,6 @@ struct block_index_import_args {
     int quarantined;    /* rows skipped this run — see import_row_verify() */
 };
 
-/* ── Per-row verify (lane C4 — importblockindex trust hardening) ─────────
- *
- * --importblockindex bulk-memcpys legacy zclassicd CDiskBlockIndex bytes
- * straight into node.db without checking that the record actually IS what
- * its own LevelDB key claims, or that it carries real proof-of-work. Below,
- * every row gets hash-bound (the header this row deserializes to must hash
- * back to the LevelDB key that named it — the SAME round-trip
- * disk_block_index_get_hash() proves for the live tip-advance path) and PoW
- * target-checked (CheckProofOfWork — cheap, no disk/crypto beyond the hash
- * already computed for the hash-bind). A row failing either is quarantined:
- * skipped, counted, and reported via a single rate-limited typed blocker —
- * the ~3.1M-row bulk import must never abort on one bad legacy row.
- *
- * Full Equihash solution verification (check_equihash_solution) is the
- * expensive half — profiled at ~ms/block, which would blow the "~2x the
- * unverified baseline" import-throughput budget (~60-74s for ~3.1M
- * headers) if run on every row. It runs on a deterministic stride PLUS
- * every row above the baked ROM state checkpoint (get_rom_state_checkpoint,
- * core/chainparams/src/checkpoints.c) — below that checkpoint the fold is
- * re-derived from block bodies later anyway (this import only seeds
- * headers for lazy P2P body fetch); above it there is no later from-genesis
- * re-derivation pass to catch a bad header, so every row gets the full
- * check. See CLAUDE.md "Consensus rule: validate against the CHAIN" — this
- * does not change any consensus predicate, only which already-consensus
- * checks run at import time. */
-#define IMPORT_ROW_POW_STRIDE 10000
-
 /* Process-lifetime count of rows quarantined by import_row_verify() across
  * every --importblockindex / snapshot-bundle call in this process. Exposed
  * for tests/diagnostics; never resets mid-process (a fresh CLI process
@@ -98,67 +72,6 @@ uint64_t snapshot_import_block_index_quarantine_total(void)
 }
 
 static struct log_throttle g_import_row_verify_warn_throttle = LOG_THROTTLE_INIT;
-
-static void import_row_build_header(const struct disk_block_index *dbi,
-                                    struct block_header *out)
-{
-    block_header_init(out);
-    out->nVersion = dbi->nVersion;
-    out->hashPrevBlock = dbi->hashPrev;
-    out->hashMerkleRoot = dbi->hashMerkleRoot;
-    out->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
-    out->nTime = dbi->nTime;
-    out->nBits = dbi->nBits;
-    out->nNonce = dbi->nNonce;
-    size_t sol_len = dbi->nSolutionSize;
-    if (sol_len > sizeof(out->nSolution))
-        sol_len = sizeof(out->nSolution);
-    memcpy(out->nSolution, dbi->nSolution, sol_len);
-    out->nSolutionSize = sol_len;
-}
-
-/* Hash-bind + PoW-target-check every row; full Equihash solution check on
- * the stride/above-checkpoint subset (see block comment above). Returns
- * true (row admissible) or false with a short machine-readable reason in
- * `out_reason` (never NULL-terminated beyond out_reason_size).
- *
- * The hash-bind + PoW + gated-Equihash sequence lives in the canonical
- * block_row_verify() primitive (services/block_row_verify.h) shared with the
- * blocks-hydrate and flat loaders; this wrapper only builds the header, gates
- * the Equihash budget (stride / above-checkpoint), and maps the verdict to
- * this path's machine tokens. */
-static bool import_row_verify(const struct disk_block_index *dbi,
-                              const uint8_t block_hash[32],
-                              const struct chain_params *cp,
-                              int64_t rom_checkpoint_height,
-                              char *out_reason, size_t out_reason_size)
-{
-    bool full_check =
-        (dbi->nHeight > 0 && (dbi->nHeight % IMPORT_ROW_POW_STRIDE) == 0) ||
-        (rom_checkpoint_height >= 0 && dbi->nHeight > rom_checkpoint_height);
-
-    struct block_header h;
-    import_row_build_header(dbi, &h);
-
-    switch (block_row_verify(block_hash, dbi->nBits, &h, cp, full_check)) {
-        case BLOCK_ROW_VERIFY_OK:
-            return true;
-        case BLOCK_ROW_VERIFY_NO_PARAMS:
-            snprintf(out_reason, out_reason_size, "no-chain-params");
-            return false;
-        case BLOCK_ROW_VERIFY_HASH_BIND_MISMATCH:
-            snprintf(out_reason, out_reason_size, "hash-bind-mismatch");
-            return false;
-        case BLOCK_ROW_VERIFY_HIGH_HASH:
-            snprintf(out_reason, out_reason_size, "high-hash");
-            return false;
-        case BLOCK_ROW_VERIFY_BAD_EQUIHASH:
-            snprintf(out_reason, out_reason_size, "invalid-equihash-solution");
-            return false;
-    }
-    snprintf(out_reason, out_reason_size, "unknown-verify-verdict");
-    return false;
-}
 
 /* Quarantine bookkeeping: bump the process counter, refresh the (rate-
  * limited) typed blocker, and log — never a silent skip. `reason` is a
@@ -216,9 +129,13 @@ static void *import_block_index_thread(void *arg)
     char idx_path[1024];
     snprintf(idx_path, sizeof(idx_path), "%s/blocks/index", a->snapshot_dir);
 
+    struct snapshot_selected_chain selected_chain;
+    snapshot_selected_chain_load(idx_path, &selected_chain);
+
     struct db_wrapper dbw;
     if (!db_wrapper_open(&dbw, idx_path, 256 << 20, false, false)) {
         LOG_WARN("snapshot", "T1: failed to open block index at %s", idx_path);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -238,6 +155,7 @@ static void *import_block_index_thread(void *arg)
         !snapshot_sql_exec_checked(&ndb, "PRAGMA wal_autocheckpoint=0",
                                    "T1 disable wal_autocheckpoint")) {
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -248,11 +166,15 @@ static void *import_block_index_thread(void *arg)
             "DROP INDEX IF EXISTS idx_blocks_prev",
             "T1 drop idx_blocks_prev") ||
         !snapshot_sql_exec_checked(&ndb,
+            "DROP INDEX IF EXISTS idx_blocks_height",
+            "T1 drop idx_blocks_height") ||
+        !snapshot_sql_exec_checked(&ndb,
             "DROP INDEX IF EXISTS idx_blocks_chainwork",
             "T1 drop idx_blocks_chainwork") ||
         !snapshot_sql_exec_checked(&ndb, "DELETE FROM blocks",
             "T1 clear blocks")) {
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -278,6 +200,7 @@ static void *import_block_index_thread(void *arg)
     if (!snapshot_tx_begin_checked(&ndb, "T1 begin bulk load transaction")) {
         db_iter_free(&it);
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -310,6 +233,12 @@ static void *import_block_index_thread(void *arg)
         }
         stream_free(&s);
 
+        if (!snapshot_selected_chain_contains(&selected_chain, dbi.nHeight,
+                                              block_hash)) {
+            db_iter_next(&it);
+            continue;
+        }
+
         /* Trust hardening (lane C4): hash-bind this row to the LevelDB key
          * that named it, and check its PoW target — see import_row_verify()
          * doc comment above. A row failing either is quarantined (skipped,
@@ -317,8 +246,9 @@ static void *import_block_index_thread(void *arg)
          * aborting on one bad legacy row. */
         {
             char reason[64];
-            if (!import_row_verify(&dbi, block_hash, cp, rom_checkpoint_height,
-                                   reason, sizeof(reason))) {
+            if (!snapshot_import_row_verify(&dbi, block_hash, cp,
+                                            rom_checkpoint_height,
+                                            reason, sizeof(reason))) {
                 import_row_quarantine(dbi.nHeight, block_hash, reason);
                 a->quarantined++;
                 db_iter_next(&it);
@@ -416,11 +346,13 @@ static void *import_block_index_thread(void *arg)
         if (tx_open)
             snapshot_tx_rollback_best_effort(&ndb, "T1 rollback after failure");
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
     if (tx_open && !snapshot_tx_commit_checked(&ndb, "T1 final commit")) {
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -430,6 +362,10 @@ static void *import_block_index_thread(void *arg)
     printf("T1: rebuilding block indexes...\n");
     fflush(stdout);
     if (!snapshot_sql_exec_checked(&ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_height"
+            " ON blocks(height) WHERE status >= 3",
+            "T1 rebuild idx_blocks_height") ||
+        !snapshot_sql_exec_checked(&ndb,
             "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)",
             "T1 rebuild idx_blocks_prev") ||
         !snapshot_sql_exec_checked(&ndb,
@@ -441,6 +377,7 @@ static void *import_block_index_thread(void *arg)
         !snapshot_sql_exec_checked(&ndb, "PRAGMA wal_autocheckpoint=1000",
             "T1 restore wal_autocheckpoint")) {
         db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
@@ -460,6 +397,7 @@ static void *import_block_index_thread(void *arg)
     }
 
     db_wrapper_close(&dbw);
+    snapshot_selected_chain_free(&selected_chain);
     node_db_close(&ndb);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;

@@ -125,13 +125,17 @@ static int64_t bx_env_i64(const char *name, int64_t dflt)
     return (int64_t)parsed;
 }
 
-/* True iff `s` is exactly 40 lowercase hex characters (an exact build commit). */
-static bool bx_is_40hex(const char *s)
+/* True iff `s` is the exact lowercase SHA-256 source identity baked by the
+ * canonical build. Git object IDs intentionally stay outside the sovereign
+ * executable (clientversion.c); producer receipts bind this same 32-byte
+ * source identity, so the exporter must gate on it rather than on the legacy
+ * external-only Git trace string. */
+static bool bx_is_exact_source_id(const char *s)
 {
     if (!s)
         return false;
     size_t n = strlen(s);
-    if (n != 40)
+    if (n != 64)
         return false;
     for (size_t i = 0; i < n; i++) {
         char c = s[i];
@@ -215,7 +219,8 @@ static bool bx_qualified(sqlite3 *pdb, char *reason, size_t cap)
      * input is immaterial here and passed false. X = proven && refolded
      * (refolded already carries proven), so the derived answer is identical to
      * the old `!proven || !refolded` gate. Every other rung (coins_ram above,
-     * build_commit below) stays exactly where it is and is never weakened. */
+     * exact source-identity rung below) stays exactly where it is and is never
+     * weakened. */
     if (!sync_trust_cap_allowed(
             sync_trust_derive(proven, refolded, /*self_derived=*/false),
             SYNC_CAP_EXPORT_BUNDLE)) {
@@ -224,14 +229,21 @@ static bool bx_qualified(sqlite3 *pdb, char *reason, size_t cap)
                          : "coins lacks self-folded refold marker");
         return false;
     }
-    if (!bx_is_40hex(zcl_build_commit_full())) {
-        snprintf(reason, cap, "build has no exact commit; unstamped");
+    if (!bx_is_exact_source_id(zcl_build_source_id_sha256())) {
+        snprintf(reason, cap, "build has no exact source identity; unstamped");
         return false;
     }
     if (cap)
         reason[0] = '\0';
     return true;
 }
+
+#ifdef ZCL_TESTING
+bool bundle_exporter_source_identity_is_exact_for_test(const char *source_id)
+{
+    return bx_is_exact_source_id(source_id);
+}
+#endif
 
 /* Belt+braces re-validation of a sealed bundle by path (read-only, immutable).
  * The export path already reopens+validates before linking; rotation only ever

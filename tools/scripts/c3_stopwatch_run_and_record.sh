@@ -19,6 +19,14 @@
 #   ZCL_BIN               node binary to time (default $REPO_ROOT/build/bin/zclassic23)
 #   ZCL_PEER              peer H:P to dial (default 127.0.0.1:39070 — the
 #                          dedicated zcl-stopwatch-peer.service fixture)
+#   ZCL_CS_FILE_PEER      ROM file-service H:P (defaults to the dedicated
+#                          fixture's 127.0.0.1:39072 only for the autonomous
+#                          fetch path; copied-header/staged-bundle runs leave
+#                          it empty unless explicitly supplied)
+#   ZCL_CS_HEADER_SOURCE  optional copied legacy datadir for the board's
+#                          headers-first proof move
+#   ZCL_CS_BUNDLE_PATH    optional immutable checkpoint bundle to stage into
+#                          the wiped proof datadir
 #   ZCL_CS_BUDGET_SECS    stopwatch budget seconds, forwarded straight
 #                          through to cold_start_to_tip_stopwatch.sh
 #                          (its own default is 600 if unset here)
@@ -41,6 +49,13 @@ STOPWATCH="$SCRIPT_DIR/cold_start_to_tip_stopwatch.sh"
 
 ZCL_BIN="${ZCL_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 ZCL_PEER="${ZCL_PEER:-127.0.0.1:39070}"
+if [ -z "${ZCL_CS_FILE_PEER+x}" ]; then
+    if [ -n "${ZCL_CS_HEADER_SOURCE:-}" ] || [ -n "${ZCL_CS_BUNDLE_PATH:-}" ]; then
+        export ZCL_CS_FILE_PEER=""
+    else
+        export ZCL_CS_FILE_PEER="127.0.0.1:39072"
+    fi
+fi
 export ZCL_CS_BUDGET_SECS="${ZCL_CS_BUDGET_SECS:-600}"
 
 HISTORY_DIR="${ZCL_C3_HISTORY_DIR:-${HOME:-/root}/.local/state/zclassic23-c3-stopwatch}"
@@ -54,7 +69,7 @@ json_num_or_null() { case "${1:-}" in ''|*[!0-9-]*) printf 'null' ;; *) printf '
 build_commit="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
 [ -z "$build_commit" ] && build_commit="unknown"
 
-echo "c3-stopwatch-run: bin=$ZCL_BIN peer=$ZCL_PEER budget=${ZCL_CS_BUDGET_SECS}s build_commit=$build_commit"
+echo "c3-stopwatch-run: bin=$ZCL_BIN peer=$ZCL_PEER file_peer=$ZCL_CS_FILE_PEER budget=${ZCL_CS_BUDGET_SECS}s build_commit=$build_commit"
 
 set +e
 out="$(bash "$STOPWATCH" --bin="$ZCL_BIN" --peer="$ZCL_PEER" 2>&1)"
@@ -76,10 +91,11 @@ wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*
 artifact_dir="$(printf '%s\n' "$out" | sed -n 's/^cold-start-wipe-stopwatch: artifact=\(.*\)$/\1/p' | tail -1)"
 
 ts="$(date +%s)"
-line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"budget_seconds":%s,"peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s}' \
+line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"budget_seconds":%s,"peer":%s,"file_peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s}' \
     "$ts" "$(json_string "$verdict")" "$rc" "$(json_num_or_null "$wall_clock")" \
     "$(json_num_or_null "$ZCL_CS_BUDGET_SECS")" "$(json_string "$ZCL_PEER")" \
-    "$(json_string "$ZCL_BIN")" "$(json_string "$build_commit")" "$(json_string "${artifact_dir:-}")")"
+    "$(json_string "$ZCL_CS_FILE_PEER")" "$(json_string "$ZCL_BIN")" \
+    "$(json_string "$build_commit")" "$(json_string "${artifact_dir:-}")")"
 
 # flock-serialized append (same pattern as soak_evidence.sh cmd_collect):
 # a bounded lock acquire (-w 30) whose failure is EXPLICIT, so a missing

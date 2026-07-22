@@ -745,5 +745,76 @@ int test_importblockindex_roundtrip(void)
         }
     }
 
+    /* ==================================================================
+     * Scenario F — a stale same-height fork must not evict the selected
+     * chain parent through SQLite's partial unique-height index. The source
+     * has main 0->1->2->3 plus a stale sibling at h=2; the unique highest
+     * tip h=3 selects the main h=2 by hashPrev, independent of LevelDB key
+     * order. This is the real fresh-import failure shape that previously
+     * produced hundreds of detached islands on the 3.18M-row copy. */
+    {
+        char src_dir_f[340];
+        snprintf(src_dir_f, sizeof(src_dir_f), "%s/legacy-src-fork", base);
+        ibr_mkdir_p(src_dir_f);
+        struct ibr_block_fixture main_fx[4];
+        bool built = ibr_build_fixture(src_dir_f, main_fx, 4);
+
+        struct uint256 fork_hash;
+        uint256_set_null(&fork_hash);
+        char idx_dir_f[512];
+        snprintf(idx_dir_f, sizeof(idx_dir_f), "%s/blocks/index", src_dir_f);
+        struct db_wrapper dbw;
+        bool dbw_ok = built &&
+            db_wrapper_open(&dbw, idx_dir_f, 4 << 20, false, false);
+        if (dbw_ok) {
+            struct disk_block_index fork;
+            disk_block_index_init(&fork);
+            fork.nHeight = 2;
+            memcpy(fork.hashPrev.data, main_fx[1].hash, 32);
+            fork.nStatus = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
+                                          BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+            fork.nTx = 1;
+            fork.nFile = 0;
+            fork.nDataPos = 9000;
+            fork.nUndoPos = 9500;
+            fork.nVersion = 4;
+            fork.hashMerkleRoot.data[0] = 0xF2;
+            built = ibr_mine_pow(&fork, ibr_pow_limit_bits(), &fork_hash) &&
+                    ibr_write_row(&dbw, &fork, fork_hash.data);
+            db_wrapper_close(&dbw);
+        } else {
+            built = false;
+        }
+        IBR_CHECK("scenario F fixture: selected chain plus stale h=2 sibling",
+                  built);
+
+        if (built) {
+            char db_path_f[380];
+            snprintf(db_path_f, sizeof(db_path_f), "%s/node_f.db", base);
+            int count_f = -1;
+            bool ok_f = snapshot_import_block_index(
+                src_dir_f, db_path_f, /*header_only=*/true, &count_f);
+            IBR_CHECK("scenario F: selected-chain import succeeds", ok_f);
+            IBR_CHECK("scenario F: only four selected headers are reported",
+                      count_f == 4);
+
+            struct node_db ndb_f;
+            bool opened_f = node_db_open(&ndb_f, db_path_f);
+            IBR_CHECK("scenario F: target node.db opens", opened_f);
+            if (opened_f) {
+                struct db_block row;
+                bool main_h2 = db_block_find_by_height(&ndb_f, 2, &row) &&
+                    memcmp(row.hash, main_fx[2].hash, 32) == 0;
+                bool stale_absent =
+                    !db_block_find_by_hash(&ndb_f, fork_hash.data, &row);
+                IBR_CHECK("scenario F: h=2 is the parent selected by h=3",
+                          main_h2);
+                IBR_CHECK("scenario F: stale same-height sibling is absent",
+                          stale_absent && db_block_count(&ndb_f) == 4);
+                node_db_close(&ndb_f);
+            }
+        }
+    }
+
     return failures;
 }

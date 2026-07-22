@@ -3391,7 +3391,7 @@ bool app_init(struct app_context *ctx)
                                 &g_state.map_block_index,
                                 &params->consensus.hashGenesisBlock);
                             if (genesis) {
-                                (void)boot_promote_tip_via_csr(
+                                (void)boot_promote_tip_preserving_header_via_csr(
                                     genesis, "no_utxos_reset_genesis", true);
                             }
                         }

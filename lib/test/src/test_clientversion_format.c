@@ -26,6 +26,7 @@
 
 #include "test/test_helpers.h"
 
+#include "config/bundle_exporter.h"
 #include "util/clientversion.h"
 
 #include <string.h>
@@ -65,6 +66,17 @@ int test_clientversion_format(void)
 
     CVF_CHECK("canonical build bakes exact lowercase SHA-256 source authority",
               cvf_source_id_shape_valid(zcl_build_source_id_sha256()));
+    CVF_CHECK("bundle exporter accepts canonical SHA-256 source authority",
+              bundle_exporter_source_identity_is_exact_for_test(
+                  zcl_build_source_id_sha256()));
+    CVF_CHECK("bundle exporter rejects external Git trace sentinel",
+              !bundle_exporter_source_identity_is_exact_for_test("external"));
+    CVF_CHECK("bundle exporter rejects legacy 40-hex Git object id",
+              !bundle_exporter_source_identity_is_exact_for_test(
+                  "0123456789abcdef0123456789abcdef01234567"));
+    CVF_CHECK("bundle exporter rejects uppercase source identity",
+              !bundle_exporter_source_identity_is_exact_for_test(
+                  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF"));
     CVF_CHECK("unstamped standalone fallback is not canonical authority",
               !cvf_source_id_shape_valid("unknown"));
 
