@@ -9,6 +9,7 @@
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/checkpoints.h"              /* get_sha3_utxo_checkpoint */
 #include "chain/equihash.h"
 #include "chain/pow.h"
 #include "config/runtime.h"
@@ -616,6 +617,21 @@ bool validate_headers_stage_ensure_pass_record(struct main_state *ms,
     if (!bi && ms->pindex_best_header &&
         height <= ms->pindex_best_header->nHeight)
         bi = block_index_get_ancestor(ms->pindex_best_header, height);
+    /* A headers-first substrate retains the checkpoint header in the block
+     * map even if a subsequent fresh-genesis state reset lowers the published
+     * header frontier. Resolve only the baked checkpoint by its baked hash;
+     * the unchanged canonical validator below still rechecks full PoW. */
+    if (!bi) {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && cp->height == height) {
+            struct uint256 cp_hash;
+            memcpy(cp_hash.data, cp->block_hash, 32);
+            struct block_index *candidate =
+                block_map_find(&ms->map_block_index, &cp_hash);
+            if (candidate && candidate->nHeight == height)
+                bi = candidate;
+        }
+    }
     if (!bi || !bi->phashBlock)
         return false;
 

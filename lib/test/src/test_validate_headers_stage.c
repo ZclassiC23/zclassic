@@ -16,6 +16,7 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
+#include "chain/checkpoints.h"
 #include "core/uint256.h"
 #include "domain/consensus/verify.h"
 #include "models/block.h"
@@ -1847,6 +1848,46 @@ int test_validate_headers_stage(void)
                  !validate_headers_stage_has_pass_record(4, &sc.hashes[4]));
         VH_CHECK("ensure-fail: no rows written at all",
                  log_row_count(progress_store_db()) == 0);
+        validate_headers_ensure_set_validator_for_test(NULL, NULL);
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* A fresh-genesis reset can lower pindex_best_header while the imported
+     * checkpoint header remains in the map. The baked height+hash may recover
+     * that header, but no arbitrary height may use the fallback. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("ensure-map-fallback: setup",
+                 vh_setup("ensure_pass_mapfb", 4, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_ensure_set_validator_for_test(stub_pass, NULL);
+
+        const int32_t cp_height = 9000;
+        struct uint256 cp_hash;
+        memset(&cp_hash, 0, sizeof(cp_hash));
+        cp_hash.data[0] = 0xAB;
+        cp_hash.data[31] = 0x09;
+        struct block_index *cp = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &cp_hash);
+        VH_CHECK("ensure-map-fallback: checkpoint in map", cp != NULL);
+        cp->nHeight = cp_height;
+        cp->nVersion = 4;
+        ms.pindex_best_header = NULL;
+
+        struct sha3_utxo_checkpoint override;
+        memset(&override, 0, sizeof(override));
+        override.height = cp_height;
+        memcpy(override.block_hash, cp_hash.data, 32);
+        checkpoints_set_sha3_override_for_test(&override);
+        VH_CHECK("ensure-map-fallback: baked checkpoint validates from map",
+                 validate_headers_stage_ensure_pass_record(&ms, cp_height));
+        VH_CHECK("ensure-map-fallback: pass fact is durable",
+                 validate_headers_stage_has_pass_record(cp_height, &cp_hash));
+        VH_CHECK("ensure-map-fallback: arbitrary height remains unresolved",
+                 !validate_headers_stage_ensure_pass_record(&ms,
+                                                            cp_height + 1));
+
+        checkpoints_reset_sha3_override_for_test();
         validate_headers_ensure_set_validator_for_test(NULL, NULL);
         vh_teardown(dir, &ms, &sc);
     }

@@ -71,6 +71,13 @@ struct consensus_state_install_runtime_result {
  * read-only, no locks taken; false on any NULL / absent / mismatched input. */
 bool consensus_state_checkpoint_header_ready(struct main_state *ms);
 
+/* Restore the checkpoint header frontier after a fresh-genesis state reset.
+ * The header must already exist in the imported block map and pass the frozen
+ * full-header validator before the CSR can publish it. This changes only the
+ * header view; it neither seeds state nor moves the served/coins tip. */
+bool consensus_state_install_restore_checkpoint_header_frontier(
+    struct main_state *ms);
+
 /* NON-TERMINAL install core. Runs the identical fail-closed pipeline as the
  * -install-consensus-bundle verb (containment classify → admit+validate →
  * producer source receipt → publication CAS with the compiled SHA3 +

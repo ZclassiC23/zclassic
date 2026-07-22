@@ -58,28 +58,6 @@
 #define ICB_SUBSYS "install_consensus_bundle"
 #define ICB_DECISION_RECORD_NAME "consensus_state_publication_decision.v1"
 
-/* ── Checkpoint-header readiness (deferral / retry precondition) ────────────── */
-
-bool consensus_state_checkpoint_header_ready(struct main_state *ms)
-{
-    if (!ms)
-        return false;
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    if (!cp || cp->height < 0)
-        return false;
-    /* The header FRONTIER, not the served/active tip: on a fresh (or
-     * genesis-reset) node the active tip sits at genesis with coins empty, but
-     * the checkpoint bundle binds against the validated HEADER chain (the -4
-     * header-bootstrap / Gap B walk reads pindex_best_header). Mirror that exact
-     * read here so this predicate answers the same question the gate asks. */
-    struct block_index *hdr = ms->pindex_best_header;
-    if (!hdr || hdr->nHeight < cp->height)
-        return false;
-    struct block_index *at = block_index_get_ancestor(hdr, (int)cp->height);
-    return at && at->phashBlock &&
-           memcmp(at->phashBlock->data, cp->block_hash, 32) == 0;
-}
-
 /* ── Containment classification (verbatim from the terminal verb) ──────────── */
 
 static bool icb_same_directory(int target_fd, const char *candidate, bool *same)
@@ -492,6 +470,10 @@ struct zcl_result consensus_state_install_from_bundle(
         bool checkpoint_bundle =
             cp && rom && cp->height == rom->height &&
             manifest.height == (int32_t)cp->height;
+        if (checkpoint_bundle && ms) {
+            (void)consensus_state_install_restore_checkpoint_header_frontier(
+                ms);
+        }
         if (checkpoint_bundle && ms &&
             !consensus_state_checkpoint_header_ready(ms)) {
             out->retriable_headers_not_ready = true;

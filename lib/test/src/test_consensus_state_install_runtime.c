@@ -36,12 +36,16 @@
 
 #include "chain/chain.h"
 #include "chain/checkpoints.h"
+#include "coins/coins_view.h"
 #include "conditions/checkpoint_bundle_install_ready.h"
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h"
 #include "core/uint256.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/validate_headers_stage.h"
+#include "services/chain_state_service.h"
+#include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -60,6 +64,21 @@
         if (cond) printf("OK\n");                                            \
         else { printf("FAIL\n"); failures++; }                              \
     } while (0)
+
+void validate_headers_ensure_set_validator_for_test(vh_validator_fn fn,
+                                                     void *user);
+
+static bool csir_header_pass(const struct block_index *bi,
+                             const char *datadir, char *reason,
+                             size_t reason_size, void *user)
+{
+    (void)bi;
+    (void)datadir;
+    (void)reason;
+    (void)reason_size;
+    (void)user;
+    return true;
+}
 
 /* Best-effort touch of an empty file at <dir>/<name>. */
 static bool csir_touch(const char *dir, const char *name)
@@ -473,6 +492,60 @@ static int case_checkpoint_header_ready(void)
     return failures;
 }
 
+/* The D8 recovery must publish only a map-resident, baked-hash checkpoint
+ * after the canonical validator has recorded a pass. The served chain stays
+ * untouched while the header view becomes install-ready. */
+static int case_checkpoint_header_frontier_restore(void)
+{
+    int failures = 0;
+    const int cp_height = 5000;
+    cbir_set_override(cp_height);
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "csir_hdr_restore", "ok");
+    CSIR_CHECK("restore: progress store opens", progress_store_open(dir));
+
+    struct main_state ms;
+    main_state_init(&ms);
+    struct block_index *tip =
+        cbir_link_chain(&ms, cp_height - 3, cp_height);
+    ms.pindex_best_header =
+        block_index_get_ancestor(tip, cp_height - 3);
+
+    struct coins_view backing;
+    memset(&backing, 0, sizeof(backing));
+    struct coins_view_cache cache;
+    coins_view_cache_init(&cache, &backing);
+    csr_init(csr_instance(), &ms.map_block_index, &ms.chain_active,
+             &ms.pindex_best_header, &cache, NULL, NULL);
+    validate_headers_ensure_set_validator_for_test(csir_header_pass, NULL);
+
+    CSIR_CHECK("restore: reset header view is not checkpoint-ready",
+               tip && !consensus_state_checkpoint_header_ready(&ms));
+    CSIR_CHECK("restore: validates and republishes checkpoint header",
+               consensus_state_install_restore_checkpoint_header_frontier(
+                   &ms));
+    CSIR_CHECK("restore: header view now owns checkpoint",
+               ms.pindex_best_header == tip &&
+                   consensus_state_checkpoint_header_ready(&ms));
+    CSIR_CHECK("restore: served tip remains untouched",
+               active_chain_tip(&ms.chain_active) == NULL);
+    CSIR_CHECK("restore: durable validated-header fact exists",
+               validate_headers_stage_has_pass_record(
+                   cp_height, tip->phashBlock));
+    CSIR_CHECK("restore: second call is idempotent",
+               consensus_state_install_restore_checkpoint_header_frontier(
+                   &ms));
+
+    validate_headers_ensure_set_validator_for_test(NULL, NULL);
+    coins_view_cache_free(&cache);
+    main_state_free(&ms);
+    progress_store_close();
+    checkpoints_reset_sha3_override_for_test();
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 /* (e2) The retry condition (checkpoint_bundle_install_ready): detect gates on
  * headers-reached-checkpoint + a staged bundle + still-below-checkpoint H*, and
  * the remedy arms the bounded install-on-next-boot request without a retry-storm. */
@@ -572,6 +645,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_durable_request();
     failures += case_post_install_fold_span_check();
     failures += case_checkpoint_header_ready();
+    failures += case_checkpoint_header_frontier_restore();
     failures += case_retry_condition();
     printf("=== consensus_state_install_runtime: %d failure(s) ===\n", failures);
     return failures;
