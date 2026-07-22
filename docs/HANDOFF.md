@@ -6,50 +6,76 @@
 > **Durable hierarchy:** [`work/SOVEREIGN-NETWORK-ROADMAP.md`](work/SOVEREIGN-NETWORK-ROADMAP.md)
 > preserves the Phase 0–6 program and promotion gates: stable sovereign sync
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
-> not displace the immediate canonical cure below.
+> not displace the immediate Q1/canonical-state priority below.
 
-# HANDOFF — current state (2026-07-19)
+# HANDOFF — current state (2026-07-22)
 
-## 0-LATEST. Current state — **AT TIP on sovereign state**
+## 0-LATEST. Regroup checkpoint — **Q1 is not won; protect the live lane**
 
-- **Height:** serve node is at network tip (H\* = peer max), 4 peers. Live
-  H\*: `zclassic23 -rpcport=39072 dumpstate reducer_frontier` (**flagless CLI
-  answers from the DEFAULT datadir — always pass `-rpcport=39072` for the
-  serve node**).
-- **Binary:** candidate `vhrepair-7d10e581d` (= main `7d10e581d`).
-- **State provenance:** entirely self-verified — past the historical
-  shielded-anchor wedge and the post-wedge poisoned-solution-row stall.
-- **Soak:** window running from the at-tip timestamp; canonical deploy to the
-  public lane is the owner's lever.
-- **Kernel store:** `consensus.db` (the reducer kernel owns its own SQLite
-  file; `progress.kv` holds only the address_index/txindex projections via
-  `projection_store`). Migration is idempotent/crash-safe at boot. Pre-flip
-  cold backup: `~/.zclassic-c23-serve1-BACKUP-preflip` (revert = old candidate
-  binary + that backup; delete once soak completes).
-- **Headers:** full 3.19M-header chain imported (`--importblockindex
-  ~/.zclassic <datadir>/node.db` — 2nd arg is the node.db PATH).
-- **Crash loop:** cured — supervisor tick-runner (no child tick on the sweep
-  thread) + Sapling-persist deferral (no nested-BEGIN abort loop); backstop
-  restarts stopped.
-- **Consensus-bundle install:** terminal admitted-and-activated on this
-  datadir (checkpoint-content authority).
-- **Blockers:** the post-wedge poisoned-solution-row stall class is cured in
-  code — mark failures raise ONE typed blocker and back off; a FAILED mask
-  clears only if the unchanged PoW+Equihash validator passes with
-  repairable-class evidence. Open follow-up: quarantine/refetch of a poisoned
-  `blocks`-table row itself (`db_block_delete` is built and unwired — needs
-  copy-proof); see the Wave N backlog memory.
-- **Other open follow-ups:** spurious per-boot txn in
-  `consensus_db_finalize_flip`; CLI wall-clock deadlines against a dead RPC
-  port; graceful-stop timing for a folding node (restart flows must verify
-  MainPID changed); post-soak cleanup of
-  `~/.zclassic-c23-serve1-BACKUP-preflip` + `-COPY-headerfix` and old
-  candidate dirs.
+Three different nodes/artifacts are in play. Do not treat one as another.
 
-Mechanism detail for the cured wedge classes (the poisoned-row stall, the
-tip_finalize boundary-persist pin, the header-continuation wedge) lives in
-[`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) and
-the Wave N backlog memory — not narrated here.
+| Role | Identity | Observed state | Rule |
+|---|---|---|---|
+| **Canonical live lane** | default datadir, running build `3b0de63b0` | 2026-07-22 typed status: H\*=3,176,325, header tip 3,190,451, gap 14,126; operator latch active on `peer_floor_violated`; security posture names a nullifier-history gap | **Observe only.** Owner-gated; no restart, deploy, or state surgery from an agent. |
+| **Stopwatch serving fixture** | `$HOME/.zclassic-c23-COPY-20260722-tipfresh3`, P2P `127.0.0.1:39070`, RPC `39071` | Typed fixture status reported H\*=3,190,536, `sync=at_tip`, 4 peers on 2026-07-22 | Immutable upstream fixture. Do not kill or mutate it while Q1 evidence depends on it. |
+| **Q1 code checkpoint** | `298affaf1` (followed only by this documentation regroup) | Clean and pushed; `make arch-score` = **50/100** | Development happens in a fresh worktree/datadir COPY. Never deploy this checkpoint merely because unit tests pass. |
+
+The old July 19 at-tip statement is historical, not current. The canonical
+lane has not earned soak time in its observed blocked state. Re-derive all
+three rows before acting; heights move and fixtures can exit.
+
+### Q1 evidence at this checkpoint
+
+- Exact judge: `make c3-stopwatch-report` is **FAIL**, pointing at
+  `build/c3-stopwatch/20260722T180227Z-3344123` with a stale/named-stall
+  verdict. There is no ledger PASS, so Q1 and Q3 receive no points.
+- Newest diagnostic COPY run:
+  `build/c3-stopwatch/20260722T192608Z-330634`. It installed the bundle and
+  climbed from H\*=3,057,014 to 3,068,904, but network tip was 3,190,504 and
+  wall time was 617 seconds against the 600-second budget. This is useful
+  liveness evidence, not a win-proof.
+- The run crossed the earlier script-corruption height without reproducing
+  that failure and staged bodies beyond the former stale-flush collision
+  height. The durable H\* did not reach tip; do not overstate this as an
+  end-to-end copy proof.
+- Measured reducer cost per 2,000-block round was dominated by
+  `body_persist` (about 52 seconds) and `script_validate` (about 24 seconds).
+  Commit/fsync time was milliseconds. The next performance change must target
+  one of those measured stage bodies, not transaction cadence or unrelated
+  boot code.
+
+### Landed and verified on `main`
+
+- Batched stage transactions, commit invariants/LCC checks, bounded deferred
+  event-log writes, and batched UTXO/tip-finalize paths.
+- Historical duplicate-txid-safe `created_outputs` keys and bounded reads.
+- `coins_ram` gather/flush lifetime protection plus monotonic stale-flush
+  handling; unit tests cover both a clean stale request and dirty-overlay
+  promotion.
+- Bounded block-swarm pieces, intake-full retry, durability scoping, and
+  loopback coverage.
+- Full optimized build, all 92 lint gates (including consensus parity), and
+  `make test-parallel`: `ALL TESTS PASSED — 0/720 groups failed`.
+
+### Resume checklist — one bottleneck, one proof
+
+1. Confirm `main` is clean and re-run the three typed status checks above.
+2. Read Q1/Q3 in [`ARCH_QUEST_BOARD.md`](ARCH_QUEST_BOARD.md); do not edit the
+   scorer or frontier-owner table and do not touch frozen consensus code.
+3. Reproduce only on a fresh datadir COPY using the immutable fixture. Keep
+   the last failing artifact until a newer artifact supersedes it.
+4. Profile `body_persist` first, then `script_validate`, through existing
+   typed/profile surfaces. Preserve hash, merkle, script, and shielded proof
+   verification; optimize repeated representation or indexing work, not the
+   predicates.
+5. Gate each small change with its focused test. Then run the exact
+   `make mvp-coldstart-to-tip-stopwatch` win-proof.
+6. Only after a ledger PASS: confirm `make arch-score` rises, run
+   `make lint && make test-parallel`, commit, and push. Q4 soak/net-disruption
+   work begins only after Q1.
+
+Mechanism detail for the historical wedge classes remains in
+[`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md).
 
 ---
 
@@ -83,12 +109,10 @@ contracts carry native paths plus input/output schemas for discovery.
 ## 4. MVP status
 
 **MRS 4/8** (do not bump without proof): C1 install, C2 Tor onion <60s, C4
-receive shielded, C7 kill-9 recovery pass local operator proof. C3
-cold-start, C5 file market, C6 7-day soak, C8 exact parity previously gated on
-the sovereign cure landing; the cure is DONE (§0-LATEST) and the soak window
-is now running, so these four are gated on accumulated clean soak time only.
-Re-run `tools/mvp_gate.sh` for the current formal C6 judge before quoting
-one here — do not trust a pinned verdict. Bar: [`docs/MVP.md`](MVP.md).
+receive shielded, and C7 kill-9 recovery have local operator proofs. C3
+cold-start, C5 full live store transfer, C6 168-hour clean soak, and C8 exact
+parity remain partial. The currently observed canonical lane is blocked and is
+not accruing C6 evidence. Bar: [`docs/MVP.md`](MVP.md).
 
 ---
 
@@ -149,7 +173,7 @@ and running executable SHA-256; Git `build_commit` is display-only).
 Copy-prove every recovery path on a COPY before live, never live surgery;
 gate on **H\* CLIMB**, not "booted without FATAL." Never weaken a
 safety/operator gate. Gate every change: `make` + `make lint` +
-`make test_parallel` (read the `N passed, M failed` line, not the pipe
+`make test-parallel` (read the `N passed, M failed` line, not the pipe
 exit). Replay any consensus-predicate tightening against REAL history first
 (the h=478544 lesson — `docs/CONSENSUS_PARITY_DOCTRINE.md`).
 

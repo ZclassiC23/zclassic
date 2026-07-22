@@ -11,56 +11,43 @@
 
 ---
 
-## #1 PRIORITY — hold the at-tip sovereign state through a clean soak, then canonical deploy
+## #1 PRIORITY — win Q1 on a COPY; keep canonical recovery owner-gated
 
-> **The sovereign shielded-state cure landed and passed the wedge.** The
-> serve node is AT NETWORK TIP on self-verified state, past the historical
-> shielded-anchor wedge this section used to track — read
-> [`../HANDOFF.md`](../HANDOFF.md) §0-LATEST fresh before acting; this file
-> carries no live height/soak numbers. Of the two cure tracks this section
-> used to run in parallel, **the sovereign consensus-bundle install**
-> (`docs/work/sovereign-cutover-runbook.md`) is the one that actually passed
-> the wedge live; the operational import-path track
-> ([`shielded-history-importer.md`](./shielded-history-importer.md))
-> documents currently-shipped importer code but was not cut over. Cure design
-> record (now PROVEN, not an open plan):
-> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). The durable
-> Phase 0–6 hierarchy and promotion gates remain
-> [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
+> The sovereign bundle path historically passed its wedge, but that does not
+> make every running lane healthy or prove a fresh-node stopwatch. Read
+> [`../HANDOFF.md`](../HANDOFF.md) §0-LATEST before acting. The current
+> autonomous task is the architecture-board Q1 proof on a datadir COPY; the
+> canonical lane is protected and any recovery/deploy remains the owner's
+> lever. Cure design record:
+> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). Durable Phase 0–6
+> promotion gates: [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
 
 **The #1 work now, in order:**
 
-1. **Soak (C6)** — hold the serve node at tip through a clean 168h window:
-   zero manual restarts, gap ≤1, exact same-height hash vs `zclassicd` (C8),
-   continuous evidence. `tools/mvp_gate.sh` reports live soak-accrual;
-   `make soak-evidence-report` is the authoritative JSONL judge. Do not churn
-   the serve datadir during the window — copy-prove any change on a fixture,
-   never on the soaking node.
-2. **Canonical deploy gate** — after a clean soak, cutting the canonical lane
-   over to the proven serve binary/datadir is the owner's lever (`make
-   deploy`, owner-gated, never automatic). Post-deploy cleanup named in
-   `../HANDOFF.md` §0-LATEST: reclaim the pre-flip backup and old candidate
-   datadirs once the deploy is confirmed durable.
-3. **Fresh-machine-to-tip gap (C3)** — the at-tip proof so far is on the ONE
-   node that ran the cure; C3's actual claim is a genuinely FRESH zclassic23
-   node reaching tip from a serving zclassic23 peer in <10 min. Both halves of
-   that path have landed on `main`: the **seed** side (`rom_seed`) serves
-   content-verified chunks, and the **fetch** side (`lib/net/src/rom_fetch.c` +
+1. **Q1 / fresh-machine-to-tip (C3)** — use the immutable serving fixture and
+   a fresh datadir COPY. Run the exact
+   `make mvp-coldstart-to-tip-stopwatch` proof; a climb or an `at_tip` FSM label
+   is not enough. The ledger must PASS within 600 seconds with final H\* equal
+   to the captured true peer tip. Then confirm `make arch-score` rises and run
+   the full lint/test gates. The measured remaining costs and resume checklist
+   are in `../HANDOFF.md` §0-LATEST.
+2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
+   restart, deploy, or datadir repair is owner-gated. Never use the canonical
+   lane to test a Q1 change. A previously at-tip observation does not override
+   current typed status.
+3. **Q4 soak and disruption proof** — after Q1, run the dedicated fixture
+   net-disruption proof, then accrue a clean 168-hour C6 window only on a
+   sovereign, exact-parity candidate with gap ≤1 and zero manual restarts.
+   `make soak-evidence-report` is the judge.
+4. **Existing C3 transport substrate** — both halves of the path are present:
+   the **seed** side (`rom_seed`) serves content-verified chunks, and the
+   **fetch** side (`lib/net/src/rom_fetch.c` +
    `app/controllers/src/rom_fetch_controller.c`, operator-invocable via
    `ops.debug.rom_fetch.bundle`) does multi-seeder verify-by-content download
-   with durable resume (`rom_fetch_download_verified_parallel`). What remains
-   for C3 is the end-to-end timed proof itself: sync a second, genuinely fresh
-   zclassic23 node against the serve node (not `zclassicd`) and confirm the
-   <10 min bar. The harness for that proof is wired:
-   `make mvp-coldstart-to-tip-stopwatch` (`tools/scripts/cold_start_to_tip_stopwatch.sh`)
-   wipes a `/tmp` datadir, boots the target binary with NO snapshot/bundle/import
-   flags at all (`ZCL_BIN=`/`--bin=` points it at any built binary), dials a real
-   serving peer, and gates on `dumpstate reducer_frontier`'s `hstar` reaching
-   `network_tip` — never on the sync FSM's `at_tip` claim — printing a real
-   `WALL_CLOCK_SECONDS=<n>` on PASS. It has not yet run-passed end-to-end (needs a
-   synced peer + the full 10-minute budget on a host with the binary built); once
-   it does, C3 promotes the same way `mvp-coldstart-to-tip-local` would.
-4. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
+   with durable resume (`rom_fetch_download_verified_parallel`). Do not build
+   another transport. What remains is the exact end-to-end timed proof in item
+   1, against zclassic23 rather than `zclassicd`.
+5. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
    parallel read-only auditors covering integrity/trust/repair-consolidation/
    pipeline-simplification, memory
    `project_wave_n_first_principles_backlog_2026-07-19`, HEAD ~b2eb1393b):
@@ -122,12 +109,10 @@ here (`do not bump without proof`, `../HANDOFF.md` §4).
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **the sovereign state cure is LANDED → prove sustained
-exact parity and liveness through the soak window → canonical deploy → close
-the fresh-machine-to-tip gap (C3) → work the Wave-N hardening backlog → finish
-native transactional hot swap / native-command consolidation → build the
-sandboxed App and publishing planes.** Refactor debt does not block a working
-sovereign node and must not jump the queue.
+Ordering principle: **win Q1/C3 on a COPY → diagnose canonical state without
+mutating it → owner-approved recovery/deploy if required → Q4/C6/C8 disruption,
+soak, and parity evidence → Wave-N hardening → transactional hot swap and
+sandboxed publishing.** Refactor debt must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
 - [x] **Criterion tests are real CI gates (hermetic slices)** — DONE, guarded by
@@ -177,12 +162,12 @@ sovereign node and must not jump the queue.
       `store_e2e` gate), guarded by
       `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e_shielded build/bin/test_zcl`.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
-      `make lint && make test_parallel`.
+      `make lint && make test-parallel`.
 - [x] **Code-review remediation** (secondary hardening lane; must not displace
       the #1 spine) — DONE for the autonomous subset of the 2026-06-27 audit
       (archived: recover with
       `git log --follow -- docs/work/archive/code-review-remediation-2026-06-30.md`);
-      continue MVP work from the sovereign cure and fresh soak window.
+      continue MVP work from the Q1 checkpoint in `../HANDOFF.md`.
 
 ### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
 > NOTE (2026-06-17): the C7 **restart-durability** blocker is now handled by the
@@ -218,17 +203,18 @@ sovereign node and must not jump the queue.
       without a seeded Sapling keystore. App-layer only; no consensus path touched.
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
-- [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — a second zcl23 node
-      EXISTS (`zclassic23-soak`, P2P 8043 / RPC 18242); remaining = prove the
-      FlyClient + SHA3 snapshot SERVE path to a fresh peer.
-- [x] **Peer floor restored** — DONE: 5 healthy peers / 5 groups; both units
-      carry external addnodes (a localhost-only addnode set can NEVER converge
-      a cold import). Do NOT lower the ≥3 floor.
+- [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — use the immutable
+      serving fixture named in `../HANDOFF.md`; remaining = the exact Q1 timed
+      proof to a fresh peer.
+- [ ] **Resolve canonical peer-floor state (owner-gated)** — current typed
+      status has peers but still carries an active `peer_floor_violated`
+      operator latch. Diagnose read-only; do not restart or mutate the lane.
+      Do not lower the ≥3 floor.
 - [x] **zclassicd oracle up** — DONE: RPC 8232 reachable; the C8 parity oracle
       runs against it continuously (read-only; per doctrine never stop
       `zclassicd`).
-- [ ] **Run the 7-day soak (C6)** — the cure landed and the window is running
-      on the serve node (`../HANDOFF.md` §0-LATEST); require gap ≤1, exact
+- [ ] **Run the 7-day soak (C6)** — start/restart evidence only after the
+      candidate is healthy (`../HANDOFF.md` §0-LATEST); require gap ≤1, exact
       same-height hash, complete security posture, continuous evidence, RSS
       plateau, and zero manual restarts for the full 168h — measure against
       [`../USER_BENCHMARKS.md`](../USER_BENCHMARKS.md) /
@@ -241,11 +227,10 @@ sovereign node and must not jump the queue.
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** C6/C8's shielded-state-cure precondition is CLEARED — the
-next promotion is a clean 168-hour soak window on the at-tip sovereign state,
-then canonical deploy. C3's fresh-machine-to-tip proof is a separate,
-still-open gap (see #1 PRIORITY item 3). CI promotion (A) gates honest
-measurement; the boot refactor gates nothing v1.
+**Gating summary:** Q1/C3's fresh-machine-to-tip proof is first (see #1 item
+1). Q4/C6/C8 evidence follows only on a healthy sovereign candidate; canonical
+recovery/deploy remains owner-gated. CI promotion (A) gates honest measurement;
+the boot refactor gates nothing v1.
 
 ---
 
