@@ -66,7 +66,9 @@ bool coins_ram_enabled(void);
  * second trigger, the live-slot HIGH WATER (ZCL_FOLD_INRAM_MAX_SLOTS, default
  * ~3M; 0 disables), flushes a dense window before it can grow the overlay
  * without bound and OOM. Both drain through coins_ram_note_applied. */
-bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks);
+typedef bool (*coins_ram_frontier_writer_fn)(struct sqlite3 *, int32_t);
+bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks,
+                    coins_ram_frontier_writer_fn frontier_writer);
 
 /* True once coins_ram_init has bound a live map (and the flag is on). The
  * coins_kv.c shims test THIS, not coins_ram_enabled(), so a flagged build that
@@ -225,7 +227,8 @@ bool coins_ram_note_applied(int32_t height);
  * has landed yet, so the safe replay point is genesis (cursor 0). One BEGIN
  * IMMEDIATE. No-op (true) when the flag is off, the watermark is absent on a
  * non-mint/refold datadir, or the cursor is already <= it. */
-bool coins_ram_reconcile_boot(struct sqlite3 *db);
+bool coins_ram_reconcile_boot(struct sqlite3 *db,
+                              coins_ram_frontier_writer_fn frontier_writer);
 
 /* Free the map. Does NOT flush (caller flushes first on a clean stop). */
 void coins_ram_shutdown(void);

@@ -22,9 +22,17 @@ struct block;
 struct block_index;
 struct json_value;
 struct main_state;
+struct sqlite3;
 struct tx_out;
 
 #define UTXO_APPLY_BATCH_PER_TICK 100
+
+/* The sole state-frontier writer lives in utxo_apply_stage.c. Recovery,
+ * reorg, boot, and install transactions call this request name; the alias
+ * deliberately routes every request through the manifest-owned function
+ * without cloning the write primitive into those callers. */
+bool coins_kv_set_applied_height_in_tx(struct sqlite3 *db, int32_t height);
+#define utxo_apply_frontier_set_in_tx coins_kv_set_applied_height_in_tx
 
 /* The full pre-image of a coin, as needed to emit a correct restore-ADD
  * on a stage-side reorg unwind (the inverse of the SPEND emitted when an

@@ -13,6 +13,7 @@
 #include "jobs/mint_skip_crypto.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/stage_repair_internal.h"
+#include "jobs/utxo_apply_stage.h"
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -347,7 +348,7 @@ bool reducer_frontier_replay_dry_run_stale_script(
               (!rewind_coins ||
                reducer_frontier_replay_inverse_delta_range_checked(db, replay_first, utxo_cursor)) &&
               (!rewind_coins ||
-               coins_kv_set_applied_height_in_tx(db, replay_first)) &&
+               utxo_apply_frontier_set_in_tx(db, replay_first)) &&
               script_validate_stage_dry_run_block(blk, height, dry);
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     return ok;
@@ -427,7 +428,7 @@ bool reducer_frontier_replay_stale_script_tx(
         (rewind_coins &&
          !utxo_apply_unwind_write_cursor(db, (uint64_t)replay_first)) ||
         (rewind_coins &&
-         !coins_kv_set_applied_height_in_tx(db, replay_first))) {
+         !utxo_apply_frontier_set_in_tx(db, replay_first))) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
@@ -528,7 +529,7 @@ bool reducer_frontier_replay_stale_proof_tx(sqlite3 *db,
         (rewind_coins &&
          !utxo_apply_unwind_write_cursor(db, (uint64_t)replay_first)) ||
         (rewind_coins &&
-         !coins_kv_set_applied_height_in_tx(db, replay_first)) ||
+         !utxo_apply_frontier_set_in_tx(db, replay_first)) ||
         !stage_reducer_frontier_repair_marker_record_in_tx(
             db, marker, "stale proof")) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);

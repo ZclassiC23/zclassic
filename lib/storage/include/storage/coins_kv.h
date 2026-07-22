@@ -341,15 +341,9 @@ coins_kv_seed_checkpoint_verdict(struct sqlite3 *db);
  * value is stored as a stable little-endian int64 blob under this key. */
 #define COINS_APPLIED_HEIGHT_KEY "coins_applied_height"
 
-/* Write the applied frontier inside the caller's ALREADY-OPEN transaction
- * (forward = stage_run_once's BEGIN IMMEDIATE; reorg = the unwind's own BEGIN
- * IMMEDIATE; poison_rewind = the rewind's own BEGIN IMMEDIATE). Wraps
- * progress_meta_set_in_tx — NO inner BEGIN/COMMIT — so the height commits or
- * rolls back as ONE unit with the coin mutation + cursor. This is a PLAIN set
- * (allows decrease): both the reorg path (frontier BACK to fork+1) and the
- * poison_rewind path (frontier DOWN to height) legitimately decrease it, so a
- * monotonic-floor helper must NEVER be used here.
- * Returns false on failure so the caller can ROLLBACK. */
+/* Canonical state-frontier writer, implemented by the utxo_apply stage. This
+ * storage declaration lets tests and callback consumers name the capability;
+ * production callers request it through utxo_apply_frontier_set_in_tx. */
 bool coins_kv_set_applied_height_in_tx(struct sqlite3 *db, int32_t height);
 
 /* Read the applied frontier. *found is false (a clean "unknown") when the row
@@ -450,7 +444,9 @@ bool coins_kv_tip_is_self_derived(struct sqlite3 *db, int32_t hstar,
  * already equals the durable cursor with NO coin mutation) from the trusted
  * utxo_apply stage cursor. NEVER seeds from MAX(coins.height). No-op once the
  * key exists. Returns false on error (next boot retries). */
-bool coins_kv_backfill_applied_height_if_absent(struct sqlite3 *db);
+typedef bool (*coins_kv_frontier_writer_fn)(struct sqlite3 *, int32_t);
+bool coins_kv_backfill_applied_height_if_absent(
+    struct sqlite3 *db, coins_kv_frontier_writer_fn writer);
 
 /* Truncate coins_kv + clear the migration stamp + drop coins_applied_height so
  * a subsequent coins_kv_seed_from_node_db performs a FRESH copy. The reindex

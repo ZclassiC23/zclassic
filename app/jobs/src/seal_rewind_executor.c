@@ -20,6 +20,7 @@
 
 #include "jobs/stage_repair_internal.h"   /* stage_repair_force_stage_cursor */
 #include "jobs/stage_helpers.h"           /* stage_cursor_persisted */
+#include "jobs/utxo_apply_stage.h"
 #include "utxo_apply_delta_internal.h"    /* utxo_apply_emit_inverse_delta,
                                            * utxo_apply_delete_rows_above */
 #include "storage/seal_kv.h"
@@ -173,7 +174,7 @@ bool seal_rewind_to_nearest(sqlite3 *db, int32_t H, int32_t floor,
     if (!utxo_apply_delete_rows_above(db, G, C - 1) ||
         !stage_repair_force_stage_cursor(db, "utxo_apply", G) ||
         !stage_repair_force_stage_cursor(db, "tip_finalize", G) ||
-        !coins_kv_set_applied_height_in_tx(db, G)) {
+        !utxo_apply_frontier_set_in_tx(db, G)) {
         LOG_WARN("seal_rewind",
                  "[seal_rewind] reset writes failed at G=%d — rolling back", G);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);

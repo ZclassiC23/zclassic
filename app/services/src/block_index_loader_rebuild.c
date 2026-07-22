@@ -9,7 +9,6 @@
  * This file owns projection-backed rebuild. The shared height-sorted forward
  * pass (block_index_forward_pass) lives in block_index_loader.c and is
  * declared in services/block_index_loader.h. */
-
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/chain_tip.h"
@@ -26,6 +25,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/utxo_apply_stage.h"
 #include "chain/checkpoints.h"
 #include "storage/coins_kv.h"
 #include "models/database.h"
@@ -522,7 +522,7 @@ static bool cold_import_set_applied_if_behind(sqlite3 *db, int32_t want)
     bool ok = true;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
         ok = false;
-    if (ok && !coins_kv_set_applied_height_in_tx(db, want))
+    if (ok && !utxo_apply_frontier_set_in_tx(db, want))
         ok = false;
     if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
         ok = false;

@@ -66,6 +66,14 @@ static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
 
+bool coins_kv_set_applied_height_in_tx(sqlite3 *db, int32_t height)
+{
+    if (!db) return false;
+    uint64_t value = (uint64_t)(int64_t)height;
+    uint8_t blob[8];
+    for (int i = 0; i < 8; i++) blob[i] = (uint8_t)(value >> (8 * i));
+    return progress_meta_set_in_tx(db, COINS_APPLIED_HEIGHT_KEY, blob, 8);
+}
 /* Module state shared with utxo_apply_stage_dump.c (the dump-state TU)
  * via utxo_apply_stage_internal.h — written here, atomic_load-only there. */
 _Atomic uint64_t g_ua_verified_total = 0;
@@ -688,28 +696,20 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return false;
     }
 
-    /* One-time backfill for existing datadirs that predate coins_applied_height:
-     * seed the canonical contiguous frontier from the already-trusted utxo_apply
-     * cursor (NEVER from MAX(coins.height)). No-op once the key exists; a virgin
-     * datadir (no cursor row) is left ABSENT so the first forward apply writes it
-     * in lockstep with the cursor. Non-fatal — next boot retries. */
-    if (!coins_kv_backfill_applied_height_if_absent(db)) {
+    /* Derive an absent frontier from the durable cursor, never coin rows. */
+    if (!coins_kv_backfill_applied_height_if_absent(
+            db, coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
 
-    /* Bulk-fold in-RAM hot store (flag-gated, ZCL_FOLD_INRAM). BOTH calls are
-     * no-ops (return true) when the flag is off, so steady-state init is
-     * unchanged. reconcile_boot runs FIRST: if a prior bulk fold crashed
-     * between flushes, the durable utxo_apply cursor is ahead of the last
-     * coins_kv flush watermark — rewind it so the fold re-applies the
-     * un-flushed tail (the from-genesis self-verify still gates correctness).
-     * Then init allocates the overlay and binds it to the coins_kv handle. */
-    if (!coins_ram_reconcile_boot(db)) {
+    /* Rewind an in-RAM cursor to its durable watermark before binding. */
+    if (!coins_ram_reconcile_boot(db,
+                                  coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    if (!coins_ram_init(db, 0)) {
+    if (!coins_ram_init(db, 0, coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

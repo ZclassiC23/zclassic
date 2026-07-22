@@ -634,7 +634,8 @@ int test_coins_applied_frontier(void)
                   coins_kv_get_applied_height(pdb, &before, &found_before) &&
                   found_before == false);
 
-        CAF_CHECK("backfill: runs", coins_kv_backfill_applied_height_if_absent(pdb));
+        CAF_CHECK("backfill: runs", coins_kv_backfill_applied_height_if_absent(
+                      pdb, coins_kv_set_applied_height_in_tx));
 
         int32_t after = -999; bool found_after = false;
         CAF_CHECK("backfill: key present after backfill",
@@ -651,7 +652,8 @@ int test_coins_applied_frontier(void)
                   caf_exec(pdb,
                     "UPDATE stage_cursor SET cursor=50 WHERE name='utxo_apply'"));
         CAF_CHECK("backfill: second call no-ops",
-                  coins_kv_backfill_applied_height_if_absent(pdb));
+                  coins_kv_backfill_applied_height_if_absent(
+                      pdb, coins_kv_set_applied_height_in_tx));
         int32_t after2 = -1; bool found2 = false;
         (void)coins_kv_get_applied_height(pdb, &after2, &found2);
         CAF_CHECK("backfill: idempotent — frontier unchanged (still 123)",
@@ -716,7 +718,8 @@ int test_coins_applied_frontier(void)
             "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
             "VALUES('utxo_apply',10,1)"));
         CAF_CHECK("poison: stamp applied frontier=10 (== cursor)",
-                  coins_kv_backfill_applied_height_if_absent(pdb));
+                  coins_kv_backfill_applied_height_if_absent(
+                      pdb, coins_kv_set_applied_height_in_tx));
         CAF_CHECK("poison: precondition frontier == cursor (10)",
                   frontier_eq_cursor(pdb));
 

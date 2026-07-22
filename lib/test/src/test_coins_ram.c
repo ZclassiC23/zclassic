@@ -217,7 +217,8 @@ int test_coins_ram(void)
     sqlite3 *db = progress_store_db();
     CR_CHECK("ov: db handle", db != NULL);
     CR_CHECK("ov: schema", coins_kv_ensure_schema(db));
-    CR_CHECK("ov: init", coins_ram_init(db, 1000000 /* never auto-flush */));
+    CR_CHECK("ov: init", coins_ram_init(
+                 db, 1000000, coins_kv_set_applied_height_in_tx));
     CR_CHECK("ov: active", coins_ram_active());
 
     /* This test thread is the SINGLE WRITER driving the overlay (it mirrors the
@@ -383,7 +384,8 @@ int test_coins_ram(void)
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         progress_store_tx_unlock();
     }
-    CR_CHECK("reconcile: ok", coins_ram_reconcile_boot(db));
+    CR_CHECK("reconcile: ok", coins_ram_reconcile_boot(
+                 db, coins_kv_set_applied_height_in_tx));
     {
         progress_store_tx_lock();
         sqlite3_stmt *s = NULL;
@@ -478,7 +480,8 @@ int test_coins_ram(void)
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         progress_store_tx_unlock();
         CR_CHECK("reconcile: equal-cursor stale tail ok",
-                 coins_ram_reconcile_boot(db));
+                 coins_ram_reconcile_boot(
+                     db, coins_kv_set_applied_height_in_tx));
         CR_CHECK("reconcile: equal-cursor keeps durable coin below tail",
                  cr_scalar_i64(db,
                      "SELECT COUNT(*) FROM coins "
@@ -604,7 +607,8 @@ int test_coins_ram(void)
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         progress_store_tx_unlock();
         CR_CHECK("reconcile: absent watermark + refold marker ok",
-                 coins_ram_reconcile_boot(db));
+                 coins_ram_reconcile_boot(
+                     db, coins_kv_set_applied_height_in_tx));
         progress_store_tx_lock();
         sqlite3_stmt *s = NULL;
         int64_t cur = -1;
@@ -666,7 +670,8 @@ int test_coins_ram(void)
         sqlite3 *dbD = progress_store_db();
         CR_CHECK("defer: schema", coins_kv_ensure_schema(dbD));
         CR_CHECK("defer: stage schema", stage_table_ensure(dbD));
-        CR_CHECK("defer: init flush_every=1", coins_ram_init(dbD, 1));
+        CR_CHECK("defer: init flush_every=1", coins_ram_init(
+                     dbD, 1, coins_kv_set_applied_height_in_tx));
         coins_ram_writer_enter();
 
         struct uint256 dt = cr_txid(0x77);
@@ -706,7 +711,8 @@ int test_coins_ram(void)
         CR_CHECK("witness: open", progress_store_open(dirW));
         sqlite3 *dbW = progress_store_db();
         CR_CHECK("witness: schema", coins_kv_ensure_schema(dbW));
-        CR_CHECK("witness: init", coins_ram_init(dbW, 1000000));
+        CR_CHECK("witness: init", coins_ram_init(
+                     dbW, 1000000, coins_kv_set_applied_height_in_tx));
         coins_ram_writer_enter();
 
         struct uint256 wt = cr_txid(0x88);
@@ -811,7 +817,8 @@ int test_coins_ram(void)
         CR_CHECK("ab.B: open", progress_store_open(dirB));
         sqlite3 *dbB = progress_store_db();
         CR_CHECK("ab.B: schema", coins_kv_ensure_schema(dbB));
-        CR_CHECK("ab.B: init", coins_ram_init(dbB, 1000000 /* manual flush */));
+        CR_CHECK("ab.B: init", coins_ram_init(
+                     dbB, 1000000, coins_kv_set_applied_height_in_tx));
         CR_CHECK("ab.B: overlay active", coins_ram_active());
         /* This thread is the single writer driving the overlay leg (mirrors the
          * reducer). Bracket so the coins_kv_* READ shims route to the overlay. */
@@ -936,7 +943,8 @@ int test_coins_ram(void)
         CR_CHECK("mf.O: open", progress_store_open(dirO));
         sqlite3 *dbO = progress_store_db();
         CR_CHECK("mf.O: schema", coins_kv_ensure_schema(dbO));
-        CR_CHECK("mf.O: init", coins_ram_init(dbO, 1000000));
+        CR_CHECK("mf.O: init", coins_ram_init(
+                     dbO, 1000000, coins_kv_set_applied_height_in_tx));
         CR_CHECK("mf.O: overlay active", coins_ram_active());
         /* Single writer driving the overlay leg (mirrors the reducer). */
         coins_ram_writer_enter();
@@ -1029,7 +1037,8 @@ int test_coins_ram(void)
              *    overlay get is a probe (miss) + read-through; to isolate the
              *    in-RAM probe cost we ALSO pre-load the keys into the overlay
              *    (LIVE slots) and read those (overlay hit, no SQLite). ── */
-            coins_ram_init(dbP, 1000000);
+            coins_ram_init(dbP, 1000000,
+                           coins_kv_set_applied_height_in_tx);
             /* warm the overlay with the probed keys as LIVE slots */
             for (int p = 0; p < PROBES; p++) {
                 uint32_t idx = (uint32_t)(((uint64_t)p * 2654435761u) % (uint32_t)filled);
@@ -1085,7 +1094,8 @@ int test_coins_ram(void)
         CR_CHECK("md: open", progress_store_open(dirM));
         sqlite3 *dbM = progress_store_db();
         CR_CHECK("md: schema", coins_kv_ensure_schema(dbM));
-        CR_CHECK("md: init", coins_ram_init(dbM, 1000000 /* manual flush */));
+        CR_CHECK("md: init", coins_ram_init(
+                     dbM, 1000000, coins_kv_set_applied_height_in_tx));
         CR_CHECK("md: active", coins_ram_active());
 
         /* A durable coin the overlay will SHADOW as spent. Write it straight to
@@ -1163,7 +1173,8 @@ int test_coins_ram(void)
         CR_CHECK("hw: open", progress_store_open(dirH));
         sqlite3 *dbH = progress_store_db();
         CR_CHECK("hw: schema", coins_kv_ensure_schema(dbH));
-        CR_CHECK("hw: init (flush_every huge)", coins_ram_init(dbH, 1000000));
+        CR_CHECK("hw: init (flush_every huge)", coins_ram_init(
+                     dbH, 1000000, coins_kv_set_applied_height_in_tx));
         CR_CHECK("hw: active", coins_ram_active());
         coins_ram_writer_enter();
 

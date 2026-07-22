@@ -41,6 +41,7 @@
                                           * refold_progress_mark_started,
                                           * refold_progress_mark_started_from_anchor */
 #include "jobs/tip_finalize_stage.h"     /* tip_finalize_stage_seed_anchor */
+#include "jobs/utxo_apply_stage.h"
 #include "chain/checkpoints.h"           /* get_sha3_utxo_checkpoint */
 #include "chain/utxo_snapshot_loader.h"  /* uss_open/uss_iter/uss_close (mint) */
 #include "event/event.h"                 /* event_emitf, EV_BOOT_VALIDATION_FAILED */
@@ -483,7 +484,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
             refold_ok = false;
     /* utxo_apply's next-height cursor convention: applied-through `anchor`
      * means the frontier value is anchor+1. */
-    if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, anchor + 1))
+    if (refold_ok && !utxo_apply_frontier_set_in_tx(rpdb, anchor + 1))
         refold_ok = false;
     /* The UTXO snapshot does not carry historical Sprout/Sapling roots.
      * Record that absence explicitly: the fold must backfill [0,anchor)
@@ -1322,7 +1323,7 @@ retry_authority_store:
                         "load_snapshot_at_own_height applied_height_begin_failed");
             _exit(EXIT_FAILURE);
         }
-        if (!coins_kv_set_applied_height_in_tx(rpdb, seed_h + 1)) {
+        if (!utxo_apply_frontier_set_in_tx(rpdb, seed_h + 1)) {
             sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
             if (!authority_retry_used) {
                 authority_retry_used = true;
@@ -1575,7 +1576,7 @@ retry_authority_store:
          i++)
         if (!stage_repair_force_stage_cursor(rpdb, k_coins_stages[i], seed_h))
             refold_ok = false;
-    if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, seed_h + 1))
+    if (refold_ok && !utxo_apply_frontier_set_in_tx(rpdb, seed_h + 1))
         refold_ok = false;
     /* SHIELDED SEED (v3, Sapling root-verified) or the default cursor reset
      * (v1/v2). Fail-closed. See config/boot_shielded_seed.h. */

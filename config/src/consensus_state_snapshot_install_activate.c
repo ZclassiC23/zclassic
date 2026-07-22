@@ -11,7 +11,6 @@
  * config/consensus_state_snapshot_install.h. */
 
 #include "config/consensus_state_snapshot_install.h"
-
 #include "consensus_state_snapshot_install_internal.h" /* lease + authority resolver */
 #include "jobs/reducer_frontier.h"       /* reducer_frontier_compute_hstar,
                                           * REDUCER_TRUSTED_BASE_*_KEY */
@@ -19,6 +18,7 @@
 #include "jobs/stage_helpers.h"
 #include "jobs/stage_repair_internal.h"  /* stage_repair_force_stage_cursor */
 #include "jobs/tip_finalize_stage.h"     /* tip_finalize_stage_seed_anchor */
+#include "jobs/utxo_apply_stage.h"
 #include "services/consensus_state_publication_cas.h"
 #include "services/nullifier_backfill_service.h"
 #include "storage/anchor_kv.h"
@@ -689,7 +689,7 @@ static bool activate_apply_in_tx(
                                  "forcing stage cursor %s failed",
                                  k_activate_stages[i]);
     }
-    if (!coins_kv_set_applied_height_in_tx(progress_db, m->height + 1))
+    if (!utxo_apply_frontier_set_in_tx(progress_db, m->height + 1))
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "setting coins_applied_height failed");
 

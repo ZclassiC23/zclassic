@@ -14,6 +14,7 @@
 #include "utxo_apply_delta_internal.h"
 #include "jobs/reducer_commit_invariants.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/utxo_apply_stage.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -499,7 +500,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * strand the frontier ABOVE the rewound coins (a phantom-forward frontier
      * the self-heal would wrongly trust). Co-committed with the inverse delta +
      * cursor; ROLLBACK on failure like the surrounding writes. */
-    if (!coins_kv_set_applied_height_in_tx(db, fork_plus1)) {
+    if (!utxo_apply_frontier_set_in_tx(db, fork_plus1)) {
         sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }

@@ -5,6 +5,7 @@
 
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair_internal.h"
+#include "jobs/utxo_apply_stage.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
@@ -99,7 +100,7 @@ bool boot_mint_anchor_genesis_reset(struct node_db *ndb)
          i++)
         if (!stage_repair_force_stage_cursor(rpdb, k_refold_stages[i], 0))
             refold_ok = false;
-    if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, 0))
+    if (refold_ok && !utxo_apply_frontier_set_in_tx(rpdb, 0))
         refold_ok = false;
     if (refold_ok && (!anchor_kv_reset_mark_complete_in_tx(rpdb) ||
                       !nullifier_kv_reset_mark_complete_in_tx(rpdb)))

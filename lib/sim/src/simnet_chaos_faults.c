@@ -34,6 +34,7 @@
 #include "jobs/stage_rederive_range.h"
 #include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/utxo_apply_stage.h"
 #include "net/download.h"
 #include "net/file_service.h"
 #include "net/rom_fetch.h"
@@ -55,7 +56,6 @@
 #include "validation/chainstate.h"
 #include "validation/connect_block.h"
 #include "validation/main_state.h"
-
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -557,7 +557,7 @@ bool chaos_fault_empty_active_chain_window(int gap_height,
     bool anchor_ok = tf_init &&
         tip_finalize_stage_seed_anchor(N, tipN->hashBlock.data, true);
     sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
-    bool coins_ok = coins_kv_set_applied_height_in_tx(db, N + 1);
+    bool coins_ok = utxo_apply_frontier_set_in_tx(db, N + 1);
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
     if (!anchor_ok || !coins_ok) {
         chaos_note(out, "fixture anchor/coins seed failed");

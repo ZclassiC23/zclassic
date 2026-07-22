@@ -11,6 +11,7 @@
 #include "utxo_apply_delta_internal.h"
 
 #include "jobs/stage_helpers.h"
+#include "jobs/utxo_apply_stage.h"
 #include "coins/coins.h"
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
@@ -402,7 +403,7 @@ bool utxo_apply_repair_value_overflow_hole(
         progress_store_tx_unlock();
         return false;
     }
-    if (!coins_kv_set_applied_height_in_tx(db, height)) {
+    if (!utxo_apply_frontier_set_in_tx(db, height)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
         return false;

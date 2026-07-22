@@ -80,6 +80,7 @@ static struct {
     uint32_t         since_flush;   /* heights applied since last flush */
     int32_t          last_applied;  /* highest height noted, -1 = none */
     size_t           max_slots;     /* live-slot high-water flush cap (0=off) */
+    coins_ram_frontier_writer_fn writer;
     /* Read-through prepared-statement cache. The overlay's cold-miss reads
      * (coins_ram_get / _get_prevout / _exists → coins_kv_*_sqlite_cached) run
      * ONLY on the single fold/drive thread (coins_kv_overlay_safe gates on
@@ -252,12 +253,13 @@ static bool grow(void)
     G.mask = mask;
     return true;
 }
-
 /* ── lifecycle ───────────────────────────────────────────────────────── */
-
-bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
+bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks,
+                    coins_ram_frontier_writer_fn writer)
 {
     if (!coins_ram_enabled()) return true;  /* flag off: no-op */
+    if (!writer) LOG_FAIL("coins_ram", "init: NULL frontier writer");
+    G.writer = writer;
     if (G.active) {
         if (G.db != db)
             coins_ram_read_cache_finalize();  /* stale vs the old handle */
@@ -266,7 +268,6 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
     }
     if (!db)
         LOG_FAIL("coins_ram", "init: NULL db handle");
-
     size_t cap = COINS_RAM_DEFAULT_SLOTS;
     G.slots = zcl_calloc(cap, sizeof(*G.slots), "coins_ram_slots");
     if (!G.slots)
@@ -276,10 +277,7 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
     G.live_count = 0;
     G.used = 0;
     G.db = db;
-    /* Flush cadence precedence: an explicit caller arg wins; otherwise honor
-     * ZCL_FOLD_INRAM_FLUSH_EVERY (a mint/refold operator tuning knob — a
-     * smaller value tightens the worst-case crash-resume rewind at the cost of
-     * more frequent flushes); otherwise the compiled default. When the env is
+    /* An explicit cadence wins, then ZCL_FOLD_INRAM_FLUSH_EVERY. When the env is
      * unset the value is COINS_RAM_DEFAULT_FLUSH_EVERY exactly as before, so
      * steady-state behavior is unchanged. Bounds keep it in [1, 5,000,000]. */
     if (flush_every_blocks) {
@@ -1174,7 +1172,7 @@ bool coins_ram_flush(int32_t flushed_height)
         if (!progress_meta_set_in_tx(db, COINS_RAM_FLUSHED_HEIGHT_KEY, wm, 8))
             ok = false;
     }
-    if (ok && !coins_kv_set_applied_height_in_tx(db, flushed_height + 1))
+    if (ok && (!G.writer || !G.writer(db, flushed_height + 1)))
         ok = false;
     if (ok) {
         /* Move the utxo_apply stage cursor to flushed_height+1 (next to apply)
@@ -1293,12 +1291,13 @@ static bool coins_ram_boot_replay_marker_present(sqlite3 *db, bool *present)
     return true;
 }
 
-bool coins_ram_reconcile_boot(struct sqlite3 *db)
+bool coins_ram_reconcile_boot(
+    struct sqlite3 *db, coins_ram_frontier_writer_fn writer)
 {
     if (!coins_ram_enabled()) return true;  /* flag off: nothing to reconcile */
     if (!db)
         LOG_FAIL("coins_ram", "reconcile_boot: NULL db");
-
+    if (!writer) LOG_FAIL("coins_ram", "reconcile_boot: NULL frontier writer");
     /* Read the durable flush watermark. Absent → this datadir was never
      * bulk-folded in RAM mode; nothing to rewind. */
     uint8_t wm[8] = {0};
@@ -1379,7 +1378,7 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
         }
     }
     if (ok && rewind_cursor &&
-        !coins_kv_set_applied_height_in_tx(db, (int32_t)want_cursor))
+        !writer(db, (int32_t)want_cursor))
         ok = false;
     if (ok && !coins_ram_purge_replay_tail(db, want_cursor))
         ok = false;

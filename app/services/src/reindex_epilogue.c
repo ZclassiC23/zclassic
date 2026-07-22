@@ -17,6 +17,7 @@
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/utxo_apply_stage.h"
 #include "models/database.h"
 #include "services/seed_integrity_gate.h"
 #include "storage/coins_kv.h"
@@ -143,7 +144,7 @@ static bool derive_authority_from_node_db_utxos(struct node_db *ndb,
             char *err = NULL;
             if (sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
                 set_ok = false;
-            if (set_ok && !coins_kv_set_applied_height_in_tx(pdb, tip_h + 1))
+            if (set_ok && !utxo_apply_frontier_set_in_tx(pdb, tip_h + 1))
                 set_ok = false;
             if (set_ok && sqlite3_exec(pdb, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
                 set_ok = false;

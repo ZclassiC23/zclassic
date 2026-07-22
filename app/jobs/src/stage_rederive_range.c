@@ -27,6 +27,7 @@
 #include "jobs/stage_rederive_range.h"
 
 #include "jobs/stage_repair_internal.h"   /* cursor_at_unlocked, force_stage_cursor */
+#include "jobs/utxo_apply_stage.h"
 #include "reducer_frontier_replay_tx.h"   /* delete_log_range, inverse_delta_range_checked */
 #include "utxo_apply_delta_internal.h"    /* delete_rows_above, unwind_write_cursor */
 
@@ -133,7 +134,7 @@ bool stage_rederive_range(sqlite3 *db, struct main_state *ms,
         }
         if (!utxo_apply_delete_rows_above(db, from_height, utxo_cursor - 1) ||
             !utxo_apply_unwind_write_cursor(db, (uint64_t)from_height) ||
-            !coins_kv_set_applied_height_in_tx(db, from_height))
+            !utxo_apply_frontier_set_in_tx(db, from_height))
             goto rollback;
         coins_rewound = true;
         cursors_rewound++; /* utxo_apply */

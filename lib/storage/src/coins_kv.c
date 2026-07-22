@@ -790,31 +790,12 @@ bool coins_kv_boundary_root_get(sqlite3 *db, int32_t height,
  * machine reads back identically on any host (the blob is opaque to the
  * progress_meta layer, which owns no integer encoding). */
 
-static void le64_put(uint8_t b[8], int64_t v)
-{
-    uint64_t u = (uint64_t)v;
-    for (int i = 0; i < 8; i++)
-        b[i] = (uint8_t)(u >> (8 * i));
-}
-
 static int64_t le64_get(const uint8_t b[8])
 {
     uint64_t u = 0;
     for (int i = 0; i < 8; i++)
         u |= (uint64_t)b[i] << (8 * i);
     return (int64_t)u;
-}
-
-bool coins_kv_set_applied_height_in_tx(sqlite3 *db, int32_t height)
-{
-    if (!db) return false;
-    /* Joins the caller's ALREADY-OPEN txn (progress_meta_set_in_tx issues NO
-     * inner BEGIN/COMMIT). A PLAIN set — the reorg path legitimately decreases
-     * the frontier, so NO monotonic-floor guard. */
-    uint8_t blob[8];
-    le64_put(blob, (int64_t)height);
-    return progress_meta_set_in_tx(db, COINS_APPLIED_HEIGHT_KEY,
-                                   blob, sizeof(blob));
 }
 
 bool coins_kv_get_applied_height(sqlite3 *db, int32_t *out, bool *found)
@@ -1064,9 +1045,12 @@ static bool utxo_apply_cursor_persisted(sqlite3 *db, int64_t *out, bool *found)
     return ok;
 }
 
-bool coins_kv_backfill_applied_height_if_absent(sqlite3 *db)
+bool coins_kv_backfill_applied_height_if_absent(
+    sqlite3 *db, coins_kv_frontier_writer_fn writer)
 {
     if (!db) return true;  /* store not open yet → no-op, retried later */
+    if (!writer)
+        LOG_FAIL("coins_kv", "applied_height backfill: NULL frontier writer");
 
     bool present = false;
     int32_t cur = 0;
@@ -1098,7 +1082,7 @@ bool coins_kv_backfill_applied_height_if_absent(sqlite3 *db)
     bool ok = true;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
         ok = false;
-    if (ok && !coins_kv_set_applied_height_in_tx(db, (int32_t)cursor))
+    if (ok && !writer(db, (int32_t)cursor))
         ok = false;
     if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
         ok = false;

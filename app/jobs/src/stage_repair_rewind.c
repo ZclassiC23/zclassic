@@ -18,6 +18,7 @@
 
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
+#include "jobs/utxo_apply_stage.h"
 
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
@@ -436,7 +437,7 @@ bool stage_repair_header_solution_poison_rewind(
      * co-write makes frontier == cursor hold by construction on this path too.
      * A PLAIN set (the rewind decreases the frontier); ROLLBACK on failure
      * exactly like the surrounding writes (goto rollback). */
-    if (!coins_kv_set_applied_height_in_tx(db, height))
+    if (!utxo_apply_frontier_set_in_tx(db, height))
         goto rollback;
 
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
