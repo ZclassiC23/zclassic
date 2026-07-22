@@ -124,6 +124,7 @@ struct msg_processor {
     msg_catchup_batch_scope_fn catchup_batch_begin;
     msg_catchup_batch_scope_fn catchup_batch_end;
     void *catchup_batch_scope_ctx;
+    uint32_t block_swarm_staged_since_drain;
     msg_compact_block_submit_fn compact_block_submit;
     void *compact_block_submit_ctx;
     msg_peer_save_fn peer_save;

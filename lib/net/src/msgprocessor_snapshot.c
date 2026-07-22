@@ -61,6 +61,7 @@ static int64_t g_swarm_last_progress_time = 0;
  * which must agree with this file's parse_block_piece_payload_refs on the
  * same per-block cap. */
 #define BLOCK_PAYLOAD_SUBMIT_RETRIES 3
+#define BLOCK_PAYLOAD_DRAIN_BATCH (8u * BLOCKS_PER_PIECE)
 #define BLOCK_PIECE_TIMEOUT_SECS 8
 #define BLOCK_PIECE_CONTIGUOUS_WINDOW 4u
 
@@ -71,7 +72,10 @@ struct block_piece_payload_ref {
 
 static int block_payload_drain_catchup(struct msg_processor *mp)
 {
-    if (!mp || !mp->catchup_drain)
+    if (!mp)
+        return 0;
+    mp->block_swarm_staged_since_drain = 0;
+    if (!mp->catchup_drain)
         return 0;
     return mp->catchup_drain(mp->catchup_drain_ctx);
 }
@@ -104,13 +108,9 @@ static bool block_payload_submit_all(struct msg_processor *mp,
     if (!mp || !node)
         return false;
 
-    /* Match the ordinary async block-intake worker's outer durability scope.
-     * reducer_stage_p2p_block_for_catchup retains its per-body nested scope,
-     * but this outer bracket keeps those inner exits from issuing one
-     * fdatasync per body. The reducer's stage pre-commit hook still flushes
-     * every deferred body before a cursor/log COMMIT, and the final paired end
-     * flushes any body that advanced no stage. A zblkdata piece is bounded by
-     * BLOCKS_PER_PIECE, so the dirty window remains strictly bounded. */
+    /* Match async intake's outer durability scope: nested per-body exits do
+     * not fdatasync individually, while pre-commit/final-exit still flushes
+     * before durable cursors. One scope is bounded by BLOCKS_PER_PIECE. */
     bool batch_scope_open = mp->catchup_batch_begin && mp->catchup_batch_end;
     if (batch_scope_open)
         mp->catchup_batch_begin(mp->catchup_batch_scope_ctx);
@@ -179,7 +179,9 @@ static bool block_payload_submit_all(struct msg_processor *mp,
         stream_free(&block_stream);
     }
 
-    (void)block_payload_drain_catchup(mp);
+    mp->block_swarm_staged_since_drain += count;
+    if (mp->block_swarm_staged_since_drain >= BLOCK_PAYLOAD_DRAIN_BATCH)
+        (void)block_payload_drain_catchup(mp);
     if (batch_scope_open)
         mp->catchup_batch_end(mp->catchup_batch_scope_ctx);
     return true;

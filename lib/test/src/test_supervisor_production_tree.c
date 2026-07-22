@@ -44,10 +44,12 @@
 #include "net/net.h"
 #include "net/protocol.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/reducer_ingest_service.h"
 #include "services/sync_monitor.h"
 #include "supervisors/net_supervisor.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
+#include "storage/disk_block_io.h"
 #include "util/blocker.h"
 #include "util/reducer_drive_guard.h"
 #include "util/safe_alloc.h"
@@ -155,12 +157,15 @@ static const char *const k_staged_children[] = {
  * proves whether staged_stage_tick's reducer_drive_active() skip branch
  * really skips the drain call. */
 static _Atomic int g_spt_drain_calls = 0;
+static _Atomic bool g_spt_drain_saw_deferred_sync = false;
 #define SPT_STUB_CURSOR         4242ull
 #define SPT_STUB_UPSTREAM_CURSOR 4200ull
 
 static int spt_stub_drain(int max_steps)
 {
     (void)max_steps;
+    atomic_store(&g_spt_drain_saw_deferred_sync,
+                 disk_block_io_deferred_sync_enabled());
     atomic_fetch_add(&g_spt_drain_calls, 1);
     return 0;
 }
@@ -424,6 +429,7 @@ int test_supervisor_production_tree(void)
      * main_state_init()'d `staged_ms`. */
     {
         atomic_store(&g_spt_drain_calls, 0);
+        atomic_store(&g_spt_drain_saw_deferred_sync, false);
         bool esc = false;
 
         int64_t marker = staged_sync_supervisor_test_run_stage_tick(
@@ -473,6 +479,9 @@ int test_supervisor_production_tree(void)
             &staged_ms, &esc, &period_us);
         SPT_CHECK("catchup inactive: effective period_us is 0",
                   period_us == 0);
+        SPT_CHECK("catchup inactive: drain keeps immediate durability",
+                  !atomic_load(&g_spt_drain_saw_deferred_sync) &&
+                  !disk_block_io_deferred_sync_enabled());
 
         /* Activate catchup_cadence: one connected peer far ahead of the
          * (test-overridden) log_head -> gap >= default threshold (500). */
@@ -485,24 +494,32 @@ int test_supervisor_production_tree(void)
         catchup_cadence_test_set_log_head_override(0); /* gap = 100000 */
 
         period_us = -1;
+        atomic_store(&g_spt_drain_saw_deferred_sync, false);
         (void)staged_sync_supervisor_test_run_stage_tick(
             "staged.spt_test_stage", "staged.spt_test_upstream",
             spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
             &staged_ms, &esc, &period_us);
         SPT_CHECK("catchup active: effective period_us is 1s (default)",
                   peer != NULL && period_us == (int64_t)1000 * 1000);
+        SPT_CHECK("catchup active: drain uses paired deferred durability",
+                  atomic_load(&g_spt_drain_saw_deferred_sync) &&
+                  !disk_block_io_deferred_sync_enabled());
 
         /* Deactivate: the backlog drains (gap closes) -> RESETS to 0. This
          * is the load-bearing byte-identical-at-tip property: the shortened
          * tick period must not leak into a caught-up live node. */
         catchup_cadence_test_set_log_head_override(100000); /* gap = 0 */
         period_us = -1;
+        atomic_store(&g_spt_drain_saw_deferred_sync, false);
         (void)staged_sync_supervisor_test_run_stage_tick(
             "staged.spt_test_stage", "staged.spt_test_upstream",
             spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
             &staged_ms, &esc, &period_us);
         SPT_CHECK("catchup deactivated (gap closed): period_us resets to 0",
                   period_us == 0);
+        SPT_CHECK("catchup deactivated: immediate durability restored",
+                  !atomic_load(&g_spt_drain_saw_deferred_sync) &&
+                  !disk_block_io_deferred_sync_enabled());
 
         catchup_cadence_test_reset();
         sync_monitor_set_context(NULL, NULL, NULL);

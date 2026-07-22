@@ -17,6 +17,7 @@
  * message — stays as tiny named functions/strings the table points at. */
 
 #include "supervisors/staged_sync_supervisor.h"
+#include "services/reducer_ingest_service.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
@@ -462,7 +463,16 @@ static void staged_stage_tick(struct liveness_contract *c)
      * in progress) it returns ZCL_CATCHUP_DRAIN_BATCH (default 500). Batch
      * size never changes WHAT a stage folds — only the commit cadence and
      * latency. */
+    /* Catch-up stages can emit one event and/or block write per step. Reuse
+     * the reducer's crash-ordered outer scope so those writes sync once at a
+     * pre-commit boundary, not once per imported header/body. At tip this is
+     * false, so each write keeps its normal immediate sync. */
+    const bool batch_catchup_sync = catchup_cadence_active();
+    if (batch_catchup_sync)
+        reducer_enter_batched_body_sync();
     (void)d->drain(stage_effective_batch(d->batch, d->per_step_fanout));
+    if (batch_catchup_sync)
+        reducer_exit_batched_body_sync();
 
     /* Effective per-child tick period for the NEXT sweep: refold_cadence
      * wins over catchup_cadence when both could apply (same precedence as

@@ -516,7 +516,7 @@ static int test_block_swarm_throughput(void)
         ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired */
         ASSERT(!sink.scope_open);                       /* no scope leak */
         ASSERT(sink.submits_outside_scope == 0);        /* every body batched */
-        ASSERT(sink.drains == sink.scope_begins);       /* one drain per piece */
+        ASSERT(sink.drains == 5);                       /* one per 512 bodies */
         ASSERT(sink.drains_inside_scope == sink.drains);/* flush-before-end */
 
         double secs = (double)elapsed_us / 1e6;
@@ -657,6 +657,7 @@ static int test_block_swarm_disconnect_requeue(void)
         ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired        */
         ASSERT(!sink.scope_open);
         ASSERT(sink.submits_outside_scope == 0);
+        ASSERT(sink.drains == 5);
         ASSERT(sink.drains_inside_scope == sink.drains);
 
         send_segment_free(sent_a);
