@@ -108,6 +108,11 @@ bool coins_kv_get_prevout(struct sqlite3 *db, const uint8_t txid[32],
                           size_t *script_len_out, int32_t *height_out,
                           bool *is_coinbase_out);
 
+/* Per-thread monotonic count of actual sqlite3_prepare_v2 calls made by point
+ * lookups, including RAM-overlay read-through misses. Diagnostic sampling may
+ * take a before/after delta without changing lookup behavior. */
+uint64_t coins_kv_prepare_count_thread(void);
+
 /* Count of live outputs. Returns -1 on error. */
 int64_t coins_kv_count(struct sqlite3 *db);
 

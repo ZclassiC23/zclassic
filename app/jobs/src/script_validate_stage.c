@@ -41,6 +41,7 @@
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/reducer_stage_profile.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -105,6 +106,30 @@ static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
+
+static void sv_profile_acquire(const struct block_parse_handle *h)
+{
+    reducer_stage_profile_add(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                              h->cache_hit ? RPF_CACHE_HITS : RPF_CACHE_MISSES,
+                              1);
+    reducer_stage_profile_add(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                              RPF_CACHE_PROBES, h->lookup_probes);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_CACHE_LOCK_WAIT_US, h->lock_wait_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_DISK_READ_US, h->disk_read_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_PARSE_US, h->parse_us);
+}
+
+static void sv_release_stage_block(struct block_parse_handle *handle,
+                                   struct block *owned, bool borrowed)
+{
+    if (borrowed)
+        block_parse_cache_release(handle);
+    else
+        block_free(owned);
+}
 
 /* STEP 2A — HOLD-and-re-derive budget for the transient "couldn't determine
  * yet" class (prevout_unresolved / block_decode_failed). The stage HOLDS the
@@ -365,6 +390,7 @@ bool script_validate_stage_dry_run_block(
 
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
+    int64_t total_started = platform_time_monotonic_us();
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
@@ -419,30 +445,50 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
 
-    struct block blk;
-    block_init(&blk);
-    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
-        block_free(&blk);
+    struct block owned;
+    block_init(&owned);
+    struct block_parse_handle handle;
+    memset(&handle, 0, sizeof(handle));
+    bool borrowed = g_reader == NULL;
+    int64_t acquire_started = platform_time_monotonic_us();
+    bool read_ok = borrowed
+        ? block_parse_cache_acquire(next_h, bi->phashBlock->data, bi,
+                                    g_datadir, &handle)
+        : stage_read_block(&owned, bi, next_h, g_datadir, g_reader,
+                           g_reader_user);
+    if (!read_ok) {
+        block_free(&owned);
         /* body_persist already hash+merkle verified this body — a later
          * read failure is not a normal wait (see stage_body_read_hold). */
         return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock,
                                     &g_last_blocked_unix);
     }
+    if (borrowed) sv_profile_acquire(&handle);
+    const struct block *blk = borrowed ? block_parse_handle_block(&handle)
+                                       : &owned;
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_SCRIPT_VALIDATE, RPF_UPSTREAM_US,
+        (uint64_t)(acquire_started - total_started));
     stage_body_read_hold_clear(STAGE_NAME);
 
     /* #26 — at-tip contextual gate (script_validate_contextual.c): per-tx
      * contextual rules / finality / BIP34 before script verification. */
     bool ctx_internal = false;
-    switch (script_validate_contextual_gate(ms, db, next_h, bi, &blk,
+    int64_t phase_started = platform_time_monotonic_us();
+    switch (script_validate_contextual_gate(ms, db, next_h, bi, blk,
                                             &ctx_internal)) {
     case SV_CTX_PASS:
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                         RPF_CONTEXTUAL_US,
+                                  (uint64_t)(platform_time_monotonic_us() -
+                                             phase_started));
         break;
     case SV_CTX_WAIT_PARAMS:
-        block_free(&blk);
+        sv_release_stage_block(&handle, &owned, borrowed);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     case SV_CTX_REJECTED:
-        block_free(&blk);
+        sv_release_stage_block(&handle, &owned, borrowed);
         if (ctx_internal)
             atomic_fetch_add(&g_internal_error_total, 1);
         sv_unresolved_clear(db); /* advancing past any held height */
@@ -455,7 +501,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * infra fault, never a validity verdict — a contextual REJECT is
          * SV_CTX_REJECTED above): route it through the bounded retry/reindex
          * ladder instead of a dead JOB_FATAL. */
-        block_free(&blk);
+        sv_release_stage_block(&handle, &owned, borrowed);
         return sv_db_fault(sqlite3_extended_errcode(db), next_h,
                            "contextual gate log insert");
     }
@@ -473,8 +519,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * fold; it does not certify skipped signatures. Default OFF → a normal
          * boot never reaches this branch. */
         script_verify_summary_init(&summary);   /* ok=1, internal_error=0 */
-        for (size_t ti = 0; ti < blk.num_vtx; ti++) {
-            const struct transaction *tx = &blk.vtx[ti];
+        for (size_t ti = 0; ti < blk->num_vtx; ti++) {
+            const struct transaction *tx = &blk->vtx[ti];
             summary.tx_count++;
             if (!transaction_is_coinbase(tx))
                 summary.input_count += tx->num_vin;
@@ -483,12 +529,12 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         /* Production path: fan the per-input ECDSA verify across the worker
          * pool, then fold the reached-input tallies the reduce computed into
          * the live atomics (verdict-identical to the serial sweep). */
-        script_verify_block(&blk, next_h, g_prevout, g_prevout_user, NULL, NULL,
+        script_verify_block(blk, next_h, g_prevout, g_prevout_user, NULL, NULL,
                             true, &summary);
         atomic_fetch_add(&g_inputs_verified_total, summary.inputs_verified);
         atomic_fetch_add(&g_inputs_failed_total, summary.inputs_failed);
     }
-    block_free(&blk);
+    sv_release_stage_block(&handle, &owned, borrowed);
 
     /* STEP 2A: the internal_error class (prevout_unresolved / block_decode_failed)
      * is a TRANSIENT "cannot determine validity yet" — utxo_apply / the creating
@@ -532,14 +578,24 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * restart. bi is the live in-memory entry from active_chain_at; blk
          * was freed above but bi is independent. */
         block_index_status_set_valid_level(bi, BLOCK_VALID_SCRIPTS);
+        phase_started = platform_time_monotonic_us();
         block_index_emit_header_event(bi, "script_validate", &g_header_event_emit_total, &g_header_event_emit_fail_total);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                         RPF_HEADER_EVENT_US,
+                                  (uint64_t)(platform_time_monotonic_us() -
+                                             phase_started));
     }
 
+    phase_started = platform_time_monotonic_us();
     if (!script_validate_log_insert(db, next_h, status, ok, summary.tx_count,
                     summary.input_count, fail_txid, fail_vin, fail_serror,
                     bi->phashBlock))
         return sv_db_fault(sqlite3_extended_errcode(db), next_h,
                            "script_validate_log insert");
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_STAGE_LOG_CURSOR_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         phase_started));
 
     /* A height advanced cleanly: release any HOLD budget/named blocker so a
      * later hole restarts from scratch. */
@@ -548,6 +604,10 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     c->cursor_out = c->cursor_in + 1;
     /* Clean advancing step — the infra-db fault retry budget resets. */
     stage_db_fault_clear(&g_sv_db_fault);
+    reducer_stage_profile_add(REDUCER_PROFILE_SCRIPT_VALIDATE, RPF_BLOCKS, 1);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_SCRIPT_VALIDATE, RPF_TOTAL_US,
+        (uint64_t)(platform_time_monotonic_us() - total_started));
     return JOB_ADVANCED;
 }
 

@@ -375,6 +375,13 @@ int test_coins_kv(void)
                   slen == sizeof(sc1) &&
                   memcmp(script, sc1, sizeof(script)) == 0;
         CK_CHECK("get_prevout point-read reports metadata", ok);
+        uint64_t prepares_before = coins_kv_prepare_count_thread();
+        CK_CHECK("raw get_prevout point-read reports metadata",
+                 coins_kv_get_prevout_sqlite(
+                     db, t1.data, 1, &value, script, sizeof(script), &slen,
+                     &height, &coinbase));
+        CK_CHECK("raw get_prevout records one actual prepare",
+                 coins_kv_prepare_count_thread() == prepares_before + 1);
         CK_CHECK("get_prevout missing vout -> false",
                  !coins_kv_get_prevout(db, t1.data, 2, NULL, NULL, 0, NULL,
                                        NULL, NULL));

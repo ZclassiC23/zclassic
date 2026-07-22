@@ -24,6 +24,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* run_job is handed one job slot (jobs + job_size*i) and the per-batch user
  * pointer. It runs to completion with no shared mutable state — the caller
@@ -63,6 +64,10 @@ bool vwp_pool_start(struct vwp_pool *pool, vwp_job_fn run_job, int n_threads);
  * pool is not inited or the arguments are degenerate. */
 void vwp_pool_run_batch(struct vwp_pool *pool, void *jobs, size_t job_size,
                         int n_jobs, void *user);
+void vwp_pool_run_batch_profiled(struct vwp_pool *pool, void *jobs,
+                                 size_t job_size, int n_jobs, void *user,
+                                 uint64_t *wakeup_us_out,
+                                 uint64_t *wait_us_out);
 
 /* Signal stop, join every worker, and release the pool's heap + sync objects. */
 void vwp_pool_stop(struct vwp_pool *pool);

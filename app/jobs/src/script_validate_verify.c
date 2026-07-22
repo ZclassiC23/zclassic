@@ -20,8 +20,11 @@
 #include "script/script_flags.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/reducer_stage_profile.h"
 #include "validation/sighash.h"
 #include "validation/tx_verifier.h"
+#include "platform/time_compat.h"
+#include "platform/clock.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -131,7 +134,12 @@ static void sv_serial(const struct block *blk, int height, uint32_t flags,
             continue;
 
         struct precomputed_tx_data txdata;
+        int64_t precompute_started = platform_time_monotonic_us();
         precompute_tx_data(tx, &txdata);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                         RPF_TX_PRECOMPUTE_US,
+                                  (uint64_t)(platform_time_monotonic_us() -
+                                             precompute_started));
 
         for (size_t vi = 0; vi < tx->num_vin; vi++) {
             struct tx_out prev;
@@ -147,9 +155,15 @@ static void sv_serial(const struct block *blk, int height, uint32_t flags,
             struct sig_checker checker = tx_make_sig_checker(&tsc);
             ScriptError serror = SCRIPT_ERR_OK;
             out->input_count++;
+            int64_t cpu_started = clock_thread_cpu_ns();
             bool ok = verify_script(&tx->vin[vi].script_sig,
                                     &prev.script_pub_key, flags, &checker,
                                     branch_id, &serror);
+            int64_t cpu_ns = clock_thread_cpu_ns() - cpu_started;
+            if (cpu_ns > 0)
+                reducer_stage_profile_observe_us(
+                    REDUCER_PROFILE_SCRIPT_VALIDATE,
+                    RPF_VERIFY_SCRIPT_CPU_US, (uint64_t)cpu_ns / 1000u);
             if (ok) {
                 out->inputs_verified++;
             } else {
@@ -232,9 +246,15 @@ static void sv_worker(void *j, void *u)
                         ctx->branch_id, job->txdata);
     struct sig_checker checker = tx_make_sig_checker(&tsc);
     ScriptError serror = SCRIPT_ERR_OK;
+    int64_t cpu_started = clock_thread_cpu_ns();
     job->verified = verify_script(&job->tx->vin[job->vi].script_sig,
                                   &job->prev.script_pub_key, ctx->flags,
                                   &checker, ctx->branch_id, &serror);
+    int64_t cpu_ns = clock_thread_cpu_ns() - cpu_started;
+    if (cpu_ns > 0)
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                         RPF_VERIFY_SCRIPT_CPU_US,
+                                         (uint64_t)cpu_ns / 1000u);
     job->serror = serror;
 }
 
@@ -246,6 +266,7 @@ static bool g_sv_pool_failed = false;
 
 static struct vwp_pool *sv_pool_get(void)
 {
+    int64_t started = platform_time_monotonic_us();
     pthread_mutex_lock(&g_sv_pool_lock);
     if (!g_sv_pool_ready && !g_sv_pool_failed) {
         if (vwp_pool_start(&g_sv_pool, sv_worker, 0))
@@ -255,6 +276,9 @@ static struct vwp_pool *sv_pool_get(void)
     }
     struct vwp_pool *p = g_sv_pool_ready ? &g_sv_pool : NULL;
     pthread_mutex_unlock(&g_sv_pool_lock);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_POOL_SETUP_US,
+                              (uint64_t)(platform_time_monotonic_us() - started));
     return p;
 }
 
@@ -303,6 +327,12 @@ static bool sv_parallel(const struct block *blk, int height, uint32_t flags,
         free(jobs);
         return false;
     }
+    reducer_stage_profile_add(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                              RPF_JOB_ARRAY_ALLOCS, 2);
+    reducer_stage_profile_add(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                              RPF_JOB_ARRAY_BYTES,
+                              blk->num_vtx * sizeof(*txdata_arr) +
+                              n_inputs * sizeof(*jobs));
 
     /* Build phase — SERIAL: precompute per-tx data + resolve prevouts in
      * (tx, vin) order so any in-order resolver dependency is preserved. */
@@ -311,7 +341,12 @@ static bool sv_parallel(const struct block *blk, int height, uint32_t flags,
         const struct transaction *tx = &blk->vtx[ti];
         if (transaction_is_coinbase(tx))
             continue;
+        int64_t precompute_started = platform_time_monotonic_us();
         precompute_tx_data(tx, &txdata_arr[ti]);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                         RPF_TX_PRECOMPUTE_US,
+                                  (uint64_t)(platform_time_monotonic_us() -
+                                             precompute_started));
         for (size_t vi = 0; vi < tx->num_vin; vi++) {
             struct sv_job *job = &jobs[k++];
             job->tx = tx;
@@ -329,10 +364,17 @@ static bool sv_parallel(const struct block *blk, int height, uint32_t flags,
     }
 
     struct sv_ctx ctx = { .flags = flags, .branch_id = branch_id };
-    vwp_pool_run_batch(pool, jobs, sizeof(*jobs), (int)n_inputs, &ctx);
+    uint64_t wake_us = 0, wait_us = 0;
+    vwp_pool_run_batch_profiled(pool, jobs, sizeof(*jobs), (int)n_inputs, &ctx,
+                                &wake_us, &wait_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_POOL_WAKE_US, wake_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_WORKER_WAIT_US, wait_us);
 
     /* Reduce phase — SERIAL, in original order: reproduce the serial verdict,
      * first-failure, and reached-input counts exactly. */
+    int64_t reduce_started = platform_time_monotonic_us();
     bool stopped = false;
     for (size_t i = 0; i < n_inputs && !stopped; i++) {
         struct sv_job *job = &jobs[i];
@@ -354,6 +396,10 @@ static bool sv_parallel(const struct block *blk, int height, uint32_t flags,
     }
     if (!stopped)
         out->tx_count = blk->num_vtx;  /* clean sweep touched every tx */
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
+                                     RPF_ORDERED_REDUCTION_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         reduce_started));
 
     free(txdata_arr);
     free(jobs);

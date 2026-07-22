@@ -9,6 +9,7 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
+#include "platform/time_compat.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -104,9 +105,18 @@ bool vwp_pool_start(struct vwp_pool *pool, vwp_job_fn run_job, int n_threads)
 void vwp_pool_run_batch(struct vwp_pool *pool, void *jobs, size_t job_size,
                         int n_jobs, void *user)
 {
+    vwp_pool_run_batch_profiled(pool, jobs, job_size, n_jobs, user, NULL, NULL);
+}
+
+void vwp_pool_run_batch_profiled(struct vwp_pool *pool, void *jobs,
+                                 size_t job_size, int n_jobs, void *user,
+                                 uint64_t *wakeup_us_out,
+                                 uint64_t *wait_us_out)
+{
     if (!pool || !pool->inited || !jobs || job_size == 0 || n_jobs <= 0)
         return;
 
+    int64_t wake_started = platform_time_monotonic_us();
     pthread_mutex_lock(&pool->mu);
     pool->jobs = jobs;
     pool->job_size = job_size;
@@ -115,8 +125,13 @@ void vwp_pool_run_batch(struct vwp_pool *pool, void *jobs, size_t job_size,
     pool->n_done = 0;
     pool->run_user = user;
     pthread_cond_broadcast(&pool->cv_take);
+    int64_t wait_started = platform_time_monotonic_us();
+    if (wakeup_us_out)
+        *wakeup_us_out = (uint64_t)(wait_started - wake_started);
     while (pool->n_done < pool->n_jobs)
         pthread_cond_wait(&pool->cv_done, &pool->mu);
+    if (wait_us_out)
+        *wait_us_out = (uint64_t)(platform_time_monotonic_us() - wait_started);
     pool->jobs = NULL;
     pool->job_size = 0;
     pool->n_jobs = 0;

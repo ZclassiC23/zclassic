@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * block_parse_cache — a tiny single-mutex LRU of recently-read+deserialized
- * block bodies, keyed by (height, block_hash).
+ * block_parse_cache — a bounded direct-mapped ring of parsed immutable block
+ * bodies, keyed by (height, block_hash).
  *
  * WHY: the five staged-sync stages (body_persist, script_validate,
  * proof_validate, utxo_apply, tip_finalize_post_step) each independently
@@ -11,20 +11,18 @@
  * every JoinSplit, every Sapling spend/output bundle) dominates the fold's
  * CPU outside crypto. body_persist is the producer (it advances first), so by
  * the time the four downstream stages reach the same height the body is in
- * cache and they get a DEEP COPY instead of re-reading+re-parsing.
+ * cache and converted stages borrow the same immutable parsed object instead
+ * of re-reading, re-parsing, or deep-cloning it.
  *
  * KEY = (height, block_hash). The hash component is load-bearing: an in-memory
  * header relabel / reorg can put a DIFFERENT block at the same height, and a
  * height-only key would then serve a stale body. A (height,hash) miss falls
  * back to read_block_from_disk_pread off the supplied block_index.
  *
- * RESULT-PRESERVING: every consumer receives a COMPLETE, independent clone
- * (a block_serialize -> block_deserialize round-trip, byte-identical to what
- * read_block_from_disk_pread would have produced from the same on-disk bytes)
- * and owns it — it must block_free its copy exactly as before. The cache owns
- * its own retained copy; nothing aliases across consumers. Thread-safe: all
- * state is under one mutex; the clone returned to the caller is built under the
- * lock and then handed out, so it can outlive any later eviction.
+ * RESULT-PRESERVING: a borrowed pointer is valid only while its generation-
+ * tagged handle is pinned. Eviction skips pinned entries and no cache lock is
+ * held during downstream work. The legacy get API still returns an independent
+ * deep clone for consumers that have not yet adopted the handle contract.
  */
 #ifndef STORAGE_BLOCK_PARSE_CACHE_H
 #define STORAGE_BLOCK_PARSE_CACHE_H
@@ -34,6 +32,18 @@
 
 struct block;
 struct block_index;
+
+struct block_parse_handle {
+    const struct block *block;
+    void *entry;
+    uint64_t generation;
+    bool detached;
+    bool cache_hit;
+    uint32_t lookup_probes;
+    uint64_t lock_wait_us;
+    uint64_t disk_read_us;
+    uint64_t parse_us;
+};
 
 /* Cache capacity: the number of (height,hash) -> parsed-body slots. Must be
  * >= the refold batch size (currently 2000) so a full batch of bodies
@@ -45,6 +55,17 @@ struct block_index;
  * every capacity-sensitive caller, including tests, derives it instead of
  * hardcoding a duplicate that can silently drift out of sync. */
 #define BLOCK_PARSE_CACHE_CAPACITY 2048
+
+/* Pin one immutable parsed body. A hit is a borrowed view of the resident
+ * body, not a clone. The pointer returned by block_parse_handle_block is valid
+ * only until the matching release. */
+bool block_parse_cache_acquire(int32_t height, const uint8_t block_hash[32],
+                               const struct block_index *bi,
+                               const char *datadir,
+                               struct block_parse_handle *out);
+const struct block *block_parse_handle_block(
+    const struct block_parse_handle *handle);
+void block_parse_cache_release(struct block_parse_handle *handle);
 
 /* Fetch the block body for (height, block_hash) into `out` (which the caller
  * MUST have block_init'd) as an independent deep copy the caller owns and frees

@@ -67,6 +67,13 @@ static bool coins_kv_overlay_safe(void)
            (coins_ram_writer_thread() || coins_ram_mint_drive_thread());
 }
 
+static _Thread_local uint64_t g_prepare_count;
+
+uint64_t coins_kv_prepare_count_thread(void)
+{
+    return g_prepare_count;
+}
+
 /* Reducer-batch physical-row meter. Thread-local matches the single reducer
  * writer and cannot leak into maintenance work on another thread. Each
  * mutation records SQLite's affected-row result: INSERT OR IGNORE distinguishes
@@ -424,6 +431,8 @@ static sqlite3_stmt *ckv_point_stmt(sqlite3 *db, const char *sql, bool fresh,
 {
     if (fresh) {
         sqlite3_stmt *s = NULL;
+        if (g_prepare_count != UINT64_MAX)
+            g_prepare_count++;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
             return NULL;
         return s;
@@ -433,6 +442,8 @@ static sqlite3_stmt *ckv_point_stmt(sqlite3 *db, const char *sql, bool fresh,
         sqlite3_clear_bindings(*cache);
         return *cache;
     }
+    if (g_prepare_count != UINT64_MAX)
+        g_prepare_count++;
     if (sqlite3_prepare_v2(db, sql, -1, cache, NULL) != SQLITE_OK) {
         *cache = NULL;
         return NULL;

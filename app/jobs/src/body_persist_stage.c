@@ -32,6 +32,7 @@
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/reducer_stage_profile.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -72,13 +73,42 @@ static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 
+static void profile_acquire(const struct block_parse_handle *h)
+{
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                              h->cache_hit ? RPF_CACHE_HITS : RPF_CACHE_MISSES,
+                              1);
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST, RPF_CACHE_PROBES,
+                              h->lookup_probes);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_CACHE_LOCK_WAIT_US, h->lock_wait_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_DISK_READ_US, h->disk_read_us);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_PARSE_US, h->parse_us);
+}
+
+static void release_stage_block(struct block_parse_handle *handle,
+                                struct block *owned, bool borrowed)
+{
+    if (borrowed)
+        block_parse_cache_release(handle);
+    else
+        block_free(owned);
+}
+
 static bool verify_merkle_root(const struct block *blk)
 {
     if (!blk) return false;
     if (blk->num_vtx == 0)
         return uint256_is_null(&blk->header.hashMerkleRoot);
 
-    struct uint256 *txids = malloc(blk->num_vtx * sizeof(struct uint256)); // raw-alloc-ok:bounded-temporary
+    size_t bytes = blk->num_vtx * sizeof(struct uint256);
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                              RPF_MERKLE_ALLOCS, 1);
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                              RPF_MERKLE_BYTES, bytes);
+    struct uint256 *txids = malloc(bytes); // raw-alloc-ok:bounded-temporary
     if (!txids) return false;
     for (size_t i = 0; i < blk->num_vtx; i++)
         txids[i] = blk->vtx[i].hash;
@@ -96,6 +126,7 @@ static void emit_block_body_event(const struct block *blk,
                                   const struct uint256 *hash,
                                   int height)
 {
+    int64_t encode_started = platform_time_monotonic_us();
     event_log_t *log = event_log_singleton();
     if (!log) {
         /* Not wired yet (early boot, or unit tests that don't open the
@@ -153,7 +184,16 @@ static void emit_block_body_event(const struct block *blk,
         return;
     }
 
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_EVENT_ENCODE_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         encode_started));
+    int64_t append_started = platform_time_monotonic_us();
     uint64_t off = event_log_append(log, EV_BLOCK_BODY, buf, written);
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_EVENT_APPEND_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         append_started));
     free(buf);
     if (off == UINT64_MAX) {
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
@@ -194,6 +234,7 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
 
 static job_result_t step_persist(struct stage_step_ctx *c)
 {
+    int64_t total_started = platform_time_monotonic_us();
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
@@ -242,18 +283,37 @@ static job_result_t step_persist(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
 
-    struct block blk;
-    block_init(&blk);
-    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
-        block_free(&blk);
+    struct block owned;
+    block_init(&owned);
+    struct block_parse_handle handle;
+    memset(&handle, 0, sizeof(handle));
+    bool borrowed = g_reader == NULL;
+    int64_t acquire_started = platform_time_monotonic_us();
+    bool read_ok = borrowed
+        ? block_parse_cache_acquire(next_h, bi->phashBlock->data, bi,
+                                    g_datadir, &handle)
+        : stage_read_block(&owned, bi, next_h, g_datadir, g_reader,
+                           g_reader_user);
+    if (!read_ok) {
+        block_free(&owned);
         return requeue_body_for_refetch(bi, next_h, "read_failed",
                                         &g_read_failed_total);
     }
+    if (borrowed) profile_acquire(&handle);
+    const struct block *blk = borrowed ? block_parse_handle_block(&handle)
+                                       : &owned;
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_BODY_PERSIST, RPF_UPSTREAM_US,
+        (uint64_t)(acquire_started - total_started));
 
     struct uint256 disk_hash;
-    block_get_hash(&blk, &disk_hash);
+    int64_t phase_started = platform_time_monotonic_us();
+    block_get_hash(blk, &disk_hash);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_BODY_PERSIST, RPF_BLOCK_HASH_US,
+        (uint64_t)(platform_time_monotonic_us() - phase_started));
     if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
-        block_free(&blk);
+        release_stage_block(&handle, &owned, borrowed);
         /* Purge any (height,hash) slot the shared block_parse_cache may hold
          * for this key: this stage's own hash check just rejected `blk`, so a
          * cached copy under this key (however it got there) must never be
@@ -263,25 +323,35 @@ static job_result_t step_persist(struct stage_step_ctx *c)
                                         &g_header_mismatch_total);
     }
 
-    if (!verify_merkle_root(&blk)) {
-        block_free(&blk);
+    phase_started = platform_time_monotonic_us();
+    bool merkle_ok = verify_merkle_root(blk);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_BODY_PERSIST, RPF_MERKLE_US,
+        (uint64_t)(platform_time_monotonic_us() - phase_started));
+    if (!merkle_ok) {
+        release_stage_block(&handle, &owned, borrowed);
         return requeue_body_for_refetch(bi, next_h, "merkle_mismatch",
                                         &g_merkle_mismatch_total);
     }
 
     /* The body is read, hashes to its header, and merkle-checks; emit it into
      * the append-only log before freeing. */
-    emit_block_body_event(&blk, &disk_hash, next_h);
+    emit_block_body_event(blk, &disk_hash, next_h);
 
     /* Index every output this block creates so script_validate (stage 5) can
      * resolve transparent prevouts without -txindex. body_persist (stage 4) is
      * strictly upstream, so the index is complete at/below the script_validate
      * frontier before it is needed (P0 §2.1). Load-bearing for validation:
      * a write failure is fatal, not silently skipped. */
-    if (!created_outputs_index_put_block(db, &blk, next_h)) {
-        block_free(&blk);
+    phase_started = platform_time_monotonic_us();
+    if (!created_outputs_index_put_block(db, blk, next_h)) {
+        release_stage_block(&handle, &owned, borrowed);
         return JOB_FATAL;
     }
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_CREATED_INDEX_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         phase_started));
 
     /* The body has landed on disk and round-tripped (hash + merkle verified),
      * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
@@ -290,16 +360,29 @@ static job_result_t step_persist(struct stage_step_ctx *c)
      * the same emit: an n_tx=0 row breaks the next boot's nChainTx propagation
      * exactly at this block. */
     block_index_status_fetch_or(bi, BLOCK_HAVE_DATA);
-    if (bi->nTx == 0 && blk.num_vtx > 0)
-        bi->nTx = (unsigned int)blk.num_vtx;
+    if (bi->nTx == 0 && blk->num_vtx > 0)
+        bi->nTx = (unsigned int)blk->num_vtx;
+    phase_started = platform_time_monotonic_us();
     block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_BODY_PERSIST, RPF_HEADER_EVENT_US,
+        (uint64_t)(platform_time_monotonic_us() - phase_started));
 
-    block_free(&blk);
+    release_stage_block(&handle, &owned, borrowed);
+    phase_started = platform_time_monotonic_us();
     if (!body_persist_log_insert(db, next_h, "verified", true))
         return JOB_FATAL;
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                     RPF_STAGE_LOG_CURSOR_US,
+                              (uint64_t)(platform_time_monotonic_us() -
+                                         phase_started));
     atomic_fetch_add(&g_verified_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST, RPF_BLOCKS, 1);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_BODY_PERSIST, RPF_TOTAL_US,
+        (uint64_t)(platform_time_monotonic_us() - total_started));
     return JOB_ADVANCED;
 }
 
@@ -350,10 +433,40 @@ bool body_persist_stage_init(struct main_state *ms)
 
 STAGE_STEP_ONCE_SIMPLE(body_persist)
 
-STAGE_DRAIN_IMPL(body_persist)
+int body_persist_stage_drain(int max_steps)
+{
+    if (max_steps <= 0)
+        return 0;
+    sqlite3 *batch_db = progress_store_db();
+    bool batched = false;
+    if (batch_db) {
+        progress_store_tx_lock();
+        batched = stage_batch_begin(batch_db);
+        if (!batched)
+            progress_store_tx_unlock();
+    }
+    int advanced = 0;
+    for (int i = 0; i < max_steps; i++) {
+        job_result_t r = body_persist_stage_step_once();
+        if (r != JOB_ADVANCED)
+            break;
+        advanced++;
+    }
+    if (batched) {
+        (void)stage_batch_end(batch_db,
+                              advanced > 0 || stage_batch_dirty());
+        /* A prepared statement belongs to exactly one completed outer batch.
+         * Finalize after either COMMIT or ROLLBACK so no DB/reorg generation
+         * can inherit bindings or statement state from its predecessor. */
+        created_outputs_index_batch_reset();
+        progress_store_tx_unlock();
+    }
+    return advanced;
+}
 
 void body_persist_stage_shutdown(void)
 {
+    created_outputs_index_batch_reset();
     /* Registry hygiene (tests re-init in-process): re-derived from live
      * state the next time the condition fires, so clearing here loses
      * nothing. */

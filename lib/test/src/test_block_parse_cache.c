@@ -1,12 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Tests for block_parse_cache (lib/storage/src/block_parse_cache.c), the
- * BLOCK_PARSE_CACHE_CAPACITY-entry (height, block_hash) LRU that feeds the
- * consensus fold via
- * stage_read_block() (app/jobs/include/jobs/stage_helpers.h:102-113). The
- * contract (block_parse_cache.h:21-27): every consumer receives a COMPLETE,
- * INDEPENDENT deep clone — a block_serialize<->block_deserialize round-trip
- * byte-identical to a fresh read_block_from_disk_pread — and owns it.
+ * BLOCK_PARSE_CACHE_CAPACITY-entry (height, block_hash) immutable body ring.
+ * Converted stages pin and borrow the resident block; the compatibility get
+ * API returns an independent byte-identical deep clone.
  *
  * A silent defect here (stale entry, key collision, shallow clone, eviction
  * error) would hand a WRONG body to body_persist/script_validate/proof_validate/
@@ -16,8 +13,7 @@
  *       and the cache entry unaffected),
  *   (b) no (height,hash) key collision (same height/diff hash, same hash/diff
  *       height both return their own bytes),
- *   (c) LRU eviction (> BLOCK_PARSE_CACHE_CAPACITY distinct keys; oldest
- *       evicted, recents still hit).
+ *   (c) direct-ring replacement at the capacity boundary.
  *   (d) sealed segment source below the frontier (see test_segment_backed_read).
  *   (e) a MISS whose body does NOT hash to the requested key is never
  *       installed into the cache (verify-before-store) — a bad disk read at
@@ -42,9 +38,12 @@
 #include "core/serialize.h"
 #include "core/amount.h"
 #include "core/uint256.h"
+#include "util/reducer_stage_profile.h"
+#include "json/json.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <pthread.h>
 
 /* ── Fixture helpers ─────────────────────────────────────────── */
 
@@ -300,21 +299,21 @@ done:
     return failures;
 }
 
-/* ── Test (c): LRU eviction ───────────────────────────────────── */
+/* ── Test (c): direct-ring replacement ───────────────────────── */
 
 /* Derived from the production constant (block_parse_cache.h) rather than a
  * duplicated magic number, so this test always exercises the REAL capacity
  * boundary instead of silently drifting out of sync with it. */
 #define BPC_CAP BLOCK_PARSE_CACHE_CAPACITY
 
-static int test_lru_eviction(const char *datadir)
+static int test_ring_replacement(const char *datadir)
 {
     int failures = 0;
     block_parse_cache_clear();
 
-    TEST("bpc: >BPC_CAP keys evict oldest; recents hit; re-get of evicted re-reads") {
+    TEST("bpc: ring collision replaces slot; other slots remain byte-identical") {
         /* CAP+1 distinct fixtures. Insert 0..CAP in order (each a miss). The
-         * first inserted (idx 0) is the LRU victim once the CAP+1th lands. */
+         * first and last heights map to the same direct-ring slot. */
         const int N = BPC_CAP + 1;
         struct fixture *fxs = calloc((size_t)N, sizeof(*fxs)); // raw-alloc-ok:test
         if (!fxs) { printf("FAIL (alloc)\n"); failures++; goto done; }
@@ -347,10 +346,10 @@ static int test_lru_eviction(const char *datadir)
             block_free(&g);
         }
 
-        /* The recent keys (1..CAP) must still be present and byte-correct.
+        /* Every non-colliding key (1..CAP) must remain byte-correct.
          * We cannot observe hit-vs-miss directly through the API, but a
          * correct entry returns its own bytes regardless; the eviction
-         * property is exercised by confirming idx 0 was dropped (below) while
+         * property is exercised by confirming idx 0 was replaced (below) while
          * every later key is intact. */
         bool recents_ok = true;
         for (int i = 1; i < N; i++) {
@@ -368,11 +367,11 @@ static int test_lru_eviction(const char *datadir)
             free(fxs); goto done;
         }
 
-        /* idx 0 should have been evicted. Prove eviction structurally: clear
+        /* idx 0 should have been replaced. Prove replacement structurally: clear
          * its block_index disk pointer (HAVE_DATA off). A cache HIT would
          * ignore the index and still return bytes; an evicted entry forces the
          * MISS path, which now fails the HAVE_DATA guard -> get returns false.
-         * That false is the observable proof the oldest was evicted. */
+         * That false is the observable proof the colliding slot was replaced. */
         struct block_index broken = fxs[0].bi;
         broken.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
         struct block g0; block_init(&g0);
@@ -380,7 +379,7 @@ static int test_lru_eviction(const char *datadir)
                                                   &broken, datadir, &g0);
         block_free(&g0);
         if (still_cached) {
-            printf("FAIL (oldest key NOT evicted after %d inserts)\n", N);
+            printf("FAIL (colliding key NOT replaced after %d inserts)\n", N);
             failures++;
             for (int j = 0; j < N; j++) free(fxs[j].bytes);
             free(fxs); goto done;
@@ -805,22 +804,192 @@ done:
     return failures;
 }
 
+struct borrowed_reader_ctx {
+    const struct fixture *fx;
+    const char *datadir;
+    int failures;
+};
+
+static void *borrowed_reader(void *arg)
+{
+    struct borrowed_reader_ctx *ctx = arg;
+    for (int i = 0; i < 100; i++) {
+        struct block_parse_handle h;
+        if (!block_parse_cache_acquire(1400, ctx->fx->hash.data, &ctx->fx->bi,
+                                       ctx->datadir, &h)) {
+            ctx->failures++;
+            continue;
+        }
+        const struct block *b = block_parse_handle_block(&h);
+        if (!b || b->num_vtx != 1 || b->vtx[0].num_vout != 3)
+            ctx->failures++;
+        block_parse_cache_release(&h);
+    }
+    return NULL;
+}
+
+static int test_borrowed_contract(const char *datadir)
+{
+    int failures = 0;
+    struct block a_src, b_src;
+    build_block(&a_src, 0xB011, 3);
+    build_block(&b_src, 0xB022, 4);
+    struct fixture fa, fb;
+    bool fixtures = make_fixture(&fa, datadir, &a_src, 1400) &&
+                    make_fixture(&fb, datadir, &b_src,
+                                 1400 + BLOCK_PARSE_CACHE_CAPACITY);
+    block_free(&a_src);
+    block_free(&b_src);
+    if (!fixtures) {
+        free(fa.bytes); free(fb.bytes);
+        return 1;
+    }
+
+    TEST("bpc borrowed: pin survives collision and pressure clear") {
+        block_parse_cache_clear();
+        struct block_parse_handle a, collision;
+        bool ok = block_parse_cache_acquire(1400, fa.hash.data, &fa.bi,
+                                            datadir, &a) &&
+                  block_parse_cache_acquire(
+                      1400 + BLOCK_PARSE_CACHE_CAPACITY, fb.hash.data, &fb.bi,
+                      datadir, &collision);
+        const struct block *held = block_parse_handle_block(&a);
+        block_parse_cache_clear();
+        ok = ok && held && held->vtx[0].num_vout == 3;
+        block_parse_cache_release(&collision);
+        block_parse_cache_release(&a);
+        struct block_index broken = fa.bi;
+        broken.nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+        struct block after; block_init(&after);
+        bool resident = block_parse_cache_get(1400, fa.hash.data, &broken,
+                                              datadir, &after);
+        block_free(&after);
+        if (!ok || resident) { printf("FAIL (pin/clear)\n"); failures++; }
+        else printf("OK\n");
+    }
+
+    TEST("bpc borrowed: generation makes stale release harmless") {
+        block_parse_cache_clear();
+        struct block_parse_handle a, b;
+        bool ok = block_parse_cache_acquire(1400, fa.hash.data, &fa.bi,
+                                            datadir, &a);
+        struct block_parse_handle stale = a;
+        block_parse_cache_release(&a);
+        ok = ok && block_parse_cache_acquire(
+            1400 + BLOCK_PARSE_CACHE_CAPACITY, fb.hash.data, &fb.bi, datadir,
+            &b);
+        block_parse_cache_release(&stale);
+        block_parse_cache_clear();
+        const struct block *still_pinned = block_parse_handle_block(&b);
+        ok = ok && still_pinned && still_pinned->vtx[0].num_vout == 4;
+        block_parse_cache_release(&b);
+        if (!ok) { printf("FAIL (stale generation)\n"); failures++; }
+        else printf("OK\n");
+    }
+
+    TEST("bpc borrowed: concurrent readers remain immutable") {
+        block_parse_cache_clear();
+        enum { N = 8 };
+        pthread_t threads[N];
+        struct borrowed_reader_ctx ctx[N];
+        bool spawned[N] = {0};
+        for (int i = 0; i < N; i++) {
+            ctx[i] = (struct borrowed_reader_ctx){ .fx = &fa,
+                                                   .datadir = datadir };
+            spawned[i] = pthread_create(&threads[i], NULL, borrowed_reader,
+                                        &ctx[i]) == 0;
+        }
+        bool ok = true;
+        for (int i = 0; i < N; i++) {
+            if (spawned[i]) pthread_join(threads[i], NULL);
+            if (!spawned[i] || ctx[i].failures) ok = false;
+        }
+        if (!ok) { printf("FAIL (concurrent readers)\n"); failures++; }
+        else printf("OK\n");
+    }
+
+    TEST("bpc borrowed: borrowed and legacy bytes are identical") {
+        block_parse_cache_clear();
+        struct block_parse_handle h;
+        struct block legacy; block_init(&legacy);
+        bool ok = block_parse_cache_acquire(1400, fa.hash.data, &fa.bi,
+                                            datadir, &h) &&
+                  block_parse_cache_get(1400, fa.hash.data, &fa.bi, datadir,
+                                        &legacy);
+        size_t blen = 0, llen = 0;
+        unsigned char *bb = ok ? ser(block_parse_handle_block(&h), &blen) : NULL;
+        unsigned char *lb = ok ? ser(&legacy, &llen) : NULL;
+        ok = ok && bb && lb && blen == llen && memcmp(bb, lb, blen) == 0;
+        free(bb); free(lb); block_free(&legacy);
+        block_parse_cache_release(&h);
+        if (!ok) { printf("FAIL (wire identity)\n"); failures++; }
+        else printf("OK\n");
+    }
+
+    free(fa.bytes); free(fb.bytes);
+    block_parse_cache_clear();
+    return failures;
+}
+
+static int test_profile_reset(void)
+{
+    int failures = 0;
+    TEST("reducer profile: counters are resettable and unmeasured fields null") {
+        reducer_stage_profile_reset();
+        reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST, RPF_BLOCKS, 7);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                         RPF_TOTAL_US, 1);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                         RPF_TOTAL_US, 2);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                         RPF_TOTAL_US, 3);
+        reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
+                                         RPF_TOTAL_US, 100);
+        struct json_value root;
+        json_init(&root);
+        bool ok = reducer_stage_profile_dump_state_json(&root, NULL);
+        const struct json_value *body = json_get(&root, "body_persist");
+        const struct json_value *cumulative = body ? json_get(body, "cumulative") : NULL;
+        const struct json_value *blocks = cumulative ? json_get(cumulative, "blocks") : NULL;
+        const struct json_value *ctx = cumulative ? json_get(cumulative,
+                                                  "contextual_gate_us") : NULL;
+        const struct json_value *quantiles = cumulative
+            ? json_get(cumulative, "latency_quantiles_us") : NULL;
+        const struct json_value *total_q = quantiles
+            ? json_get(quantiles, "total_us") : NULL;
+        const struct json_value *samples = total_q
+            ? json_get(total_q, "samples") : NULL;
+        const struct json_value *p50 = total_q ? json_get(total_q, "p50") : NULL;
+        const struct json_value *p95 = total_q ? json_get(total_q, "p95") : NULL;
+        ok = ok && blocks && json_get_int(blocks) == 7 && ctx &&
+             json_is_null(ctx) && samples && json_get_int(samples) == 4 &&
+             p50 && json_get_int(p50) == 3 && p95 && json_get_int(p95) == 127;
+        reducer_stage_profile_reset();
+        json_free(&root);
+        if (!ok) { printf("FAIL (profile reset/nullability)\n"); failures++; }
+        else printf("OK\n");
+    }
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_block_parse_cache(void)
 {
-    printf("\n=== block_parse_cache (deep-clone / key / LRU / segment) ===\n");
+    printf("\n=== block_parse_cache (borrow / key / ring / segment) ===\n");
     int failures = 0;
     char tmpdir[256];
     make_test_dir(tmpdir, sizeof(tmpdir));
 
     failures += test_deep_clone_equality(tmpdir);
     failures += test_no_key_collision(tmpdir);
-    failures += test_lru_eviction(tmpdir);
+    failures += test_ring_replacement(tmpdir);
     failures += test_no_cache_on_hash_mismatch(tmpdir);
     failures += test_evict_removes_one_key(tmpdir);
     failures += test_segment_backed_read(tmpdir);
     failures += test_segment_corruption_fails_closed(tmpdir);
+    failures += test_borrowed_contract(tmpdir);
+    failures += test_profile_reset();
 
     block_parse_cache_clear();
     cleanup_test_dir(tmpdir);

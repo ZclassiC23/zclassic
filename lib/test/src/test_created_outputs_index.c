@@ -10,6 +10,9 @@
 #include "script/script.h"
 #include "storage/progress_store.h"
 #include "util/safe_alloc.h"
+#include "util/reducer_stage_profile.h"
+#include "util/stage.h"
+#include "json/json.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -82,6 +85,28 @@ int test_created_outputs_index(void)
     CO_CHECK("put_block height=100",
              created_outputs_index_put_block(db, &blk, 100));
 
+    reducer_stage_profile_reset();
+    CO_CHECK("batch prepare proof begins", stage_batch_begin(db));
+    CO_CHECK("batch prepare proof put first",
+             created_outputs_index_put_block(db, &blk, 300));
+    CO_CHECK("batch prepare proof put second",
+             created_outputs_index_put_block(db, &blk, 301));
+    struct json_value profile;
+    json_init(&profile);
+    CO_CHECK("batch prepare profile dumps",
+             reducer_stage_profile_dump_state_json(&profile, NULL));
+    const struct json_value *profile_body = json_get(&profile, "body_persist");
+    const struct json_value *profile_cumulative = profile_body
+        ? json_get(profile_body, "cumulative") : NULL;
+    const struct json_value *profile_prepares = profile_cumulative
+        ? json_get(profile_cumulative, "created_index_statement_prepares")
+        : NULL;
+    CO_CHECK("batch reuses exactly one insert prepare",
+             profile_prepares && json_get_int(profile_prepares) == 1);
+    json_free(&profile);
+    CO_CHECK("batch prepare proof commits", stage_batch_end(db, true));
+    created_outputs_index_batch_reset();
+
     /* A future body with the same txid must coexist with, not overwrite, the
      * earlier creator. This is the real out-of-order pipeline regression: body
      * download may be thousands of heights ahead of script validation. */
@@ -99,11 +124,16 @@ int test_created_outputs_index(void)
     {
         int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
         int created_h = -1;
+        uint64_t prepares_before =
+            created_outputs_index_prepare_count_thread();
         CO_CHECK("bounded get includes creator height",
                  created_outputs_index_get_bounded(
                      db, blk.vtx[0].hash.data, 0, 90, 100, &v, sc,
                      sizeof(sc), &sl, &created_h) &&
                  created_h == 100 && v == blk.vtx[0].vout[0].value);
+        CO_CHECK("bounded get records one actual prepare",
+                 created_outputs_index_prepare_count_thread() ==
+                     prepares_before + 1);
         CO_CHECK("bounded get ignores future duplicate txid",
                  created_outputs_index_get_bounded(
                      db, blk.vtx[0].hash.data, 0, 90, 150, &v, sc,

@@ -8,9 +8,61 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
+#include "util/stage.h"
 
 #include <sqlite3.h>
 #include <string.h>
+
+static _Thread_local sqlite3 *g_put_db;
+static _Thread_local sqlite3_stmt *g_put_stmt;
+static _Thread_local uint64_t g_put_generation;
+static _Thread_local uint64_t g_prepare_count;
+
+uint64_t created_outputs_index_prepare_count_thread(void)
+{
+    return g_prepare_count;
+}
+
+void created_outputs_index_batch_reset(void)
+{
+    if (g_put_stmt)
+        sqlite3_finalize(g_put_stmt);
+    g_put_stmt = NULL;
+    g_put_db = NULL;
+    g_put_generation = 0;
+}
+
+static sqlite3_stmt *created_outputs_put_stmt(sqlite3 *db, bool *cached_out)
+{
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (batched && g_put_stmt && g_put_db == db &&
+        g_put_generation == generation) {
+        *cached_out = true;
+        return g_put_stmt;
+    }
+    created_outputs_index_batch_reset();
+    sqlite3_stmt *st = NULL;
+    if (g_prepare_count != UINT64_MAX)
+        g_prepare_count++;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO created_outputs "
+        "(txid, vout, value, script, height) VALUES (?,?,?,?,?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                              RPF_CREATED_INDEX_PREPARES, 1);
+    if (batched) {
+        g_put_db = db;
+        g_put_stmt = st;
+        g_put_generation = generation;
+        *cached_out = true;
+    } else {
+        *cached_out = false;
+    }
+    return st;
+}
 
 bool created_outputs_index_ensure_schema(sqlite3 *db)
 {
@@ -99,11 +151,11 @@ bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
 {
     if (!db || !blk)
         LOG_FAIL("created_outputs", "put_block: NULL db/blk");
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO created_outputs "
-        "(txid, vout, value, script, height) VALUES (?,?,?,?,?)",
-        -1, &st, NULL) != SQLITE_OK) {
+    bool cached = false;
+    reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                              RPF_CREATED_INDEX_BLOCKS, 1);
+    sqlite3_stmt *st = created_outputs_put_stmt(db, &cached);
+    if (!st) {
         LOG_WARN("created_outputs", "[created_outputs] put prepare failed: %s",
                  sqlite3_errmsg(db));
         return false;
@@ -111,6 +163,8 @@ bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
     bool ok = true;
     for (size_t ti = 0; ok && ti < blk->num_vtx; ti++) {
         const struct transaction *tx = &blk->vtx[ti];
+        reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                                  RPF_CREATED_INDEX_TXS, 1);
         for (size_t vo = 0; vo < tx->num_vout; vo++) {
             const struct tx_out *o = &tx->vout[vo];
             sqlite3_reset(st);
@@ -121,6 +175,10 @@ bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
                                (int)o->script_pub_key.size, SQLITE_STATIC);
             sqlite3_bind_int64(st, 5, (sqlite3_int64)height);
             int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+            reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                                      RPF_CREATED_INDEX_OUTPUTS, 1);
+            reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
+                                      RPF_CREATED_INDEX_STEPS, 1);
             if (rc != SQLITE_DONE) {
                 LOG_WARN("created_outputs",
                          "[created_outputs] put height=%d tx=%zu vout=%zu rc=%d",
@@ -130,7 +188,12 @@ bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
             }
         }
     }
-    sqlite3_finalize(st);
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
+    if (!cached)
+        sqlite3_finalize(st);
+    else if (!ok)
+        created_outputs_index_batch_reset();
     return ok;
 }
 
@@ -142,6 +205,8 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
     if (!db || !txid)
         return false;
     sqlite3_stmt *st = NULL;
+    if (g_prepare_count != UINT64_MAX)
+        g_prepare_count++;
     if (sqlite3_prepare_v2(db,
         "SELECT value, script FROM created_outputs "
         "WHERE txid = ? AND vout = ? ORDER BY height DESC LIMIT 1",
@@ -182,6 +247,8 @@ bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
     if (!db || !txid || min_height > max_height)
         return false;
     sqlite3_stmt *st = NULL;
+    if (g_prepare_count != UINT64_MAX)
+        g_prepare_count++;
     if (sqlite3_prepare_v2(db,
         "SELECT value, script, height FROM created_outputs "
         "WHERE txid = ? AND vout = ? "

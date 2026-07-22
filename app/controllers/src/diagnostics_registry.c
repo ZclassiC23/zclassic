@@ -128,6 +128,7 @@
 #include "util/log_macros.h"
 #include "util/long_op.h"
 #include "util/service_state.h"
+#include "util/reducer_stage_profile.h"
 #include "util/supervisor.h"
 #include "util/supervisor_backstop.h"
 #include "util/blocker.h"

@@ -514,6 +514,16 @@ bool read_block_from_disk_pread(struct block *b,
                                 const struct disk_block_pos *pos,
                                 const char *datadir)
 {
+    return read_block_from_disk_pread_profiled(b, pos, datadir, NULL, NULL);
+}
+
+bool read_block_from_disk_pread_profiled(struct block *b,
+                                         const struct disk_block_pos *pos,
+                                         const char *datadir,
+                                         uint64_t *read_us_out,
+                                         uint64_t *parse_us_out)
+{
+    int64_t read_started = platform_time_monotonic_us();
     block_init(b);
 
     if (!datadir || !pos || pos->nFile < 0)
@@ -560,12 +570,17 @@ bool read_block_from_disk_pread(struct block *b,
         LOG_FAIL("disk_block_io", "read_block_pread: pread returned %zd for file=%d pos=%u",
                  nread, pos->nFile, payload_pos);
     }
+    if (read_us_out)
+        *read_us_out = (uint64_t)(platform_time_monotonic_us() - read_started);
 
+    int64_t parse_started = platform_time_monotonic_us();
     struct byte_stream s;
     stream_init_from_data(&s, buf, (size_t)nread);
     bool ok = block_deserialize(b, &s);
     stream_free(&s);
     free(buf);
+    if (parse_us_out)
+        *parse_us_out = (uint64_t)(platform_time_monotonic_us() - parse_started);
     return ok;
 }
 

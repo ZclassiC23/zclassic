@@ -34,6 +34,14 @@ bool created_outputs_index_ensure_schema(sqlite3 *db);
 bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
                                      int height);
 
+/* Finalize this thread's batch-owned prepared statements. Idempotent; called
+ * on stage shutdown, while generation/DB changes self-invalidate on use. */
+void created_outputs_index_batch_reset(void);
+
+/* Per-thread monotonic count of actual sqlite3_prepare_v2 calls made by this
+ * index. Intended for bounded before/after diagnostic sampling. */
+uint64_t created_outputs_index_prepare_count_thread(void);
+
 /* Resolve one outpoint at its newest indexed creator height. Callers needing a
  * historical view must use the bounded form below. Returns true and fills
  * *value_out + script (up to script_cap bytes, with the true length in

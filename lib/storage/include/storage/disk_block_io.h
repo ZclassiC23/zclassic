@@ -109,6 +109,14 @@ bool read_block_from_disk_pread(struct block *b,
                                 const struct disk_block_pos *pos,
                                 const char *datadir);
 
+/* Profiled sibling used by the parse cache. The two optional outputs measure
+ * file open/locate/pread/close and block_deserialize respectively. */
+bool read_block_from_disk_pread_profiled(struct block *b,
+                                         const struct disk_block_pos *pos,
+                                         const char *datadir,
+                                         uint64_t *read_us_out,
+                                         uint64_t *parse_us_out);
+
 /* Read and deserialize a block by index using pread(). Thread-safe.
  * Equivalent to read_block_from_disk_index() but without the FILE* cache. */
 bool read_block_from_disk_index_pread(struct block *b,
