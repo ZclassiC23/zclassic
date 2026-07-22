@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Forward creation index: (txid, vout) -> {value, scriptPubKey, height}.
+/* Forward creation index: (txid, vout, height) -> {value, scriptPubKey}.
  *
  * Populated by body_persist (pipeline stage 4) as each verified block body
  * lands on disk. Because body_persist runs strictly UPSTREAM of script_validate
@@ -28,23 +28,25 @@ typedef struct sqlite3 sqlite3;
 bool created_outputs_index_ensure_schema(sqlite3 *db);
 
 /* Insert every output of every tx in `blk`, created at `height`. Idempotent
- * (INSERT OR REPLACE keyed on (txid,vout)) so a post-rewind re-persist rewrites
- * identical rows. Returns false on a real SQLite error (caller -> JOB_FATAL). */
+ * (INSERT OR REPLACE keyed on (txid,vout,height)) so a post-rewind re-persist
+ * rewrites identical rows without letting a future duplicate historical txid
+ * erase an earlier creator. Returns false on a real SQLite error. */
 bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
                                      int height);
 
-/* Resolve one outpoint. Returns true and fills *value_out + script (up to
- * script_cap bytes, with the true length in *script_len_out) when found;
- * false when absent or on error. Tolerates a not-yet-created table. */
+/* Resolve one outpoint at its newest indexed creator height. Callers needing a
+ * historical view must use the bounded form below. Returns true and fills
+ * *value_out + script (up to script_cap bytes, with the true length in
+ * *script_len_out) when found; false when absent or on error. */
 bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
                                uint32_t vout, int64_t *value_out,
                                uint8_t *script_out, size_t script_cap,
                                size_t *script_len_out);
 
-/* Resolve one outpoint only when its creator height is inside
- * [min_height, max_height]. This is used by repair replay to build a bounded
- * parent-height view above the durable coins frontier without accidentally
- * authorizing outputs from future or unrelated sparse-log islands. */
+/* Resolve the newest version of one outpoint whose creator height is inside
+ * [min_height, max_height]. This is used by repair replay and script validation
+ * to build a bounded historical view without authorizing a later duplicate
+ * txid or an unrelated sparse-log island. */
 bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
                                        uint32_t vout, int min_height,
                                        int max_height, int64_t *value_out,

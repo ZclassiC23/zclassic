@@ -762,7 +762,7 @@ job_result_t utxo_apply_stage_step_once(void)
      * after us, reads our cursor). Self-contained txn; on failure the
      * cursor is untouched so the next tick retries. */
     progress_store_tx_lock();
-    bool unwind_ok =
+    bool unwind_ok = !utxo_apply_reorg_batch_should_audit() ||
         utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
                                           &g_ua_reorg_unwound_total,
                                           &g_ua_last_blocked_unix);
@@ -839,6 +839,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_ua_internal_error_total, (uint64_t)0);
     atomic_store(&g_ua_reorg_unwound_total, (uint64_t)0);
+    utxo_apply_reorg_batch_reset();
     atomic_store(&g_ua_total_outputs_added, (uint64_t)0);
     atomic_store(&g_ua_total_outputs_spent, (uint64_t)0);
     atomic_store(&g_ua_last_step_unix, (int64_t)0);

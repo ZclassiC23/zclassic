@@ -339,6 +339,18 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
                                     des.last_round_advances);
         ok = ok && json_push_kv_int(out, "drain_last_elapsed_us",
                                     des.last_elapsed_us);
+        struct json_value stage_us;
+        json_init(&stage_us);
+        json_set_object(&stage_us);
+        static const char *const names[REDUCER_DRAIN_NUM_STAGES] = {
+            "header_admit", "validate_headers", "body_fetch", "body_persist",
+            "script_validate", "proof_validate", "utxo_apply", "tip_finalize"
+        };
+        for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++)
+            ok = ok && json_push_kv_int(&stage_us, names[i],
+                                        des.last_stage_us[i]);
+        ok = ok && json_push_kv(out, "drain_last_stage_us", &stage_us);
+        json_free(&stage_us);
     }
 
     /* Batched pre-commit durability flush timing (drive+fsync telemetry gap
@@ -349,9 +361,16 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
      * batch commit is ever observed. */
     {
         int64_t last_flush_us = 0, flush_us_ewma = 0;
+        unsigned scope_depth = 0;
+        bool event_log_deferred = false;
         reducer_body_fsync_timing_snapshot(&last_flush_us, &flush_us_ewma);
+        reducer_body_fsync_scope_snapshot(&scope_depth, &event_log_deferred);
         ok = ok && json_push_kv_int(out, "fsync_last_flush_us", last_flush_us);
         ok = ok && json_push_kv_int(out, "fsync_flush_us_ewma", flush_us_ewma);
+        ok = ok && json_push_kv_int(out, "fsync_scope_depth",
+                                    (int64_t)scope_depth);
+        ok = ok && json_push_kv_bool(out, "event_log_deferred",
+                                     event_log_deferred);
     }
 
     /* coins_applied_height is the LAGGING measure (the durable coins_kv

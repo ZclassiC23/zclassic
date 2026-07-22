@@ -289,6 +289,11 @@ struct block_index *active_chain_cached_tip(const struct active_chain *c)
     return arr[h];
 }
 
+int active_chain_cached_height(const struct active_chain *c)
+{
+    return c ? atomic_load_explicit(&c->height, memory_order_acquire) : -1;
+}
+
 struct block_index *active_chain_tip(const struct active_chain *c)
 {
     if (!c || !c->chain) return NULL;
@@ -658,13 +663,13 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
      * When the finalized tip is provably ON best_header's chain
      * (block_index_get_ancestor(best_header, c->height) == tip — the liveness
      * guard), the canonical contiguous successors ARE best_header's ancestors at
-     * each height (chain.c block_index_get_ancestor, O(log n) along pskip). So
+     * each height. So
      * have-data contiguity reduces to: walk h up from lo, stop at the first
      * ancestor lacking BLOCK_HAVE_DATA or carrying a failure; fill to the last
      * good. This is verdict-IDENTICAL to the pprev-walk below (ancestors are
      * pprev-contiguous by construction; forks are excluded since only
      * best_header's own ancestor at each height is consulted) — only the
-     * TRAVERSAL changes, restoring 2*O(map) → O(gap*log n). A reorg where
+     * TRAVERSAL changes, restoring 2*O(map) → O(log n + gap). A reorg where
      * best_header left the finalized tip fails the guard and falls through to
      * the slow scan, which handles it via the pprev-walk. Never publishes
      * authority (active_chain_fill_window); under-extension is a safe stall. */
@@ -676,11 +681,50 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
          * the finalized height must be the SAME BLOCK as the tip (hash), but a
          * duplicate same-hash object must not defeat the fast-path ancestry walk
          * — that pointer mismatch is exactly the live 3162167 wedge. */
+        /* Probe the immediate successor before walking the whole bounded
+         * header band. During catch-up every reducer stage calls this helper,
+         * while block ingress normally makes only the next few bodies visible.
+         * If H+1 is still body-missing, no later height can be contiguous, so
+         * 8 stages x 8192 ancestor/map probes is provably wasted work. The
+         * same-hash lookup preserves the duplicate-object rescue contract. */
+        struct block_index *next = block_index_get_ancestor(best_header, lo);
+        struct block_index *cand = have_data_by_hash(m, next);
+        if (!cand || block_has_any_failure(cand))
+            return true;
+
         atomic_fetch_add_explicit(&g_window_extend_fast_hits, 1,
                                   memory_order_relaxed);
-        struct block_index *cand = tip;
-        for (int h = lo; h <= hi; h++) {
-            struct block_index *anc = block_index_get_ancestor(best_header, h);
+
+        /* Seek to the top of the bounded band ONCE, then materialize its
+         * ancestry by following pprev. The former loop performed one skip-list
+         * seek per height (up to 8192 seeks per reducer batch), even though all
+         * requested heights are consecutive on the same ancestry. Besides
+         * being needlessly expensive, that cost sat inside the UTXO stage and
+         * obscured its actual apply time. A fixed-size stack buffer is bounded
+         * by ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP (64 KiB on 64-bit hosts),
+         * cannot OOM, and keeps this helper reentrant/thread-safe.
+         *
+         * Clamp to best_header: callers normally pass its height, but the old
+         * per-height loop simply stopped when asked above it. Preserving that
+         * behavior avoids turning a harmless over-large bound into an
+         * under-extension. Any malformed/non-consecutive pprev chain remains a
+         * safe no-op, just as a failed ancestor seek was before. */
+        struct block_index *path[ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP];
+        int path_hi = hi;
+        if (path_hi > best_header->nHeight)
+            path_hi = best_header->nHeight;
+        int path_len = path_hi - lo + 1;
+        struct block_index *walk =
+            block_index_get_ancestor(best_header, path_hi);
+        for (int i = path_len - 1; i >= 0; i--) {
+            if (!walk || walk->nHeight != lo + i)
+                return true;
+            path[i] = walk;
+            walk = walk->pprev;
+        }
+
+        for (int i = 1; i < path_len; i++) {
+            struct block_index *anc = path[i];
             if (!anc || block_has_any_failure(anc))
                 break;
             /* Merge BLOCK_HAVE_DATA across same-hash duplicates: a bodiless
@@ -692,8 +736,6 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
                 break;
             cand = have;
         }
-        if (cand == tip || cand->nHeight <= c->height)
-            return true; /* no contiguous have-data successor on the header path */
         return active_chain_fill_window(c, cand);
     }
 

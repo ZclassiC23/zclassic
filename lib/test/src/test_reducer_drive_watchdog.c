@@ -279,6 +279,16 @@ int test_reducer_drive_watchdog(void)
             okt = okt && json_get(&v, "drain_exit_budget_total") != NULL;
             okt = okt && json_get(&v, "drain_last_round_advances") != NULL;
             okt = okt && json_get(&v, "drain_last_elapsed_us") != NULL;
+            const struct json_value *stage_us =
+                json_get(&v, "drain_last_stage_us");
+            okt = okt && stage_us != NULL;
+            static const char *const stage_names[] = {
+                "header_admit", "validate_headers", "body_fetch", "body_persist",
+                "script_validate", "proof_validate", "utxo_apply", "tip_finalize"
+            };
+            for (size_t i = 0; stage_us &&
+                 i < sizeof(stage_names) / sizeof(stage_names[0]); i++)
+                okt = okt && json_get(stage_us, stage_names[i]) != NULL;
             okt = okt && json_get(&v, "fsync_last_flush_us") != NULL;
             okt = okt && json_get(&v, "fsync_flush_us_ewma") != NULL;
             RDW_CHECK("dump carries the drain-exit + fsync-timing fields",

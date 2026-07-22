@@ -137,6 +137,43 @@ int test_coins_kv_read_cache(void)
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     CKR_CHECK("populated coins_kv", wrote);
 
+    /* Cached write statements survive the add_many call while the reducer's
+     * delta meter is active. Prove they never retain caller-owned script bytes
+     * through COMMIT/finalize: free and allocator-churn the source first, then
+     * demand a byte-exact durable read. This reproduces the COPY-fold UAF that
+     * replaced the first eight P2PKH bytes with freed-heap metadata. */
+    uint8_t lifetime_txid[32];
+    ckr_txid(lifetime_txid, CKR_N + 99);
+    uint8_t lifetime_expect[25];
+    for (size_t i = 0; i < sizeof(lifetime_expect); i++)
+        lifetime_expect[i] = (uint8_t)(0x40 + i);
+    uint8_t *lifetime_src = malloc(sizeof(lifetime_expect));
+    if (lifetime_src) memcpy(lifetime_src, lifetime_expect, sizeof(lifetime_expect));
+    struct coins_kv_add_row lifetime_row = {
+        .txid = lifetime_txid, .vout = 7, .value = 777, .height = 77,
+        .is_coinbase = false, .script = lifetime_src,
+        .script_len = sizeof(lifetime_expect) };
+    coins_kv_delta_begin();
+    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+    bool lifetime_wrote = lifetime_src &&
+        coins_kv_add_many_sqlite(db, &lifetime_row, 1);
+    free(lifetime_src);
+    uint8_t *churn = malloc(sizeof(lifetime_expect));
+    if (churn) memset(churn, 0xEE, sizeof(lifetime_expect));
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    int64_t lifetime_delta = 0;
+    bool lifetime_finished = coins_kv_delta_finish(&lifetime_delta);
+    free(churn);
+    uint8_t lifetime_got[32] = {0};
+    size_t lifetime_len = 0;
+    CKR_CHECK("cached writer owns script through caller free + COMMIT",
+              lifetime_wrote && lifetime_finished && lifetime_delta == 1 &&
+              coins_kv_get_sqlite(db, lifetime_txid, 7, NULL, lifetime_got,
+                                  sizeof(lifetime_got), &lifetime_len) &&
+              lifetime_len == sizeof(lifetime_expect) &&
+              memcmp(lifetime_got, lifetime_expect,
+                     sizeof(lifetime_expect)) == 0);
+
     /* Owned cached statements (single-owner, as coins_ram owns them). */
     sqlite3_stmt *c_prevout = NULL, *c_get = NULL, *c_exists = NULL;
 

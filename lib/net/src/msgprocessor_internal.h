@@ -106,5 +106,7 @@ bool mp_snapshot_is_active(void);
  * disconnect actions while a swarm is in progress. */
 bool mp_swarm_is_active(void);
 bool mp_block_swarm_is_active(void);
+/* One crash-ordered durability scope held across the complete block swarm;
+ * per-piece scopes nest inside it. */
 
 #endif /* ZCL_NET_MSGPROCESSOR_INTERNAL_H */

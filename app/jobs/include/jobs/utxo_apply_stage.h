@@ -122,6 +122,7 @@ uint64_t utxo_apply_stage_value_overflow_total(void);
 uint64_t utxo_apply_stage_upstream_failed_total(void);
 uint64_t utxo_apply_stage_internal_error_total(void);
 uint64_t utxo_apply_stage_reorg_unwound_total(void);
+uint64_t utxo_apply_stage_reorg_audit_total(void);
 uint64_t utxo_apply_stage_outputs_added_total(void);
 uint64_t utxo_apply_stage_outputs_spent_total(void);
 

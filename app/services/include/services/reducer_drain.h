@@ -81,6 +81,7 @@ struct reducer_drain_exit_stats {
     uint64_t exit_budget_total;
     int64_t  last_round_advances;  /* adv count of the last round run */
     int64_t  last_elapsed_us;      /* wall-clock time of the last drain call */
+    int64_t  last_stage_us[REDUCER_DRAIN_NUM_STAGES];
 };
 void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out);
 

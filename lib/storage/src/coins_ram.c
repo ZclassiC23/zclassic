@@ -2,21 +2,8 @@
  *
  * coins_ram — implementation. See storage/coins_ram.h for the contract.
  *
- * Open-addressed linear-probe table keyed (txid[32],vout). Each slot is one
- * coin overlay entry: LIVE (an add) or TOMB (a spend that must shadow a durable
- * coins_kv row as ABSENT). Reads consult the overlay first; a MISS reads
- * through to coins_kv. Mutations stay in RAM until coins_ram_flush drains them
- * to coins_kv inside ONE BEGIN IMMEDIATE that also moves the durable cursor —
- * preserving the per-height atomic commit at flush boundaries and a
- * deterministic crash-replay of the un-flushed tail (coins_ram_reconcile_boot).
- *
- * Raw sqlite carries // raw-sql-ok:progress-kv-kernel-store — coins_kv lives on
- * the cross-thread progress.kv handle (the same hatch coins_kv.c uses). The
- * flush/read-through statements are prepared+finalized within the call.
- *
- * SINGLE-WRITER: the bulk fold runs on the reducer drive holding
- * progress_store_tx_lock; this store is not internally locked. Enable the flag
- * only for the bulk fold (mint / -refold-from-anchor catch-up).
+ * Open-addressed (txid,vout) overlay: LIVE adds and TOMB spends flush with the
+ * durable cursor in one transaction. Single-writer; see coins_ram.h.
  */
 #include "storage/coins_ram.h"
 
@@ -56,16 +43,12 @@ struct ram_slot {
     uint8_t *script;       /* LIVE only, heap (NULL iff script_len==0) */
 };
 
-/* Default capacity: power-of-two >= ~4M / 0.7 load. 8M slots * ~64B = ~512MB
- * for the slot array (+ heap scripts). tmpfs-resident bulk fold can afford it. */
+/* Power-of-two >= ~4M / 0.7 load; about 512MB plus scripts. */
 #define COINS_RAM_DEFAULT_SLOTS (8u * 1024u * 1024u)
 #define COINS_RAM_MAX_LOAD_NUM  7
 #define COINS_RAM_MAX_LOAD_DEN  10
 #define COINS_RAM_DEFAULT_FLUSH_EVERY 50000u
-/* Live-slot high-water flush cap: ~3M live coins (< the 8M-slot default cap's
- * 70% grow point at 5.6M), so the overlay flushes to durable coins_kv before a
- * dense window can force a grow() / OOM. Overridable via ZCL_FOLD_INRAM_MAX_SLOTS
- * (0 disables). */
+/* Flush before the 8M-slot table's 70% grow point; 0 disables. */
 #define COINS_RAM_DEFAULT_MAX_SLOTS (3u * 1024u * 1024u)
 
 static struct {
@@ -76,26 +59,19 @@ static struct {
     size_t           mask;          /* cap-1 */
     size_t           live_count;    /* LIVE slots in the overlay */
     size_t           used;          /* LIVE+TOMB (probe-length budget) */
+    size_t          *occupied;      /* exact LIVE+TOMB slot indices */
+    size_t           occupied_count, occupied_cap;
     uint32_t         flush_every;
     uint32_t         since_flush;   /* heights applied since last flush */
     int32_t          last_applied;  /* highest height noted, -1 = none */
     size_t           max_slots;     /* live-slot high-water flush cap (0=off) */
     coins_ram_frontier_writer_fn writer;
-    /* Read-through prepared-statement cache. The overlay's cold-miss reads
-     * (coins_ram_get / _get_prevout / _exists → coins_kv_*_sqlite_cached) run
-     * ONLY on the single fold/drive thread (coins_kv_overlay_safe gates on
-     * coins_ram_writer_thread || coins_ram_mint_drive_thread), so a single-
-     * owner cached statement is safe here and hoists the per-read SQL compile
-     * (~half of every ~4 us durable point query) out of the fold hot loop.
-     * Prepared lazily against G.db; finalized in shutdown + on a db rebind. */
+    /* Single fold-thread read-through statement cache. */
     sqlite3_stmt    *rd_get;
     sqlite3_stmt    *rd_prevout;
     sqlite3_stmt    *rd_exists;
 } G;
 
-/* Finalize the read-through statement cache (idempotent). Called before the
- * bound db handle can change (init rebind) or be freed (shutdown). Safe to call
- * on the fold thread only — the same single-owner contract as the cache use. */
 static void coins_ram_read_cache_finalize(void)
 {
     if (G.rd_get)     { sqlite3_finalize(G.rd_get);     G.rd_get = NULL; }
@@ -121,17 +97,7 @@ bool coins_ram_enabled(void)
 
 bool coins_ram_active(void) { return G.active && G.slots != NULL; }
 
-/* ── single-writer guard (the phashBlock-into-bucket UAF class) ──
- *
- * _Thread_local: each thread sees its OWN counter. The reducer fold thread
- * brackets its step with coins_ram_writer_enter/exit; coins_ram_writer_thread()
- * returns true ONLY for that thread while inside the bracket. A reader on a
- * DIFFERENT thread (bg-validation pthread, RPC pool, seal_service) sees its own
- * counter at 0 → the coins_kv.c READ shims route to the SQLite path instead of
- * touching the lock-free overlay. The overlay store is only mutated from inside
- * the writer bracket, so a true return means "the overlay is safe for THIS
- * thread to read". Counter form (not bool) so a nested/recursive enter is
- * balanced by the matching number of exits. */
+/* TLS counter confines the lock-free overlay to the reducer fold thread. */
 static _Thread_local int t_writer_depth = 0;
 
 /* Mint serial-pipeline READ marker (coins_ram.h). In a debug build the drive
@@ -233,19 +199,42 @@ static void slot_release_script(struct ram_slot *s)
     if (s->script) { free(s->script); s->script = NULL; }
 }
 
+/* Record each transition from EMPTY exactly once. Flush and grow can then walk
+ * O(touched keys) instead of the fixed 8M-slot backing table. A LIVE<->TOMB
+ * transition keeps the same entry; the list is reset only after a durable
+ * flush clears every recorded slot. */
+static bool remember_occupied(size_t index)
+{
+    if (G.occupied_count == G.occupied_cap) {
+        size_t next = G.occupied_cap ? G.occupied_cap << 1 : 4096u;
+        if (next < G.occupied_cap || next > SIZE_MAX / sizeof(*G.occupied))
+            LOG_FAIL("coins_ram", "occupied index capacity overflow");
+        size_t *grown = zcl_realloc(G.occupied,
+                                    next * sizeof(*G.occupied),
+                                    "coins_ram_occupied");
+        if (!grown)
+            LOG_FAIL("coins_ram", "occupied index OOM at %zu entries", next);
+        G.occupied = grown;
+        G.occupied_cap = next;
+    }
+    G.occupied[G.occupied_count++] = index;
+    return true;
+}
+
 static bool grow(void)
 {
     size_t new_cap = G.cap << 1;
     struct ram_slot *ns = zcl_calloc(new_cap, sizeof(*ns), "coins_ram_grow");
     if (!ns)
         LOG_FAIL("coins_ram", "grow: OOM for %zu slots", new_cap);
-    size_t old_cap = G.cap, mask = new_cap - 1;
+    size_t mask = new_cap - 1;
     struct ram_slot *os = G.slots;
-    for (size_t i = 0; i < old_cap; i++) {
-        if (os[i].state == SLOT_EMPTY) continue;
+    for (size_t k = 0; k < G.occupied_count; k++) {
+        size_t i = G.occupied[k];
         size_t j = key_hash(os[i].txid, os[i].vout) & mask;
         while (ns[j].state != SLOT_EMPTY) j = (j + 1) & mask;
         ns[j] = os[i];  /* moves the script pointer ownership */
+        G.occupied[k] = j;
     }
     free(os);
     G.slots = ns;
@@ -323,9 +312,11 @@ void coins_ram_shutdown(void)
 {
     coins_ram_read_cache_finalize();  /* before the bound db handle closes */
     if (G.slots) {
-        for (size_t i = 0; i < G.cap; i++) slot_release_script(&G.slots[i]);
+        for (size_t k = 0; k < G.occupied_count; k++)
+            slot_release_script(&G.slots[G.occupied[k]]);
         free(G.slots);
     }
+    free(G.occupied);
     memset(&G, 0, sizeof(G));
 }
 
@@ -357,6 +348,10 @@ bool coins_ram_add(const uint8_t txid[32], uint32_t vout, int64_t value,
     }
 
     if (!found) {                       /* fresh slot (was EMPTY) */
+        if (!remember_occupied(i)) {
+            free(new_script);
+            return false;
+        }
         memcpy(s->txid, txid, 32);
         s->vout = vout;
         G.used++;
@@ -406,6 +401,8 @@ bool coins_ram_spend(const uint8_t txid[32], uint32_t vout)
         s = &G.slots[i];
     }
     memcpy(s->txid, txid, 32);
+    if (!remember_occupied(i))
+        return false;
     s->vout = vout;
     s->state = SLOT_TOMB;
     s->script = NULL;
@@ -1092,15 +1089,6 @@ static bool coins_ram_flush_has_reducer_witness(sqlite3 *db,
     return true;
 }
 
-/* Drain the overlay into coins_kv (adds via coins_kv_add_many, spends via
- * coins_kv_spend_many) and advance the durable cursor — ALL inside ONE
- * BEGIN IMMEDIATE on the progress.kv handle. Mirrors apply_coins_kv's
- * adds-before-spends ordering at the batch granularity: a coin created and
- * spent within the un-flushed window never reaches coins_kv (the spend
- * deleted the LIVE slot), so the overlay contains only net-live LIVE rows and
- * TOMBs that shadow durable rows — adds and spends here touch disjoint keys,
- * so ordering between the two phases is immaterial, but we keep adds-first to
- * mirror the per-block contract. */
 bool coins_ram_flush(int32_t flushed_height)
 {
     if (!coins_ram_active()) return false;
@@ -1109,29 +1097,58 @@ bool coins_ram_flush(int32_t flushed_height)
                  "flush: stage batch is active at height=%d; defer until "
                  "after stage_batch_end",
                  flushed_height);
-    sqlite3 *db = G.db;
-    if (!coins_ram_flush_has_reducer_witness(db, flushed_height))
-        LOG_FAIL("coins_ram",
-                 "flush: reducer witness missing at height=%d",
+    sqlite3 *db = G.db; progress_store_tx_lock();
+    uint8_t prior_wm[8] = {0};
+    size_t prior_wm_len = 0; bool prior_wm_found = false;
+    if (!progress_meta_get(db, COINS_RAM_FLUSHED_HEIGHT_KEY, prior_wm,
+                           sizeof(prior_wm), &prior_wm_len, &prior_wm_found)) {
+        progress_store_tx_unlock();
+        LOG_FAIL("coins_ram", "flush: durable watermark read failed");
+    }
+    int32_t durable_height = -1; if (prior_wm_found) {
+        if (prior_wm_len != sizeof(prior_wm)) {
+            progress_store_tx_unlock();
+            LOG_FAIL("coins_ram", "flush: malformed watermark len=%zu", prior_wm_len);
+        }
+        uint64_t u = 0; for (int i = 0; i < 8; i++) u |= (uint64_t)prior_wm[i] << (8 * i);
+        durable_height = (int32_t)u;
+    }
+    if (flushed_height <= durable_height && !(G.since_flush > 0 && G.last_applied > durable_height)) {
+        progress_store_tx_unlock();
+        LOG_INFO("coins_ram", "[coins_ram] stale flush skipped requested=%d durable=%d",
+                 flushed_height, durable_height);
+        return true;
+    }
+    if (G.last_applied > flushed_height) flushed_height = G.last_applied;
+    if (!coins_ram_flush_has_reducer_witness(db, flushed_height)) {
+        progress_store_tx_unlock();
+        LOG_FAIL("coins_ram", "flush: reducer witness missing at height=%d",
                  flushed_height);
-
-    /* Gather LIVE adds and TOMB spends into row arrays. */
+    }
     size_t nadd = G.live_count, nspend = 0;
-    for (size_t i = 0; i < G.cap; i++)
-        if (G.slots[i].state == SLOT_TOMB) nspend++;
+    for (size_t k = 0; k < G.occupied_count; k++)
+        if (G.slots[G.occupied[k]].state == SLOT_TOMB) nspend++;
 
     struct coins_kv_add_row   *adds   = NULL;
     struct coins_kv_spend_row *spends = NULL;
     if (nadd) {
         adds = zcl_malloc(nadd * sizeof(*adds), "coins_ram_flush_adds");
-        if (!adds) LOG_FAIL("coins_ram", "flush: OOM adds");
+        if (!adds) {
+            progress_store_tx_unlock();
+            LOG_FAIL("coins_ram", "flush: OOM adds");
+        }
     }
     if (nspend) {
         spends = zcl_malloc(nspend * sizeof(*spends), "coins_ram_flush_spends");
-        if (!spends) { free(adds); LOG_FAIL("coins_ram", "flush: OOM spends"); }
+        if (!spends) {
+            free(adds);
+            progress_store_tx_unlock();
+            LOG_FAIL("coins_ram", "flush: OOM spends");
+        }
     }
     size_t ai = 0, si = 0;
-    for (size_t i = 0; i < G.cap; i++) {
+    for (size_t k = 0; k < G.occupied_count; k++) {
+        size_t i = G.occupied[k];
         const struct ram_slot *s = &G.slots[i];
         if (s->state == SLOT_LIVE) {
             adds[ai].txid        = s->txid;
@@ -1149,23 +1166,14 @@ bool coins_ram_flush(int32_t flushed_height)
         }
     }
 
-    progress_store_tx_lock();
     char *err = NULL;
     bool ok = true;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("coins_ram", "flush: BEGIN failed: %s", err ? err : "?");
         ok = false;
     }
-    /* Drain through the RAW SQLite variants — the public _many shims would
-     * re-enter the overlay (we are inside the overlay's own flush). TOMBs first
-     * would also work (disjoint keys), but mirror the per-block adds-before-
-     * spends contract. */
     if (ok && nadd && !coins_kv_add_many_sqlite(db, adds, nadd))   ok = false;
     if (ok && nspend && !coins_kv_spend_many_sqlite(db, spends, nspend)) ok = false;
-
-    /* Co-write the durable cursor + frontier + flush watermark inside THIS txn
-     * so coins_kv, the utxo_apply stage cursor, coins_applied_height, and the
-     * crash-replay watermark all reflect the SAME flushed height atomically. */
     if (ok) {
         uint8_t wm[8];
         for (int i = 0; i < 8; i++) wm[i] = (uint8_t)(((uint64_t)(uint32_t)flushed_height) >> (8 * i));
@@ -1175,8 +1183,6 @@ bool coins_ram_flush(int32_t flushed_height)
     if (ok && (!G.writer || !G.writer(db, flushed_height + 1)))
         ok = false;
     if (ok) {
-        /* Move the utxo_apply stage cursor to flushed_height+1 (next to apply)
-         * so a resume after a clean flush picks up exactly above the flush. */
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(db,
             "INSERT INTO stage_cursor (name, cursor, updated_at) "
@@ -1204,18 +1210,15 @@ bool coins_ram_flush(int32_t flushed_height)
                  flushed_height);
     }
     if (err) sqlite3_free(err);
-    progress_store_tx_unlock();
     free(adds); free(spends);
 
-    /* The overlay is now durable in coins_kv — clear it (reads fall through to
-     * coins_kv, which is now the truth for these keys). */
-    for (size_t i = 0; i < G.cap; i++) {
-        slot_release_script(&G.slots[i]);
-        G.slots[i].state = SLOT_EMPTY;
+    for (size_t k = 0; k < G.occupied_count; k++) {
+        struct ram_slot *s = &G.slots[G.occupied[k]];
+        slot_release_script(s);
+        s->state = SLOT_EMPTY;
     }
-    G.live_count = 0;
-    G.used = 0;
-    G.since_flush = 0;
+    G.occupied_count = 0; G.live_count = 0; G.used = 0; G.since_flush = 0;
+    progress_store_tx_unlock();
     LOG_INFO("coins_ram", "[coins_ram] flushed through height=%d "
              "(%zu adds, %zu spends)", flushed_height, nadd, nspend);
     return true;
@@ -1232,12 +1235,10 @@ bool coins_ram_flush_due(void)
 bool coins_ram_note_applied(int32_t height)
 {
     if (!coins_ram_active()) return true;
+    if (height <= G.last_applied)
+        return true;
     G.last_applied = height;
     G.since_flush++;
-    /* Flush on the block cadence OR the live-slot high water (a dense window
-     * that outruns the cadence — the OOM guard), at this applied-height
-     * boundary where the reducer witness + co-written cursor are consistent. A
-     * flush during an open drain batch defers to utxo_apply_stage_drain. */
     bool cadence_due = G.since_flush >= G.flush_every;
     bool high_water  = G.max_slots && G.live_count >= G.max_slots;
     if (cadence_due || high_water) {

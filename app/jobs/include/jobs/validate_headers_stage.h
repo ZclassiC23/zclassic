@@ -76,7 +76,7 @@ struct uint256;
 struct json_value;
 
 #define VH_POOL_SIZE         4
-#define VH_BATCH_SIZE        8
+#define VH_BATCH_SIZE       64
 #define VH_MAX_REASON       64
 #define VH_BATCH_PER_TICK   64
 

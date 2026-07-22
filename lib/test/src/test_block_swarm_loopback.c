@@ -34,7 +34,7 @@
  * The per-peer swarm scheduler mp_snapshot_send_tick() (private header, not on
  * the test include path) is forward-declared and called DIRECTLY: it is real
  * production code, and it owns the rarest-first assignment, the contiguous
- * window cap, the 16-deep pipeline, and the zblkreq emission. Driving it is what
+ * window cap, the bounded piece pipeline, and the zblkreq emission. Driving it is what
  * makes this an integration test of the actual piece dance rather than a
  * re-implementation of it.
  *
@@ -96,6 +96,9 @@ struct bs_sink {
     uint64_t submits_outside_scope;
     uint64_t drains;
     uint64_t drains_inside_scope;
+    int transient_submit_failures;
+    unsigned scope_depth;
+    unsigned scope_max_depth;
     bool scope_open;
 };
 
@@ -105,6 +108,13 @@ static bool bs_block_submit(struct block *b, struct validation_state *out,
     struct bs_sink *sink = ctx;
     if (!sink->scope_open)
         sink->submits_outside_scope++;
+    if (sink->transient_submit_failures > 0) {
+        const char *reason = sink->transient_submit_failures == 1
+            ? "p2p-block-intake-full"
+            : "header-admit-inbox-full";
+        sink->transient_submit_failures--;
+        return validation_state_error(out, reason);
+    }
     struct byte_stream s;
     stream_init(&s, 4096);
     if (block_serialize(b, &s))
@@ -120,6 +130,9 @@ static void bs_scope_begin(void *ctx)
 {
     struct bs_sink *sink = ctx;
     sink->scope_begins++;
+    sink->scope_depth++;
+    if (sink->scope_depth > sink->scope_max_depth)
+        sink->scope_max_depth = sink->scope_depth;
     sink->scope_open = true;
 }
 
@@ -127,7 +140,9 @@ static void bs_scope_end(void *ctx)
 {
     struct bs_sink *sink = ctx;
     sink->scope_ends++;
-    sink->scope_open = false;
+    if (sink->scope_depth > 0)
+        sink->scope_depth--;
+    sink->scope_open = sink->scope_depth > 0;
 }
 
 static int bs_catchup_drain(void *ctx)
@@ -136,7 +151,7 @@ static int bs_catchup_drain(void *ctx)
     sink->drains++;
     if (sink->scope_open)
         sink->drains_inside_scope++;
-    return 0;
+    return 1;
 }
 
 /* ── Seeder fixture ──────────────────────────────────────────────────────── */
@@ -443,7 +458,7 @@ static int test_block_swarm_throughput(void)
         struct coins_view_cache coins_b;
         struct net_manager nm_b;
         struct msg_processor mp_b;
-        struct bs_sink sink = {0};
+        struct bs_sink sink = { .transient_submit_failures = 2 };
 
         main_state_init(&ms_b);
         tx_mempool_init(&mempool_b, 0);
@@ -512,12 +527,20 @@ static int test_block_swarm_throughput(void)
         /* Every body in the manifest range (1..end) transferred exactly once. */
         ASSERT(!mp_block_swarm_is_active());           /* swarm completed+freed */
         ASSERT(sink.blocks == (uint64_t)end_height);
-        ASSERT(sink.scope_begins == 40);                /* one per 64-body piece */
+        ASSERT(sink.scope_begins == 40); /* one bounded scope per 64-body piece */
         ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired */
+        ASSERT(sink.scope_max_depth == 1);              /* never chain-wide */
         ASSERT(!sink.scope_open);                       /* no scope leak */
         ASSERT(sink.submits_outside_scope == 0);        /* every body batched */
-        ASSERT(sink.drains == 5);                       /* one per 512 bodies */
-        ASSERT(sink.drains_inside_scope == sink.drains);/* flush-before-end */
+        ASSERT(sink.drains == 2); /* header inbox + block intake backpressure */
+        ASSERT(sink.drains_inside_scope == 2);          /* flush-before-retry */
+        const int expected_pieces =
+            (end_height + (int)BLOCKS_PER_PIECE - 1) /
+            (int)BLOCKS_PER_PIECE;
+        const int expected_rounds =
+            (expected_pieces + PIECE_PIPELINE_DEPTH - 1) /
+            PIECE_PIPELINE_DEPTH;
+        ASSERT(rounds == expected_rounds);
 
         double secs = (double)elapsed_us / 1e6;
         double blks = (double)sink.blocks / secs;
@@ -623,7 +646,13 @@ static int test_block_swarm_disconnect_requeue(void)
         mp_snapshot_send_tick(&mp_b, p1);
         size_t p1_reqs = bs_queue_depth(sent_p1);
         printf("(dead peer held %zu in-flight pieces) ", p1_reqs);
-        ASSERT(p1_reqs > 0);                           /* p1 took pieces        */
+        const size_t expected_pieces =
+            (size_t)(end_height + (int)BLOCKS_PER_PIECE - 1) /
+            BLOCKS_PER_PIECE;
+        const size_t expected_owned =
+            expected_pieces < PIECE_PIPELINE_DEPTH
+                ? expected_pieces : PIECE_PIPELINE_DEPTH;
+        ASSERT(p1_reqs == expected_owned);             /* all bounded work owned */
         bs_drop_queue(p1, sent_p1);                    /* p1 vanishes mid-flight */
 
         /* THE FIX (wired into connman's disconnect cleanup): reclaim exactly the
@@ -653,11 +682,12 @@ static int test_block_swarm_disconnect_requeue(void)
 
         ASSERT(!mp_block_swarm_is_active());           /* finished via failover */
         ASSERT(sink.blocks == (uint64_t)end_height);   /* all bodies delivered  */
-        ASSERT(sink.scope_begins == 40);                /* one scope per piece   */
+        ASSERT(sink.scope_begins == 40); /* one bounded scope per piece */
         ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired        */
+        ASSERT(sink.scope_max_depth == 1);              /* never chain-wide */
         ASSERT(!sink.scope_open);
         ASSERT(sink.submits_outside_scope == 0);
-        ASSERT(sink.drains == 5);
+        ASSERT(sink.drains == 0);                       /* no periodic barrier */
         ASSERT(sink.drains_inside_scope == sink.drains);
 
         send_segment_free(sent_a);

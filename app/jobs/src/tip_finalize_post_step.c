@@ -19,7 +19,7 @@
 #include "chain/mmb.h"
 #include "chain/sha3_windows.h"          /* golden-window corroboration table */
 #include "config/runtime.h"
-#include "core/serialize.h"              /* byte_stream for window re-serialize */
+#include "crypto/sha3.h"                /* incremental raw-window digest */
 #include "event/event.h"                 /* EV_BLOCK_INDEX_CORRUPT telemetry */
 #include "util/blocker.h"                /* typed evidence blocker */
 #include "controllers/blockchain_controller.h"
@@ -30,6 +30,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"           /* coins_kv_commitment + boundary root */
+#include "storage/blocks_mmap_reader.h" /* zero-copy canonical block payload */
 #include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "services/block_source_policy.h" /* projection-deferred diagnostic */
 #include "services/chain_evidence_authority_service.h" /* live evidence follow */
@@ -48,10 +49,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Memory ceiling for the transient per-window re-serialize buffer. A 1000-block
- * window of small historical blocks is a few MB; this caps a pathologically
- * large window so the OBSERVE-ONLY tripwire can never spike RAM on the fold
- * path. Over the cap → skip the window (no evidence, no false positive). */
+/* Byte ceiling for one golden window. The mmap reader is zero-copy, but this
+ * still bounds work on corrupt/pathological block-index metadata. */
 #define SHA3_WINDOW_TRIPWIRE_MAX_BYTES (128u * 1024u * 1024u)
 
 enum sha3_window_tripwire_result
@@ -140,34 +139,40 @@ static void sha3_window_tripwire_at_boundary(const struct block_index *pindex_ne
         bi = bi->pprev;
     }
 
-    /* Re-serialize each body into the canonical wire form (block_serialize —
-     * byte-identical to `getblock <hash> 0`, the exact bytes the golden table
-     * was generated from) and concatenate in height order. */
-    struct byte_stream s;
-    stream_init(&s, 1u << 20);
-    if (s.error) {
-        stream_free(&s);
+    /* Hash the canonical on-disk payload bytes directly. The golden table was
+     * generated from raw `getblock <hash> 0` payloads, and nDataPos points at
+     * those exact bytes after the blk*.dat framing header. The former path
+     * parsed and reserialized all 1000 blocks, then allocated their full
+     * concatenation; that verdict-equivalent detour cost ~8 seconds inside a
+     * tip-finalize batch. The existing mmap reader validates magic, payload
+     * length, and file bounds before returning bytes. Incremental SHA3 is
+     * byte-identical to hashing the concatenation and uses constant memory. */
+    char blocks_dir[2304];
+    int pn = snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
+    if (pn < 0 || (size_t)pn >= sizeof(blocks_dir))
         return;
-    }
+    struct blocks_mmap *mmap = NULL;
+    if (!bmr_open(blocks_dir, &mmap))
+        return;
+    struct sha3_256_ctx sha3;
+    sha3_256_init(&sha3);
+    size_t total = 0;
     for (int i = 0; i < SHA3_WINDOW_SIZE; i++) {
-        struct block b;
-        block_init(&b);
-        if (!stage_read_block(&b, chain[i], chain[i]->nHeight, datadir,
-                              NULL, NULL)) {
-            block_free(&b);
-            stream_free(&s);
-            return;   /* missing body — skip this window */
+        size_t len = 0;
+        const uint8_t *payload = bmr_get_payload(
+            mmap, chain[i]->nFile, chain[i]->nDataPos, &len);
+        if (!payload || len > SHA3_WINDOW_TRIPWIRE_MAX_BYTES - total) {
+            bmr_close(mmap);
+            return;   /* missing/corrupt body or over cap: no false evidence */
         }
-        bool ok = block_serialize(&b, &s);
-        block_free(&b);
-        if (!ok || s.error || s.size > SHA3_WINDOW_TRIPWIRE_MAX_BYTES) {
-            stream_free(&s);
-            return;   /* serialize failure / over cap — skip */
-        }
+        sha3_256_write(&sha3, payload, len);
+        total += len;
     }
-
-    (void)sha3_window_tripwire_eval(wi, s.data, s.size);
-    stream_free(&s);
+    uint8_t digest[32];
+    sha3_256_finalize(&sha3, digest);
+    bmr_close(mmap);
+    (void)sha3_window_tripwire_report(
+        wi, memcmp(digest, g_sha3_windows[wi].hash, sizeof(digest)) == 0);
 }
 
 void tip_finalize_run_post_finalize(struct block_index *pindex_new)

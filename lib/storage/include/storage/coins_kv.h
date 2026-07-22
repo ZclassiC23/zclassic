@@ -36,7 +36,7 @@ struct utxo_projection;
 /* CREATE TABLE IF NOT EXISTS coins(...). Idempotent. */
 bool coins_kv_ensure_schema(struct sqlite3 *db);
 
-/* INSERT OR REPLACE one output. `script` may be NULL iff `script_len`==0. */
+/* Insert or update one output. `script` may be NULL iff `script_len`==0. */
 bool coins_kv_add(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t value, int32_t height, bool is_coinbase,
                   const uint8_t *script, size_t script_len);
@@ -110,6 +110,18 @@ bool coins_kv_get_prevout(struct sqlite3 *db, const uint8_t txid[32],
 
 /* Count of live outputs. Returns -1 on error. */
 int64_t coins_kv_count(struct sqlite3 *db);
+
+/* Exact O(batch) physical-row delta meter for the reducer commit invariant.
+ * begin/finish/cancel are thread-local and must bracket one outer SQLite
+ * transaction. While armed, every coins_kv add/spend records SQLite's
+ * affected-row result: replacing an existing (txid,vout) is 0, inserting a
+ * new row is +1, deleting a live row is -1, and deleting an absent row is 0.
+ * This preserves the old exact COUNT(*)-delta proof without a read-before-
+ * write query or scanning the full chain state twice per batch.
+ * finish returns false if no matching meter is active. */
+void coins_kv_delta_begin(void);
+void coins_kv_delta_cancel(void);
+bool coins_kv_delta_finish(int64_t *delta_out);
 
 /* ── RAW (overlay-bypassing) accessors ──────────────────────────────────
  *

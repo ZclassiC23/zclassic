@@ -23,7 +23,7 @@ bool created_outputs_index_ensure_schema(sqlite3 *db)
         "  value  INTEGER NOT NULL,"
         "  script BLOB    NOT NULL,"
         "  height INTEGER NOT NULL,"
-        "  PRIMARY KEY (txid, vout)"
+        "  PRIMARY KEY (txid, vout, height)"
         ") WITHOUT ROWID;"
         "CREATE INDEX IF NOT EXISTS created_outputs_height "
         "  ON created_outputs(height);";
@@ -33,6 +33,63 @@ bool created_outputs_index_ensure_schema(sqlite3 *db)
                  err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
+    }
+
+    /* The original projection keyed rows only by (txid,vout). That is not a
+     * historical creation index: when body download ran ahead of script
+     * validation, a later block containing a duplicate historical txid used
+     * INSERT OR REPLACE to erase the earlier creator. The script stage could
+     * then resolve a spender against the FUTURE duplicate output and emit a
+     * timing-dependent false-invalid verdict. Height is therefore part of the
+     * key, and bounded reads select the newest creator visible at their own
+     * height.
+     *
+     * Migrate the rebuildable projection in place. Existing old-format rows
+     * remain useful (one version per outpoint); subsequent body replay adds
+     * every height-version without overwriting them. The transaction makes a
+     * crash observe either complete schema. */
+    sqlite3_stmt *ti = NULL;
+    bool height_is_key = false;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(created_outputs)", -1,
+                           &ti, NULL) != SQLITE_OK) {
+        LOG_WARN("created_outputs", "schema inspect failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    while (sqlite3_step(ti) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        const unsigned char *name = sqlite3_column_text(ti, 1);
+        int pk_order = sqlite3_column_int(ti, 5);
+        if (name && strcmp((const char *)name, "height") == 0) {
+            height_is_key = pk_order > 0;
+            break;
+        }
+    }
+    sqlite3_finalize(ti);
+    if (!height_is_key) {
+        static const char *const migrate =
+            "BEGIN IMMEDIATE;"
+            "CREATE TABLE created_outputs_height_key ("
+            " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+            " value INTEGER NOT NULL, script BLOB NOT NULL,"
+            " height INTEGER NOT NULL,"
+            " PRIMARY KEY (txid, vout, height)"
+            ") WITHOUT ROWID;"
+            "INSERT OR REPLACE INTO created_outputs_height_key "
+            " SELECT txid,vout,value,script,height FROM created_outputs;"
+            "DROP TABLE created_outputs;"
+            "ALTER TABLE created_outputs_height_key RENAME TO created_outputs;"
+            "CREATE INDEX created_outputs_height ON created_outputs(height);"
+            "COMMIT;";
+        err = NULL;
+        if (sqlite3_exec(db, migrate, NULL, NULL, &err) != SQLITE_OK) {
+            (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            LOG_WARN("created_outputs", "height-key migration failed: %s",
+                     err ? err : "(no message)");
+            if (err) sqlite3_free(err);
+            return false;
+        }
+        LOG_INFO("created_outputs",
+                 "migrated creation index key to (txid,vout,height)");
     }
     return true;
 }
@@ -86,7 +143,8 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
         return false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT value, script FROM created_outputs WHERE txid = ? AND vout = ?",
+        "SELECT value, script FROM created_outputs "
+        "WHERE txid = ? AND vout = ? ORDER BY height DESC LIMIT 1",
         -1, &st, NULL) != SQLITE_OK) {
         /* Missing table (body_persist not yet run) or other error: treat as
          * not-found. The caller (script_validate) FAILS LOUD on a true miss. */
@@ -127,7 +185,8 @@ bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
     if (sqlite3_prepare_v2(db,
         "SELECT value, script, height FROM created_outputs "
         "WHERE txid = ? AND vout = ? "
-        "  AND height >= ? AND height <= ?",
+        "  AND height >= ? AND height <= ? "
+        "ORDER BY height DESC LIMIT 1",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("created_outputs",
                  "[created_outputs] bounded get prepare failed: %s",

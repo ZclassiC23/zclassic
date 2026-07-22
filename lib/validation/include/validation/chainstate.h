@@ -126,6 +126,9 @@ struct active_chain {
 void active_chain_init(struct active_chain *c);
 void active_chain_free(struct active_chain *c);
 struct block_index *active_chain_cached_tip(const struct active_chain *c);
+/* Raw derived cache/window bound; unlike active_chain_height(), never resolves
+ * finalized authority. Used only to bound lookahead-cache work. */
+int active_chain_cached_height(const struct active_chain *c);
 struct block_index *active_chain_tip(const struct active_chain *c);
 struct block_index *active_chain_at(const struct active_chain *c, int height);
 bool active_chain_capture_window(struct active_chain *c,
@@ -166,8 +169,9 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
                                           struct block_index *best_header,
                                           int max_height);
 /* S5 observability: cumulative hit counts for the two traversal strategies
- * inside active_chain_extend_window_have_data — the O(log n) best-header
- * ancestry FAST path vs the O(map) full-scan+pprev-walk SLOW path (fires only
+ * inside active_chain_extend_window_have_data — the O(log n + bounded gap)
+ * best-header ancestry FAST path vs the O(map) full-scan+pprev-walk SLOW path
+ * (fires only
  * when best_header is NULL/behind/off the finalized chain). A live node that
  * starts climbing on the slow path is a silent regression back to the fixed
  * ~9s/block full-map-scan pathology (commit b1c47d1d9) — these counters make

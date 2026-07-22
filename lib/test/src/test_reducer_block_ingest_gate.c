@@ -107,6 +107,11 @@ static int rbi_mkdir_p(const char *p)
     return -1;
 }
 
+static void rbi_discard_header(const struct header_admit_msg *msg)
+{
+    (void)msg;
+}
+
 /* Build a regtest block at `height` on top of `prev_hash` the way
  * create_new_block() shapes it: one coinbase tx (subsidy, no fees, a minimal
  * miner script), merkle root over that single tx, header fields filled,
@@ -606,6 +611,32 @@ int test_reducer_block_ingest_gate(void)
     RBI_CHECK("UTXO commitment changed after the block applied",
               have_commit_before && have_commit_after &&
               memcmp(commit_before, commit_after, 32) != 0);
+
+    /* Headers-first catch-up must not replay an exact known header through the
+     * bounded mailbox. It still stages/persists the body and preserves the
+     * normal pending-reducer verdict. */
+    RBI_CHECK("known-header fast path starts with an empty admit inbox",
+              mailbox_header_admit_drain(rbi_discard_header) == 0);
+    uint64_t known_before =
+        reducer_ingest_catchup_known_header_bypass_total();
+    uint64_t solution_skip_before =
+        reducer_ingest_catchup_validated_solution_skip_total();
+    struct validation_state catchup_out;
+    validation_state_init(&catchup_out);
+    bool catchup_final = reducer_stage_p2p_block_for_catchup(
+        &ctl, &blk1b, &catchup_out);
+    RBI_CHECK("known-header catch-up remains a staged, non-final verdict",
+              !catchup_final &&
+              strcmp(catchup_out.reject_reason,
+                     "p2p-block-staged-for-reducer") == 0);
+    RBI_CHECK("known-header catch-up takes the exact-hash bypass",
+              reducer_ingest_catchup_known_header_bypass_total() ==
+                  known_before + 1);
+    RBI_CHECK("validated header avoids a redundant solution rewrite",
+              reducer_ingest_catchup_validated_solution_skip_total() ==
+                  solution_skip_before + 1);
+    RBI_CHECK("known-header catch-up enqueues no duplicate header",
+              mailbox_header_admit_drain(rbi_discard_header) == 0);
 
     /* ── (6) Teardown ───────────────────────────────────────────────────── */
     /* Both helper-built blocks were block_init'd unconditionally; block_free is

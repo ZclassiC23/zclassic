@@ -82,6 +82,20 @@ int test_created_outputs_index(void)
     CO_CHECK("put_block height=100",
              created_outputs_index_put_block(db, &blk, 100));
 
+    /* A future body with the same txid must coexist with, not overwrite, the
+     * earlier creator. This is the real out-of-order pipeline regression: body
+     * download may be thousands of heights ahead of script validation. */
+    struct block duplicate; block_init(&duplicate);
+    duplicate.num_vtx = 1;
+    duplicate.vtx = zcl_calloc(1, sizeof(struct transaction), "co_dup_vtx");
+    co_make_tx(&duplicate.vtx[0], 0x11, 2); /* same txid as blk.vtx[0] */
+    duplicate.vtx[0].vout[0].value += 777;
+    unsigned char future_script[] = {0x51, 0x51, 0x51, 0x51};
+    script_set(&duplicate.vtx[0].vout[0].script_pub_key, future_script,
+               sizeof(future_script));
+    CO_CHECK("put future duplicate txid height=200",
+             created_outputs_index_put_block(db, &duplicate, 200));
+
     {
         int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
         int created_h = -1;
@@ -90,6 +104,20 @@ int test_created_outputs_index(void)
                      db, blk.vtx[0].hash.data, 0, 90, 100, &v, sc,
                      sizeof(sc), &sl, &created_h) &&
                  created_h == 100 && v == blk.vtx[0].vout[0].value);
+        CO_CHECK("bounded get ignores future duplicate txid",
+                 created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 90, 150, &v, sc,
+                     sizeof(sc), &sl, &created_h) &&
+                 created_h == 100 && v == blk.vtx[0].vout[0].value &&
+                 sl == blk.vtx[0].vout[0].script_pub_key.size &&
+                 memcmp(sc, blk.vtx[0].vout[0].script_pub_key.data, sl) == 0);
+        CO_CHECK("bounded get selects visible duplicate txid",
+                 created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 90, 250, &v, sc,
+                     sizeof(sc), &sl, &created_h) &&
+                 created_h == 200 && v == duplicate.vtx[0].vout[0].value &&
+                 sl == sizeof(future_script) &&
+                 memcmp(sc, future_script, sl) == 0);
         CO_CHECK("bounded get rejects below window",
                  !created_outputs_index_get_bounded(
                      db, blk.vtx[0].hash.data, 0, 101, 110, &v, sc,
@@ -105,7 +133,9 @@ int test_created_outputs_index(void)
         struct transaction *tx = &blk.vtx[ti];
         for (uint32_t vo = 0; vo < (uint32_t)tx->num_vout; vo++) {
             int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
-            bool got = co_get(db, &tx->hash, vo, &v, sc, sizeof(sc), &sl);
+            bool got = created_outputs_index_get_bounded(
+                db, tx->hash.data, vo, 100, 100, &v, sc, sizeof(sc), &sl,
+                NULL);
             bool match = got && v == tx->vout[vo].value
                 && sl == tx->vout[vo].script_pub_key.size
                 && memcmp(sc, tx->vout[vo].script_pub_key.data, sl) == 0;
@@ -131,7 +161,9 @@ int test_created_outputs_index(void)
     {
         int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
         CO_CHECK("resolves after re-put",
-                 co_get(db, &blk.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl)
+                 created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 100, 100, &v, sc,
+                     sizeof(sc), &sl, NULL)
                  && v == blk.vtx[0].vout[0].value);
     }
 
@@ -176,10 +208,71 @@ int test_created_outputs_index(void)
     for (size_t ti = 0; ti < blk.num_vtx; ti++)
         transaction_free(&blk.vtx[ti]);
     free(blk.vtx);
+    transaction_free(&duplicate.vtx[0]);
+    free(duplicate.vtx);
     transaction_free(&low.vtx[0]);
     free(low.vtx);
     transaction_free(&low2.vtx[0]);
     free(low2.vtx);
+
+    /* Upgrade proof: an existing two-column-key projection is migrated
+     * atomically and keeps its surviving row. The next height-version with the
+     * same outpoint then coexists with it. */
+    sqlite3 *legacy_db = NULL;
+    CO_CHECK("legacy migration db opens",
+             sqlite3_open(":memory:", &legacy_db) == SQLITE_OK);
+    if (legacy_db) {
+        const char *legacy_sql =
+            "CREATE TABLE created_outputs("
+            "txid BLOB NOT NULL,vout INTEGER NOT NULL,value INTEGER NOT NULL,"
+            "script BLOB NOT NULL,height INTEGER NOT NULL,"
+            "PRIMARY KEY(txid,vout)) WITHOUT ROWID;"
+            "INSERT INTO created_outputs VALUES("
+            "x'0100000000000000000000000000000000000000000000000000000000000000',"
+            "0,123,x'51',10);";
+        CO_CHECK("legacy schema seeded",
+                 sqlite3_exec(legacy_db, legacy_sql, NULL, NULL, NULL) ==
+                     SQLITE_OK);
+        CO_CHECK("legacy schema migrates",
+                 created_outputs_index_ensure_schema(legacy_db));
+        uint8_t legacy_txid[32] = {1};
+        int64_t legacy_value = 0;
+        unsigned char legacy_script[MAX_SCRIPT_SIZE];
+        size_t legacy_len = 0;
+        int legacy_height = -1;
+        CO_CHECK("legacy row survives migration",
+                 created_outputs_index_get_bounded(
+                     legacy_db, legacy_txid, 0, 0, 10, &legacy_value,
+                     legacy_script, sizeof(legacy_script), &legacy_len,
+                     &legacy_height) &&
+                 legacy_value == 123 && legacy_height == 10 &&
+                 legacy_len == 1 && legacy_script[0] == 0x51);
+
+        struct block legacy_dup; block_init(&legacy_dup);
+        legacy_dup.num_vtx = 1;
+        legacy_dup.vtx = zcl_calloc(1, sizeof(struct transaction),
+                                    "co_legacy_dup_vtx");
+        transaction_init(&legacy_dup.vtx[0]);
+        memcpy(legacy_dup.vtx[0].hash.data, legacy_txid, sizeof(legacy_txid));
+        legacy_dup.vtx[0].num_vout = 1;
+        legacy_dup.vtx[0].vout = zcl_calloc(1, sizeof(struct tx_out),
+                                           "co_legacy_dup_vout");
+        legacy_dup.vtx[0].vout[0].value = 456;
+        unsigned char op_true[] = {0x51, 0x51};
+        script_set(&legacy_dup.vtx[0].vout[0].script_pub_key, op_true,
+                   sizeof(op_true));
+        CO_CHECK("post-migration duplicate version inserts",
+                 created_outputs_index_put_block(legacy_db, &legacy_dup, 20));
+        CO_CHECK("post-migration old version remains bounded",
+                 created_outputs_index_get_bounded(
+                     legacy_db, legacy_txid, 0, 0, 15, &legacy_value,
+                     legacy_script, sizeof(legacy_script), &legacy_len,
+                     &legacy_height) &&
+                 legacy_value == 123 && legacy_height == 10);
+        transaction_free(&legacy_dup.vtx[0]);
+        free(legacy_dup.vtx);
+        sqlite3_close(legacy_db);
+    }
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

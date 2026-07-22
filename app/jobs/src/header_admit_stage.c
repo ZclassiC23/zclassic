@@ -57,6 +57,9 @@ static _Atomic uint64_t g_admitted_total = 0;
 static _Atomic uint64_t g_inbox_drained_total = 0;
 static _Atomic uint64_t g_inbox_logged_total = 0;
 static _Atomic uint64_t g_reorg_rewind_total = 0;
+static _Atomic uint64_t g_reorg_audit_total = 0;
+static _Atomic uint64_t g_reorg_audit_height_checks = 0;
+static uint64_t g_reorg_audit_batch_generation;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 /* Reducer producer path: count of block_index entries CREATED by the
@@ -273,20 +276,14 @@ static struct block_index *ha_resolve_bi(sqlite3 *db,
 }
 
 
-/* ── Reorg-rewind (mirrors tip_finalize_stage.c rewind) ─────────────── */
-
-/* Read the header_admit_log row hash at `height` and compare it to the
- * active chain's hash at that height. `out_known` is false (a no-op) when
- * the log has no row there OR the chain has no block there; otherwise
- * `out_matches` reflects whether the bytes are equal. Returns false only
- * on a SQL-prepare failure (treated as fatal by the caller). Reuses the
- * SELECT-hash pattern of header_admit_stage_has_record (above). */
-static bool log_row_active_match(sqlite3 *db, int height,
+/* Compare a durable row with the active window. A missing row/window slot is
+ * unknown (no-op); SQL failure is fatal. */
+static bool log_row_active_match(sqlite3_stmt *st, int height,
                                  bool *out_known, bool *out_matches)
 {
     *out_known   = false;
     *out_matches = false;
-    if (!db || height < 0)
+    if (!st || height < 0)
         return true;
 
     struct main_state *ms = g_ms;
@@ -295,13 +292,8 @@ static bool log_row_active_match(sqlite3 *db, int height,
     if (!bi || !bi->phashBlock)
         return true;  /* chain has no block here → no-op (out_known=false) */
 
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT hash FROM header_admit_log WHERE height=?",
-            -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("header_admit", "[header_admit] rewind prepare failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
     sqlite3_bind_int(st, 1, height);
     if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         const void *blob = sqlite3_column_blob(st, 0);
@@ -311,7 +303,6 @@ static bool log_row_active_match(sqlite3 *db, int height,
             *out_matches = (memcmp(blob, bi->phashBlock->data, 32) == 0);
         }
     }
-    sqlite3_finalize(st);
     return true;
 }
 
@@ -364,24 +355,9 @@ static bool rewind_forward_child_if_stale(sqlite3 *db, uint64_t cursor,
     return true;
 }
 
-/* Detect a reorg below the cursor and rewind to the fork point so the
- * stale rows get re-admitted (INSERT OR REPLACE) with the canonical
- * hashes on the forward re-walk.
- *
- * Unlike tip_finalize — whose reorg always touches the tip — a
- * header_admit divergence can sit BELOW a matching tip (the live case:
- * cursor=3129674, tip rows at 3129672/3129673 match, but 3129671 holds a
- * stale pre-reorg hash). A tip-only `cursor-1` check would miss it. So we
- * scan the recent window [cursor-2 .. floor] (capped) and rewind to the
- * DEEPEST divergent height found — re-admitting it and everything above.
- *
- * The scan is bounded by HEADER_ADMIT_REORG_REWIND_MAX_DEPTH so a deep
- * stale fork can't pin the CPU. A height whose log row matches, or whose
- * chain has no block (out_known=false — the LOG_AHEAD shrink case), is a
- * no-op and never triggers a rewind.
- *
- * This touches only the stage cursor and the header_admit_log. Returns false
- * (→ JOB_FATAL) only on a SQL/persist failure. */
+/* A divergence can sit below a matching tip, so scan the bounded recent
+ * active-window overlap and rewind to the deepest mismatch. This mutates only
+ * the stage cursor/log; SQL or cursor persistence failure is fatal. */
 static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
 {
     if (!g_stage || !g_ms)
@@ -412,14 +388,36 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
      * whose logged hash no longer matches the active chain. */
     int floor_h = (int)cursor - HEADER_ADMIT_REORG_REWIND_MAX_DEPTH;
     if (floor_h < 0) floor_h = 0;
+    /* Above the raw lookahead bound active_chain_at() is known NULL. */
+    int top_h = (int)cursor - 1;
+    int window_h = active_chain_cached_height(&g_ms->chain_active);
+    if (top_h > window_h)
+        top_h = window_h;
+
+    sqlite3_stmt *match_st = NULL;
+    if (top_h >= floor_h && sqlite3_prepare_v2(
+            db, "SELECT hash FROM header_admit_log WHERE height=?",
+            -1, &match_st, NULL) != SQLITE_OK) {
+        LOG_WARN("header_admit", "[header_admit] rewind prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
     int deepest_divergent = -1;
-    for (int h = (int)cursor - 1; h >= floor_h; h--) {
+    bool audit_ok = true;
+    for (int h = top_h; h >= floor_h; h--) {
+        atomic_fetch_add_explicit(&g_reorg_audit_height_checks, 1,
+                                  memory_order_relaxed);
         bool known = false, matches = false;
-        if (!log_row_active_match(db, h, &known, &matches))
-            return false;
+        if (!log_row_active_match(match_st, h, &known, &matches)) {
+            audit_ok = false;
+            break;
+        }
         if (known && !matches)
             deepest_divergent = h;  /* keep going: find the lowest one */
     }
+    sqlite3_finalize(match_st);
+    if (!audit_ok)
+        return false;
     if (deepest_divergent < 0)
         return true;  /* recent window is consistent → no rewind */
 
@@ -472,7 +470,6 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
-    reducer_extend_window_to_candidate(ms, true);
 
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
@@ -641,11 +638,17 @@ job_result_t header_admit_stage_step_once(void)
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
     progress_store_tx_lock();
-    bool rewind_ok = rewind_cursor_if_active_chain_reorged(db);
-    if (!rewind_ok) {
-        progress_store_tx_unlock();
-        LOG_RETURN(JOB_FATAL, "header_admit",
-                   "FATAL: active-chain reorg rewind failed");
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (!batched || generation != g_reorg_audit_batch_generation) {
+        atomic_fetch_add(&g_reorg_audit_total, 1u);
+        if (!rewind_cursor_if_active_chain_reorged(db)) {
+            progress_store_tx_unlock();
+            LOG_RETURN(JOB_FATAL, "header_admit",
+                       "FATAL: active-chain reorg rewind failed");
+        }
+        if (batched)
+            g_reorg_audit_batch_generation = generation;
     }
     (void)mailbox_header_admit_drain(handle_header_admit_msg);
     job_result_t r = stage_run_once(g_stage, db);
@@ -671,6 +674,9 @@ void header_admit_stage_shutdown(void)
     atomic_store(&g_inbox_drained_total, (uint64_t)0);
     atomic_store(&g_inbox_logged_total, (uint64_t)0);
     atomic_store(&g_reorg_rewind_total, (uint64_t)0);
+    atomic_store(&g_reorg_audit_total, (uint64_t)0);
+    atomic_store(&g_reorg_audit_height_checks, (uint64_t)0);
+    g_reorg_audit_batch_generation = 0;
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
     atomic_store(&g_produced_total, (uint64_t)0);
@@ -705,6 +711,16 @@ uint64_t header_admit_stage_admitted_total(void)
 uint64_t header_admit_stage_reorg_rewind_total(void)
 {
     return atomic_load(&g_reorg_rewind_total);
+}
+
+uint64_t header_admit_stage_reorg_audit_total(void)
+{
+    return atomic_load(&g_reorg_audit_total);
+}
+
+uint64_t header_admit_stage_reorg_audit_height_checks(void)
+{
+    return atomic_load(&g_reorg_audit_height_checks);
 }
 
 uint64_t header_admit_stage_produced_total(void)
@@ -761,6 +777,10 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       (int64_t)atomic_load(&g_inbox_logged_total));
     json_push_kv_int (out, "reorg_rewind_total",
                       (int64_t)atomic_load(&g_reorg_rewind_total));
+    json_push_kv_int (out, "reorg_audit_total",
+                      (int64_t)atomic_load(&g_reorg_audit_total));
+    json_push_kv_int (out, "reorg_audit_height_checks",
+                      (int64_t)atomic_load(&g_reorg_audit_height_checks));
     json_push_kv_int (out, "header_event_emit_total",
                       (int64_t)atomic_load(&g_header_event_emit_total));
     json_push_kv_int (out, "header_event_emit_fail_total",

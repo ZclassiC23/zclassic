@@ -44,6 +44,7 @@ int utxo_apply_stage_drain(int max_steps)
      * disable (a) — (b)/(c) still run — when it is not installed. */
     if (batched) {
         reducer_commit_invariants_batch_begin(batch_db);
+        utxo_apply_lookup_batch_begin(batch_db);
         if (!utxo_apply_stage_lookup_is_live())
             reducer_commit_invariants_disable_coins_check();
     }
@@ -84,6 +85,7 @@ int utxo_apply_stage_drain(int max_steps)
             committed = false;
         }
         commit_us = GetTimeMicros() - commit_t0;
+        utxo_apply_lookup_batch_end();
         progress_store_tx_unlock();
     }
 

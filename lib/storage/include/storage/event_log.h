@@ -189,12 +189,11 @@ uint64_t event_log_size(event_log_t *log);
  * jbd2_log_wait_commit while the CPU is otherwise idle — the measured fold
  * bottleneck.
  *
- * In deferred mode event_log_append() still writes the header+payload+sentinel
- * via pwrite, in the same order, into the page cache (so a concurrent reader
- * sees the bytes), but SKIPS both per-append fsync()s and marks the log dirty.
- * event_log_flush() then fdatasync()s the file ONCE, making every append since
- * the last flush durable together — the fsync cadence drops from twice-per-event
- * to once-per-drain-batch.
+ * In deferred mode event_log_append() assembles complete
+ * header+payload+sentinel records in a bounded buffer. event_log_flush() writes
+ * that span and fdatasync()s the file ONCE; the reader-visible end advances
+ * only after the bytes are written. The syscall/fsync cadence therefore drops
+ * from per-event to once-per-drain-batch.
  *
  * Crash consistency is UNCHANGED. The tail-scan recovery at event_log_open()
  * walks forward from the start and stops at the first event whose CRC or

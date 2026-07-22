@@ -133,6 +133,18 @@ void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
         *flush_us_ewma = atomic_load(&g_fsync_flush_us_ewma);
 }
 
+void reducer_body_fsync_scope_snapshot(unsigned *depth,
+                                       bool *event_log_deferred)
+{
+    if (depth)
+        *depth = atomic_load_explicit(&g_body_fsync_scope_depth,
+                                      memory_order_acquire);
+    if (event_log_deferred) {
+        event_log_t *log = event_log_singleton();
+        *event_log_deferred = log && event_log_deferred_sync_enabled(log);
+    }
+}
+
 #ifdef ZCL_TESTING
 /* Direct test hook: invokes the exact static precommit function stage.c's
  * hook would call, WITHOUT needing a real open stage_batch/DB — safe because
@@ -152,10 +164,13 @@ void reducer_enter_batched_body_sync(void)
                                         memory_order_relaxed);
     if (!was)
         stage_batch_set_precommit_hook(reducer_batched_durability_precommit);
-    unsigned prior = atomic_fetch_add_explicit(&g_body_fsync_scope_depth, 1,
-                                                memory_order_acq_rel);
-    if (prior > 0)
-        return;
+    (void)atomic_fetch_add_explicit(&g_body_fsync_scope_depth, 1,
+                                    memory_order_acq_rel);
+    /* Reassert on EVERY nested entry. The event-log singleton can be wired
+     * after an outer scope began during boot; treating nested entry as a pure
+     * counter increment then leaves that late handle in per-append two-fsync
+     * mode for the entire catch-up. These setters are idempotent, and depth>0
+     * prevents a concurrent final exit while this entry owns its increment. */
     disk_block_io_set_deferred_sync(true);
     /* event_log is a per-handle flag; NULL singleton (early boot, offline
      * mint with emission suppressed) simply means nothing to defer/flush. */

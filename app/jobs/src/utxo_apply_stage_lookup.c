@@ -17,6 +17,29 @@
 #include <stdint.h>
 #include <string.h>
 
+/* One prepared prevout reader per outer utxo_apply batch. The batch is owned
+ * by one reducer thread and one progress.kv handle, so this thread-local cache
+ * has no cross-thread or rebind hazard. Outside a batch the established
+ * prepare/read/finalize path remains unchanged. */
+static _Thread_local sqlite3 *t_lookup_batch_db;
+static _Thread_local sqlite3_stmt *t_prevout_stmt;
+
+void utxo_apply_lookup_batch_begin(sqlite3 *db)
+{
+    if (t_prevout_stmt)
+        sqlite3_finalize(t_prevout_stmt);
+    t_prevout_stmt = NULL;
+    t_lookup_batch_db = db;
+}
+
+void utxo_apply_lookup_batch_end(void)
+{
+    if (t_prevout_stmt)
+        sqlite3_finalize(t_prevout_stmt);
+    t_prevout_stmt = NULL;
+    t_lookup_batch_db = NULL;
+}
+
 /* Production prevout resolver for utxo_apply, the init-time default for
  * g_lookup - the analogue of script_validate's created_index_prevout
  * self-default, but with the CORRECT semantics for utxo_apply: found must
@@ -53,9 +76,16 @@ bool utxo_apply_stage_lookup_live(const struct uint256 *txid, uint32_t vout,
     int32_t height = 0;
     bool is_coinbase = false;
     size_t slen = 0;
-    if (!coins_kv_get_prevout(db, txid->data, vout, &value, out->script,
-                              UTXO_APPLY_SCRIPT_MAX, &slen, &height,
-                              &is_coinbase))
+    bool found;
+    if (t_lookup_batch_db == db && !coins_ram_active())
+        found = coins_kv_get_prevout_sqlite_cached(
+            db, &t_prevout_stmt, txid->data, vout, &value, out->script,
+            UTXO_APPLY_SCRIPT_MAX, &slen, &height, &is_coinbase);
+    else
+        found = coins_kv_get_prevout(
+            db, txid->data, vout, &value, out->script,
+            UTXO_APPLY_SCRIPT_MAX, &slen, &height, &is_coinbase);
+    if (!found)
         return true;   /* no live output at this txid -> found stays false */
 
     if (slen > UTXO_APPLY_SCRIPT_MAX) {

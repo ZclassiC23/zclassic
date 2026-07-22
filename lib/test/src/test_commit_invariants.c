@@ -262,6 +262,37 @@ static int ci_part1_injection(void)
                  !blocker_exists(UTXO_APPLY_COMMIT_INVARIANT_BLOCKER_ID));
     }
 
+    /* Replacement is an exact zero physical delta. A forged +1 claim must
+     * refuse even though INSERT OR REPLACE itself succeeds. */
+    blocker_clear(UTXO_APPLY_COMMIT_INVARIANT_BLOCKER_ID);
+    {
+        uint8_t txid[32];
+        memset(txid, 0xA0, sizeof(txid)); /* already live above */
+        reducer_commit_invariants_batch_begin(db);
+        bool replaced = coins_kv_add(db, txid, 0, 7777, 101, false, NULL, 0);
+        CI_CHECK("(a) replacement write succeeds", replaced);
+        reducer_commit_invariants_note_coins(5, /*added=*/1, /*spent=*/0);
+        bool ok = reducer_commit_invariants_verify(db);
+        CI_CHECK("(a) replacement collision: forged +1 REFUSES", !ok);
+        CI_CHECK("(a) replacement collision: blocker names height=5 + kind",
+                 ci_blocker_names(5, "coins_conservation"));
+    }
+
+    /* Deleting an absent row is likewise an exact zero physical delta. */
+    blocker_clear(UTXO_APPLY_COMMIT_INVARIANT_BLOCKER_ID);
+    {
+        uint8_t absent[32];
+        memset(absent, 0xDD, sizeof(absent));
+        reducer_commit_invariants_batch_begin(db);
+        bool deleted = coins_kv_spend(db, absent, 9);
+        CI_CHECK("(a) absent DELETE retains no-op API success", deleted);
+        reducer_commit_invariants_note_coins(6, /*added=*/0, /*spent=*/1);
+        bool ok = reducer_commit_invariants_verify(db);
+        CI_CHECK("(a) absent spend: forged -1 REFUSES", !ok);
+        CI_CHECK("(a) absent spend: blocker names height=6 + kind",
+                 ci_blocker_names(6, "coins_conservation"));
+    }
+
     /* Reorg rebaseline: a noted reorg makes verify PASS even with a would-be
      * violation queued (the unwind's inverse math owns conservation). */
     blocker_clear(UTXO_APPLY_COMMIT_INVARIANT_BLOCKER_ID);
@@ -414,8 +445,8 @@ static int ci_part2_green_fold(void)
                      coins_before >= 0 && coins_after == coins_before + 1);
 
             int64_t count_us = reducer_commit_invariants_last_count_us();
-            printf("commit_invariants: green: per-commit coins-count overhead "
-                   "= %lld us (overlay inactive, SQLite COUNT path)\n",
+            printf("commit_invariants: green: O(1) delta-read overhead "
+                   "= %lld us (overlay inactive, no COUNT scan)\n",
                    (long long)count_us);
 
             block_free(&blk1);

@@ -265,6 +265,76 @@ int test_reducer_step_drain_harness(void)
                      reducer_window_extend_failure_count() == before + 1);
             SD_CHECK("window-extend healthy: window actually widened to cand",
                      fault_ms.chain_active.height == 0);
+
+            /* With a best-header chain far above the window but H+1 still
+             * body-missing, the fast path must stop after that single proof;
+             * it cannot scan the remaining header band or consume an
+             * active-chain grow allocation. Once H+1 receives data, the same
+             * topology must immediately reactivate and expose it. */
+            struct uint256 fh1, fh2;
+            memset(&fh1, 0xBC, sizeof(fh1));
+            memset(&fh2, 0xCD, sizeof(fh2));
+            struct block_index fc1, fc2;
+            memset(&fc1, 0, sizeof(fc1));
+            memset(&fc2, 0, sizeof(fc2));
+            fc1.nHeight = 1;
+            fc1.phashBlock = &fh1;
+            fc1.hashBlock = fh1;
+            fc1.pprev = fcand;
+            fc1.nStatus = BLOCK_VALID_TREE;
+            fc2.nHeight = 2;
+            fc2.phashBlock = &fh2;
+            fc2.hashBlock = fh2;
+            fc2.pprev = &fc1;
+            fc2.nStatus = BLOCK_VALID_TREE;
+            bool headers_ok =
+                block_map_insert(&fault_ms.map_block_index, &fh1, &fc1) &&
+                block_map_insert(&fault_ms.map_block_index, &fh2, &fc2);
+            fault_ms.pindex_best_header = &fc2;
+            SD_CHECK("window-extend H+1 gate: headers inserted", headers_ok);
+
+            uint64_t fast_before =
+                active_chain_extend_window_have_data_fast_count();
+            zcl_alloc_fault_fail_next("active_chain");
+            reducer_extend_window_to_candidate(&fault_ms, true);
+            zcl_alloc_fault_clear();
+            SD_CHECK("window-extend H+1 gate: missing body is a no-op",
+                     fault_ms.chain_active.height == 0);
+            SD_CHECK("window-extend H+1 gate: no futile band walk counted",
+                     active_chain_extend_window_have_data_fast_count() ==
+                         fast_before);
+
+            fc1.nStatus |= BLOCK_HAVE_DATA;
+            reducer_extend_window_to_candidate(&fault_ms, true);
+            SD_CHECK("window-extend H+1 gate: body arrival reactivates",
+                     fault_ms.chain_active.height == 1);
+            SD_CHECK("window-extend H+1 gate: productive walk counted once",
+                     active_chain_extend_window_have_data_fast_count() ==
+                         fast_before + 1);
+
+            /* One outer stage batch must perform one window exposure even
+             * when many cursor steps call the shared helper. This is the
+             * production 500-step catch-up shape. */
+            sqlite3 *batch_db = NULL;
+            bool batch_open = sqlite3_open(":memory:", &batch_db) == SQLITE_OK &&
+                              stage_batch_begin(batch_db);
+            SD_CHECK("window-extend batch cache: opens outer transaction",
+                     batch_open);
+            if (batch_open) {
+                uint64_t attempts_before =
+                    reducer_window_extend_attempt_count();
+                reducer_extend_window_to_candidate(&fault_ms, true);
+                reducer_extend_window_to_candidate(&fault_ms, true);
+                reducer_extend_window_to_candidate(&fault_ms, true);
+                SD_CHECK("window-extend batch cache: three steps attempt once",
+                         reducer_window_extend_attempt_count() ==
+                             attempts_before + 1);
+                SD_CHECK("window-extend batch cache: no correctness failure",
+                         reducer_window_extend_failure_count() == before + 1);
+                (void)stage_batch_end(batch_db, false);
+            }
+            if (batch_db)
+                sqlite3_close(batch_db);
         }
 
         main_state_free(&fault_ms);

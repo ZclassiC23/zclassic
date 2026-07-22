@@ -496,32 +496,34 @@ int test_validate_headers_stage(void)
         vh_teardown(dir, &ms, &sc);
     }
 
-    /* ── batched: 20 blocks → 3 steps (8 + 8 + 4) ──────────────────── */
+    /* ── batched: two full batches plus one partial ────────────────── */
     {
+        const int batch_total = 2 * VH_BATCH_SIZE + 4;
         char dir[256]; struct main_state ms; struct synth_chain_vh sc;
         VH_CHECK("batched: setup",
-                 vh_setup("batched", 20, stub_pass, NULL,
+                 vh_setup("batched", batch_total, stub_pass, NULL,
                           dir, sizeof(dir), &ms, &sc) == 0);
-        VH_CHECK("batched: header_admit drains 20",
-                 header_admit_stage_drain(100) == 20);
+        VH_CHECK("batched: header_admit drains all",
+                 header_admit_stage_drain(batch_total + 1) == batch_total);
 
         VH_CHECK("batched: step 1 ADVANCED",
                  validate_headers_stage_step_once() == JOB_ADVANCED);
-        VH_CHECK("batched: cursor at 8 after step 1",
+        VH_CHECK("batched: cursor at one batch after step 1",
                  validate_headers_stage_cursor() == VH_BATCH_SIZE);
         VH_CHECK("batched: step 2 ADVANCED",
                  validate_headers_stage_step_once() == JOB_ADVANCED);
-        VH_CHECK("batched: cursor at 16 after step 2",
+        VH_CHECK("batched: cursor at two batches after step 2",
                  validate_headers_stage_cursor() == 2 * VH_BATCH_SIZE);
         VH_CHECK("batched: step 3 ADVANCED (final partial)",
                  validate_headers_stage_step_once() == JOB_ADVANCED);
-        VH_CHECK("batched: cursor at 20 after step 3",
-                 validate_headers_stage_cursor() == 20);
-        VH_CHECK("batched: passed_total == 20",
-                 validate_headers_stage_passed_total() == 20);
+        VH_CHECK("batched: cursor reaches final partial",
+                 validate_headers_stage_cursor() == (uint64_t)batch_total);
+        VH_CHECK("batched: passed_total reaches all",
+                 validate_headers_stage_passed_total() == (uint64_t)batch_total);
 
         sqlite3 *db = progress_store_db();
-        VH_CHECK("batched: log has 20 rows", log_row_count(db) == 20);
+        VH_CHECK("batched: log has every row",
+                 log_row_count(db) == batch_total);
 
         vh_teardown(dir, &ms, &sc);
     }

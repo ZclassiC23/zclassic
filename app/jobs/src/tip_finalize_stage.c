@@ -14,6 +14,7 @@
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
 #include "tip_finalize_stage_observe.h"
+#include "tip_finalize_batch_drain.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -32,12 +33,10 @@
 #include <string.h>
 
 #define STAGE_NAME "tip_finalize"
-#define TF_REFOLD_HSTAR_REFRESH_STRIDE 4096  /* refold H* throttle; see step_finalize */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
-
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
  *
@@ -580,7 +579,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      * keeps the retraction (the window must track the finalized frontier). See
      * docs/work/refold-fold-rate-bottlenecks.md (#1). */
     if (!refold_in_progress() && (new_tip->nStatus & BLOCK_HAVE_DATA) &&
-        !active_chain_move_window_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
+        !tip_finalize_batch_window_move(ms, new_tip)) { // one-write-path-ok:reducer-tip-authority
         /* HAVE_DATA gate (deadlock-cure step 3): never move the window onto a
          * body-missing N+1 — that is the bodiless-slot pin the have-data extender
          * is built to refuse (false-reorg cascade). When N+1's body is present
@@ -606,12 +605,15 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         tip_finalize_observe_update_last_advance(new_tip->nHeight,
                                                  new_tip->phashBlock->data);
     }
-    /* Refresh the EXTERNAL provable-tip cache (H*) on the finalize advance (hold
-     * progress_store_tx_lock; reads just-committed prefix; every advance so H*
-     * can't stay stale-high). EXCEPT a from-genesis refold: floor=0 rescans the
-     * whole prefix per block — O(chain^2) mint cost — and H* is observability-
-     * only (never coins_kv or a log row), so throttling there is fold-identical. */
-    if (!refold_in_progress() || (next_h % TF_REFOLD_HSTAR_REFRESH_STRIDE) == 0)
+    /* The exact hash-bound receipts checked above prove this one-height H*
+     * extension without re-reading the already-proven prefix. Fast-forward
+     * only from an explicitly published, adjacent frontier. Any gap, fresh
+     * cache, anchor transition, or prior failed row falls back to the complete
+     * SELECT-only proof; reorg rewind always takes that full path above. */
+    if (reducer_frontier_provable_tip_is_published() &&
+        reducer_frontier_provable_tip_cached() == next_h - 1)
+        reducer_frontier_provable_tip_set(next_h);
+    else
         tf_refresh_provable_tip(db);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
@@ -751,8 +753,6 @@ job_result_t tip_finalize_stage_step_once(void)
     progress_store_tx_unlock();
     return r;
 }
-
-STAGE_DRAIN_IMPL(tip_finalize)
 
 void tip_finalize_stage_shutdown(void)
 {

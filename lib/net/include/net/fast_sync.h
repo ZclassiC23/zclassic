@@ -455,7 +455,9 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 /* Max inflight block pieces per peer. Each piece is independently hashed
  * against the manifest before payload blocks are submitted, so this only
  * controls bandwidth-delay utilization, not trust. */
-#define PIECE_PIPELINE_DEPTH 16
+/* One peer may keep 64 independently hash-bound 64-block pieces in flight.
+ * The global contiguous window and loopback proof derive from this constant. */
+#define PIECE_PIPELINE_DEPTH 64
 
 /* Endgame threshold: when fewer than this many pieces remain,
  * request all remaining from every available peer. */

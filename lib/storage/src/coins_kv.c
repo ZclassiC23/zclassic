@@ -67,6 +67,78 @@ static bool coins_kv_overlay_safe(void)
            (coins_ram_writer_thread() || coins_ram_mint_drive_thread());
 }
 
+/* Reducer-batch physical-row meter. Thread-local matches the single reducer
+ * writer and cannot leak into maintenance work on another thread. Each
+ * mutation records SQLite's affected-row result: INSERT OR IGNORE distinguishes
+ * a new row from a collision, while DELETE distinguishes an existing row from
+ * an absent no-op. This is exact without a read-before-write point query. */
+static _Thread_local struct {
+    bool active;
+    int64_t delta;
+    sqlite3 *db;
+    sqlite3_stmt *add_many;
+    sqlite3_stmt *spend_many;
+} t_delta;
+
+void coins_kv_delta_begin(void)
+{
+    coins_kv_delta_cancel();
+    t_delta.active = true;
+    t_delta.delta = 0;
+}
+
+void coins_kv_delta_cancel(void)
+{
+    if (t_delta.add_many)
+        sqlite3_finalize(t_delta.add_many);
+    if (t_delta.spend_many)
+        sqlite3_finalize(t_delta.spend_many);
+    memset(&t_delta, 0, sizeof(t_delta));
+}
+
+bool coins_kv_delta_finish(int64_t *delta_out)
+{
+    if (!t_delta.active || !delta_out)
+        return false;
+    *delta_out = t_delta.delta;
+    coins_kv_delta_cancel();
+    return true;
+}
+
+/* Complete the value replacement after INSERT OR IGNORE reports a primary-key
+ * collision. This preserves the former INSERT OR REPLACE final-row semantics,
+ * while keeping the physical row present (net delta zero) and avoiding a
+ * SELECT probe on every normal insertion. Collisions are rejected by the
+ * reducer's delta builder; this path primarily serves restore/reorg utilities
+ * and makes the low-level store total under adversarial tests. */
+static bool ckv_update_existing(sqlite3 *db, const uint8_t txid[32],
+                                uint32_t vout, int64_t value, int32_t height,
+                                bool is_coinbase, const uint8_t *script,
+                                size_t script_len)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE coins SET value=?,height=?,is_coinbase=?,script=? "
+            "WHERE txid=? AND vout=?", -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("coins_kv", "collision update prepare failed: %s (ext=%d)",
+                 sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)value);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)height);
+    sqlite3_bind_int(s, 3, is_coinbase ? 1 : 0);
+    if (script && script_len > 0)
+        sqlite3_bind_blob(s, 4, script, (int)script_len, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_blob(s, 4, "", 0, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 5, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 6, (int)vout);
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc != SQLITE_DONE)
+        LOG_WARN("coins_kv", "collision update failed rc=%d: %s (ext=%d)",
+                 rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
 bool coins_kv_ensure_schema(sqlite3 *db)
 {
     if (!db) return false;
@@ -104,18 +176,18 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                              script, script_len);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO coins"
+        "INSERT OR IGNORE INTO coins"
         "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
         -1, &s, NULL) != SQLITE_OK)
         LOG_FAIL("coins_kv", "add prepare failed: %s (ext=%d)",
                  sqlite3_errmsg(db), sqlite3_extended_errcode(db));
-    sqlite3_bind_blob (s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_blob (s, 1, txid, 32, SQLITE_TRANSIENT);
     sqlite3_bind_int  (s, 2, (int)vout);
     sqlite3_bind_int64(s, 3, (sqlite3_int64)value);
     sqlite3_bind_int64(s, 4, (sqlite3_int64)height);
     sqlite3_bind_int  (s, 5, is_coinbase ? 1 : 0);
     if (script && script_len > 0)
-        sqlite3_bind_blob(s, 6, script, (int)script_len, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 6, script, (int)script_len, SQLITE_TRANSIENT);
     else
         sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
@@ -124,7 +196,14 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
     if (rc != SQLITE_DONE)
         LOG_WARN("coins_kv", "add step failed rc=%d: %s (ext=%d)",
                  rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+    bool inserted = rc == SQLITE_DONE && sqlite3_changes(db) == 1;
     sqlite3_finalize(s);
+    if (rc == SQLITE_DONE && !inserted &&
+        !ckv_update_existing(db, txid, vout, value, height, is_coinbase,
+                             script, script_len))
+        return false;
+    if (inserted && t_delta.active)
+        t_delta.delta++;
     return rc == SQLITE_DONE;
 }
 
@@ -139,7 +218,7 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
         -1, &s, NULL) != SQLITE_OK)
         LOG_FAIL("coins_kv", "spend prepare failed: %s (ext=%d)",
                  sqlite3_errmsg(db), sqlite3_extended_errcode(db));
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
     sqlite3_bind_int (s, 2, (int)vout);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     /* DELETE of an absent row returns SQLITE_DONE (a no-op, not an error) —
@@ -148,7 +227,10 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     if (rc != SQLITE_DONE)
         LOG_WARN("coins_kv", "spend step failed rc=%d: %s (ext=%d)",
                  rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+    int changed = rc == SQLITE_DONE ? sqlite3_changes(db) : 0;
     sqlite3_finalize(s);
+    if (t_delta.active)
+        t_delta.delta -= changed;
     return rc == SQLITE_DONE;
 }
 
@@ -163,15 +245,21 @@ bool coins_kv_add_many_sqlite(sqlite3 *db, const struct coins_kv_add_row *rows,
      * identical SQL to coins_kv_add — only the prepare/finalize is hoisted out
      * of the row loop. Stack-local (never module-static): no cross-thread
      * cached-statement hazard (see the coins_kv.c header note). */
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO coins"
+    sqlite3_stmt *local = NULL;
+    bool cache = t_delta.active &&
+                 (t_delta.db == NULL || t_delta.db == db);
+    if (cache && !t_delta.db)
+        t_delta.db = db;
+    sqlite3_stmt **slot = cache ? &t_delta.add_many : &local;
+    if (!*slot && sqlite3_prepare_v2(db,
+        "INSERT OR IGNORE INTO coins"
         "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
-        -1, &s, NULL) != SQLITE_OK) {
+        -1, slot, NULL) != SQLITE_OK) {
         LOG_FAIL("coins_kv", "add_many prepare failed: %s (ext=%d)",
                  sqlite3_errmsg(db), sqlite3_extended_errcode(db));
         return false;
     }
+    sqlite3_stmt *s = *slot;
 
     bool ok = true;
     for (size_t i = 0; i < count; i++) {
@@ -181,13 +269,14 @@ bool coins_kv_add_many_sqlite(sqlite3 *db, const struct coins_kv_add_row *rows,
             break; }
         sqlite3_reset(s);
         sqlite3_clear_bindings(s);
-        sqlite3_bind_blob (s, 1, r->txid, 32, SQLITE_STATIC);
+        sqlite3_bind_blob (s, 1, r->txid, 32, SQLITE_TRANSIENT);
         sqlite3_bind_int  (s, 2, (int)r->vout);
         sqlite3_bind_int64(s, 3, (sqlite3_int64)r->value);
         sqlite3_bind_int64(s, 4, (sqlite3_int64)r->height);
         sqlite3_bind_int  (s, 5, r->is_coinbase ? 1 : 0);
         if (r->script && r->script_len > 0)
-            sqlite3_bind_blob(s, 6, r->script, (int)r->script_len, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 6, r->script, (int)r->script_len,
+                              SQLITE_TRANSIENT);
         else
             sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
         int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
@@ -198,8 +287,24 @@ bool coins_kv_add_many_sqlite(sqlite3 *db, const struct coins_kv_add_row *rows,
             ok = false;
             break;
         }
+        bool inserted = sqlite3_changes(db) == 1;
+        if (!inserted && !ckv_update_existing(
+                db, r->txid, r->vout, r->value, r->height, r->is_coinbase,
+                r->script, r->script_len)) {
+            ok = false;
+            break;
+        }
+        if (t_delta.active && inserted)
+            t_delta.delta++;
     }
-    sqlite3_finalize(s);
+    if (cache) {
+        /* Cached statements outlive the caller's row buffers. Release the
+         * final SQLITE_TRANSIENT copies now; the next call will rebind. */
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+    } else {
+        sqlite3_finalize(s);
+    }
     return ok;
 }
 
@@ -231,14 +336,20 @@ bool coins_kv_spend_many_sqlite(sqlite3 *db, const struct coins_kv_spend_row *ro
     if (count == 0) return true;
     if (!rows) return false;
 
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
+    sqlite3_stmt *local = NULL;
+    bool cache = t_delta.active &&
+                 (t_delta.db == NULL || t_delta.db == db);
+    if (cache && !t_delta.db)
+        t_delta.db = db;
+    sqlite3_stmt **slot = cache ? &t_delta.spend_many : &local;
+    if (!*slot && sqlite3_prepare_v2(db,
         "DELETE FROM coins WHERE txid=? AND vout=?",
-        -1, &s, NULL) != SQLITE_OK) {
+        -1, slot, NULL) != SQLITE_OK) {
         LOG_FAIL("coins_kv", "spend_many prepare failed: %s (ext=%d)",
                  sqlite3_errmsg(db), sqlite3_extended_errcode(db));
         return false;
     }
+    sqlite3_stmt *s = *slot;
 
     bool ok = true;
     for (size_t i = 0; i < count; i++) {
@@ -248,7 +359,7 @@ bool coins_kv_spend_many_sqlite(sqlite3 *db, const struct coins_kv_spend_row *ro
             break; }
         sqlite3_reset(s);
         sqlite3_clear_bindings(s);
-        sqlite3_bind_blob(s, 1, r->txid, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 1, r->txid, 32, SQLITE_TRANSIENT);
         sqlite3_bind_int (s, 2, (int)r->vout);
         int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
         /* DELETE of an absent row returns SQLITE_DONE (a no-op, not an error) —
@@ -261,8 +372,15 @@ bool coins_kv_spend_many_sqlite(sqlite3 *db, const struct coins_kv_spend_row *ro
             ok = false;
             break;
         }
+        if (t_delta.active)
+            t_delta.delta -= sqlite3_changes(db);
     }
-    sqlite3_finalize(s);
+    if (cache) {
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+    } else {
+        sqlite3_finalize(s);
+    }
     return ok;
 }
 

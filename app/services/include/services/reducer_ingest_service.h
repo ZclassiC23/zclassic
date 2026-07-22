@@ -79,6 +79,13 @@ void reducer_exit_batched_body_sync(void);
 void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
                                         int64_t *flush_us_ewma);
 
+/* Live batching-state snapshot. `depth` is the global nest count and
+ * `event_log_deferred` proves the CURRENT singleton handle is actually armed
+ * (not merely that an outer scope once entered before the handle existed).
+ * Either output pointer may be NULL. */
+void reducer_body_fsync_scope_snapshot(unsigned *depth,
+                                       bool *event_log_deferred);
+
 #ifdef ZCL_TESTING
 /* Force an artificial delay (microseconds) at the top of the next and every
  * subsequent precommit flush, so a test can prove the timing/EWMA/condition

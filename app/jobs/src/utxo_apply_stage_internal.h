@@ -77,6 +77,9 @@ extern _Atomic uint64_t g_ua_window_miss_total;
 extern _Atomic int64_t  g_ua_window_miss_height;
 extern _Atomic uint64_t g_ua_hash_bound_fallback_total;
 extern _Atomic int64_t  g_ua_hash_bound_fallback_height;
+
+bool utxo_apply_reorg_batch_should_audit(void);
+void utxo_apply_reorg_batch_reset(void);
 extern _Atomic uint64_t g_ua_select_idle_total;
 extern _Atomic int64_t  g_ua_select_idle_height;
 extern _Atomic int64_t  g_ua_select_idle_reason;
@@ -117,6 +120,10 @@ stage_t *utxo_apply_stage_handle(void);
  * utxo_apply_stage.c. */
 bool utxo_apply_stage_lookup_live(const struct uint256 *txid, uint32_t vout,
                                   struct utxo_apply_lookup *out, void *user);
+/* Bracket the single-owner cached SQLite prevout reader around one outer
+ * utxo_apply batch. begin/end are idempotent and finalize any prior statement. */
+void utxo_apply_lookup_batch_begin(struct sqlite3 *db);
+void utxo_apply_lookup_batch_end(void);
 
 /* Select the block the apply stage may act on. Prefer active_chain[height];
  * if that slot is missing/bodiless, recover only when script_validate_log

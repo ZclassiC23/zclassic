@@ -86,6 +86,12 @@ uint64_t header_admit_stage_admitted_total(void);
  * cursor, the cursor was rewound to the fork point so the stale log rows
  * get re-admitted (INSERT OR REPLACE) with the canonical hashes. */
 uint64_t header_admit_stage_reorg_rewind_total(void);
+/* Number of bounded active-chain/log consistency audits. A drain transaction
+ * performs exactly one even when it admits hundreds of headers. */
+uint64_t header_admit_stage_reorg_audit_total(void);
+/* Number of active-window heights actually compared by those audits. Heights
+ * above the raw lookahead window are known NULL and deliberately skipped. */
+uint64_t header_admit_stage_reorg_audit_height_checks(void);
 /* Count of block_index entries the stage CREATED from staged raw header
  * bytes (the reducer producer path). */
 uint64_t header_admit_stage_produced_total(void);

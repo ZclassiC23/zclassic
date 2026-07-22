@@ -5,16 +5,12 @@
  * See storage/event_log.h for the wire format, threading model, and
  * recovery contract.
  *
- * Implementation notes
- * --------------------
  * - Pure pwrite + fsync. The on-disk format is frozen, and the recovery
  *   scan is what keeps any future append backend safe.
- *
  * - The CRC is Castagnoli (CRC-32C, polynomial 0x1EDC6F41), reflected
  *   form, init 0xFFFFFFFF, final xor 0xFFFFFFFF. The software table is
  *   the reference implementation; x86 hosts with SSE4.2 use hardware
  *   CRC32C after a startup self-check matches reference output.
- *
  * - On open() the file is scanned from the tail to detect partial
  *   trailing writes (crash between header-fsync and sentinel-fsync, or
  *   sentinel write torn). Any partial event is TRUNCATED so the file
@@ -25,6 +21,7 @@
  *   strictly append-only and durable before the offset is published. */
 
 #include "storage/event_log.h"
+#include "storage/event_log_pending.h"
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -215,6 +212,9 @@ struct event_log {
      * fdatasync()s once. Both under `lock`. See event_log.h. */
     bool deferred_sync;
     bool dirty;
+    /* Deferred records are assembled here and published to readers only when
+     * the complete span has been written at a batch boundary. */
+    struct event_log_pending pending;
 };
 
 /* Test override for the kill switch: -1 = consult env, 0 = off, 1 = forced.
@@ -395,6 +395,7 @@ event_log_t *event_log_open(const char *path)
     log->end_offset = (uint64_t)end;
     log->deferred_sync = false;
     log->dirty = false;
+    log->pending = (struct event_log_pending){0};
 
     fprintf(stderr,  // obs-ok:event-log-lifecycle
             "[event_log] opened %s (size=%llu)\n",
@@ -405,15 +406,21 @@ event_log_t *event_log_open(const char *path)
 void event_log_close(event_log_t *log)
 {
     if (!log) return;
-    /* Best-effort flush — append() already fsync'd, but in case of a
-     * weird caller pattern, ensure durability one last time. */
+    /* Best-effort flush also publishes any deferred in-memory span. */
     if (log->fd >= 0) {
-        fsync(log->fd);
+        (void)event_log_flush(log);
         close(log->fd);
         log->fd = -1;
     }
+    event_log_pending_destroy(&log->pending);
     pthread_mutex_destroy(&log->lock);
     free(log);
+}
+
+static bool event_log_write_pending_locked(event_log_t *log)
+{
+    return log && event_log_pending_write(&log->pending, log->fd,
+                                           &log->end_offset);
 }
 
 uint64_t event_log_append(event_log_t *log,
@@ -430,7 +437,7 @@ uint64_t event_log_append(event_log_t *log,
     }
 
     pthread_mutex_lock(&log->lock);
-    uint64_t start = log->end_offset;
+    uint64_t start = log->end_offset + (uint64_t)log->pending.len;
     /* Deferred mode skips BOTH per-append fsync()s (batched to a later
      * event_log_flush()), unless the kill switch forces per-append sync. */
     bool defer = log->deferred_sync && !event_log_force_per_append_sync();
@@ -442,6 +449,37 @@ uint64_t event_log_append(event_log_t *log,
     put_u32_le(hdr + 8,  0u);
     uint32_t crc = crc32c(payload, payload_len);
     put_u32_le(hdr + 12, crc);
+
+    uint8_t sent[EVT_SENTINEL_LEN];
+    put_u64_le(sent + 0, EVENT_LOG_SENTINEL_MAGIC);
+    put_u64_le(sent + 8, start);
+
+    if (defer) {
+        size_t event_len = EVT_HDR_LEN + payload_len + EVT_SENTINEL_LEN;
+        if (!event_log_pending_prepare(&log->pending, event_len, log->fd,
+                                       &log->end_offset)) {
+            pthread_mutex_unlock(&log->lock);
+            return UINT64_MAX;
+        }
+        uint8_t *dst = log->pending.data + log->pending.len;
+        memcpy(dst, hdr, EVT_HDR_LEN);
+        if (payload_len > 0)
+            memcpy(dst + EVT_HDR_LEN, payload, payload_len);
+        memcpy(dst + EVT_HDR_LEN + payload_len, sent, EVT_SENTINEL_LEN);
+        log->pending.len += event_len;
+        log->dirty = true;
+        pthread_mutex_unlock(&log->lock);
+        return start;
+    }
+
+    /* A caller that disabled deferred mode without flushing cannot overtake
+     * older buffered records. The immediate fsyncs below cover both spans. */
+    if (!event_log_write_pending_locked(log)) {
+        pthread_mutex_unlock(&log->lock);
+        return UINT64_MAX;
+    }
+    start = log->end_offset;
+    put_u64_le(sent + 8, start);
 
     /* Durable body write: header + payload. */
     if (full_pwrite(log->fd, hdr, EVT_HDR_LEN, (off_t)start) < 0) {
@@ -462,7 +500,7 @@ uint64_t event_log_append(event_log_t *log,
             return UINT64_MAX;
         }
     }
-    if (!defer && fsync(log->fd) < 0) {
+    if (fsync(log->fd) < 0) {
         pthread_mutex_unlock(&log->lock);
         fprintf(stderr,  // obs-ok:event-log-append-failure
                 "[event_log] fsync(hdr+payload) failed: %s\n",
@@ -471,9 +509,6 @@ uint64_t event_log_append(event_log_t *log,
     }
 
     /* Durable completion marker: sentinel. */
-    uint8_t sent[EVT_SENTINEL_LEN];
-    put_u64_le(sent + 0, EVENT_LOG_SENTINEL_MAGIC);
-    put_u64_le(sent + 8, start);
     if (full_pwrite(log->fd, sent, EVT_SENTINEL_LEN,
                     (off_t)(start + EVT_HDR_LEN + payload_len)) < 0) {
         pthread_mutex_unlock(&log->lock);
@@ -482,19 +517,12 @@ uint64_t event_log_append(event_log_t *log,
                 strerror(errno));
         return UINT64_MAX;
     }
-    if (!defer) {
-        if (fsync(log->fd) < 0) {
-            pthread_mutex_unlock(&log->lock);
-            fprintf(stderr,  // obs-ok:event-log-append-failure
-                    "[event_log] fsync(sentinel) failed: %s\n",
-                    strerror(errno));
-            return UINT64_MAX;
-        }
-    } else {
-        /* Bytes are in the page cache and ordered; a later event_log_flush()
-         * fdatasync()s the file once before any durable marker referencing
-         * these bytes commits. */
-        log->dirty = true;
+    if (fsync(log->fd) < 0) {
+        pthread_mutex_unlock(&log->lock);
+        fprintf(stderr,  // obs-ok:event-log-append-failure
+                "[event_log] fsync(sentinel) failed: %s\n",
+                strerror(errno));
+        return UINT64_MAX;
     }
 
     log->end_offset = start + EVT_HDR_LEN + payload_len + EVT_SENTINEL_LEN;
@@ -526,6 +554,11 @@ bool event_log_flush(event_log_t *log)
     if (!log->dirty) {
         pthread_mutex_unlock(&log->lock);
         return true;
+    }
+    if (!event_log_write_pending_locked(log)) {
+        pthread_mutex_unlock(&log->lock);
+        LOG_FAIL("event_log", "flush: pwrite(%s) failed: %s",
+                 log->path, strerror(errno));
     }
     if (fdatasync(log->fd) < 0) {
         /* Keep `dirty` set so a retry re-attempts the fdatasync; the caller

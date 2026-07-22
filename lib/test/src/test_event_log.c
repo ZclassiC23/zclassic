@@ -23,7 +23,9 @@
 #include "test/test_helpers.h"
 
 #include "platform/time_compat.h"
+#include "services/reducer_ingest_service.h"
 #include "storage/event_log.h"
+#include "storage/event_log_singleton.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -876,6 +878,7 @@ static int run_deferred_sync(int *failures_out)
      * and no flush happens implicitly. */
     event_log_set_deferred_sync(log, true);
     EL_CHECK("defer: enabled after set", event_log_deferred_sync_enabled(log));
+    uint64_t visible_before = event_log_size(log);
     const int N = 20;
     for (int i = 0; i < N; i++) {
         memset(buf, (int)(0x20 + i), sizeof(buf));
@@ -883,10 +886,14 @@ static int run_deferred_sync(int *failures_out)
     }
     EL_CHECK("defer: appends left the log dirty (no per-append fsync)",
              event_log_test_dirty(log));
+    EL_CHECK("defer: unflushed batch is not reader-visible",
+             event_log_size(log) == visible_before);
 
     /* Flush: one fdatasync, dirty cleared. A second flush is a no-op true. */
     EL_CHECK("defer: flush succeeds", event_log_flush(log));
     EL_CHECK("defer: flush clears dirty", !event_log_test_dirty(log));
+    EL_CHECK("defer: flush publishes the complete batch",
+             event_log_size(log) > visible_before);
     EL_CHECK("defer: flush is idempotent when clean", event_log_flush(log));
 
     /* All 1 (baseline) + N events must survive a close + reopen. */
@@ -902,6 +909,29 @@ static int run_deferred_sync(int *failures_out)
      * fault-injection checks below. */
     EL_CHECK("defer: reopened handle defaults to per-append",
              !event_log_deferred_sync_enabled(log));
+
+    /* Boot-order regression: an outer scope may begin before projections wire
+     * the singleton. A nested reducer kick must arm the late handle instead of
+     * assuming the outermost entry already did so. */
+    event_log_set_singleton(NULL);
+    reducer_enter_batched_body_sync();
+    event_log_set_singleton(log);
+    reducer_enter_batched_body_sync();
+    unsigned scope_depth = 0;
+    bool singleton_deferred = false;
+    reducer_body_fsync_scope_snapshot(&scope_depth, &singleton_deferred);
+    EL_CHECK("defer: nested entry arms singleton wired mid-scope",
+             scope_depth == 2 && singleton_deferred);
+    reducer_exit_batched_body_sync();
+    reducer_body_fsync_scope_snapshot(&scope_depth, &singleton_deferred);
+    EL_CHECK("defer: inner exit preserves outer deferred scope",
+             scope_depth == 1 && singleton_deferred);
+    reducer_exit_batched_body_sync();
+    reducer_body_fsync_scope_snapshot(&scope_depth, &singleton_deferred);
+    EL_CHECK("defer: outer exit flushes and disables late singleton",
+             scope_depth == 0 && !singleton_deferred);
+    event_log_set_singleton(NULL);
+
     struct stream_ctx sc = {0};
     sc.ordered = true;
     event_log_stream(log, 0, stream_cb, &sc);

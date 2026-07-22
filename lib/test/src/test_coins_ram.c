@@ -336,6 +336,11 @@ int test_coins_ram(void)
     CR_CHECK("applied frontier read",
              coins_kv_get_applied_height(db, &applied, &found));
     CR_CHECK("applied frontier == flushed+1", found && applied == 21);
+    CR_CHECK("stale flush after newer commit is a no-op", coins_ram_flush(19));
+    applied = -1; found = false;
+    CR_CHECK("stale flush cannot rewind applied frontier",
+             coins_kv_get_applied_height(db, &applied, &found) &&
+             found && applied == 21 && coins_kv_count(db) == 4);
 
     /* ── coins_applied_height bound check (Wave N hardening, FORWARD_PLAN.md
      * item 7): the stored width is int64 but every reader treats the value
@@ -694,6 +699,23 @@ int test_coins_ram(void)
                  coins_kv_get_applied_height(dbD, &dapplied, &dfound));
         CR_CHECK("defer: applied frontier == 41",
                  dfound && dapplied == 41);
+
+        struct uint256 dt2 = cr_txid(0x78);
+        CR_CHECK("stale-dirty: add next-height overlay coin",
+                 coins_kv_add(dbD, dt2.data, 0, 8888, 41, false,
+                              (const uint8_t *)"e", 1));
+        progress_store_tx_lock();
+        CR_CHECK("stale-dirty: batch begin", stage_batch_begin(dbD));
+        CR_CHECK("stale-dirty: note next height", coins_ram_note_applied(41));
+        CR_CHECK("stale-dirty: batch end", stage_batch_end(dbD, true));
+        progress_store_tx_unlock();
+        CR_CHECK("stale-dirty: old waiter promotes to dirty height",
+                 coins_ram_flush(40));
+        dapplied = -1; dfound = false;
+        CR_CHECK("stale-dirty: promoted flush lands overlay without rewind",
+                 cr_scalar_i64(dbD, "SELECT COUNT(*) FROM coins") == 2 &&
+                 coins_kv_get_applied_height(dbD, &dapplied, &dfound) &&
+                 dfound && dapplied == 42);
 
         coins_ram_writer_exit();
         coins_ram_shutdown();

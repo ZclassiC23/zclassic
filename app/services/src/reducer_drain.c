@@ -49,6 +49,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/refold_cadence.h"   /* refold_cadence_drain_batch (mint/refold) */
+#include "jobs/catchup_cadence.h"  /* peer-gap-gated live-sync batch */
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -240,6 +241,7 @@ static _Atomic uint64_t g_drain_exit_converged_total;
 static _Atomic uint64_t g_drain_exit_budget_total;
 static _Atomic int64_t  g_drain_last_round_advances;
 static _Atomic int64_t  g_drain_last_elapsed_us;
+static _Atomic int64_t  g_drain_last_stage_us[REDUCER_DRAIN_NUM_STAGES];
 
 void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out)
 {
@@ -249,6 +251,8 @@ void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out)
     out->exit_budget_total    = atomic_load(&g_drain_exit_budget_total);
     out->last_round_advances  = atomic_load(&g_drain_last_round_advances);
     out->last_elapsed_us      = atomic_load(&g_drain_last_elapsed_us);
+    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++)
+        out->last_stage_us[i] = atomic_load(&g_drain_last_stage_us[i]);
 }
 
 #ifdef ZCL_TESTING
@@ -258,6 +262,8 @@ void reducer_drain_exit_stats_reset_for_testing(void)
     atomic_store(&g_drain_exit_budget_total, 0u);
     atomic_store(&g_drain_last_round_advances, 0);
     atomic_store(&g_drain_last_elapsed_us, 0);
+    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++)
+        atomic_store(&g_drain_last_stage_us[i], 0);
 }
 #endif
 
@@ -272,7 +278,10 @@ static int reducer_drain_all_stages(int max_steps_per_stage,
 {
     int total = 0;
     for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++) {
+        int64_t started_us = GetTimeMicros();
         int a = g_drain_stages[i].drain(max_steps_per_stage);
+        atomic_store(&g_drain_last_stage_us[i],
+                     GetTimeMicros() - started_us);
         if (adv_per_stage)
             adv_per_stage[i] = a;
         total += a;
@@ -416,7 +425,13 @@ int reducer_drain_to_convergence(void)
      * (boot_datadir_lock_acquire calls hw_bench_init() right after the
      * datadir lock is acquired, before the reducer can ever run), never
      * lazily from here. */
-    const int     per_stage_batch = hw_bench_batch_size(100);
+    /* The block-swarm/message path reaches this synchronous kick directly,
+     * not only the staged-sync supervisor children. Apply the SAME peer-gap-
+     * gated catch-up batch policy here so block arrival cannot silently fall
+     * back to the hardware baseline while the node is far behind. Inactive at
+     * or near tip: catchup_cadence_drain_batch returns its argument unchanged. */
+    const int per_stage_batch =
+        catchup_cadence_drain_batch(hw_bench_batch_size(100));
     return reducer_drain_core(drain_budget_us, drain_hard_cap, per_stage_batch,
                               /*converge_on_frontier_stall=*/false);
 }
@@ -451,7 +466,15 @@ int reducer_kick(struct chain_activation_controller *ctl)
     if (!ctl)
         return 0;
     zcl_mutex_lock(&ctl->mutex);
+    /* The normal network/FSM kick emits the same block/header events as the
+     * unbudgeted mint drive. Give it the same crash-ordered batch boundary;
+     * the depth-counted scope makes this a no-op when an ingest caller already
+     * owns the outer scope. */
+    reducer_drive_enter_labeled("reducer_kick");
+    reducer_enter_batched_body_sync();
     int advanced = reducer_drain_to_convergence();
+    reducer_exit_batched_body_sync();
+    reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
     return advanced;
 }

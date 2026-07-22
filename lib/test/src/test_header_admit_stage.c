@@ -225,8 +225,11 @@ int test_header_admit_stage(void)
         HA_CHECK("init is idempotent (same ms)",
                  header_admit_stage_init(&ms));
 
+        uint64_t audits_before = header_admit_stage_reorg_audit_total();
         int advanced = header_admit_stage_drain(100);
         HA_CHECK("drain advances 5 times", advanced == 5);
+        HA_CHECK("one bounded reorg audit per drain batch",
+                 header_admit_stage_reorg_audit_total() == audits_before + 1);
         HA_CHECK("cursor reaches 5",
                  header_admit_stage_cursor() == 5);
         HA_CHECK("admitted_total == 5",

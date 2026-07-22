@@ -730,6 +730,8 @@ int test_utxo_apply_stage(void)
                  uv_setup("happy", 3, UV_FAIL_NONE, -1, dir, sizeof(dir),
                           &ms, &sc) == 0);
         UV_CHECK("happy: drains 3", utxo_apply_stage_drain(100) == 3);
+        UV_CHECK("happy: one reorg audit per batch",
+                 utxo_apply_stage_reorg_audit_total() == 1);
         UV_CHECK("happy: cursor at 3", utxo_apply_stage_cursor() == 3);
         UV_CHECK("happy: verified_total == 3",
                  utxo_apply_stage_verified_total() == 3);

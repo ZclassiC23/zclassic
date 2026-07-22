@@ -77,6 +77,29 @@ static uint64_t read_cursor(sqlite3 *db, const char *name)
     return v;
 }
 
+struct lcc_batch_step_state {
+    sqlite3 *db;
+    const char *stage_name;
+    int64_t skip_height;
+};
+
+static job_result_t lcc_batch_step(struct stage_step_ctx *ctx)
+{
+    struct lcc_batch_step_state *s = ctx ? ctx->user : NULL;
+    if (!s || !s->db || !s->stage_name)
+        return JOB_FATAL;
+    if ((int64_t)ctx->cursor_in != s->skip_height) {
+        char sql[192];
+        snprintf(sql, sizeof sql,
+                 "INSERT INTO \"%s_log\"(height,ok) VALUES(%llu,1)",
+                 s->stage_name, (unsigned long long)ctx->cursor_in);
+        if (!exec_ok(s->db, sql))
+            return JOB_FATAL;
+    }
+    ctx->cursor_out = ctx->cursor_in + 1;
+    return JOB_ADVANCED;
+}
+
 int test_lcc_write_rules(void);
 int test_lcc_write_rules(void)
 {
@@ -195,6 +218,41 @@ int test_lcc_write_rules(void)
     LCC_CHECK("non-stage named cursor is exempt",
               stage_set_named_cursor(db, "some_helper_cursor", 999) &&
               read_cursor(db, "some_helper_cursor") == 999);
+
+    /* A batched stage coalesces its repeated cursor checks to the only
+     * externally-visible boundary. Prove both sides: a complete range commits;
+     * one missing row vetoes and rolls back the entire batch. */
+    LCC_CHECK("batch: create contiguous log",
+              exec_ok(db, "CREATE TABLE batchstage_log("
+                          "height INTEGER PRIMARY KEY, ok INTEGER NOT NULL)"));
+    struct lcc_batch_step_state good = { db, "batchstage", -1 };
+    stage_t *good_stage = stage_create("batchstage", lcc_batch_step, &good);
+    LCC_CHECK("batch: contiguous stage created", good_stage != NULL);
+    LCC_CHECK("batch: contiguous begin", stage_batch_begin(db));
+    LCC_CHECK("batch: contiguous advances twice",
+              stage_run_once(good_stage, db) == JOB_ADVANCED &&
+              stage_run_once(good_stage, db) == JOB_ADVANCED);
+    LCC_CHECK("batch: contiguous boundary commits",
+              stage_batch_end(db, true));
+    LCC_CHECK("batch: contiguous cursor durable",
+              read_cursor(db, "batchstage") == 2);
+    stage_destroy(good_stage);
+
+    LCC_CHECK("batch-hole: create log",
+              exec_ok(db, "CREATE TABLE batchhole_log("
+                          "height INTEGER PRIMARY KEY, ok INTEGER NOT NULL)"));
+    struct lcc_batch_step_state hole = { db, "batchhole", 1 };
+    stage_t *hole_stage = stage_create("batchhole", lcc_batch_step, &hole);
+    LCC_CHECK("batch-hole: stage created", hole_stage != NULL);
+    LCC_CHECK("batch-hole: begin", stage_batch_begin(db));
+    LCC_CHECK("batch-hole: in-transaction cursors advance",
+              stage_run_once(hole_stage, db) == JOB_ADVANCED &&
+              stage_run_once(hole_stage, db) == JOB_ADVANCED);
+    LCC_CHECK("batch-hole: commit boundary REFUSES the range",
+              !stage_batch_end(db, true));
+    LCC_CHECK("batch-hole: cursor rollback is durable",
+              read_cursor(db, "batchhole") == 0 && !stage_batch_active());
+    stage_destroy(hole_stage);
 
     sqlite3_close(db);
 

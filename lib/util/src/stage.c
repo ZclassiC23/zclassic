@@ -22,6 +22,7 @@
 
 #include "platform/time_compat.h"
 #include "util/stage.h"
+#include "stage_batch_internal.h"
 
 #include "core/utiltime.h"
 #include "storage/progress_store.h"
@@ -209,18 +210,20 @@ static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out)
     return true;
 }
 
-/* UPSERT the cursor row. Caller is responsible for transaction
- * lifecycle — this function only runs the UPSERT statement. */
-static bool cursor_write_locked(sqlite3 *db, const char *name, uint64_t value)
+/* UPSERT the cursor row with an already-observed previous value. The batched
+ * stage hot path defers its LCC range proof to the sole durable commit; all
+ * other callers pass defer_lcc=false and retain the immediate write guard. */
+static bool cursor_write_locked_known_prev(sqlite3 *db, const char *name,
+                                           uint64_t value, uint64_t prev,
+                                           bool defer_lcc)
 {
     /* LCC write rule (see util/stage_lcc.h): THE cursor-write chokepoint. A
      * RAISE over a rowless hole in `<name>_log` is refused when enforcement is
      * enabled (txn rolls back), else logged loudly but allowed (default). */
-    uint64_t prev = 0;
-    if (!cursor_read(db, name, &prev))
-        return false;
     char lccerr[192];
-    if (value > prev &&
+    bool lcc_deferred = value > prev && defer_lcc &&
+                        stage_batch_defer_lcc(name, prev, value);
+    if (value > prev && !lcc_deferred &&
         !stage_lcc_check_raise(db, name, prev, value, lccerr, sizeof lccerr)) {
         bool enforce = stage_lcc_enforcement_enabled(db);
         fprintf(stderr, "[stage] LCC %s raise %s %llu->%llu: %s\n",  // obs-ok:stage-lcc-refuse
@@ -253,6 +256,17 @@ static bool cursor_write_locked(sqlite3 *db, const char *name, uint64_t value)
         return false;
     }
     return true;
+}
+
+/* UPSERT the cursor row. Caller is responsible for transaction lifecycle.
+ * General cursor writers do not already own a trusted previous value, so read
+ * it and perform the immediate LCC check exactly as before. */
+static bool cursor_write_locked(sqlite3 *db, const char *name, uint64_t value)
+{
+    uint64_t prev = 0;
+    if (!cursor_read(db, name, &prev))
+        return false;
+    return cursor_write_locked_known_prev(db, name, value, prev, false);
 }
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -337,31 +351,7 @@ static void stage_record_step_timing(stage_t *s, int64_t elapsed_us)
     atomic_store(&s->step_us_ewma, next);
 }
 
-/* ── Batched drain (one COMMIT per batch, not one per step) ─────────────
- *
- * When a drain driver opens a batch txn (stage_batch_begin), the per-step
- * BEGIN/COMMIT in stage_run_once is replaced by a per-step SAVEPOINT so the
- * whole batch commits once. The flag is process-global because
- * progress_store_tx_lock (recursive) already serializes every progress.kv
- * txn — at most one batch can be open at a time. The caller holds that lock
- * across begin..end (see util/stage.h). */
 #define STAGE_SAVEPOINT_NAME "stage_step"
-static _Atomic bool g_batch_open = false;
-/* Set when a step enrols durable, correct work into the open batch that did
- * NOT advance the forward cursor (a reorg unwind). stage_batch_end then COMMITs
- * the batch even when advanced==0, instead of rolling the unwind back. Cleared
- * on every begin. */
-static _Atomic bool g_batch_dirty = false;
-
-/* Pre-commit hook (see util/stage.h). Set once at boot before any drain
- * thread runs, so a plain pointer read in stage_batch_end() is race-free. */
-static stage_batch_precommit_fn g_precommit_hook = NULL;
-
-void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn)
-{
-    g_precommit_hook = fn;
-}
-
 /* Test-only commit-boundary hook (see util/stage.h). NULL in production —
  * `stage_run_once`'s call site below is one pointer load + branch when
  * unset, and `g_boundary_seq` is only ever incremented inside that same
@@ -375,106 +365,7 @@ void stage_set_test_commit_boundary_hook(stage_commit_boundary_fn fn)
     g_boundary_seq  = 0;
 }
 
-/* Wall time of the outer batch COMMIT — the one fsync point a batched drain
- * still pays per batch. Process-global like g_batch_open (at most one batch
- * commits at a time), same seeded 1/16 EWMA + floor-to-1 idiom as
- * stage_record_step_timing above. */
-static _Atomic int64_t g_batch_commit_last_us;
-static _Atomic int64_t g_batch_commit_us_ewma;
-
-static void stage_batch_record_commit_timing(int64_t elapsed_us)
-{
-    if (elapsed_us <= 0)
-        elapsed_us = 1;
-    atomic_store(&g_batch_commit_last_us, elapsed_us);
-    int64_t prev = atomic_load(&g_batch_commit_us_ewma);
-    int64_t next = (prev == 0) ? elapsed_us : prev + (elapsed_us - prev) / 16;
-    atomic_store(&g_batch_commit_us_ewma, next);
-}
-
-int64_t stage_batch_commit_us_ewma(void)
-{
-    return atomic_load(&g_batch_commit_us_ewma);
-}
-
-bool stage_batch_active(void)
-{
-    return atomic_load(&g_batch_open);
-}
-
-void stage_batch_mark_dirty(void)
-{
-    atomic_store(&g_batch_dirty, true);
-}
-
-bool stage_batch_dirty(void)
-{
-    return atomic_load(&g_batch_dirty);
-}
-
-bool stage_batch_begin(sqlite3 *db)
-{
-    if (!db) return false;
-    if (atomic_load(&g_batch_open)) {
-        /* Nested begin without an end is a caller bug; refuse rather than
-         * silently mask it (a stray COMMIT would defeat the co-commit
-         * invariant). */
-        fprintf(stderr, "[stage] batch_begin: a batch is already open\n");  // obs-ok:stage-begin-failure
-        return false;
-    }
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "[stage] batch BEGIN: %s\n",  // obs-ok:stage-begin-failure
-                err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    atomic_store(&g_batch_open, true);
-    atomic_store(&g_batch_dirty, false);
-    return true;
-}
-
-bool stage_batch_end(sqlite3 *db, bool commit)
-{
-    if (!db) return false;
-    if (!atomic_load(&g_batch_open)) {
-        /* No batch open — nothing to finish. Treat as benign no-op. */
-        return true;
-    }
-    /* Ordering seam: before the outer COMMIT, give the pre-commit hook a
-     * chance to flush any on-disk artifact a committed row will reference
-     * (deferred block-body fdatasync). A veto (false) means those bytes are
-     * NOT durable, so committing the rows that reference them would break the
-     * crash-ordering invariant — ROLLBACK the whole batch instead. Only on the
-     * commit path; a ROLLBACK never needs the flush. */
-    if (commit && g_precommit_hook && !g_precommit_hook()) {
-        fprintf(stderr, "[stage] batch pre-commit hook vetoed COMMIT; "  // obs-ok:stage-commit-failure
-                "rolling back\n");
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        atomic_store(&g_batch_open, false);
-        return false;
-    }
-    char *err = NULL;
-    const char *fini = commit ? "COMMIT" : "ROLLBACK";
-    int64_t commit_t0 = commit ? GetTimeMicros() : 0;
-    int rc = sqlite3_exec(db, fini, NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[stage] batch %s: %s\n",  // obs-ok:stage-commit-failure
-                fini, err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        /* The outer txn may still be open; force it closed so the next
-         * batch can BEGIN cleanly. */
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        atomic_store(&g_batch_open, false);
-        return false;
-    }
-    if (err) sqlite3_free(err);
-    if (commit)
-        stage_batch_record_commit_timing(GetTimeMicros() - commit_t0);
-    atomic_store(&g_batch_open, false);
-    return true;
-}
-
+/* Outer batch-COMMIT wall time; seeded 1/16 EWMA, floor-to-1. */
 /* Commit this step's work. Batched: RELEASE the savepoint (the step's
  * writes stay enrolled in the still-open outer batch txn, to be COMMITted
  * once by stage_batch_end). Unbatched: COMMIT the step's own txn. Returns
@@ -547,7 +438,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
      * coin write + cursor + *_log row), but the whole batch commits ONCE.
      * `batched` is sampled once and used for every open/finish call below so
      * the txn shape is internally consistent for this step. */
-    const bool batched = atomic_load(&g_batch_open);
+    const bool batched = stage_batch_active();
     const char *txn_open  = batched ? "SAVEPOINT " STAGE_SAVEPOINT_NAME
                                     : "BEGIN IMMEDIATE";
     char *err = NULL;
@@ -582,7 +473,8 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
             pthread_mutex_unlock(&s->lock);
             return stage_note_fatal(s, "ADVANCED but cursor did not move");
         }
-        if (!cursor_write_locked(db, s->name, ctx.cursor_out)) {
+        if (!cursor_write_locked_known_prev(db, s->name, ctx.cursor_out, cur,
+                                            batched)) {
             stage_step_rollback(db, batched);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);

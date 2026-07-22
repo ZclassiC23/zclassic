@@ -61,9 +61,11 @@ static int64_t g_swarm_last_progress_time = 0;
  * which must agree with this file's parse_block_piece_payload_refs on the
  * same per-block cap. */
 #define BLOCK_PAYLOAD_SUBMIT_RETRIES 3
-#define BLOCK_PAYLOAD_DRAIN_BATCH (8u * BLOCKS_PER_PIECE)
 #define BLOCK_PIECE_TIMEOUT_SECS 8
-#define BLOCK_PIECE_CONTIGUOUS_WINDOW 4u
+/* Keep one full per-peer request pipeline contiguous: a bounded 1,024-block
+ * ahead window. Every piece remains manifest-hash checked before any block
+ * reaches the reducer. */
+#define BLOCK_PIECE_CONTIGUOUS_WINDOW PIECE_PIPELINE_DEPTH
 
 struct block_piece_payload_ref {
     const unsigned char *data;
@@ -72,10 +74,7 @@ struct block_piece_payload_ref {
 
 static int block_payload_drain_catchup(struct msg_processor *mp)
 {
-    if (!mp)
-        return 0;
-    mp->block_swarm_staged_since_drain = 0;
-    if (!mp->catchup_drain)
+    if (!mp || !mp->catchup_drain)
         return 0;
     return mp->catchup_drain(mp->catchup_drain_ctx);
 }
@@ -84,7 +83,8 @@ static bool block_payload_retry_after_drain(const char *reason)
 {
     return reason &&
         (strcmp(reason, "header-admit-inbox-full") == 0 ||
-         strcmp(reason, "p2p-block-header-missing") == 0);
+         strcmp(reason, "p2p-block-header-missing") == 0 ||
+         strcmp(reason, "p2p-block-intake-full") == 0);
 }
 
 static bool block_payload_submit_accepted(
@@ -179,11 +179,19 @@ static bool block_payload_submit_all(struct msg_processor *mp,
         stream_free(&block_stream);
     }
 
-    mp->block_swarm_staged_since_drain += count;
-    if (mp->block_swarm_staged_since_drain >= BLOCK_PAYLOAD_DRAIN_BATCH)
-        (void)block_payload_drain_catchup(mp);
+    /* The staged-sync supervisor is the single continuous reducer driver.
+     * Do not park this P2P message thread behind a whole-pipeline drain after
+     * an arbitrary body count: that stalls the next wire piece even while the
+     * bounded inbox and body store still have capacity. The retry loop above
+     * retains the synchronous drain exactly where it is required for bounded
+     * backpressure (inbox full / missing header), then retries the same body. */
     if (batch_scope_open)
         mp->catchup_batch_end(mp->catchup_batch_scope_ctx);
+    /* Connman body staging and the reducer share the activation mutex. A 1 ms
+     * handoff per verified 64-block piece (≤2.1 s over 133k blocks) prevents
+     * connman from starving the waiting reducer between durability scopes;
+     * validity and wire ordering are unchanged. */
+    platform_sleep_ms(1);
     return true;
 }
 
@@ -1389,12 +1397,10 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         }
                     }
                 }
-
                 int our_h = active_chain_height(&mp->main_state->chain_active);
                 if (node->blk_manifest_received)
                     printf("Peer %s: block manifest h=%d..%d (%u pieces)\n",
                            node->addr_name, start_h, end_h, num_pieces);
-
                 /* If peer is ahead and no active block swarm, start one. */
                 if (node->blk_manifest_received &&
                     end_h > our_h + BLOCKS_PER_PIECE &&
@@ -1407,7 +1413,6 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     };
                     memcpy(pm.tip_hash, tip_hash, 32);
                     memcpy(pm.merkle_root, merkle_root, 32);
-
                     pthread_mutex_lock(&g_block_swarm_mutex);
                     if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
                         block_swarm_mark_complete_through_height(
@@ -1423,7 +1428,6 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 }
                 free(piece_hashes);
             }
-
         } else if (strcmp(cmd, MSG_BLOCK_REQ) == 0) {
             mp_serve_block_req(mp, node, s);
 
@@ -1495,7 +1499,6 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             g_block_swarm.manifest.piece_hashes[piece_index],
                             32) == 0;
                     }
-
                     bool payloads_accepted = block_refs != NULL;
                     if (verified && block_refs) {
                         pthread_mutex_unlock(&g_block_swarm_mutex);

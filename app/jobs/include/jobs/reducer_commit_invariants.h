@@ -12,14 +12,13 @@
  *   (a) coins_kv row-count delta == outputs created − inputs spent across the
  *       batch. `expected` is Σ(added − spent) accumulated in memory from each
  *       authored block's own delta stats (no table scan); `actual` is the
- *       coins_kv count delta between batch begin and commit. The count is EXACT
- *       but O(rows) on the SQLite path (and worse under the coins_ram overlay,
- *       whose count recomputes the effective set); it is therefore GATED — run
- *       only when the overlay is INACTIVE (the live steady-state commit path
- *       this invariant most protects; batches there are 1–2 blocks so the count
- *       is negligible in wall-%). Under the bulk-fold overlay the count is
- *       skipped and (a) rides the fold's own from-genesis self-verify +
- *       crash-proof accounting; (b)/(c) still fire. See verify() for the gate.
+ *       exact physical coins_kv row delta metered at each add/spend from
+ *       SQLite's affected-row result, so replacements and absent deletes
+ *       retain their real zero delta without a read-before-write query or
+ *       either batch-boundary COUNT(*) scan.
+ *       Under the bulk-fold overlay the meter is skipped and (a) rides the
+ *       fold's own from-genesis self-verify + crash-proof accounting; (b)/(c)
+ *       still fire. See verify() for the gate.
  *
  *   (b) the anchor set is append-only / monotonic within the batch: every
  *       Sprout/Sapling frontier appended by the fold lands at a height strictly
@@ -47,8 +46,8 @@ struct sqlite3;
 /* Blocker id (literal so the check_blocker_remedy lint gate resolves it). */
 #define UTXO_APPLY_COMMIT_INVARIANT_BLOCKER_ID "utxo_apply.commit_invariant_violation"
 
-/* Open a fresh conservation window: reset accumulators, snapshot the pre-batch
- * coins count (unless the overlay is active) + per-pool anchor max. Call once,
+/* Open a fresh conservation window: reset accumulators, arm the exact physical
+ * coins delta meter (unless the overlay is active), and read per-pool anchor max. Call once,
  * right after stage_batch_begin opens the outer batch txn. */
 void reducer_commit_invariants_batch_begin(struct sqlite3 *db);
 
@@ -89,8 +88,8 @@ bool reducer_commit_invariants_verify(struct sqlite3 *db);
  * or a defensive reset). Idempotent. */
 void reducer_commit_invariants_reset(void);
 
-/* Wall-microseconds the last verify() spent inside the coins_kv count (0 when
- * the count was gated/skipped). Overhead-measurement surface for tests. */
+/* Wall-microseconds the last verify() spent reading the O(1) coins delta meter
+ * (0 when the meter was gated/skipped). Overhead-measurement surface. */
 int64_t reducer_commit_invariants_last_count_us(void);
 
 #endif /* ZCL_JOBS_REDUCER_COMMIT_INVARIANTS_H */

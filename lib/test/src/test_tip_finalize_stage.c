@@ -7,6 +7,7 @@
 #include "json/json.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/reducer_frontier.h"
+#include "util/boot_scan.h"
 /* src-private: the current-tip-missing observe helper under test (Task A #11). */
 #include "../../../app/jobs/src/tip_finalize_stage_observe.h"
 #include "services/consensus_state_publication_cas.h"
@@ -1342,8 +1343,13 @@ int test_tip_finalize_stage(void)
         /* Drain the clean prefix: every upstream log + tip_finalize now reaches
          * a contiguous ok=1 prefix of 2 (rows at heights 1 and 2 above the
          * anchor 0), so H* = MIN over all six = 2. The cache must equal it. */
-        TF_CHECK("provable_tip: initial drain",
-                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("provable_tip: first advance takes baseline proof",
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
+        boot_scan_reset_for_testing();
+        TF_CHECK("provable_tip: adjacent advances fast-forward H*",
+                 tip_finalize_stage_drain(100) == 2);
+        TF_CHECK("provable_tip: fast-forward scans no historical frontier rows",
+                 boot_scan_value("reducer_frontier.contiguity_rows") == 0);
         int32_t hstar_real = compute_hstar_now(progress_store_db());
         TF_CHECK("provable_tip: real H* reaches the synthetic frontier",
                  hstar_real == 2);

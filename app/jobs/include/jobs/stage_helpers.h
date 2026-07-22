@@ -44,6 +44,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 struct stage_cursor_read_result {
     bool ok;        /* false = sqlite/read error; caller must not trust cursor */
@@ -130,8 +131,34 @@ static inline bool stage_cursor_read_or_zero(sqlite3 *db, const char *name,
 {
     if (out)
         *out = 0;
+
+    /* A stage drain holds one outer transaction while its upstream cursor is
+     * immutable. Cache that identical SELECT once per thread/batch generation;
+     * outside a batch every call still reads durable storage. TLS avoids a
+     * cross-thread observer race, and the generation prevents stale reuse. */
+    static _Thread_local sqlite3 *cached_db;
+    static _Thread_local uint64_t cached_generation;
+    static _Thread_local char cached_name[64];
+    static _Thread_local struct stage_cursor_read_result cached_result;
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (batched && cached_db == db && cached_generation == generation &&
+        name && strcmp(cached_name, name) == 0) {
+        if (!cached_result.ok)
+            return false;
+        if (out)
+            *out = cached_result.found ? cached_result.cursor : 0;
+        return true;
+    }
+
     struct stage_cursor_read_result r =
         stage_cursor_read_persisted(db, name, tag);
+    if (batched && name && strlen(name) < sizeof(cached_name)) {
+        cached_db = db;
+        cached_generation = generation;
+        memcpy(cached_name, name, strlen(name) + 1);
+        cached_result = r;
+    }
     if (!r.ok)
         return false;
     if (out)
@@ -444,10 +471,16 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * real failure. LOG_WARN is therefore the honest cross-stage observability
  * channel; the JSON field is intentionally omitted. */
 static _Atomic uint64_t g_reducer_window_extend_failures = 0;
+static _Atomic uint64_t g_reducer_window_extend_attempts = 0;
 
 static inline uint64_t reducer_window_extend_failure_count(void)
 {
     return atomic_load(&g_reducer_window_extend_failures);
+}
+
+static inline uint64_t reducer_window_extend_attempt_count(void)
+{
+    return atomic_load(&g_reducer_window_extend_attempts);
 }
 
 static inline void reducer_extend_window_to_candidate(struct main_state *ms,
@@ -455,6 +488,19 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 {
     if (!authoritative || !ms)
         return;
+    /* A stage batch sees one immutable upstream cursor and needs one window
+     * exposure, not the same H+1 body-presence proof before every one of its
+     * 500 cursor steps. Cache the successful/no-work attempt per thread and
+     * batch generation. A failed allocation is deliberately NOT cached so the
+     * next step retries and keeps the loud failure counter moving. */
+    static _Thread_local struct main_state *cached_ms;
+    static _Thread_local uint64_t cached_generation;
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (batched && cached_ms == ms && cached_generation == generation)
+        return;
+    atomic_fetch_add(&g_reducer_window_extend_attempts, 1);
+    bool success = true;
     /* The wrong-fork wedge this rework fixes is specific to the best-KNOWN
      * HEADER possibly sitting above the have-data frontier on a forked /
      * not-yet-downloaded branch: scanning up to that header height while the
@@ -463,13 +509,18 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
      * path uses the header height as a GENEROUS scan bound. A window already
      * at/above that height makes the extender a cheap no-op. */
     if (ms->pindex_best_header) {
-        if (!active_chain_extend_window_have_data(
+        success = active_chain_extend_window_have_data(
                 &ms->chain_active, &ms->map_block_index,
-                ms->pindex_best_header, ms->pindex_best_header->nHeight)) {
+                ms->pindex_best_header, ms->pindex_best_header->nHeight);
+        if (!success) {
             atomic_fetch_add(&g_reducer_window_extend_failures, 1);
             LOG_WARN("reducer_window",
                      "[reducer_window] have-data window extend failed "
                      "(alloc) header_h=%d", ms->pindex_best_header->nHeight);
+        }
+        if (batched && success) {
+            cached_ms = ms;
+            cached_generation = generation;
         }
         return;
     }
@@ -488,12 +539,17 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
         active_chain_most_work_candidate(&ms->chain_active,
                                          &ms->map_block_index);
     if (cand) {
-        if (!active_chain_extend_window(&ms->chain_active, cand)) {
+        success = active_chain_extend_window(&ms->chain_active, cand);
+        if (!success) {
             atomic_fetch_add(&g_reducer_window_extend_failures, 1);
             LOG_WARN("reducer_window",
                      "[reducer_window] most-work candidate window extend "
                      "failed (alloc) cand_h=%d", cand->nHeight);
         }
+    }
+    if (batched && success) {
+        cached_ms = ms;
+        cached_generation = generation;
     }
 }
 

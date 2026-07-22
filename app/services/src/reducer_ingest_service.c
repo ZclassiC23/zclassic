@@ -59,6 +59,7 @@
 #include "jobs/stage_repair.h"  /* header-solution repair-table backfill */
 
 static _Atomic int g_last_body_persist_log_height = -1;
+static _Atomic uint64_t g_catchup_validated_solution_skip_total;
 
 static bool reducer_should_log_body_persist(int height)
 {
@@ -330,6 +331,13 @@ static void reducer_cache_ingested_solution(
         block_map_find(&ctl->ms->map_block_index, block_hash);
     if (self) {
         sol_h = self->nHeight;
+        /* An exact durable PASS already proves this header and its solution.
+         * Replacing the same large solution row for every arriving body adds
+         * no evidence and serializes catch-up on the progress-store writer. */
+        if (validate_headers_stage_has_pass_record(sol_h, block_hash)) {
+            atomic_fetch_add(&g_catchup_validated_solution_skip_total, 1u);
+            return;
+        }
     } else {
         struct block_index *prev =
             block_map_find(&ctl->ms->map_block_index,
@@ -363,6 +371,18 @@ static bool reducer_push_header_admit(struct block *pblock,
     return validation_state_error(out, "header-admit-inbox-full");
 }
 
+static _Atomic uint64_t g_catchup_known_header_bypass_total;
+
+uint64_t reducer_ingest_catchup_known_header_bypass_total(void)
+{
+    return atomic_load(&g_catchup_known_header_bypass_total);
+}
+
+uint64_t reducer_ingest_catchup_validated_solution_skip_total(void)
+{
+    return atomic_load(&g_catchup_validated_solution_skip_total);
+}
+
 bool reducer_stage_p2p_block_for_catchup(
     struct chain_activation_controller *ctl,
     struct block *pblock,
@@ -389,17 +409,31 @@ bool reducer_stage_p2p_block_for_catchup(
 
     struct uint256 block_hash;
     block_get_hash(pblock, &block_hash);
+    struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
+                                            &block_hash);
     reducer_cache_ingested_solution(ctl, pblock, &block_hash);
-    bool header_pushed = reducer_push_header_admit(pblock, &block_hash, out);
-    if (!header_pushed)
+    /* Headers-first catch-up already owns this exact hash in the block map.
+     * Keep the hash-bound solution backfill above, but do not enqueue the same
+     * header again: validate_headers consumes the existing admitted frontier,
+     * while the duplicate mailbox path turns every 1,024-body burst into an
+     * O(burst) pending-header replay. Unknown hashes still take the sole
+     * header-admit producer path below. */
+    if (bi) {
+        atomic_fetch_add(&g_catchup_known_header_bypass_total, 1u);
+    } else if (!reducer_push_header_admit(pblock, &block_hash, out)) {
+        LOG_WARN("reducer",
+                 "catchup header admission deferred hash_prefix=%02x%02x%02x%02x",
+                 block_hash.data[0], block_hash.data[1],
+                 block_hash.data[2], block_hash.data[3]);
         return false;
+    }
 
     zcl_mutex_lock(&ctl->mutex);
     reducer_drive_enter();
     reducer_enter_batched_body_sync();
 
-    struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
-                                            &block_hash);
+    if (!bi)
+        bi = block_map_find(&ctl->ms->map_block_index, &block_hash);
     const int hdr_batch = hw_profile_drain_batch_effective(100);
     for (int round = 0; !bi && round < 16; round++) {
         int advanced = header_admit_stage_drain(hdr_batch) +

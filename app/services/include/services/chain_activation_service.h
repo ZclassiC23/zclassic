@@ -237,6 +237,10 @@ bool reducer_stage_p2p_block_for_catchup(
     struct block *pblock,
     struct validation_state *out);
 
+/* Exact-hash block-map hits that bypassed redundant catch-up header enqueue. */
+uint64_t reducer_ingest_catchup_known_header_bypass_total(void);
+uint64_t reducer_ingest_catchup_validated_solution_skip_total(void);
+
 /* reducer_kick — wake the reducer to walk the best chain with no new block
  * (the Group-2 NULL-block "connect to best tip now" path). Drains the eight
  * stage step bodies once under ctl->mutex so cursor-driven catch-up makes

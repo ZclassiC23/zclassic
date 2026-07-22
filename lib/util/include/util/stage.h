@@ -203,6 +203,10 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db);
 bool stage_batch_begin(sqlite3 *db);
 bool stage_batch_end(sqlite3 *db, bool commit);
 bool stage_batch_active(void);
+/* Monotonic identity of the currently/latest-opened batch. A stage wrapper
+ * can perform an invariant audit once per outer transaction without guessing
+ * from cursor values. 0 means no batch has ever opened. */
+uint64_t stage_batch_generation(void);
 
 /* Global EWMA (us, alpha=1/16, seeded from the first sample) of the outer
  * batch-COMMIT wall time — the one per-batch fsync point a batched drain

@@ -13,7 +13,7 @@
 
 #include "core/utiltime.h"          /* GetTimeMicros */
 #include "storage/anchor_kv.h"      /* anchor_kv_max_height, ANCHOR_POOL_* */
-#include "storage/coins_kv.h"       /* coins_kv_count */
+#include "storage/coins_kv.h"       /* coins_kv_delta_* */
 #include "storage/coins_ram.h"      /* coins_ram_active */
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -110,7 +110,6 @@ static struct {
     bool     reorg;          /* rebaseline: unwind mutated state this batch */
     bool     coins_touched;  /* any block authored coins */
     bool     count_gated;    /* (a) count-check skipped (overlay / no baseline) */
-    int64_t  coins_n0;       /* pre-batch coins_kv_count (>=0 when !count_gated) */
     int64_t  expected_net;   /* Σ(added − spent) */
     int64_t  top_height;     /* highest height touched (for blocker naming) */
     int64_t  anchor_last[CI_POOLS];  /* last appended height per pool (baseline) */
@@ -129,6 +128,7 @@ static struct {
 
 static void ci_wipe(void)
 {
+    coins_kv_delta_cancel();
     free(g.nf.slots);
     memset(&g, 0, sizeof(g));
     g.anchor_last[0] = -1;
@@ -158,20 +158,15 @@ void reducer_commit_invariants_batch_begin(struct sqlite3 *db)
     ci_wipe();
     g.active = true;
 
-    /* Invariant (a) baseline — gate the O(rows) count off the overlay hot
-     * path (see the header). coins_kv_count under coins_ram recomputes the
-     * effective set, so a from-genesis / refold bulk fold must NOT pay it per
-     * batch; the fold's own self-verify covers (a) there. */
+    /* Invariant (a) — arm the exact physical-row meter off the overlay hot
+     * path. A from-genesis/refold bulk fold uses the overlay's self-verify. */
     if (coins_ram_active()) {
         g.count_gated = true;
     } else {
-        int64_t n0 = db ? coins_kv_count(db) : -1;
-        if (n0 < 0) {
-            /* Could not read the baseline — skip (a) rather than risk a false
-             * refusal; (b)/(c) still fire. */
+        if (!db) {
             g.count_gated = true;
         } else {
-            g.coins_n0 = n0;
+            coins_kv_delta_begin();
         }
     }
 
@@ -193,6 +188,7 @@ void reducer_commit_invariants_disable_coins_check(void)
     if (!g.active)
         return;
     g.count_gated = true;
+    coins_kv_delta_cancel();
 }
 
 void reducer_commit_invariants_note_coins(int height, uint64_t added,
@@ -294,6 +290,7 @@ static void ci_raise_blocker(int height, const char *kind, const char *detail)
 
 bool reducer_commit_invariants_verify(struct sqlite3 *db)
 {
+    (void)db;  /* compatibility: the exact delta meter no longer scans db */
     g.last_count_us = 0;
 
     if (!g.active)
@@ -327,37 +324,27 @@ bool reducer_commit_invariants_verify(struct sqlite3 *db)
         return false;
     }
 
-    /* (a) coins conservation — gated off the overlay hot path. */
+    /* (a) exact physical-row conservation — gated off the overlay hot path. */
     if (g.coins_touched && !g.count_gated) {
         int64_t t0 = GetTimeMicros();
-        int64_t n1 = db ? coins_kv_count(db) : -1;
+        int64_t actual = 0;
+        bool measured = coins_kv_delta_finish(&actual);
         g.last_count_us = GetTimeMicros() - t0;
-        if (n1 >= 0 && g.coins_n0 >= 0) {
-            int64_t actual = n1 - g.coins_n0;
-            if (actual != g.expected_net) {
-                char detail[160];
-                snprintf(detail, sizeof(detail),
-                         "coins_kv row-count delta actual=%lld expected=%lld "
-                         "(n0=%lld n1=%lld) — created−spent does not match the "
-                         "physical coin set",
-                         (long long)actual, (long long)g.expected_net,
-                         (long long)g.coins_n0, (long long)n1);
-                ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR,
-                        "[%s] commit-invariants: REFUSE commit: "
-                        "coins_conservation at height=%lld: %s\n",
-                        CI_SUBSYS, (long long)g.top_height, detail);
-                ci_raise_blocker((int)g.top_height, "coins_conservation",
-                                 detail);
-                ci_wipe();
-                return false;
-            }
-        } else {
-            /* Count read failed at verify — do not false-refuse a batch we
-             * could not measure; log and pass. */
-            LOG_WARN(CI_SUBSYS,
-                     "[commit-invariants] coins count unreadable at verify "
-                     "(n1=%lld) — (a) skipped for this commit",
-                     (long long)n1);
+        if (!measured || actual != g.expected_net) {
+            char detail[160];
+            snprintf(detail, sizeof(detail),
+                     "coins_kv physical row delta actual=%lld expected=%lld "
+                     "(meter=%s) — created−spent does not match the physical "
+                     "coin set",
+                     (long long)actual, (long long)g.expected_net,
+                     measured ? "exact" : "unavailable");
+            ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR,
+                    "[%s] commit-invariants: REFUSE commit: "
+                    "coins_conservation at height=%lld: %s\n",
+                    CI_SUBSYS, (long long)g.top_height, detail);
+            ci_raise_blocker((int)g.top_height, "coins_conservation", detail);
+            ci_wipe();
+            return false;
         }
     }
 
