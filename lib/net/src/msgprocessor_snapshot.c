@@ -2,33 +2,10 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Snapshot / fast-sync / swarm message family — the REQUESTER/client side
- * plus the mp_handle_zcl23_sync dispatcher itself.
- *
- * This file owns the parallel UTXO swarm coordinator (g_swarm, mutex),
- * the parallel block swarm coordinator (g_block_swarm, mutex), and the
- * per-peer FlyClient challenge rate limiter (g_fc_rate_table).
- *
- * It implements:
- *   - mp_handle_zcl23_sync (the receiver dispatcher for every z-prefixed
- *     command not in the standard dispatch table) — the SERVE-side
- *     branches (zsnapreq, zchunkreq, zblkreq) call into
- *     msgprocessor_snapshot_serve.c's mp_serve_snapshot_req /
- *     mp_serve_chunk_req / mp_serve_block_req
- *   - push_chunk_request, push_block_piece_request, block_payload_submit_all,
- *     parse_block_piece_payload_refs (the requester-side producers/parsers)
- *   - mp_snapshot_init / mp_snapshot_send_tick / mp_snapshot_maybe_offer
- *     (lifecycle / per-peer trickle hooks invoked from msgprocessor.c) —
- *     mp_snapshot_send_tick's PEER_SNAPSHOT_SERVING half is
- *     msgprocessor_snapshot_serve.c's mp_snapshot_send_tick_serve
- *
- * The SERVE side — cached snapshot offer, cached UTXO sync manifest,
- * cached block piece manifest, the zchunkreq/zblkreq client-puzzle PoW
- * guard, send_snapshot_offer_msg, push_manifest, push_block_manifest, and
- * the public msg_processor_*_offer / *_manifest APIs declared in
- * net/msgprocessor.h (callers in boot.c keep working as before) — lives in
- * msgprocessor_snapshot_serve.c. See msgprocessor_snapshot_internal.h for
- * the shared declarations the split promotes across the two files. */
+/* Snapshot/fast-sync requester and z-prefixed receiver dispatcher. Owns the
+ * UTXO and block swarm coordinators plus the FlyClient challenge limiter.
+ * Serve-side requests delegate to msgprocessor_snapshot_serve.c; shared
+ * declarations live in msgprocessor_snapshot_internal.h. */
 
 #include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
@@ -127,6 +104,17 @@ static bool block_payload_submit_all(struct msg_processor *mp,
     if (!mp || !node)
         return false;
 
+    /* Match the ordinary async block-intake worker's outer durability scope.
+     * reducer_stage_p2p_block_for_catchup retains its per-body nested scope,
+     * but this outer bracket keeps those inner exits from issuing one
+     * fdatasync per body. The reducer's stage pre-commit hook still flushes
+     * every deferred body before a cursor/log COMMIT, and the final paired end
+     * flushes any body that advanced no stage. A zblkdata piece is bounded by
+     * BLOCKS_PER_PIECE, so the dirty window remains strictly bounded. */
+    bool batch_scope_open = mp->catchup_batch_begin && mp->catchup_batch_end;
+    if (batch_scope_open)
+        mp->catchup_batch_begin(mp->catchup_batch_scope_ctx);
+
     for (uint32_t i = 0; i < count; i++) {
         struct byte_stream block_stream;
         stream_init_from_data(&block_stream, refs[i].data, refs[i].len);
@@ -137,6 +125,8 @@ static bool block_payload_submit_all(struct msg_processor *mp,
             block_free(&blk);
             stream_free(&block_stream);
             LOG_WARN("net", "zblkdata payload deserialize failed index=%u", i);
+            if (batch_scope_open)
+                mp->catchup_batch_end(mp->catchup_batch_scope_ctx);
             return false;
         }
 
@@ -179,6 +169,8 @@ static bool block_payload_submit_all(struct msg_processor *mp,
                          i, last_reason[0] ? last_reason : "not-enqueued");
                 block_free(&blk);
                 stream_free(&block_stream);
+                if (batch_scope_open)
+                    mp->catchup_batch_end(mp->catchup_batch_scope_ctx);
                 return false;
             }
         }
@@ -188,6 +180,8 @@ static bool block_payload_submit_all(struct msg_processor *mp,
     }
 
     (void)block_payload_drain_catchup(mp);
+    if (batch_scope_open)
+        mp->catchup_batch_end(mp->catchup_batch_scope_ctx);
     return true;
 }
 

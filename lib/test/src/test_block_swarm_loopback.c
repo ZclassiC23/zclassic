@@ -91,12 +91,20 @@ bool mp_block_swarm_is_active(void);
 struct bs_sink {
     uint64_t blocks;
     uint64_t bytes;   /* serialized size of each delivered body */
+    uint64_t scope_begins;
+    uint64_t scope_ends;
+    uint64_t submits_outside_scope;
+    uint64_t drains;
+    uint64_t drains_inside_scope;
+    bool scope_open;
 };
 
 static bool bs_block_submit(struct block *b, struct validation_state *out,
                             void *ctx)
 {
     struct bs_sink *sink = ctx;
+    if (!sink->scope_open)
+        sink->submits_outside_scope++;
     struct byte_stream s;
     stream_init(&s, 4096);
     if (block_serialize(b, &s))
@@ -106,6 +114,29 @@ static bool bs_block_submit(struct block *b, struct validation_state *out,
     if (out)
         validation_state_init(out);   /* valid = accepted */
     return true;
+}
+
+static void bs_scope_begin(void *ctx)
+{
+    struct bs_sink *sink = ctx;
+    sink->scope_begins++;
+    sink->scope_open = true;
+}
+
+static void bs_scope_end(void *ctx)
+{
+    struct bs_sink *sink = ctx;
+    sink->scope_ends++;
+    sink->scope_open = false;
+}
+
+static int bs_catchup_drain(void *ctx)
+{
+    struct bs_sink *sink = ctx;
+    sink->drains++;
+    if (sink->scope_open)
+        sink->drains_inside_scope++;
+    return 0;
 }
 
 /* ── Seeder fixture ──────────────────────────────────────────────────────── */
@@ -426,6 +457,9 @@ static int test_block_swarm_throughput(void)
         mp_b.datadir = ".";
         mp_b.net_mgr = &nm_b;
         msg_processor_set_block_submit(&mp_b, bs_block_submit, &sink);
+        msg_processor_set_catchup_drain(&mp_b, bs_catchup_drain, &sink);
+        msg_processor_set_catchup_batch_scope(
+            &mp_b, bs_scope_begin, bs_scope_end, &sink);
 
         /* B's best header = manifest tip (arms piece assignment); active chain
          * empty (arms swarm start: end_h > our_h + BLOCKS_PER_PIECE). */
@@ -478,6 +512,12 @@ static int test_block_swarm_throughput(void)
         /* Every body in the manifest range (1..end) transferred exactly once. */
         ASSERT(!mp_block_swarm_is_active());           /* swarm completed+freed */
         ASSERT(sink.blocks == (uint64_t)end_height);
+        ASSERT(sink.scope_begins == 40);                /* one per 64-body piece */
+        ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired */
+        ASSERT(!sink.scope_open);                       /* no scope leak */
+        ASSERT(sink.submits_outside_scope == 0);        /* every body batched */
+        ASSERT(sink.drains == sink.scope_begins);       /* one drain per piece */
+        ASSERT(sink.drains_inside_scope == sink.drains);/* flush-before-end */
 
         double secs = (double)elapsed_us / 1e6;
         double blks = (double)sink.blocks / secs;
@@ -513,7 +553,7 @@ static int test_block_swarm_disconnect_requeue(void)
     TEST("block swarm loopback: a dead peer's in-flight pieces are event-"
          "driven requeued (pre-timeout) and picked up by a failover peer") {
         const struct chain_params *params = chain_params_get();
-        const int32_t end_height = 2560;            /* 5 pieces of 512 */
+        const int32_t end_height = 2560;            /* 40 pieces of 64 */
         struct bs_seeder seed;
 
         ASSERT(!mp_block_swarm_is_active());
@@ -539,6 +579,9 @@ static int test_block_swarm_disconnect_requeue(void)
         mp_b.datadir = ".";
         mp_b.net_mgr = &nm_b;
         msg_processor_set_block_submit(&mp_b, bs_block_submit, &sink);
+        msg_processor_set_catchup_drain(&mp_b, bs_catchup_drain, &sink);
+        msg_processor_set_catchup_batch_scope(
+            &mp_b, bs_scope_begin, bs_scope_end, &sink);
 
         struct uint256 bhh;
         memset(&bhh, 0, sizeof(bhh));
@@ -610,6 +653,11 @@ static int test_block_swarm_disconnect_requeue(void)
 
         ASSERT(!mp_block_swarm_is_active());           /* finished via failover */
         ASSERT(sink.blocks == (uint64_t)end_height);   /* all bodies delivered  */
+        ASSERT(sink.scope_begins == 40);                /* one scope per piece   */
+        ASSERT(sink.scope_ends == sink.scope_begins);   /* exactly paired        */
+        ASSERT(!sink.scope_open);
+        ASSERT(sink.submits_outside_scope == 0);
+        ASSERT(sink.drains_inside_scope == sink.drains);
 
         send_segment_free(sent_a);
         send_segment_free(sent_p1);
