@@ -22,6 +22,7 @@
 #define ZCL_SERVICES_NODE_DB_CATCHUP_SERVICE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct node_db;
 struct active_chain;
@@ -40,15 +41,15 @@ bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
                                              int chain_tip,
                                              bool next_slot_present);
 
-/* The SQLite node.db projection is derived state.  It must not occupy the
- * serialized DB service while the canonical reducer frontier is folding a
- * real tail gap.  A one-block edge is the normal live-tip shape and remains
- * eligible for projection catchup; only a gap of two or more is deferred. */
-bool node_db_catchup_tail_fold_in_progress(int chain_tip, int hstar);
+/* The SQLite node.db projection is derived state. It must not occupy the
+ * serialized DB service while the canonical reducer frontier is folding
+ * toward the validated-header target. A one-block edge is the normal live-tip
+ * shape; only a target gap of two or more is deferred. */
+bool node_db_catchup_tail_fold_in_progress(int64_t canonical_target,
+                                           int hstar);
 
 #ifdef ZCL_TESTING
 #include <stddef.h>
-#include <stdint.h>
 uint8_t *node_db_catchup_test_mmap_block_file_quiet(const char *datadir,
                                                     int file_num,
                                                     size_t *out_size,

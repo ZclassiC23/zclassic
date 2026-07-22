@@ -66,15 +66,15 @@ int test_node_db_catchup_service(void)
     if (data) munmap(data, sz);
     NDC_CHECK("valid block file maps", mapped);
 
-    NDC_CHECK("derived catchup defers for a two-block canonical gap",
+    NDC_CHECK("header target defers catchup for a two-block canonical gap",
               node_db_catchup_tail_fold_in_progress(102, 100));
-    NDC_CHECK("derived catchup defers for a large canonical gap",
+    NDC_CHECK("header target defers catchup across a sparse active chain",
               node_db_catchup_tail_fold_in_progress(1000000, 7));
     NDC_CHECK("normal one-block live edge remains eligible",
               !node_db_catchup_tail_fold_in_progress(101, 100));
     NDC_CHECK("equal frontiers remain eligible",
               !node_db_catchup_tail_fold_in_progress(100, 100));
-    NDC_CHECK("unknown chain tip does not invent a fold",
+    NDC_CHECK("unknown header target does not invent a fold",
               !node_db_catchup_tail_fold_in_progress(-1, 100));
     NDC_CHECK("unknown H-star does not invent a fold",
               !node_db_catchup_tail_fold_in_progress(100, -1));

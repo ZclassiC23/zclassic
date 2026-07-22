@@ -30,6 +30,7 @@
 #include "config/boot_snapshot_import.h"
 #include "services/hodl_history_service.h"
 #include "services/node_db_catchup_service.h"
+#include "services/chain_state_service.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_in_progress — suppress projection
                                     * backfill while a mint/refold discards the
@@ -399,8 +400,9 @@ static void *projection_backfill_service_thread(void *arg)
         int first_missing_height = -1;
         bool refolding = refold_in_progress();
         int hstar = reducer_frontier_provable_tip_cached();
+        int64_t header_tip = csr_header_height(csr_instance());
         bool tail_folding =
-            node_db_catchup_tail_fold_in_progress(chain_tip, hstar);
+            node_db_catchup_tail_fold_in_progress(header_tip, hstar);
 
         /* The actual projection cursor (the height the backfill has REACHED),
          * read before the rewind logic below mutates projection_tip. This — not
@@ -446,7 +448,7 @@ static void *projection_backfill_service_thread(void *arg)
         boot_reap_catchup_service(svc);
 
         /* Defer derived node.db work while a mint/refold rebuilds the upper
-         * chain or canonical H* is more than one block behind chain_tip.
+         * chain or canonical H* is more than one block behind header_tip.
          * Otherwise its bulk transaction can monopolize the serialized DB
          * service ahead of the canonical fold. A one-block live edge remains
          * eligible; the first loop after either fold closes resumes backfill.

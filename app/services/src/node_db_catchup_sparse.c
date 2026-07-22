@@ -39,10 +39,10 @@ bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
            projection_tip < chain_tip && !next_slot_present;
 }
 
-bool node_db_catchup_tail_fold_in_progress(int chain_tip, int hstar)
+bool node_db_catchup_tail_fold_in_progress(int64_t canonical_target, int hstar)
 {
-    return chain_tip >= 0 && hstar >= 0 &&
-           (int64_t)chain_tip > (int64_t)hstar + 1;
+    return canonical_target >= 0 && hstar >= 0 &&
+           canonical_target > (int64_t)hstar + 1;
 }
 
 /* Return the highest projection cursor that a body-less, proven snapshot
