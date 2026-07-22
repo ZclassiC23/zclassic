@@ -379,7 +379,7 @@ bool consensus_export_output_open(
 #ifdef ZCL_TESTING
 static void (*g_after_output_bind_hook)(void *) = NULL;
 static void *g_after_output_bind_ctx = NULL;
-static void (*g_after_staging_create_hook)(void *) = NULL;
+static void (*g_after_staging_create_hook)(void *, int) = NULL;
 static void *g_after_staging_create_ctx = NULL;
 static void (*g_before_link_hook)(void *) = NULL;
 static void *g_before_link_ctx = NULL;
@@ -392,7 +392,7 @@ void consensus_state_snapshot_export_test_set_after_output_bind_hook(
 }
 
 void consensus_state_snapshot_export_test_set_after_staging_create_hook(
-    void (*hook)(void *), void *ctx)
+    void (*hook)(void *, int), void *ctx)
 {
     g_after_staging_create_hook = hook;
     g_after_staging_create_ctx = ctx;
@@ -408,14 +408,14 @@ void consensus_export_run_after_bind_hook(void)
         hook(ctx);
 }
 
-static void output_run_after_staging_create_hook(void)
+static void output_run_after_staging_create_hook(int staging_fd)
 {
-    void (*hook)(void *) = g_after_staging_create_hook;
+    void (*hook)(void *, int) = g_after_staging_create_hook;
     void *ctx = g_after_staging_create_ctx;
     g_after_staging_create_hook = NULL;
     g_after_staging_create_ctx = NULL;
     if (hook)
-        hook(ctx);
+        hook(ctx, staging_fd);
 }
 
 static void output_run_before_link_hook(void)
@@ -429,7 +429,10 @@ static void output_run_before_link_hook(void)
 }
 #else
 void consensus_export_run_after_bind_hook(void) { }
-static void output_run_after_staging_create_hook(void) { }
+static void output_run_after_staging_create_hook(int staging_fd)
+{
+    (void)staging_fd;
+}
 static void output_run_before_link_hook(void) { }
 #endif
 
@@ -455,7 +458,7 @@ bool consensus_export_open_temp(struct consensus_export_output_binding *output,
     }
     output->temp_dev = created.st_dev;
     output->temp_ino = created.st_ino;
-    output_run_after_staging_create_hook();
+    output_run_after_staging_create_hook(output->temp_fd);
 
     if (!output_vfs_register(output))
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,

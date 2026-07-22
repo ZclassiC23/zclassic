@@ -1110,22 +1110,18 @@ static void candidate_create_sidecar(void *opaque)
     if(fd>=0) close(fd);
 }
 
-static void candidate_retain_staging_writer(void *opaque)
+static void candidate_retain_staging_writer(void *opaque, int fd)
 {
     struct candidate_retained_writer_hook *hook=opaque;
     hook->ran=true;
-    struct stat dir_st;
-    if(fstat(hook->dirfd,&dir_st)!=0) return;
-    for(int fd=3;fd<1024;fd++) {
-        struct stat st;
-        int flags=fcntl(fd,F_GETFL);
-        if(flags<0||(flags&O_ACCMODE)!=O_RDWR||fstat(fd,&st)!=0||
-           !S_ISREG(st.st_mode)||st.st_nlink!=0||st.st_dev!=dir_st.st_dev)
-            continue;
-        hook->writer_fd=fcntl(fd,F_DUPFD_CLOEXEC,
-                              candidate_retained_writer_dup_floor());
-        break;
-    }
+    struct stat dir_st,st;
+    int flags=fd>=0?fcntl(fd,F_GETFL):-1;
+    if(flags<0||(flags&O_ACCMODE)!=O_RDWR||
+       fstat(hook->dirfd,&dir_st)!=0||fstat(fd,&st)!=0||
+       !S_ISREG(st.st_mode)||st.st_nlink!=0||st.st_dev!=dir_st.st_dev)
+        return;
+    hook->writer_fd=fcntl(fd,F_DUPFD_CLOEXEC,
+                          candidate_retained_writer_dup_floor());
 }
 
 static void activate_mutate_retained_writer(void *opaque)

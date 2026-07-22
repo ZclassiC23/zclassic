@@ -87,9 +87,10 @@ static int cse_retained_writer_dup_floor(void)
     return 3;
 }
 
-static void cse_final_race_after_create(void *opaque)
+static void cse_final_race_after_create(void *opaque, int staging_fd)
 {
     struct cse_final_race_fixture *f = opaque;
+    (void)staging_fd;
     f->ran = true;
     int fd = open(f->final,
                   O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
@@ -102,45 +103,35 @@ static void cse_final_race_after_create(void *opaque)
     f->ok = wrote && closed;
 }
 
-static void cse_staging_link_after_create(void *opaque)
+static void cse_staging_link_after_create(void *opaque, int fd)
 {
     struct cse_staging_link_fixture *f = opaque;
     f->ran = true;
-    struct stat dir_st;
-    if (fstat(f->dirfd, &dir_st) != 0)
+    struct stat dir_st, st;
+    if (fd < 0 || fstat(f->dirfd, &dir_st) != 0 || fstat(fd, &st) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink != 0 ||
+        st.st_dev != dir_st.st_dev)
         return;
-    for (int fd = 3; fd < 1024; fd++) {
-        struct stat st;
-        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-            st.st_nlink != 0 || st.st_dev != dir_st.st_dev)
-            continue;
-        char source[64];
-        int n = snprintf(source, sizeof(source), "/proc/self/fd/%d", fd);
-        f->ok = n > 0 && (size_t)n < sizeof(source) &&
-            linkat(AT_FDCWD, source, f->dirfd, f->alias,
-                   AT_SYMLINK_FOLLOW) == 0;
-        break;
-    }
+    char source[64];
+    int n = snprintf(source, sizeof(source), "/proc/self/fd/%d", fd);
+    f->ok = n > 0 && (size_t)n < sizeof(source) &&
+        linkat(AT_FDCWD, source, f->dirfd, f->alias,
+               AT_SYMLINK_FOLLOW) == 0;
 }
 
-static void cse_retain_staging_writer(void *opaque)
+static void cse_retain_staging_writer(void *opaque, int fd)
 {
     struct cse_retained_writer_fixture *f = opaque;
     f->ran = true;
-    struct stat dir_st;
-    if (fstat(f->dirfd, &dir_st) != 0)
+    struct stat dir_st, st;
+    int flags = fd >= 0 ? fcntl(fd, F_GETFL) : -1;
+    if (flags < 0 || (flags & O_ACCMODE) != O_RDWR ||
+        fstat(f->dirfd, &dir_st) != 0 || fstat(fd, &st) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink != 0 ||
+        st.st_dev != dir_st.st_dev)
         return;
-    for (int fd = 3; fd < 1024; fd++) {
-        struct stat st;
-        int flags = fcntl(fd, F_GETFL);
-        if (flags < 0 || (flags & O_ACCMODE) != O_RDWR ||
-            fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-            st.st_nlink != 0 || st.st_dev != dir_st.st_dev)
-            continue;
-        f->writer_fd = fcntl(fd, F_DUPFD_CLOEXEC,
-                             cse_retained_writer_dup_floor());
-        break;
-    }
+    f->writer_fd = fcntl(fd, F_DUPFD_CLOEXEC,
+                         cse_retained_writer_dup_floor());
 }
 
 /* Mirrors log_level_capture() in test_log_level.c / csa_mint_capture() in
