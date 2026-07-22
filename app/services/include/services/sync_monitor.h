@@ -89,6 +89,10 @@ void sync_monitor_get_local_recovery_stats(
 
 void sync_monitor_on_block_connected(int height);
 int64_t sync_monitor_tip_advance_age(void);
+/* Lock-free best-known peer height from the latest tip-state evaluation.
+ * Diagnostics use this snapshot instead of dereferencing connman during
+ * shutdown, after its node mutexes may already have been destroyed. */
+int sync_monitor_peer_height_cached(void);
 /* Five-second runtime-driver evaluation of the raw sync FSM.  Uses the
  * published served frontier plus local/header/peer heights and only commits
  * AT_TIP after pending body work drains. Safe before context initialization. */

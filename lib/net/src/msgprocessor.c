@@ -402,6 +402,7 @@ static void *msg_block_intake_worker(void *arg)
 {
     struct msg_block_intake *in = arg;
     unsigned processed_since_drain = 0;
+    bool batch_scope_open = false;
     if (!in)
         return NULL;
 
@@ -417,6 +418,8 @@ static void *msg_block_intake_worker(void *arg)
         if (in->stopping || thread_registry_shutdown_requested()) {
             in->running = false;
             pthread_mutex_unlock(&in->mu);
+            if (batch_scope_open && in->mp && in->mp->catchup_batch_end)
+                in->mp->catchup_batch_end(in->mp->catchup_batch_scope_ctx);
             break;
         }
 
@@ -426,9 +429,24 @@ static void *msg_block_intake_worker(void *arg)
         in->depth--;
         pthread_mutex_unlock(&in->mu);
 
+        if (!batch_scope_open && in->mp && in->mp->catchup_batch_begin) {
+            in->mp->catchup_batch_begin(in->mp->catchup_batch_scope_ctx);
+            batch_scope_open = true;
+        }
+
         msg_block_intake_process_one(in, &item);
         msg_block_intake_item_free(&item);
         processed_since_drain++;
+
+        pthread_mutex_lock(&in->mu);
+        size_t queued = in->depth;
+        pthread_mutex_unlock(&in->mu);
+        if (processed_since_drain >= MSG_BLOCK_INTAKE_DRAIN_BATCH ||
+            queued == 0) {
+            if (batch_scope_open && in->mp && in->mp->catchup_batch_end)
+                in->mp->catchup_batch_end(in->mp->catchup_batch_scope_ctx);
+            batch_scope_open = false;
+        }
         msg_block_intake_maybe_drain_catchup(in, &processed_since_drain);
         thread_liveness_beat(&g_p2p_ingest_liveness,
                              (int64_t)atomic_fetch_add(&g_p2p_ingest_beat_count, 1) + 1);
@@ -1320,6 +1338,19 @@ void msg_processor_set_catchup_drain(struct msg_processor *mp,
         return;
     mp->catchup_drain = drain;
     mp->catchup_drain_ctx = ctx;
+}
+
+void msg_processor_set_catchup_batch_scope(
+    struct msg_processor *mp,
+    msg_catchup_batch_scope_fn begin,
+    msg_catchup_batch_scope_fn end,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->catchup_batch_begin = begin;
+    mp->catchup_batch_end = end;
+    mp->catchup_batch_scope_ctx = ctx;
 }
 
 void msg_processor_set_peer_save(struct msg_processor *mp,

@@ -155,7 +155,17 @@ struct zcl_result consensus_state_chain_binding_decide(
         cp_auth && observation->fresh_genesis_bootstrap;
     if ((!frontier_durable && !fresh_genesis_admissible) ||
         !observation->frontier_unchanged)
-        return ZCL_ERR(-3, "chain binding: selected frontier changed or is not durable");
+        return ZCL_ERR(-3,
+                       "chain binding: selected frontier changed or is not "
+                       "durable (before_consistent=%d after_consistent=%d "
+                       "checkpoint_authority=%d fresh_genesis=%d unchanged=%d "
+                       "durable_served_height=%d)",
+                       observation->before_frontier_consistent ? 1 : 0,
+                       observation->after_frontier_consistent ? 1 : 0,
+                       cp_auth ? 1 : 0,
+                       observation->fresh_genesis_bootstrap ? 1 : 0,
+                       observation->frontier_unchanged ? 1 : 0,
+                       observation->durable_served_height);
 
     /* -4 admits on EITHER of two sovereign paths:
      *

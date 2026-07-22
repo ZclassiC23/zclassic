@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sqlite3.h>
 
 #include "services/consensus_state_chain_binding_service.h"
 #include "storage/consensus_state_bundle_codec.h"
@@ -67,6 +68,7 @@ struct consensus_state_publication_cas_inputs {
     uint8_t artifact_receipt_digest[32];               /* file/inode identity */
     bool chain_evidence_present;
     bool chain_bound_to_artifact;   /* matches same receipt digest + lane */
+    bool checkpoint_authority_used; /* cryptographically bound in evidence */
     uint8_t chain_evidence_digest[32];
     bool source_receipt_present;
     struct consensus_state_source_receipt source_receipt;
@@ -167,6 +169,10 @@ struct zcl_result consensus_state_publication_cas_persist_for_test(
  * capture surface for tests over a progress-store fixture. */
 bool consensus_state_publication_cas_capture_frontier(
     int32_t *out_height, uint8_t out_hash[32]);
+/* Same capture while the caller already owns the progress-store lock and an
+ * SQLite cutover transaction. Never acquires the process lock itself. */
+bool consensus_state_publication_cas_capture_frontier_locked(
+    sqlite3 *progress_db, int32_t *out_height, uint8_t out_hash[32]);
 
 const char *consensus_state_publication_decision_name(
     enum consensus_state_publication_decision decision);

@@ -721,7 +721,6 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("utxo_apply", "init: stage_create failed");
     }
-
     g_ms = ms;
     g_stage = s;
     /* Wire the production UTXO-set resolver unless a caller (a test)

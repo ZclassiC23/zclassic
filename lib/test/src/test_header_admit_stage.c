@@ -16,6 +16,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "jobs/header_admit_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "services/header_admit_inbox.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
@@ -26,8 +27,11 @@
 #include "validation/main_logic.h"
 #include "validation/main_state.h"
 
+#include "../../../app/jobs/src/header_admit_forward_rewind.h"
+
 #include <errno.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -770,6 +774,54 @@ int test_header_admit_stage(void)
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
         synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── Checkpoint-window hole: after the first header-only finalize, the
+     *      active height can name the trusted base while chain[height] is
+     *      still absent. The exact durable trusted-base pair is sufficient to
+     *      admit its canonical child; any hash mismatch remains fail-closed. */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit", "trusted_base_parent");
+        mkdir_p_ha(dir);
+        HA_CHECK("trusted_base_parent: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        atomic_store(&ms.chain_active.height, 10);
+
+        struct uint256 parent_hash = {0};
+        struct uint256 child_hash = {0};
+        parent_hash.data[0] = 0xA1;
+        child_hash.data[0] = 0xB2;
+        struct block_index parent;
+        struct block_index child;
+        block_index_init(&parent);
+        block_index_init(&child);
+        parent.nHeight = 10;
+        parent.phashBlock = &parent_hash;
+        child.nHeight = 11;
+        child.phashBlock = &child_hash;
+        child.pprev = &parent;
+
+        uint8_t height_blob[8] = {10, 0, 0, 0, 0, 0, 0, 0};
+        sqlite3 *db = progress_store_db();
+        HA_CHECK("trusted_base_parent: exact authority pair stored",
+                 progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                   height_blob, sizeof(height_blob)) &&
+                 progress_meta_set(db, REDUCER_TRUSTED_BASE_HASH_KEY,
+                                   parent_hash.data, sizeof(parent_hash.data)));
+        HA_CHECK("trusted_base_parent: absent window parent is hash-bound",
+                 header_admit_forward_replay_parent_ok(db, &ms, &child, 11));
+
+        parent_hash.data[0] ^= 0x01;
+        HA_CHECK("trusted_base_parent: mismatched parent is refused",
+                 !header_admit_forward_replay_parent_ok(db, &ms, &child, 11));
+
+        active_chain_free(&ms.chain_active);
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }

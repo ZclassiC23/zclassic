@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_body_index.h"
 #include "body_fetch_log_store.h"
 
 #include "chain/chain.h"
@@ -100,7 +101,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
 
     /* Look up the in-memory block_index entry — we need the hash and
      * the BLOCK_HAVE_DATA flag. */
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    struct block_index *bi = stage_body_index_at(ms, next_h);
     if (!bi || !bi->phashBlock) {
         /* Concurrent reorg through this height between validate and
          * fetch. Surface as IDLE so the supervisor retries; the chain

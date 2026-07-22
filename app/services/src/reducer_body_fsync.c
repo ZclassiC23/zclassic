@@ -56,6 +56,7 @@
 #include <stdint.h>
 
 static _Atomic bool g_body_fsync_hook_registered = false;
+static _Atomic unsigned g_body_fsync_scope_depth = 0;
 
 /* Single-writer: reducer_batched_durability_precommit fires only from
  * stage_batch_end(), which stage.c documents as serialized by the recursive
@@ -151,6 +152,10 @@ void reducer_enter_batched_body_sync(void)
                                         memory_order_relaxed);
     if (!was)
         stage_batch_set_precommit_hook(reducer_batched_durability_precommit);
+    unsigned prior = atomic_fetch_add_explicit(&g_body_fsync_scope_depth, 1,
+                                                memory_order_acq_rel);
+    if (prior > 0)
+        return;
     disk_block_io_set_deferred_sync(true);
     /* event_log is a per-handle flag; NULL singleton (early boot, offline
      * mint with emission suppressed) simply means nothing to defer/flush. */
@@ -161,6 +166,19 @@ void reducer_enter_batched_body_sync(void)
 
 void reducer_exit_batched_body_sync(void)
 {
+    unsigned prior = atomic_load_explicit(&g_body_fsync_scope_depth,
+                                          memory_order_acquire);
+    while (prior > 0 &&
+           !atomic_compare_exchange_weak_explicit(
+               &g_body_fsync_scope_depth, &prior, prior - 1,
+               memory_order_acq_rel, memory_order_acquire)) {
+        /* retry with the observed depth */
+    }
+    if (prior == 0)
+        return;
+    if (prior > 1)
+        return;
+
     /* Final flush for any body / event written but not yet covered by a stage
      * COMMIT (e.g. a drive that persisted work then advanced nothing this
      * pass), then leave deferred mode. Best-effort: a sync failure keeps the

@@ -12,6 +12,7 @@
 #include "config/boot_internal.h"
 #include "config/db_service.h"
 #include "services/chain_activation_service.h"
+#include "services/reducer_ingest_service.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
@@ -87,6 +88,18 @@ int boot_drain_catchup_reducer(void *ctx)
      * exact reducer checks and cursor transactions while yielding on its
      * bounded runtime cadence. */
     return reducer_kick(boot_activation_controller());
+}
+
+void boot_begin_catchup_batch(void *ctx)
+{
+    (void)ctx;
+    reducer_enter_batched_body_sync();
+}
+
+void boot_end_catchup_batch(void *ctx)
+{
+    (void)ctx;
+    reducer_exit_batched_body_sync();
 }
 
 bool boot_snapshot_active(void *ctx)

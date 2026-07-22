@@ -3037,8 +3037,29 @@ int test_consensus_state_snapshot_install(void)
          * evidence and assert reducer_frontier_compute_hstar CLIMBS past the
          * wedge. Lower the compiled finality floor so the small fixture height
          * is a valid anchor (restored to the production default after). */
-        CSI_CHECK("activate: forward stage-log schema materializes",
-                  hs_ensure_forward_schema(pdb));
+        /* Production ACTIVATE runs before the reducer stages initialize on a
+         * genuinely fresh boot. Prove it, rather than test scaffolding,
+         * materialized every H*-authoritative log schema. */
+        bool frontier_schema_present = true;
+        static const char *const frontier_tables[] = {
+            "validate_headers_log", "script_validate_log",
+            "body_persist_log", "proof_validate_log", "utxo_apply_log",
+            "tip_finalize_log",
+        };
+        for (size_t i = 0;
+             i < sizeof(frontier_tables) / sizeof(frontier_tables[0]); i++) {
+            char sql[160];
+            int64_t table_count = 0;
+            snprintf(sql, sizeof(sql),
+                     "SELECT count(*) FROM sqlite_master WHERE type='table' "
+                     "AND name='%s'", frontier_tables[i]);
+            frontier_schema_present = frontier_schema_present &&
+                                      candidate_query_i64(pdb, sql,
+                                                          &table_count) &&
+                                      table_count == 1;
+        }
+        CSI_CHECK("activate: production materializes every H* log schema",
+                  frontier_schema_present);
         int32_t hstar_base = -1, served_base = -1;
         progress_store_tx_lock();
         bool base_ok = reducer_frontier_compute_hstar(pdb, &hstar_base,

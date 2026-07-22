@@ -4,7 +4,9 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/tip_finalize_stage.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
@@ -12,6 +14,24 @@
 #include <string.h>
 
 #define STAGE_NAME "header_admit"
+
+/* A blocks-less checkpoint activation can publish the finalized parent while
+ * its active-chain window slot remains absent. Header admission must not guess
+ * across that hole, but it can use either convention-aware finalized history
+ * or the exact durable trusted-base (height,hash) pair installed by the
+ * checkpoint CAS. Both witnesses are hash-bound; absence/mismatch refuses. */
+static bool durable_parent_matches(sqlite3 *db, int parent_height,
+                                   const struct uint256 *parent_hash)
+{
+    uint8_t durable_hash[32];
+    if (reducer_frontier_trusted_base_matches(db, parent_height,
+                                               parent_hash->data))
+        return true;
+    if (tip_finalize_stage_block_hash_at(db, parent_height, durable_hash) &&
+        memcmp(durable_hash, parent_hash->data, sizeof(durable_hash)) == 0)
+        return true;
+    return false;
+}
 
 static bool log_row_parent_match(sqlite3 *db, int height,
                                  const struct uint256 *expected_parent,
@@ -111,8 +131,10 @@ bool header_admit_forward_replay_parent_ok(sqlite3 *db,
 
     struct block_index *parent =
         active_chain_at(&ms->chain_active, height - 1);
-    return parent && parent->phashBlock &&
-           uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
+    if (parent && parent->phashBlock)
+        return uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
+    return durable_parent_matches(db, height - 1,
+                                  bi->pprev->phashBlock);
 }
 
 bool header_admit_forward_rewind_target(sqlite3 *db,

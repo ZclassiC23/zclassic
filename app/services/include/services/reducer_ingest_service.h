@@ -60,8 +60,11 @@ int reducer_drain_to_convergence_unbudgeted(void);
  * body BEFORE the stage cursor / *_log rows that reference it commit) and turns
  * on disk_block_io deferred mode; exit() does a final flush and leaves deferred
  * mode so unrelated write_block_to_disk callers keep their immediate sync. Call
- * both while holding the controller mutex + reducer drive, one exit per enter
- * before every reducer_drive_exit(). */
+ * Scopes are nestable: the async catch-up worker opens one outer scope around
+ * its body batch while each individual reducer submission retains its existing
+ * inner scope. Only the outermost exit flushes and disables deferred mode.
+ * The stage pre-commit hook preserves the body-before-cursor durability order
+ * if another reducer stage commits while the outer scope is open. */
 void reducer_enter_batched_body_sync(void);
 void reducer_exit_batched_body_sync(void);
 

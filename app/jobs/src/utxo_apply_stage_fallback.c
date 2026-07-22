@@ -12,6 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "script_validate_log_store.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
@@ -167,6 +168,7 @@ void utxo_apply_select_idle_note(int height,
 
 static bool indexed_body_hash_verifies(const struct block_index *bi,
                                        const char *datadir,
+                                       struct uint256 *parent_hash_out,
                                        enum utxo_apply_select_idle_reason *why)
 {
     if (!bi || !bi->phashBlock || !datadir || !datadir[0]) {
@@ -191,6 +193,8 @@ static bool indexed_body_hash_verifies(const struct block_index *bi,
     struct uint256 got;
     block_get_hash(&blk, &got);
     bool ok = uint256_eq(&got, bi->phashBlock);
+    if (ok && parent_hash_out)
+        *parent_hash_out = blk.header.hashPrevBlock;
     block_free(&blk);
     if (!ok) {
         if (why) *why = UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH;
@@ -203,25 +207,58 @@ static bool indexed_body_hash_verifies(const struct block_index *bi,
 }
 
 static bool candidate_extends_visible_parent(struct main_state *ms,
-                                             const struct block_index *bi,
+                                             const struct uint256 *parent_hash,
                                              int height)
+{
+    if (!ms || !parent_hash)
+        return false;
+    if (height == 0)
+        return uint256_is_null(parent_hash);
+
+    struct block_index *parent =
+        active_chain_at(&ms->chain_active, height - 1);
+    if (!parent || !parent->phashBlock)
+        return false;
+    return uint256_eq(parent_hash, parent->phashBlock);
+}
+
+static bool indexed_candidate_extends_visible_parent(
+        struct main_state *ms, const struct block_index *bi, int height)
 {
     if (!ms || !bi)
         return false;
     if (height == 0)
         return bi->pprev == NULL;
-
     struct block_index *parent =
         active_chain_at(&ms->chain_active, height - 1);
-    if (!parent || !parent->phashBlock || !bi->pprev ||
-        !bi->pprev->phashBlock)
-        return false;
-    return uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
+    return parent && parent->phashBlock && bi->pprev &&
+           bi->pprev->phashBlock &&
+           uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
 }
 
 static bool candidate_extends_durable_parent(sqlite3 *db,
-                                             const struct block_index *bi,
+                                             const struct uint256 *parent_hash,
                                              int height)
+{
+    if (!db || !parent_hash)
+        return false;
+    if (height == 0)
+        return uint256_is_null(parent_hash);
+
+    uint8_t durable_hash[32];
+    if (tip_finalize_stage_block_hash_at(db, height - 1, durable_hash) &&
+        memcmp(durable_hash, parent_hash->data, sizeof(durable_hash)) == 0)
+        return true;
+
+    /* The first checkpoint transition replaces the seed's anchor row with a
+     * finalized lookahead row, so the canonical trusted-base declaration is
+     * the exact fallback witness for that one missing-parent seam. */
+    return reducer_frontier_trusted_base_matches(db, height - 1,
+                                                  parent_hash->data);
+}
+
+static bool indexed_candidate_extends_durable_parent(
+        sqlite3 *db, const struct block_index *bi, int height)
 {
     if (!db || !bi)
         return false;
@@ -230,11 +267,14 @@ static bool candidate_extends_durable_parent(sqlite3 *db,
     if (!bi->pprev || !bi->pprev->phashBlock)
         return false;
 
-    uint8_t parent_hash[32];
-    if (!tip_finalize_stage_block_hash_at(db, height - 1, parent_hash))
-        return false;  // raw-return-ok:optional-durable-parent-witness
-    return memcmp(parent_hash, bi->pprev->phashBlock->data,
-                  sizeof(parent_hash)) == 0;
+    uint8_t durable_hash[32];
+    if (tip_finalize_stage_block_hash_at(db, height - 1, durable_hash) &&
+        memcmp(durable_hash, bi->pprev->phashBlock->data,
+               sizeof(durable_hash)) == 0)
+        return true;
+
+    return reducer_frontier_trusted_base_matches(
+        db, height - 1, bi->pprev->phashBlock->data);
 }
 
 static struct block_index *hash_bound_fallback(
@@ -261,19 +301,26 @@ static struct block_index *hash_bound_fallback(
         if (why) *why = UA_SELECT_IDLE_HEIGHT_MISMATCH;
         return NULL;
     }
-    if ((bi->nStatus & BLOCK_HAVE_DATA) == 0) {
-        char datadir[2048];
-        GetDataDir(true, datadir, sizeof(datadir));
-        enum utxo_apply_select_idle_reason body_why =
-            UA_SELECT_IDLE_INDEXED_BODY_MISSING;
-        if (!indexed_body_hash_verifies(bi, datadir, &body_why)) {
-            if (why) *why = body_why;
-            return NULL;
-        }
-        block_index_status_fetch_or(bi, BLOCK_HAVE_DATA);
+    bool indexed_parent_ok =
+        indexed_candidate_extends_visible_parent(ms, bi, height) ||
+        indexed_candidate_extends_durable_parent(db, bi, height);
+    if ((bi->nStatus & BLOCK_HAVE_DATA) != 0 && indexed_parent_ok)
+        return bi;
+
+    char datadir[2048];
+    GetDataDir(true, datadir, sizeof(datadir));
+    enum utxo_apply_select_idle_reason body_why =
+        UA_SELECT_IDLE_INDEXED_BODY_MISSING;
+    struct uint256 actual_parent;
+    uint256_set_null(&actual_parent);
+    if (!indexed_body_hash_verifies(bi, datadir, &actual_parent, &body_why)) {
+        if (why) *why = body_why;
+        return NULL;
     }
-    if (!candidate_extends_visible_parent(ms, bi, height) &&
-        !candidate_extends_durable_parent(db, bi, height)) {
+    if ((bi->nStatus & BLOCK_HAVE_DATA) == 0)
+        block_index_status_fetch_or(bi, BLOCK_HAVE_DATA);
+    if (!candidate_extends_visible_parent(ms, &actual_parent, height) &&
+        !candidate_extends_durable_parent(db, &actual_parent, height)) {
         if (why) *why = UA_SELECT_IDLE_PARENT_MISMATCH;
         return NULL;
     }

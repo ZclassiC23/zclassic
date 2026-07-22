@@ -696,6 +696,44 @@ int test_stage_repair(void)
         teardown_case(dir);
     }
 
+    /* A completed first transition above a durable trusted base must survive
+     * L1 reconcile. Rewinding 19->18 here would replace the anchor row with a
+     * finalized transition row and then strand the next retry on a hash
+     * mismatch — the fresh bundle-install wedge reproduced by C3. */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("trusted_base_transition", dir, sizeof(dir),
+                             &db);
+        ok = ok && seed_cursors(db, 19, 19) &&
+             exec_sql(db,
+                "ALTER TABLE tip_finalize_log ADD COLUMN tip_hash BLOB;") &&
+             exec_sql(db,
+                "INSERT OR REPLACE INTO tip_finalize_log"
+                "(height,status,ok,tip_hash) VALUES"
+                "(18,'finalized',1,"
+                "X'0100000000000000000000000000000000000000000000000000000000000000');"
+                "INSERT OR REPLACE INTO progress_meta(key,value) VALUES"
+                "('reducer_trusted_base_height',X'1200000000000000');"
+                "INSERT OR REPLACE INTO progress_meta(key,value) VALUES"
+                "('reducer_trusted_base_hash',zeroblob(32));");
+
+        struct stage_reducer_frontier_reconcile_result out;
+        memset(&out, 0, sizeof(out));
+        out.hstar = 18;
+        out.tip_finalize_cursor_before = 19;
+        out.coins_applied_found = true;
+        out.coins_applied_height = 19;
+        bool rv =
+            stage_reducer_frontier_reconcile_tip_finalize_cursor_for_testing(
+                db, true, &out);
+        ok = ok && rv && !out.clamped_tip_finalize &&
+             out.tip_finalize_cursor_after == 19 &&
+             cursor_for(db, "tip_finalize") == 19;
+        STR_CHECK("trusted-base completed transition is never rewound", ok);
+        teardown_case(dir);
+    }
+
     /* === tip_finalize rewind-churn refusal (Lane 1C — defence-in-depth
      * under the L1A coins-frontier clamp) ===
      *

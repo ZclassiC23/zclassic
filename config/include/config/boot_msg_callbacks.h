@@ -23,6 +23,8 @@ bool boot_submit_compact_block(struct block *block,
                                struct validation_state *state,
                                void *ctx);
 int boot_drain_catchup_reducer(void *ctx);
+void boot_begin_catchup_batch(void *ctx);
+void boot_end_catchup_batch(void *ctx);
 
 /* Snapshot-sync state + anchor accessors. */
 bool boot_snapshot_active(void *ctx);

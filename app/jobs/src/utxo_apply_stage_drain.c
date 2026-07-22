@@ -48,9 +48,10 @@ int utxo_apply_stage_drain(int max_steps)
             reducer_commit_invariants_disable_coins_check();
     }
 
-    /* Pre-batch cursor: h2_before_batch + advanced gives the exact height
-     * range this batch folds (see utxo_apply_batch_commit_record below). */
-    int64_t h_before_batch = atomic_load(&g_ua_last_advance_height);
+    /* Read the durable pre-batch cursor directly. The observer atomic is an
+     * advance event, so it is intentionally unset after a process restart. */
+    int64_t h_before_batch =
+        (int64_t)stage_cursor_persisted(batch_db, STAGE_NAME, STAGE_NAME) - 1;
 
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {

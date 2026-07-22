@@ -24,6 +24,7 @@
 #include "test/test_helpers.h"
 
 #include "config/boot.h"
+#include "chain/chain.h"
 #include "core/serialize.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_row_itag.h"
@@ -372,6 +373,43 @@ static int case_warm_empty_datadir(void)
     return failures;
 }
 
+/* A fresh node has a real in-memory genesis tip before reducer stage tables
+ * exist. The warm must publish exactly H*=0 alongside that runtime authority
+ * so clean-genesis instant-on can distinguish it from an unpublished cache. */
+static int case_warm_clean_genesis(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+    reducer_frontier_provable_tip_reset();
+    tip_finalize_observe_reset_last_height();
+    IVW_CHECK("clean-genesis: schema", ivw_build_schema(db));
+
+    struct uint256 genesis_hash;
+    ivw_synth_hash(genesis_hash.data, 0, 0x42);
+    struct block_index genesis;
+    block_index_init(&genesis);
+    genesis.nHeight = 0;
+    genesis.phashBlock = &genesis_hash;
+
+    tip_finalize_stage_warm_authority_caches(db, &genesis,
+                                             "test_warm_clean_genesis");
+
+    IVW_CHECK("clean-genesis: H*=0 is explicitly published",
+              reducer_frontier_provable_tip_is_published() &&
+              reducer_frontier_provable_tip_cached() == 0);
+    int64_t authority_h = -1;
+    uint8_t authority_hash[32];
+    IVW_CHECK("clean-genesis: runtime authority owns genesis",
+              tip_finalize_stage_authority_snapshot(&authority_h,
+                                                    authority_hash) &&
+              authority_h == 0 &&
+              memcmp(authority_hash, genesis_hash.data, 32) == 0);
+
+    sqlite3_close(db);
+    return failures;
+}
+
 /* (4) An already-published provable tip is never clobbered by the warm. */
 static int case_warm_never_clobbers_published(void)
 {
@@ -550,6 +588,7 @@ int test_install_verb_warm(void)
     int failures = 0;
     failures += case_warm_publishes_durable();
     failures += case_warm_empty_datadir();
+    failures += case_warm_clean_genesis();
     failures += case_warm_never_clobbers_published();
     failures += case_post_install_invalidation();
     return failures;

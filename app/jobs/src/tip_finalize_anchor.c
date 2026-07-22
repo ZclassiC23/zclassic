@@ -260,39 +260,13 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * side effects; it must never be overwritten through SQLite coercion. */
     int32_t prev_trusted_height = 0;
     bool prev_trusted_found = false;
-    uint8_t trusted_height_blob[8] = {0};
-    size_t trusted_height_size = 0;
-    if (!progress_meta_get_blob_exact(
-            db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-            trusted_height_blob, sizeof(trusted_height_blob),
-            &trusted_height_size, &prev_trusted_found)) {
+    if (!reducer_frontier_trusted_base_height_read(
+            db, &prev_trusted_height, &prev_trusted_found)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] trusted-base height read failed h=%d",
                  height);
         progress_store_tx_unlock();
         return false;
-    }
-    if (prev_trusted_found &&
-        trusted_height_size != sizeof(trusted_height_blob)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] trusted-base height malformed h=%d "
-                 "bytes=%zu", height, trusted_height_size);
-        progress_store_tx_unlock();
-        return false;
-    }
-    if (prev_trusted_found) {
-        uint64_t decoded = 0;
-        for (int i = 7; i >= 0; i--)
-            decoded = (decoded << 8) | trusted_height_blob[i];
-        if (decoded > INT32_MAX) {
-            LOG_WARN("tip_finalize",
-                     "[tip_finalize] trusted-base height out of range "
-                     "h=%d stored=%llu", height,
-                     (unsigned long long)decoded);
-            progress_store_tx_unlock();
-            return false;
-        }
-        prev_trusted_height = (int32_t)decoded;
     }
 
     /* PRE-INSERT state for the FIX-3 seed-exemption verdict: a trusted

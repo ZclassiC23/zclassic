@@ -68,6 +68,10 @@ bool stage_reducer_frontier_try_stale_proof_replay(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
+bool stage_repair_preserve_trusted_base_transition(
+    struct sqlite3 *db, int hstar, int cursor,
+    const struct stage_reducer_frontier_reconcile_result *out);
+
 /* Detector signature shared by the stale-script replay paths: given the
  * script_validate cursor, pick the lowest height strictly below it to re-derive
  * (an ok=0 status hole, an ok=1 wrong-hash split, or a row-ABSENT rowless hole).

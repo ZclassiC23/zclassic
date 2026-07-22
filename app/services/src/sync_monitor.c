@@ -1,11 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
-
-// one-result-type-ok:monitor-operations-use-zcl-result — E2 (one way out):
-// most of this file is sync-monitor / recovery-stats recording (void setters,
-// pointer accessors, pure predicates, and out-param stats). Both operation
-// executors (frontier body queue + periodic tip-state evaluation) return
-// struct zcl_result so failures retain contextual reasons.
-
+// one-result-type-ok:monitor-operations-use-zcl-result — state accessors are
+// pure; both fallible operation executors return contextual zcl_result values.
 #include "services/sync_monitor.h"
 #include "util/log_macros.h"
 
@@ -168,6 +163,11 @@ int64_t sync_monitor_tip_advance_age(void)
         return -1; // raw-return-ok:sentinel
     int64_t now = (int64_t)platform_time_wall_time_t();
     return (now > last) ? (now - last) : 0;
+}
+
+int sync_monitor_peer_height_cached(void)
+{
+    return atomic_load(&g_tip_eval_peer_height);
 }
 
 struct zcl_result sync_monitor_evaluate_tip_state(void)

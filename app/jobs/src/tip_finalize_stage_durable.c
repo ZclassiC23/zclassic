@@ -87,11 +87,11 @@ bool tip_finalize_stage_hydrate_cursor_from_store(sqlite3 *db,
     return true;
 }
 
-void tip_finalize_stage_publish_resolved_or_fresh_tip(
+static bool publish_resolved_or_fresh_tip(
     sqlite3 *db, const struct block_index *existing_tip, const char *reason)
 {
     if (publish_resolved_durable_tip(db, reason))
-        return;
+        return true;
     if (existing_tip && existing_tip->phashBlock &&
         has_no_durable_tip_history(db) &&
         fresh_tip_coin_frontier_allows(db, existing_tip, reason)) {
@@ -100,7 +100,15 @@ void tip_finalize_stage_publish_resolved_or_fresh_tip(
         LOG_INFO("tip_finalize",
                  "[tip_finalize] authority publish fresh h=%d reason=%s",
                  existing_tip->nHeight, reason ? reason : "");
+        return true;
     }
+    return false;
+}
+
+void tip_finalize_stage_publish_resolved_or_fresh_tip(
+    sqlite3 *db, const struct block_index *existing_tip, const char *reason)
+{
+    (void)publish_resolved_or_fresh_tip(db, existing_tip, reason);
 }
 
 void tip_finalize_stage_warm_authority_caches(
@@ -114,7 +122,8 @@ void tip_finalize_stage_warm_authority_caches(
      * public primitives. */
     if (!db || reducer_frontier_provable_tip_is_published())
         return;
-    tip_finalize_stage_publish_resolved_or_fresh_tip(db, existing_tip, reason);
+    bool authority_published =
+        publish_resolved_or_fresh_tip(db, existing_tip, reason);
     progress_store_tx_lock();
     if (!reducer_frontier_provable_tip_is_published()) {
         int32_t hs = 0, sf = 0;
@@ -123,6 +132,19 @@ void tip_finalize_stage_warm_authority_caches(
             LOG_INFO("tip_finalize",
                      "[tip_finalize] provable-tip cache warmed h=%d reason=%s",
                      reducer_frontier_provable_tip_cached(),
+                     reason ? reason : "");
+        } else if (authority_published && existing_tip &&
+                   existing_tip->nHeight == 0) {
+            /* A fresh datadir reaches this boot-order seam before reducer stage
+             * tables exist, so compute_hstar cannot derive a durable frontier.
+             * The runtime authority pair above nevertheless owns the compiled
+             * genesis block. Publish exactly H*=0 so the chain-binding service
+             * can apply its already-fail-closed clean-genesis admission; never
+             * synthesize a positive frontier here. */
+            reducer_frontier_provable_tip_set(0);
+            LOG_INFO("tip_finalize",
+                     "[tip_finalize] provable-tip cache warmed from clean "
+                     "genesis runtime authority h=0 reason=%s",
                      reason ? reason : "");
         } else {
             LOG_WARN("tip_finalize",

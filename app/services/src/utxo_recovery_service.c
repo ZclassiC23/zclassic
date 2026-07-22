@@ -115,7 +115,12 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
         .new_tip = tip,
         .new_coins_best = *tip->phashBlock,
         .expected_utxo_count = 0,
-        .update_header_tip = true,
+        /* A UTXO repair publishes the body/coins frontier.  It must not use
+         * its rollback authorization to drag an already-better header-only
+         * frontier down to the repaired body tip.  Header publication below
+         * uses the ordinary forward-only CSR ratchet: it fills an empty/older
+         * header slot but preserves a validated header chain ahead of coins. */
+        .update_header_tip = false,
         .persist_coins_best = persist_coins_best,
         .rollback_auth = &rollback_auth,
         .wallet_scan_height = -1,
@@ -123,8 +128,20 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
     };
 
     enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-    if (rc == CSR_OK)
+    if (rc == CSR_OK) {
+        bool promoted = false;
+        enum csr_result hrc = csr_promote_header_tip(
+            csr_instance(), &ctx->state->chain_active,
+            &ctx->state->pindex_best_header, tip,
+            reason ? reason : "utxo_recovery.header_floor", &promoted);
+        if (hrc != CSR_OK)
+            LOG_WARN("utxo_recovery",
+                     "recovered body tip h=%d but header ratchet returned %s "
+                     "reason=%s",
+                     tip->nHeight, csr_result_name(hrc),
+                     reason ? reason : "");
         return ZCL_OK;
+    }
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {

@@ -384,6 +384,21 @@ int test_consensus_state_publication_cas(void)
                refuses_with(bad,
                             CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_BEHIND));
 
+    bad = make_inputs();
+    bad.frontier_height = 0;
+    bad.checkpoint_authority_used = true;
+    struct consensus_state_publication_decision_record bootstrap_rec;
+    consensus_state_publication_cas_decide(&bad, &bootstrap_rec);
+    PCAS_CHECK("checkpoint-authorized genesis frontier admits",
+               bootstrap_rec.decision == CONSENSUS_PUBLICATION_ADMIT &&
+               bootstrap_rec.refusal == CONSENSUS_PUBLICATION_REFUSAL_NONE &&
+               bootstrap_rec.expected_frontier_height == 0);
+
+    bad.frontier_known = false;
+    PCAS_CHECK("checkpoint authority never admits an unknown frontier",
+               refuses_with(bad,
+                            CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_UNKNOWN));
+
     struct consensus_state_publication_decision_record null_rec;
     consensus_state_publication_cas_decide(NULL, &null_rec);
     PCAS_CHECK("null inputs refuse (null_input)",

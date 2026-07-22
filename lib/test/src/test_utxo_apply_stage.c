@@ -12,6 +12,7 @@
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_batch_commit.h"
 #include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
@@ -208,6 +209,8 @@ static bool synth_chain_uv_build(struct synth_chain_uv *sc, int n)
     sc->read_fail_height = -1;
     for (int i = 0; i < n; i++) {
         if (!make_body(sc, i)) return false;
+        if (i > 0)
+            sc->bodies[i].header.hashPrevBlock = sc->hashes[i - 1];
         block_header_get_hash(&sc->bodies[i].header, &sc->hashes[i]);
         block_index_init(&sc->blocks[i]);
         sc->blocks[i].phashBlock = &sc->hashes[i];
@@ -1009,6 +1012,49 @@ int test_utxo_apply_stage(void)
                  uv_dump_has("\"hash_bound_fallback_total\":1"));
         UV_CHECK("hash_fallback_durable_parent: fallback height recorded",
                  uv_dump_has("\"hash_bound_fallback_height\":1"));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Checkpoint first-transition fallback: once tip_finalize replaces the
+         * seed anchor row, the exact trusted-base metadata remains the only
+         * durable hash(H) witness until the next transition. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("hash_fallback_trusted_base: setup",
+                 uv_setup("hash_fallback_trusted_base", 3, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("hash_fallback_trusted_base: visible h0 only",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[0]));
+        UV_CHECK("hash_fallback_trusted_base: seed h1 script hash verdict",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
+        UV_CHECK("hash_fallback_trusted_base: block_map has h1 by hash",
+                 block_map_insert(&ms.map_block_index, sc.blocks[1].phashBlock,
+                                  &sc.blocks[1]));
+        UV_CHECK("hash_fallback_trusted_base: h0 applies",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        uint8_t trusted_height[8] = {0};
+        UV_CHECK("hash_fallback_trusted_base: exact authority pair stored",
+                 progress_meta_set(progress_store_db(),
+                                   REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                   trusted_height, sizeof(trusted_height)) &&
+                 progress_meta_set(progress_store_db(),
+                                   REDUCER_TRUSTED_BASE_HASH_KEY,
+                                   sc.blocks[0].phashBlock->data, 32));
+        UV_CHECK("hash_fallback_trusted_base: h1 body on disk",
+                 uv_write_body_to_disk(&sc, 1));
+        /* A block-file scan can create a same-hash body owner whose derived
+         * pprev link is absent even though the body header itself carries the
+         * exact durable parent hash. The apply gate must bind to the validated
+         * body bytes, not that rebuildable pointer. */
+        sc.blocks[1].pprev = NULL;
+        active_chain_free(&ms.chain_active);
+        active_chain_init(&ms.chain_active);
+        UV_CHECK("hash_fallback_trusted_base: h1 applies without anchor row",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback_trusted_base: fallback counter recorded",
+                 uv_dump_has("\"hash_bound_fallback_total\":1"));
         uv_teardown(dir, &ms, &sc);
     }
 
@@ -2171,6 +2217,36 @@ int test_utxo_apply_stage(void)
         json_free(&synth);
 
         utxo_apply_batch_commit_reset_for_test();
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* A resumed stage must seed its observer from the durable cursor before
+     * the first drain. Otherwise the first real post-checkpoint commit is
+     * falsely logged as heights 0..N even though state advances at C+1. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("batch_commit resume: setup",
+                 uv_setup("batch_commit_resume", 5, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("batch_commit resume: establish durable prefix",
+                 utxo_apply_stage_drain(3) == 3 &&
+                 utxo_apply_stage_cursor() == 3);
+        utxo_apply_stage_shutdown();
+        UV_CHECK("batch_commit resume: reinitialize stage",
+                 utxo_apply_stage_init(&ms));
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        utxo_apply_stage_set_lookup(fake_lookup, &sc);
+        utxo_apply_batch_commit_reset_for_test();
+        UV_CHECK("batch_commit resume: fold remaining suffix",
+                 utxo_apply_stage_drain(100) == 2);
+        struct json_value resumed;
+        json_init(&resumed);
+        UV_CHECK("batch_commit resume: dump",
+                 utxo_apply_batch_commit_dump_state_json(&resumed, NULL));
+        UV_CHECK("batch_commit resume: absolute range is 3..4",
+                 json_get_int(json_get(&resumed, "last_height_lo")) == 3 &&
+                 json_get_int(json_get(&resumed, "last_height_hi")) == 4);
+        json_free(&resumed);
         uv_teardown(dir, &ms, &sc);
     }
 

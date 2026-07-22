@@ -148,6 +148,16 @@ void reducer_frontier_provable_tip_reset(void);
 #define REDUCER_TRUSTED_BASE_HEIGHT_KEY "reducer_trusted_base_height"
 #define REDUCER_TRUSTED_BASE_HASH_KEY   "reducer_trusted_base_hash"
 
+/* Canonical SELECT-only readers for the durable trusted-base declaration.
+ * An absent declaration is a successful read with found=false; malformed or
+ * partially-present metadata fails closed. */
+bool reducer_frontier_trusted_base_height_read(sqlite3 *db, int32_t *height,
+                                                bool *found);
+bool reducer_frontier_trusted_base_read(sqlite3 *db, int32_t *height,
+                                        uint8_t hash[32], bool *found);
+bool reducer_frontier_trusted_base_matches(sqlite3 *db, int32_t height,
+                                           const uint8_t hash[32]);
+
 /* Compute H* (deepest provably-consistent height) and served_floor from
  * durable state.
  *

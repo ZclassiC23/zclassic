@@ -1,11 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- *
- * stage_repair_reducer_frontier — L1 reducer-frontier reconcile.
- *
- * This is deliberately limited to block_index mirror flags plus the
- * body_fetch and tip_finalize cursors. It never deletes reducer logs and never
- * mutates coins.
- */
+ * PURPOSE: Reconcile L1 reducer flags and cursors without mutating coins. */
 
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
@@ -25,7 +19,6 @@
 #include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
-
 #include <sqlite3.h>
 #include <stdint.h>
 #include <string.h>
@@ -359,8 +352,7 @@ static bool reconcile_tip_finalize_cursor(
     /* OWN-frame: tip_finalize's cursor is the served tip. Accept [hstar,
      * hstar+1], with a one-height lower cap for coins_applied's next-height
      * convention. A deeper coins cap is an anchor/window inconsistency, not a
-     * cursor convention mismatch; refuse it instead of pushing a stage cursor
-     * below the trusted floor. */
+     * cursor convention mismatch; refuse it below the trusted floor. */
     int cur = out->tip_finalize_cursor_before;
     int lo = out->hstar;
     int hi = out->hstar + 1;
@@ -381,6 +373,13 @@ static bool reconcile_tip_finalize_cursor(
         }
         if (hi > applied_through)
             hi = applied_through;
+        if (lo > hi)
+            lo = hi;
+    }
+
+    if (stage_repair_preserve_trusted_base_transition(
+            db, out->hstar, cur, out)) {
+        hi = cur;
         if (lo > hi)
             lo = hi;
     }

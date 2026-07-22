@@ -38,6 +38,7 @@ typedef bool (*msg_block_submit_fn)(struct block *block,
                                     struct validation_state *out,
                                     void *ctx);
 typedef int (*msg_catchup_drain_fn)(void *ctx);
+typedef void (*msg_catchup_batch_scope_fn)(void *ctx);
 typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_zmsg_save_fn)(const struct zmsg_message *msg, void *ctx);
 typedef bool (*msg_file_offer_save_fn)(const struct file_offer *offer,
@@ -120,6 +121,9 @@ struct msg_processor {
     void *block_submit_ctx;
     msg_catchup_drain_fn catchup_drain;
     void *catchup_drain_ctx;
+    msg_catchup_batch_scope_fn catchup_batch_begin;
+    msg_catchup_batch_scope_fn catchup_batch_end;
+    void *catchup_batch_scope_ctx;
     msg_compact_block_submit_fn compact_block_submit;
     void *compact_block_submit_ctx;
     msg_peer_save_fn peer_save;
@@ -210,6 +214,11 @@ void msg_processor_set_block_submit(struct msg_processor *mp,
 void msg_processor_set_catchup_drain(struct msg_processor *mp,
                                      msg_catchup_drain_fn drain,
                                      void *ctx);
+void msg_processor_set_catchup_batch_scope(
+    struct msg_processor *mp,
+    msg_catchup_batch_scope_fn begin,
+    msg_catchup_batch_scope_fn end,
+    void *ctx);
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx);

@@ -6,11 +6,12 @@
 
 #include "jobs/reducer_frontier.h"
 #include "script_validate_log_store.h"
-#include "storage/progress_store.h"
+#include "platform/time_compat.h"
 #include "tip_finalize_log_store.h"
 #include "utxo_apply_log_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -114,27 +115,44 @@ int tip_finalize_trusted_anchor_at(sqlite3 *db, int height,
     struct finalized_tip_row row;
     if (!finalized_tip_row_at(db, height, &row))
         LOG_ERR("tip_finalize", "trusted anchor row read failed h=%d", height);
+    bool row_hash_match = row.has_tip_hash &&
+                          uint256_eq(&row.tip_hash, block_hash);
+    /* This predicate is intentionally attempted for every successor before
+     * the full-validation path.  A missing/non-anchor row is therefore the
+     * normal case, not an anomaly: logging it once per distinct height turns
+     * a fast fold into an O(delta) warning storm.  Keep diagnostics for the
+     * only surprising case below — a row that claims to be the anchor but
+     * disagrees with the trusted-base metadata. */
     if (!row.found || !row.ok || !row.is_anchor || !row.has_tip_hash ||
-        !uint256_eq(&row.tip_hash, block_hash))
+        !row_hash_match)
         return 0;
-    uint8_t height_blob[8] = {0};
     uint8_t hash_blob[32] = {0};
-    size_t height_size = 0, hash_size = 0;
-    bool height_found = false, hash_found = false;
-    if (!progress_meta_get_blob_exact(
-            db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, height_blob,
-            sizeof(height_blob), &height_size, &height_found) ||
-        !progress_meta_get_blob_exact(
-            db, REDUCER_TRUSTED_BASE_HASH_KEY, hash_blob,
-            sizeof(hash_blob), &hash_size, &hash_found))
+    int32_t trusted_height = -1;
+    bool trusted_found = false;
+    if (!reducer_frontier_trusted_base_read(
+            db, &trusted_height, hash_blob, &trusted_found))
         LOG_ERR("tip_finalize", "trusted base metadata read failed h=%d",
                 height);
-    uint64_t encoded_height = 0;
-    for (int i = 7; i >= 0; i--)
-        encoded_height = (encoded_height << 8) | height_blob[i];
-    return height_found && hash_found && height_size == sizeof(height_blob) &&
-           hash_size == sizeof(hash_blob) && encoded_height == (uint64_t)height &&
-           memcmp(hash_blob, block_hash->data, sizeof(hash_blob)) == 0;
+    bool height_match = trusted_found && trusted_height == height;
+    bool hash_match = trusted_found &&
+                      memcmp(hash_blob, block_hash->data,
+                             sizeof(hash_blob)) == 0;
+    if (!height_match || !hash_match) {
+        static struct log_throttle meta_throttle = LOG_THROTTLE_INIT;
+        uint64_t repeats = 0;
+        if (log_throttle_should_emit(&meta_throttle,
+                                     (uint64_t)(uint32_t)height,
+                                     platform_time_wall_unix(), 300,
+                                     &repeats))
+            LOG_WARN("tip_finalize",
+                     "trusted anchor metadata mismatch h=%d "
+                     "trusted_found=%d trusted_height=%d hash_match=%d "
+                     "repeats=%llu",
+                     height, trusted_found ? 1 : 0, trusted_height,
+                     hash_match ? 1 : 0,
+                     (unsigned long long)repeats);
+    }
+    return height_match && hash_match;
 }
 
 job_result_t tip_finalize_evidence_refuse(

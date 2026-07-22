@@ -37,16 +37,12 @@
  * captured frontier is consumed only as "a consistent frontier >= bundle
  * height" (cas_run's frontier_height >= manifest.height guard + the staleness
  * match), never as exact tip equality. */
-bool consensus_state_publication_cas_capture_frontier(int32_t *height,
-                                                      uint8_t hash[32])
+bool consensus_state_publication_cas_capture_frontier_locked(
+    sqlite3 *db, int32_t *height, uint8_t hash[32])
 {
-    if (!height || !hash)
+    if (!db || !height || !hash)
         return false; /* raw-return-ok:null-out-param */
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return false; /* raw-return-ok:no-open-progress-store */
     bool ok = false;
-    progress_store_tx_lock();
     int32_t hstar = -1;
     int32_t served_floor = -1;
     int durable_h = -1;
@@ -64,8 +60,27 @@ bool consensus_state_publication_cas_capture_frontier(int32_t *height,
         *height = hstar;
         memcpy(hash, hstar_hash, 32);
         ok = true;
+    } else if (reducer_frontier_provable_tip_is_published() &&
+               reducer_frontier_provable_tip_cached() == 0) {
+        /* Fresh instant-on runs before reducer tables have a durable row, but
+         * tip_finalize_stage_warm_authority_caches has published the genuine
+         * runtime genesis pair. Bind that exact (0, genesis-hash) pair into the
+         * CAS record; the opaque chain evidence independently requires stable
+         * clean-genesis plus compiled-checkpoint authority before admission. */
+        int64_t authority_h = -1;
+        uint8_t authority_hash[32] = {0};
+        if (tip_finalize_stage_authority_snapshot(&authority_h,
+                                                  authority_hash) &&
+            authority_h == 0) {
+            *height = 0;
+            memcpy(hash, authority_hash, 32);
+            memcpy(hstar_hash, authority_hash, 32);
+            ok = true;
+            LOG_INFO(CAS_SUBSYS,
+                     "frontier capture used clean-genesis runtime authority "
+                     "h=0 (durable reducer rows not initialized yet)");
+        }
     }
-    progress_store_tx_unlock();
     if (!ok) {
         /* A blind refusal after a long verify is a diagnosed defect class in
          * this repo — log EVERY number so the refusal is self-explaining. */
@@ -86,5 +101,18 @@ bool consensus_state_publication_cas_capture_frontier(int32_t *height,
                  "durable_h=%d (>1 above H* — check finalize lattice)",
                  hstar, durable_h);
     }
+    return ok;
+}
+
+bool consensus_state_publication_cas_capture_frontier(int32_t *height,
+                                                      uint8_t hash[32])
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false; /* raw-return-ok:no-open-progress-store */
+    progress_store_tx_lock();
+    bool ok = consensus_state_publication_cas_capture_frontier_locked(
+        db, height, hash);
+    progress_store_tx_unlock();
     return ok;
 }

@@ -238,37 +238,6 @@ static const char *blocker_row_sql(const struct dump_log *log)
     return NULL;
 }
 
-static bool trusted_base_height_for_dump(sqlite3 *db, int32_t *out,
-                                         bool *found)
-{
-    *out = -1;
-    *found = false;
-    uint8_t blob[8] = {0};
-    size_t n = 0;
-    bool present = false;
-    if (!progress_meta_get_blob_exact(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                                      blob, sizeof(blob), &n, &present))
-        return false;
-    if (!present)
-        return true;
-    if (n != sizeof(blob)) {
-        LOG_WARN("reducer",
-                 "dump trusted_base blob malformed (len=%zu)", n);
-        return false;
-    }
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | blob[i];
-    if (v > INT32_MAX) {
-        LOG_WARN("reducer", "dump trusted_base height out of range (%llu)",
-                 (unsigned long long)v);
-        return false;
-    }
-    *out = (int32_t)v;
-    *found = true;
-    return true;
-}
-
 static bool blocker_row_at(sqlite3 *db,
                            const struct dump_log *log,
                            int32_t height,
@@ -489,18 +458,17 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "itag_null_rows_seen",
                      (int64_t)reducer_frontier_itag_null_count());
 
-    /* Tail-fold progress: H* against the network's best-known tip (the
-     * highest starting_height any handshake-complete NODE_NETWORK peer
-     * advertised — same source sync_monitor's tip_eval_peer_height and the
-     * sync_rate_below_floor/local_header_refill_needed conditions already
-     * read via connman_max_peer_height()). This is the one number that
+    /* Tail-fold progress: H* against the network's best-known tip, published
+     * lock-free by sync_monitor's periodic tip evaluation.  Reading the
+     * cached value is deliberate: diagnostics can run during shutdown, after
+     * connman has destroyed its node mutex, and must never dereference that
+     * retired object. This is the one number that
      * answers "is a cured (release_assisted) node now catching the tail up
      * to the network, or stuck?" without cross-referencing a second
-     * dumpstate call. -1 / not-ok when no connman is wired yet (e.g. very
-     * early boot) or no peer has completed handshake. */
-    struct connman *cm = sync_monitor_connman();
-    bool network_tip_ok = cm != NULL;
-    int32_t network_tip = network_tip_ok ? connman_max_peer_height(cm) : -1;
+     * dumpstate call. -1 / not-ok before the monitor has observed a
+     * handshake-complete peer. */
+    int32_t network_tip = sync_monitor_peer_height_cached();
+    bool network_tip_ok = network_tip >= 0;
     if (network_tip < 0)
         network_tip_ok = false;
     json_push_kv_bool(out, "network_tip_read_ok", network_tip_ok);
@@ -514,9 +482,8 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
 
     int32_t trusted_base_height = -1;
     bool trusted_base_found = false;
-    bool trusted_base_ok =
-        trusted_base_height_for_dump(db, &trusted_base_height,
-                                     &trusted_base_found);
+    bool trusted_base_ok = reducer_frontier_trusted_base_height_read(
+        db, &trusted_base_height, &trusted_base_found);
     json_push_kv_bool(out, "trusted_base_read_ok", trusted_base_ok);
     json_push_kv_bool(out, "trusted_base_found",
                       trusted_base_ok && trusted_base_found);

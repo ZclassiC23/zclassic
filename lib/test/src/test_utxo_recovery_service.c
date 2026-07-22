@@ -1229,6 +1229,13 @@ int test_utxo_recovery_service(void)
         struct block_index *scan_fallback = up
             ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
 
+        /* Reproduce header-first boot: the validated header chain is already
+         * ahead of the coins/body recovery candidate.  Repair may lower the
+         * active body tip to the derivable frontier, but must preserve this
+         * independent header frontier. */
+        if (scan_fallback)
+            fx.ms.pindex_best_header = scan_fallback;
+
         struct chain_restore_result rr;
         memset(&rr, 0, sizeof(rr));
         if (up && seeded && scan_fallback)
@@ -1250,7 +1257,7 @@ int test_utxo_recovery_service(void)
                   uint256_eq(&got_best, &want_hash) &&
                   active_chain_height(&fx.ms.chain_active) == A + 10 &&
                   fx.ms.pindex_best_header &&
-                  fx.ms.pindex_best_header->nHeight == A + 10);
+                  fx.ms.pindex_best_header->nHeight == A + 20);
 
         if (up)
             urs_frontier_fixture_teardown(&fx);

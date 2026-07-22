@@ -9,6 +9,7 @@
 #include "platform/time_compat.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_body_index.h"
 #include "proof_validate_log_store.h"
 #include "proof_validate_stage_internal.h"
 #include "jobs/proof_validate_verify.h"
@@ -239,7 +240,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
     stage_upstream_log_hole_clear(STAGE_NAME);
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    struct block_index *bi = stage_body_index_at(ms, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

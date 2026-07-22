@@ -14,6 +14,7 @@
 #include "jobs/body_persist_stage.h"
 #include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_body_index.h"
 #include "body_persist_log_store.h"
 
 #include "bloom/merkle.h"
@@ -234,7 +235,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    struct block_index *bi = stage_body_index_at(ms, next_h);
     if (!bi || !bi->phashBlock ||
         !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());

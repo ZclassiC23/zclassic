@@ -356,14 +356,20 @@ void consensus_state_publication_cas_decide(
                "validation profile is not FULL (non-serving state)");
         return;
     }
-    /* CAS frontier binding: the bundle may not be ahead of the durable H*. */
+    /* CAS frontier binding: ordinary state replacement may not move ahead of
+     * durable H*. The headers-first checkpoint path is different: its opaque
+     * chain-evidence digest already binds the compiled checkpoint authority and
+     * proves the selected PoW header while the current frontier is still below
+     * the bundle. Keep unknown frontiers fail-closed; permit a known, stable
+     * below-bundle frontier only when that evidence flag is present. */
     if (!in->frontier_known) {
         finish(out, CONSENSUS_PUBLICATION_REFUSED,
                CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_UNKNOWN,
                "current durable frontier could not be captured");
         return;
     }
-    if (in->frontier_height < in->manifest.height) {
+    if (in->frontier_height < in->manifest.height &&
+        !in->checkpoint_authority_used) {
         finish(out, CONSENSUS_PUBLICATION_REFUSED,
                CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_BEHIND,
                "bundle height exceeds the durable node frontier");
@@ -677,6 +683,9 @@ struct zcl_result consensus_state_publication_cas_run(
     in.chain_evidence_present = true;
     in.chain_bound_to_artifact = consensus_state_chain_evidence_matches_artifact(
         request->chain_evidence, request->artifact, request->target_lane);
+    in.checkpoint_authority_used =
+        consensus_state_chain_evidence_used_checkpoint_authority(
+            request->chain_evidence);
     if (!consensus_state_chain_evidence_digest(request->chain_evidence,
                                                in.chain_evidence_digest))
         return ZCL_ERR(-65, "cas run: chain evidence digest unavailable");

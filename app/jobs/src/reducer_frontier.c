@@ -475,41 +475,6 @@ static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height,
     return true;
 }
 
-/* Read the durable trusted-base height declaration (see the key's contract
- * in reducer_frontier.h). Absent key is a clean "no declaration" (fresh /
- * pre-seed datadir); a malformed blob is a hard read error. SELECT-only
- * (progress_meta_get), preserving this TU's contract. */
-static bool reducer_trusted_base_height(sqlite3 *db, int32_t *out,
-                                        bool *found)
-{
-    *found = false;
-    uint8_t blob[8] = {0};
-    size_t n = 0;
-    bool f = false;
-    if (!progress_meta_get_blob_exact(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                                      blob, sizeof(blob), &n, &f))
-        return false;
-    if (!f)
-        return true;
-    if (n != sizeof(blob)) {
-        LOG_WARN("reducer",
-                 "[reducer] trusted_base blob malformed (len=%zu)", n);
-        return false;
-    }
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | blob[i];
-    if (v > INT32_MAX) {
-        LOG_WARN("reducer",
-                 "[reducer] trusted_base height out of range (%llu)",
-                 (unsigned long long)v);
-        return false;
-    }
-    *out = (int32_t)v;
-    *found = true;
-    return true;
-}
-
 static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
                                    int32_t *out)
 {
@@ -551,8 +516,8 @@ static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
      * row candidate; only ever RAISES the anchor. */
     int32_t base_h = 0;
     bool base_found = false;
-    if (!reducer_trusted_base_height(db, &base_h, &base_found))
-        return false;
+    if (!reducer_frontier_trusted_base_height_read(db, &base_h, &base_found))
+        return false; /* raw-return-ok:trusted-base reader logged failure */
     if (base_found && base_h >= compiled_anchor && base_h > *out &&
         reducer_anchor_candidate_ok(db, base_h, true))
         *out = base_h;

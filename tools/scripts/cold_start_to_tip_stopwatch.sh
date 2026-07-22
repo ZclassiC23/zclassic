@@ -187,6 +187,8 @@ fi
 # capture_failure_bundle — on any non-pass verdict, snapshot the live
 # diagnostic state a human/agent needs to root-cause the run WITHOUT
 # re-running the harness: frontier.json (dumpstate reducer_frontier),
+# reducer_drive.json (the synchronous drain/lock owner and its last exit),
+# stage-*.json (each reducer stage's cursor/counters/last blocker),
 # blocker.json (dumpstate blocker), ops.log.tail.txt (the typed `ops logs`
 # command if the node is still alive/RPC-reachable, else a plain tail of
 # node.log). Sets BUNDLE_CAPTURE_FAILED=true if ANY piece could not be
@@ -199,13 +201,22 @@ fi
 capture_failure_bundle() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
-    local got_frontier=0 got_blocker=0 got_logs=0
+    local got_frontier=0 got_drive=0 got_stages=0 got_blocker=0 got_logs=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_frontier \
             >"$ARTIFACT_DIR/frontier.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
         if [ "$got_frontier" = 1 ] && is_busy_response "$(cat "$ARTIFACT_DIR/frontier.json" 2>/dev/null)"; then
             FRONTIER_BUSY_AT_CAPTURE="true"
         fi
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_drive \
+            >"$ARTIFACT_DIR/reducer_drive.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/reducer_drive.json" ] && got_drive=1
+        got_stages=1
+        for stage_name in header_admit validate_headers body_fetch body_persist \
+                          script_validate proof_validate utxo_apply tip_finalize; do
+            "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate "$stage_name" \
+                >"$ARTIFACT_DIR/stage-$stage_name.json" 2>/dev/null &&
+                [ -s "$ARTIFACT_DIR/stage-$stage_name.json" ] || got_stages=0
+        done
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate blocker \
             >"$ARTIFACT_DIR/blocker.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/blocker.json" ] && got_blocker=1
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" ops logs \
@@ -215,7 +226,8 @@ capture_failure_bundle() {
     if [ "$got_logs" = 0 ] && [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
         tail -200 "$DATADIR/node.log" >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && got_logs=1
     fi
-    [ "$got_frontier" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] || BUNDLE_CAPTURE_FAILED="true"
+    [ "$got_frontier" = 1 ] && [ "$got_drive" = 1 ] && [ "$got_stages" = 1 ] &&
+        [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] || BUNDLE_CAPTURE_FAILED="true"
 }
 
 write_artifact() {
@@ -227,6 +239,11 @@ write_artifact() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
     [ "$verdict" != "pass" ] && capture_failure_bundle
+    NODE_LOG_CAPTURED="false"
+    if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ] &&
+       cp -p -- "$DATADIR/node.log" "$ARTIFACT_DIR/node.log" 2>/dev/null; then
+        NODE_LOG_CAPTURED="true"
+    fi
     {
         printf '{\n'
         printf '  "schema": "zcl.c3_stopwatch_artifact.v1",\n'
@@ -247,6 +264,7 @@ write_artifact() {
         printf '  "reached_network_tip": %s,\n' "$([ "$verdict" = "pass" ] && printf true || printf false)"
         printf '  "scratch_datadir": %s,\n' "$(json_string "${DATADIR:-}")"
         printf '  "scratch_datadir_removed": true,\n'
+        printf '  "node_log_captured": %s,\n' "$NODE_LOG_CAPTURED"
         printf '  "bundle_capture_failed": %s,\n' "$BUNDLE_CAPTURE_FAILED"
         printf '  "frontier_busy_at_capture": %s\n' "$FRONTIER_BUSY_AT_CAPTURE"
         printf '}\n'

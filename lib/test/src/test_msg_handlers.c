@@ -556,7 +556,23 @@ struct async_block_submit_ctx {
     atomic_int entered;
     atomic_int release;
     atomic_int drains;
+    atomic_int batch_begins;
+    atomic_int batch_ends;
 };
+
+static void count_async_batch_begin(void *ctx)
+{
+    struct async_block_submit_ctx *submit_ctx = ctx;
+    atomic_fetch_add_explicit(&submit_ctx->batch_begins, 1,
+                              memory_order_relaxed);
+}
+
+static void count_async_batch_end(void *ctx)
+{
+    struct async_block_submit_ctx *submit_ctx = ctx;
+    atomic_fetch_add_explicit(&submit_ctx->batch_ends, 1,
+                              memory_order_relaxed);
+}
 
 static int count_async_catchup_drain(void *ctx)
 {
@@ -616,6 +632,8 @@ static int test_process_block_msg_queues_reducer_during_catchup(void)
         mp.block_submit_ctx = &submit_ctx;
         mp.catchup_drain = count_async_catchup_drain;
         mp.catchup_drain_ctx = &submit_ctx;
+        msg_processor_set_catchup_batch_scope(
+            &mp, count_async_batch_begin, count_async_batch_end, &submit_ctx);
 
         struct p2p_node node;
         memset(&node, 0, sizeof(node));
@@ -651,6 +669,10 @@ static int test_process_block_msg_queues_reducer_during_catchup(void)
                               memory_order_release);
         msg_processor_stop_block_intake(&mp);
         ASSERT(atomic_load_explicit(&submit_ctx.drains,
+                                    memory_order_acquire) == 1);
+        ASSERT(atomic_load_explicit(&submit_ctx.batch_begins,
+                                    memory_order_acquire) == 1);
+        ASSERT(atomic_load_explicit(&submit_ctx.batch_ends,
                                     memory_order_acquire) == 1);
         stream_free(&s);
         block_free(&blk);
