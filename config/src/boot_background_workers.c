@@ -398,6 +398,9 @@ static void *projection_backfill_service_thread(void *arg)
         int projection_block_tip = -1;
         int first_missing_height = -1;
         bool refolding = refold_in_progress();
+        int hstar = reducer_frontier_provable_tip_cached();
+        bool tail_folding =
+            node_db_catchup_tail_fold_in_progress(chain_tip, hstar);
 
         /* The actual projection cursor (the height the backfill has REACHED),
          * read before the rewind logic below mutates projection_tip. This — not
@@ -407,10 +410,12 @@ static void *projection_backfill_service_thread(void *arg)
             (ndb && ndb->open) ? node_db_sync_get_tip_height(ndb) : -1;
 
         /* BEHIND = there is real backfill work to do and it is not being
-         * intentionally suppressed by an in-progress mint/refold. Only in this
-         * state is a frozen cursor a fault; a caught-up (cursor >= tip) or
-         * mid-refold worker is healthy/quiescent. */
-        bool behind = !refolding && projection_cursor >= 0 && chain_tip >= 0 &&
+         * intentionally suppressed by an in-progress mint/refold or canonical
+         * tail fold. Only in this state is a frozen cursor a fault; a caught-up
+         * (cursor >= tip) or intentionally deferred worker is
+         * healthy/quiescent. */
+        bool behind = !refolding && !tail_folding &&
+                      projection_cursor >= 0 && chain_tip >= 0 &&
                       projection_cursor < chain_tip;
 
         supervisor_child_id sup_id =
@@ -440,21 +445,14 @@ static void *projection_backfill_service_thread(void *arg)
 
         boot_reap_catchup_service(svc);
 
-        /* A from-genesis mint/refold (-mint-anchor / -refold-staged) RESETS the
-         * reducer to genesis and is rebuilding the upper active chain that this
-         * thread's cursor-rewind + catchup-start logic publishes. While that
-         * fold runs, the active chain still names the (to-be-discarded) upper
-         * torn tip, so node_db_sync_set_tip(rewind) below re-publishes it every
-         * ~5 s; the sync-projection authority pair-self-check then resolves that
-         * tip to a different height and refuses the write — hammering the
-         * progress.kv lock against the fold for no benefit (the catchup itself
-         * already short-circuits on the same signal in
-         * node_db_catchup_service_run). Skip the whole backfill pass while a
-         * refold is in progress; the first post-refold pass resumes it once
-         * refold_in_progress() clears. Mirrors the proven guards in
-         * node_db_catchup_service.c and utxo_mirror_sync_service.c. A normal
-         * boot never sets the signal, so this branch is unchanged there. */
-        if (refolding) {
+        /* Defer derived node.db work while a mint/refold rebuilds the upper
+         * chain or canonical H* is more than one block behind chain_tip.
+         * Otherwise its bulk transaction can monopolize the serialized DB
+         * service ahead of the canonical fold. A one-block live edge remains
+         * eligible; the first loop after either fold closes resumes backfill.
+         * Mirrors the ownership guards in node_db_catchup_service.c and
+         * utxo_mirror_sync_service.c. */
+        if (refolding || tail_folding) {
             for (int i = 0; i < 5 &&
                  !svc->projection_backfill_thread_stop &&
                  boot_running(svc); i++)

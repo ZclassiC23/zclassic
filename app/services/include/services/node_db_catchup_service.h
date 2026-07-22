@@ -40,6 +40,12 @@ bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
                                              int chain_tip,
                                              bool next_slot_present);
 
+/* The SQLite node.db projection is derived state.  It must not occupy the
+ * serialized DB service while the canonical reducer frontier is folding a
+ * real tail gap.  A one-block edge is the normal live-tip shape and remains
+ * eligible for projection catchup; only a gap of two or more is deferred. */
+bool node_db_catchup_tail_fold_in_progress(int chain_tip, int hstar);
+
 #ifdef ZCL_TESTING
 #include <stddef.h>
 #include <stdint.h>

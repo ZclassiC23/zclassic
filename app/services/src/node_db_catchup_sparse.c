@@ -2,10 +2,10 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* node_db_catchup_sparse: the sparse-prefix projection-cursor helpers for
- * node_db_catchup_service, lifted out of node_db_catchup_service.c to keep
- * that file under the E1 line ceiling. PURE relocation: bodies are
- * byte-identical to their prior home; only their surrounding TU changed. */
+/* node_db_catchup_sparse: pure projection-catchup boundary classifiers.
+ * The sparse-prefix helpers were split from node_db_catchup_service.c to keep
+ * that file under the E1 line ceiling; tail-fold ownership lives here beside
+ * them because it is likewise side-effect-free policy. */
 
 // one-result-type-ok:pure-classifiers — every function here is a pure,
 // side-effect-free bool/int classifier (no I/O, no DB, nothing fallible to
@@ -37,6 +37,12 @@ bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
 {
     return sparse_prefix && projection_tip >= 0 &&
            projection_tip < chain_tip && !next_slot_present;
+}
+
+bool node_db_catchup_tail_fold_in_progress(int chain_tip, int hstar)
+{
+    return chain_tip >= 0 && hstar >= 0 &&
+           (int64_t)chain_tip > (int64_t)hstar + 1;
 }
 
 /* Return the highest projection cursor that a body-less, proven snapshot
