@@ -264,10 +264,29 @@ sapling_tree_persist_pair_status(struct node_db *ndb,
     return ok ? SAPLING_PERSIST_OK : SAPLING_PERSIST_FAILED;
 }
 
+bool sapling_tree_persist_pair_in_open_tx(struct node_db *ndb,
+                                          const void *blob, size_t blob_len,
+                                          int64_t height)
+{
+    if (!ndb || !ndb->open || !ndb->db || !blob || blob_len == 0)
+        LOG_FAIL("sapling_tree_rebuild",
+                 "persist_pair_in_open_tx: invalid args at height=%lld",
+                 (long long)height);
+    if (sqlite3_get_autocommit(ndb->db) != 0)
+        LOG_FAIL("sapling_tree_rebuild",
+                 "persist_pair_in_open_tx: caller has no open transaction "
+                 "at height=%lld", (long long)height);
+
+    return node_db_state_set(ndb, "sapling_tree", blob, blob_len) &&
+           node_db_state_set_int(ndb, "sapling_tree_rebuild_height", height);
+}
+
 /* Public bool wrapper (unchanged signature — external callers in
- * sync_controller_blocks.c, wallet_rescan_controller_witness.c, and
- * boot_refold_staged.c always persist under their OWN tx / sync_in_batch, so
- * they never hit the DEFERRED branch and OK-vs-not-OK is all they need). */
+ * wallet_rescan_controller_witness.c and boot_refold_staged.c either own
+ * their transaction explicitly or run from the deferred rebuild lane, so
+ * OK-vs-not-OK is all they need). The block-index writers use the explicit
+ * in-open-tx entry point above; transaction ownership must not be inferred
+ * from shared connection state. */
 bool sapling_tree_persist_pair(struct node_db *ndb,
                                const void *blob, size_t blob_len,
                                int64_t height)

@@ -118,6 +118,17 @@ bool sapling_tree_persist_pair(struct node_db *ndb,
                                const void *blob, size_t blob_len,
                                int64_t height);
 
+/* Persist the same atomic tree/height pair inside a transaction the caller
+ * already owns. This is deliberately separate from
+ * sapling_tree_persist_pair(): sqlite3_get_autocommit() cannot distinguish a
+ * transaction owned by this call stack from a foreign transaction on the
+ * shared connection. The two block-index writers call this only from their
+ * serialized DB-service write lane after a successful BEGIN. It never begins
+ * or commits and fails closed if the connection is in autocommit mode. */
+bool sapling_tree_persist_pair_in_open_tx(struct node_db *ndb,
+                                          const void *blob, size_t blob_len,
+                                          int64_t height);
+
 /* Kick off the deferred/live Sapling tree rebuild as a background,
  * supervised thread (sapling_tree_rebuild() registers "sync.
  * sapling_tree_rebuild" on the supervisor tree on entry). Called from

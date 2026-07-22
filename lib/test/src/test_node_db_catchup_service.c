@@ -164,6 +164,8 @@ int test_node_db_catchup_service(void)
         b.header.nVersion = 4;
         b.header.nTime = 1700000123u;
         b.header.nBits = 0x2000ffffu;
+        b.header.hashPrevBlock.data[0] = 0x01;
+        b.header.hashMerkleRoot.data[0] = 0x02;
         b.num_vtx = 1;
         b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
         if (b.vtx) {
@@ -176,6 +178,8 @@ int test_node_db_catchup_service(void)
         disk_block_pos_init(&pos);
         unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
         bool wrote = b.vtx && write_block_to_disk(&b, &pos, dir2, msg_start);
+        struct uint256 block_hash;
+        block_get_hash(&b, &block_hash);
         block_free(&b);
 
         struct block_index torn;
@@ -208,6 +212,24 @@ int test_node_db_catchup_service(void)
                   wrote && installed && opened && result != -99);
         NDC_CHECK("catchup refuses to advance the projection onto a torn slot",
                   tip < 1);
+
+        /* Repair only the torn identity and run the same on-disk block through
+         * the real catchup transaction. This reaches advance_wallet_witnesses
+         * with sync_in_batch=false while the catchup's plain BEGIN is open —
+         * the exact post-bundle path that previously misclassified its own
+         * transaction as foreign and aborted on the first block. */
+        torn.phashBlock = &block_hash;
+        int repaired_result = opened
+            ? node_db_catchup_service_run(&ndb, &ac, NULL, dir2) : -1;
+        int repaired_tip = opened ? node_db_sync_get_tip_height(&ndb) : -1;
+        int64_t tree_height = -1;
+        bool tree_persisted = opened &&
+            node_db_state_get_int(&ndb, "sapling_tree_rebuild_height",
+                                  &tree_height);
+        NDC_CHECK("catchup advances through its caller-owned plain transaction",
+                  repaired_result == 1 && repaired_tip == 1);
+        NDC_CHECK("catchup commits the Sapling tree/height pair atomically",
+                  tree_persisted && tree_height == 1);
 
         if (opened) node_db_close(&ndb);
         active_chain_free(&ac);

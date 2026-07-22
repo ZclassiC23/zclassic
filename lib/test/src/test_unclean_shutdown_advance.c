@@ -288,6 +288,75 @@ static int test_sapling_persist_pair_round_trip(void)
     return failures;
 }
 
+/* The projection catchup owns a plain transaction but intentionally does not
+ * set the reducer-specific sync_in_batch flag. Prove that its explicit entry
+ * point writes inside that transaction without attempting a nested BEGIN,
+ * that rollback removes both members of the pair, and that a committed retry
+ * publishes both together. */
+static int test_sapling_persist_pair_inside_caller_transaction(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling_tree_persist_pair writes atomically inside the caller's "
+           "plain transaction... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_persist_pair", "caller_tx");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    build_one_leaf_sapling_tree(&tree, 0x59);
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+
+    const int64_t saved_h = 900321;
+    bool refused_without_tx = ok &&
+        !sapling_tree_persist_pair_in_open_tx(&ndb, ts.data, ts.size,
+                                              saved_h);
+    bool began_rollback = refused_without_tx && node_db_begin(&ndb);
+    bool wrote_then_rolled_back = began_rollback &&
+        sapling_tree_persist_pair_in_open_tx(&ndb, ts.data, ts.size,
+                                              saved_h) &&
+        node_db_rollback(&ndb);
+    int64_t got_h = -1;
+    bool absent_after_rollback = wrote_then_rolled_back &&
+        !node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &got_h);
+
+    bool began_commit = absent_after_rollback && node_db_begin(&ndb);
+    bool wrote_then_committed = began_commit &&
+        sapling_tree_persist_pair_in_open_tx(&ndb, ts.data, ts.size,
+                                              saved_h) &&
+        node_db_commit(&ndb);
+    size_t tree_len = 0;
+    uint8_t tree_buf[8192];
+    bool pair_visible = wrote_then_committed &&
+        node_db_state_get_int(&ndb, "sapling_tree_rebuild_height", &got_h) &&
+        got_h == saved_h &&
+        node_db_state_get(&ndb, "sapling_tree", tree_buf, sizeof(tree_buf),
+                          &tree_len) && tree_len == ts.size &&
+        memcmp(tree_buf, ts.data, tree_len) == 0;
+
+    ok = ok && refused_without_tx && absent_after_rollback && pair_visible;
+    stream_free(&ts);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (refused_without_tx=%d rollback_absent=%d pair_visible=%d)\n",
+               refused_without_tx, absent_after_rollback, pair_visible);
+        failures++;
+    }
+    return failures;
+}
+
 static bool make_output_only_tx(struct transaction *tx,
                                 const struct uint256 *cm)
 {
@@ -811,6 +880,7 @@ int test_unclean_shutdown_advance(void)
     failures += test_sapling_rebuild_accepts_verified_checkpoint();
     failures += test_sapling_rebuild_rejects_mismatched_checkpoint();
     failures += test_sapling_persist_pair_round_trip();
+    failures += test_sapling_persist_pair_inside_caller_transaction();
     failures += test_sapling_rebuild_folds_forward_from_saved_height();
     failures += test_sapling_persist_pair_busy_retry_succeeds();
     failures += test_sapling_persist_pair_busy_exhausted_names_blocker();

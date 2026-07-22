@@ -210,14 +210,18 @@ bool advance_wallet_witnesses(struct node_db *ndb,
         }
     }
 
-    /* Save tree to node_state — blob + height as one atomic pair (see
-     * sapling_tree_persist_pair, lane/sapling-tree-persist). */
+    /* Save tree to node_state — blob + height as one atomic pair inside the
+     * serialized writer transaction both callers already own. Do not infer
+     * ownership from ndb->sync_in_batch: node_db_catchup_service owns a plain
+     * transaction while intentionally leaving that reducer-specific flag
+     * false. Treating its own transaction as foreign made every post-bundle
+     * catchup abort at its first block. */
     {
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(tree, &ts);
-        if (!sapling_tree_persist_pair(ndb, ts.data, ts.size,
-                                       (int64_t)height))
+        if (!sapling_tree_persist_pair_in_open_tx(ndb, ts.data, ts.size,
+                                                  (int64_t)height))
             ok = false;
         stream_free(&ts);
     }
