@@ -5344,6 +5344,10 @@ check-stage-advances-or-blocks:
 	@echo "══ LINT: stage advances-or-blocks (E5) ══"
 	@./tools/scripts/check_stage_advances_or_blocks.sh
 
+check-frontier-single-writer:
+	@echo "══ LINT: one canonical writer per frontier ══"
+	@./tools/scripts/check_frontier_single_writer.sh
+
 check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
@@ -5499,6 +5503,7 @@ LINT_GATES := \
     check-shape-includes-header \
     check-projections-pure \
     check-one-write-path \
+    check-frontier-single-writer \
     check-no-authoritative-ram-state \
     check-no-dev-history-in-contracts \
     check-stage-advances-or-blocks \

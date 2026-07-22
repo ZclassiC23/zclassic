@@ -515,6 +515,7 @@ current green tree.
 | **E3: `check-shape-includes-header`** | HARD | A shape file must include its shape contract header: conditions → `"framework/condition.h"` or `"conditions/"`; models → a `"models/"` header (pulls AR lifecycle); supervisors → `"supervisors/"` or `"util/supervisor.h"`. `app/jobs/` skipped (no `job.h` yet). Override `// shape-include-ok:<tag>`. |
 | **E4: `check-projections-pure`** | HARD | A projection (`lib/storage/src/*_projection.c`) is a pure fold: no `#include` from `app/services/`-`app/controllers/`, and no AR save path (`AR_*_SAVE`, which would fire another model's hooks). Override `// projection-cache-ok:<tag>` (memoize a derived value into the projection's own table). |
 | **E6: `check-one-write-path`** | RATCHET | New chain-state write surfaces forbidden unless they route through the reducer/log authority. Scans for legacy writers (`active_chain_set_tip`, `coins_view_*` flush/write, `process_new_block`, `connect_tip`, `disconnect_tip`, `utxo_projection_set_author`) vs `one_write_path_baseline.txt`. Override `// one-write-path-ok:<tag>` (compat wrapper, not a second consensus writer). |
+| **E6b: `check-frontier-single-writer`** | RATCHET | Every frontier in `arch_frontier_owners.tsv` has one canonical owner. Current non-owner writers are explicit in `frontier_single_writer_baseline.tsv`; a new clone or stale baseline row fails, and Q2 must shrink the baseline to empty. No inline override. |
 | **E7: `check-no-authoritative-ram-state`** | RATCHET | No direct `active_chain` internals access / new global-static `struct active_chain`. Derived RAM indexes only via accessors; consensus authority is the log/projection/cursor surface. Baseline `no_authoritative_ram_state_baseline.txt` (empty). Override `// ram-state-ok:<tag>` (documented derived cache). |
 | **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the silent-ready hole class (e.g. READY reported as "behind_peers" while hundreds of blocks behind). Override `// no-silent-ready-ok:<tag>`. |
 | **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/util/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
@@ -580,6 +581,7 @@ add/remove a gate.
 - `check-observability-pairing`
 - `check-one-result-type`
 - `check-one-write-path`
+- `check-frontier-single-writer`
 - `check-operator-needed-sink`
 - `check-projections-pure`
 - `check-pthread-create`

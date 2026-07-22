@@ -1,0 +1,17 @@
+# frontier<TAB>grandfathered non-owner writer path
+# Q2 must shrink this file to comments-only as it demotes cloned state-frontier
+# writers. New entries are architecture debt and require explicit review.
+state_frontier	app/jobs/src/reducer_frontier_replay_tx.c
+state_frontier	app/jobs/src/seal_rewind_executor.c
+state_frontier	app/jobs/src/stage_rederive_range.c
+state_frontier	app/jobs/src/stage_repair_rewind.c
+state_frontier	app/jobs/src/utxo_apply_delta_reorg.c
+state_frontier	app/jobs/src/utxo_apply_delta_repair.c
+state_frontier	app/services/src/block_index_loader_rebuild.c
+state_frontier	app/services/src/reindex_epilogue.c
+state_frontier	config/src/boot_mint_anchor_reset.c
+state_frontier	config/src/boot_refold_staged.c
+state_frontier	config/src/consensus_state_snapshot_install_activate.c
+state_frontier	lib/sim/src/simnet_chaos_faults.c
+state_frontier	lib/storage/src/coins_kv.c
+state_frontier	lib/storage/src/coins_ram.c
