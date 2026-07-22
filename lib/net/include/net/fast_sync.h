@@ -430,7 +430,7 @@ int swarm_sync_progress(const struct swarm_sync *ss);
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
 /* ── Block swarm: BitTorrent-style parallel block download ──── */
-/* Groups blocks into "pieces" (512 blocks each). Each piece is
+/* Groups blocks into independently hashable/verifiable pieces. Each piece is
  * independently hashable and verifiable. Legacy peers contribute
  * via normal getdata/block; ZCL23 peers use the swarm protocol.
  *
@@ -446,11 +446,11 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 #define MSG_BLOCK_DATA      "zblkdata"
 #define MSG_BLOCK_BITMAP    "zblkbitmap"
 
-/* Blocks per piece. Empty/near-empty historic ZCL blocks dominate the
- * post-snapshot delta, so 512-block pieces cut request/response churn while
- * staying below the 2 MiB P2P message cap in the normal case. The sender still
- * enforces MAX_PROTOCOL_MESSAGE_LENGTH before writing zblkdata. */
-#define BLOCKS_PER_PIECE 512
+/* Keep a realistic post-snapshot piece below the 2 MiB P2P message cap. The
+ * prior 512-block shape exceeded that cap on the copied production tail, so
+ * the sender emitted hashes without bodies and the swarm could never complete.
+ * The sender still enforces MAX_PROTOCOL_MESSAGE_LENGTH for every response. */
+#define BLOCKS_PER_PIECE 64
 
 /* Max inflight block pieces per peer. Each piece is independently hashed
  * against the manifest before payload blocks are submitted, so this only

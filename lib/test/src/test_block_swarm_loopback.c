@@ -399,7 +399,7 @@ static int test_block_swarm_throughput(void)
          "completion over a real wire, every body transferred, throughput "
          "measured") {
         const struct chain_params *params = chain_params_get();
-        const int32_t end_height = 2560;            /* 5 pieces of 512 */
+        const int32_t end_height = 2560;            /* 40 pieces of 64 */
         struct bs_seeder seed;
 
         ASSERT(!mp_block_swarm_is_active());        /* clean process precondition */
