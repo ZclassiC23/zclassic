@@ -594,6 +594,27 @@ struct zcl_result consensus_state_install_from_bundle(
         consensus_state_chain_evidence_free(chain_evidence);
 
     if (!chain_built.ok) {
+        /* Retriable classification. A CHECKPOINT bundle (compiled-checkpoint
+         * authority available) refused while the checkpoint header's frozen
+         * pass record is NOT yet established on this node — its Equihash
+         * solution is not stored, so validate_headers_stage_ensure_pass_record
+         * cannot mint the -4 header-bootstrap anchor (reason
+         * no-header-solution-backfill-required, the D8 instant-on class) — is a
+         * CURABLE, node-side deferral, NOT a rejection of a byte-good bundle
+         * (the bundle already passed integrity + manifest self-bind +
+         * CHECKPOINT_ROM authority above). Flag it retriable so the autonomous
+         * boot seam (boot_auto_install_bundle) does NOT permanently mark a good
+         * bundle .failed; checkpoint_bundle_install_ready (or a future boot,
+         * once the checkpoint header's solution is backfilled) retries. A
+         * non-checkpoint bundle, or one whose pass record IS already present,
+         * keeps the terminal refusal unchanged. */
+        if (chain_req.checkpoint_authority.available) {
+            struct uint256 cp_hash;
+            memcpy(cp_hash.data, chain_req.checkpoint_authority.block_hash, 32);
+            if (!validate_headers_stage_has_pass_record(
+                    chain_req.checkpoint_authority.height, &cp_hash))
+                out->retriable_headers_not_ready = true;
+        }
         rc = ZCL_ERR(chain_built.code,
                      "selected-chain binding failed (the bundle's height/hash is "
                      "not on this node's validated header chain, or the node is "
