@@ -167,6 +167,71 @@ static bool main_flag_is_known_extra(const char *arg)
     return false;
 }
 
+/* The seven operator-target flags (see config/args.h's doc comment on
+ * cli_flag_kind): the ones that pick WHICH node/instance an invocation
+ * means. Each row spells out its own single-dash bare/prefix and
+ * double-dash bare/prefix forms explicitly rather than building them with
+ * snprintf, so classification is a handful of strcmp/strncmp calls with no
+ * runtime string assembly. */
+struct cli_target_flag {
+    const char *single_bare;   /* "-rpcport"    (missing "=value") */
+    const char *single_prefix; /* "-rpcport="   (correct form)     */
+    const char *double_bare;   /* "--rpcport"   (double-dash typo) */
+    const char *double_prefix; /* "--rpcport="  (double-dash typo) */
+    const char *placeholder;   /* "-rpcport=PORT" (suggestion text) */
+};
+
+static const struct cli_target_flag k_cli_target_flags[] = {
+    { "-datadir",       "-datadir=",       "--datadir",       "--datadir=",       "-datadir=DIR"        },
+    { "-rpcport",       "-rpcport=",       "--rpcport",       "--rpcport=",       "-rpcport=PORT"       },
+    { "-port",          "-port=",          "--port",          "--port=",          "-port=PORT"          },
+    { "-httpsport",     "-httpsport=",     "--httpsport",     "--httpsport=",     "-httpsport=PORT"     },
+    { "-fsport",        "-fsport=",        "--fsport",        "--fsport=",        "-fsport=PORT"        },
+    { "-operator-lane", "-operator-lane=", "--operator-lane", "--operator-lane=", "-operator-lane=NAME" },
+    { "-profile",       "-profile=",       "--profile",       "--profile=",       "-profile=NAME"       },
+};
+#define CLI_TARGET_FLAG_COUNT \
+    (sizeof(k_cli_target_flags) / sizeof(k_cli_target_flags[0]))
+
+enum cli_flag_kind cli_flag_classify(const char *arg, char *suggest,
+                                     size_t suggest_cap)
+{
+    if (!arg || arg[0] != '-')
+        return CLI_FLAG_OK;
+    for (size_t i = 0; i < CLI_TARGET_FLAG_COUNT; i++) {
+        const struct cli_target_flag *f = &k_cli_target_flags[i];
+        bool double_dash =
+            strcmp(arg, f->double_bare) == 0 ||
+            strncmp(arg, f->double_prefix, strlen(f->double_prefix)) == 0;
+        if (double_dash) {
+            if (suggest && suggest_cap)
+                snprintf(suggest, suggest_cap, "%s", f->placeholder);
+            return CLI_FLAG_DOUBLE_DASH_TYPO;
+        }
+        if (strcmp(arg, f->single_bare) == 0) {
+            if (suggest && suggest_cap)
+                snprintf(suggest, suggest_cap, "%s", f->placeholder);
+            return CLI_FLAG_MISSING_VALUE;
+        }
+    }
+    return CLI_FLAG_OK;
+}
+
+const char *cli_flag_client_whitelist_csv(void)
+{
+    static char buf[256];
+    if (buf[0])
+        return buf;
+    size_t pos = 0;
+    for (size_t i = 0; i < CLI_TARGET_FLAG_COUNT; i++) {
+        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s%s",
+                         pos ? "," : "", k_cli_target_flags[i].placeholder);
+        if (n > 0 && (size_t)n < sizeof(buf) - pos)
+            pos += (size_t)n;
+    }
+    return buf;
+}
+
 int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
                             bool *show_metrics)
 {
@@ -403,11 +468,30 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
              * in this loop (e.g. -gui/--self-test above,
              * -addnode=/-connect=/-filesync= below) or read independently
              * via GetArg()/GetBoolArg() (main_flag_is_known_extra() above)
-             * rather than this loop's own strncmp branches. */
-            fprintf(stderr,
-                    "Warning: unrecognized flag '%s' (ignored) — check "
-                    "spelling or docs/RUNBOOK.md; this is not a supported "
-                    "zclassic23 flag.\n", argv[i]);
+             * rather than this loop's own strncmp branches.
+             *
+             * Daemon mode stays tolerant (CLAUDE.md / SAFETY FOOTGUN task,
+             * 2026-07-23) — it does not FATAL here even for a double-dash
+             * typo of one of the seven operator-target flags (that hard
+             * refusal is CLI-client-only, src/main_cli_modes.c). But when
+             * cli_flag_classify() recognizes the shape, name the exact
+             * single-dash correction instead of a generic "check spelling"
+             * — the same suggestion the CLI-client path would give for the
+             * identical typo. */
+            char suggest[24] = {0};
+            if (cli_flag_classify(argv[i], suggest, sizeof(suggest)) !=
+                CLI_FLAG_OK) {
+                fprintf(stderr,
+                        "Warning: unrecognized flag '%s' (ignored) — "
+                        "zclassic23 flags use a single dash with '=' "
+                        "joining the value; did you mean %s?\n",
+                        argv[i], suggest);
+            } else {
+                fprintf(stderr,
+                        "Warning: unrecognized flag '%s' (ignored) — check "
+                        "spelling or docs/RUNBOOK.md; this is not a supported "
+                        "zclassic23 flag.\n", argv[i]);
+            }
         }
     }
     return -1; /* parsed OK — caller continues booting */

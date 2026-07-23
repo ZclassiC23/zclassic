@@ -2226,8 +2226,19 @@ static int cli_run_static_agent_method(const char *method,
 
 enum { CLI_MAX_PARAMS = 128 };
 
+/* Forward decl: defined below alongside is_cli_mode (the pair is easiest to
+ * read together); cli_main is defined above that point in the file. */
+static int cli_validate_client_argv(int argc, char **argv);
+
 int cli_main(int argc, char **argv)
 {
+    /* Strict operator-target-flag validation FIRST — before datadir/home
+     * default resolution even begins (see cli_validate_client_argv's doc
+     * comment / the SAFETY FOOTGUN fix). */
+    int argrc = cli_validate_client_argv(argc, argv);
+    if (argrc >= 0)
+        return argrc;
+
     const char *home = getenv("HOME");
     char datadir[512];
     if (home) snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
@@ -2591,11 +2602,31 @@ int cli_main(int argc, char **argv)
     return rc;
 }
 
-/* Detect CLI mode: first non-option arg doesn't start with '-' */
+/* Detect CLI mode: a typed command word (a non-flag token, or one of the
+ * -agent/-status/-summary aliases) is present ANYWHERE in argv.
+ *
+ * SAFETY FOOTGUN fix (2026-07-23, live incident): the previous version
+ * returned false — "this is a node boot" — the moment it hit ANY argv token
+ * starting with '-' that was not one of a small hardcoded set, even if a
+ * real command word (e.g. "status") followed later. `zclassic23
+ * --rpcport=39071 status` (a double-dash typo of `-rpcport=`, no
+ * `-datadir=`) hit that early return at argv[1] and never reached "status",
+ * so the WHOLE invocation fell through main()'s dispatch chain into a full
+ * node boot against the DEFAULT datadir — the protected live node's
+ * directory — running a ~97s read-only integrity check before its shutdown
+ * watchdog killed it.
+ *
+ * This function no longer bails early on an unrecognized or malformed
+ * flag: it just keeps scanning for the command word. None of this
+ * codebase's flags take a space-separated value (every one is either bare
+ * or "-flag=value"), so a bare non-dash token is unambiguous evidence of a
+ * command word, never a value belonging to a preceding flag. Once CLI mode
+ * is chosen, cli_main()'s own strict validator (below) hard-refuses a
+ * malformed operator-target flag instead of silently mis-routing it. */
 bool is_cli_mode(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
-        if (argv[i][0] != '-') return true;  /* RPC method name */
+        if (argv[i][0] != '-') return true;  /* RPC method / native command word */
         if (strcmp(argv[i], "--agent") == 0 ||
             strcmp(argv[i], "-agent") == 0 ||
             strcmp(argv[i], "--status") == 0 ||
@@ -2603,16 +2634,61 @@ bool is_cli_mode(int argc, char **argv)
             strcmp(argv[i], "--summary") == 0 ||
             strcmp(argv[i], "-summary") == 0)
             return true;
-        /* Skip known node options with values */
-        if (strncmp(argv[i], "-datadir=", 9) == 0 ||
-            strncmp(argv[i], "-rpcport=", 9) == 0 ||
-            strncmp(argv[i], "-operator-lane=", 15) == 0 ||
-            strncmp(argv[i], "-profile=", 9) == 0)
-            continue;
-        /* Any other -flag is a node option */
-        return false;
+        /* Anything else (recognized node flag, recognized client flag,
+         * unrecognized flag, or a malformed typo) is NOT evidence either
+         * way by itself — keep scanning the rest of argv for a command
+         * word instead of guessing "node boot" from one token. */
     }
     return false;
+}
+
+/* Refuse the whole CLI-client invocation for one malformed operator-target
+ * flag: print the offending token, the exact single-dash correction, the
+ * -datadir= reminder, and the full valid-flag list, then return the
+ * standard invalid-invocation exit code. Never returns to let cli_main
+ * continue — see cli_validate_client_argv's only call site. */
+static int cli_refuse_malformed_target_flag(const char *arg,
+                                            enum cli_flag_kind kind,
+                                            const char *suggest)
+{
+    const char *why = (kind == CLI_FLAG_DOUBLE_DASH_TYPO)
+        ? "zclassic23 flags use a single dash, not a double dash"
+        : "this flag needs its value joined with '=' (e.g. -rpcport=PORT), "
+          "not a bare flag or a space-separated value";
+    fprintf(stderr,
+           "error=UNRECOGNIZED_FLAG detail=flag '%s' is not recognized in "
+           "CLI-client mode (%s); did you mean %s? try=fix the flag — "
+           "CLI-RPC mode also requires -datadir=DIR to target a specific "
+           "node (bare `status` with no flags at all still targets the "
+           "default local node) valid_flags=%s\n",
+           arg, why, suggest, cli_flag_client_whitelist_csv());
+    return ZCL_COMMAND_EXIT_INVALID;
+}
+
+/* SAFETY FOOTGUN fix (2026-07-23): once is_cli_mode() has decided this
+ * invocation carries a typed command word, every one of the seven
+ * operator-target flags (see config/args.h) must be either correctly
+ * formed or absent — never silently mis-routed. Deliberately narrow: only
+ * a double-dash typo or a bare "-flag" missing its "=value" is refused;
+ * every other dash-prefixed token (arbitrary RPC method params, native
+ * command conventions like `--input=`, `--next`, `--format=json`,
+ * `field=...`) is untouched, since those are legitimate opaque data this
+ * client forwards, not operator-target flags. Runs BEFORE any datadir/
+ * rpcport resolution (the caller's very first statement) so a malformed
+ * flag can never influence which node this call would have targeted —
+ * closing the "explicit-looking flags were supplied and silently ignored,
+ * so resolution fell back to the default datadir" hazard structurally,
+ * not by special-casing the fallback path itself. */
+static int cli_validate_client_argv(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        char suggest[24] = {0};
+        enum cli_flag_kind kind = cli_flag_classify(argv[i], suggest,
+                                                     sizeof(suggest));
+        if (kind != CLI_FLAG_OK)
+            return cli_refuse_malformed_target_flag(argv[i], kind, suggest);
+    }
+    return -1; /* every token OK; caller continues */
 }
 
 /* ── --gen-utxo-snapshot mode ──────────────────────────────────
