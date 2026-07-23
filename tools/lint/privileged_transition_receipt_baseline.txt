@@ -68,3 +68,4 @@ app.swap.participate       exempt: PLANNED fail-closed, no artifact install (swa
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_seed.disable exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_fetch.bundle exempt: downloads+content-verifies a file into the datadir only; activation is the separate receipt-gated -install-consensus-bundle path
+ops.debug.rom_seed.publish exempt: idempotent re-scan registering already-on-disk content-verified artifacts for serving; produces and installs nothing
