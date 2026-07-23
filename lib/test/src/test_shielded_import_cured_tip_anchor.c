@@ -280,11 +280,14 @@ int test_shielded_import_cured_tip_anchor(void)
         utxo_recovery_set_cold_import_trust_anchor(NULL, -1);
     }
 
-    /* ── RELINK FIX: a height-scrambled HEADER-ONLY ancestor under intact
-     * hash-linkage is relabeled in place → the coins tip becomes trust-rooted.
-     * This is the exact live shape (LDB-import height-tear) neither boot repair
-     * pass can reach. No cold-import anchor is registered — the cure is
-     * structural (correct the labels), not an accept-the-island exception. ── */
+    /* ── RELINK FIX: a height-scrambled ancestry under intact hash-linkage is
+     * relabeled in place → the coins tip becomes trust-rooted. The chain
+     * descends THROUGH the node at the SHA3 anchor height (the live-datadir
+     * shape), so the anchor node's OWN scrambled label must be corrected too —
+     * ancestry_break trust-roots only once its descent reaches a node whose
+     * height <= anchor. (Stopping one node shallow was the off-by-one that left
+     * the live tip un-rooted after relabeling ~116k heights.) No cold-import
+     * anchor is registered: the cure is structural, not an island exception. ── */
     {
         utxo_recovery_set_cold_import_trust_anchor(NULL, -1);   /* clean slate */
 
@@ -293,10 +296,10 @@ int test_shielded_import_cured_tip_anchor(void)
 
         enum { CHAIN = 12 };
         struct block_index blocks[CHAIN];
-        /* Root at anchor+1 (pprev=NULL): a chain rooted at/just above the
-         * attested extent is trust-rooted by construction. */
+        /* blocks[0] IS the node at the anchor height (pprev=NULL loaded root);
+         * blocks[1..] climb above it to the tip. */
         for (int i = 0; i < CHAIN; i++) {
-            cta_make_block(&blocks[i], anchor + 1 + i,
+            cta_make_block(&blocks[i], anchor + i,
                            i > 0 ? &blocks[i - 1] : NULL, 0x40);
             block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
                              &blocks[i]);
@@ -306,11 +309,10 @@ int test_shielded_import_cured_tip_anchor(void)
         CTA_CHECK("relink: contiguous chain tip is trust-rooted before scramble",
                   utxo_recovery_block_trust_rooted(tip));
 
-        /* Scramble one middle header-only ancestor's stored height (LDB tear):
-         * hash-linkage (pprev) stays intact, only the label is wrong. */
-        const int j = 5;
-        const int32_t correct_j = anchor + 1 + j;
-        blocks[j].nHeight = anchor + 500000;   /* wildly wrong */
+        /* Scramble BOTH the anchor node (blocks[0]) and a mid ancestor
+         * (blocks[5]); hash-linkage (pprev) stays intact, only labels are wrong. */
+        blocks[0].nHeight = anchor + 500000;   /* anchor node label torn */
+        blocks[5].nHeight = anchor + 600000;   /* mid ancestor label torn */
 
         CTA_CHECK("relink: scramble makes the tip a detached island",
                   !utxo_recovery_block_trust_rooted(tip) &&
@@ -318,10 +320,12 @@ int test_shielded_import_cured_tip_anchor(void)
 
         struct utxo_recovery_ancestry_repair rep =
             utxo_recovery_relink_scrambled_ancestry(&ms, tip);
-        CTA_CHECK("relink: repair reports FIXED with >=1 relabel",
-                  rep.result == UTXO_ANCESTRY_REPAIR_FIXED && rep.fixed >= 1);
-        CTA_CHECK("relink: scrambled ancestor's height is corrected",
-                  blocks[j].nHeight == correct_j);
+        CTA_CHECK("relink: repair reports FIXED with >=2 relabels",
+                  rep.result == UTXO_ANCESTRY_REPAIR_FIXED && rep.fixed >= 2);
+        CTA_CHECK("relink: the anchor node's own height is corrected",
+                  blocks[0].nHeight == anchor);
+        CTA_CHECK("relink: the mid ancestor's height is corrected",
+                  blocks[5].nHeight == anchor + 5);
         CTA_CHECK("relink: tip is trust-rooted after the repair",
                   utxo_recovery_block_trust_rooted(tip) &&
                   utxo_recovery_block_ancestry_break(tip) == NULL);
