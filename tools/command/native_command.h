@@ -91,6 +91,9 @@ void zcl_native_handle_dev_status(
 void zcl_native_handle_dev_ff(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_verify_change(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_core_boundary(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

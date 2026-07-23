@@ -28,6 +28,26 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_ff)
 
+ZCL_COMMAND_DEV_READ(
+    "dev.verify-change", "dev", "",
+    "Compile affected code and run mapped focused proofs with compact output",
+    "A fresh changed-scope verification: exact compile_commands.json recipes "
+    "for changed C translation units (source-wide compile fallback for header "
+    "or build-graph edits), mapped focused tests, and lint-fast. Full logs are "
+    "retained under build/verify-change; failures return one dense first-error "
+    "capsule.", 0,
+    "dev,verify,change,affected,focused,concise", "zcl.command.empty_input.v1",
+    "zcl.dev_verify_change.v1", "", "",
+    "zclassic23-dev dev verify-change", ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_verify_change,
+    "changed-scope verification requires the dev-only process executor",
+    "make dev-bin, then zclassic23-dev dev verify-change")
+
 ZCL_COMMAND_BRANCH("dev.core", "dev", "Core boundary and proof lanes",
                    ZCL_COMMAND_LAYER_DEV)
 ZCL_COMMAND_BRANCH("dev.app", "dev", "Build capability-scoped C Apps",

@@ -22,6 +22,7 @@ CACHE_SOURCE_ID=""
 CACHE_SOURCE_MUTATION=""
 CACHE_TOOL="none"
 PROOF_SCOPE="full_source_inventory"
+VERIFY_ARTIFACT=""
 TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
 COMPILE_PLAN_KIND=""
@@ -972,6 +973,12 @@ first_error_line() {
         log "FIRST-ERROR[$label]: $line"
         return
     fi
+    line="$(printf '%s\n' "$output" |
+        grep -m1 -E 'source build superseded|make(\[[0-9]+\])?: \*\*\*' || true)"
+    if [ -n "$line" ]; then
+        log "FIRST-ERROR[$label]: $line"
+        return
+    fi
     if printf '%s\n' "$output" | grep -q 'Failed groups:'; then
         log_path="$(printf '%s\n' "$output" |
             grep -m1 -oE 'log=[^[:space:]]+' | sed 's/^log=//' || true)"
@@ -983,7 +990,8 @@ first_error_line() {
             fi
         fi
     fi
-    line="$(printf '%s\n' "$output" | grep -m1 -iE 'error|FAIL' || true)"
+    line="$(printf '%s\n' "$output" |
+        grep -viE '(^|\.\.\.) OK$' | grep -m1 -iE 'error|FAIL' || true)"
     log "FIRST-ERROR[$label]: ${line:-<no matching error line>}"
 }
 
@@ -1004,6 +1012,101 @@ run_rung() {
         first_error_line "$label" "$output"
         fail "rung $label failed (exit $rc)"
     fi
+}
+
+# Compact rung used by verify-change. Complete stdout/stderr stays in one
+# retained artifact; the terminal sees only PASS lines or one FIRST-ERROR.
+run_rung_quiet() {
+    local label="$1"
+    shift
+    local rc started elapsed output
+    started="$(date +%s)"
+    set +e
+    ( set -e; "$@" ) >>"$VERIFY_ARTIFACT" 2>&1
+    rc=$?
+    set -e
+    elapsed="$(( $(date +%s) - started ))"
+    if [ "$rc" -ne 0 ]; then
+        output="$(tail -n 240 "$VERIFY_ARTIFACT")"
+        first_error_line "$label" "$output"
+        log "artifact=$VERIFY_ARTIFACT"
+        fail "verify-change rung $label failed (exit $rc)"
+    fi
+    log "PASS[$label] elapsed_s=$elapsed"
+}
+
+ensure_fresh_compdb() {
+    local status
+    status="$(bash tools/dev/generate-compdb.sh --status 2>/dev/null || true)"
+    if printf '%s' "$status" | grep -q '"fresh":true'; then
+        log "compile database fresh"
+        return 0
+    fi
+    log "refresh compile_commands.json from real dev recipes"
+    make_fast agent-index
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
+        fail "source identity recapture failed after compdb refresh"
+    log "source identity recaptured after compilation-database publication"
+}
+
+compdb_command_for_source() {
+    local source="$1"
+    jq -r --arg source "$source" \
+        '[.[] | select(.file == $source)][0].command // empty' \
+        compile_commands.json
+}
+
+compile_affected_gate() {
+    local changed source command output fallback=0 count=0
+    changed="$(mktemp "${TMPDIR:-/tmp}/zcl-verify-changed.XXXXXX")"
+    changed_file_hints | sort -u | sed '/^$/d' >"$changed"
+    while IFS= read -r source; do
+        case "$source" in
+            *.c) ;;
+            *.md|docs/*|*.txt) ;;
+            *) fallback=1 ;;
+        esac
+    done <"$changed"
+    if [ "$fallback" -eq 1 ]; then
+        rm -f "$changed"
+        log "compile scope=full_source_inventory reason=header_or_build_graph_change"
+        make_fast fast-compile
+        return
+    fi
+    ensure_fresh_compdb
+    while IFS= read -r source; do
+        case "$source" in *.c) ;; *) continue ;; esac
+        command="$(compdb_command_for_source "$source")"
+        if [ -z "$command" ]; then
+            rm -f "$changed"
+            log "compile scope=full_source_inventory reason=source_missing_from_compdb file=$source"
+            make_fast fast-compile
+            return
+        fi
+        output="$(jq -r --arg source "$source" \
+            '[.[] | select(.file == $source)][0].output // empty' \
+            compile_commands.json)"
+        [ -n "$output" ] && mkdir -p "$(dirname "$output")"
+        log "compile affected source=$source recipe=compile_commands.json"
+        bash -c "$command"
+        count=$((count + 1))
+    done <"$changed"
+    rm -f "$changed"
+    log "compile scope=affected_translation_units count=$count"
+}
+
+run_mapped_focused_tests() {
+    local group count=0
+    [ -z "$UNMAPPED_CODE_CHANGES" ] ||
+        fail "unmapped code changes require an impact rule: $UNMAPPED_CODE_CHANGES"
+    for group in $TEST_GROUPS; do
+        log "focused test group=$group"
+        make_fast t-fast "ONLY=$group"
+        FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
+            fail "source identity recapture failed after focused group $group"
+        count=$((count + 1))
+    done
+    log "focused test scope=mapped_groups count=$count"
 }
 
 # Loud but NEVER fatal: compile_commands.json drifts stale silently — nothing
@@ -1097,6 +1200,21 @@ main() {
             compdb_freshness_notice
 
             log "PASS: ff ladder green (compile -> source-wide-tests -> lint-fast); not release CI"
+            return
+            ;;
+        verify-change)
+            select_test_groups
+            note_unmapped_code_changes
+            mkdir -p "$ROOT/build/verify-change"
+            local_source_id="${FROZEN_SOURCE_RECORD%% *}"
+            VERIFY_ARTIFACT="$ROOT/build/verify-change/${local_source_id}.log"
+            : >"$VERIFY_ARTIFACT"
+            log "verify-change schema=zcl.dev_verify_change.v1"
+            log "changed_files=$(changed_file_count) focused_groups=${TEST_GROUPS:-none}"
+            run_rung_quiet compile compile_affected_gate
+            run_rung_quiet focused-tests run_mapped_focused_tests
+            run_rung_quiet lint-fast make_fast lint-fast
+            log "PASS: verify-change green artifact=$VERIFY_ARTIFACT"
             return
             ;;
         rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)

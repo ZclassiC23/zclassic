@@ -100,11 +100,14 @@ cleanup()
 
 query_make_graph()
 {
-    "$MAKE_BIN" -s --no-print-directory -f Makefile -f - zcl-compdb-vars <<'MAKE_EOF'
+    local destination="$1"
+    "$MAKE_BIN" -s --no-print-directory -f Makefile -f - \
+        ZCL_COMPDB_GRAPH_PATH="$destination" zcl-compdb-vars <<'MAKE_EOF'
 .PHONY: zcl-compdb-vars
 zcl-compdb-vars:
-	@printf 'DEV_OBJS=%s\n' '$(DEV_OBJS)'
-	@printf 'VIEW_GEN_HEADERS=%s\n' '$(VIEW_GEN_HEADERS)'
+	@$(file >$(ZCL_COMPDB_GRAPH_PATH),VIEW_GEN_HEADERS=$(VIEW_GEN_HEADERS))
+	@$(foreach obj,$(DEV_OBJS),$(file >>$(ZCL_COMPDB_GRAPH_PATH),DEV_OBJ=$(obj)))
+	@true
 MAKE_EOF
 }
 
@@ -242,7 +245,7 @@ emit_compdb()
 
 main()
 {
-    local graph dev_line headers_line raw rows compdb_tmp status_tmp
+    local graph headers_line raw rows compdb_tmp status_tmp
     local object_count entry_count generated_at generated_epoch
     local compdb_hash compdb_size compdb_mtime input_hash latest_input
     local clangd_available=false clangd_version="" clangd_status="not_requested"
@@ -265,12 +268,10 @@ main()
     trap cleanup EXIT
 
     cd "$ROOT"
-    graph="$(query_make_graph)"
-    dev_line="$(printf '%s\n' "$graph" | sed -n 's/^DEV_OBJS=//p')"
-    headers_line="$(printf '%s\n' "$graph" |
-        sed -n 's/^VIEW_GEN_HEADERS=//p')"
-    [ -n "$dev_line" ] || fail 'Makefile returned an empty DEV_OBJS graph'
-    mapfile -t dev_objects < <(printf '%s\n' "$dev_line" | tr ' ' '\n' |
+    graph="$TMP_DIR/make-graph.txt"
+    query_make_graph "$graph"
+    headers_line="$(sed -n 's/^VIEW_GEN_HEADERS=//p' "$graph")"
+    mapfile -t dev_objects < <(sed -n 's/^DEV_OBJ=//p' "$graph" |
         sed '/^$/d')
     mapfile -t generated_headers < <(
         printf '%s\n' "$headers_line" | tr ' ' '\n' | sed '/^$/d')
