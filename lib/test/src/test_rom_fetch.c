@@ -69,6 +69,30 @@ static bool write_file(const char *dir, const char *name,
     return true;
 }
 
+/* Write a SPARSE bundle of `size` bytes: the 16-byte SQLite magic (so the
+ * CONSENSUS_BUNDLE kind content check passes) followed by a hole to `size`
+ * via ftruncate. The body reads back as zeros — cheap on disk yet a real
+ * multi-chunk artifact for the serve/verify path. */
+static bool write_sparse_bundle(const char *dir, const char *name,
+                                uint64_t size)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+    static const uint8_t magic[16] = "SQLite format 3";
+    if (write(fd, magic, sizeof(magic)) != (ssize_t)sizeof(magic)) {
+        close(fd);
+        return false;
+    }
+    if (ftruncate(fd, (off_t)size) != 0) {
+        close(fd);
+        return false;
+    }
+    close(fd);
+    return true;
+}
+
 /* Server-side ground truth for how many "ROM" chunks crossed the wire — used
  * to prove resume refetches ONLY the missing chunk (client thread timing can't
  * fudge it; mirrors test_rom_journal_resume.c). */
@@ -932,6 +956,151 @@ static int test_verified_multi_seeder_hang_failover(void)
     return failures;
 }
 
+/* ── (h2) Typed refusal frame decode (pure) ──────────────────────────
+ *
+ * The server answers a declined ROM chunk request with a typed refusal frame
+ * whose 4-byte size field is FS_ROM_REFUSAL_SENTINEL (impossible as a real
+ * chunk size). This proves the client's decode cleanly separates a refusal
+ * from a data reply AND from a corrupt/garbage size — the exact confusion that
+ * made a busy seeder's refusal surface as "implausible chunk size <garbage>". */
+static int test_refusal_frame_decode(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: typed refusal frame decodes cleanly — the sentinel is a "
+         "refusal, a real/short chunk size is NOT, and a garbage size is NOT "
+         "mistaken for one (only the exact sentinel matches)") {
+        uint8_t sentinel[4] = { 0xFF, 0xFF, 0xFF, 0xFF }; /* 0xFFFFFFFF */
+        ASSERT(rom_fetch_wire_is_refusal(sentinel));
+
+        uint32_t full = ROM_SEED_CHUNK_SIZE;
+        uint8_t chunk_hdr[4] = { (uint8_t)full, (uint8_t)(full >> 8),
+                                 (uint8_t)(full >> 16), (uint8_t)(full >> 24) };
+        ASSERT(!rom_fetch_wire_is_refusal(chunk_hdr));
+
+        uint8_t tail_hdr[4] = { 0x00, 0x10, 0x00, 0x00 }; /* 4096 */
+        ASSERT(!rom_fetch_wire_is_refusal(tail_hdr));
+
+        /* A garbage size ONE below the sentinel must NOT read as a refusal —
+         * a corrupt stream never masquerades as a clean back-off. */
+        uint8_t near[4] = { 0xFE, 0xFF, 0xFF, 0xFF }; /* 0xFFFFFFFE */
+        ASSERT(!rom_fetch_wire_is_refusal(near));
+        uint8_t zero[4] = { 0, 0, 0, 0 };
+        ASSERT(!rom_fetch_wire_is_refusal(zero));
+        ASSERT(!rom_fetch_wire_is_refusal(NULL));
+
+        /* Reason labels: stable, bounded, unknown folds to "declined". */
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(FS_ROM_REFUSE_INFLIGHT),
+                      "inflight-cap") == 0);
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(FS_ROM_REFUSE_RATE),
+                      "rate-window") == 0);
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(FS_ROM_REFUSE_UNKNOWN),
+                      "unknown-artifact") == 0);
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(FS_ROM_REFUSE_CONN_BUDGET),
+                      "conn-budget") == 0);
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(FS_ROM_REFUSE_IO),
+                      "server-io") == 0);
+        ASSERT(strcmp(rom_fetch_refusal_reason_name(250), "declined") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── (h3) Default-caps parallel multi-chunk fetch (THE regression) ─────
+ *
+ * Eight verified-parallel workers fetch a >=8-chunk artifact from ONE seeder
+ * under the REAL shipped rom_seed caps (no test override). This is the exact
+ * shape the cold-start stopwatch drove: on the pre-fix defaults — per-peer
+ * inflight cap 2 and a per-peer byte window of exactly one chunk/second — six
+ * of eight workers were refused every round and the refusal (an encrypted
+ * FS_DONE frame) misparsed as a garbage size, so the download aborted with
+ * chunks_served ~0. With the typed refusal frame + the inflight-8 / 8-chunks-
+ * per-second window, every chunk crosses the wire and the whole file verifies. */
+static int test_default_caps_parallel_multichunk(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: 8 verified-parallel workers fetch a 9-chunk artifact from "
+         "ONE seeder under the REAL default caps — every chunk crosses the wire "
+         "(typed refusals back off + retry, never abort) and the file verifies") {
+        fs_server_stop();
+        rom_seed_reset();            /* restores the shipped default caps       */
+        rom_peer_scoring_test_reset();
+        /* Deliberately DO NOT raise the caps — the shipped defaults must serve
+         * 8 parallel workers against one dedicated seeder. */
+
+        char sroot[] = "/tmp/zcl_romfetch_dcsrv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+        char croot[] = "/tmp/zcl_romfetch_dccli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        /* 9 chunks: eight full 8 MB chunks + a 4 KB tail, sparse-backed. */
+        uint64_t size = 8ull * (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
+        ASSERT(write_sparse_bundle(sdir, "consensus-state-bundle-dc.sqlite",
+                                   size));
+
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-dc.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+        ASSERT(art.num_chunks == 9);
+        struct rom_fetch_manifest m;
+        manifest_from_artifact(&art, &m);
+
+        static const uint16_t cand_ports[] = { 18601, 18605, 18609 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        uint8_t (*chunk_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
+        ASSERT(chunk_sha3 != NULL);
+        uint32_t manifest_chunks = 0;
+        ASSERT(rom_fetch_get_manifest("127.0.0.1", port, m.chunk_root,
+                                      chunk_sha3, ROM_SEED_MAX_CHUNKS,
+                                      &manifest_chunks));
+        ASSERT(manifest_chunks == art.num_chunks);
+
+        struct rom_fetch_peer peers[1];
+        memset(peers, 0, sizeof(peers));
+        snprintf(peers[0].addr, sizeof(peers[0].addr), "%s", "127.0.0.1");
+        peers[0].port = port;
+
+        int64_t served_before = seed_chunks_served();
+        /* THE assertion: full download under default caps, 8 workers, 1 peer. */
+        ASSERT(rom_fetch_download_verified_parallel(peers, 1, &m, chunk_sha3,
+                                                    manifest_chunks, cdir,
+                                                    NULL, NULL));
+        int64_t served_after = seed_chunks_served();
+        /* Every chunk crossed the wire exactly once — no abort, no dupes. */
+        ASSERT(served_after - served_before == (int64_t)art.num_chunks);
+
+        char final_path[1200];
+        snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
+        ASSERT(rom_fetch_verify_file(final_path, &m));
+
+        free(chunk_sha3);
+        fs_server_stop();
+        char p[1200];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-dc.sqlite", sdir);
+        unlink(p);
+        unlink(final_path);
+        rmdir(sdir);
+        rmdir(cdir);
+        rom_seed_reset();
+        rom_peer_scoring_test_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── (i) Native command layer: typed blocker + typed refusal ───────────
  *
  * rom_fetch.c/test_rom_fetch.c above prove the ENGINE fails closed; these
@@ -1194,6 +1363,8 @@ int test_rom_fetch(void)
     failures += test_parallel_download();
     failures += test_verified_multi_seeder();
     failures += test_verified_multi_seeder_hang_failover();
+    failures += test_refusal_frame_decode();
+    failures += test_default_caps_parallel_multichunk();
     failures += test_bundle_handler_no_seeder_blocker();
     failures += test_bundle_handler_corrupted_refused();
     return failures;
