@@ -199,7 +199,7 @@ static int test_code_capsule_commands_join(void)
 
         ASSERT(json_get_bool(json_get(&reply.data, "found")));
         const struct json_value *cmds = json_get(&reply.data, "commands");
-        ASSERT(cmds && cmds->type == JSON_ARR && cmds->num_children > 0);
+        ASSERT(cmds && cmds->type == JSON_ARR && cmds->num_children == 1);
         ASSERT(json_get_int(json_get(&reply.data, "command_count")) ==
               (int64_t)cmds->num_children);
 
@@ -208,6 +208,14 @@ static int test_code_capsule_commands_join(void)
             if (strcmp(json_get_str(&cmds->children[i]), "code.sym") == 0)
                 has_sym = true;
         ASSERT(has_sym);
+        const struct json_value *evidence = json_get(&reply.data, "evidence");
+        ASSERT_STR_EQ(json_get_str(json_get(evidence, "registry")),
+                      "exact_def_handler_name");
+        ASSERT_STR_EQ(json_get_str(json_get(evidence, "includes")),
+                      "exact_compiler_depfile_edges");
+        const struct json_value *unknowns = json_get(&reply.data, "unknowns");
+        ASSERT(unknowns && unknowns->type == JSON_ARR &&
+               unknowns->num_children > 0);
 
         zcl_command_reply_free(&reply);
         json_free(&input);

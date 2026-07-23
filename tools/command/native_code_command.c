@@ -231,6 +231,23 @@ static int code_commands_for_file(struct codeindex *ci, const char *def_path,
     return n;
 }
 
+/* Exact function-pointer/.def join for one handler symbol. Unlike the file
+ * join used by code.room, this never attributes sibling handlers in the same
+ * translation unit to the requested symbol. */
+static int code_commands_for_symbol(const char *symbol_name,
+                                    const char **out, int cap)
+{
+    if (!symbol_name || !symbol_name[0] || !out || cap <= 0) return 0;
+    const struct zcl_command_handler_index *ix = zcl_command_handler_index();
+    int n = 0;
+    for (size_t i = 0; ix && i < ix->count && n < cap; i++) {
+        const char *handler = ix->entries[i].handler_name;
+        if (handler && strcmp(handler, symbol_name) == 0)
+            out[n++] = ix->entries[i].path;
+    }
+    return n;
+}
+
 /* ── code.group ─────────────────────────────────────────────────────────── */
 void zcl_native_handle_code_group(const struct zcl_command_request *request,
                                   struct zcl_command_reply *reply)
@@ -644,10 +661,10 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
         nother++;
     }
 
-    /* commands[]: the dispatch join on the symbol's def file (never dropped —
-     * capped at CODE_COMMAND_CAP, small by construction). */
+    /* commands[]: exact handler-name join against the .def-derived dispatch
+     * index (never dropped; capped and small by construction). */
     const char *cmd_paths[CODE_COMMAND_CAP];
-    int ncmd = code_commands_for_file(ci, def_path, cmd_paths, CODE_COMMAND_CAP);
+    int ncmd = code_commands_for_symbol(s.name, cmd_paths, CODE_COMMAND_CAP);
     struct json_value cmds;
     json_init(&cmds); json_set_array(&cmds);
     for (int i = 0; i < ncmd; i++) code_push_line(&cmds, cmd_paths[i]);
@@ -726,7 +743,7 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
             size_t n = json_write(parts[p], scratch, sizeof(scratch));
             used += (n == 0 || n >= sizeof(scratch)) ? sizeof(scratch) : n;
         }
-        if (used <= ZCL_COMMAND_RESULT_BUDGET - 2000)
+        if (used <= ZCL_COMMAND_RESULT_BUDGET - 2600)
             break;
         if (want_includes) { want_includes = false; continue; }
         if (want_callees)  { want_callees = false; continue; }
@@ -756,6 +773,53 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
 
     (void)json_push_kv(&reply->data, "commands", &cmds);
     (void)json_push_kv_int(&reply->data, "command_count", ncmd);
+
+    struct json_value evidence, likely, empty, unknowns;
+    json_init(&evidence); json_set_object(&evidence);
+    (void)json_push_kv_str(&evidence, "identity", "exact_index_row");
+    (void)json_push_kv_str(&evidence, "definition", "exact_index_location");
+    (void)json_push_kv_str(&evidence, "call_graph",
+                           "heuristic_lexical_attribution");
+    (void)json_push_kv_str(&evidence, "registry",
+                           "exact_def_handler_name");
+    (void)json_push_kv_str(&evidence, "includes",
+                           "exact_compiler_depfile_edges");
+    (void)json_push_kv_str(&evidence, "tests",
+                           "exact_shared_rule_path_floor");
+    (void)json_push_kv(&reply->data, "evidence", &evidence);
+
+    json_init(&likely); json_set_array(&likely);
+    if (def_path[0]) {
+        struct json_value item;
+        json_init(&item); json_set_object(&item);
+        (void)json_push_kv_str(&item, "path", def_path);
+        (void)json_push_kv_str(&item, "evidence",
+                               "heuristic_primary_edit_site");
+        code_push_obj(&likely, &item);
+    }
+    if (s.decl_path[0] && strcmp(s.decl_path, def_path) != 0) {
+        struct json_value item;
+        json_init(&item); json_set_object(&item);
+        (void)json_push_kv_str(&item, "path", s.decl_path);
+        (void)json_push_kv_str(&item, "evidence",
+                               "heuristic_if_contract_changes");
+        code_push_obj(&likely, &item);
+    }
+    (void)json_push_kv(&reply->data, "likely_change_files", &likely);
+
+    json_init(&empty); json_set_array(&empty);
+    (void)json_push_kv(&reply->data, "struct_fields", &empty);
+    (void)json_push_kv(&reply->data, "ownership_locks", &empty);
+    (void)json_push_kv(&reply->data, "database_tables", &empty);
+    (void)json_push_kv(&reply->data, "events", &empty);
+    (void)json_push_kv(&reply->data, "blockers", &empty);
+    (void)json_push_kv(&reply->data, "invariants", &empty);
+    json_init(&unknowns); json_set_array(&unknowns);
+    code_push_line(&unknowns,
+                   "semantic field/ownership/lock/db/event/blocker index not built");
+    code_push_line(&unknowns,
+                   "definition extent and per-symbol compiler AST not indexed");
+    (void)json_push_kv(&reply->data, "unknowns", &unknowns);
 
     (void)json_push_kv(&reply->data, "callers", &callers_arr);
     (void)json_push_kv_int(&reply->data, "caller_count", n_callers);
@@ -791,7 +855,8 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
                        ? " (shrunk to fit budget)" : "");
     (void)json_push_kv_str(&reply->data, "summary", summary);
 
-    json_free(&others); json_free(&cmds);
+    json_free(&others); json_free(&cmds); json_free(&evidence);
+    json_free(&likely); json_free(&empty); json_free(&unknowns);
     json_free(&callers_arr); json_free(&callees_arr); json_free(&inc_arr);
     codeindex_close(ci);
 }

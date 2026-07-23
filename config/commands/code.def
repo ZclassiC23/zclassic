@@ -111,9 +111,10 @@ ZCL_COMMAND_READY_READ(
     "code.capsule", "code", "",
     "Compose one symbol's identity, call graph, includes, and command join",
     "One symbol's identity (id/def/decl/signature/group), direct callers and "
-    "callees (each capped), in-tree includes of its def file, and the "
-    "command paths whose registered handler is defined in that file, from "
-    "the code index and the command handler index; budget-aware "
+    "callees (each capped), compiler-depfile includes, exact .def command "
+    "bindings for that handler, evidence labels, likely change files, and "
+    "explicit empty/unknown semantic sections when fields, ownership, locks, "
+    "database, events, or blockers are not indexed; budget-aware "
     "self-shrinking drops includes then callees then callers (never "
     "identity/def/route) to fit the reply budget — `dropped_sections` names "
     "what was cut.", 0,
