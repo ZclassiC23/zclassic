@@ -297,10 +297,16 @@ int test_shielded_import_cured_tip_anchor(void)
         enum { CHAIN = 12 };
         struct block_index blocks[CHAIN];
         /* blocks[0] IS the node at the anchor height (pprev=NULL loaded root);
-         * blocks[1..] climb above it to the tip. */
+         * blocks[1..] climb above it to the tip. The terminus MUST be the
+         * compiled checkpoint block — the relink hash-verifies it (a wrong
+         * lineage is refused, not stamped), so give blocks[0] the checkpoint
+         * hash. */
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
         for (int i = 0; i < CHAIN; i++) {
             cta_make_block(&blocks[i], anchor + i,
                            i > 0 ? &blocks[i - 1] : NULL, 0x40);
+            if (i == 0 && cp)
+                memcpy(blocks[0].hashBlock.data, cp->block_hash, 32);
             block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
                              &blocks[i]);
         }
@@ -386,6 +392,74 @@ int test_shielded_import_cured_tip_anchor(void)
 
         blocker_reset_for_testing();
         main_state_free(&ms);
+    }
+
+    /* ── RELINK CYCLE (pprev lasso): a wrong pprev pointer (the loader's
+     * by-height fallback wiring a parent from a scrambled height) makes the walk
+     * lap a cycle. A height relabel cannot cure wrong linkage — Floyd detection
+     * REFUSES with NO mutation. ── */
+    {
+        utxo_recovery_set_cold_import_trust_anchor(NULL, -1);
+        struct main_state ms;
+        main_state_init(&ms);
+        enum { CHAIN = 12 };
+        struct block_index blocks[CHAIN];
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        for (int i = 0; i < CHAIN; i++) {
+            cta_make_block(&blocks[i], anchor + i,
+                           i > 0 ? &blocks[i - 1] : NULL, 0x42);
+            if (i == 0 && cp)
+                memcpy(blocks[0].hashBlock.data, cp->block_hash, 32);
+            block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
+                             &blocks[i]);
+        }
+        struct block_index *tip = &blocks[CHAIN - 1];
+        /* Wire a lasso above the anchor: blocks[3].pprev jumps UP to blocks[7],
+         * so 7->6->5->4->3->7 loops forever. Scramble a height so the tip
+         * presents as an island first. */
+        blocks[6].nHeight = anchor + 90000;
+        blocks[3].pprev = &blocks[7];
+        CTA_CHECK("relink cycle: tip presents as a detached island",
+                  utxo_recovery_block_ancestry_break(tip) != NULL);
+        struct utxo_recovery_ancestry_repair rep =
+            utxo_recovery_relink_scrambled_ancestry(&ms, tip);
+        CTA_CHECK("relink cycle: a pprev lasso is REFUSED (no mutation)",
+                  rep.result == UTXO_ANCESTRY_REPAIR_REFUSED && rep.fixed == 0);
+        CTA_CHECK("relink cycle: the scrambled height survives (nothing mutated)",
+                  blocks[6].nHeight == anchor + 90000);
+        main_state_free(&ms);
+    }
+
+    /* ── RELINK WRONG-TERMINUS: an acyclic chain whose anchor-height node is NOT
+     * the compiled checkpoint block is a wrong lineage — REFUSED (never stamp the
+     * anchor height onto a non-checkpoint block and fail-open). Only exercised
+     * when a checkpoint is compiled in. ── */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp) {
+            utxo_recovery_set_cold_import_trust_anchor(NULL, -1);
+            struct main_state ms;
+            main_state_init(&ms);
+            enum { CHAIN = 12 };
+            struct block_index blocks[CHAIN];
+            for (int i = 0; i < CHAIN; i++) {
+                cta_make_block(&blocks[i], anchor + i,
+                               i > 0 ? &blocks[i - 1] : NULL, 0x43);
+                block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
+                                 &blocks[i]);
+            }   /* blocks[0] keeps a synthetic hash != cp->block_hash */
+            struct block_index *tip = &blocks[CHAIN - 1];
+            blocks[5].nHeight = anchor + 600000;   /* scramble -> island */
+            CTA_CHECK("relink wrong-terminus: tip presents as a detached island",
+                      utxo_recovery_block_ancestry_break(tip) != NULL);
+            struct utxo_recovery_ancestry_repair rep =
+                utxo_recovery_relink_scrambled_ancestry(&ms, tip);
+            CTA_CHECK("relink wrong-terminus: a non-checkpoint terminus is REFUSED",
+                      rep.result == UTXO_ANCESTRY_REPAIR_REFUSED && rep.fixed == 0);
+            CTA_CHECK("relink wrong-terminus: the scramble survives (no mutation)",
+                      blocks[5].nHeight == anchor + 600000);
+            main_state_free(&ms);
+        }
     }
 
     return failures;

@@ -175,13 +175,20 @@ struct utxo_recovery_ancestry_repair {
  * blocker UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID, changes nothing). Bounded to
  * ~(tip.height - anchor) hops; two-pass so a refusal never mutates.
  *
+ * FAIL-CLOSED (mutating nothing) on the shapes a height relabel CANNOT cure: a
+ * pprev CYCLE / lasso (Floyd-detected — a wrong pprev wired from a scrambled
+ * height by the loader's by-height fallback), a genuine missing-parent break, or
+ * a terminus whose hash is not the compiled checkpoint block (wrong lineage).
+ * PASS 2 is JOURNALED: a mutation that does not end up trust-rooting the tip is
+ * REVERTED before returning (the boot shutdown persists the flat index
+ * unconditionally, so an unverified label must never survive the call).
+ *
  * Runs ONLY when the caller has already detected a detached island
  * (utxo_recovery_block_ancestry_break(tip) != NULL) — it NOOP early-returns on a
  * trust-rooted tip, so healthy datadirs pay nothing beyond that one gate walk.
- * Idempotent. Persists nothing itself; the boot restore caller re-saves the flat
- * block index (which re-derives skip links from the corrected heights on the
- * next load). Only relabels nHeight — nChainWork/nChainTx/pskip are all height-
- * independent (derived from pprev + nBits), matching block_index_repair_heights. */
+ * Idempotent. On FIXED it relabels nHeight AND rebuilds pskip for the mutated
+ * nodes (pskip is built FROM nHeight, NOT height-independent); nChainWork/
+ * nChainTx are pprev+nBits-derived and unaffected. */
 struct utxo_recovery_ancestry_repair
 utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
                                         struct block_index *tip);

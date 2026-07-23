@@ -48,6 +48,7 @@
 
 #include "services/utxo_recovery_service.h"
 #include "services/block_index_loader.h"
+#include "chain/chain.h"                 /* block_index_build_skip */
 #include "validation/main_state.h"
 #include "jobs/reducer_frontier.h"
 #include "chain/checkpoints.h"
@@ -57,6 +58,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"             /* zcl_malloc for the pass-2 journal */
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -246,87 +248,133 @@ utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
         return r;                              /* NOOP */
     r.island_root_h = island->nHeight;
 
-    /* PASS 1 — VALIDATE (no mutation). Walk tip -> anchor via pprev (the
-     * store's own hash linkage), tracking the AUTHORITATIVE height from the
-     * trusted coins tip. "Hash linkage agrees" = the parent is a genuine,
-     * self-consistent node in the block-index map (its own hash resolves to
-     * itself). A NULL / foreign / self-inconsistent parent ABOVE the attested
-     * anchor extent is a real linkage break, not a label scramble. */
+    /* PASS 1 — VALIDATE (no mutation). Walk tip -> anchor via pprev (the store's
+     * OWN in-memory hash linkage), tracking the authoritative height from the
+     * trusted coins tip. This only ever CURES a pure label scramble on an
+     * otherwise-intact, acyclic, correct-lineage chain. It FAILS CLOSED (mutating
+     * nothing) on the three shapes a height relabel provably cannot cure:
+     *
+     *   1. A NULL / foreign / self-inconsistent parent above the anchor — a
+     *      genuine missing-parent break, not a label scramble.
+     *   2. A pprev CYCLE ("lasso"): the block-index loader's by-height pprev
+     *      fallback (block_index_loader.c) can wire a WRONG parent from a
+     *      scrambled stored height, so the walk laps a cycle forever. A height
+     *      relabel cannot cure wrong pprev linkage, and mutating a cycle stamps
+     *      garbage — Floyd tortoise/hare detects it (the max_steps backstop is
+     *      NOT enough: correct_h decrements every step so it cannot fire on a
+     *      lasso whose height-labels lie).
+     *   3. A terminus whose hash is NOT the compiled checkpoint block — a
+     *      wrong-lineage acyclic path would otherwise get the anchor height
+     *      stamped onto a non-checkpoint block, pass a height-only post-check,
+     *      and fail-open trust-root O(tip-anchor) mislabels. */
     int64_t max_steps = (int64_t)tip->nHeight - (int64_t)anchor + 8;
     int64_t steps = 0;
     int fixes_needed = 0;
     int32_t correct_h = tip->nHeight;
     struct block_index *cur = tip;
-    bool repairable = false;
+    struct block_index *hare = tip;           /* Floyd cycle guard */
+    struct block_index *terminus = NULL;
+    bool repairable = false, cycle = false;
     for (;;) {
         int32_t parent_h = correct_h - 1;
-        /* Relabel DOWN TO AND INCLUDING the node at the anchor height itself:
-         * ancestry_break only trust-roots once its contiguous descent reaches a
-         * node whose stored nHeight <= anchor, so the anchor node's own label
-         * must read exactly `anchor`. Stopping at parent_h <= anchor (one node
-         * too shallow) leaves the anchor node scrambled and the tip a detached
-         * island — the off-by-one that left the live coins tip un-rooted after
-         * relabeling ~116k heights. Below the anchor is the attested extent. */
-        if (parent_h < anchor) {               /* relabeled through the anchor node */
+        /* Descend DOWN TO AND INCLUDING the node at the anchor height: ancestry_
+         * break only trust-roots once its contiguous descent reaches a node whose
+         * stored nHeight <= anchor, so the anchor node's own label must read
+         * exactly `anchor`. Below the anchor is the attested extent. */
+        if (parent_h < anchor) {              /* cur is the anchor-height node */
+            terminus = cur;
             repairable = true;
             break;
         }
         struct block_index *pp = cur->pprev;
         if (!pp || !pp->phashBlock ||
             block_map_find(&ms->map_block_index, pp->phashBlock) != pp) {
-            r.refuse_at_h = correct_h;         /* linkage break at cur */
+            r.refuse_at_h = correct_h;        /* missing-parent linkage break */
             break;
         }
         if (pp->nHeight != parent_h)
             fixes_needed++;
         cur = pp;
         correct_h = parent_h;
-        if (++steps > max_steps) {             /* defensive: cycle/corruption */
+        /* Floyd cycle detection over the pprev POINTERS (never heights, which
+         * lie): hare advances two, tortoise (cur) one; a meet is a lasso. */
+        if (hare) hare = hare->pprev;
+        if (hare) hare = hare->pprev;
+        if (hare && hare == cur) { cycle = true; r.refuse_at_h = correct_h; break; }
+        if (++steps > max_steps) {            /* defensive backstop */
             r.refuse_at_h = correct_h;
             break;
         }
     }
 
+    /* Terminus IDENTITY: the node the walk reaches at the anchor height MUST be
+     * the compiled checkpoint block, or the whole lineage is wrong. */
+    if (repairable && cp && terminus) {
+        struct uint256 cph;
+        memcpy(cph.data, cp->block_hash, 32);
+        if (!terminus->phashBlock ||
+            uint256_cmp(terminus->phashBlock, &cph) != 0) {
+            repairable = false;
+            r.refuse_at_h = terminus->nHeight;
+        }
+    }
+
     if (!repairable) {
-        /* FAIL-CLOSED: genuine hash-linkage break — name a typed blocker,
-         * change nothing. The header-band planner / operator drives the
-         * missing-parent backfill; a later boot re-attempts the relink. */
+        /* FAIL-CLOSED: a pprev lasso, a genuine missing-parent break, or a
+         * wrong-lineage terminus — real corruption a label relabel cannot cure.
+         * Name a typed blocker; MUTATE NOTHING. */
+        const char *why = cycle ? "pprev cycle (loader by-height fallback wired a "
+                                  "wrong parent from a scrambled height)"
+                                : "pprev torn / wrong-lineage above the attested extent";
         struct blocker_record br;
         if (blocker_init(&br, UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID,
                          "utxo_recovery", BLOCKER_DEPENDENCY, NULL)) {
             br.retry_budget = -1;              /* unbounded — wait for backfill */
             snprintf(br.reason, sizeof(br.reason),
-                     "coins_tip=%d refuse_at=%d anchor=%d island_root=%d "
-                     "(pprev torn above the attested extent — real corruption, "
-                     "not a height-label scramble)",
-                     tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+                     "coins_tip=%d refuse_at=%d anchor=%d island_root=%d cycle=%d "
+                     "(%s)",
+                     tip->nHeight, r.refuse_at_h, anchor, r.island_root_h,
+                     cycle ? 1 : 0, why);
             (void)blocker_set(&br);            /* rate-limited dup is fine */
         }
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=ancestry_relink_refused coins_tip=%d refuse_at=%d "
-                    "anchor=%d island_root=%d",
-                    tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+                    "anchor=%d island_root=%d cycle=%d",
+                    tip->nHeight, r.refuse_at_h, anchor, r.island_root_h,
+                    cycle ? 1 : 0);
         LOG_WARN("utxo_recovery",
-                 "SCOPED ANCESTRY RELINK REFUSED: coins tip h=%d ancestry has a "
-                 "hash-linkage break at h=%d (anchor=%d island_root=%d) — real "
-                 "corruption, not a height-label scramble; changed nothing, "
-                 "waiting on header backfill",
-                 tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+                 "SCOPED ANCESTRY RELINK REFUSED: coins tip h=%d is a detached "
+                 "island (refuse_at=%d anchor=%d island_root=%d cycle=%d) — %s; "
+                 "changed nothing (a height relabel cannot cure wrong pprev "
+                 "linkage), waiting on backfill / loader repair",
+                 tip->nHeight, r.refuse_at_h, anchor, r.island_root_h,
+                 cycle ? 1 : 0, why);
         r.result = UTXO_ANCESTRY_REPAIR_REFUSED;
         return r;
     }
 
     if (fixes_needed == 0) {
-        /* Repairable path is fully contiguous already — the island root sat
-         * inside the attested extent, nothing above it to relabel. */
+        /* Repairable path is fully contiguous already — nothing to relabel. */
         r.result = UTXO_ANCESTRY_REPAIR_NOOP;
         return r;
     }
 
-    /* PASS 2 — APPLY. The path is proven repairable (reaches the anchor via
-     * genuine hash-linkage within the bound), so relabel every torn parent
-     * height. Only nHeight changes: nChainWork/nChainTx/pskip are all height-
-     * independent, and the flat re-save re-derives skip links on next load. */
+    /* PASS 2 — APPLY, JOURNALED. The boot shutdown persists the flat block index
+     * UNCONDITIONALLY (boot_services_shutdown), so a mutation that does not end
+     * up trust-rooting the tip must NOT survive this call — journal (node,
+     * old_height) and revert on any post-check failure. */
+    struct relink_jrnl { struct block_index *node; int32_t old_h; };
+    struct relink_jrnl *jrnl =
+        zcl_malloc((size_t)fixes_needed * sizeof(*jrnl), "relink_journal");
+    if (!jrnl) {
+        LOG_WARN("utxo_recovery",
+                 "SCOPED ANCESTRY RELINK: journal alloc failed for %d node(s) — "
+                 "refusing WITHOUT mutation (fail-closed, non-corrupting)",
+                 fixes_needed);
+        r.result = UTXO_ANCESTRY_REPAIR_REFUSED;
+        return r;
+    }
+    size_t jn = 0;
     correct_h = tip->nHeight;
     cur = tip;
     for (;;) {
@@ -335,6 +383,11 @@ utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
             break;
         struct block_index *pp = cur->pprev;   /* proven non-NULL in pass 1 */
         if (pp->nHeight != parent_h) {
+            if (jn < (size_t)fixes_needed) {
+                jrnl[jn].node = pp;
+                jrnl[jn].old_h = pp->nHeight;
+                jn++;
+            }
             pp->nHeight = parent_h;
             r.fixed++;
         }
@@ -342,22 +395,34 @@ utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
         correct_h = parent_h;
     }
 
-    /* Authoritative verdict: the tip must now be trust-rooted. */
+    /* Authoritative verdict: the tip must now be trust-rooted. If not (defensive
+     * — pass 1 proved the path acyclic with a checkpoint terminus), REVERT every
+     * mutation so the shutdown save cannot persist unverified labels. */
     if (utxo_recovery_block_ancestry_break(tip) != NULL) {
-        /* Defensive — unreachable given pass 1 proved the path. Do NOT claim
-         * success; leave the tip for the header-band planner. */
+        for (size_t i = jn; i > 0; i--)
+            jrnl[i - 1].node->nHeight = jrnl[i - 1].old_h;
+        free(jrnl);
         LOG_WARN("utxo_recovery",
-                 "SCOPED ANCESTRY RELINK: relabeled %d height(s) below coins "
-                 "tip h=%d but the tip is still not trust-rooted — leaving for "
-                 "the header-band planner", r.fixed, tip->nHeight);
+                 "SCOPED ANCESTRY RELINK: relabeled %d then REVERTED (post-check "
+                 "still a detached island) — coins tip h=%d unchanged",
+                 r.fixed, tip->nHeight);
+        r.fixed = 0;
         r.result = UTXO_ANCESTRY_REPAIR_REFUSED;
         return r;
     }
 
+    /* SUCCESS. The labels changed, so pskip (built FROM nHeight in chain.c, NOT
+     * height-independent) is now stale for every mutated node — rebuild it
+     * lowest-first (parents before children) so block_index_get_ancestor stays
+     * correct for same-boot consumers (tip publish / successor / watchdog). */
+    for (size_t i = jn; i > 0; i--)
+        block_index_build_skip(jrnl[i - 1].node);
+    free(jrnl);
+
     LOG_WARN("utxo_recovery",
-             "SCOPED ANCESTRY RELINK: coins tip h=%d had an LDB-import height "
-             "scramble in its header-only ancestry (island_root=%d anchor=%d); "
-             "relabeled %d height(s) under intact hash-linkage — tip is now "
+             "SCOPED ANCESTRY RELINK: coins tip h=%d had a height-label scramble "
+             "in its ancestry (island_root=%d anchor=%d); relabeled + skip-rebuilt "
+             "%d node(s) on an acyclic checkpoint-terminated chain — tip is now "
              "trust-rooted", tip->nHeight, r.island_root_h, anchor, r.fixed);
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=ancestry_relink_fixed coins_tip=%d island_root=%d "
