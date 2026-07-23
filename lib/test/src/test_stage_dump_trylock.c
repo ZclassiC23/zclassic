@@ -18,13 +18,24 @@
  * now creates a partial index (idx_utxo_apply_log_ok0 ON utxo_apply_log(height)
  * WHERE ok=0); this test asserts EXPLAIN QUERY PLAN uses that index rather than
  * a full table scan.
+ *
+ * Diagnostics sweep (same theme, other reducer-starvable dumpers): the durable
+ * peek in refold_progress_dump_state_json and the failure-summary read behind
+ * validate_headers_stage_dump_state_json also took progress_store_tx_lock
+ * BLOCKING. Both now trylock and emit a busy status
+ * (durable_store_status / failure_summary_status == "progress_store_busy") when
+ * the fold owns the lock; validate_headers_log grows a partial ok=0 index that
+ * bounds the successful-trylock hold. The cases below prove the busy path
+ * (non-blocking + labeled) and the index.
  */
 
 #include "test/test_helpers.h"
 
 #include "jobs/proof_validate_stage.h"
+#include "jobs/refold_progress.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "json/json.h"
 #include "storage/progress_store.h"
 
@@ -35,10 +46,11 @@
 #include <string.h>
 #include <time.h>
 
-/* Production schema-ensure for utxo_apply_log — declared extern (private
- * header lives under app/jobs/src/), the same pattern
+/* Production schema-ensure for utxo_apply_log / validate_headers_log — declared
+ * extern (private headers live under app/jobs/src/), the same pattern
  * test_utxo_root_ladder_tripwire.c uses. */
 extern bool utxo_apply_log_ensure_schema(struct sqlite3 *db);
+extern bool validate_headers_log_ensure_schema(struct sqlite3 *db);
 
 #define SD_CHECK(name, expr) do {                                 \
     printf("stage_dump_trylock: %s... ", (name));                 \
@@ -76,6 +88,15 @@ static bool is_busy_marker(const struct json_value *out)
         return false;
     const char *s = json_get_str(st);
     return s && strcmp(s, "progress_store_busy") == 0 && json_get_bool(rt);
+}
+
+/* True iff `out[key]` is exactly the string `expected`. */
+static bool json_status_is(const struct json_value *out, const char *key,
+                           const char *expected)
+{
+    const struct json_value *v = json_get(out, key);
+    const char *s = v ? json_get_str(v) : NULL;
+    return s && strcmp(s, expected) == 0;
 }
 
 /* (A2) Each of the 3 dumpers returns the busy marker — fast, non-blocking —
@@ -221,11 +242,134 @@ static int case_utxo_apply_ok0_index_used(void)
     return failures;
 }
 
+/* (diagnostics sweep) refold_progress + validate_headers dumps take the busy
+ * path — fast, non-blocking, labeled — while a helper thread holds the lock,
+ * then the normal path once it is free. */
+static int case_diag_dumps_busy_path(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "stage_dump_trylock", "diag");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    SD_CHECK("diag: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+    sqlite3 *db = progress_store_db();
+    /* validate_headers needs its table so the FREE path has a real read; the
+     * busy path returns before any table read. */
+    SD_CHECK("diag: validate_headers schema",
+             db && validate_headers_log_ensure_schema(db));
+
+    struct locker lk = { 0, 0 };
+    pthread_t th;
+    int rc = pthread_create(&th, NULL, locker_thread, &lk);
+    SD_CHECK("diag: locker thread starts", rc == 0);
+    if (rc != 0) {
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+    for (int i = 0; i < 500000 && !atomic_load(&lk.locked); i++) {
+        struct timespec ts = { 0, 200000 };
+        nanosleep(&ts, NULL);
+    }
+    SD_CHECK("diag: locker holds the progress lock", atomic_load(&lk.locked));
+
+    /* A blocking lock would deadlock here (the holder only releases on signal). */
+    struct json_value out;
+
+    json_init(&out);
+    bool r1 = refold_progress_dump_state_json(&out, NULL);
+    SD_CHECK("diag: refold_progress dump returns true", r1);
+    SD_CHECK("diag: refold_progress durable_store_status busy",
+             json_status_is(&out, "durable_store_status", "progress_store_busy"));
+
+    json_init(&out);
+    bool v1 = validate_headers_stage_dump_state_json(&out, NULL);
+    SD_CHECK("diag: validate_headers dump returns true", v1);
+    SD_CHECK("diag: validate_headers failure_summary_status busy",
+             json_status_is(&out, "failure_summary_status",
+                            "progress_store_busy"));
+
+    atomic_store(&lk.release, 1);
+    pthread_join(th, NULL);
+
+    json_init(&out);
+    bool r2 = refold_progress_dump_state_json(&out, NULL);
+    SD_CHECK("free: refold_progress durable_store_status available",
+             r2 && json_status_is(&out, "durable_store_status", "available"));
+
+    json_init(&out);
+    bool v2 = validate_headers_stage_dump_state_json(&out, NULL);
+    SD_CHECK("free: validate_headers failure_summary_status available",
+             v2 && json_status_is(&out, "failure_summary_status", "available"));
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* (diagnostics sweep amplifier) The validate_headers failure-summary ok=0 query
+ * uses the partial index, not a full table scan. */
+static int case_validate_headers_ok0_index_used(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "stage_dump_trylock", "vheqp");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    SD_CHECK("vheqp: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+    sqlite3 *db = progress_store_db();
+    SD_CHECK("vheqp: validate_headers schema (creates index)",
+             db && validate_headers_log_ensure_schema(db));
+
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    bool prep = sqlite3_prepare_v2(db,
+        "EXPLAIN QUERY PLAN "
+        "SELECT height, COALESCE(fail_reason, '') "
+        "  FROM validate_headers_log WHERE ok=0 "
+        " ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL) == SQLITE_OK;
+    SD_CHECK("vheqp: prepare EXPLAIN QUERY PLAN", prep);
+
+    bool uses_index = false;
+    bool bare_scan = false;
+    while (prep && sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *detail = sqlite3_column_text(st, 3);
+        const char *d = detail ? (const char *)detail : "";
+        if (strstr(d, "idx_validate_headers_log_ok0"))
+            uses_index = true;
+        if (strstr(d, "SCAN validate_headers_log") && !strstr(d, "USING INDEX"))
+            bare_scan = true;
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+
+    SD_CHECK("vheqp: query plan uses idx_validate_headers_log_ok0", uses_index);
+    SD_CHECK("vheqp: query plan is NOT a bare full-table scan", !bare_scan);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_stage_dump_trylock(void)
 {
     int failures = 0;
     failures += case_dumpers_busy_path();
     failures += case_utxo_apply_ok0_index_used();
+    failures += case_diag_dumps_busy_path();
+    failures += case_validate_headers_ok0_index_used();
     if (failures == 0)
         printf("test_stage_dump_trylock: ALL PASSED\n");
     else

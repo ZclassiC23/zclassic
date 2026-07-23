@@ -44,6 +44,11 @@ struct validate_headers_failure_summary {
     int64_t last_height;
     char first_reason[VH_MAX_REASON];
     char last_reason[VH_MAX_REASON];
+    /* True when a fold owned progress_store_tx_lock at load time: the counts
+     * above are the init'd defaults (0 / -1), not a real read. The dumper
+     * labels this so an observer never mistakes "busy, retry" for "no
+     * failures". */
+    bool progress_store_busy;
 };
 
 void validate_headers_failure_summary_load(
