@@ -1384,5 +1384,68 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* connman_relay_block announces a new tip to handshaked peers only, and
+     * is idempotent per peer. This is the miner/submitblock announce seam:
+     * a locally-accepted tip never travels the P2P receive-relay path, so
+     * connman_relay_block is what makes an already-connected follower hear
+     * about it. */
+    printf("connman_addnode_fallback: relay_block -> handshaked peers only... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        /* Three peers: one fully handshaked (must receive the announce), one
+         * still mid-handshake (must NOT), one handshaked but disconnecting
+         * (must NOT). */
+        struct p2p_node *ready =
+            add_test_peer(&cm, 203, 0, 113, 1, PEER_HANDSHAKE_COMPLETE,
+                          false, false);
+        struct p2p_node *early =
+            add_test_peer(&cm, 203, 0, 113, 2, PEER_CONNECTED, false, false);
+        struct p2p_node *leaving =
+            add_test_peer(&cm, 203, 0, 113, 3, PEER_HANDSHAKE_COMPLETE,
+                          false, true);
+        ok = ok && ready && early && leaving;
+
+        struct uint256 blk;
+        uint256_set_null(&blk);
+        blk.data[0] = 0xab;
+        blk.data[31] = 0xcd;
+
+        if (ok) {
+            connman_relay_block(&cm, &blk);
+            /* Only the fully-handshaked, non-disconnecting peer is queued. */
+            ok = ok && ready->inventory_to_send_count == 1;
+            ok = ok && early->inventory_to_send_count == 0;
+            ok = ok && leaving->inventory_to_send_count == 0;
+            /* And it is a MSG_BLOCK inv for exactly this hash. */
+            ok = ok && ready->inventory_to_send[0].type == MSG_BLOCK;
+            ok = ok && uint256_eq(&ready->inventory_to_send[0].hash, &blk);
+        }
+
+        /* Idempotent: once the peer knows the hash, re-announcing the same
+         * tip does not enqueue a duplicate inv (no announce storm). */
+        if (ok) {
+            p2p_node_add_inventory_known(ready, &ready->inventory_to_send[0]);
+            connman_relay_block(&cm, &blk);
+            ok = ok && ready->inventory_to_send_count == 1;
+        }
+
+        /* NULL args are a safe no-op, never a crash. */
+        if (ok) {
+            connman_relay_block(NULL, &blk);
+            connman_relay_block(&cm, NULL);
+        }
+
+        connman_free(&cm);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

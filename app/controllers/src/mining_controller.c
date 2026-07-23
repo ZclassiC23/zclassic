@@ -5,8 +5,10 @@
 
 #include "views/format_helpers.h"
 #include "controllers/mining_controller.h"
+#include "controllers/network_controller.h"  /* rpc_net_get_connman */
 #include "controllers/sovereignty_controller.h"
 #include "controllers/strong_params.h"
+#include "net/connman.h"                      /* connman_relay_block */
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -44,12 +46,33 @@ static struct mining_context *mining_ctx(void)
     return &g_mining_ctx;
 }
 
+/* Announce a just-accepted local tip block to connected peers. Locally-minted
+ * (`generate`) and externally-submitted (`submitblock`) blocks are accepted
+ * through reducer_ingest_block directly, never through the P2P block-receive
+ * relay in msg_blocks.c, so without this an already-connected peer never hears
+ * about the new tip and can sit one-or-more blocks behind until it re-queries
+ * on its own. This is the standard full-node behaviour: a node that accepts a
+ * new best-chain tip advertises it. connman_relay_block is bounded (one inv
+ * per peer, per-peer known-inventory filtered) and a no-op when there are no
+ * handshaked peers, so it is safe on every network. */
+static void mining_announce_accepted_block(const struct uint256 *hash)
+{
+    struct connman *cm = rpc_net_get_connman();
+    if (cm)
+        connman_relay_block(cm, hash);
+}
+
 static bool mining_submit_mined_block(struct block *block)
 {
     struct validation_state state;
     validation_state_init(&state);
     bool ok = reducer_ingest_block(boot_activation_controller(), block,
                                    REDUCER_SRC_MINED, true, &state);
+    if (ok) {
+        struct uint256 h;
+        block_get_hash(block, &h);
+        mining_announce_accepted_block(&h);
+    }
     if (!ok) {
         /* Surface WHY the reducer rejected a locally-mined block. Without
          * this, `generate` returns an empty result array with no clue why
@@ -267,6 +290,11 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
      * reject. */
     bool ok = reducer_ingest_block(boot_activation_controller(), &blk,
                                    REDUCER_SRC_SUBMIT, true, &state);
+    if (ok) {
+        struct uint256 h;
+        block_get_hash(&blk, &h);
+        mining_announce_accepted_block(&h);
+    }
     block_free(&blk);
 
     if (!ok) {
