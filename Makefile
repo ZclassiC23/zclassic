@@ -3032,6 +3032,36 @@ c3-stopwatch-report:
 arch-score:
 	@bash tools/scripts/arch_score.sh
 
+# ── netdisrupt-stopwatch (PROOF B, SELF-CONTAINED two-node RUNNER) ────
+#
+# The runnable, no-fixture-needed companion to
+# mvp-netdisrupt-recovery-stopwatch above. That target drills an
+# already-running live client + a caller-supplied upstream pid; THIS one
+# spawns its OWN isolated two-node regtest fixture (a throwaway miner +
+# follower under /tmp on non-live 39xxx ports), proves the follower reaches
+# the miner's tip, YANKS the network (SIGSTOP the miner — a clean partition),
+# holds --cut-secs of silence, restores it (SIGCONT), mines a fresh gap, and
+# times how long the follower takes to auto-resume and re-catch the miner's
+# tip WITHOUT a restart — the plan's proof pillar
+# (docs/work/stopwatch-gates.md, PROOF B). It records the RESUME LATENCY as
+# the headline metric.
+#
+# It ALWAYS appends one line to the shared PROOF B ledger
+# (~/.local/state/zclassic23-netdisrupt-stopwatch/history.jsonl) so
+# `make netdisrupt-stopwatch-report` (the judge) has a fresh last line to
+# gate on, THEN surfaces the drill verdict the coldstart-recipe way: SKIP
+# (a precondition absent — binary/ports/initial-sync) maps to a clean exit 0;
+# SEAM (3) / STALLED-NAMED (4) / FAIL (1) propagate as a failing recipe.
+# Tunables are the ZCL_ND2_* env vars (see
+# tools/scripts/netdisrupt_two_node_drill.sh). SPAWNS real nodes, so it is
+# DELIBERATELY out of `make ci` — opt-in, same as test-two-node-peer-tip.
+.PHONY: netdisrupt-stopwatch
+netdisrupt-stopwatch: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 echo "══ PROOF B STOPWATCH (self-contained): spawn miner+follower -> yank (SIGSTOP) -> restore (SIGCONT)+gap -> time follower auto-resume+climb ══"; \
+	 bash tools/scripts/netdisrupt_two_node_run_and_record.sh; rc=$$?; \
+	 exit $$rc'
+
 .PHONY: netdisrupt-stopwatch-report
 netdisrupt-stopwatch-report:
 	@bash -c 'set -uo pipefail; \
