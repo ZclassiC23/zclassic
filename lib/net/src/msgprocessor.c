@@ -23,6 +23,7 @@
 #include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
 #include "net/addrman.h"
+#include "net/checkpoint_header_fetch.h"
 #include "net/dandelion.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
@@ -2168,6 +2169,14 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                                                    now_send))
                 exec_getheaders_action(mp, node, &periodic);
         }
+
+        /* Checkpoint-header-solution cure: when the app-layer repair condition
+         * has armed a fetch (a staged checkpoint bundle needs the one missing
+         * checkpoint-header Equihash solution), send ONE bounded getheaders span
+         * to this peer so it returns exactly that header. Cheap no-op when not
+         * armed; globally throttled so only one request goes out per interval. */
+        if (!snapshot_active)
+            checkpoint_header_fetch_maybe_send(mp, node, now_send);
     }
 
     /* ── Download manager: assign queued blocks to this peer ────── */
