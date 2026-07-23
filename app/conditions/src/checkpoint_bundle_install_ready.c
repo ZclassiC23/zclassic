@@ -17,7 +17,9 @@
 
 #include "conditions/checkpoint_bundle_install_ready.h"
 
+#include "core/uint256.h"
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
+#include "conditions/checkpoint_header_solution_repair.h" /* solution-available gate */
 #include "config/consensus_state_install_runtime.h"   /* autodetect + arm + ready predicate */
 #include "controllers/agent_controller.h"             /* agent_runtime_context_datadir */
 #include "event/event.h"
@@ -89,6 +91,19 @@ static bool detect_checkpoint_bundle_install_ready(void)
     if (!consensus_state_checkpoint_header_ready(ms))
         return false; // raw-return-ok:detect-poll-headers-not-yet-at-checkpoint-is-normal
 
+    /* The checkpoint header's Equihash solution must be durably available so the
+     * install can actually bind. On a headers-first substrate the solution is
+     * absent until checkpoint_header_solution_repair peer-fetches + persists it;
+     * arming the install-on-next-boot before then would only burn the bounded
+     * install budget (BOOT_INSTALL_BUNDLE_MAX) on a solutionless retriable
+     * defer. Wait for the sibling repair to land it first. */
+    {
+        struct uint256 cp_hash;
+        memcpy(cp_hash.data, cp->block_hash, 32);
+        if (!checkpoint_header_solution_available(cp->height, &cp_hash))
+            return false; // raw-return-ok:checkpoint-header-solution-not-yet-backfilled
+    }
+
     /* A staged, installable bundle must still be present. autodetect returns
      * NULL once the sovereign marker exists (installed), when no installable
      * bundle is present under bundles/, or when every candidate carries a
@@ -116,6 +131,12 @@ static enum condition_remedy_result remedy_checkpoint_bundle_install_ready(void)
     if (!cp || !cbir_below_checkpoint(cp) ||
         !consensus_state_checkpoint_header_ready(ms))
         return COND_REMEDY_SKIP; // raw-return-ok:precondition-regressed-this-tick
+    {
+        struct uint256 cp_hash;
+        memcpy(cp_hash.data, cp->block_hash, 32);
+        if (!checkpoint_header_solution_available(cp->height, &cp_hash))
+            return COND_REMEDY_SKIP; // raw-return-ok:solution-not-yet-backfilled-do-not-burn-budget
+    }
 
     char *bundle = boot_autodetect_consensus_bundle(datadir);
     if (!bundle)

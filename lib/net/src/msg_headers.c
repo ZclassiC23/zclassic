@@ -29,6 +29,7 @@
 #include "core/arith_uint256.h"
 #include "net/netaddr.h"
 #include "net/header_corroboration.h"
+#include "net/checkpoint_header_fetch.h"
 #include "services/header_range_scheduler.h"  // lib-layer-ok:net3-range-parallel-header-planner
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
@@ -615,6 +616,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         block_header_get_hash(&hdr, &hdr_hash);
         bool was_known = (block_map_find(&mp->main_state->map_block_index,
                                           &hdr_hash) != NULL);
+
+        /* Checkpoint-header-solution cure: offer every received header (with its
+         * on-wire Equihash solution) to the checkpoint fetch. Cheap (one relaxed
+         * atomic) when no fetch is armed; on a hash-pin match it captures the
+         * bytes for the app-layer condition to frozen-verify + persist. The
+         * header is captured even when `was_known` (the imported checkpoint
+         * header IS already in the index — only its solution is missing). */
+        checkpoint_header_fetch_offer(&hdr, &hdr_hash);
 
         struct validation_state state;
         validation_state_init(&state);

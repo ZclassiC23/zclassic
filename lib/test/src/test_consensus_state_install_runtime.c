@@ -572,7 +572,17 @@ static int case_retry_condition(void)
     CSIR_CHECK("cond: stage bundle", csir_touch(bundles, "consensus-state-bundle-5000.sqlite"));
     checkpoint_bundle_install_ready_test_set_datadir(dir);
 
-    /* detect FIRES: headers ready + bundle staged + H* below checkpoint. */
+    /* The install-ready gate now also requires the checkpoint header's Equihash
+     * solution to be durably available (its sibling checkpoint_header_solution_
+     * repair peer-fetches + persists it). Land a pass record for the checkpoint
+     * header so the install can actually bind — otherwise detect would (now
+     * correctly) wait rather than burn the bounded install budget. */
+    CSIR_CHECK("cond: progress store opens", progress_store_open(dir));
+    validate_headers_ensure_set_validator_for_test(csir_header_pass, NULL);
+    CSIR_CHECK("cond: checkpoint header solution landed (pass record minted)",
+               validate_headers_stage_ensure_pass_record(&ms, CP));
+
+    /* detect FIRES: headers ready + solution available + bundle staged + H* below. */
     CSIR_CHECK("cond: detect fires when headers reach checkpoint + bundle staged",
                checkpoint_bundle_install_ready_test_detect());
 
@@ -628,6 +638,8 @@ static int case_retry_condition(void)
                    !checkpoint_bundle_install_ready_test_detect());
     }
 
+    validate_headers_ensure_set_validator_for_test(NULL, NULL);
+    progress_store_close();
     test_rm_rf_recursive(dir);
     checkpoint_bundle_install_ready_test_reset();
     reducer_frontier_provable_tip_reset();
