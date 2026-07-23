@@ -362,6 +362,7 @@ int body_persist_stage_drain(int max_steps)
          * Finalize after either COMMIT or ROLLBACK so no DB/reorg generation
          * can inherit bindings or statement state from its predecessor. */
         created_outputs_index_batch_reset();
+        body_persist_log_store_batch_reset();
         progress_store_tx_unlock();
     }
     return advanced;
@@ -370,6 +371,7 @@ int body_persist_stage_drain(int max_steps)
 void body_persist_stage_shutdown(void)
 {
     created_outputs_index_batch_reset();
+    body_persist_log_store_batch_reset();
     /* Registry hygiene (tests re-init in-process): re-derived from live
      * state the next time the condition fires, so clearing here loses
      * nothing. */
