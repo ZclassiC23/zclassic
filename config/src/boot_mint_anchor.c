@@ -431,8 +431,8 @@ bool boot_mint_anchor_run(const char *datadir)
     /* S1.2 — skip event_log emission during the offline mint. The mint's only
      * output (utxo-anchor.snapshot) is built from coins_kv (progress.kv,
      * written directly by utxo_apply) + node.db shielded state; it never reads
-     * the event_log or its projections. So the fold-thread EV_BLOCK_BODY /
-     * EV_BLOCK_HEADER emissions — serialize + pwrite + fsync per block — are
+     * the event_log or its projections. So the fold-thread EV_BLOCK_HEADER
+     * emission — serialize + pwrite + fsync per block — is
      * pure overhead here. Every fold-path emitter routes through
      * event_log_singleton() and is NULL-tolerant (skips on NULL), so unwiring
      * the singleton suppresses all of them for the mint's duration.

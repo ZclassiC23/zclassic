@@ -10,9 +10,6 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/body_persist_stage.h"
-#include "storage/event_log.h"
-#include "storage/event_log_payloads.h"
-#include "storage/event_log_singleton.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -251,54 +248,6 @@ static void bp_teardown(const char *dir, struct main_state *ms,
     test_cleanup_tmpdir(dir);
 }
 
-/* B2 EV_BLOCK_BODY emission: collect every EV_BLOCK_BODY in the log,
- * round-trip the body back to a struct block, and verify the embedded
- * hash matches the block hash. */
-struct body_collect {
-    int count;
-    int roundtrip_ok;     /* all bodies parse + deserialize + hash-match */
-    struct uint256 last_hash;
-    int last_height;
-};
-
-static bool body_collect_cb(uint64_t offset, enum event_log_type type,
-                            const void *payload, size_t len, void *user)
-{
-    (void)offset;
-    struct body_collect *c = user;
-    if (type != EV_BLOCK_BODY) return true;
-    c->count++;
-
-    struct ev_block_body b;
-    const uint8_t *body = NULL;
-    if (!ev_block_body_parse((const uint8_t *)payload, len, &b, &body)) {
-        c->roundtrip_ok = 0;
-        return true;
-    }
-    memcpy(c->last_hash.data, b.hash, 32);
-    c->last_height = b.height;
-
-    /* Deserialize the body bytes back to a block and recompute the hash —
-     * proves the log is a faithful, replayable copy of the block. */
-    struct byte_stream s;
-    stream_init_from_data(&s, body, b.body_len);
-    struct block blk;
-    block_init(&blk);
-    if (!block_deserialize(&blk, &s)) {
-        c->roundtrip_ok = 0;
-        block_free(&blk);
-        stream_free(&s);
-        return true;
-    }
-    struct uint256 rt_hash;
-    block_get_hash(&blk, &rt_hash);
-    if (memcmp(rt_hash.data, b.hash, 32) != 0)
-        c->roundtrip_ok = 0;
-    block_free(&blk);
-    stream_free(&s);
-    return true;
-}
-
 int test_body_persist_stage(void);
 int test_body_persist_stage(void)
 {
@@ -490,111 +439,6 @@ int test_body_persist_stage(void)
         BP_CHECK("dump: log_rows=2",
                  strstr(buf, "\"log_rows\":2") != NULL);
         json_free(&v);
-        bp_teardown(dir, &ms, &sc);
-    }
-
-    /* ── B2: EV_BLOCK_BODY codec round-trip (pure) ──────────────────── */
-    {
-        uint8_t body_bytes[] = { 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02 };
-        struct ev_block_body in;
-        memset(&in, 0, sizeof(in));
-        for (int i = 0; i < 32; i++) in.hash[i] = (uint8_t)(i + 1);
-        in.height   = 1234567;
-        in.body_len = (uint32_t)sizeof(body_bytes);
-
-        uint8_t buf[64];
-        size_t written = 0;
-        BP_CHECK("codec: serialize ok",
-                 ev_block_body_serialize(&in, body_bytes, buf, sizeof(buf),
-                                         &written));
-        BP_CHECK("codec: wire size",
-                 written == ev_block_body_wire_size(in.body_len));
-
-        struct ev_block_body out;
-        const uint8_t *body_out = NULL;
-        BP_CHECK("codec: parse ok",
-                 ev_block_body_parse(buf, written, &out, &body_out));
-        BP_CHECK("codec: hash matches",
-                 memcmp(out.hash, in.hash, 32) == 0);
-        BP_CHECK("codec: height matches", out.height == in.height);
-        BP_CHECK("codec: body_len matches", out.body_len == in.body_len);
-        BP_CHECK("codec: body bytes match",
-                 body_out && memcmp(body_out, body_bytes,
-                                    sizeof(body_bytes)) == 0);
-        BP_CHECK("codec: parse rejects truncation",
-                 !ev_block_body_parse(buf, EV_BLOCK_BODY_FIXED_BYTES - 1,
-                                      &out, &body_out));
-        BP_CHECK("codec: parse rejects short body",
-                 !ev_block_body_parse(buf, written - 1, &out, &body_out));
-    }
-
-    /* ── B2: emit verified bodies into a real event log + replay ────── */
-    {
-        char dir[256]; struct main_state ms; struct synth_chain_bp sc;
-        BP_CHECK("emit: setup",
-                 bp_setup("emit", 4, -1, -1, dir, sizeof(dir), &ms, &sc) == 0);
-
-        char logpath[320];
-        snprintf(logpath, sizeof(logpath), "%s/events.log", dir);
-        event_log_t *log = event_log_open(logpath);
-        BP_CHECK("emit: log open", log != NULL);
-        event_log_set_singleton(log);
-
-        BP_CHECK("emit: drains 4", body_persist_stage_drain(100) == 4);
-        BP_CHECK("emit: body_emit_total == 4",
-                 body_persist_stage_body_emit_total() == 4);
-        BP_CHECK("emit: no emit failures",
-                 body_persist_stage_body_emit_fail_total() == 0);
-
-        struct body_collect col;
-        memset(&col, 0, sizeof(col));
-        col.roundtrip_ok = 1;
-        BP_CHECK("emit: stream ok",
-                 event_log_stream(log, 0, body_collect_cb, &col) == 0);
-        BP_CHECK("emit: log has 4 bodies", col.count == 4);
-        BP_CHECK("emit: all bodies round-trip + hash-match",
-                 col.roundtrip_ok == 1);
-
-        /* Verified-only: a read-failed height must NOT emit a body. */
-        event_log_set_singleton(NULL);
-        event_log_close(log);
-        bp_teardown(dir, &ms, &sc);
-    }
-
-    {
-        char dir[256]; struct main_state ms; struct synth_chain_bp sc;
-        BP_CHECK("emit_skip: setup",
-                 bp_setup("emitskip", 4, -1, -1, dir, sizeof(dir),
-                          &ms, &sc) == 0);
-        sc.fail_read_height = 1;   /* h=1 requeues for re-fetch, no body */
-
-        char logpath[320];
-        snprintf(logpath, sizeof(logpath), "%s/events.log", dir);
-        event_log_t *log = event_log_open(logpath);
-        BP_CHECK("emit_skip: log open", log != NULL);
-        event_log_set_singleton(log);
-
-        BP_CHECK("emit_skip: drains 1", body_persist_stage_drain(100) == 1);
-        /* Only h=0 verified+emitted; h=1 read-failed → requeued, no body. */
-        BP_CHECK("emit_skip: body_emit_total == 1",
-                 body_persist_stage_body_emit_total() == 1);
-
-        struct body_collect col;
-        memset(&col, 0, sizeof(col));
-        col.roundtrip_ok = 1;
-        event_log_stream(log, 0, body_collect_cb, &col);
-        BP_CHECK("emit_skip: log has 1 body", col.count == 1);
-
-        /* Re-fetch heals: remaining heights verify and emit. */
-        sc.fail_read_height = -1;
-        sc.blocks[1].nStatus |= BLOCK_HAVE_DATA;
-        BP_CHECK("emit_skip: heals after re-fetch",
-                 body_persist_stage_drain(100) == 3);
-        BP_CHECK("emit_skip: body_emit_total == 4",
-                 body_persist_stage_body_emit_total() == 4);
-
-        event_log_set_singleton(NULL);
-        event_log_close(log);
         bp_teardown(dir, &ms, &sc);
     }
 

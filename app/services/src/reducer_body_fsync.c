@@ -8,8 +8,8 @@
  * The reducer fold defers two per-block fsync sources. (1) The body-persist
  * path (write_block_to_disk in reducer_persist_ingested_body_locked)
  * fdatasync()s each block on write. (2) event_log_append() fsync()s TWICE per
- * event, and the fold emits ~2 events/block (EV_BLOCK_BODY + EV_BLOCK_HEADER)
- * ON the drive thread — ~4 event fsyncs/block. Every one is an ext4
+ * event, and the fold emits one EV_BLOCK_HEADER event/block ON the drive
+ * thread — ~2 event fsyncs/block. Every one is an ext4
  * journal-commit barrier that dominates the fold / catch-up wait (the drive
  * thread parks in jbd2_log_wait_commit while the CPU is idle). This TU defers
  * both to the stage drain-batch boundary:
@@ -27,7 +27,7 @@
  *     / event_log callers (import, tests, at-tip) keep their immediate per-op
  *     fdatasync.
  *
- * Durability is unchanged — only the fsync cadence drops from ~5/block to
+ * Durability is unchanged — only the fsync cadence drops from ~3/block to
  * ~1/batch. At tip the batch is a single block, so the artifacts are synced at
  * that block's own drain COMMIT: identical durability, one extra deferred hop.
  *
