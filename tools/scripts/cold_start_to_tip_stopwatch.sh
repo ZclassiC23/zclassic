@@ -188,6 +188,8 @@ fi
 # diagnostic state a human/agent needs to root-cause the run WITHOUT
 # re-running the harness: frontier.json (dumpstate reducer_frontier),
 # reducer_drive.json (the synchronous drain/lock owner and its last exit),
+# reducer_stage_profile.json (per-stage RPF_* sub-phase timing: disk read,
+# event encode/append, created-index, stage-log cursor — the fold-cost split),
 # stage-*.json (each reducer stage's cursor/counters/last blocker),
 # blocker.json (dumpstate blocker), ops.log.tail.txt (the typed `ops logs`
 # command if the node is still alive/RPC-reachable, else a plain tail of
@@ -201,7 +203,7 @@ fi
 capture_failure_bundle() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
-    local got_frontier=0 got_drive=0 got_stages=0 got_blocker=0 got_logs=0
+    local got_frontier=0 got_drive=0 got_profile=0 got_stages=0 got_blocker=0 got_logs=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_frontier \
             >"$ARTIFACT_DIR/frontier.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
@@ -210,6 +212,8 @@ capture_failure_bundle() {
         fi
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_drive \
             >"$ARTIFACT_DIR/reducer_drive.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/reducer_drive.json" ] && got_drive=1
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_stage_profile \
+            >"$ARTIFACT_DIR/reducer_stage_profile.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/reducer_stage_profile.json" ] && got_profile=1
         got_stages=1
         for stage_name in header_admit validate_headers body_fetch body_persist \
                           script_validate proof_validate utxo_apply tip_finalize; do
@@ -226,8 +230,9 @@ capture_failure_bundle() {
     if [ "$got_logs" = 0 ] && [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
         tail -200 "$DATADIR/node.log" >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && got_logs=1
     fi
-    [ "$got_frontier" = 1 ] && [ "$got_drive" = 1 ] && [ "$got_stages" = 1 ] &&
-        [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] || BUNDLE_CAPTURE_FAILED="true"
+    [ "$got_frontier" = 1 ] && [ "$got_drive" = 1 ] && [ "$got_profile" = 1 ] &&
+        [ "$got_stages" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] ||
+        BUNDLE_CAPTURE_FAILED="true"
 }
 
 write_artifact() {
