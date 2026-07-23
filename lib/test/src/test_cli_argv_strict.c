@@ -460,11 +460,21 @@ static int cas_test_daemon_mode_tolerant_and_warns(void)
             (char *)CAS_BIN, datadir_flag, rpcport_flag, port_flag,
             (char *)"-nolegacyimport", (char *)"-nobgvalidation", NULL,
         };
+        /* Generous budget: under a full `make test-parallel` run (32
+         * concurrent groups, each forking/execing its own heavy binaries),
+         * scheduling this child's fork+exec+first-fprintf can take far
+         * longer than it does standalone — the WARN itself is printed
+         * within milliseconds of exec in an idle system, but wall-clock
+         * delay under CPU contention is not this test's concern. Still
+         * comfortably inside the 300s per-group timeout. */
         char out[16384] = {0};
         bool saw_warn = cas_run_daemon_wait_for(
             argv, home,
-            "unrecognized flag '--rpcport=", 5000, out, sizeof(out));
+            "unrecognized flag '--rpcport=", 20000, out, sizeof(out));
 
+        if (!saw_warn || !cas_contains(out, "did you mean -rpcport=PORT?"))
+            fprintf(stderr, "cas_test_daemon_mode_tolerant_and_warns: "
+                    "captured output:\n%s\n", out);
         ASSERT(saw_warn);
         ASSERT(cas_contains(out, "did you mean -rpcport=PORT?"));
         /* Tolerant: this is NOT the CLI-client hard refusal. */
