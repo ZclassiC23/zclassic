@@ -65,6 +65,8 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "services/block_index_loader.h"
+#include "services/reducer_ingest_service.h" /* reducer_ingest_try_seed_anchor (regtest genesis boot seed) */
+#include "jobs/tip_finalize_stage.h"         /* tip_finalize_stage_cursor + active_chain_tip */
 #include "models/block.h"
 #include "models/file_offer.h"
 #include "models/file_service.h"
@@ -520,6 +522,29 @@ static void boot_register_core_liveness_and_reducer(
     if (!armed_from_anchor)
         (void)block_index_loader_seed_stages_from_cold_import(
             svc->state, boot_node_db(svc), progress_store_db());
+
+    /* Regtest fresh-genesis bootstrap (boot-time mirror of the on-demand ingest
+     * seed in reducer_ingest_service.c). A from-genesis regtest node — miner OR
+     * P2P follower — has no genesis ANCHOR, so the staged reducer tries to FOLD
+     * genesis through proof_validate, which chokes (genesis carries no
+     * script_validate receipt) and wedges the whole fold at height 0. The miner
+     * seeded this only inside its first generate ingest; a follower never
+     * ingests a block while proof_validate is wedged (a deadlock). Seed it here
+     * at boot exactly as the ingest does: every upstream cursor is stamped to 1
+     * so the pipeline folds from height 1 (fixes test-two-node-peer-tip /
+     * netdisrupt-stopwatch). The paired coins_applied_height=1 seed the mint
+     * guard needs is written by the frontier's single owner
+     * (utxo_apply_stage_init); this only stamps cursors + anchor rows, never the
+     * coins frontier (check-frontier-single-writer). fMineBlocksOnDemand-gated
+     * (regtest only; a no-op on main/testnet); fires only at genesis with an
+     * unseeded finalize cursor and nothing else seeded; idempotent. */
+    if (!armed_from_anchor && params && params->fMineBlocksOnDemand) {
+        struct block_index *gtip = active_chain_tip(&svc->state->chain_active);
+        if (gtip && gtip->phashBlock && gtip->nHeight == 0 &&
+            tip_finalize_stage_cursor() == 0)
+            reducer_ingest_try_seed_anchor(0, gtip->phashBlock->data,
+                                           "regtest-genesis-boot");
+    }
 }
 
 /* ── Runtime service startup (called from app_init) ────────── */

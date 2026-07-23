@@ -22,6 +22,7 @@
 #include "proof_validate_log_store.h"
 #include "script_validate_log_store.h"
 #include "chain/chain.h"
+#include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "services/seal_service.h"
 #include "services/anchor_selfmint.h"
@@ -698,6 +699,20 @@ bool utxo_apply_stage_init(struct main_state *ms)
 
     /* Derive an absent frontier from the durable cursor, never coin rows. */
     if (!coins_kv_backfill_applied_height_if_absent(
+            db, coins_kv_set_applied_height_in_tx)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    /* Regtest on-demand mint bootstrap (this frontier's single writer). A
+     * pristine from-genesis regtest node folds no block above genesis until
+     * `generate` runs, but generate's guard needs coins_applied_height==hstar+1
+     * (==1 at genesis) FIRST — the cursor backfill above can't break that (no
+     * cursor row yet). Seed it so a self-derived from-genesis node is mint-
+     * eligible (MVP C7). fMineBlocksOnDemand-gated (regtest only); see the
+     * genesis anchor seed's paired comment in config/src/boot_services.c. */
+    if (chain_params_get()->fMineBlocksOnDemand &&
+        !coins_kv_seed_genesis_applied_height(
             db, coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;

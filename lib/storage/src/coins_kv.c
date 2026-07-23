@@ -1248,6 +1248,80 @@ bool coins_kv_backfill_applied_height_if_absent(
     return ok;
 }
 
+bool coins_kv_seed_genesis_applied_height(
+    sqlite3 *db, coins_kv_frontier_writer_fn writer)
+{
+    if (!db) return true;  /* store not open yet → no-op, retried later */
+    if (!writer)
+        LOG_FAIL("coins_kv", "genesis applied_height seed: NULL frontier writer");
+
+    /* (1) Already seeded? Never re-seed (a later legitimate rewind must be free
+     * to move it — same contract as the cursor backfill above). */
+    bool present = false;
+    int32_t cur = 0;
+    if (!coins_kv_get_applied_height(db, &cur, &present))
+        return false;
+    if (present)
+        return true;
+
+    /* (2) A borrowed / snapshot seed is proven-authority: the sovereignty gate's
+     * part 3 (borrowed_seed_no_refold_marker) refuses those; they must never be
+     * minted on, and they already carry coins_applied_height (so this is doubly
+     * inert). Skip — never manufacture a self-derived claim over a borrow. */
+    if (coins_kv_is_proven_authority(db, NULL))
+        return true;
+
+    /* (3) Any coins already present means a fold/seed has begun — not a pristine
+     * from-genesis store. Leave the frontier to the forward fold / cursor
+     * backfill so we never claim coverage the store does not have. */
+    if (coins_kv_count(db) > 0)
+        return true;
+
+    /* (4) A stamped utxo_apply cursor row likewise means the store is past
+     * pristine genesis (the cursor backfill above already handled it). */
+    int64_t cursor = 0;
+    bool have_cursor = false;
+    progress_store_tx_lock();
+    if (!utxo_apply_cursor_persisted(db, &cursor, &have_cursor)) {
+        progress_store_tx_unlock();
+        LOG_WARN("coins_kv", "[coins_kv] genesis applied_height seed: cursor read failed");
+        return false;
+    }
+    if (have_cursor) {
+        progress_store_tx_unlock();
+        return true;  /* fold already started — not pristine genesis */
+    }
+
+    /* Pristine from-genesis store: seed coins_applied_height = 1 (genesis applied,
+     * empty coin delta). The ONE allowed standalone txn — a pure derived-frontier
+     * write with NO coin mutation, mirroring coins_kv_backfill_applied_height_if_
+     * absent. This equals the value the forward fold co-commits the instant it
+     * applies genesis (cursor_in 0 → next_cursor 1), and equals hstar+1 at the
+     * genesis tip (hstar==0), so the frontier tear/reconcile diagnostics stay
+     * quiet (coins_applied 1 is NOT above the empty-log contiguity anchor+1). */
+    char *err = NULL;
+    bool ok = true;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && !writer(db, (int32_t)1))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        if (err) LOG_WARN("coins_kv",
+                          "[coins_kv] genesis applied_height seed failed: %s", err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+
+    if (ok)
+        LOG_INFO("coins_kv",
+                 "[coins_kv] seeded coins_applied_height=1 for a pristine "
+                 "from-genesis regtest store (on-demand mint bootstrap)");
+    return ok;
+}
+
 bool coins_kv_reset_for_reseed(sqlite3 *db)
 {
     if (!db) return false;

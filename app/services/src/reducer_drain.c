@@ -50,6 +50,10 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/refold_cadence.h"   /* refold_cadence_drain_batch (mint/refold) */
 #include "jobs/catchup_cadence.h"  /* peer-gap-gated live-sync batch */
+#include "jobs/reducer_frontier.h" /* reducer_frontier_provable_tip_cached (H* gate) */
+#include "validation/chainstate.h" /* active_chain_tip (regtest at-tip publish) */
+#include "chain/chain.h"           /* BLOCK_FAILED_MASK */
+#include "chain/chainparams.h"     /* struct chain_params (fMineBlocksOnDemand) */
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -475,6 +479,40 @@ int reducer_kick(struct chain_activation_controller *ctl)
     int advanced = reducer_drain_to_convergence();
     reducer_exit_batched_body_sync();
     reducer_drive_exit();
+
+    /* Regtest on-demand at-tip publish (the P2P-FOLLOWER counterpart to the
+     * self-mined publish in reducer_ingest_block). On a fMineBlocksOnDemand
+     * node the last block at the tip has NO successor to witness its
+     * canonicity, so tip_finalize's one-block lookahead can never finalize it
+     * — the miner works around this by publishing its just-mined tip via the
+     * trusted-tip authority inline, but a follower folds received blocks
+     * through this async drive and would otherwise leave H* (getblockcount)
+     * one block below the applied active tip forever (proven: follower reaches
+     * active tip N but getblockcount stalls at N-1). Once the drive has
+     * converged, if the active tip is fully applied (utxo_apply succeeded) yet
+     * tip_finalize has not published it, publish it here — the same
+     * self-authority the miner uses, no successor required. Gated on
+     * fMineBlocksOnDemand (true ONLY for regtest): on main/testnet this whole
+     * branch is skipped. */
+    if (ctl->params && ctl->params->fMineBlocksOnDemand && ctl->ms) {
+        struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
+        /* Gate on the PROVABLE tip (H*) trailing the applied active tip, NOT
+         * the finalize cursor: step_finalize can advance the served-tip cursor
+         * to N while the tip_finalize_LOG still lacks a counted row at N (its
+         * one-block-lookahead never wrote N's finalized row without a
+         * successor), so H* / getblockcount sit at N-1. set_authoritative_tip
+         * writes the authority anchor row at N (ensure_authority_anchor_row runs
+         * even when cursor==N) and republishes H*, lifting the provable tip to
+         * the applied tip. Idempotent once H* == N (this branch no longer
+         * fires). */
+        if (tip && tip->phashBlock &&
+            !(tip->nStatus & BLOCK_FAILED_MASK) &&
+            utxo_apply_stage_succeeded_at(tip->nHeight) &&
+            reducer_frontier_provable_tip_cached() < tip->nHeight)
+            tip_finalize_stage_set_authoritative_tip(tip->nHeight,
+                                                     tip->phashBlock->data);
+    }
+
     zcl_mutex_unlock(&ctl->mutex);
     return advanced;
 }

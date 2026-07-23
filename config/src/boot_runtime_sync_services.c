@@ -33,6 +33,7 @@
 #include "services/utxo_mirror_sync_service.h"
 #include "net/connman.h"
 #include "net/download.h"
+#include "chain/chainparams.h"  /* fMineBlocksOnDemand (regtest legacy-mirror skip) */
 #include <stdio.h>
 
 /* Initialize header_probe and register its supervised poll Job (runtime svc). */
@@ -81,6 +82,18 @@ bool boot_legacy_mirror_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
+    /* The legacy mirror parity-compares this node against a co-located
+     * zclassicd oracle. On regtest (fMineBlocksOnDemand) there is no zclassicd
+     * regtest counterpart, so the mirror can only mis-compare against a
+     * mainnet zclassicd — every height diverges, tripping mirror.hash-
+     * disagreement / mirror.divergence_located and driving the node into an
+     * oracle-divergence panic that stalls an otherwise-healthy regtest sync
+     * (observed wedging make netdisrupt-stopwatch's follower). Skip it there;
+     * on main/testnet the mirror runs unchanged. */
+    if (svc->params && svc->params->fMineBlocksOnDemand) {
+        printf("[legacy-mirror] skipped on regtest (no zclassicd counterpart)\n");
+        return true;
+    }
     struct legacy_mirror_sync_config cfg = {0};
     cfg.enabled = true;
     if (!legacy_mirror_sync_init(&cfg, svc->state, svc->coins_tip,

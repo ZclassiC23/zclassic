@@ -845,6 +845,71 @@ int test_coins_applied_frontier(void)
         branch_free(&R);
     }
 
+    /* ── PART F: coins_kv_seed_genesis_applied_height (regtest genesis mint
+     * bootstrap). A pristine from-genesis store gets coins_applied_height=1;
+     * every non-pristine shape (already-present / borrowed-proven / coins
+     * present / cursor present) is a fail-closed no-op. ─────────────────── */
+    {
+        /* (1) Pristine store: no key, no coins, no cursor, not proven → seed 1. */
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "gseed");
+        CAF_CHECK("gseed: progress_store opens", progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        (void)coins_kv_ensure_schema(pdb);
+        int32_t v = -1; bool found = true;
+        CAF_CHECK("gseed: key ABSENT before seed",
+                  coins_kv_get_applied_height(pdb, &v, &found) && !found);
+        CAF_CHECK("gseed: seed runs on a pristine from-genesis store",
+                  coins_kv_seed_genesis_applied_height(
+                      pdb, coins_kv_set_applied_height_in_tx));
+        CAF_CHECK("gseed: coins_applied_height == 1 (genesis applied)",
+                  coins_kv_get_applied_height(pdb, &v, &found) && found && v == 1);
+        /* (2) Idempotent: a second call never re-seeds. */
+        CAF_CHECK("gseed: second call no-ops",
+                  coins_kv_seed_genesis_applied_height(
+                      pdb, coins_kv_set_applied_height_in_tx));
+        v = -1; found = false;
+        CAF_CHECK("gseed: idempotent — still 1",
+                  coins_kv_get_applied_height(pdb, &v, &found) && found && v == 1);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+    {
+        /* (3) Coins already present → not pristine → no-op (key stays ABSENT). */
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "gseedcoins");
+        CAF_CHECK("gseed-coins: progress_store opens", progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        (void)coins_kv_ensure_schema(pdb);
+        uint8_t ctxid[32] = {0}; ctxid[0] = 0xAB; uint8_t pk[3] = { 0x76, 0xa9, 0xCC };
+        CAF_CHECK("gseed-coins: seed a live coin at height 5",
+                  coins_kv_add(pdb, ctxid, 0, 100000000LL, (int32_t)5, false, pk, sizeof(pk)));
+        CAF_CHECK("gseed-coins: seed no-ops with coins present",
+                  coins_kv_seed_genesis_applied_height(
+                      pdb, coins_kv_set_applied_height_in_tx));
+        int32_t v = -1; bool found = true;
+        CAF_CHECK("gseed-coins: key still ABSENT (not a pristine genesis store)",
+                  coins_kv_get_applied_height(pdb, &v, &found) && !found);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+    {
+        /* (4) utxo_apply cursor already stamped → not pristine → no-op. */
+        char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "gseedcur");
+        CAF_CHECK("gseed-cursor: progress_store opens", progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        (void)coins_kv_ensure_schema(pdb);
+        CAF_CHECK("gseed-cursor: stamp utxo_apply cursor=7",
+                  caf_exec(pdb, "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+                                "VALUES('utxo_apply',7,1)"));
+        CAF_CHECK("gseed-cursor: seed no-ops with a stamped cursor",
+                  coins_kv_seed_genesis_applied_height(
+                      pdb, coins_kv_set_applied_height_in_tx));
+        int32_t v = -1; bool found = true;
+        CAF_CHECK("gseed-cursor: key still ABSENT (fold already started)",
+                  coins_kv_get_applied_height(pdb, &v, &found) && !found);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     branch_free(&L);
     branch_free(&W);
     branch_free(&F);
