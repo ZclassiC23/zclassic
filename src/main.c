@@ -25,13 +25,10 @@
 #include "net/file_service.h"           /* -filesync fast path (fs_client_sync) */
 #include "controllers/agent_controller.h" /* rpc_agent_set_boot_context */
 #include "views/wallet_gui.h"           /* -gui launch */
-#include "services/chain_tip_watchdog.h" /* #8: self-respawn when off-systemd */
-#include "util/supervisor_backstop.h"   /* Pillar 7: self-respawn on a frozen
-                                          * supervisor sweep, off-systemd */
+#include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
 #include "util/util.h"                  /* ParseParameters */
-#include "util/sd_notify.h"             /* #8: detect NOTIFY_SOCKET */
-#include "platform/os_proc.h"           /* os_proc_exe_path (self-respawn exe) */
+#include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,11 +43,6 @@
  * ════════════════════════════════════════════════════════════════ */
 
 volatile sig_atomic_t g_shutdown_requested = 0;
-
-/* #8 — saved argv for in-process self-respawn (off-systemd liveness recovery).
- * Captured at the top of node mode (after the one-shot sub-modes return), used
- * only by the self-respawn execv after a clean app_shutdown. */
-static char **g_saved_argv = NULL;
 
 /* Alarm-based shutdown watchdog. Async-signal-safe.
  * Previous implementation used pthread_create from the signal handler
@@ -335,8 +327,11 @@ int main(int argc, char **argv)
                                ctx.https_port, ctx.fs_port);
 
     /* #8 — capture argv for a possible in-process self-respawn (the watchdog
-     * sets the respawn flag for a genuine-liveness stall when off-systemd). */
-    g_saved_argv = argv;
+     * sets the respawn flag for a genuine-liveness stall when off-systemd).
+     * The decision + re-exec live in config/src/boot_self_respawn.c so every
+     * shutdown exit point (here AND the straggler-guard _exit in
+     * boot_services_shutdown.c) honors an armed request identically. */
+    boot_self_respawn_set_argv(argv);
 
     /* ONE preflight naming ALL unmet -mint-anchor producer preconditions
      * upfront (config/src/boot_mint_anchor_preflight.c), BEFORE app_init
@@ -482,39 +477,23 @@ int main(int argc, char **argv)
 
     if (show_metrics) app_stop_metrics();
 
-    /* #8 — S7: if the tip-watchdog requested a self-respawn (genuine-liveness
-     * stall with NO systemd notify socket), shut down cleanly and then re-exec
-     * this binary in-process so liveness recovery does not depend on
-     * Restart=always. Under systemd the flag is never set (sd_notify_is_active
-     * was true), so this is a no-op there and the normal exit happens. The
-     * bounded restart budget persisted in progress.kv is reloaded by the fresh
-     * boot, so self-respawn is bounded exactly like a systemd restart and
-     * cannot loop unbounded.
+    /* #8 — S7 / Pillar 7: if the chain-tip watchdog OR the supervisor backstop
+     * requested a self-respawn (genuine-liveness stall / frozen root sweep with
+     * NO systemd notify socket), shut down cleanly and then re-exec this binary
+     * in-process so liveness recovery does not depend on Restart=always. Under
+     * systemd the flags are never honored (sd_notify_is_active()==true), so
+     * boot_self_respawn_exec_or_return() is a no-op here and the normal exit
+     * happens. The bounded restart budget persisted in progress.kv is reloaded
+     * by the fresh boot, so self-respawn is bounded exactly like a systemd
+     * restart and cannot loop unbounded.
      *
-     * Pillar 7 — "supervise the supervisor": the independent backstop watcher
-     * (lib/util/src/supervisor_backstop.c) latches the SAME kind of flag when
-     * the root supervisor's sweep heartbeat freezes off-systemd (its on-
-     * systemd path instead just stops feeding boot_sd_watchdog's WATCHDOG=1
-     * ping, so systemd's own Restart=always recovers the unit — no re-exec
-     * needed there). Check both flags here so a frozen supervisor gets the
-     * exact same off-systemd recovery as a frozen chain tip. */
-    bool do_respawn = (chain_tip_watchdog_respawn_requested() ||
-                       supervisor_backstop_respawn_requested()) &&
-                      !sd_notify_is_active() && g_saved_argv;
+     * The decision + execv are centralized in config/src/boot_self_respawn.c
+     * so the straggler-guard _exit path in boot_services_shutdown.c (a
+     * background worker missed its join window; the destructive frees are
+     * skipped and the process exits early) honors an armed respawn the SAME
+     * way — an early exit there used to silently drop the request off-systemd,
+     * leaving the node DOWN. */
     app_shutdown();
-    if (do_respawn) {
-        char exe[4096];
-        if (os_proc_exe_path(exe, sizeof(exe))) {
-            fprintf(stderr,
-                "[main] self-respawn: re-exec %s (off-systemd liveness "
-                "recovery; bounded by the persisted restart budget)\n", exe);
-            fflush(NULL);
-            execv(exe, g_saved_argv);
-            /* execv only returns on error — fall through to a normal exit so a
-             * failed re-exec is at worst a one-time DOWN, never a busy loop. */
-            fprintf(stderr, "[main] self-respawn execv failed: %s — exiting "
-                "(not looping)\n", strerror(errno));
-        }
-    }
+    boot_self_respawn_exec_or_return();
     return 0;
 }

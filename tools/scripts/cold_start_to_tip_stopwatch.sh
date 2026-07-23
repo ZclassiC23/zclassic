@@ -88,6 +88,14 @@ ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
 # silently folding busy reads into "no forward progress" (see D6 / the
 # is_busy_response()/rpc_frontier() comment below).
 FRONTIER_BUSY_TIMEOUT_SECS="${ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS:-120}"
+# Bounded number of supervised self-respawns this harness will FOLLOW before
+# calling it a runaway (see the respawn-seam handling in the main loop). A
+# clean self-exit carrying a self_respawn_* exit-reason breadcrumb is the node
+# asking its supervisor (systemd Restart=always in production; THIS harness in
+# the drill) to relaunch it on the SAME datadir — e.g. to consume an
+# install-on-next-boot request. The node's own progress.kv restart budget
+# bounds this too; the harness cap is the belt-and-suspenders runaway stop.
+MAX_BOOTS="${ZCL_CS_MAX_BOOTS:-12}"
 
 # ── argv: --bin=PATH / --peer=H:P / --file-peer=H:P / --budget=N / --sample=N /
 #    --busy-timeout=N / --selftest, or bare positionals (bin, peer) for quick
@@ -128,6 +136,8 @@ last_network_tip="-1"
 last_blocker_ids="-"
 last_blocker_count="0"
 busy_streak_start=0
+boots=1
+last_respawn_reason=""
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr '\n' ' '
@@ -149,6 +159,34 @@ json_number_or_null() {
 # instead of reading it as hstar=-1 or a silent empty.
 is_busy_response() {
     printf '%s' "$1" | grep -qE '"retryable"[[:space:]]*:[[:space:]]*true'
+}
+
+# is_self_respawn_reason — true iff the given boot-exit-reason.v1 `reason` value
+# is a supervised self-respawn request (self_respawn_tip_watchdog /
+# self_respawn_supervisor_backstop / self_respawn_both — see
+# lib/util/include/util/shutdown_stagewatch.h). The node writes this breadcrumb
+# EARLY in its clean shutdown (fsync + atomic rename, before any teardown
+# stage) when the chain-tip watchdog, the supervisor backstop, or the
+# checkpoint-bundle install-ready condition asked to be relaunched. A clean
+# exit carrying it means "bring me back on the SAME datadir" — exactly what
+# systemd Restart=always does in production; here THIS harness is the
+# supervisor. Anything else (operator_or_external, empty, or no breadcrumb at
+# all after a crash) is NOT a respawn request and is a real death.
+is_self_respawn_reason() {
+    case "${1:-}" in
+        self_respawn_*) return 0 ;;
+        *)              return 1 ;;
+    esac
+}
+
+# read_exit_reason — extract the `reason=` value from the node's
+# <datadir>/boot-exit-reason.v1 breadcrumb, or print nothing if absent. See the
+# writer shutdown_stagewatch_write_exit_reason() (magic=ZCLEXITRSN, version=1,
+# reason=<name>, ts=<unix>).
+read_exit_reason() {
+    local f="$DATADIR/boot-exit-reason.v1"
+    [ -f "$f" ] || return 0
+    sed -n 's/^reason=\(.*\)$/\1/p' "$f" 2>/dev/null | tail -1
 }
 
 # --selftest: hermetic classification self-check for is_busy_response() /
@@ -175,6 +213,15 @@ if [ "$SELFTEST" = "1" ]; then
     is_busy_response "";               st_check "empty response NOT recognized as busy" 1 $?
     printf '%s' "$st_good_json" | grep -q '"hstar"'; st_check "good fixture has hstar field" 0 $?
     printf '%s' "$st_busy_json" | grep -q '"hstar"'; st_check "busy fixture has NO hstar field (would retry, not misread as -1)" 1 $?
+
+    # Exit-reason classification: a self_respawn_* breadcrumb means "relaunch
+    # me" (the harness follows it); everything else is a real death.
+    is_self_respawn_reason "self_respawn_tip_watchdog";        st_check "tip-watchdog respawn IS a respawn request" 0 $?
+    is_self_respawn_reason "self_respawn_supervisor_backstop"; st_check "backstop respawn IS a respawn request" 0 $?
+    is_self_respawn_reason "self_respawn_both";                st_check "both-respawn IS a respawn request" 0 $?
+    is_self_respawn_reason "operator_or_external";             st_check "operator/external exit is NOT a respawn request" 1 $?
+    is_self_respawn_reason "";                                 st_check "empty/absent breadcrumb is NOT a respawn request (crash class)" 1 $?
+    is_self_respawn_reason "self_respawn";                     st_check "bare 'self_respawn' (no suffix) is NOT a known respawn reason" 1 $?
 
     if [ "$st_fail" = 0 ]; then
         echo "cold-start-wipe-stopwatch: --selftest PASS"
@@ -257,6 +304,8 @@ write_artifact() {
         printf '  "reason": %s,\n' "$(json_string "$reason")"
         printf '  "wall_clock_seconds": %s,\n' "$(json_number_or_null "$elapsed")"
         printf '  "budget_seconds": %s,\n' "$(json_number_or_null "$BUDGET")"
+        printf '  "boots": %s,\n' "$(json_number_or_null "$boots")"
+        printf '  "last_respawn_reason": %s,\n' "$(json_string "$last_respawn_reason")"
         printf '  "peer": %s,\n' "$(json_string "$PEER")"
         printf '  "file_peer": %s,\n' "$(json_string "$FILE_PEER")"
         printf '  "header_source": %s,\n' "$(json_string "$HEADER_SOURCE")"
@@ -363,11 +412,22 @@ node_args=(
 )
 [ -n "$FILE_PEER" ] && node_args+=( -fileservice="$FILE_PEER" )
 
-setsid env HOME="$ISO_HOME" "$NODE_BIN" \
-    "${node_args[@]}" \
-    >>"$DATADIR/node.log" 2>&1 &
-PID=$!
-echo "cold-start-wipe-stopwatch: launched pid=$PID"
+# launch_node — (re)start the node against the SAME fresh datadir with the SAME
+# args, appending to the SAME node.log, and set the watched PID. Called once for
+# the initial boot and once per followed self-respawn (boot 2..N): a supervised
+# respawn is defined as "relaunch me on the same datadir", so staging (bundle /
+# header import / install-on-next-boot request) is NEVER re-done here — it
+# persists in the datadir for the next boot to consume. Mirrors what systemd
+# Restart=always does to the live unit.
+launch_node() {
+    setsid env HOME="$ISO_HOME" "$NODE_BIN" \
+        "${node_args[@]}" \
+        >>"$DATADIR/node.log" 2>&1 &
+    PID=$!
+}
+
+launch_node
+echo "cold-start-wipe-stopwatch: launched pid=$PID (boot $boots)"
 
 rpc() { "$NODE_BIN" -rpcport=$RPC -datadir="$DATADIR" "$@" 2>/dev/null; }
 
@@ -430,9 +490,41 @@ reached=0
 while :; do
     now=$(date +%s); elapsed=$((now - start))
     if ! kill -0 "$PID" 2>/dev/null; then
-        echo "cold-start-wipe-stopwatch: node EXITED early (t=${elapsed}s) — log tail:"
+        # The watched PID is gone. Distinguish a SUPERVISED SELF-RESPAWN (a
+        # clean exit that wrote a self_respawn_* exit-reason breadcrumb — the
+        # node asking to be relaunched on the same datadir, e.g. to consume an
+        # install-on-next-boot request) from a REAL death (crash / no
+        # breadcrumb / an unexpected operator_or_external exit nobody asked
+        # for). Reading the breadcrumb — not the exit code — is authoritative:
+        # it is written+fsync'd EARLY in the node's clean shutdown, so it is
+        # already durable by the time the process actually exits ~seconds
+        # later. (If the node's own in-process execv re-exec HELD, the PID
+        # would never have died and we would not be here — this follows the
+        # early-_exit path that bypasses that re-exec off-systemd.)
+        wait "$PID" 2>/dev/null; node_ec=$?
+        reason="$(read_exit_reason)"
+        if is_self_respawn_reason "$reason"; then
+            last_respawn_reason="$reason"
+            if [ "$boots" -ge "$MAX_BOOTS" ] 2>/dev/null; then
+                echo "cold-start-wipe-stopwatch: node EXITED early (t=${elapsed}s) — log tail:"
+                tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
+                die "self-respawn budget exhausted: followed $boots boots (>= max $MAX_BOOTS), last reason=$reason — the node keeps asking to respawn without reaching tip (runaway)"
+            fi
+            # Consume the breadcrumb so a subsequent crash (which writes NO new
+            # breadcrumb) can never be mis-read as another respawn request via
+            # this now-stale one. Then relaunch on the SAME datadir, keeping the
+            # wall clock (start) running across boots.
+            rm -f "$DATADIR/boot-exit-reason.v1" 2>/dev/null || true
+            boots=$((boots + 1))
+            echo "cold-start-wipe-stopwatch: FOLLOWED self-respawn (reason=$reason ec=$node_ec) — relaunching boot $boots on same datadir (t=${elapsed}s, wall clock continues)"
+            launch_node
+            echo "cold-start-wipe-stopwatch: launched pid=$PID (boot $boots)"
+            sleep "$SAMPLE_SECS"
+            continue
+        fi
+        echo "cold-start-wipe-stopwatch: node EXITED early (t=${elapsed}s, ec=$node_ec, boots=$boots) — log tail:"
         tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
-        die "node process died before reaching network_tip"
+        die "node process died before reaching network_tip (exit_reason=${reason:-<none: crash or no breadcrumb>} ec=$node_ec boots=$boots)"
     fi
 
     fj="$(rpc_frontier)"
@@ -496,10 +588,16 @@ done
 
 now=$(date +%s); elapsed=$((now - start))
 
+# BOOTS=<n> is the total number of node launches this run spanned (1 = no
+# respawn; >1 = the harness FOLLOWED that many supervised self-respawns across
+# the single wiped datadir, total wall clock counted across all of them). The
+# recorder folds it into the durable ledger line.
+echo "BOOTS=$boots"
+
 if [ "$reached" = 1 ]; then
     echo "WALL_CLOCK_SECONDS=$elapsed"
-    echo "=== cold-start-wipe-stopwatch: PASS — H* reached network_tip=$last_network_tip in ${elapsed}s (budget ${BUDGET}s) ==="
-    write_artifact "pass" 0 "wiped datadir reached network_tip within budget"
+    echo "=== cold-start-wipe-stopwatch: PASS — H* reached network_tip=$last_network_tip in ${elapsed}s across $boots boot(s) (budget ${BUDGET}s) ==="
+    write_artifact "pass" 0 "wiped datadir reached network_tip within budget across $boots boot(s)"
     exit 0
 fi
 
@@ -510,8 +608,8 @@ if [ -n "$first_hstar" ] && [ "$max_hstar" -gt "$first_hstar" ] 2>/dev/null; the
 fi
 
 if [ "$climbed" = 1 ]; then
-    echo "=== cold-start-wipe-stopwatch: SEAM — H* climbed ($first_hstar -> $max_hstar) but did not reach network_tip=$last_network_tip within ${BUDGET}s ==="
-    write_artifact "seam" 3 "H* made forward progress but did not catch network_tip within budget"
+    echo "=== cold-start-wipe-stopwatch: SEAM — H* climbed ($first_hstar -> $max_hstar) across $boots boot(s) but did not reach network_tip=$last_network_tip within ${BUDGET}s ==="
+    write_artifact "seam" 3 "H* made forward progress across $boots boot(s) but did not catch network_tip within budget"
     exit 3
 fi
 
