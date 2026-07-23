@@ -273,6 +273,69 @@ static int test_code_capsule_static_id_is_exact(void)
     return failures;
 }
 
+static int test_code_change_plan_symbol(void)
+{
+    int failures = 0;
+    TEST("code_change_plan: exact stable symbol yields bounded read/edit/test plan") {
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "name",
+            "fn:static:app/models/src/app_event.c:bytes_nonzero");
+        struct zcl_command_request request = {
+            .input = &input, .view = "normal",
+            .invoked_name = "code.change-plan",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.code_change_plan.v1");
+        zcl_native_handle_code_change_plan(&request, &reply);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "resolution")),
+                      "exact_stable_id");
+        ASSERT(json_get_bool(json_get(&reply.data, "symbol_found")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "symbol_id")),
+            "fn:static:app/models/src/app_event.c:bytes_nonzero");
+        const struct json_value *read = json_get(&reply.data, "read");
+        ASSERT(read && read->type == JSON_ARR && read->num_children > 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&read->children[0], "path")),
+                      "app/models/src/app_event.c");
+        const struct json_value *tests = json_get(&reply.data, "test_groups");
+        ASSERT(tests && tests->type == JSON_ARR && tests->num_children > 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_code_change_plan_patch(void)
+{
+    int failures = 0;
+    TEST("code_change_plan: unified patch extracts exact bounded paths") {
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "patch",
+            "diff --git a/lib/json/src/json.c b/lib/json/src/json.c\n"
+            "--- a/lib/json/src/json.c\n+++ b/lib/json/src/json.c\n@@ -1 +1 @@\n");
+        struct zcl_command_request request = {
+            .input = &input, .view = "normal",
+            .invoked_name = "code.change-plan",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.code_change_plan.v1");
+        zcl_native_handle_code_change_plan(&request, &reply);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "resolution")),
+                      "exact_patch_paths");
+        const struct json_value *edit = json_get(&reply.data, "edit");
+        ASSERT(edit && edit->type == JSON_ARR && edit->num_children == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&edit->children[0], "path")),
+                      "lib/json/src/json.c");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 4: budget-shrink — a high-fan-in symbol still fits, reports drops ── */
 static int test_code_capsule_budget_shrink(void)
 {
@@ -333,6 +396,8 @@ int test_code_capsule(void)
     failures += test_code_capsule_golden_symbol();
     failures += test_code_capsule_commands_join();
     failures += test_code_capsule_static_id_is_exact();
+    failures += test_code_change_plan_symbol();
+    failures += test_code_change_plan_patch();
     failures += test_code_capsule_budget_shrink();
     return failures;
 }

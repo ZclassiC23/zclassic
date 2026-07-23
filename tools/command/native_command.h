@@ -144,6 +144,9 @@ void zcl_native_handle_code_sym(
 void zcl_native_handle_code_capsule(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_code_change_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_code_refs(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

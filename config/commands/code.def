@@ -129,6 +129,24 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_capsule)
 
 ZCL_COMMAND_READY_READ(
+    "code.change-plan", "code", "",
+    "Turn one symbol, intent, or patch into a bounded edit and proof plan",
+    "A small evidence-labelled plan of files to read/edit, boundaries to "
+    "avoid, affected compilation, and focused tests. Stable symbol ids resolve "
+    "exactly; intent resolution is explicitly heuristic; patch paths are read "
+    "from bounded unified-diff headers.", 0,
+    "code,change,plan,edit,compile,test,impact", "zcl.code_change_plan_input.v1",
+    "zcl.code_change_plan.v1", "name,symbol,intent,patch", "name",
+    "zclassic23 code change-plan codeindex_open",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_change_plan)
+
+ZCL_COMMAND_READY_READ(
     "code.refs", "code", "",
     "List bounded call sites and references to one symbol",
     "Call sites and references to one symbol from the code index, capped by "
