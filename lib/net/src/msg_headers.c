@@ -466,58 +466,68 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                                       &hash_stop, mp->params);
     block_locator_free(&locator);
 
-    /* Count headers to send.
+    /* Bound the reply by header count AND by bytes.
      *
-     * Legacy ZClassic peers (MagicBean / pre-ZCL23) cap inbound headers
-     * at MAX_HEADERS_RESULTS=160 and ban senders that exceed it
-     * (Misbehaving +20 → disconnect). When we serve a legacy peer with a
-     * larger batch, we get banned mid-handshake. The bug was visible on
-     * the loopback peer at 127.0.0.1:8034: zclassicd's debug.log shows
-     * "ProcessMessages(headers, 1088003 bytes) FAILED" followed by
-     * "Misbehaving: 127.0.0.1:<port> (0 -> 20)" right after our version.
-     * ZCL23 peers carry NODE_ZCL23 and accept up to 2000 per our own
-     * limit at line :237. */
+     * Count: legacy ZClassic peers (MagicBean / pre-ZCL23) cap inbound headers
+     * at MAX_HEADERS_RESULTS=160 and ban senders that exceed it (Misbehaving
+     * +20 → disconnect). Serving a legacy peer a larger batch gets us banned
+     * mid-handshake (zclassicd's debug.log: "ProcessMessages(headers, 1088003
+     * bytes) FAILED" then "Misbehaving: 127.0.0.1:<port> (0 -> 20)"). ZCL23
+     * peers carry NODE_ZCL23 and accept up to 2000.
+     *
+     * Bytes: ~2000 Equihash headers (~1.5 KB each with the 1344-byte solution)
+     * serialize to ~2.9 MB, over the 2 MiB MAX_PROTOCOL_MESSAGE_LENGTH wire cap
+     * — the receiver drops the whole oversized reply and never learns our tip.
+     * getheaders_try_append_header() stops the batch at the byte budget, so we
+     * emit exactly the count that fits under the cap. */
     const int max_headers = peer_supports_fast_sync(node->services) ? 2000 : 160;
+    struct byte_stream body;
+    stream_init(&body, 65536);
     int count = 0;
-    struct block_index *count_iter = iter;
 
-    while (count_iter && count < max_headers) {
-        if (!headers_index_header_servable(mp, count_iter, NULL)) {
-            struct block_index *parent = count_iter->pprev;
-            count_iter = parent ?
-                headers_next_servable_successor(mp, parent) : NULL;
+    for (struct block_index *it = iter; it && count < max_headers; ) {
+        struct block_header hdr;
+        if (!headers_index_header_servable(mp, it, &hdr)) {
+            struct block_index *parent = it->pprev;
+            it = parent ? headers_next_servable_successor(mp, parent) : NULL;
             continue;
         }
+        if (!getheaders_try_append_header(&body, &hdr))
+            break;  /* next header would overflow the wire cap */
         count++;
-        if (!uint256_is_null(&hash_stop) && count_iter->phashBlock &&
-            uint256_eq(count_iter->phashBlock, &hash_stop))
+        if (!uint256_is_null(&hash_stop) && it->phashBlock &&
+            uint256_eq(it->phashBlock, &hash_stop))
             break;
-        count_iter = headers_next_servable_successor(mp, count_iter);
+        it = headers_next_servable_successor(mp, it);
     }
 
     struct byte_stream headers;
-    stream_init(&headers, 4096);
+    stream_init(&headers, body.size + 16);
     stream_write_compact_size(&headers, (uint64_t)count);
-
-    for (int i = 0; i < count && iter; ) {
-        struct block_header hdr;
-        if (!headers_index_header_servable(mp, iter, &hdr)) {
-            struct block_index *parent = iter->pprev;
-            iter = parent ? headers_next_servable_successor(mp, parent)
-                          : NULL;
-            continue;
-        }
-
-        block_header_serialize(&hdr, &headers);
-        stream_write_compact_size(&headers, 0);
-        i++;
-        iter = headers_next_servable_successor(mp, iter);
-    }
+    stream_write(&headers, body.data, body.size);
+    stream_free(&body);
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, headers.data, headers.size);
     p2p_node_end_message(node);
     stream_free(&headers);
+    return true;
+}
+
+/* See net/msg_internal.h. */
+bool getheaders_try_append_header(struct byte_stream *body,
+                                  const struct block_header *hdr)
+{
+    size_t before = body->size;
+    block_header_serialize(hdr, body);
+    stream_write_compact_size(body, 0);  /* per-header tx count = 0 */
+    /* Reserve headroom for the compact_size(count) prefix the caller writes
+     * ahead of `body` (≤3 bytes for count ≤ 2000; 16 is generous). */
+    if (body->error ||
+        body->size + 16 > (size_t)MAX_PROTOCOL_MESSAGE_LENGTH) {
+        body->size = before;
+        return false;
+    }
     return true;
 }
 
