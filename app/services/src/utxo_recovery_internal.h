@@ -75,6 +75,15 @@ bool utxo_recovery_header_frontier(int32_t *out_h);
  * its CSR tip promotions on it too. Implemented in
  * utxo_recovery_frontier_gate.c. */
 
+/* Boot-restore glue (utxo_recovery_frontier_gate.c): if `tip` is a detached
+ * island, run utxo_recovery_relink_scrambled_ancestry and, on a FIXED verdict,
+ * durably re-save the flat block index. No-op (one bounded gate walk) when the
+ * tip is already trust-rooted. Lives in the gate TU (not restore.c) purely to
+ * keep utxo_recovery_restore.c under the E1 file-size ceiling. */
+struct utxo_recovery_ctx;
+void utxo_recovery_relink_island_if_present(struct utxo_recovery_ctx *ctx,
+                                            struct block_index *tip);
+
 /* INVARIANT A GATE — never INSTALL a tip above what the validated header
  * log can DERIVE. Returns the candidate itself (no clamp needed, or
  * fail-open with no frontier evidence), the hash-linked ancestor at the

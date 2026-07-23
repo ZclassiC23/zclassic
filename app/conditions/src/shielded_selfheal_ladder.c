@@ -28,6 +28,9 @@
 #include "conditions/shielded_selfheal_ladder.h"
 
 #include "conditions/sapling_anchor_frontier_unavailable.h" /* shielded_selfheal_* + enum */
+#include "conditions/checkpoint_header_solution_repair.h" /* solution-available gate */
+#include "chain/checkpoints.h"                             /* get_sha3_utxo_checkpoint */
+#include "core/uint256.h"
 #include "config/boot.h"
 #include "config/consensus_state_install_runtime.h"
 #include "config/runtime.h"
@@ -318,6 +321,36 @@ enum condition_remedy_result shielded_selfheal_run_named_remedy(void)
     const char *datadir = agent_runtime_context_datadir();
     if (datadir && datadir[0]) {
         char *bundle = boot_autodetect_consensus_bundle(datadir);
+        /* Gate on the checkpoint header's Equihash solution being durably
+         * available before arming: boot_install_bundle_consume burns
+         * BOOT_INSTALL_BUNDLE_MAX BEFORE the install with no refund on a
+         * solutionless retriable defer, so 3 deferred boots exhaust the budget and
+         * the request is never re-armed (cure permanently dead). Mirror
+         * checkpoint_bundle_install_ready's gate — the sibling
+         * checkpoint_header_solution_repair peer-fetches + persists the solution
+         * first. This ladder is disabled on '-COPY-' datadirs, so the burn is
+         * INVISIBLE to copy-proof and can only manifest live. */
+        if (bundle) {
+            const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+            bool solution_ready = false;
+            if (cp) {
+                struct uint256 cph;
+                memcpy(cph.data, cp->block_hash, 32);
+                solution_ready =
+                    checkpoint_header_solution_available(cp->height, &cph);
+            }
+            if (!solution_ready) {
+                LOG_INFO(SSL_SUBSYS,
+                         "[condition:%s] Rung B: staged bundle %s but the "
+                         "checkpoint header solution is not yet durable — NOT "
+                         "arming (would burn the bounded install budget on a "
+                         "solutionless defer); waiting on "
+                         "checkpoint_header_solution_repair",
+                         SSL_COND_NAME, bundle);
+                free(bundle);
+                bundle = NULL;
+            }
+        }
         if (bundle) {
             int armed = boot_install_bundle_request(datadir, bundle);
             LOG_WARN(SSL_SUBSYS,

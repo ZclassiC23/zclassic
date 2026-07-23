@@ -18,6 +18,7 @@
 #include "test/test_helpers.h"
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
+#include "chain/checkpoints.h"
 #include "config/consensus_state_install_runtime.h"
 #include "controllers/agent_controller.h"
 #include "controllers/shielded_gap_remedy_controller.h"
@@ -529,14 +530,22 @@ int test_sapling_anchor_frontier_condition(void)
     }
 
     /* (H) Rung B ARMS the durable install-on-next-boot request when a
-     * ROM-matching bundle is present — hermetic against the fixture's own temp
-     * datadir (never the live node). Drives the REAL remedy path: NULLIFIER_ONLY
-     * gap + no open node.db (Rung A skipped) + a bundle present -> Rung B arms. */
+     * ROM-matching bundle is present AND the checkpoint header solution is
+     * durably available — hermetic against the fixture's own temp datadir (never
+     * the live node). Drives the REAL remedy path: NULLIFIER_ONLY gap + no open
+     * node.db (Rung A skipped) + a bundle present -> Rung B arms.
+     *
+     * NEW CONTRACT (solution gate): Rung B must NOT burn the bounded install
+     * budget on a solutionless defer — it only arms once
+     * checkpoint_header_solution_available is true. Seed a validate_headers_log
+     * PASS row at the compiled checkpoint so the gated arm proceeds; the
+     * un-seeded case is proven in (H-gate) below. */
     {
         struct safu_engine_fixture fx;
         bool ok = safu_engine_setup(&fx, "rungB");
         SAFC_CHECK("rungB fixture setup", ok);
-        if (ok) {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (ok && cp) {
             char bdir[320];
             snprintf(bdir, sizeof(bdir), "%s/bundles", fx.dir);
             mkdir(bdir, 0700);
@@ -544,6 +553,23 @@ int test_sapling_anchor_frontier_condition(void)
             snprintf(bpath, sizeof(bpath), "%s/complete-state.sqlite", bdir);
             FILE *f = fopen(bpath, "wb");
             if (f) { fputs("SQLite format 3\0stub-bundle", f); fclose(f); }
+
+            /* Make the checkpoint header solution durably available. */
+            sqlite3 *db = progress_store_db();
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS validate_headers_log("
+                "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER "
+                "NOT NULL, fail_reason TEXT, validated_at INTEGER);",
+                NULL, NULL, NULL);
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "INSERT OR REPLACE INTO validate_headers_log(height,hash,ok) "
+                    "VALUES(?,?,1)", -1, &st, NULL) == SQLITE_OK) {
+                sqlite3_bind_int64(st, 1, cp->height);
+                sqlite3_bind_blob(st, 2, cp->block_hash, 32, SQLITE_STATIC);
+                sqlite3_step(st);
+                sqlite3_finalize(st);
+            }
 
             SAFC_CHECK("rungB: no install request pending before the heal",
                        !boot_install_bundle_pending(fx.dir));
@@ -556,8 +582,42 @@ int test_sapling_anchor_frontier_condition(void)
 
             SAFC_CHECK("rungB: remedy ran exactly once",
                        sapling_anchor_frontier_test_remedy_calls() == 1);
-            SAFC_CHECK("rungB: install-on-next-boot request ARMED (hermetic)",
+            SAFC_CHECK("rungB: install-on-next-boot request ARMED with the "
+                       "checkpoint solution present",
                        boot_install_bundle_pending(fx.dir));
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* (H-gate) Rung B does NOT arm the budgeted install when the checkpoint
+     * header solution is ABSENT — the solution gate that stops
+     * boot_install_bundle_consume from burning BOOT_INSTALL_BUNDLE_MAX on
+     * solutionless retriable defers (a live-only, copy-proof-invisible cure
+     * death). Same fixture as (H) but no validate_headers_log seed. */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "rungB_gate");
+        SAFC_CHECK("rungB-gate fixture setup", ok);
+        if (ok) {
+            char bdir[320];
+            snprintf(bdir, sizeof(bdir), "%s/bundles", fx.dir);
+            mkdir(bdir, 0700);
+            char bpath[400];
+            snprintf(bpath, sizeof(bpath), "%s/complete-state.sqlite", bdir);
+            FILE *f = fopen(bpath, "wb");
+            if (f) { fputs("SQLite format 3\0stub-bundle", f); fclose(f); }
+
+            struct blocker_record r;
+            blocker_init(&r, UTXO_APPLY_NF_GAP_BLOCKER_ID, "utxo_apply",
+                        BLOCKER_PERMANENT, "test: nullifier history gap");
+            blocker_set(&r);
+            condition_engine_tick();   /* detect + remedy: Rung B gated off */
+
+            SAFC_CHECK("rungB-gate: remedy ran exactly once",
+                       sapling_anchor_frontier_test_remedy_calls() == 1);
+            SAFC_CHECK("rungB-gate: install NOT armed without the checkpoint "
+                       "solution (budget not burned)",
+                       !boot_install_bundle_pending(fx.dir));
         }
         safu_engine_teardown(&fx);
     }

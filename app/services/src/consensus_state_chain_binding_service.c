@@ -549,7 +549,12 @@ struct zcl_result consensus_state_chain_evidence_build(
         manifest, &observation);
     if (!decision.ok) {
         progress_store_tx_unlock();
-        return ZCL_ERR(-26, "chain evidence refused: %s", decision.message);
+        /* Propagate the decide CODE (-3..-11), not a generic wrapper: the install
+         * runtime classifies retriable-vs-.fail from it (a -3 frontier-durability
+         * refusal is a solution-independent node-side deferral that must never
+         * .fail a byte-good bundle). The specific reason stays in the message. */
+        return ZCL_ERR(decision.code, "chain evidence refused: %s",
+                       decision.message);
     }
     progress_store_tx_unlock();
 
