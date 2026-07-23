@@ -69,6 +69,18 @@ bool disk_block_io_deferred_sync_enabled(void);
  * (returns true) when nothing is pending — cheap to call on every commit. */
 bool disk_block_io_sync_pending(void);
 
+/* ── Scoped read fd cache (pread fast path) ───────────────────────────
+ * read_block_from_disk_pread*() open()+close()es the blk*.dat file per block.
+ * Between enter() and exit() (thread-local), the caller's thread reuses the
+ * last-opened read fd when consecutive reads hit the same file, saving the
+ * per-block open/close during a drain. Scope it ONLY around the reducer's
+ * forward-fold read loop, where blk*.dat files are append-only and never
+ * unlinked/recreated on the reading thread; exit() closes the cached fd. Every
+ * reader outside the scope keeps the stateless open/close so a file replaced at
+ * a reused path is never read through a stale fd. */
+void disk_block_io_read_fd_cache_enter(void);
+void disk_block_io_read_fd_cache_exit(void);
+
 bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
                           const char *datadir);
 

@@ -562,6 +562,70 @@ static int test_deferred_sync_byte_identical(void)
     return failures;
 }
 
+/* Between enter() and exit() the reader reuses one fd across same-file reads.
+ * Interleaving two blocks in the SAME blk file at different offsets must still
+ * return each block's own bytes (pread is positional); after exit() the fd is
+ * closed and the stateless path resumes. */
+static int test_scoped_read_fd_cache(void)
+{
+    int failures = 0;
+    char tmpdir[256];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+
+    TEST("read fd cache: scoped reuse returns correct interleaved blocks") {
+        struct disk_block_pos pa, pb;
+        disk_block_pos_init(&pa);
+        disk_block_pos_init(&pb);
+        if (!write_test_block(tmpdir, &pa, 111111) ||
+            !write_test_block(tmpdir, &pb, 222222)) {
+            printf("FAIL (write)\n"); failures++; goto _test_next;
+        }
+        if (pa.nFile != pb.nFile) {
+            printf("FAIL (blocks not colocated file a=%d b=%d)\n",
+                   pa.nFile, pb.nFile);
+            failures++; goto _test_next;
+        }
+
+        disk_block_io_read_fd_cache_enter();
+        bool ok = true;
+        for (int i = 0; i < 8 && ok; i++) {
+            struct block a, b;
+            block_init(&a);
+            block_init(&b);
+            if (!read_block_from_disk_pread(&a, &pa, tmpdir) ||
+                !read_block_from_disk_pread(&b, &pb, tmpdir) ||
+                a.header.nTime != 111111 || b.header.nTime != 222222)
+                ok = false;
+            block_free(&a);
+            block_free(&b);
+        }
+        disk_block_io_read_fd_cache_exit();
+        if (!ok) {
+            printf("FAIL (interleaved cached reads returned wrong block)\n");
+            failures++; goto _test_next;
+        }
+
+        /* After exit the cache is off and its fd closed: a normal read works. */
+        struct block c;
+        block_init(&c);
+        if (!read_block_from_disk_pread(&c, &pa, tmpdir)) {
+            printf("FAIL (post-exit read)\n");
+            block_free(&c);
+            failures++; goto _test_next;
+        }
+        bool post_ok = c.header.nTime == 111111;
+        block_free(&c);
+        if (!post_ok) {
+            printf("FAIL (post-exit wrong block)\n"); failures++; goto _test_next;
+        }
+        printf("OK\n");
+    }
+    _test_next:
+    disk_block_io_read_fd_cache_exit();  /* never leak enabled state */
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_disk_block_io(void)
@@ -577,5 +641,6 @@ int test_disk_block_io(void)
     failures += test_set_have_data_verified();
     failures += test_write_allocates_append_position();
     failures += test_deferred_sync_byte_identical();
+    failures += test_scoped_read_fd_cache();
     return failures;
 }

@@ -349,12 +349,17 @@ int body_persist_stage_drain(int max_steps)
             progress_store_tx_unlock();
     }
     int advanced = 0;
+    /* Reuse one read fd across this drain's tail reads (append-only forward
+     * fold on this thread); exit() closes it. Reads below the sealed frontier
+     * take the mmap segment and never reach the pread fd. */
+    disk_block_io_read_fd_cache_enter();
     for (int i = 0; i < max_steps; i++) {
         job_result_t r = body_persist_stage_step_once();
         if (r != JOB_ADVANCED)
             break;
         advanced++;
     }
+    disk_block_io_read_fd_cache_exit();
     if (batched) {
         (void)stage_batch_end(batch_db,
                               advanced > 0 || stage_batch_dirty());
