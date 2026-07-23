@@ -381,29 +381,28 @@ static void staged_stage_stall_escalation_apply(const char *dotted_name,
  * refold_cadence_active() is false, so this precedence check is trivially
  * correct — an offline from-anchor/genesis refold keeps its proven
  * 2000/250ms values untouched, and only when no refold is in progress does a
- * live catch-up (peers connected, gap >= threshold) get to raise the batch
- * to catchup_cadence's 500. Neither override touches the shared 2s tick
- * period. */
+ * live catch-up (peers connected, gap >= threshold) get to raise one-block
+ * stages to catchup_cadence's measured default. Neither override touches the
+ * shared 2s tick period. */
 static int stage_effective_batch(int normal_batch, int per_step_fanout)
 {
     int refold_batch = refold_cadence_drain_batch(normal_batch);
     if (refold_batch != normal_batch)
         return refold_batch;
     int catchup_batch = catchup_cadence_drain_batch(normal_batch);
-    /* Fan-out cap (A12): a stage whose step_once verifies per_step_fanout units
+    /* Fan-out containment (A12): a stage whose step_once verifies
+     * per_step_fanout units
      * of consensus work (validate_headers: VH_BATCH_SIZE Equihash solutions per
      * step) would, at an accelerated step count, run per_step_fanout * batch
      * verifications inside ONE commit held under progress_store_tx_lock —
      * stalling every other supervised child (incl. the dumpstate/status front
      * door) for the whole sweep (catchup_cadence.h:37-44 does not model this).
-     * Scale the accelerated target back down by the fan-out, never below the
-     * stage's own normal batch. No-op when the override is inactive
-     * (catchup_batch == normal_batch) or the stage does not fan out — the live
-     * hot path is left untouched. */
-    if (per_step_fanout > 1 && catchup_batch > normal_batch) {
-        int scaled = catchup_batch / per_step_fanout;
-        catchup_batch = scaled > normal_batch ? scaled : normal_batch;
-    }
+     * Keep such a stage at its proven normal batch; the catch-up optimization
+     * targets the one-block-per-step tail stages. No-op when the override is
+     * inactive (catchup_batch == normal_batch) or the stage does not fan out
+     * — the live hot path is left untouched. */
+    if (per_step_fanout > 1 && catchup_batch > normal_batch)
+        catchup_batch = normal_batch;
     return catchup_batch;
 }
 

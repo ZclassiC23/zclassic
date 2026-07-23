@@ -228,6 +228,42 @@ static inline bool stage_read_block(struct block *out,
                                  bi, datadir, out);
 }
 
+/* Acquire one immutable block view for a stage. Production readers pin the
+ * shared parse-cache entry; injected test readers keep their historical
+ * independently-owned block contract. No cache lock survives this call. */
+static inline bool stage_acquire_block_view(
+    struct block *owned, struct block_parse_handle *handle,
+    const struct block **view, bool *borrowed,
+    const struct block_index *bi, int height, const char *datadir,
+    stage_block_reader_fn injected, void *user)
+{
+    if (!owned || !handle || !view || !borrowed || !bi || !bi->phashBlock)
+        return false;
+    block_init(owned);
+    memset(handle, 0, sizeof(*handle));
+    *view = NULL;
+    *borrowed = injected == NULL;
+    bool ok = *borrowed
+        ? block_parse_cache_acquire((int32_t)height, bi->phashBlock->data,
+                                    bi, datadir, handle)
+        : injected(owned, bi, datadir, user);
+    if (!ok)
+        return false;
+    *view = *borrowed ? block_parse_handle_block(handle) : owned;
+    if (!*view && *borrowed)
+        block_parse_cache_release(handle);
+    return *view != NULL;
+}
+
+static inline void stage_release_block_view(
+    struct block *owned, struct block_parse_handle *handle, bool borrowed)
+{
+    if (borrowed)
+        block_parse_cache_release(handle);
+    else if (owned)
+        block_free(owned);
+}
+
 /* ── Durable upstream-log-row hole (silent-hold audit, lane/stall-taxonomy) ──
  *
  * Every stage's floor check reads an upstream stage's DURABLY persisted

@@ -365,23 +365,23 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         return block_apply_failure(c, next_h, "upstream_failed",
             upstream.ok != 1 ? "proof_validate" : "script_validate", NULL);
     }
-
-    struct block blk;
-    block_init(&blk);
-    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
+    struct block owned; struct block_parse_handle handle;
+    const struct block *blk = NULL; bool borrowed = false;
+    if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
+                                  bi, next_h, g_datadir, g_reader,
+                                  g_reader_user)) {
         utxo_apply_select_idle_note(next_h, UA_SELECT_IDLE_STAGE_READ_FAILED, bi);
-        block_free(&blk);
+        block_free(&owned);
         /* body_persist already verified this body — names a typed blocker (see stage_body_read_hold). */
         return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock, &g_ua_last_blocked_unix);
     }
     stage_body_read_hold_clear(STAGE_NAME);
-
     struct delta_summary summary;
-    utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
+    utxo_apply_compute_block_delta(blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
 
     /* REPLAY GATE (D2 count-and-continue, env-gated ZCL_REPLAY_COUNT_ONLY).
-     * compute_block_delta sets count_only_d2_skip ONLY in count-only mode when
+     * count_only_d2_skip is set ONLY in count-only mode when
      * the coinbase-maturity predicate fired (already logged+counted there).
      * STRICTLY read/log/continue: author NO coins, insert NO nullifiers,
      * persist NO inverse-delta, write NO utxo_apply_log row, and DO NOT take
@@ -394,7 +394,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (summary.count_only_d2_skip) {
         replay_count_only_note_block_replayed((uint32_t)next_h);
         free_delta(&summary);
-        block_free(&blk);
+        stage_release_block_view(&owned, &handle, borrowed);
         /* Advance the cursor WITHOUT authoring/sealing/minting: this is a
          * diagnostic walk over a copy, not a real apply. coins_applied_height
          * is intentionally NOT co-committed (no coins were written), so the
@@ -415,12 +415,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         enum utxo_apply_shielded_gate_result sg =
-            utxo_apply_shielded_history_gate(db, &blk, next_h, &summary);
+            utxo_apply_shielded_history_gate(db, blk, next_h, &summary);
         if (sg == UTXO_SHIELDED_GATE_ERROR) {
             ua_fatal_permanent_blocker(next_h,
                                        "shielded history gate store failure");
             free_delta(&summary);
-            block_free(&blk);
+            stage_release_block_view(&owned, &handle, borrowed);
             return JOB_FATAL;
         }
         if (sg == UTXO_SHIELDED_GATE_HOLD) {
@@ -430,18 +430,18 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                     ? 1 : 2,
                 bi->phashBlock);
             free_delta(&summary);
-            block_free(&blk);
+            stage_release_block_view(&owned, &handle, borrowed);
             return JOB_IDLE;
         }
     }
 
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        if (!utxo_apply_check_and_insert_nullifiers(db, &blk, next_h,
+        if (!utxo_apply_check_and_insert_nullifiers(db, blk, next_h,
                                                     &summary)) {
             ua_fatal_permanent_blocker(next_h,
                                        "nullifier_kv insert store failure");
             free_delta(&summary);
-            block_free(&blk);
+            stage_release_block_view(&owned, &handle, borrowed);
             return JOB_FATAL;
         }
     }
@@ -456,7 +456,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             ua_fatal_permanent_blocker(next_h,
                                        "coins_kv author store failure");
             free_delta(&summary);
-            block_free(&blk);
+            stage_release_block_view(&owned, &handle, borrowed);
             return JOB_FATAL;
         }
         /* Feed the batch-commit conservation invariant (a): this authored
@@ -475,7 +475,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             ua_fatal_permanent_blocker(next_h,
                                        "inverse-delta persist store failure");
             free_delta(&summary);
-            block_free(&blk);
+            stage_release_block_view(&owned, &handle, borrowed);
             return JOB_FATAL;
         }
     }
@@ -529,7 +529,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         ua_fatal_permanent_blocker(next_h,
                                    "utxo_apply_log insert store failure");
         free_delta(&summary);
-        block_free(&blk);
+        stage_release_block_view(&owned, &handle, borrowed);
         return JOB_FATAL;
     }
 
@@ -539,12 +539,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         uint8_t detail[36];
         memcpy(detail, summary.failure_detail, sizeof(detail));
         free_delta(&summary);
-        block_free(&blk);
+        stage_release_block_view(&owned, &handle, borrowed);
         return block_apply_failure(c, next_h, status, kind, detail);
     }
 
     free_delta(&summary);
-    block_free(&blk);
+    stage_release_block_view(&owned, &handle, borrowed);
 
     /* Co-commit the contiguous applied frontier = the SAME value written to
      * the stage cursor (cursor_in + 1), so coins_applied_height ==

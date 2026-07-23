@@ -432,6 +432,13 @@ void activation_request_connect(struct chain_activation_controller *ctl,
      * thread on every at-tip catch-up, so the guard-header's "never on the
      * live path" note does not hold for this chokepoint. */
     reducer_drive_enter();
+    /* This activation chokepoint drives the same multi-block fold as
+     * reducer_kick(), but cannot call reducer_kick() while ctl->mutex is held.
+     * Keep its crash-ordering scope identical: event/body bytes are deferred
+     * only until the stage-batch precommit hook has flushed them, before the
+     * cursor transaction commits.  Without this scope every event append
+     * performs its own fdatasync and dominates checkpoint-tail replay. */
+    reducer_enter_batched_body_sync();
     if (pblock) {
         struct uint256 block_hash;
         block_get_hash(pblock, &block_hash);
@@ -456,6 +463,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
             &ctl->ms->chain_active, &ctl->ms->map_block_index,
             ctl->ms->pindex_best_header, ctl->ms->pindex_best_header->nHeight);
     (void)reducer_drain_to_convergence();
+    reducer_exit_batched_body_sync();
     /* The reducer reports its verdict through the tip advance + the typed
      * behind-blocker (registered below by activation_eval_tip_blocker) —
      * there is no hard-failure bool to surface here, so `ok` stays true and

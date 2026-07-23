@@ -170,7 +170,7 @@ static int case_active_when_gap_exceeds_threshold(void)
     catchup_cadence_test_set_log_head_override(400);
 
     CC_CHECK("gap 600 >= threshold 500: active", catchup_cadence_active());
-    CC_CHECK("active: default batch 500",
+    CC_CHECK("active: measured default batch 2000",
              catchup_cadence_drain_batch(100) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
     CC_CHECK("active: default batch applies regardless of caller's arg",
              catchup_cadence_drain_batch(64) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
@@ -232,7 +232,7 @@ static int case_active_then_restore(void)
     catchup_cadence_test_set_log_head_override(400); /* gap = 600, active */
 
     CC_CHECK("restore: active before catch-up", catchup_cadence_active());
-    CC_CHECK("restore: batch 500 while active",
+    CC_CHECK("restore: measured batch while active",
              catchup_cadence_drain_batch(100) == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
     CC_CHECK("restore: tick period 1s while active",
              catchup_cadence_tick_period_us() ==
@@ -288,29 +288,23 @@ static int case_fanout_capped_under_catchup(void)
     catchup_cadence_test_set_log_head_override(0); /* gap = 100000, active */
     CC_CHECK("A12 active precondition", catchup_cadence_active());
 
-    /* A non-fanning stage IS accelerated to the full catch-up batch (500). */
+    /* A non-fanning stage is accelerated to the measured catch-up batch. */
     int nonfan = staged_sync_supervisor_test_effective_batch(100, 1);
-    CC_CHECK("A12 active: non-fanout stage accelerated to 500",
+    CC_CHECK("A12 active: non-fanout stage accelerated to measured default",
              nonfan == CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
 
-    /* A fanning stage (validate_headers) is CAPPED: its per-commit work
-     * (batch * VH_BATCH_SIZE) must stay ~baseline, not ~8x. Concretely the
-     * effective batch must never exceed the accelerated target / fan-out, and
-     * must not regress below the stage's own normal batch. */
+    /* A fanning stage (validate_headers) is not accelerated: its per-commit
+     * work (batch * VH_BATCH_SIZE) stays exactly at the proven baseline. */
     int fan = staged_sync_supervisor_test_effective_batch(
         VH_BATCH_PER_TICK, VH_BATCH_SIZE);
-    CC_CHECK("A12 active: fanout stage NOT raised to 500",
+    CC_CHECK("A12 active: fanout stage not raised to catch-up default",
              fan < CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH);
-    CC_CHECK("A12 active: fanout stage batch <= accel/fanout",
-             fan <= CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH / VH_BATCH_SIZE
-                    || fan == VH_BATCH_PER_TICK);
-    CC_CHECK("A12 active: fanout stage not below its normal batch",
-             fan >= VH_BATCH_PER_TICK);
-    /* The load-bearing property: per-commit Equihash volume stays the
-     * documented order of magnitude (baseline 512, NOT ~4000). */
-    CC_CHECK("A12 active: per-commit fanned work stays ~baseline order",
+    CC_CHECK("A12 active: fanout stage remains at normal batch",
+             fan == VH_BATCH_PER_TICK);
+    /* The load-bearing property: per-commit Equihash volume is unchanged. */
+    CC_CHECK("A12 active: per-commit fanned work stays at baseline",
              (long)fan * VH_BATCH_SIZE
-                 <= 2L * VH_BATCH_PER_TICK * VH_BATCH_SIZE);
+                 == (long)VH_BATCH_PER_TICK * VH_BATCH_SIZE);
 
     cc_cleanup();
     return failures;

@@ -9,7 +9,7 @@
  * ordinary node that fell behind (bodies already on disk, nothing to fetch
  * over P2P, purely reducer-bound) is hard-floored at 100/2s = ~50 blk/s no
  * matter how fast the disk/CPU actually are. This override lifts that floor
- * to 500/2s = ~250 blk/s ONLY while the node is genuinely far behind the
+ * to 2000/1s ONLY while the node is genuinely far behind the
  * network tip, without touching the shared 2s tick period (the supervisor is
  * single-threaded and shared across many domains — shortening the period
  * would starve everything else, unlike refold_cadence's period override,
@@ -35,13 +35,16 @@
  * normal mode MUST stay batch=<stage default>.
  *
  * Widening the per-drain batch only widens the commit window of the
- * existing per-batch SAVEPOINT/BEGIN IMMEDIATE (one COMMIT per 500 instead
+ * existing per-batch SAVEPOINT/BEGIN IMMEDIATE (one COMMIT per 2000 instead
  * of per 100); correctness is unchanged and a crash resumes idempotently
  * from the last durable cursor, same as always. The bounded risk is one
- * run_due_ticks() pass taking longer wall-clock while active:
- * Σ(500 * per-block cost) over the 4 tail stages, with utxo_apply the
- * slowest at ~0.2-1.4ms/block, so ~500 * ~1ms ~= 0.5s per stage — well
- * under the multi-minute quiet windows other supervisor domains tolerate.
+ * run_due_ticks() pass taking longer wall-clock while active. The 2000-block
+ * value is measured rather than projected: on the 2026-07-23 frozen C3
+ * corpus it processed 36,810 blocks in the same 360-second budget where the
+ * 500-block value processed 29,000 (+26.9%), with the slowest observed
+ * utxo_apply subphase taking 8.485s. Fan-out stages remain at their normal
+ * batch (stage_effective_batch) so this wider window applies only to stages
+ * whose step_once performs one block of work.
  *
  * TICK-PERIOD OVERRIDE — catchup_cadence_tick_period_us() — shortens the
  * PER-CHILD tick period for the eight staged-sync children ONLY, from the
@@ -67,7 +70,7 @@
  *
  * TUNABLE (only while active):
  *   ZCL_CATCHUP_GAP_THRESHOLD  blocks   default  500   clamp [1,100000000]
- *   ZCL_CATCHUP_DRAIN_BATCH    blocks   default  500   clamp [1,1000000]
+ *   ZCL_CATCHUP_DRAIN_BATCH    blocks   default 2000   clamp [1,1000000]
  *   ZCL_CATCHUP_TICK_MS        ms       default  1000  clamp [1000,2000]
  */
 
@@ -78,10 +81,8 @@
 #include <stdint.h>
 
 /* Accelerated-cadence defaults (used when active + the env var is unset).
- * 500 matches the already-shipped BODY_FETCH_BATCH_PER_TICK /
- * BODY_PERSIST_BATCH_PER_TICK / HEADER_ADMIT_BATCH_PER_TICK — not a new
- * magic number. */
-#define CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH 500
+ * 2000 is the measured C3 throughput winner documented above. */
+#define CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH 2000
 #define CATCHUP_CADENCE_DEFAULT_GAP_THRESHOLD 500
 #define CATCHUP_CADENCE_DEFAULT_TICK_MS 1000
 
@@ -94,7 +95,7 @@
 bool catchup_cadence_active(void);
 
 /* Per-stage drain batch. Returns `normal_batch` UNCHANGED when inactive;
- * when active, returns ZCL_CATCHUP_DRAIN_BATCH (default 500, clamped). */
+ * when active, returns ZCL_CATCHUP_DRAIN_BATCH (default 2000, clamped). */
 int catchup_cadence_drain_batch(int normal_batch);
 
 /* Per-child supervisor tick period in microseconds. Returns 0 when inactive

@@ -193,10 +193,13 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     char datadir[2048];
     GetDataDir(true, datadir, sizeof(datadir));
 
-    struct block blk;
-    block_init(&blk);
-    if (!stage_read_block(&blk, pindex_new, pindex_new->nHeight, datadir,
-                          NULL, NULL)) {
+    struct block owned;
+    struct block_parse_handle handle;
+    const struct block *blk = NULL;
+    bool borrowed = false;
+    if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
+                                  pindex_new, pindex_new->nHeight, datadir,
+                                  NULL, NULL)) {
         /* No on-disk body (HAVE_DATA absent / read failed). The body is read
          * back from disk, so a missing body is a benign skip — the tip still
          * advanced, only the derived side effects are deferred. The skip must
@@ -208,10 +211,10 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                  "body unreadable; wallet/mempool/MMR/MMB deferred",
                  pindex_new->nHeight,
                  (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
-        /* A partial deserialize can have allocated blk.vtx before the
+        /* A partial injected-reader deserialize can have allocated owned.vtx before the
          * read failed — the success path frees it at the bottom; this
          * early return must too. */
-        block_free(&blk);
+        block_free(&owned);
         return;
     }
 
@@ -230,11 +233,11 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * by the have_data_unreadable machinery, and comparing ITS coinbase
      * against OUR label would be a false splice signal. */
     if (pindex_new->nHeight >= 1 && pindex_new->phashBlock &&
-        blk.num_vtx > 0) {
+        blk->num_vtx > 0) {
         struct uint256 body_hash;
-        block_get_hash(&blk, &body_hash);
+        block_get_hash(blk, &body_hash);
         if (uint256_eq(&body_hash, pindex_new->phashBlock) &&
-            !check_block_coinbase_height_matches(&blk.vtx[0],
+            !check_block_coinbase_height_matches(&blk->vtx[0],
                                                  pindex_new->nHeight)) {
             char reason[160];
             snprintf(reason, sizeof(reason),
@@ -256,16 +259,17 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
         struct wallet *wallet = app_runtime_wallet();
         struct node_db *ndb = app_runtime_node_db();
         if (wallet) {
-            for (size_t i = 0; i < blk.num_vtx; i++) {
-                wallet_sync_transaction(wallet, &blk.vtx[i], pindex_new);
+            for (size_t i = 0; i < blk->num_vtx; i++) {
+                const struct transaction *tx = &blk->vtx[i];
+                wallet_sync_transaction(wallet, tx, pindex_new);
                 /* Trial-decrypt Sapling shielded outputs for our wallet */
-                if (blk.vtx[i].num_shielded_output > 0 &&
+                if (tx->num_shielded_output > 0 &&
                     wallet->sapling_keys.num_keys > 0) {
-                    struct transaction *tx =
-                        (struct transaction *)&blk.vtx[i];
-                    transaction_compute_hash(tx);
+                    struct uint256 txid;
+                    if (!transaction_hash_serialized(tx, &txid))
+                        continue;
                     size_t notes_before = wallet->num_sapling_notes;
-                    wallet_try_sapling_decrypt(wallet, tx, &tx->hash);
+                    wallet_try_sapling_decrypt(wallet, tx, &txid);
                     /* Persist newly discovered notes to SQLite. Snapshot the
                      * notes under the wallet lock first: iterating the live
                      * array here would race a concurrent note-append realloc
@@ -293,9 +297,8 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                     }
                 }
                 /* Mark spent nullifiers */
-                if (blk.vtx[i].num_shielded_spend > 0)
-                    wallet_mark_sapling_nullifiers_spent(
-                        wallet, (struct transaction *)&blk.vtx[i]);
+                if (tx->num_shielded_spend > 0)
+                    wallet_mark_sapling_nullifiers_spent(wallet, tx);
             }
             zcl_mutex_lock(&wallet->cs);
             wallet->best_block_height = pindex_new->nHeight;
@@ -308,7 +311,7 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
         struct tx_mempool *mempool = app_runtime_mempool();
         if (mempool)
             tx_mempool_remove_for_block(mempool,
-                blk.vtx, blk.num_vtx,
+                blk->vtx, blk->num_vtx,
                 (unsigned int)pindex_new->nHeight);
     }
 
@@ -419,5 +422,5 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * utxo_root_ladder_tripwire.h for the full contract. */
     utxo_root_ladder_tripwire_at_boundary(pindex_new->nHeight);
 
-    block_free(&blk);
+    stage_release_block_view(&owned, &handle, borrowed);
 }

@@ -308,10 +308,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             add_failure_counter(cached.first_failure_proof_type, NULL);
         stage_body_read_hold_clear(STAGE_NAME);
     } else {
-    struct block blk;
-    block_init(&blk);
-    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
-        block_free(&blk);
+    struct block owned;
+    struct block_parse_handle handle;
+    const struct block *blk = NULL;
+    bool borrowed = false;
+    if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
+                                  bi, next_h, g_datadir,
+                                  g_reader, g_reader_user)) {
+        block_free(&owned);
         /* body_persist already hash+merkle verified this body — a later
          * read failure is not a normal wait (see stage_body_read_hold). */
         return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock,
@@ -322,9 +326,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
      * params need not be loaded. Keep the gate ONLY when actually verifying. */
     if (!skip_crypto && !g_tx_verifier &&
-        proof_verify_block_has_shielded_proofs(&blk) &&
+        proof_verify_block_has_shielded_proofs(blk) &&
         !sapling_params_loaded()) {
-        block_free(&blk);
+        stage_release_block_view(&owned, &handle, borrowed);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         /* The zk verification keys are not loaded yet and this block carries
          * shielded proofs that REQUIRE them. The LOADER (load_params_thread,
@@ -369,11 +373,11 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         /* Production path: fan per-tx shielded-proof verification across the
          * worker pool, then reduce in original tx order — the add_success /
          * add_failure counter callbacks fire in serial-sweep order. */
-        proof_verify_block(&blk, next_h, g_tx_verifier, g_tx_verifier_user,
+        proof_verify_block(blk, next_h, g_tx_verifier, g_tx_verifier_user,
                            true, add_success_counters, add_failure_counter,
                            NULL, &summary);
     }
-    block_free(&blk);
+    stage_release_block_view(&owned, &handle, borrowed);
     }
 
     /* TL-2: the internal_error class is a TRANSIENT "could not complete proof
