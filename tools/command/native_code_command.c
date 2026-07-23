@@ -568,8 +568,8 @@ void zcl_native_handle_code_sym(const struct zcl_command_request *request,
 void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
                                     struct zcl_command_reply *reply)
 {
-    const char *name = code_str(request, "name");
-    if (!name) {
+    const char *query = code_str(request, "name");
+    if (!query) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "MISSING_NAME",
                                "normalize", false, false,
@@ -581,14 +581,18 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
 
     struct ci_symbol s;
     bool found = false;
-    (void)codeindex_symbol(ci, name, &s, &found);
+    bool by_id = strchr(query, ':') != NULL;
+    if (by_id)
+        (void)codeindex_symbol_by_id(ci, query, &s, &found);
+    else
+        (void)codeindex_symbol(ci, query, &s, &found);
     if (!found) {
-        (void)json_push_kv_str(&reply->data, "name", name);
+        (void)json_push_kv_str(&reply->data, "query", query);
         (void)json_push_kv_bool(&reply->data, "found", false);
         char summary[160];
         (void)snprintf(summary, sizeof(summary),
                        "no indexed symbol named '%s'; try `code find %s`",
-                       name, name);
+                       query, query);
         (void)json_push_kv_str(&reply->data, "summary", summary);
         codeindex_close(ci);
         return;
@@ -596,7 +600,7 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
 
     char id[400];
     id[0] = '\0';
-    (void)codeindex_symbol_id(ci, name, id, sizeof(id));
+    (void)codeindex_symbol_record_id(&s, id, sizeof(id));
 
     char sig[320];
     code_trunc(sig, sizeof(sig), s.signature, 300);
@@ -616,18 +620,24 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
     /* other_defs: the same mechanism as code.sym (never dropped for budget —
      * capped at CODE_OTHER_DEF_CAP already, small by construction). */
     static struct ci_symbol hits[CODE_OTHER_DEF_CAP + 4];
-    int nh = codeindex_find(ci, name, hits, (int)(sizeof(hits) / sizeof(hits[0])));
+    int nh = codeindex_find(ci, s.name, hits,
+                            (int)(sizeof(hits) / sizeof(hits[0])));
     if (nh < 0) nh = 0;
     struct json_value others;
     json_init(&others); json_set_array(&others);
     int nother = 0;
     for (int i = 0; i < nh && nother < CODE_OTHER_DEF_CAP; i++) {
-        if (strcmp(hits[i].name, name) != 0) continue;
+        if (strcmp(hits[i].name, s.name) != 0) continue;
         if (hits[i].def_path[0] == '\0') continue;
         if (hits[i].def_line == s.def_line &&
             strcmp(hits[i].def_path, s.def_path) == 0) continue;
         struct json_value o;
         json_init(&o); json_set_object(&o);
+        char other_id[400];
+        other_id[0] = '\0';
+        (void)codeindex_symbol_record_id(&hits[i], other_id,
+                                         sizeof(other_id));
+        (void)json_push_kv_str(&o, "id", other_id);
         (void)json_push_kv_str(&o, "def_path", hits[i].def_path);
         (void)json_push_kv_int(&o, "def_line", hits[i].def_line);
         code_push_obj(&others, &o);
@@ -664,7 +674,7 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
         if (want_callers) {
             static struct ci_ref crefs[CODE_CAPSULE_CALLER_CAP + 1];
             int want = CODE_CAPSULE_CALLER_CAP + 1;
-            int nc = codeindex_callers(ci, name, crefs, want);
+            int nc = codeindex_callers_for_symbol(ci, &s, crefs, want);
             if (nc < 0) nc = 0;
             callers_trunc = nc > CODE_CAPSULE_CALLER_CAP;
             n_callers = callers_trunc ? CODE_CAPSULE_CALLER_CAP : nc;
@@ -680,7 +690,7 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
         if (want_callees) {
             static struct ci_ref erefs[CODE_CAPSULE_CALLEE_CAP + 1];
             int want = CODE_CAPSULE_CALLEE_CAP + 1;
-            int ne = codeindex_callees(ci, name, erefs, want);
+            int ne = codeindex_callees_for_symbol(ci, &s, erefs, want);
             if (ne < 0) ne = 0;
             callees_trunc = ne > CODE_CAPSULE_CALLEE_CAP;
             n_callees = callees_trunc ? CODE_CAPSULE_CALLEE_CAP : ne;
@@ -725,6 +735,9 @@ void zcl_native_handle_code_capsule(const struct zcl_command_request *request,
     }
 
     (void)json_push_kv_bool(&reply->data, "found", true);
+    (void)json_push_kv_str(&reply->data, "query", query);
+    (void)json_push_kv_str(&reply->data, "resolution",
+                           by_id ? "exact_stable_id" : "legacy_name_primary");
     (void)json_push_kv_str(&reply->data, "name", s.name);
     (void)json_push_kv_str(&reply->data, "id", id);
     (void)json_push_kv_str(&reply->data, "kind", kind);

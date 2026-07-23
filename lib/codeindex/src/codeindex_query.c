@@ -21,6 +21,45 @@ bool codeindex_symbol(struct codeindex *ci, const char *name,
     return ci_store_symbol_by_name(ci->store, name, out, found);
 }
 
+bool codeindex_symbol_by_id(struct codeindex *ci, const char *id,
+                            struct ci_symbol *out, bool *found)
+{
+    if (found) *found = false;
+    if (!ci || !ci->store || !id || !out)
+        LOG_FAIL("codeindex", "null arg to codeindex_symbol_by_id");
+    static const char static_prefix[] = "fn:static:";
+    if (strncmp(id, static_prefix, sizeof(static_prefix) - 1) == 0) {
+        const char *qualified = id + sizeof(static_prefix) - 1;
+        const char *split = strrchr(qualified, ':');
+        if (!split || split == qualified || split[1] == '\0')
+            return true;
+        char path[256];
+        size_t path_len = (size_t)(split - qualified);
+        if (path_len >= sizeof(path))
+            return true;
+        memcpy(path, qualified, path_len);
+        path[path_len] = '\0';
+        return ci_store_symbol_by_name_path(ci->store, split + 1, path,
+                                             out, found);
+    }
+
+    const char *name = strrchr(id, ':');
+    if (!name || name[1] == '\0')
+        return true;
+    name++;
+    if (!ci_store_symbol_by_name(ci->store, name, out, found))
+        return false;
+    if (!*found)
+        return true;
+    char canonical[400];
+    if (codeindex_symbol_record_id(out, canonical, sizeof(canonical)) < 0 ||
+        strcmp(canonical, id) != 0) {
+        *found = false;
+        memset(out, 0, sizeof(*out));
+    }
+    return true;
+}
+
 int codeindex_find(struct codeindex *ci, const char *query,
                    struct ci_symbol *out, int cap)
 {
@@ -167,6 +206,30 @@ int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
     return ci_store_refs_by_enclosing(ci->store, enclosing_name, out, cap);
 }
 
+int codeindex_callers_for_symbol(struct codeindex *ci,
+                                 const struct ci_symbol *symbol,
+                                 struct ci_ref *out, int cap)
+{
+    if (!ci || !ci->store || !symbol || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad args to identity-aware callers");
+    if (symbol->kind == 't' && symbol->def_path[0])
+        return ci_store_refs_by_callee_file(ci->store, symbol->name,
+                                             symbol->def_path, out, cap);
+    return ci_store_refs_by_callee(ci->store, symbol->name, out, cap);
+}
+
+int codeindex_callees_for_symbol(struct codeindex *ci,
+                                 const struct ci_symbol *symbol,
+                                 struct ci_ref *out, int cap)
+{
+    if (!ci || !ci->store || !symbol || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad args to identity-aware callees");
+    if (symbol->kind == 't' && symbol->def_path[0])
+        return ci_store_refs_by_enclosing_file(ci->store, symbol->name,
+                                                symbol->def_path, out, cap);
+    return ci_store_refs_by_enclosing(ci->store, symbol->name, out, cap);
+}
+
 /* Kind → id namespace word. Functions carry linkage in a second component
  * (static/external); other kinds are named directly under their namespace. */
 static const char *kind_id_ns(char k)
@@ -181,34 +244,40 @@ static const char *kind_id_ns(char k)
     }
 }
 
+int codeindex_symbol_record_id(const struct ci_symbol *s,
+                               char *buf, size_t cap)
+{
+    if (!s || !buf || cap == 0)
+        LOG_ERR("codeindex", "bad args to codeindex_symbol_record_id");
+    buf[0] = '\0';
+    const char *ns = kind_id_ns(s->kind);
+    int n;
+    if (s->kind == 't' && s->def_path[0]) {
+        /* A file-local (static) function is identified by its definition site
+         * so two same-named statics in different files never collide. */
+        n = snprintf(buf, cap, "%s:static:%s:%s", ns, s->def_path, s->name);
+    } else if (s->kind == 'T' || s->kind == 't') {
+        n = snprintf(buf, cap, "%s:external:%s", ns, s->name);
+    } else {
+        n = snprintf(buf, cap, "%s:%s", ns, s->name);
+    }
+    if (n < 0 || (size_t)n >= cap) {
+        buf[0] = '\0';
+        LOG_ERR("codeindex", "symbol id overflow for %s", s->name);
+    }
+    return n;
+}
+
 int codeindex_symbol_id(struct codeindex *ci, const char *name,
                         char *buf, size_t cap)
 {
     if (!ci || !ci->store || !name || !buf || cap == 0)
         LOG_ERR("codeindex", "bad args to codeindex_symbol_id");
-    buf[0] = '\0';
-
     struct ci_symbol s;
     bool found = false;
     if (!ci_store_symbol_by_name(ci->store, name, &s, &found))
         LOG_ERR("codeindex", "symbol lookup failed in symbol_id");
     if (!found)
         return -1;
-
-    const char *ns = kind_id_ns(s.kind);
-    int n;
-    if (s.kind == 't' && s.def_path[0]) {
-        /* A file-local (static) function is identified by its definition site
-         * so two same-named statics in different files never collide. */
-        n = snprintf(buf, cap, "%s:static:%s:%s", ns, s.def_path, s.name);
-    } else if (s.kind == 'T' || s.kind == 't') {
-        n = snprintf(buf, cap, "%s:external:%s", ns, s.name);
-    } else {
-        n = snprintf(buf, cap, "%s:%s", ns, s.name);
-    }
-    if (n < 0 || (size_t)n >= cap) {
-        buf[0] = '\0';
-        LOG_ERR("codeindex", "symbol id overflow for %s", name);
-    }
-    return n;
+    return codeindex_symbol_record_id(&s, buf, cap);
 }

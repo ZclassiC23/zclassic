@@ -23,6 +23,9 @@
 #include <sys/stat.h>
 
 #define CI_PATH_MAX 4096
+#define CI_SYM_COLS \
+    "name,kind,def_path,def_line,decl_path,decl_line," \
+    "signature,doc,guard,\"group\",partial,row_sha3"
 
 /* Derived-schema generation tag. Bump on ANY change to the derived table
  * layout or the meaning of a derived column (recompute, never repair). It is
@@ -33,11 +36,22 @@
 #define CI_SCHEMA_VERSION "cg1"
 
 /* ── the public handle (defined here so every TU can reach the store) ── */
+typedef struct sqlite3 sqlite3;
+typedef struct sqlite3_stmt sqlite3_stmt;
 struct ci_store;
 struct codeindex {
     struct ci_store *store;
     char             root[CI_PATH_MAX];
 };
+
+static inline void ci_cpy(char *dst, size_t cap, const char *src)
+{
+    if (!dst || cap == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t i = 0;
+    for (; i + 1 < cap && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+}
 
 /* ── store: derived SQLite DB at <root>/.codeindex/index.kv ───────────
  * Raw sqlite3_step in the store carries `// raw-sql-ok:codeindex-derived`. */
@@ -46,6 +60,9 @@ struct codeindex {
 struct ci_store *ci_store_open(const char *root);
 struct ci_store *ci_store_open_path(const char *dbpath);/* an explicit path (tmp build) */
 void             ci_store_close(struct ci_store *s);
+sqlite3         *ci_store_db(struct ci_store *s);
+void             ci_store_lock(struct ci_store *s);
+void             ci_store_unlock(struct ci_store *s);
 
 /* Lazy-open refresh: coalesces concurrent stale opens under the cross-process
  * rebuild lock. Public codeindex_rebuild() remains a forced recompute. */
@@ -79,6 +96,10 @@ bool ci_store_meta_get(struct ci_store *s, const char *k, void *buf,
                        size_t cap, size_t *outlen, bool *found);
 bool ci_store_symbol_by_name(struct ci_store *s, const char *name,
                              struct ci_symbol *out, bool *found);
+bool ci_store_fill_symbol(sqlite3_stmt *stmt, struct ci_symbol *out);
+bool ci_store_symbol_by_name_path(struct ci_store *s, const char *name,
+                                  const char *def_path,
+                                  struct ci_symbol *out, bool *found);
 int  ci_store_find_symbols(struct ci_store *s, const char *q,
                            struct ci_symbol *out, int cap);
 int  ci_store_refs_by_callee(struct ci_store *s, const char *callee,
@@ -87,6 +108,13 @@ int  ci_store_refs_by_callee(struct ci_store *s, const char *callee,
  * graph), ordered by (ref_file, ref_line). Fills up to `cap`, returns count. */
 int  ci_store_refs_by_enclosing(struct ci_store *s, const char *enclosing,
                                 struct ci_ref *out, int cap);
+int  ci_store_refs_by_callee_file(struct ci_store *s, const char *callee,
+                                  const char *ref_file,
+                                  struct ci_ref *out, int cap);
+int  ci_store_refs_by_enclosing_file(struct ci_store *s,
+                                     const char *enclosing,
+                                     const char *ref_file,
+                                     struct ci_ref *out, int cap);
 bool ci_store_file_by_path(struct ci_store *s, const char *path,
                            struct ci_file *out, bool *found);
 int  ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap);

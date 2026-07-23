@@ -216,7 +216,64 @@ static int test_code_capsule_commands_join(void)
     return failures;
 }
 
-/* ── 3: budget-shrink — a high-fan-in symbol still fits, reports drops ── */
+/* ── 3: stable static identity — exact lookup and file-scoped graph ───── */
+static int test_code_capsule_static_id_is_exact(void)
+{
+    int failures = 0;
+    TEST("code_capsule: stable id selects one same-named static definition "
+         "and scopes its call graph to that file") {
+        const char *id =
+            "fn:static:app/models/src/app_event.c:bytes_nonzero";
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "name", id);
+        struct zcl_command_request request = {
+            .input = &input, .view = "normal", .invoked_name = "code.capsule",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.code_capsule.v1");
+        zcl_native_handle_code_capsule(&request, &reply);
+
+        ASSERT(json_get_bool(json_get(&reply.data, "found")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "query")), id);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "id")), id);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "resolution")),
+                      "exact_stable_id");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "def_path")),
+                      "app/models/src/app_event.c");
+
+        const struct json_value *callers = json_get(&reply.data, "callers");
+        ASSERT(callers && callers->type == JSON_ARR);
+        for (size_t i = 0; i < callers->num_children; i++)
+            ASSERT_STR_EQ(json_get_str(
+                json_get(&callers->children[i], "file")),
+                "app/models/src/app_event.c");
+        const struct json_value *callees = json_get(&reply.data, "callees");
+        ASSERT(callees && callees->type == JSON_ARR);
+        for (size_t i = 0; i < callees->num_children; i++)
+            ASSERT_STR_EQ(json_get_str(
+                json_get(&callees->children[i], "file")),
+                "app/models/src/app_event.c");
+
+        const struct json_value *others =
+            json_get(&reply.data, "other_defs");
+        ASSERT(others && others->type == JSON_ARR &&
+               others->num_children > 0);
+        for (size_t i = 0; i < others->num_children; i++) {
+            const char *other_id = json_get_str(
+                json_get(&others->children[i], "id"));
+            ASSERT(other_id && strncmp(other_id, "fn:static:", 10) == 0);
+            ASSERT(strcmp(other_id, id) != 0);
+        }
+
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 4: budget-shrink — a high-fan-in symbol still fits, reports drops ── */
 static int test_code_capsule_budget_shrink(void)
 {
     int failures = 0;
@@ -275,6 +332,7 @@ int test_code_capsule(void)
     int failures = 0;
     failures += test_code_capsule_golden_symbol();
     failures += test_code_capsule_commands_join();
+    failures += test_code_capsule_static_id_is_exact();
     failures += test_code_capsule_budget_shrink();
     return failures;
 }

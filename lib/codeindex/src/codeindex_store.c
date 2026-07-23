@@ -37,15 +37,9 @@ struct ci_store {
     int             bound_fd; /* immutable canonical inode, -1 for :memory: */
 };
 
-/* Bounded copy into a fixed field; always NUL-terminates. */
-static void cpy(char *dst, size_t cap, const char *src)
-{
-    if (!dst || cap == 0) return;
-    if (!src) { dst[0] = '\0'; return; }
-    size_t i = 0;
-    for (; i + 1 < cap && src[i]; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
+sqlite3 *ci_store_db(struct ci_store *s) { return s ? s->db : NULL; }
+void ci_store_lock(struct ci_store *s) { if (s) pthread_mutex_lock(&s->lock); }
+void ci_store_unlock(struct ci_store *s) { if (s) pthread_mutex_unlock(&s->lock); }
 
 /* ── canonical per-symbol row hash (verify-on-read) ─────────────────── */
 
@@ -543,28 +537,23 @@ bool ci_store_meta_get(struct ci_store *s, const char *k, void *buf,
     return true;
 }
 
-/* Column order for the shared SELECT below. */
-#define CI_SYM_COLS \
-    "name,kind,def_path,def_line,decl_path,decl_line," \
-    "signature,doc,guard,\"group\",partial,row_sha3"
-
 /* Fill a ci_symbol from a stepped row and verify its integrity checksum.
  * Returns false (row rejected) if the recomputed hash mismatches the stored
  * row_sha3 — verify-on-read. */
-static bool fill_symbol(sqlite3_stmt *stmt, struct ci_symbol *out)
+bool ci_store_fill_symbol(sqlite3_stmt *stmt, struct ci_symbol *out)
 {
     memset(out, 0, sizeof(*out));
     const unsigned char *t;
-    t = sqlite3_column_text(stmt, 0);  cpy(out->name, sizeof(out->name), (const char *)t);
+    t = sqlite3_column_text(stmt, 0);  ci_cpy(out->name, sizeof(out->name), (const char *)t);
     t = sqlite3_column_text(stmt, 1);  out->kind = (t && t[0]) ? (char)t[0] : 'D';
-    t = sqlite3_column_text(stmt, 2);  cpy(out->def_path, sizeof(out->def_path), (const char *)t);
+    t = sqlite3_column_text(stmt, 2);  ci_cpy(out->def_path, sizeof(out->def_path), (const char *)t);
     out->def_line = sqlite3_column_int(stmt, 3);
-    t = sqlite3_column_text(stmt, 4);  cpy(out->decl_path, sizeof(out->decl_path), (const char *)t);
+    t = sqlite3_column_text(stmt, 4);  ci_cpy(out->decl_path, sizeof(out->decl_path), (const char *)t);
     out->decl_line = sqlite3_column_int(stmt, 5);
-    t = sqlite3_column_text(stmt, 6);  cpy(out->signature, sizeof(out->signature), (const char *)t);
-    t = sqlite3_column_text(stmt, 7);  cpy(out->doc, sizeof(out->doc), (const char *)t);
-    t = sqlite3_column_text(stmt, 8);  cpy(out->guard, sizeof(out->guard), (const char *)t);
-    t = sqlite3_column_text(stmt, 9);  cpy(out->group, sizeof(out->group), (const char *)t);
+    t = sqlite3_column_text(stmt, 6);  ci_cpy(out->signature, sizeof(out->signature), (const char *)t);
+    t = sqlite3_column_text(stmt, 7);  ci_cpy(out->doc, sizeof(out->doc), (const char *)t);
+    t = sqlite3_column_text(stmt, 8);  ci_cpy(out->guard, sizeof(out->guard), (const char *)t);
+    t = sqlite3_column_text(stmt, 9);  ci_cpy(out->group, sizeof(out->group), (const char *)t);
     out->partial = sqlite3_column_int(stmt, 10) != 0;
 
     const void *rb = sqlite3_column_blob(stmt, 11);
@@ -596,7 +585,7 @@ bool ci_store_symbol_by_name(struct ci_store *s, const char *name,
     bool ok = true;
     int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
     if (rc == SQLITE_ROW) {
-        if (fill_symbol(stmt, out)) {
+        if (ci_store_fill_symbol(stmt, out)) {
             if (found) *found = true;
         }  /* corrupted → leave found=false */
     } else if (rc != SQLITE_DONE) {
@@ -635,7 +624,7 @@ int ci_store_find_symbols(struct ci_store *s, const char *q,
     int n = 0;
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
-        if (fill_symbol(stmt, &out[n]))
+        if (ci_store_fill_symbol(stmt, &out[n]))
             n++;  /* skip corrupted rows */
     }
     sqlite3_finalize(stmt);
@@ -662,12 +651,12 @@ int ci_store_refs_by_callee(struct ci_store *s, const char *callee,
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
         memset(&out[n], 0, sizeof(out[n]));
-        cpy(out[n].callee, sizeof(out[n].callee),
+        ci_cpy(out[n].callee, sizeof(out[n].callee),
             (const char *)sqlite3_column_text(stmt, 0));
-        cpy(out[n].ref_file, sizeof(out[n].ref_file),
+        ci_cpy(out[n].ref_file, sizeof(out[n].ref_file),
             (const char *)sqlite3_column_text(stmt, 1));
         out[n].ref_line = sqlite3_column_int(stmt, 2);
-        cpy(out[n].enclosing, sizeof(out[n].enclosing),
+        ci_cpy(out[n].enclosing, sizeof(out[n].enclosing),
             (const char *)sqlite3_column_text(stmt, 3));
         n++;
     }
@@ -695,12 +684,12 @@ int ci_store_refs_by_enclosing(struct ci_store *s, const char *enclosing,
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
         memset(&out[n], 0, sizeof(out[n]));
-        cpy(out[n].callee, sizeof(out[n].callee),
+        ci_cpy(out[n].callee, sizeof(out[n].callee),
             (const char *)sqlite3_column_text(stmt, 0));
-        cpy(out[n].ref_file, sizeof(out[n].ref_file),
+        ci_cpy(out[n].ref_file, sizeof(out[n].ref_file),
             (const char *)sqlite3_column_text(stmt, 1));
         out[n].ref_line = sqlite3_column_int(stmt, 2);
-        cpy(out[n].enclosing, sizeof(out[n].enclosing),
+        ci_cpy(out[n].enclosing, sizeof(out[n].enclosing),
             (const char *)sqlite3_column_text(stmt, 3));
         n++;
     }
@@ -728,9 +717,9 @@ bool ci_store_file_by_path(struct ci_store *s, const char *path,
     int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
     if (rc == SQLITE_ROW) {
         memset(out, 0, sizeof(*out));
-        cpy(out->path, sizeof(out->path), (const char *)sqlite3_column_text(stmt, 0));
-        cpy(out->group, sizeof(out->group), (const char *)sqlite3_column_text(stmt, 1));
-        cpy(out->purpose, sizeof(out->purpose), (const char *)sqlite3_column_text(stmt, 2));
+        ci_cpy(out->path, sizeof(out->path), (const char *)sqlite3_column_text(stmt, 0));
+        ci_cpy(out->group, sizeof(out->group), (const char *)sqlite3_column_text(stmt, 1));
+        ci_cpy(out->purpose, sizeof(out->purpose), (const char *)sqlite3_column_text(stmt, 2));
         if (found) *found = true;
     } else if (rc != SQLITE_DONE) {
         ok = false;
@@ -757,10 +746,10 @@ int ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap)
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
         memset(&out[n], 0, sizeof(out[n]));
-        cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
-        cpy(out[n].kind, sizeof(out[n].kind), (const char *)sqlite3_column_text(stmt, 1));
-        cpy(out[n].parent, sizeof(out[n].parent), (const char *)sqlite3_column_text(stmt, 2));
-        cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 3));
+        ci_cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
+        ci_cpy(out[n].kind, sizeof(out[n].kind), (const char *)sqlite3_column_text(stmt, 1));
+        ci_cpy(out[n].parent, sizeof(out[n].parent), (const char *)sqlite3_column_text(stmt, 2));
+        ci_cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 3));
         n++;
     }
     sqlite3_finalize(stmt);
@@ -787,9 +776,9 @@ int ci_store_files_in_group(struct ci_store *s, const char *group,
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
         memset(&out[n], 0, sizeof(out[n]));
-        cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
-        cpy(out[n].group, sizeof(out[n].group), (const char *)sqlite3_column_text(stmt, 1));
-        cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 2));
+        ci_cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
+        ci_cpy(out[n].group, sizeof(out[n].group), (const char *)sqlite3_column_text(stmt, 1));
+        ci_cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 2));
         n++;
     }
     sqlite3_finalize(stmt);
@@ -851,7 +840,7 @@ int ci_store_symbols_in_file(struct ci_store *s, const char *path,
     int n = 0;
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
-        if (fill_symbol(stmt, &out[n]))
+        if (ci_store_fill_symbol(stmt, &out[n]))
             n++;  /* skip corrupted rows */
     }
     sqlite3_finalize(stmt);
@@ -877,7 +866,7 @@ int ci_store_includes_of_file(struct ci_store *s, const char *path,
     int n = 0;
     int rc;
     while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
-        cpy(out[n], 256, (const char *)sqlite3_column_text(stmt, 0));
+        ci_cpy(out[n], 256, (const char *)sqlite3_column_text(stmt, 0));
         n++;
     }
     sqlite3_finalize(stmt);

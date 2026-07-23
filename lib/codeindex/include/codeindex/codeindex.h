@@ -100,6 +100,12 @@ void codeindex_close(struct codeindex *ci);
 bool codeindex_symbol(struct codeindex *ci, const char *name,
                       struct ci_symbol *out, bool *found);
 
+/* Stable-id lookup. Unlike the legacy name lookup, a static-function id
+ * (`fn:static:<repo-path>:<name>`) resolves that exact definition, so equal
+ * static names in different translation units cannot collide. */
+bool codeindex_symbol_by_id(struct codeindex *ci, const char *id,
+                            struct ci_symbol *out, bool *found);
+
 /* Ranked substring search over symbol names: exact match ranks first, then
  * prefix, then substring; ties broken by name then def_path for determinism.
  * Fills up to `cap` rows in `out`, returns the count (>=0), -1 on error. */
@@ -164,6 +170,15 @@ int codeindex_callers(struct codeindex *ci, const char *name,
 int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
                       struct ci_ref *out, int cap);
 
+/* Identity-aware variants. Static functions are restricted to their
+ * definition file; externally linked symbols retain name-wide behavior. */
+int codeindex_callers_for_symbol(struct codeindex *ci,
+                                 const struct ci_symbol *symbol,
+                                 struct ci_ref *out, int cap);
+int codeindex_callees_for_symbol(struct codeindex *ci,
+                                 const struct ci_symbol *symbol,
+                                 struct ci_ref *out, int cap);
+
 /* Linkage-aware stable identity for `name`, computed from existing fields:
  * "fn:static:<path>:<name>" for a static function, "fn:external:<name>" for an
  * external one (name-based lookup is untouched). Writes a NUL-terminated id
@@ -171,6 +186,8 @@ int codeindex_callees(struct codeindex *ci, const char *enclosing_name,
  * -1 on error / not found. */
 int codeindex_symbol_id(struct codeindex *ci, const char *name,
                         char *buf, size_t cap);
+int codeindex_symbol_record_id(const struct ci_symbol *symbol,
+                               char *buf, size_t cap);
 
 /* ── Impact-closure query (proof-DAG from symbol closure, F3) ───────────
  *
