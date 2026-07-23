@@ -15,9 +15,50 @@
 #include "storage/progress_store.h"
 #include "platform/time_compat.h"
 #include "util/reducer_stage_profile.h"
+#include "util/stage.h"
 
+#include <sqlite3.h>
 #include <stdbool.h>
 #include <string.h>
+
+/* coins_kv prevout fallback statement cache. The prevout resolver runs serially
+ * on the script_validate drain thread (sv_serial and the sv_parallel build
+ * phase both resolve in-order before the worker fan), so this thread-local
+ * statement is single-owner within a drain batch. Prepared once per (db, batch
+ * generation); finalized at drain teardown via script_validate_prevout_batch_
+ * reset(). Outside a batch it falls back to the fresh-prepare path unchanged. */
+static _Thread_local sqlite3 *g_coins_prevout_db;
+static _Thread_local sqlite3_stmt *g_coins_prevout_stmt;
+static _Thread_local uint64_t g_coins_prevout_gen;
+
+void script_validate_prevout_batch_reset(void)
+{
+    if (g_coins_prevout_stmt)
+        sqlite3_finalize(g_coins_prevout_stmt);
+    g_coins_prevout_stmt = NULL;
+    g_coins_prevout_db = NULL;
+    g_coins_prevout_gen = 0;
+}
+
+static bool sv_coins_prevout_lookup(sqlite3 *db, const uint8_t txid[32],
+                                    uint32_t vout, int64_t *value_out,
+                                    uint8_t *script_out, size_t script_cap,
+                                    size_t *script_len_out, int32_t *height_out)
+{
+    bool batched = stage_batch_active();
+    uint64_t gen = batched ? stage_batch_generation() : 0;
+    if (!batched)
+        return coins_kv_get_prevout(db, txid, vout, value_out, script_out,
+                                    script_cap, script_len_out, height_out,
+                                    NULL);
+    if (g_coins_prevout_db != db || g_coins_prevout_gen != gen)
+        script_validate_prevout_batch_reset();
+    g_coins_prevout_db = db;
+    g_coins_prevout_gen = gen;
+    return coins_kv_get_prevout_cached(db, &g_coins_prevout_stmt, txid, vout,
+                                       value_out, script_out, script_cap,
+                                       script_len_out, height_out, NULL);
+}
 
 /* Production prevout resolver (P0 §2.1) — resolves an outpoint to its spent
  * output WITHOUT requiring -txindex, correct at the script_validate frontier
@@ -80,9 +121,9 @@ bool script_validate_created_index_prevout(const struct outpoint *prevout,
                                   RPF_PREVOUT_COINS_FALLBACKS, 1);
         prepares_before = coins_kv_prepare_count_thread();
         int32_t coin_h = 0;
-        bool coin_found = coins_kv_get_prevout(
+        bool coin_found = sv_coins_prevout_lookup(
             db, prevout->hash.data, prevout->n, &value, script,
-            sizeof(script), &slen, &coin_h, NULL);
+            sizeof(script), &slen, &coin_h);
         reducer_stage_profile_add(
             REDUCER_PROFILE_SCRIPT_VALIDATE, RPF_PREVOUT_PREPARES,
             coins_kv_prepare_count_thread() - prepares_before);

@@ -17,6 +17,9 @@
 static _Thread_local sqlite3 *g_put_db;
 static _Thread_local sqlite3_stmt *g_put_stmt;
 static _Thread_local uint64_t g_put_generation;
+static _Thread_local sqlite3 *g_getb_db;
+static _Thread_local sqlite3_stmt *g_getb_stmt;
+static _Thread_local uint64_t g_getb_generation;
 static _Thread_local uint64_t g_prepare_count;
 
 uint64_t created_outputs_index_prepare_count_thread(void)
@@ -24,13 +27,31 @@ uint64_t created_outputs_index_prepare_count_thread(void)
     return g_prepare_count;
 }
 
-void created_outputs_index_batch_reset(void)
+static void put_stmt_reset(void)
 {
     if (g_put_stmt)
         sqlite3_finalize(g_put_stmt);
     g_put_stmt = NULL;
     g_put_db = NULL;
     g_put_generation = 0;
+}
+
+static void getb_stmt_reset(void)
+{
+    if (g_getb_stmt)
+        sqlite3_finalize(g_getb_stmt);
+    g_getb_stmt = NULL;
+    g_getb_db = NULL;
+    g_getb_generation = 0;
+}
+
+void created_outputs_index_batch_reset(void)
+{
+    /* The put (body_persist thread) and bounded-read (script_validate thread)
+     * caches live in disjoint thread-locals; a reset on either thread finalizes
+     * only whichever statement that thread owns. */
+    put_stmt_reset();
+    getb_stmt_reset();
 }
 
 static sqlite3_stmt *created_outputs_put_stmt(sqlite3 *db, bool *cached_out)
@@ -42,7 +63,7 @@ static sqlite3_stmt *created_outputs_put_stmt(sqlite3 *db, bool *cached_out)
         *cached_out = true;
         return g_put_stmt;
     }
-    created_outputs_index_batch_reset();
+    put_stmt_reset();
     sqlite3_stmt *st = NULL;
     if (g_prepare_count != UINT64_MAX)
         g_prepare_count++;
@@ -237,6 +258,45 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
     return found;
 }
 
+/* Bounded-read statement cache. Prepared once per (db, batch generation) — the
+ * script_validate prevout resolver runs serially on the drain thread, so this
+ * thread-local statement is single-owner within a drain and re-prepares when a
+ * new batch (or db) begins. Finalized at drain teardown via
+ * created_outputs_index_batch_reset(). Mirrors created_outputs_put_stmt. */
+static sqlite3_stmt *created_outputs_get_bounded_stmt(sqlite3 *db,
+                                                      bool *cached_out)
+{
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (batched && g_getb_stmt && g_getb_db == db &&
+        g_getb_generation == generation) {
+        sqlite3_reset(g_getb_stmt);
+        sqlite3_clear_bindings(g_getb_stmt);
+        *cached_out = true;
+        return g_getb_stmt;
+    }
+    getb_stmt_reset();
+    sqlite3_stmt *st = NULL;
+    if (g_prepare_count != UINT64_MAX)
+        g_prepare_count++;
+    if (sqlite3_prepare_v2(db,
+        "SELECT value, script, height FROM created_outputs "
+        "WHERE txid = ? AND vout = ? "
+        "  AND height >= ? AND height <= ? "
+        "ORDER BY height DESC LIMIT 1",
+        -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    if (batched) {
+        g_getb_db = db;
+        g_getb_stmt = st;
+        g_getb_generation = generation;
+        *cached_out = true;
+    } else {
+        *cached_out = false;
+    }
+    return st;
+}
+
 bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
                                        uint32_t vout, int min_height,
                                        int max_height, int64_t *value_out,
@@ -246,15 +306,9 @@ bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
 {
     if (!db || !txid || min_height > max_height)
         return false;
-    sqlite3_stmt *st = NULL;
-    if (g_prepare_count != UINT64_MAX)
-        g_prepare_count++;
-    if (sqlite3_prepare_v2(db,
-        "SELECT value, script, height FROM created_outputs "
-        "WHERE txid = ? AND vout = ? "
-        "  AND height >= ? AND height <= ? "
-        "ORDER BY height DESC LIMIT 1",
-        -1, &st, NULL) != SQLITE_OK) {
+    bool cached = false;
+    sqlite3_stmt *st = created_outputs_get_bounded_stmt(db, &cached);
+    if (!st) {
         LOG_WARN("created_outputs",
                  "[created_outputs] bounded get prepare failed: %s",
                  sqlite3_errmsg(db));
@@ -287,7 +341,12 @@ bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
                  "[created_outputs] bounded get step failed rc=%d: %s",
                  rc, sqlite3_errmsg(db));
     }
-    sqlite3_finalize(st);
+    if (cached) {
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    } else {
+        sqlite3_finalize(st);
+    }
     return found;
 }
 
