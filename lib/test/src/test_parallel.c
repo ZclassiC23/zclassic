@@ -299,6 +299,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_ondemand_genesis_seed) \
     X(mint_fold_livelock) \
     X(mint_anchor_fresh_datadir) \
+    X(no_state_source) \
     X(fold_inram_crash_proof) \
     X(stage_crash_sweep) \
     X(coins_kv_read_cache) \
