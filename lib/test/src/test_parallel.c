@@ -271,7 +271,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) X(boot_snapshot_drop_bodiless) \
     X(boot_datadir_lock) X(boot_shutdown_marker) X(boot_stale_locks) \
     X(boot_blocktree_cleanup) X(boot_legacy_blocks) X(boot_flyclient) \
-    X(boot_memory_guard) X(boot_flight_recorder) \
+    X(boot_memory_guard) X(boot_flight_recorder) X(boot_self_respawn) \
     X(boot_refold_window_extend) \
     X(refold_retro_validate) X(refold_body_span_contiguous) \
     X(contaminated_coin_above_anchor) X(boot_reindex_terminates) \

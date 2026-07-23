@@ -10,8 +10,11 @@
 # (same collect/judge split as tools/scripts/soak_evidence.sh — collect
 # NEVER gates on the run's outcome, judge does).
 #
-# Ledger line: {ts, verdict, exit_code, wall_clock_seconds, budget_seconds,
-#               peer, node_bin, build_commit, artifact_dir}
+# Ledger line: {ts, verdict, exit_code, wall_clock_seconds, boots,
+#               budget_seconds, peer, node_bin, build_commit, artifact_dir}
+#   boots is the total node launches the run spanned (1 = no respawn; >1 = the
+#   harness followed that many supervised self-respawns across the one wiped
+#   datadir — how an install-on-next-boot run survives the respawn seam).
 #   verdict is one of pass|fail|skip|seam|stalled-named|frontier-busy-timeout|
 #   error, mapped from the underlying stopwatch's exit code (0/1/2/3/4/5/other).
 #
@@ -89,10 +92,16 @@ esac
 
 wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*\)$/\1/p' | tail -1)"
 artifact_dir="$(printf '%s\n' "$out" | sed -n 's/^cold-start-wipe-stopwatch: artifact=\(.*\)$/\1/p' | tail -1)"
+# boots = total node launches this run spanned (1 = no respawn; >1 = the
+# harness followed N-1 supervised self-respawns across the one wiped datadir).
+# Distinguishes an install-respawn run that SURVIVED the seam from a plain
+# single-boot run in the durable ledger.
+boots="$(printf '%s\n' "$out" | sed -n 's/^BOOTS=\([0-9][0-9]*\)$/\1/p' | tail -1)"
 
 ts="$(date +%s)"
-line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"budget_seconds":%s,"peer":%s,"file_peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s}' \
+line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"boots":%s,"budget_seconds":%s,"peer":%s,"file_peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s}' \
     "$ts" "$(json_string "$verdict")" "$rc" "$(json_num_or_null "$wall_clock")" \
+    "$(json_num_or_null "$boots")" \
     "$(json_num_or_null "$ZCL_CS_BUDGET_SECS")" "$(json_string "$ZCL_PEER")" \
     "$(json_string "$ZCL_CS_FILE_PEER")" "$(json_string "$ZCL_BIN")" \
     "$(json_string "$build_commit")" "$(json_string "${artifact_dir:-}")")"

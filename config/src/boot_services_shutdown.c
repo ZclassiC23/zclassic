@@ -10,6 +10,7 @@
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_fast_restart.h"
 #include "config/boot_loop_guard.h"
+#include "config/boot_self_respawn.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "util/shutdown_stagewatch.h"
@@ -301,6 +302,17 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
             shutdown_stagewatch_complete_clean();
             fflush(stdout);
             fflush(stderr);
+            /* Off-systemd, honor a latched self-respawn HERE rather than
+             * _exit(0)ing into a DOWN node: main.c's post-app_shutdown()
+             * re-exec is unreachable on this early-exit path. execv is
+             * strictly safer than the frees we just skipped — it atomically
+             * discards the detached straggler threads, so there is no
+             * use-after-free window — and it is the exact recovery systemd's
+             * Restart=always would perform. Under systemd it is a no-op
+             * (sd_notify active), so Restart=always stays the sole authority.
+             * Returns only if not armed or execv failed → the _exit(0) below
+             * is the unchanged clean exit. */
+            boot_self_respawn_exec_or_return();
             _exit(0);
         }
     }
