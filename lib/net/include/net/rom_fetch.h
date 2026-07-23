@@ -123,6 +123,18 @@ bool rom_fetch_chunk(const char *peer_addr, uint16_t port,
                      const uint8_t chunk_root[32], uint32_t idx,
                      uint8_t *buf, uint32_t buf_cap, uint32_t *out_sz);
 
+/* Pure decode of a chunk-reply's 4-byte LE size field: true iff it is the
+ * server's typed refusal sentinel (FS_ROM_REFUSAL_SENTINEL) — i.e. the reply is
+ * a "peer busy/declined" refusal frame, not a data chunk. A real chunk size is
+ * bounded by ROM_SEED_CHUNK_SIZE and never reaches the sentinel, and a corrupt
+ * garbage size is NOT mistaken for a refusal (only the exact sentinel matches).
+ * Exposed for the refusal-frame decode unit test. */
+bool rom_fetch_wire_is_refusal(const uint8_t hdr4[4]);
+
+/* Stable human label for a fs_rom_refusal_reason code (unknown codes fold to
+ * "declined"). Used for clean "peer busy (<reason>)" logging and in tests. */
+const char *rom_fetch_refusal_reason_name(uint8_t reason);
+
 /* ── Whole-file verification + download driver ──────────────────────── */
 
 /* Re-hash `path` in one bounded streaming pass and require ALL of:

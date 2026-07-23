@@ -215,4 +215,40 @@ bool fs_parse_rom_manifest_request(const uint8_t *payload, uint32_t plen,
 #define FS_ROM_LIST_REQUEST_SIZE 3
 bool fs_parse_rom_list_request(const uint8_t *payload, uint32_t plen);
 
+/* ── ROM chunk refusal reply (server→client) ─────────────────────────
+ *
+ * A chunk request the server declines (unknown artifact, per-connection
+ * budget, per-peer inflight cap, or per-peer/global byte-rate window) is
+ * answered with a small typed refusal frame on the SAME raw transport as a
+ * chunk reply (fs_send_chunk_fast) — NOT the 64 KB encrypted FS_DONE frame,
+ * whose ciphertext leading bytes the raw chunk reader misparses as a garbage
+ * "implausible chunk size". The refusal's 4-byte size field carries an
+ * impossible-as-a-chunk-size sentinel so the client decodes it unambiguously
+ * (a real chunk size never exceeds ROM_SEED_CHUNK_SIZE):
+ *
+ *   [4B size = FS_ROM_REFUSAL_SENTINEL (LE)][1B reason][32B MAC]
+ *   MAC = SHA3-256(key || send_counter || FS_ROM_REFUSAL_MAC_TAG || reason)
+ *
+ * The MAC binds the refusal to the session key + counter (an off-path injector
+ * cannot forge one); the fixed 33-byte tail after the sentinel bounds the
+ * client read (a malicious seeder cannot make the client over-read). The client
+ * treats a verified refusal as a clean, retryable "peer busy — back off and
+ * retry", never garbage. Per-chunk content verification remains the integrity
+ * authority for delivered bytes. */
+#define FS_ROM_REFUSAL_SENTINEL 0xFFFFFFFFu
+
+enum fs_rom_refusal_reason {
+    FS_ROM_REFUSE_UNKNOWN     = 0, /* unknown/undeserved chunk_root or index  */
+    FS_ROM_REFUSE_CONN_BUDGET = 1, /* per-connection byte/time budget tripped */
+    FS_ROM_REFUSE_INFLIGHT    = 2, /* per-peer concurrent-serve cap tripped   */
+    FS_ROM_REFUSE_RATE        = 3, /* per-peer/global byte-rate window full    */
+    FS_ROM_REFUSE_IO          = 4, /* server-side chunk read/alloc failure     */
+    FS_ROM_REFUSE_MAX
+};
+
+/* Send a typed ROM chunk refusal frame (see the block comment above). Returns
+ * false on a socket write failure. The connection is terminal after a refusal.
+ * `reason` is one of enum fs_rom_refusal_reason. */
+bool fs_send_chunk_refusal(struct fs_session *s, uint8_t reason);
+
 #endif

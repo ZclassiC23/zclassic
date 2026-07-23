@@ -234,6 +234,39 @@ static int rf_connect(const char *peer_addr, uint16_t port)
     return fd;
 }
 
+/* Must byte-match FS_ROM_REFUSAL_MAC_TAG in file_service.c: the typed ROM
+ * chunk refusal frame rides fs_send_chunk_refusal's MAC scheme with this
+ * constant in the tag slot. "RREF" + zero padding. */
+static const uint8_t RF_ROM_REFUSAL_MAC_TAG[32] = { 'R', 'R', 'E', 'F' };
+
+/* Pure decode of the 4-byte chunk-reply size field: true iff it is the ROM
+ * refusal sentinel (server declined this chunk). A real chunk size never
+ * reaches the sentinel (it is bounded by ROM_SEED_CHUNK_SIZE), so this cleanly
+ * separates a refusal from a data reply — and a corrupt/garbage size is NOT
+ * mistaken for a refusal (only the exact sentinel is). */
+bool rom_fetch_wire_is_refusal(const uint8_t hdr4[4])
+{
+    if (!hdr4)
+        return false;
+    uint32_t size = (uint32_t)hdr4[0] | ((uint32_t)hdr4[1] << 8) |
+                    ((uint32_t)hdr4[2] << 16) | ((uint32_t)hdr4[3] << 24);
+    return size == FS_ROM_REFUSAL_SENTINEL;
+}
+
+/* Human label for a refusal reason code (bounded; unknown codes fold to a
+ * stable string). Used for clean "peer busy" logging and in tests. */
+const char *rom_fetch_refusal_reason_name(uint8_t reason)
+{
+    switch (reason) {
+    case FS_ROM_REFUSE_UNKNOWN:     return "unknown-artifact";
+    case FS_ROM_REFUSE_CONN_BUDGET: return "conn-budget";
+    case FS_ROM_REFUSE_INFLIGHT:    return "inflight-cap";
+    case FS_ROM_REFUSE_RATE:        return "rate-window";
+    case FS_ROM_REFUSE_IO:          return "server-io";
+    default:                        return "declined";
+    }
+}
+
 bool rom_fetch_chunk(const char *peer_addr, uint16_t port,
                      const uint8_t chunk_root[32], uint32_t idx,
                      uint8_t *buf, uint32_t buf_cap, uint32_t *out_sz)
@@ -274,15 +307,51 @@ bool rom_fetch_chunk(const char *peer_addr, uint16_t port,
                  peer_addr, (unsigned)port);
     }
 
-    /* Success reply: raw [4-byte size LE][data][32-byte MAC]. A refusal is
-     * an FS_DONE *frame* (64 KB encrypted) — its leading bytes parse as
-     * garbage here, so it surfaces as a size-cap or read failure below.
-     * Fail-closed either way. */
+    /* Success reply: raw [4-byte size LE][data][32-byte MAC]. A refusal is a
+     * typed frame [4-byte sentinel LE][1-byte reason][32-byte MAC] whose size
+     * field is the impossible-as-a-size FS_ROM_REFUSAL_SENTINEL — decoded here
+     * as a clean, retryable "peer busy — back off", never garbage. */
     uint8_t hdr[4];
     if (!rf_recv_exact(fd, hdr, 4)) {
         close(fd);
         LOG_FAIL(RF_SUBSYS, "chunk: size header read failed (peer %s:%u "
                  "refused or went away)", peer_addr, (unsigned)port);
+    }
+    if (rom_fetch_wire_is_refusal(hdr)) {
+        /* Typed refusal: [1-byte reason][32-byte MAC]. Fixed-size read (a
+         * malicious seeder cannot make us over-read); verify the MAC binds it
+         * to this session, then treat as a clean, retryable back-off — return
+         * false WITHOUT the "implausible size" fail path. */
+        uint8_t reason = 0;
+        uint8_t rmac_wire[32];
+        if (!rf_recv_exact(fd, &reason, 1) || !rf_recv_exact(fd, rmac_wire, 32)) {
+            close(fd);
+            LOG_INFO(RF_SUBSYS, "chunk %u: peer %s:%u refused (truncated "
+                     "refusal frame) — backing off", idx, peer_addr,
+                     (unsigned)port);
+            return false;
+        }
+        close(fd);
+        uint8_t rmac_expect[32];
+        struct sha3_256_ctx rmc;
+        sha3_256_init(&rmc);
+        sha3_256_write(&rmc, s.key, 32);
+        sha3_256_write(&rmc, (const unsigned char *)&s.recv_counter, 8);
+        sha3_256_write(&rmc, RF_ROM_REFUSAL_MAC_TAG, 32);
+        sha3_256_write(&rmc, &reason, 1);
+        sha3_256_finalize(&rmc, rmac_expect);
+        uint8_t rdiff = 0;
+        for (int i = 0; i < 32; i++) rdiff |= rmac_wire[i] ^ rmac_expect[i];
+        if (rdiff != 0) {
+            LOG_INFO(RF_SUBSYS, "chunk %u: peer %s:%u sent an unauthenticated "
+                     "refusal (MAC mismatch) — backing off", idx, peer_addr,
+                     (unsigned)port);
+            return false;
+        }
+        LOG_INFO(RF_SUBSYS, "chunk %u: peer %s:%u busy (%s) — backing off + "
+                 "retry", idx, peer_addr, (unsigned)port,
+                 rom_fetch_refusal_reason_name(reason));
+        return false;
     }
     uint32_t size = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
@@ -1276,10 +1345,18 @@ static bool rf_ver_acquire_chunk(struct rf_ver_job *j, uint32_t i,
          * rather than loop re-fetching content we already know is bad. */
         if (!any_retryable_miss)
             return false;
-        /* Some peer had a transient miss — back off once, then retry the ring
-         * (skip the sleep after the final round). */
-        if (round + 1u < ROM_FETCH_VER_ROUNDS && !atomic_load(&j->abort))
-            platform_sleep_ms(ROM_FETCH_CHUNK_RETRY_MS);
+        /* Some peer had a transient miss (typically a per-peer rate-window
+         * refusal) — back off once, then retry the ring (skip the sleep after
+         * the final round). JITTER the backoff by a chunk-index-derived spread
+         * so N parallel workers that all filled the same per-peer window this
+         * second don't re-collide in lockstep the next round (thundering herd);
+         * each worker holds a distinct chunk index i at any instant, so the
+         * spread de-correlates them while staying bounded and deterministic. */
+        if (round + 1u < ROM_FETCH_VER_ROUNDS && !atomic_load(&j->abort)) {
+            uint32_t jitter = (i * 137u + round * 991u) %
+                              (ROM_FETCH_CHUNK_RETRY_MS / 2u + 1u);
+            platform_sleep_ms(ROM_FETCH_CHUNK_RETRY_MS + jitter);
+        }
     }
     return false;
 }
