@@ -1489,6 +1489,8 @@ int main(int argc, char **argv)
     failures += test_catchup_cadence();
     { extern int test_stage_dump_trylock(void);
       failures += test_stage_dump_trylock(); }
+    { extern int test_agent_posture_trylock(void);
+      failures += test_agent_posture_trylock(); }
     { extern int test_rom_compile_status(void);
       failures += test_rom_compile_status(); }
     { extern int test_rom_watch_loop(void);
