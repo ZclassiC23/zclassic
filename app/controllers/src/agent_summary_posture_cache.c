@@ -25,7 +25,18 @@
  * agent_security_posture_test_override_review_required() and immediately
  * re-invoke this RPC expecting the override to apply to that very call; a
  * cache would serve the pre-override snapshot and break that contract.
- * Release binaries never define ZCL_TESTING. */
+ * Release binaries never define ZCL_TESTING.
+ *
+ * The cache-miss fallthrough below still calls
+ * agent_security_posture_collect(out, NULL) directly, but that call is no
+ * longer able to block this TTL's whole duration: it now tries the shared
+ * node.db connection's own mutex non-blockingly before reading (see
+ * posture_ndb_try_lock() in agent_security_posture.c) and, on contention,
+ * returns the last-known-good (or labeled "posture_unavailable_busy")
+ * snapshot immediately instead of queuing behind a writer's SQLITE_BUSY
+ * retry. This TTL cache remains valuable for coalescing a burst of calls
+ * into one real collection; it is no longer the only thing standing between
+ * a contended connection and a stalled front door. */
 
 #include "event_agent_summary_internal.h"
 
