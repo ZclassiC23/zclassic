@@ -313,7 +313,7 @@ static bool witness_checkpoint_header_solution_repair(int64_t target_at_detect)
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     struct uint256 cp_hash;
     if (!chsr_checkpoint_hash(cp, &cp_hash))
-        return false;
+        return false; // raw-return-ok:no-compiled-checkpoint-witness-cannot-clear
     // honest-witness-ok: NOT poison-absence and NOT an FSM flag. This clears iff
     // a FRESH durable SELECT shows the checkpoint solution landed — a
     // validate_headers_log PASS row OR a hash-bound header_solution_repair row
