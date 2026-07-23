@@ -314,9 +314,12 @@ static void refold_snapshot_candidate_dump_json(struct json_value *out)
  * See CLAUDE.md "Adding state introspection". Read-only: this dumper observes
  * the cached atomics and the durable progress.kv keys; it never marks, clears,
  * or otherwise mutates refold state. `key` is unused. Reentrant-safe — the
- * cached reads take no lock, and the durable peek takes only the recursive
- * progress_store tx lock (the same lock refold_progress_refresh uses), so it is
- * safe to call from a diagnostics context even while a fold step holds it. */
+ * cached reads take no lock, and the durable peek takes progress_store_tx_lock
+ * NON-BLOCKING (trylock): the reducer holds that lock around each fold batch,
+ * so a diagnostics thread must never block on it (it would queue an RPC worker
+ * behind the fold). When the fold owns the lock the durable peek is skipped and
+ * labeled progress_store_busy; the lock-free cached answers are always present.
+ * Mirrors the A2 stage-dump trylock fix. */
 bool refold_progress_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -341,7 +344,19 @@ bool refold_progress_dump_state_json(struct json_value *out, const char *key)
      * store is not open we report the cached answers only. */
     sqlite3 *db = progress_store_db();
     json_push_kv_bool(out, "durable_store_open", db != NULL);
-    if (db) {
+    /* Non-blocking durable peek: the reducer holds progress_store_tx_lock
+     * around each fold batch (heavily so during the from-genesis/from-anchor
+     * refold this dumper reports on), so a BLOCKING acquire here would queue an
+     * RPC worker behind the fold and take the observability front door dark
+     * exactly when it is most needed. Trylock and, when the fold owns the lock,
+     * report busy and emit only the lock-free cached answers above. */
+    bool durable_ok = db && progress_store_tx_trylock();
+    json_push_kv_str(out, "durable_store_status",
+                     !db ? "progress_store_unavailable"
+                         : durable_ok ? "available" : "progress_store_busy");
+    if (db && !durable_ok)
+        json_push_kv_bool(out, "durable_snapshot_retryable", true);
+    if (durable_ok) {
         uint8_t ip[1] = {0};
         size_t ip_n = 0;
         bool ip_found = false;
@@ -351,7 +366,6 @@ bool refold_progress_dump_state_json(struct json_value *out, const char *key)
         uint8_t tbuf[4] = {0};
         size_t t_n = 0;
         bool t_found = false;
-        progress_store_tx_lock();
         bool ip_ok = progress_meta_get(db, REFOLD_IN_PROGRESS_KEY,
                                        ip, sizeof(ip), &ip_n, &ip_found);
         bool fa_ok = progress_meta_get(db, REFOLD_FROM_ANCHOR_KEY,

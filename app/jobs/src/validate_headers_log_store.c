@@ -51,6 +51,22 @@ bool validate_headers_log_ensure_schema(sqlite3 *db)
     if (!add_column_if_missing(db,
             "ALTER TABLE validate_headers_log ADD COLUMN itag BLOB"))
         return false;
+    /* Partial index for the failure-summary reads (COUNT ok=0 + the earliest/
+     * latest ok=0 rows in validate_headers_report.c). Without it, COUNT(*)
+     * WHERE ok=0 full-scans up to ~3.1M rows (ok=0 is normally empty) under
+     * progress_store_tx_lock — the A2 amplifier the utxo_apply
+     * idx_utxo_apply_log_ok0 fix addressed. Bounds the non-blocking dumper's
+     * lock hold to the handful of failure rows. Idempotent; advisory-perf
+     * only, so a create failure is logged but does not fail schema-ensure. */
+    char *ierr = NULL;
+    if (sqlite3_exec(db,
+            "CREATE INDEX IF NOT EXISTS idx_validate_headers_log_ok0 "
+            "  ON validate_headers_log(height) WHERE ok = 0",
+            NULL, NULL, &ierr) != SQLITE_OK)
+        LOG_WARN("validate_headers",
+                 "[validate_headers] ok=0 index create failed: %s",
+                 ierr ? ierr : "(no message)");
+    if (ierr) sqlite3_free(ierr);
     return stage_row_itag_backfill(db, "validate_headers_log");
 }
 

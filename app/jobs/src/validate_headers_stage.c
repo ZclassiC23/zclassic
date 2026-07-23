@@ -993,14 +993,10 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
     json_push_kv_int (out, "pool_size", (int64_t)VH_POOL_SIZE);
     json_push_kv_int (out, "batch_size", (int64_t)VH_BATCH_SIZE);
-    json_push_kv_int (out, "passed_total",
-                      (int64_t)atomic_load(&g_passed_total));
-    json_push_kv_int (out, "failed_total",
-                      (int64_t)atomic_load(&g_failed_total));
-    json_push_kv_int (out, "last_step_unix",
-                      atomic_load(&g_last_step_unix));
-    json_push_kv_int (out, "last_blocked_unix",
-                      atomic_load(&g_last_blocked_unix));
+    json_push_kv_int(out, "passed_total", (int64_t)atomic_load(&g_passed_total));
+    json_push_kv_int(out, "failed_total", (int64_t)atomic_load(&g_failed_total));
+    json_push_kv_int(out, "last_step_unix", atomic_load(&g_last_step_unix));
+    json_push_kv_int(out, "last_blocked_unix", atomic_load(&g_last_blocked_unix));
     json_push_kv_int (out, "failure_recheck_cursor",
                       atomic_load(&g_failure_recheck_cursor));
     json_push_kv_int (out, "last_recheck_frontier",
@@ -1013,6 +1009,10 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_mark_fail_warn_total));
     struct validate_headers_failure_summary failures;
     validate_headers_failure_summary_load(&failures);
+    /* Labeled staleness: progress_store_busy => the counts below are the
+     * struct's init'd defaults (0 / -1), not a real read (fold owned the lock). */
+    json_push_kv_str(out, "failure_summary_status",
+        failures.progress_store_busy ? "progress_store_busy" : "available");
     json_push_kv_int(out, "failure_log_count", failures.count);
     json_push_kv_int(out, "first_failed_height", failures.first_height);
     json_push_kv_str(out, "first_fail_reason", failures.first_reason);

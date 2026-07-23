@@ -127,7 +127,17 @@ void validate_headers_failure_summary_load(
     if (!db)
         return;
 
-    progress_store_tx_lock();
+    /* Observability must never queue behind a fold. The reducer holds
+     * progress_store_tx_lock around each bulk header-validation batch; take it
+     * NON-BLOCKING (trylock) and, when the fold owns it, report busy and return
+     * the init'd summary rather than blocking an RPC worker. Mirrors the A2
+     * stage-dump trylock fix. The ok=0 reads below are index-backed
+     * (idx_validate_headers_log_ok0), so the successful-trylock hold is bounded
+     * to the handful of failure rows, never a full-table scan under the lock. */
+    if (!progress_store_tx_trylock()) {
+        out->progress_store_busy = true;
+        return;
+    }
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT COUNT(*) FROM validate_headers_log WHERE ok=0",
