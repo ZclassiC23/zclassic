@@ -1273,6 +1273,68 @@ bool ev_block_header_parse(const uint8_t *in, size_t in_len,
                            struct ev_block_header *h_out,
                            const uint8_t **solution_out);
 
+/* ── EV_BLOCK_STATUS ─────────────────────────────────────────────────
+ *
+ * Lightweight status-only update for a block_index entry that ALREADY has a
+ * durable EV_BLOCK_HEADER row from first admit. body_persist / script_validate
+ * bump BLOCK_HAVE_DATA / BLOCK_VALID_SCRIPTS (+ nFile/nDataPos/nUndoPos/nTx)
+ * without ever changing the immutable header fields (hash, hashPrev, version,
+ * merkle/sapling roots, time, bits, nonce, Equihash solution) — carrying only
+ * the mutable fields avoids re-serializing the full ~1.5KB header + solution
+ * on every status bump. block_index_projection's catch_up applies this
+ * against the row the prior EV_BLOCK_HEADER created (patches the mutable
+ * fields of the stored blob and re-serializes it there, off the fold's hot
+ * path — see storage/block_index_projection.c).
+ *
+ * Wire layout (little-endian, no padding), fixed 52 bytes:
+ *   bytes  0..31   hash       (block hash — projection lookup key)
+ *   bytes 32..35   nStatus    (uint32 LE)
+ *   bytes 36..39   nFile      (int32 LE)
+ *   bytes 40..43   nDataPos   (uint32 LE)
+ *   bytes 44..47   nUndoPos   (uint32 LE)
+ *   bytes 48..51   nTx        (uint32 LE)
+ */
+#define EV_BLOCK_STATUS_WIRE_LEN 52u
+
+struct ev_block_status {
+    uint8_t  hash[32];
+    uint32_t nStatus;
+    int32_t  nFile;
+    uint32_t nDataPos;
+    uint32_t nUndoPos;
+    uint32_t nTx;
+};
+
+static inline bool
+ev_block_status_serialize(const struct ev_block_status *s,
+                          uint8_t out[EV_BLOCK_STATUS_WIRE_LEN])
+{
+    if (!s || !out) return false;
+    memcpy(out + 0, s->hash, 32);
+    ev_put_u32_le(out + 32, s->nStatus);
+    ev_put_u32_le(out + 36, (uint32_t)s->nFile);
+    ev_put_u32_le(out + 40, s->nDataPos);
+    ev_put_u32_le(out + 44, s->nUndoPos);
+    ev_put_u32_le(out + 48, s->nTx);
+    return true;
+}
+
+static inline bool
+ev_block_status_parse(const void *payload, size_t payload_len,
+                      struct ev_block_status *out)
+{
+    if (!payload || !out) return false;
+    if (payload_len != EV_BLOCK_STATUS_WIRE_LEN) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memcpy(out->hash, buf + 0, 32);
+    out->nStatus  =           ev_get_u32_le(buf + 32);
+    out->nFile    = (int32_t) ev_get_u32_le(buf + 36);
+    out->nDataPos =           ev_get_u32_le(buf + 40);
+    out->nUndoPos =           ev_get_u32_le(buf + 44);
+    out->nTx      =           ev_get_u32_le(buf + 48);
+    return true;
+}
+
 /* ── ZNAM events for znam_projection ───────────────────────────────
  *
  * Frozen wire formats. Variable-length strings carry an explicit u8

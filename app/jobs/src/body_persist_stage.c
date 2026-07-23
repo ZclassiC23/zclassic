@@ -117,9 +117,10 @@ static bool verify_merkle_root(const struct block *blk)
  * every one of these verdicts, so never persist them as permanent ok=0
  * rows — those statuses sit outside every repair's status set and would
  * pin H*, utxo_apply and tip_finalize forever. Clear BLOCK_HAVE_DATA and
- * re-emit the header event (the projection persists the cleared bit across
- * restarts, same discipline as the success path), hold the cursor, and let
- * the normal !HAVE_DATA sync path re-download the body; this stage then
+ * re-emit a status event (the projection persists the cleared bit across
+ * restarts, same discipline as the success path, but as the lightweight
+ * status-only record — see jobs/block_header_emit.h), hold the cursor, and
+ * let the normal !HAVE_DATA sync path re-download the body; this stage then
  * retries. While cleared, the HAVE_DATA gate above idles without re-reading,
  * so the counter advances once per requeue, not per step. Only
  * upstream_failed (a deterministic header-consensus verdict re-fetch cannot
@@ -129,7 +130,7 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
                                              _Atomic uint64_t *counter)
 {
     block_index_status_clear_bits(bi, BLOCK_HAVE_DATA);
-    block_index_emit_header_event(bi, STAGE_NAME, &g_header_event_emit_total,
+    block_index_emit_status_event(bi, STAGE_NAME, &g_header_event_emit_total,
                                   &g_header_event_emit_fail_total);
     atomic_fetch_add(counter, 1);
     atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -258,15 +259,20 @@ static job_result_t step_persist(struct stage_step_ctx *c)
 
     /* The body has landed on disk and round-tripped (hash + merkle verified),
      * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
-     * EV_BLOCK_HEADER with updated nStatus so the projection persists the
-     * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). nTx rides
-     * the same emit: an n_tx=0 row breaks the next boot's nChainTx propagation
+     * a lightweight status event with the updated nStatus so the projection
+     * persists the HAVE_DATA bit (idempotent — the projection patches its
+     * already-durable EV_BLOCK_HEADER row keyed on hash, see
+     * jobs/block_header_emit.h). This bump never re-serializes the immutable
+     * header fields/solution: reducer_ingest_service.c's EV_BLOCK_HEADER emit
+     * already recorded them for this hash before body_persist ever runs (this
+     * stage is strictly downstream of body admission). nTx rides the same
+     * event: an n_tx=0 row breaks the next boot's nChainTx propagation
      * exactly at this block. */
     block_index_status_fetch_or(bi, BLOCK_HAVE_DATA);
     if (bi->nTx == 0 && blk->num_vtx > 0)
         bi->nTx = (unsigned int)blk->num_vtx;
     phase_started = platform_time_monotonic_us();
-    block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
+    block_index_emit_status_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
     reducer_stage_profile_observe_us(
         REDUCER_PROFILE_BODY_PERSIST, RPF_HEADER_EVENT_US,
         (uint64_t)(platform_time_monotonic_us() - phase_started));

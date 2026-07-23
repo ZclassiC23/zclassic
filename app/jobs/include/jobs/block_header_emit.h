@@ -1,12 +1,22 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Shared EV_BLOCK_HEADER emitter for the reducer stages.
+ * Shared EV_BLOCK_HEADER / EV_BLOCK_STATUS emitters for the reducer stages.
  *
- * The reducer stages that raise in-memory `struct block_index` status emit
- * EV_BLOCK_HEADER through this helper, so block_index_projection persists the
- * live chain-index state from one shared mapping.
+ * block_index_emit_header_event() is for FIRST ADMIT (header_admit_stage) and
+ * genuine repair/heal corrections: it carries the full header, including the
+ * up-to-1344-byte Equihash solution, so block_index_projection can construct
+ * a brand-new row.
  *
- * Sources scalars from the in-memory `struct block_index` (not the
+ * block_index_emit_status_event() is for a PURE status bump on an entry that
+ * ALREADY has a durable row (body_persist raising BLOCK_HAVE_DATA,
+ * script_validate raising BLOCK_VALID_SCRIPTS): it carries only the mutable
+ * fields (hash + nStatus/nFile/nDataPos/nUndoPos/nTx, 52 bytes fixed) instead
+ * of re-serializing the immutable header fields + solution on every advance
+ * (measured ~1.4KB/block/bump saved on the fold's hot path — the projection
+ * patches its stored blob's mutable fields off that hot path, during its own
+ * catch_up; see storage/block_index_projection.c).
+ *
+ * Both source scalars from the in-memory `struct block_index` (not the
  * disk_block_index that lib/storage/block_index_db.c serializes). hashPrev is
  * the parent's phashBlock (all-zero for genesis). Best-effort/counted, never
  * fatal — exactly the block_index_db.c semantics. Counters are caller-owned
@@ -86,6 +96,55 @@ static inline void block_index_emit_header_event(
     }
 
     uint64_t off = event_log_append(log, EV_BLOCK_HEADER, stackbuf, written);
+    if (off == UINT64_MAX) {
+        if (emit_fail)
+            atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
+        return;
+    }
+    if (emit_ok)
+        atomic_fetch_add_explicit(emit_ok, 1, memory_order_relaxed);
+}
+
+/* Lightweight counterpart of block_index_emit_header_event() above — see the
+ * file header comment for when to use which. Requires a prior EV_BLOCK_HEADER
+ * row for this hash to already exist in the projection (first admit always
+ * runs upstream of body_persist/script_validate in the reducer pipeline); a
+ * status event for a hash the projection has never folded is a durable-log
+ * ordering defect, logged and counted by the projection's catch_up, never
+ * fatal (the cursor still advances — see block_index_projection.c). */
+static inline void block_index_emit_status_event(
+        const struct block_index *bi, const char *tag,
+        _Atomic uint64_t *emit_ok, _Atomic uint64_t *emit_fail)
+{
+    if (!bi || !bi->phashBlock)
+        return;
+
+    event_log_t *log = event_log_singleton();
+    if (!log) {
+        /* Not wired yet (very early boot, or tests). The projection catches
+         * up once boot completes — not a hard failure, not counted. */
+        return;
+    }
+
+    struct ev_block_status s;
+    memset(&s, 0, sizeof(s));
+    memcpy(s.hash, bi->phashBlock->data, 32);
+    s.nStatus  = block_index_status_load(bi);
+    s.nFile    = block_index_file_load(bi);
+    s.nDataPos = block_index_data_pos_load(bi);
+    s.nUndoPos = block_index_undo_pos_load(bi);
+    s.nTx      = bi->nTx;
+
+    uint8_t buf[EV_BLOCK_STATUS_WIRE_LEN];
+    if (!ev_block_status_serialize(&s, buf)) {
+        LOG_WARN(tag, "[%s] status emit: serialize failed h=%d",
+                 tag, bi->nHeight);
+        if (emit_fail)
+            atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
+        return;
+    }
+
+    uint64_t off = event_log_append(log, EV_BLOCK_STATUS, buf, sizeof(buf));
     if (off == UINT64_MAX) {
         if (emit_fail)
             atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);

@@ -573,13 +573,18 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         /* Raise the in-memory validity level to BLOCK_VALID_SCRIPTS, which
          * tip_finalize.preconditions_ok requires before publication. This is
          * a validity LEVEL stored in the low BLOCK_VALID_MASK bits, not an
-         * OR-able flag, so clear the mask before setting it. Re-emit
-         * EV_BLOCK_HEADER so the projection persists the new nStatus across
-         * restart. bi is the live in-memory entry from active_chain_at; blk
-         * was freed above but bi is independent. */
+         * OR-able flag, so clear the mask before setting it. Re-emit a
+         * lightweight status event (jobs/block_header_emit.h) so the
+         * projection persists the new nStatus across restart WITHOUT
+         * re-serializing the immutable header fields + Equihash solution —
+         * those were already durably recorded by the first-admit
+         * EV_BLOCK_HEADER (header_admit_stage) this hash's projection row
+         * carries; only the mutable status/nTx bits change here. bi is the
+         * live in-memory entry from active_chain_at; blk was freed above but
+         * bi is independent. */
         block_index_status_set_valid_level(bi, BLOCK_VALID_SCRIPTS);
         phase_started = platform_time_monotonic_us();
-        block_index_emit_header_event(bi, "script_validate", &g_header_event_emit_total, &g_header_event_emit_fail_total);
+        block_index_emit_status_event(bi, "script_validate", &g_header_event_emit_total, &g_header_event_emit_fail_total);
         reducer_stage_profile_observe_us(REDUCER_PROFILE_SCRIPT_VALIDATE,
                                          RPF_HEADER_EVENT_US,
                                   (uint64_t)(platform_time_monotonic_us() -
