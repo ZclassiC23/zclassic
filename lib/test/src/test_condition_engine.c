@@ -18,6 +18,7 @@
 
 static _Atomic bool g_detect;
 static _Atomic bool g_witness;
+static _Atomic bool g_urgent;
 static _Atomic int g_detect_calls;
 static _Atomic int g_remedy_calls;
 static _Atomic int g_detail_calls;
@@ -39,6 +40,11 @@ static bool ce_witness(int64_t target_at_detect)
 {
     (void)target_at_detect;
     return atomic_load(&g_witness);
+}
+
+static bool ce_urgent(void)
+{
+    return atomic_load(&g_urgent);
 }
 
 static bool ce_detail(struct json_value *out)
@@ -65,6 +71,7 @@ static void reset_fixture(void)
     event_log_init();
     atomic_store(&g_detect, false);
     atomic_store(&g_witness, false);
+    atomic_store(&g_urgent, false);
     atomic_store(&g_detect_calls, 0);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_detail_calls, 0);
@@ -128,6 +135,46 @@ int test_condition_engine(void)
         condition_engine_tick();
         ok = ok && atomic_load(&g_remedy_calls) == 1;
         CE_CHECK("backoff suppresses immediate retry", ok);
+    }
+
+    /* An urgent() hook returning true makes the remedy immediately due,
+     * bypassing the 30s backoff — the second tick runs the remedy even though
+     * backoff_secs has not elapsed. With urgent() false it stays suppressed
+     * (the case above). This is the checkpoint-header-capture fast path. */
+    static struct condition c_urgent = {
+        .name = "ce_urgent",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 30,
+        .max_attempts = 5,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .urgent = ce_urgent,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_urgent);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_urgent, true);
+        condition_engine_tick();
+        condition_engine_tick();
+        /* Both ticks run the remedy despite the 30s backoff (urgent bypass). */
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+        CE_CHECK("urgent hook bypasses backoff (remedy runs immediately)", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_urgent);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_urgent, false);   /* not urgent → backoff still holds */
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 1;
+        CE_CHECK("urgent hook false leaves backoff intact", ok);
     }
 
     static struct condition c_slow_poll = {

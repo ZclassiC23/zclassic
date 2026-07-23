@@ -277,6 +277,11 @@ static bool condition_due_for_remedy(const struct condition *cond,
         /* re-armed: attempts reset to 0; fall through to the backoff gate */
     }
     (void)attempts;
+    /* Remedy-urgency override: a time-sensitive input is ready NOW (e.g. a
+     * captured datum awaiting consume), so skip the backoff wait for this tick.
+     * Still gated by the attempt cap + cooldown above, so it cannot spin. */
+    if (cond->urgent && cond->urgent())
+        return true;
     int64_t last = atomic_load(&s->last_remedy_unix);
     int backoff = cond->backoff_secs > 0 ? cond->backoff_secs : 0;
     return last == 0 || now - last >= backoff;

@@ -311,6 +311,17 @@ static enum condition_remedy_result remedy_checkpoint_header_solution_repair(voi
     return COND_REMEDY_SKIP;
 }
 
+/* Remedy-urgency: a checkpoint header was captured off the net thread and is
+ * waiting to be verified + persisted. Consume it on the next engine tick
+ * instead of waiting out backoff_secs (up to 30s) — the solution is the last
+ * gate before the staged bundle can bind, so every second of that wait is dead
+ * time on the cure path. Non-consuming peek; the remedy's take() does the
+ * consume + frozen verify. */
+static bool urgent_checkpoint_header_solution_repair(void)
+{
+    return checkpoint_header_fetch_has_capture();
+}
+
 static bool witness_checkpoint_header_solution_repair(int64_t target_at_detect)
 {
     (void)target_at_detect;
@@ -342,6 +353,9 @@ static struct condition c_checkpoint_header_solution_repair = {
     .detect = detect_checkpoint_header_solution_repair,
     .remedy = remedy_checkpoint_header_solution_repair,
     .witness = witness_checkpoint_header_solution_repair,
+    /* A captured header makes the remedy immediately due — do not wait out the
+     * 30s backoff to verify + persist the checkpoint solution. */
+    .urgent = urgent_checkpoint_header_solution_repair,
     .witness_window_secs = 30,
 };
 

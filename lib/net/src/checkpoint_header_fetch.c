@@ -62,6 +62,14 @@ bool checkpoint_header_fetch_is_armed(void)
     return atomic_load(&g_armed);
 }
 
+bool checkpoint_header_fetch_has_capture(void)
+{
+    /* Non-consuming peek: unlike take(), never clears the slot. Relaxed is
+     * fine — the caller (the repair remedy) re-checks + consumes under the
+     * lock via take(); this only decides whether to run the remedy now. */
+    return atomic_load_explicit(&g_captured, memory_order_relaxed);
+}
+
 bool checkpoint_header_fetch_take(struct block_header *out, int32_t *out_height)
 {
     if (!out)

@@ -7,7 +7,6 @@
 #include "services/block_index_loader.h"
 #include "services/block_row_verify.h"
 #include "services/block_index_integrity.h"
-#include "services/invariant_sentinel.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "chain/chain.h"
@@ -556,15 +555,6 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
     }
     memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
 
-    /* Height→index for O(1) pprev linking */
-    int32_t max_h = entries[count - 1].height;
-    struct block_index **by_height = NULL;
-    if (max_h > 0 && max_h < 10000000) {
-        by_height = zcl_calloc((size_t)(max_h + 1), sizeof(struct block_index *), "block_index by_height");
-        if (!by_height)
-            LOG_WARN("block_index_flat", "block_index_flat: by_height calloc failed " "(%d entries) — pprev linking will be slow", max_h + 1);
-    }
-
     /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
     /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. Fetched
@@ -645,9 +635,6 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
             case BLOCK_FAILURE_TRUST_DEMOTED:  demoted_failed++;  break;
             case BLOCK_FAILURE_TRUST_NONE:     break;
         }
-
-        if (by_height && pindex->nHeight >= 0 && pindex->nHeight <= max_h)
-            by_height[pindex->nHeight] = pindex;
     }
     if (stripped_failed || demoted_failed)
         LOG_INFO("block_index_flat",
@@ -656,43 +643,37 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
                  "candidates (>ckpt)",
                  (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
-    /* Link pprev via prev_hash lookup (handles orphans correctly).
-     * Height-based linking breaks when orphan blocks at the same height
-     * overwrite the main chain entry in by_height[], causing the pprev
-     * chain to follow orphan forks instead of the main chain. */
+    /* Link pprev HASH-ONLY: resolve each entry's parent by its stored
+     * prev_hash, never by a height guess. The insert loop above has already
+     * fully populated the block_map (linking is a separate second pass), so a
+     * prev_hash that still misses means the parent genuinely is not loaded —
+     * pprev then stays NULL (honest), which the ancestry-break / typed-blocker
+     * machinery (utxo_recovery_block_ancestry_break + the scoped relink)
+     * handles by design. A by-HEIGHT fallback would instead wire a WRONG parent
+     * from a scrambled stored height, forming a pprev lasso — the ~103k-node
+     * cycle the live-cure wedge traced to — that no height relabel can cure and
+     * that the scoped relink can only fail-closed (cycle=1) refuse. The stored
+     * hashPrev bytes are the sole authority; the SQLite-cache and node.db
+     * hydrate loaders already link hash-only, and this brings the flat loader
+     * in line. An all-zero prev_hash is genesis. Once the graph is acyclic, a
+     * pure height-label scramble is curable by the scoped ancestry relink
+     * (terminus-pinned to the compiled checkpoint), not by the loader. */
     for (uint32_t i = 0; i < count; i++) {
         if ((i & 0xFFFF) == 0)
             boot_progress_note("block_index.flat_link", i, count);
         struct block_index *pindex = &arena[i];
-        /* Link by the entry's own prev_hash, NOT by its stored height:
-         * an entry persisted with a corrupt height 0 (a detached root a
-         * relabel stamped) is skipped by an `nHeight > 0` test and stays
-         * detached on every boot. An all-zero prev_hash is genesis. */
         bool has_prev = false;
         for (int pb = 0; pb < 32; pb++)
             if (entries[i].prev_hash[pb]) { has_prev = true; break; }
         if (has_prev) {
-            /* Look up prev_hash in block_map */
             struct uint256 prev;
             memcpy(prev.data, entries[i].prev_hash, 32);
             struct block_index *pp = block_map_find(bm, &prev);
             if (pp)
                 pindex->pprev = pp;
-            else if (by_height && pindex->nHeight - 1 >= 0 &&
-                     pindex->nHeight - 1 <= max_h) {
-                pindex->pprev = by_height[pindex->nHeight - 1]; /* fallback */
-                LOG_WARN("block_index_flat",
-                         "WARNING: pprev for height %d resolved via height fallback "
-                         "(prev_hash not found in block_map)",
-                         pindex->nHeight);
-                /* Validation pack: a by-height fallback is exactly the
-                 * ambiguity a label splice exploits — counted so it
-                 * surfaces in `zclassic23 dumpstate validation_pack`. */
-                invariant_sentinel_note_loader_height_fallback();
-            }
+            /* else: parent not loaded — leave pprev NULL (see above). */
         }
     }
-    free(by_height);
 
     /* Timing only (no behavior change): the qsort + forward pass below is a
      * distinct cost class from the parse/insert loop above (it sorts and walks

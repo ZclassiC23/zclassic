@@ -316,6 +316,106 @@ int test_block_index_loader(void)
         block_map_free(&ms2.map_block_index);
     }
 
+    /* ── 2b. Scrambled stored height loads WITHOUT a pprev lasso ─────────
+     * Regression fixture for the live-cure wedge root cause: the flat loader's
+     * old by-HEIGHT pprev fallback wired a WRONG parent whenever a stored
+     * height label was scrambled, forming a pprev cycle the scoped ancestry
+     * relink could only fail-closed (cycle=1) refuse. The loader now links
+     * pprev HASH-ONLY: a prev_hash that misses resolves to NULL (honest), never
+     * a height guess.
+     *
+     * Shape: node P has a prev_hash that is NOT in the file (its parent is not
+     * loaded); node C is P's REAL child (C.prev_hash == P.hash, so it links by
+     * hash) but C's stored height is scrambled to P.height-1. Under the deleted
+     * fallback, P's missing prev_hash resolved to by_height[P.height-1] == C —
+     * P.pprev = C while C.pprev = P is a 2-node lasso. Hash-only linking leaves
+     * P.pprev == NULL, so the graph is acyclic. */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        /* Ghost parent: a hash P points at that we DO NOT insert, so it is not
+         * saved and P's prev_hash misses on reload. */
+        struct uint256 ghost_hash = make_test_hash(900);
+        struct block_index ghost;
+        block_index_init(&ghost);
+        ghost.hashBlock = ghost_hash;
+        ghost.phashBlock = &ghost.hashBlock;
+
+        struct uint256 p_hash = make_test_hash(10);
+        struct uint256 c_hash = make_test_hash(11);
+        struct block_index *P = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &p_hash);
+        struct block_index *C = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &c_hash);
+        bool built = (P && C);
+        if (built) {
+            P->nHeight = 10;
+            P->nBits = 0x1f07ffff;
+            P->nTime = 1000000;
+            P->nVersion = 4;
+            P->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            P->nTx = 1;
+            P->pprev = &ghost;               /* saved prev_hash = ghost (misses) */
+
+            C->nBits = 0x1f07ffff;
+            C->nTime = 1000150;
+            C->nVersion = 4;
+            C->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            C->nTx = 1;
+            C->pprev = P;                    /* saved prev_hash = P.hash (links) */
+            C->nHeight = 9;                  /* SCRAMBLE: == P.height - 1 */
+        }
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_nolasso", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        if (built)
+            save_block_index_flat(tmpdir, &ms);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        bool loaded = built && load_block_index_flat(tmpdir, &ms2).ok;
+
+        struct block_index *P2 = loaded
+            ? block_map_find(&ms2.map_block_index, &p_hash) : NULL;
+        struct block_index *C2 = loaded
+            ? block_map_find(&ms2.map_block_index, &c_hash) : NULL;
+
+        /* P's missing parent resolves to NULL — NEVER the height-guessed C. */
+        BIL_CHECK("bil: scrambled height — missing parent is NULL, not "
+                  "height-guessed",
+                  P2 != NULL && P2->pprev == NULL);
+        /* C's hash linkage to P survives (hash-only linking is not affected). */
+        BIL_CHECK("bil: scrambled height — child still hash-links to its "
+                  "real parent", C2 != NULL && C2->pprev == P2);
+
+        /* The graph is acyclic: a bounded pprev walk from every node
+         * terminates well within the node count (a lasso would spin to the
+         * cap). */
+        bool acyclic = (P2 && C2);
+        if (acyclic) {
+            int steps = 0;
+            for (struct block_index *cur = C2; cur && steps < 8; steps++)
+                cur = cur->pprev;
+            acyclic = acyclic && (steps <= 2);   /* C2 -> P2 -> NULL */
+        }
+        BIL_CHECK("bil: scrambled height — pprev graph is acyclic (no lasso)",
+                  acyclic);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
     /* ── 3. Flat file bad magic rejected ─────────────────── */
 
     {
