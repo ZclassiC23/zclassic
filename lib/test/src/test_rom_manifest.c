@@ -298,6 +298,73 @@ static int test_rom_journal_mark_count_resume(void)
     return failures;
 }
 
+/* ── Capacity: the 32 GiB / 4096-chunk ceiling and its boundaries ──────── */
+
+static int test_rom_capacity_max_chunks(void)
+{
+    int failures = 0;
+    TEST("rom_manifest: 32 GiB / 4096-chunk capacity ceiling holds end to end") {
+        /* Pinned capacity constants: an 8 MB chunk, 4096 chunks, a 32 GiB
+         * single-artifact cap, and the 128 KiB manifest-blob bound that follows.
+         * A regression in any one trips here. */
+        ASSERT(ROM_SEED_CHUNK_SIZE == 8u * 1024u * 1024u);
+        ASSERT(ROM_SEED_MAX_CHUNKS == 4096u);
+        ASSERT(ROM_SEED_MAX_ARTIFACT_BYTES ==
+               (uint64_t)ROM_SEED_MAX_CHUNKS * ROM_SEED_CHUNK_SIZE);
+        ASSERT(ROM_SEED_MAX_ARTIFACT_BYTES == UINT64_C(34359738368)); /* 32 GiB */
+        ASSERT(ROM_SEED_MANIFEST_BLOB_MAX == 8u + ROM_SEED_MAX_CHUNKS * 32u);
+
+        /* The old 4 GiB ceiling is gone: a header seed just past 4 GiB is now
+         * accepted by the size-band guard, the cap boundary is inclusive, and
+         * one byte over is rejected before any allocation. */
+        const uint64_t four_gib = UINT64_C(4) * 1024 * 1024 * 1024;
+        ASSERT(rom_seed_kind_content_ok(ROM_ARTIFACT_HEADER_SEED, NULL, 0,
+                                        four_gib + 1)); /* was rejected pre-bump */
+        ASSERT(rom_seed_kind_content_ok(ROM_ARTIFACT_HEADER_SEED, NULL, 0,
+                                        UINT64_C(20) * 1024 * 1024 * 1024));
+        ASSERT(rom_seed_kind_content_ok(ROM_ARTIFACT_HEADER_SEED, NULL, 0,
+                                        ROM_SEED_MAX_ARTIFACT_BYTES));
+        ASSERT(!rom_seed_kind_content_ok(ROM_ARTIFACT_HEADER_SEED, NULL, 0,
+                                         ROM_SEED_MAX_ARTIFACT_BYTES + 1));
+
+        /* Max-chunk-count manifest round-trip: serialize a full 4096-chunk
+         * artifact (the 128 KiB blob), then parse + fold-verify it back. Heap,
+         * not stack — the artifact and buffers are ~128 KiB each. */
+        struct rom_artifact *a = malloc(sizeof(*a));
+        ASSERT(a != NULL);
+        memset(a, 0, sizeof(*a));
+        a->num_chunks = ROM_SEED_MAX_CHUNKS;
+        for (uint32_t c = 0; c < a->num_chunks; c++)
+            memset(a->chunk_sha3[c], (int)((c * 7u + 1u) & 0xFFu), 32);
+        uint8_t root[32];
+        fold_chunk_root(a->chunk_sha3, a->num_chunks, root);
+
+        uint8_t *blob = malloc(ROM_SEED_MANIFEST_BLOB_MAX);
+        ASSERT(blob != NULL);
+        size_t n = rom_seed_manifest_blob(a, blob, ROM_SEED_MANIFEST_BLOB_MAX);
+        ASSERT(n == 8u + (size_t)ROM_SEED_MAX_CHUNKS * 32u);
+
+        uint8_t (*out)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
+        ASSERT(out != NULL);
+        uint32_t nc = 0;
+        ASSERT(rom_fetch_parse_manifest_blob(blob, n, root, out,
+                                             ROM_SEED_MAX_CHUNKS, &nc));
+        ASSERT(nc == ROM_SEED_MAX_CHUNKS);
+        for (uint32_t c = 0; c < nc; c++)
+            ASSERT(memcmp(out[c], a->chunk_sha3[c], 32) == 0);
+
+        /* One chunk past the cap is rejected before serialization. */
+        a->num_chunks = ROM_SEED_MAX_CHUNKS + 1;
+        ASSERT(rom_seed_manifest_blob(a, blob, ROM_SEED_MANIFEST_BLOB_MAX) == 0);
+
+        free(out);
+        free(blob);
+        free(a);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_rom_manifest(void)
 {
     int failures = 0;
@@ -309,5 +376,6 @@ int test_rom_manifest(void)
     failures += test_rom_manifest_parse_rejects();
     failures += test_rom_verify_chunk();
     failures += test_rom_journal_mark_count_resume();
+    failures += test_rom_capacity_max_chunks();
     return failures;
 }

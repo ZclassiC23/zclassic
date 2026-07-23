@@ -21,9 +21,10 @@ this lane is the fetch half.
 - Artifact registry + digests: `lib/net/src/rom_seed.c` — registration
   re-derives `whole_sha3`, per-chunk `chunk_sha3[129]`, and `chunk_root`
   (SHA3 over concatenated per-chunk digests) from disk bytes
-  (`rom_seed_register`, rom_seed.c:171-331). Chunking: 4 MB
-  (`ROM_SEED_CHUNK_SIZE`, lib/net/include/net/rom_seed.h:34); a 513 MB bundle
-  is 129 chunks. Registry cap 8 artifacts, artifact cap 4 GB.
+  (`rom_seed_register`, rom_seed.c:171-331). Chunking: 8 MB
+  (`ROM_SEED_CHUNK_SIZE`, lib/net/include/net/rom_seed.h); a ~490 MB bundle
+  is ~62 chunks. Registry cap 8 artifacts, artifact cap 32 GiB
+  (`ROM_SEED_MAX_CHUNKS` 4096 × 8 MB).
 - Wire protocol: a ROM chunk request rides the existing file-service transport
   (direct TCP, default port `FS_PORT` 18034, SHA3-CTR session keyed off an
   all-zero utxo_root — see server side `fs_handle_client_fd`,

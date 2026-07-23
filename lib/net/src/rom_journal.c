@@ -35,7 +35,7 @@
 
 /* Defensive upper bound on num_chunks so a corrupt/hostile value cannot force
  * a huge bitmap allocation. Far above the ROM protocol's real cap
- * (ROM_SEED_MAX_CHUNKS == 1024) but bounded regardless of the caller. A 16 M
+ * (ROM_SEED_MAX_CHUNKS == 4096) but bounded regardless of the caller. A 16 M
  * cap is a 2 MB bitmap. */
 #define RJ_MAX_NUM_CHUNKS  (1u << 24)
 
