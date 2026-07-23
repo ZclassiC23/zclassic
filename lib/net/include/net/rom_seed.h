@@ -28,14 +28,20 @@
 
 /* ── Layout constants ───────────────────────────────────────────────── */
 
-/* 4 MB serving chunk: a 513 MB consensus bundle is ~129 chunks. Small enough
- * that a lost/corrupt chunk is cheap to re-fetch, large enough that framing
- * overhead is negligible. */
-#define ROM_SEED_CHUNK_SIZE       (4u * 1024u * 1024u)
+/* 8 MB serving chunk: a ~490 MB consensus bundle is ~62 chunks; a full ~15-20 GB
+ * starter package is a few thousand. One chunk exactly equals the default
+ * per-peer rate window (ROM_SEED_DEFAULT_PEER_BPS_CAP below), so a stock seeder
+ * paces at one chunk per wall-second per peer — the _Static_assert after the cap
+ * defaults pins that coupling. A larger chunk would exceed the per-peer window
+ * and be refused every time; a smaller one would need more chunks (bigger
+ * per-artifact digest table + manifest blob) for the same byte reach. */
+#define ROM_SEED_CHUNK_SIZE       (8u * 1024u * 1024u)
 
-/* Bounds. MAX_CHUNKS * CHUNK_SIZE = 4 GB caps a single artifact; MAX_ARTIFACTS
- * bounds the registry. Both tables are static — never sized from a wire value. */
-#define ROM_SEED_MAX_CHUNKS       1024u
+/* Bounds. MAX_CHUNKS * CHUNK_SIZE = 32 GiB caps a single artifact (comfortably
+ * over the ~15-20 GB starter-package target); MAX_ARTIFACTS bounds the registry.
+ * Both tables are static — never sized from a wire value. The per-artifact
+ * chunk-digest table is MAX_CHUNKS * 32 B = 128 KiB (registry 1 MiB static). */
+#define ROM_SEED_MAX_CHUNKS       4096u
 #define ROM_SEED_MAX_ARTIFACTS    8u
 #define ROM_SEED_NAME_MAX         128u
 
@@ -63,6 +69,16 @@
 #define ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER  2u
 #define ROM_SEED_DEFAULT_PEER_BPS_CAP   (8ull * 1024 * 1024)   /*  8 MB/s / peer  */
 #define ROM_SEED_DEFAULT_GLOBAL_BPS_CAP (64ull * 1024 * 1024)  /* 64 MB/s total   */
+
+/* The free-tier byte-rate cap is charged whole-chunk in one shot
+ * (rom_seed_rate_charge): a chunk larger than the default per-peer window would
+ * be refused on every attempt and the artifact could never be served. Keep one
+ * chunk within both default windows so a stock seeder can always make forward
+ * progress; raising CHUNK_SIZE requires raising these caps in lockstep. */
+_Static_assert((uint64_t)ROM_SEED_CHUNK_SIZE <= ROM_SEED_DEFAULT_PEER_BPS_CAP,
+               "ROM chunk must fit the default per-peer rate window");
+_Static_assert((uint64_t)ROM_SEED_CHUNK_SIZE <= ROM_SEED_DEFAULT_GLOBAL_BPS_CAP,
+               "ROM chunk must fit the default global rate window");
 
 /* ── Artifact kinds ─────────────────────────────────────────────────── */
 

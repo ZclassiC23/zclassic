@@ -226,31 +226,38 @@ static int test_parse_directory(void)
         memset(out, 0, sizeof(out));
 
         /* Two valid artifacts + one bad-digest entry + one inconsistent
-         * layout entry: the valid ones parse, the bad ones are skipped. */
-        const char *doc =
+         * layout entry: the valid ones parse, the bad ones are skipped. Sizes
+         * derive from ROM_SEED_CHUNK_SIZE (one full chunk + a 4 KB tail = 2
+         * chunks) so this stays correct across capacity bumps. */
+        const uint64_t vsize = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
+        char doc[1024];
+        snprintf(doc, sizeof(doc),
             "{\"nodes\":[],\"count\":0,\"artifacts\":["
             "{\"kind\":\"consensus_bundle\","
             "\"digest\":\"00112233445566778899aabbccddeeff"
             "00112233445566778899aabbccddeeff\","
             "\"whole_sha3\":\"ffffffffffffffffffffffffffffffff"
             "ffffffffffffffffffffffffffffffff\","
-            "\"size\":4198400,\"chunk_size\":4194304,\"chunks\":2},"
+            "\"size\":%llu,\"chunk_size\":%u,\"chunks\":2},"
             "{\"kind\":\"consensus_bundle\","
             "\"digest\":\"zz112233445566778899aabbccddeeff"
             "00112233445566778899aabbccddeeff\","
             "\"whole_sha3\":\"ffffffffffffffffffffffffffffffff"
             "ffffffffffffffffffffffffffffffff\","
-            "\"size\":4198400,\"chunk_size\":4194304,\"chunks\":2},"
+            "\"size\":%llu,\"chunk_size\":%u,\"chunks\":2},"
             "{\"kind\":\"consensus_bundle\","
             "\"digest\":\"00112233445566778899aabbccddeeff"
             "00112233445566778899aabbccddeeff\","
             "\"whole_sha3\":\"ffffffffffffffffffffffffffffffff"
             "ffffffffffffffffffffffffffffffff\","
-            "\"size\":4198400,\"chunk_size\":4194304,\"chunks\":7}]}";
+            "\"size\":%llu,\"chunk_size\":%u,\"chunks\":7}]}",
+            (unsigned long long)vsize, (unsigned)ROM_SEED_CHUNK_SIZE,
+            (unsigned long long)vsize, (unsigned)ROM_SEED_CHUNK_SIZE,
+            (unsigned long long)vsize, (unsigned)ROM_SEED_CHUNK_SIZE);
         int n = rom_fetch_parse_directory(doc, out, ROM_FETCH_MAX_ARTIFACTS);
         ASSERT_EQ(n, 1);
         ASSERT(out[0].used);
-        ASSERT(out[0].size_bytes == 4198400);
+        ASSERT(out[0].size_bytes == vsize);
         ASSERT(out[0].num_chunks == 2);
         ASSERT(out[0].chunk_root[0] == 0x00 && out[0].chunk_root[1] == 0x11);
         ASSERT(out[0].whole_sha3[0] == 0xff);
