@@ -933,6 +933,77 @@ static int case_split_at_floor(void)
     return failures;
 }
 
+/* (f) Pre-flip schema: proof_validate_log has NO block_hash column at all — the
+ *     live canonical / pre-migration datadir shape (see
+ *     proof_validate_null_hash_rearm.c). The C3 split scan MUST (1) not error on
+ *     the absent column (before the schema-aware fix it aborted the whole H*
+ *     fold with "no such column: p.block_hash", the exact bundle-install crash)
+ *     and (2) still derive agreement from the witnesses the schema DOES carry
+ *     (validate_headers.hash, header_admit.hash, script_validate.block_hash,
+ *     utxo_apply_delta.branch_hash), clamping on a real disagreement there. */
+static int case_preflip_no_proof_block_hash(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("preflip: schema", build_schema(db));
+    RF_CHECK("preflip: proven authority", stamp_proven_authority(db, A));
+
+    /* Recreate proof_validate_log WITHOUT the later-added block_hash column,
+     * reproducing the pre-flip on-disk shape exactly. */
+    char *err = NULL;
+    RF_CHECK("preflip: drop proof block_hash column",
+             sqlite3_exec(db,
+                 "DROP TABLE proof_validate_log;"
+                 "CREATE TABLE proof_validate_log ("
+                 "  height INTEGER PRIMARY KEY, status TEXT,"
+                 "  ok INTEGER NOT NULL);",
+                 NULL, NULL, &err) == SQLITE_OK);
+    sqlite3_free(err);
+
+    /* A+1..A+5 consistent across every carried witness; proof rows are ok=1
+     * with NO block_hash (the column does not exist). */
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 5; h++) {
+        uint8_t hh[32];
+        synth_hash(hh, h, 0);
+        built = built
+            && put_header_admit(db, h, hh)
+            && put_log_row(db, "validate_headers_log", "hash", h, 1, hh, NULL)
+            && put_log_row(db, "script_validate_log", "block_hash", h, 1, hh,
+                           "ok")
+            && put_log_row(db, "body_persist_log", NULL, h, 1, NULL, NULL)
+            && put_log_row(db, "proof_validate_log", NULL, h, 1, NULL, NULL)
+            && put_log_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
+            && put_utxo_delta(db, h, hh)
+            && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+    }
+    RF_CHECK("preflip: rows built", built);
+    RF_CHECK("preflip: cursors", set_all_cursors(db, A + 6));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    /* (1) No missing-column abort: compute_hstar returns true. */
+    RF_CHECK("preflip: compute returns true (no missing-column abort)", ok);
+    /* (2) The honestly-resolved prefix reaches A+5 — an absent proof witness is
+     *     NOT a split. Pre-fix this branch errored out entirely. */
+    RF_CHECK("preflip: hstar == A+5", hstar == A + 5);
+
+    /* A real disagreement in a CARRIED witness (script) at A+3 still clamps. */
+    uint8_t bad[32];
+    synth_hash(bad, A + 3, 9);
+    RF_CHECK("preflip: script fork fixture",
+             set_hash_value(db, "script_validate_log", "block_hash", A + 3,
+                            bad, 32, false));
+    hstar = -1; served = -1;
+    RF_CHECK("preflip: recompute",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("preflip: carried-witness fork caps H* at A+2", hstar == A + 2);
+
+    sqlite3_close(db);
+    return failures;
+}
+
 static int case_dump_reports_validate_failure_owner(void)
 {
     int failures = 0;
@@ -1836,6 +1907,7 @@ int test_reducer_frontier(void)
     failures += case_clamp_up();
     failures += case_hash_split();
     failures += case_split_at_floor();
+    failures += case_preflip_no_proof_block_hash();
     failures += case_dump_reports_validate_failure_owner();
     failures += case_dump_reports_unavailable_store();
     failures += case_dump_reports_hstar_log_hole();

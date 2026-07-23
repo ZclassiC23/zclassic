@@ -66,6 +66,31 @@ static void hash_prefix(sqlite3_stmt *st, int column, uint8_t out[4])
         memcpy(out, blob, 4);
 }
 
+/* True iff `table` currently carries a column named `col`. Schema generations
+ * differ: the nullable per-stage hash witnesses (script_validate_log.block_hash,
+ * proof_validate_log.block_hash) were ADDED after the reducer shipped, so a
+ * pre-flip / pre-migration datadir has proof rows with NO block_hash column at
+ * all (see proof_validate_null_hash_rearm.c). Enumerate the actual columns via
+ * pragma_table_info — a LIMIT-0 SELECT probe is unsafe here because SQLite's
+ * legacy double-quoted-identifier fallback silently reads an absent "col" as a
+ * STRING LITERAL and prepares fine, wrongly reporting the column present.
+ * table/col here are compile-time constants (no injection surface). */
+static bool column_exists(sqlite3 *db, const char *table, const char *col)
+{
+    char sql[160];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT 1 FROM pragma_table_info('%s') WHERE name='%s'",
+                     table, col);
+    if (n < 0 || n >= (int)sizeof(sql))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bool found = sqlite3_step(st) == SQLITE_ROW;  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    return found;
+}
+
 /* Clamp H* below the first missing, malformed, or mixed-fork binding.  Every
  * serving height must name one exact selected header in header_admit,
  * validate_headers, script validation, proof validation, and the
@@ -78,10 +103,30 @@ bool reducer_frontier_apply_hash_agreement(sqlite3 *db, int32_t anchor,
     if (*hstar <= anchor)
         return true;
 
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT v.height,v.hash,h.hash,s.block_hash,p.block_hash,"
-            "d.branch_hash "
+    /* Schema-aware split scan. The always-present NOT NULL witnesses
+     * (validate_headers.hash, header_admit.hash, utxo_apply_delta.branch_hash —
+     * the load-bearing coins<->header binding) are STRICT: each must be a 32-byte
+     * blob AND agree with the validated header. The two nullable witnesses
+     * (script_validate_log.block_hash, proof_validate_log.block_hash) were added
+     * to the stage-log schema after the reducer shipped; a pre-flip datadir has
+     * proof rows with NO block_hash column at all, and even post-ALTER the
+     * historical rows hold NULL. Reference each nullable witness ONLY when its
+     * column exists (else PREPARE fails "no such column: p.block_hash" and the
+     * whole H* fold errors), and treat it as VERIFY-IF-PRESENT: a genuine SQL
+     * NULL (or an absent column) means "this stage carries no independent hash
+     * witness here" and is exempt — it must not falsely clamp the honestly-
+     * derived prefix. A NON-NULL value is still checked in full: a malformed
+     * one (wrong type / not 32 bytes) or a 32-byte blob that DISAGREES with the
+     * header IS a split. A fresh node stamps block_hash on every row it authors,
+     * so present-and-check == always-check there; only the legitimate historical
+     * NULLs are skipped. The strict witnesses stay strict, so a NULL/missing
+     * mandatory row (LEFT JOIN miss) still clamps. */
+    const bool script_bh = column_exists(db, "script_validate_log", "block_hash");
+    const bool proof_bh  = column_exists(db, "proof_validate_log", "block_hash");
+
+    char sql[1200];
+    int n = snprintf(sql, sizeof(sql),
+            "SELECT v.height,v.hash,h.hash,%s,%s,d.branch_hash "
             "FROM validate_headers_log v "
             "LEFT JOIN header_admit_log h ON h.height=v.height "
             "LEFT JOIN script_validate_log s ON s.height=v.height "
@@ -90,13 +135,27 @@ bool reducer_frontier_apply_hash_agreement(sqlite3 *db, int32_t anchor,
             "WHERE v.height > ? AND v.height <= ? "
             "AND (typeof(v.hash) <> 'blob' OR length(v.hash) <> 32 "
             "OR typeof(h.hash) <> 'blob' OR length(h.hash) <> 32 "
-            "OR typeof(s.block_hash) <> 'blob' OR length(s.block_hash) <> 32 "
-            "OR typeof(p.block_hash) <> 'blob' OR length(p.block_hash) <> 32 "
             "OR typeof(d.branch_hash) <> 'blob' OR length(d.branch_hash) <> 32 "
-            "OR v.hash <> h.hash OR v.hash <> s.block_hash "
-            "OR v.hash <> p.block_hash OR v.hash <> d.branch_hash) "
+            "OR v.hash <> h.hash OR v.hash <> d.branch_hash "
+            "%s%s) "
             "ORDER BY v.height ASC LIMIT 1",
-            -1, &st, NULL) != SQLITE_OK)
+            script_bh ? "s.block_hash" : "NULL",
+            proof_bh  ? "p.block_hash" : "NULL",
+            script_bh ? "OR (s.block_hash IS NOT NULL AND "
+                        "(typeof(s.block_hash) <> 'blob' "
+                        "OR length(s.block_hash) <> 32 "
+                        "OR s.block_hash <> v.hash)) "
+                      : "",
+            proof_bh  ? "OR (p.block_hash IS NOT NULL AND "
+                        "(typeof(p.block_hash) <> 'blob' "
+                        "OR length(p.block_hash) <> 32 "
+                        "OR p.block_hash <> v.hash)) "
+                      : "");
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("reducer", "hash-agreement split scan sql overflow");
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         LOG_FAIL("reducer", "prepare hash-agreement split scan failed: %s",
                  sqlite3_errmsg(db));
     sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
