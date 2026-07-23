@@ -15,6 +15,7 @@
 #include "util/blocker.h"
 
 #include <pthread.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -71,6 +72,69 @@ static bool posture_cache_load(struct agent_security_posture *out)
     }
     pthread_mutex_unlock(&g_posture_cache_lock);
     return ok;
+}
+
+/* ── Ordinary write-contention guard (not a NAMED long op) ──────────────
+ *
+ * Live forensics on a wedged node with a write-retry storm: node_db_long_op_
+ * active() only routes around the rarer NAMED long ops that opt in via
+ * db_long_op_start/finish (PRAGMA quick_check, the staging-cleanup DELETE —
+ * see database_long_op.c). Ordinary write contention never names itself: a
+ * writer thread retrying SQLITE_BUSY inside one long-running SQLite step
+ * holds SQLite's own per-connection mutex (every public API call on a
+ * connection opened with SQLITE_OPEN_FULLMUTEX — see db_open_raw in
+ * database.c — serializes behind it) for up to that connection's
+ * ZCL_NODE_DB_BUSY_TIMEOUT_MS (10s) while it retries. Any other thread
+ * calling into that SAME connection, including this collect's ~dozen reads
+ * via chain_evidence_controller_snapshot(), then queues behind it for the
+ * same duration — measured ~10s via the chain_evidence dumpers, matching
+ * ZCL_NODE_DB_BUSY_TIMEOUT_MS exactly.
+ *
+ * node.db has no equivalent app-level write-serialization mutex to trylock
+ * (unlike progress.kv's progress_store_tx_lock, guarded non-blockingly by
+ * progress_store_tx_trylock() — see test_stage_dump_trylock.c), so this
+ * uses SQLite's own connection mutex directly via sqlite3_db_mutex(), a
+ * documented public primitive for exactly this "another thread already
+ * owns this handle" case. Trying it non-blockingly first and holding it for
+ * the whole bootstrap read on success gives the identical non-blocking
+ * guarantee at the connection level: acquired -> no other thread can hold
+ * a long call on this connection while we read, so our reads proceed at
+ * native speed; not acquired -> someone else already is, so we bail to the
+ * last-known-good snapshot immediately instead of queuing. sqlite3_mutex_
+ * try/enter/leave are documented no-ops on a NULL db/mutex, so this is safe
+ * to call even when ndb is not backed by a real handle. */
+static bool posture_ndb_try_lock(struct node_db *ndb)
+{
+    if (!ndb || !ndb->db)
+        return false;
+    return sqlite3_mutex_try(sqlite3_db_mutex(ndb->db)) == SQLITE_OK;
+}
+
+static void posture_ndb_unlock(struct node_db *ndb)
+{
+    if (ndb && ndb->db)
+        sqlite3_mutex_leave(sqlite3_db_mutex(ndb->db));
+}
+
+/* Shared filler for both busy paths below (named long op / ordinary write
+ * contention): name the state truthfully, invent no review gate, and never
+ * claim node_db_available. Distinct `status`/`next_action` per path so an
+ * operator can tell "a known maintenance op is running" apart from
+ * "the connection is just contended right now". */
+static void posture_fill_busy_partial(struct agent_security_posture *out,
+                                      const char *status,
+                                      const char *next_action)
+{
+    out->node_db_available = false;
+    out->served_from_cache = true;
+    out->cache_age_ms = -1;
+    posture_str(out->status, sizeof(out->status), status);
+    posture_str(out->next_action, sizeof(out->next_action), next_action);
+    posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
+                "unknown_db_busy");
+    posture_str(out->full_history_validation_state,
+                sizeof(out->full_history_validation_state),
+                "unknown_db_busy");
 }
 
 static void posture_collect_bootstrap(struct agent_security_posture *out,
@@ -284,6 +348,8 @@ void agent_security_posture_collect(struct agent_security_posture *out,
 {
     struct agent_security_posture empty = {0};
     sqlite3 *progress_reader = NULL;
+    struct node_db *resolved_ndb;
+    bool ndb_locked;
 
     if (!out)
         return;
@@ -292,6 +358,8 @@ void agent_security_posture_collect(struct agent_security_posture *out,
     out->sprout_anchor_activation_cursor = -1;
     out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
+
+    resolved_ndb = ndb ? ndb : app_runtime_node_db();
 
     /* If a long maintenance op holds the shared node.db connection, every read
      * below would serialize behind it (once observed at ~11 minutes). Route
@@ -302,23 +370,36 @@ void agent_security_posture_collect(struct agent_security_posture *out,
         /* No snapshot has ever been published (e.g. maintenance at first boot).
          * Answer truthfully rather than block: name the maintenance state and
          * do NOT invent a review gate — the caller's db_maintenance field and
-         * the typed blocker carry the maintenance signal. */
-        out->node_db_available = false;
-        out->served_from_cache = true;
-        out->cache_age_ms = -1;
-        posture_str(out->status, sizeof(out->status),
-                    "db_maintenance_in_progress");
-        posture_str(out->next_action, sizeof(out->next_action),
-                    "wait_db_maintenance");
-        posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
-                    "unknown_db_busy");
-        posture_str(out->full_history_validation_state,
-                    sizeof(out->full_history_validation_state),
-                    "unknown_db_busy");
+         * the typed blocker carry the maintenance signal. Cache the partial
+         * too (labeled) so a sustained outage's later calls warm from this
+         * instead of recomputing the identical placeholder every time; the
+         * moment a real collect succeeds it overwrites this unconditionally
+         * (this branch never fires again once posture_cache_load() above
+         * finds a valid entry). */
+        posture_fill_busy_partial(out, "db_maintenance_in_progress",
+                                  "wait_db_maintenance");
+        posture_cache_store(out);
         return;
     }
 
-    posture_collect_bootstrap(out, ndb);
+    /* Ordinary write contention: no NAMED long op is running, so the check
+     * above sees nothing, but the shared connection may still be held by a
+     * writer mid-SQLITE_BUSY-retry (see posture_ndb_try_lock's doc comment).
+     * Try, don't wait: on a miss, serve the last-known-good snapshot (or a
+     * labeled busy partial the first time) instead of queuing behind it. */
+    ndb_locked = posture_ndb_try_lock(resolved_ndb);
+    if (resolved_ndb && !ndb_locked) {
+        if (posture_cache_load(out))
+            return;
+        posture_fill_busy_partial(out, "posture_unavailable_busy",
+                                  "retry_status_query");
+        posture_cache_store(out);
+        return;
+    }
+
+    posture_collect_bootstrap(out, resolved_ndb);
+    if (ndb_locked)
+        posture_ndb_unlock(resolved_ndb);
     progress_reader = progress_store_open_reader();
     out->progress_store_available = progress_reader != NULL;
     posture_collect_anchors(out, progress_reader);
@@ -360,6 +441,14 @@ void agent_push_security_posture_snapshot_json(
     json_push_kv_bool(&obj, "review_required", posture->review_required);
     json_push_kv_bool(&obj, "public_serving_allowed",
         agent_security_posture_allows_public_serving(posture));
+    /* Never serve stale/partial posture silently: a busy-partial or
+     * last-known-good snapshot always carries served_from_cache=true plus
+     * its age (or -1 the first time, before anything has ever been cached),
+     * so any caller embedding this object sees the same freshness label the
+     * "agent"/status front door surfaces at its top level (source/age_ms —
+     * see event_agent_summary.c). A live collection leaves these false/0. */
+    json_push_kv_bool(&obj, "served_from_cache", posture->served_from_cache);
+    json_push_kv_int(&obj, "cache_age_ms", posture->cache_age_ms);
     json_push_kv_bool(&obj, "node_db_available", posture->node_db_available);
     json_push_kv_bool(&obj, "progress_store_available",
                       posture->progress_store_available);
