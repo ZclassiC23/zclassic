@@ -219,6 +219,22 @@ void tip_finalize_stage_set_authoritative_tip(int height,
                                                        accepted_hash)) {
                 tip_finalize_publish_last_advance(accepted, accepted_hash);
             }
+            /* Republish H* so getblockcount reflects the freshly-anchored tip.
+             * Unlike step_finalize (which republishes the provable-tip cache on
+             * every advance), this authority-anchor path advanced the finalize
+             * cursor WITHOUT refreshing the cache — so the served tip trailed the
+             * true H* by one block: the regtest last-generate-block AND at-tip-
+             * follower getblockcount lag (this path fires for every on-demand /
+             * fMineBlocksOnDemand ingest, self-mined or P2P-received). Only when
+             * the store handle is in a committed (autocommit) context — matching
+             * the seed_anchor publish guard — so a mid-cutover caller never
+             * exposes a pair a later rollback would revert. compute_hstar runs
+             * under the progress lock held above; the set is a lock-free atomic. */
+            if (sqlite3_get_autocommit(db) != 0) {
+                int32_t hs = 0, sf = 0;
+                if (reducer_frontier_compute_hstar(db, &hs, &sf))
+                    reducer_frontier_provable_tip_set(hs);
+            }
         }
         progress_store_tx_unlock();
         return;

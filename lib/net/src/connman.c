@@ -2390,6 +2390,36 @@ void connman_relay_transaction(struct connman *cm,
     printf("Relay tx %s to %d peers\n", hex, relayed);
 }
 
+void connman_relay_block(struct connman *cm,
+                         const struct uint256 *hash)
+{
+    if (!cm || !hash)
+        return;
+
+    struct inv_item inv;
+    inv_item_init_typed(&inv, MSG_BLOCK, hash);
+
+    int relayed = 0;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (node->state >= PEER_HANDSHAKE_COMPLETE && !node->disconnect) {
+            /* Per-peer known-inventory filtering lives inside
+             * p2p_node_push_inventory: a hash the peer already advertised or
+             * was told about is dropped, so re-announcing a tip is a no-op. */
+            p2p_node_push_inventory(node, &inv);
+            relayed++;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    if (relayed > 0) {
+        char hex[65];
+        uint256_get_hex(hash, hex);
+        LOG_INFO("net", "announced block %s to %d peer(s)", hex, relayed);
+    }
+}
+
 void connman_add_seed_node(struct connman *cm, const char *host,
                             uint16_t port)
 {

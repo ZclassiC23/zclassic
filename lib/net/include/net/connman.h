@@ -327,6 +327,19 @@ int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
 
+/* Announce a newly-accepted block to every handshaked peer by pushing a
+ * MSG_BLOCK inv (the counterpart to connman_relay_transaction). A node that
+ * mints or accepts a new tip out-of-band — a locally-mined block (regtest
+ * `generate`) or an externally-submitted one (`submitblock`) — never travels
+ * the P2P block-receive relay path in msg_blocks.c, so without this the tip
+ * stays invisible to already-connected peers until they independently re-query.
+ * Bounded: one inv per peer, filtered by each peer's known-inventory set
+ * (p2p_node_push_inventory), so a repeated announce of the same hash is a
+ * no-op and there is no announce storm. Peers respond with getheaders/getdata
+ * and fetch the block themselves. */
+void connman_relay_block(struct connman *cm,
+                         const struct uint256 *hash);
+
 /* one pass of the message-handler loop body.
  *
  * Snapshots cm->manager.nodes[] under cs_nodes + bumps ref_count on each

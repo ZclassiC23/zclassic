@@ -477,6 +477,37 @@ typedef bool (*coins_kv_frontier_writer_fn)(struct sqlite3 *, int32_t);
 bool coins_kv_backfill_applied_height_if_absent(
     struct sqlite3 *db, coins_kv_frontier_writer_fn writer);
 
+/* Seed coins_applied_height for a PRISTINE from-genesis regtest store so the
+ * on-demand-mining sovereignty gate (coins_kv_tip_is_self_derived part 2:
+ * coins_applied_height == hstar+1) recognises a genuinely self-derived
+ * from-genesis node as mint-eligible. A fresh regtest datadir has NO utxo_apply
+ * cursor and never folds a block ABOVE genesis until `generate` runs — but
+ * generate's guard fires FIRST (at hstar==0, where the required frontier is 1),
+ * so without this the gate refuses forever: a chicken-and-egg the cursor
+ * backfill above cannot break (there is no cursor row yet to derive from).
+ * Genesis is applied state by construction — its coinbase is consensus-
+ * unspendable, so the coin delta is empty — hence coins_applied_height = 1 is
+ * EXACTLY the value the forward fold co-commits the instant it applies genesis
+ * (cursor_in 0 -> next_cursor 1). See app/controllers/src/sovereignty_controller.c
+ * and docs/MVP.md C7. Called ONLY from utxo_apply_stage_init (this frontier's
+ * single writer — check-frontier-single-writer); the paired genesis anchor that
+ * unblocks the follower's proof_validate is seeded separately at boot
+ * (config/src/boot_services.c).
+ *
+ * Fail-closed + idempotent; NEVER touches a borrowed seed:
+ *   - no-op if coins_applied_height is already present (never re-seed — a later
+ *     legitimate rewind must be free to move it);
+ *   - no-op if the store is a proven-authority (borrowed / snapshot) seed —
+ *     those are refused by the gate's part 3 (borrowed_seed_no_refold_marker),
+ *     never minted on, and already carry coins_applied_height anyway;
+ *   - no-op if any coins exist or a utxo_apply cursor row is already stamped
+ *     (the store is not a pristine genesis store — a fold/seed has begun).
+ * The CALLER MUST gate on chain_params fMineBlocksOnDemand (true ONLY for
+ * regtest) so main/testnet boot is unchanged. Returns false only on a store
+ * write error (the next boot retries). */
+bool coins_kv_seed_genesis_applied_height(
+    struct sqlite3 *db, coins_kv_frontier_writer_fn writer);
+
 /* Truncate coins_kv + clear the migration stamp + drop coins_applied_height so
  * a subsequent coins_kv_seed_from_node_db performs a FRESH copy. The reindex
  * epilogue (app/services/src/reindex_epilogue.c) calls this right after a full
