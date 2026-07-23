@@ -21,9 +21,9 @@
 #include "chain/checkpoints.h"                        /* get_sha3_utxo_checkpoint */
 #include "conditions/checkpoint_header_solution_repair.h" /* solution-available gate */
 #include "config/consensus_state_install_runtime.h"   /* autodetect + arm + ready predicate */
+#include "config/boot_consensus_bundle_marker.h"      /* sovereign-marker witness */
 #include "controllers/agent_controller.h"             /* agent_runtime_context_datadir */
 #include "event/event.h"
-#include "jobs/reducer_frontier.h"                     /* reducer_frontier_provable_tip_cached */
 #include "services/chain_tip_watchdog.h"               /* chain_tip_watchdog_request_respawn */
 #include "services/sync_monitor.h"                     /* sync_monitor_main_state */
 #include "util/log_macros.h"
@@ -66,14 +66,6 @@ static const char *cbir_datadir(void)
     return agent_runtime_context_datadir();
 }
 
-/* The genuine instant-on window: the node has NOT yet folded/served past the
- * checkpoint (H* below it). A node already at/above the checkpoint owns its own
- * self-derived state and must never be pulled back onto a bundle. */
-static bool cbir_below_checkpoint(const struct sha3_utxo_checkpoint *cp)
-{
-    return cp && reducer_frontier_provable_tip_cached() < cp->height;
-}
-
 static bool detect_checkpoint_bundle_install_ready(void)
 {
     struct main_state *ms = cbir_main_state();
@@ -81,9 +73,15 @@ static bool detect_checkpoint_bundle_install_ready(void)
     if (!ms || !datadir || !datadir[0])
         return false;
 
+    /* Tip position does NOT gate the arm. A fresh instant-on node is BELOW the
+     * checkpoint; the live-cure node sits ABOVE it on BORROWED shielded state and
+     * still needs the bundle install to close its anchor/nullifier gap. The
+     * staged-bundle predicate below (autodetect != NULL, which returns NULL once
+     * the sovereign marker exists) is the real scope — a healthy sovereign node
+     * short-circuits there and never arms. */
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    if (!cp || !cbir_below_checkpoint(cp))
-        return false; /* already at/above the checkpoint: not the instant-on case */
+    if (!cp)
+        return false; // raw-return-ok:no-compiled-checkpoint
 
     /* The header chain must genuinely own the compiled checkpoint block before
      * the install can bind — the exact precondition the boot-time deferral waits
@@ -128,8 +126,7 @@ static enum condition_remedy_result remedy_checkpoint_bundle_install_ready(void)
     /* Re-confirm at remedy time: never respawn to install a bundle whose
      * checkpoint header is not (still) genuinely on-chain. */
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    if (!cp || !cbir_below_checkpoint(cp) ||
-        !consensus_state_checkpoint_header_ready(ms))
+    if (!cp || !consensus_state_checkpoint_header_ready(ms))
         return COND_REMEDY_SKIP; // raw-return-ok:precondition-regressed-this-tick
     {
         struct uint256 cp_hash;
@@ -186,14 +183,26 @@ static enum condition_remedy_result remedy_checkpoint_bundle_install_ready(void)
 static bool witness_checkpoint_bundle_install_ready(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    /* The install runs on the NEXT boot; the honest OBSERVABLE clear is that the
-     * node now serves state at or above the checkpoint — H* (the provable tip)
-     * climbed onto the installed bundle. Read the live provable tip, not a flag:
-     * in THIS process (pre-respawn) it is still below the checkpoint (correctly
-     * unwitnessed — the respawn is the forward step), and the reboot's install
-     * makes it true. */
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    return cp && reducer_frontier_provable_tip_cached() >= cp->height;
+    /* The install runs on the NEXT boot and writes the sovereign consensus-bundle
+     * marker (consensus_state_install_runtime.c). That marker's existence is the
+     * honest OBSERVABLE clear for BOTH cases: the fresh instant-on node (which
+     * also climbs H* onto the bundle) AND the live-cure node already ABOVE the
+     * checkpoint on borrowed state — where a `provable_tip >= checkpoint` witness
+     * would be TRIVIALLY TRUE and clear the episode before the remedy ever armed
+     * (condition.c checks the witness before running the remedy). Pre-respawn
+     * (this process) the marker does not exist yet, so the arm-and-respawn remedy
+     * is correctly unwitnessed; the reboot's install writes it. */
+    const char *datadir = cbir_datadir();
+    // honest-witness-ok: NOT poison-absence and NOT this condition's own FSM flag.
+    // The sovereign consensus-bundle marker is a DURABLE artifact written by a
+    // DIFFERENT subsystem — the atomic installer (consensus_state_install_runtime),
+    // and only AFTER it commits self-verified state — so a node whose install
+    // never ran cannot have it (correctly stays unwitnessed). It is the exact
+    // forward fact this remedy's arm-and-respawn produces, observable across the
+    // reboot, and unlike a tip-height witness it is honest for the live-cure node
+    // that already sits above the checkpoint before the install.
+    return datadir && datadir[0] &&
+           boot_consensus_bundle_marker_exists(datadir);
 }
 
 static struct condition c_checkpoint_bundle_install_ready = {

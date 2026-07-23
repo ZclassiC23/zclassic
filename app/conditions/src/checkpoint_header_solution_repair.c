@@ -36,7 +36,6 @@
 #include "controllers/agent_controller.h"               /* agent_runtime_context_datadir */
 #include "core/uint256.h"
 #include "event/event.h"
-#include "jobs/reducer_frontier.h"                       /* reducer_frontier_provable_tip_cached */
 #include "jobs/stage_repair.h"                           /* header_solution_repair save/available */
 #include "jobs/validate_headers_stage.h"                /* has/ensure pass record */
 #include "net/checkpoint_header_fetch.h"
@@ -225,10 +224,15 @@ static bool detect_checkpoint_header_solution_repair(void)
     if (!chsr_checkpoint_hash(cp, &cp_hash))
         return false; // raw-return-ok:no-compiled-checkpoint
 
-    /* Only the genuine instant-on window: still BELOW the checkpoint. A node at
-     * or above it owns its own self-derived state and needs no bundle. */
-    if (reducer_frontier_provable_tip_cached() >= cp->height)
-        return false; // raw-return-ok:already-at-or-above-checkpoint
+    /* Tip position does NOT gate the fetch. A fresh instant-on node is BELOW the
+     * checkpoint; the live-cure node sits ABOVE it (e.g. H*=3,176,325 on borrowed
+     * shielded state) yet STILL needs the checkpoint header's Equihash solution
+     * so the staged consensus bundle can bind (validate_headers_stage_ensure_
+     * pass_record(checkpoint) fails no-header-solution-backfill-required on a
+     * headers-first substrate whatever the tip height). The staged-bundle
+     * predicate below (boot_autodetect_consensus_bundle != NULL) is the real
+     * scope: a healthy sovereign node has the marker → autodetect NULL → this
+     * short-circuits and no fetch ever arms. */
 
     /* The header chain must own the checkpoint block so the fetched solution can
      * be validated + a pass record minted against a resolvable index entry. */

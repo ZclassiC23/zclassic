@@ -38,6 +38,7 @@
 #include "chain/checkpoints.h"
 #include "coins/coins_view.h"
 #include "conditions/checkpoint_bundle_install_ready.h"
+#include "conditions/checkpoint_header_solution_repair.h"
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h"
 #include "core/uint256.h"
@@ -546,9 +547,71 @@ static int case_checkpoint_header_frontier_restore(void)
     return failures;
 }
 
+/* (e3) checkpoint_header_solution_repair detect WIDENING: the checkpoint-header
+ * solution fetch must arm REGARDLESS of tip position — the live-cure node sits
+ * ABOVE the checkpoint (e.g. H*=3,176,325 on borrowed shielded state) yet still
+ * needs the checkpoint header's Equihash solution to bind the staged bundle. The
+ * staged-bundle predicate remains the real scope (a sovereign node's marker makes
+ * autodetect NULL, short-circuiting the fetch). */
+static int case_solution_repair_detect_window(void)
+{
+    int failures = 0;
+    const int CP = 5000;
+    cbir_set_override(CP);
+    checkpoint_header_solution_repair_test_reset();
+
+    struct main_state ms;
+    main_state_init(&ms);
+    ms.pindex_best_header = cbir_link_chain(&ms, CP - 3, CP + 4); /* owns CP */
+    checkpoint_header_solution_repair_test_set_main_state(&ms);
+    checkpoint_header_solution_repair_test_set_peer_count(1);
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "chsr_detect", "ok");
+    checkpoint_header_solution_repair_test_set_datadir(dir);
+    CSIR_CHECK("chsr: progress store opens", progress_store_open(dir));
+
+    /* Tip ABOVE the checkpoint — the live-cure position the old guard blocked. */
+    reducer_frontier_provable_tip_set(CP + 100000);
+
+    /* No staged bundle -> nothing to unblock -> detect FALSE. */
+    CSIR_CHECK("chsr: detect false with no staged bundle",
+               !checkpoint_header_solution_repair_test_detect());
+
+    /* Stage a bundle -> header ready + staged bundle + solution absent + tip ABOVE
+     * the checkpoint -> detect TRUE (the widening the live cure needs). */
+    char bundles[320];
+    snprintf(bundles, sizeof(bundles), "%s/bundles", dir);
+    CSIR_CHECK("chsr: mkdir bundles/", mkdir(bundles, 0700) == 0);
+    CSIR_CHECK("chsr: stage bundle",
+               csir_touch(bundles, "consensus-state-bundle-5000.sqlite"));
+    CSIR_CHECK("chsr: detect FIRES above the checkpoint (live-cure widening)",
+               checkpoint_header_solution_repair_test_detect());
+
+    /* Healthy sovereign node: the install marker makes autodetect return NULL, so
+     * detect short-circuits FALSE even with the solution still absent. */
+    {
+        struct uint256 dg;
+        memset(&dg, 0x5a, sizeof(dg));
+        (void)boot_consensus_bundle_marker_write(dir, CP, dg.data);
+        CSIR_CHECK("chsr: detect false once the sovereign marker exists (healthy)",
+                   !checkpoint_header_solution_repair_test_detect());
+    }
+
+    reducer_frontier_provable_tip_reset();
+    checkpoint_header_solution_repair_test_reset();
+    progress_store_close();
+    test_rm_rf_recursive(dir);
+    checkpoints_reset_sha3_override_for_test();
+    main_state_free(&ms);
+    return failures;
+}
+
 /* (e2) The retry condition (checkpoint_bundle_install_ready): detect gates on
- * headers-reached-checkpoint + a staged bundle + still-below-checkpoint H*, and
- * the remedy arms the bounded install-on-next-boot request without a retry-storm. */
+ * headers-reached-checkpoint + a staged bundle + the checkpoint solution, and
+ * the remedy arms the bounded install-on-next-boot request without a retry-storm.
+ * Widened: tip position no longer gates the arm (the live-cure node is above the
+ * checkpoint yet still needs the install). */
 static int case_retry_condition(void)
 {
     int failures = 0;
@@ -582,15 +645,18 @@ static int case_retry_condition(void)
     CSIR_CHECK("cond: checkpoint header solution landed (pass record minted)",
                validate_headers_stage_ensure_pass_record(&ms, CP));
 
-    /* detect FIRES: headers ready + solution available + bundle staged + H* below. */
+    /* detect FIRES: headers ready + solution available + bundle staged. */
     CSIR_CHECK("cond: detect fires when headers reach checkpoint + bundle staged",
                checkpoint_bundle_install_ready_test_detect());
 
-    /* H* already at/above the checkpoint -> the node owns its own state; never
-     * pull it back onto a bundle. */
-    reducer_frontier_provable_tip_set(CP);
-    CSIR_CHECK("cond: detect suppressed once H* >= checkpoint",
-               !checkpoint_bundle_install_ready_test_detect());
+    /* WIDENED (live-cure): H* ABOVE the checkpoint no longer suppresses the arm.
+     * The live-cure node sits above the checkpoint on BORROWED shielded state and
+     * still needs the install to close its anchor/nullifier gap; the staged-bundle
+     * predicate is the real scope (a sovereign node has the marker -> autodetect
+     * NULL -> detect false, proven at the end of this case). */
+    reducer_frontier_provable_tip_set(CP + 100000);
+    CSIR_CHECK("cond: detect STILL fires above checkpoint (live-cure path)",
+               checkpoint_bundle_install_ready_test_detect());
     reducer_frontier_provable_tip_reset();
 
     /* Header frontier below the checkpoint -> WAIT (no premature fire). */
@@ -659,6 +725,7 @@ int test_consensus_state_install_runtime(void)
     failures += case_checkpoint_header_ready();
     failures += case_checkpoint_header_frontier_restore();
     failures += case_retry_condition();
+    failures += case_solution_repair_detect_window();
     printf("=== consensus_state_install_runtime: %d failure(s) ===\n", failures);
     return failures;
 }
