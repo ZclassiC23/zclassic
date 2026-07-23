@@ -378,6 +378,50 @@ bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
     return true;
 }
 
+/* Domain-separation tag bound into a ROM chunk refusal frame's MAC — "RREF" +
+ * zero padding, distinct from the chunk (per-chunk sha3), manifest ("RMF"),
+ * and listing ("RLS") tags so a refusal is un-confusable with any data reply.
+ * The client (rom_fetch_chunk) re-derives the identical MAC with this tag. */
+static const uint8_t FS_ROM_REFUSAL_MAC_TAG[32] = { 'R', 'R', 'E', 'F' };
+
+/* Send a typed ROM chunk refusal on the SAME raw transport as a chunk reply:
+ *   [4B FS_ROM_REFUSAL_SENTINEL (LE)][1B reason][32B MAC]
+ *   MAC = SHA3-256(key || send_counter || FS_ROM_REFUSAL_MAC_TAG || reason)
+ * so the client's raw chunk reader decodes the impossible-as-a-size sentinel
+ * unambiguously as "peer busy — back off", never the garbage size an encrypted
+ * FS_DONE frame parses as. Uses the CURRENT send_counter (the counter a chunk
+ * reply would have used) so the client re-derives it with recv_counter; the
+ * connection is terminal after a refusal so no counter drift matters. */
+bool fs_send_chunk_refusal(struct fs_session *s, uint8_t reason)
+{
+    if (!s) LOG_FAIL("filesvc", "send_chunk_refusal: null session");
+    uint32_t sentinel = FS_ROM_REFUSAL_SENTINEL;
+    uint8_t hdr[4];
+    hdr[0] = (uint8_t)(sentinel);
+    hdr[1] = (uint8_t)(sentinel >> 8);
+    hdr[2] = (uint8_t)(sentinel >> 16);
+    hdr[3] = (uint8_t)(sentinel >> 24);
+    if (!send_all(s->fd, hdr, 4))
+        LOG_FAIL("filesvc", "send_chunk_refusal: failed to send sentinel");
+    if (!send_all(s->fd, &reason, 1))
+        LOG_FAIL("filesvc", "send_chunk_refusal: failed to send reason");
+
+    uint8_t mac[32];
+    struct sha3_256_ctx mctx;
+    sha3_256_init(&mctx);
+    sha3_256_write(&mctx, s->key, 32);
+    sha3_256_write(&mctx, (const unsigned char *)&s->send_counter, 8);
+    sha3_256_write(&mctx, FS_ROM_REFUSAL_MAC_TAG, 32);
+    sha3_256_write(&mctx, &reason, 1);
+    sha3_256_finalize(&mctx, mac);
+    if (!send_all(s->fd, mac, 32))
+        LOG_FAIL("filesvc", "send_chunk_refusal: failed to send MAC");
+
+    s->bytes_sent += 4 + 1 + 32;
+    s->send_counter++;
+    return true;
+}
+
 static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
                                 uint32_t *out_size,
                                 const uint8_t expected_sha3[32])
@@ -951,39 +995,42 @@ static void fs_stream_range(struct fs_session *session,
  * blocks or starves consensus P2P. Bounded by the rom_seed per-peer
  * concurrency + per-peer/global byte-rate caps (NOT the PoW/ALL gate) and the
  * per-connection budget already enforced elsewhere. No payment is required.
- * On any refusal it sends FS_DONE (a clean end-of-serve), never a silent drop. */
+ * On any refusal it sends a typed refusal frame (fs_send_chunk_refusal) — a
+ * clean, unambiguous "peer busy/declined" the client decodes into a back-off
+ * + retry, never a silent drop and never the garbage size an encrypted FS_DONE
+ * frame parses as on the raw chunk reader. */
 static void fs_serve_rom_chunk(struct fs_session *session,
                                const uint8_t client_ip[16],
                                const uint8_t root[32], uint32_t idx)
 {
     struct rom_artifact art;
     if (rom_seed_serve_lookup(root, idx, &art) != ROM_SERVE_FREE_OK) {
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_UNKNOWN);
         return;
     }
     if (!fs_conn_budget_ok(session->bytes_sent, session->start_time,
                            (int64_t)platform_time_wall_time_t())) {
         fs_gate_log_throttled("rom_conn_budget_exceeded", (int)idx);
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_CONN_BUDGET);
         return;
     }
     if (!rom_seed_peer_acquire(client_ip)) {
         fs_gate_log_throttled("rom_concurrency_refused", 0);
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_INFLIGHT);
         return;
     }
 
     uint8_t *buf = zcl_malloc(art.chunk_size, "rom_serve_chunk");
     if (!buf) {
         rom_seed_peer_release(client_ip);
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_IO);
         return;
     }
     uint32_t sz = 0;
     if (!rom_seed_read_chunk(&art, g_fs_datadir, idx, buf, art.chunk_size, &sz)) {
         free(buf);
         rom_seed_peer_release(client_ip);
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_IO);
         return;
     }
     /* Separate send budget: the ROM global/per-peer byte-rate window bounds how
@@ -992,7 +1039,7 @@ static void fs_serve_rom_chunk(struct fs_session *session,
         free(buf);
         rom_seed_peer_release(client_ip);
         fs_gate_log_throttled("rom_rate_exceeded", (int)idx);
-        (void)fs_send_frame(session, FS_DONE, NULL, 0);
+        (void)fs_send_chunk_refusal(session, FS_ROM_REFUSE_RATE);
         return;
     }
     if (fs_send_chunk_fast(session, buf, sz, art.chunk_sha3[idx]))

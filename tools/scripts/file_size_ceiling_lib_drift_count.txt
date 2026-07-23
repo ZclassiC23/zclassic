@@ -144,4 +144,15 @@
 # seed. Re-baselined in file_size_ceiling_lib_baseline.txt (904, 1626); count
 # unchanged. (NOTE: integration/instant-on-3fleet later merged wf/reseed-widening
 # which also grows rom_seed.c — the merge reconciles the two baseline bumps.)
+#
+# 2026-07-23 (wf/rom-chunk-serve-fix, ROM chunk-serve robustness): file_service.c
+# grew 2187 -> 2234 adding fs_send_chunk_refusal() — a typed ROM chunk refusal
+# frame ([4B sentinel][1B reason][32B MAC]) that replaces the encrypted FS_DONE
+# frame the raw chunk reader misparsed as a garbage "implausible chunk size";
+# rom_fetch.c grew 1626 -> 1703 adding the client-side decode (rom_fetch_wire_is_
+# refusal / rom_fetch_refusal_reason_name + the sentinel-decode branch in
+# rom_fetch_chunk) so a busy seeder's refusal reads as a clean back-off + retry
+# instead of aborting the whole parallel download. Both are real, shape-matching
+# feature growth on the starter-pack delivery path. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (2234, 1703); count unchanged.
 13
