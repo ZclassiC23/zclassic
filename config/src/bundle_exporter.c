@@ -29,6 +29,8 @@
 #include "storage/coins_ram.h"
 #include "storage/consensus_state_bundle_codec.h"
 
+#include "net/rom_seed.h"   /* reseed the produced bundle so it serves now */
+
 #include "jobs/tip_finalize_stage.h"
 
 #include "services/sync_trust_policy.h"
@@ -344,7 +346,9 @@ static void bx_try_export_once(void)
     int64_t every = g_bx.every_blocks;
     int keep = g_bx.keep;
     char bundles_dir[1100];
+    char datadir[1024];
     snprintf(bundles_dir, sizeof bundles_dir, "%s", g_bx.bundles_dir);
+    snprintf(datadir, sizeof datadir, "%s", g_bx.datadir);
     pthread_mutex_unlock(&g_bx.lock);
 
     /* Belt+braces: the proof independently refuses while the overlay is live,
@@ -426,6 +430,31 @@ static void bx_try_export_once(void)
         LOG_INFO("bundle_exporter",
                  "exported %s height=%d duration_us=%lld",
                  name, h, (long long)dur);
+        /* Serve it THIS boot. The boot rom_seed scan
+         * (config/src/boot_frontend_services.c boot_rom_seed_start ->
+         * rom_seed_scan_datadir) is single-shot and already ran, so a
+         * generation produced now would otherwise not be offered until the
+         * next boot. Register it with the seeder immediately — the same
+         * post-produce reseed the fetch path performs
+         * (config/src/boot_bundle_fetch.c). rom_seed_register re-derives every
+         * digest from the bytes on disk; a failure here is logged and non-fatal
+         * (this same boot's rom_seed scan, or a later boot, still picks it up)
+         * and keeps no durable state of its own. */
+        char rel[ROM_SEED_NAME_MAX];
+        int rn = snprintf(rel, sizeof rel, "%s/%s",
+                          ROM_SEED_BUNDLES_SUBDIR, name);
+        if (rn > 0 && (size_t)rn < sizeof rel) {
+            enum rom_register_result rrc =
+                rom_seed_register(datadir, rel, NULL, NULL);
+            if (rrc == ROM_REG_OK)
+                LOG_INFO("bundle_exporter",
+                         "reseed: registered %s with rom_seed — this node now "
+                         "serves the fresh generation to the swarm", rel);
+            else
+                LOG_WARN("bundle_exporter",
+                         "reseed: could not register %s (rc=%d) — the next "
+                         "rom_seed scan will pick it up", rel, (int)rrc);
+        }
         bx_rotate(bundles_dir, keep);
     } else {
         bx_note_refusal("%s", res.reason[0] ? res.reason : "export refused");

@@ -436,6 +436,12 @@ void zcl_native_handle_rom_seed_disable(
 void zcl_native_handle_rom_seed_artifacts(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* Publish (register) this node's on-disk starter artifacts so a fresh peer's
+ * directory listing advertises a usable manifest — see
+ * config/commands/ops.def `ops.debug.rom_seed.publish`. */
+void zcl_native_handle_rom_seed_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ROM-fetch engine surface (app/controllers/src/rom_fetch_controller.c) —
  * see config/commands/ops.def `ops.debug.rom_fetch.*` and

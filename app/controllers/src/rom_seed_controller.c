@@ -22,8 +22,10 @@
 
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "controllers/diagnostics_internal.h" /* diag_datadir */
 #include "net/rom_seed_policy.h"
 #include "net/rom_seed_ledger.h"
+#include "net/rom_seed.h"                      /* registry: scan/list/serve */
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 
@@ -159,4 +161,114 @@ void zcl_native_handle_rom_seed_artifacts(
     json_free(&stats_arr);
     (void)json_push_kv_int(&reply->data, "seed_stats_count", count);
     (void)json_push_kv_bool(&reply->data, "ledger_available", ledger != NULL);
+}
+
+/* ── ops.debug.rom_seed.publish ─────────────────────────────────────── */
+/* Serve this node's on-disk starter artifacts. The boot rom_seed scan
+ * (config/src/boot_frontend_services.c boot_rom_seed_start ->
+ * rom_seed_scan_datadir) is SINGLE-SHOT, so an artifact that lands AFTER boot
+ * — the standing bundle_exporter's fresh generation, or an operator-placed
+ * starter pack — is not offered until the next boot. This leaf re-runs that
+ * one idempotent scan on demand, closing the window so a fresh peer's
+ * discovery (rom_fetch_get_directory -> boot_bundle_pick_manifest) finds a
+ * usable manifest.
+ *
+ * It PUBLISHES only what is already on disk; it produces no bundle (the
+ * standing exporter owns production, config/bundle_exporter.h) and mints no
+ * trust: rom_seed_register re-derives every digest from the bytes and content-
+ * checks each artifact, so a corrupt/wrong-kind file is refused loudly and
+ * never offered. Idempotent, and keeps no durable state of its own. */
+static const char *rs_kind_token(enum rom_artifact_kind kind)
+{
+    switch (kind) {
+    case ROM_ARTIFACT_CONSENSUS_BUNDLE: return "consensus_bundle";
+    case ROM_ARTIFACT_HEADER_SEED:      return "header_seed";
+    case ROM_ARTIFACT_UNKNOWN:
+    default:                            return "unknown";
+    }
+}
+
+void zcl_native_handle_rom_seed_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    (void)request;
+
+    const char *datadir = diag_datadir();
+    if (!datadir || !datadir[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "NO_DATADIR",
+                               "execute", false, false,
+                               "the node datadir is not available to this "
+                               "process, so there is nothing to publish",
+                               "ops.debug.rom_seed.publish");
+        return;
+    }
+
+    /* One idempotent (re)registration of every present artifact under the
+     * datadir root and bundles/ — re-registering an already-registered file
+     * re-derives its digests and refreshes the same slot. */
+    int registered = rom_seed_scan_datadir(datadir);
+
+    struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+    int n = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+
+    bool serving_bundle = false;
+    bool serving_header_seed = false;
+
+    struct json_value list;
+    json_init(&list);
+    json_set_array(&list);
+    for (int i = 0; i < n; i++) {
+        if (arts[i].kind == ROM_ARTIFACT_CONSENSUS_BUNDLE)
+            serving_bundle = true;
+        else if (arts[i].kind == ROM_ARTIFACT_HEADER_SEED)
+            serving_header_seed = true;
+
+        char root_hex[65];
+        char whole_hex[65];
+        HexStr(arts[i].chunk_root, 32, false, root_hex, sizeof(root_hex));
+        HexStr(arts[i].whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
+
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        (void)json_push_kv_str(&item, "kind", rs_kind_token(arts[i].kind));
+        (void)json_push_kv_str(&item, "filename", arts[i].filename);
+        (void)json_push_kv_int(&item, "size_bytes",
+                               (int64_t)arts[i].size_bytes);
+        (void)json_push_kv_int(&item, "num_chunks",
+                               (int64_t)arts[i].num_chunks);
+        (void)json_push_kv_str(&item, "chunk_root", root_hex);
+        (void)json_push_kv_str(&item, "whole_sha3", whole_hex);
+        (void)json_push_back(&list, &item);
+        json_free(&item);
+    }
+
+    (void)json_push_kv_str(&reply->data, "datadir", datadir);
+    (void)json_push_kv_bool(&reply->data, "seeding_enabled",
+                            rom_seed_enabled());
+    (void)json_push_kv_int(&reply->data, "registered_now", registered);
+    (void)json_push_kv_int(&reply->data, "artifact_count", n);
+    (void)json_push_kv_bool(&reply->data, "serving_bundle", serving_bundle);
+    (void)json_push_kv_bool(&reply->data, "serving_header_seed",
+                            serving_header_seed);
+    (void)json_push_kv(&reply->data, "artifacts", &list);
+    json_free(&list);
+
+    if (!serving_bundle) {
+        (void)json_push_kv_str(&reply->data, "note",
+            "no consensus-state bundle is present under this datadir to serve; "
+            "the standing exporter produces one only from self-folded sovereign "
+            "state — dumpstate bundle_exporter names the qualification / "
+            "degradation reason. A fresh peer's discovery requires the bundle "
+            "manifest, not the header seed alone.");
+        (void)zcl_command_reply_add_next(reply, "ops.state",
+            "{\"subsystem\":\"bundle_exporter\"}",
+            "why no bundle is available to publish yet");
+    }
+    if (!rom_seed_enabled())
+        (void)json_push_kv_str(&reply->data, "seeding_note",
+            "ROM-seed serving is DISABLED (-noromseed / ops debug rom_seed "
+            "disable); registered artifacts are not served until it is enabled");
 }
