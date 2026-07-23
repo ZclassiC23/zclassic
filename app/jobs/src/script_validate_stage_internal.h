@@ -28,6 +28,10 @@ bool script_validate_created_index_prevout(const struct outpoint *prevout,
                                            struct tx_out *out,
                                            void *user);
 
+/* Finalize this thread's coins_kv prevout fallback statement cache. Called at
+ * script_validate drain teardown (one prepared statement per completed batch). */
+void script_validate_prevout_batch_reset(void);
+
 stage_t *script_validate_stage_handle(void);
 uint64_t script_validate_stage_inputs_failed_total(void);
 uint64_t script_validate_stage_header_event_emit_total(void);

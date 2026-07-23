@@ -108,6 +108,18 @@ bool coins_kv_get_prevout(struct sqlite3 *db, const uint8_t txid[32],
                           size_t *script_len_out, int32_t *height_out,
                           bool *is_coinbase_out);
 
+/* Overlay-aware cached prevout read: identical result/dispatch to
+ * coins_kv_get_prevout, but on the durable-SQLite path it reuses the caller's
+ * single-owner prepared statement (*cache) instead of preparing per call. The
+ * overlay path never touches *cache. Single-owner rules from
+ * coins_kv_get_prevout_sqlite_cached apply: one thread owns *cache and MUST
+ * finalize it before `db` closes/rebinds. */
+bool coins_kv_get_prevout_cached(struct sqlite3 *db, struct sqlite3_stmt **cache,
+                                 const uint8_t txid[32], uint32_t vout,
+                                 int64_t *value_out, uint8_t *script_out,
+                                 size_t script_cap, size_t *script_len_out,
+                                 int32_t *height_out, bool *is_coinbase_out);
+
 /* Per-thread monotonic count of actual sqlite3_prepare_v2 calls made by point
  * lookups, including RAM-overlay read-through misses. Diagnostic sampling may
  * take a before/after delta without changing lookup behavior. */

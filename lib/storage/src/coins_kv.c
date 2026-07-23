@@ -626,6 +626,24 @@ bool coins_kv_get_prevout(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                                        is_coinbase_out);
 }
 
+bool coins_kv_get_prevout_cached(sqlite3 *db, sqlite3_stmt **cache,
+                                 const uint8_t txid[32], uint32_t vout,
+                                 int64_t *value_out, uint8_t *script_out,
+                                 size_t script_cap, size_t *script_len_out,
+                                 int32_t *height_out, bool *is_coinbase_out)
+{
+    /* Same overlay dispatch as coins_kv_get_prevout; the *cache statement is
+     * threaded only to the durable-SQLite path (the overlay never prepares). */
+    if (coins_kv_overlay_safe())
+        return coins_ram_get_prevout(txid, vout, value_out, script_out,
+                                     script_cap, script_len_out, height_out,
+                                     is_coinbase_out);
+    return coins_kv_get_prevout_sqlite_cached(db, cache, txid, vout, value_out,
+                                              script_out, script_cap,
+                                              script_len_out, height_out,
+                                              is_coinbase_out);
+}
+
 int64_t coins_kv_count_sqlite(sqlite3 *db)
 {
     if (!db) return -1;

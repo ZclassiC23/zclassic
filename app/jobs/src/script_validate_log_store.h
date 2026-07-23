@@ -57,4 +57,9 @@ bool script_validate_log_insert(struct sqlite3 *db, int height,
                                 ScriptError first_failure_serror,
                                 const struct uint256 *block_hash);
 
+/* Finalize this thread's cached INSERT statement and invalidate the cached
+ * source-epoch blob. Called at script_validate drain teardown (both are
+ * per-batch caches on the single drain thread). */
+void script_validate_log_store_batch_reset(void);
+
 #endif /* ZCL_JOBS_SCRIPT_VALIDATE_LOG_STORE_H */

@@ -9,11 +9,125 @@
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/stage.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+/* Per-batch caches for the script_validate_log write hot path. Both the INSERT
+ * statement and the source-epoch authority blob are constant across a drain
+ * batch, so they are prepared/read once per (db, batch generation) on the
+ * single drain thread and finalized/invalidated at drain teardown via
+ * script_validate_log_store_batch_reset(). Outside a batch every call keeps the
+ * original fresh-prepare / fresh-read behaviour. */
+static _Thread_local sqlite3 *g_ins_db;
+static _Thread_local sqlite3_stmt *g_ins_stmt;
+static _Thread_local uint64_t g_ins_gen;
+
+static _Thread_local sqlite3 *g_epoch_db;
+static _Thread_local uint64_t g_epoch_gen;
+static _Thread_local bool g_epoch_valid;
+static _Thread_local uint8_t g_epoch_blob[32];
+static _Thread_local size_t g_epoch_size;
+static _Thread_local bool g_epoch_found;
+
+void script_validate_log_store_batch_reset(void)
+{
+    if (g_ins_stmt)
+        sqlite3_finalize(g_ins_stmt);
+    g_ins_stmt = NULL;
+    g_ins_db = NULL;
+    g_ins_gen = 0;
+    g_epoch_valid = false;
+    g_epoch_db = NULL;
+    g_epoch_gen = 0;
+}
+
+/* Read the source-epoch authority blob (a fold-constant within a batch), caching
+ * the result per (db, batch generation). Returns false only on a genuine query
+ * error, matching progress_meta_get_blob_exact. Caller holds the progress tx
+ * lock. */
+static bool sv_source_epoch_get(sqlite3 *db, uint8_t out[32], size_t *size_out,
+                                bool *found_out)
+{
+    bool batched = stage_batch_active();
+    uint64_t gen = batched ? stage_batch_generation() : 0;
+    if (batched && g_epoch_valid && g_epoch_db == db && g_epoch_gen == gen) {
+        memcpy(out, g_epoch_blob, sizeof(g_epoch_blob));
+        *size_out = g_epoch_size;
+        *found_out = g_epoch_found;
+        return true;
+    }
+    uint8_t blob[32] = {0};
+    size_t size = 0;
+    bool found = false;
+    if (!progress_meta_get_blob_exact(db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+                                      blob, sizeof(blob), &size, &found))
+        return false;
+    if (batched) {
+        g_epoch_db = db;
+        g_epoch_gen = gen;
+        memcpy(g_epoch_blob, blob, sizeof(blob));
+        g_epoch_size = size;
+        g_epoch_found = found;
+        g_epoch_valid = true;
+    }
+    memcpy(out, blob, sizeof(blob));
+    *size_out = size;
+    *found_out = found;
+    return true;
+}
+
+/* The script_validate_log upsert statement, prepared once per
+ * (db, batch generation). Returns NULL on prepare failure. */
+static sqlite3_stmt *sv_log_insert_stmt(sqlite3 *db, bool *cached_out)
+{
+    bool batched = stage_batch_active();
+    uint64_t gen = batched ? stage_batch_generation() : 0;
+    if (batched && g_ins_stmt && g_ins_db == db && g_ins_gen == gen) {
+        sqlite3_reset(g_ins_stmt);
+        sqlite3_clear_bindings(g_ins_stmt);
+        *cached_out = true;
+        return g_ins_stmt;
+    }
+    if (g_ins_stmt) {
+        sqlite3_finalize(g_ins_stmt);
+        g_ins_stmt = NULL;
+        g_ins_db = NULL;
+        g_ins_gen = 0;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, first_failure_txid, "
+        " first_failure_vin, first_failure_serror, validated_at, block_hash, "
+        " source_epoch_digest, itag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    if (batched) {
+        g_ins_db = db;
+        g_ins_stmt = st;
+        g_ins_gen = gen;
+        *cached_out = true;
+    } else {
+        *cached_out = false;
+    }
+    return st;
+}
+
+/* Release the INSERT statement after use: a cached statement is reset for the
+ * next block in the batch; a fresh (unbatched) statement is finalized. */
+static void sv_log_insert_release(sqlite3_stmt *stmt, bool cached)
+{
+    if (cached) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    } else {
+        sqlite3_finalize(stmt);
+    }
+}
 
 /* Idempotent ADD COLUMN: tolerate "duplicate column name" (already migrated),
  * fail loud on any other error. */
@@ -180,10 +294,8 @@ bool script_validate_log_insert(sqlite3 *db, int height,
     size_t source_epoch_size = 0;
     bool source_epoch_found = false;
     progress_store_tx_lock();
-    if (!progress_meta_get_blob_exact(
-            db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
-            source_epoch, sizeof(source_epoch), &source_epoch_size,
-            &source_epoch_found) ||
+    if (!sv_source_epoch_get(db, source_epoch, &source_epoch_size,
+                             &source_epoch_found) ||
         (source_epoch_found && source_epoch_size != sizeof(source_epoch))) {
         LOG_WARN("script_validate",
                  "[script_validate] malformed source epoch authority h=%d",
@@ -194,18 +306,14 @@ bool script_validate_log_insert(sqlite3 *db, int height,
     uint8_t itag[STAGE_ROW_ITAG_LEN];
     stage_row_itag_compute("script_validate_log", (int64_t)height, ok ? 1 : 0,
                            status, status ? strlen(status) : 0, itag);
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO script_validate_log "
-        "(height, status, ok, tx_count, input_count, first_failure_txid, "
-        " first_failure_vin, first_failure_serror, validated_at, block_hash, "
-        " source_epoch_digest, itag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
+    bool stmt_cached = false;
+    sqlite3_stmt *stmt = sv_log_insert_stmt(db, &stmt_cached);
+    if (!stmt) {
         LOG_WARN("script_validate", "[script_validate] prepare insert failed: %s", sqlite3_errmsg(db));
         progress_store_tx_unlock();
         return false;
     }
+    int rc;
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
     sqlite3_bind_text (stmt, 2, status, -1, SQLITE_STATIC);
     sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
@@ -241,13 +349,13 @@ bool script_validate_log_insert(sqlite3 *db, int height,
         LOG_WARN("script_validate",
                  "[script_validate] source epoch bind failed height=%d",
                  height);
-        sqlite3_finalize(stmt);
+        sv_log_insert_release(stmt, stmt_cached);
         progress_store_tx_unlock();
         return false;
     }
     sqlite3_bind_blob(stmt, 12, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
+    sv_log_insert_release(stmt, stmt_cached);
     progress_store_tx_unlock();
     if (rc != SQLITE_DONE) {
         LOG_WARN("script_validate", "[script_validate] insert height=%d rc=%d", height, rc);

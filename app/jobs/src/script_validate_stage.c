@@ -656,13 +656,20 @@ bool script_validate_stage_init(struct main_state *ms)
 
 STAGE_STEP_ONCE_SIMPLE(script_validate)
 
-STAGE_DRAIN_IMPL(script_validate)
+/* script_validate_stage_drain lives in script_validate_stage_drain.c: it is
+ * hand-written (not STAGE_DRAIN_IMPL) so the per-batch prepared-statement caches
+ * on the drain thread are finalized once the outer batch closes. */
 
 void script_validate_stage_shutdown(void)
 {
     /* Stop the shared verify worker pool before tearing down stage state so no
      * worker outlives the stage. Safe to call even if the pool never started. */
     script_verify_pool_shutdown();
+    /* Finalize any residual per-batch statement caches (drain-end normally
+     * clears them; this is the belt-and-suspenders teardown). */
+    created_outputs_index_batch_reset();
+    script_validate_prevout_batch_reset();
+    script_validate_log_store_batch_reset();
     /* Registry hygiene (tests re-init in-process): both are re-derived from
      * live state the next time the condition fires, so clearing here loses
      * nothing. */
