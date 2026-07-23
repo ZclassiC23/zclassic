@@ -27,6 +27,8 @@
 #include "config/boot_bundle_fetch.h"          /* THE WELD: download-before-autodetect */
 #include "config/boot_header_seed_import.h"    /* headers-as-artifact in-process import */
 #include "config/boot_consensus_bundle_marker.h"
+#include "conditions/no_state_source.h"        /* LOUD no-state-source signage */
+#include "jobs/reducer_frontier.h"             /* reducer_frontier_provable_tip_cached */
 #include "storage/boot_auto_refold.h"          /* A1: consume the escalator's armed refold */
 #include "storage/progress_store.h"            /* progress_store_db */
 #include "util/log_macros.h"
@@ -435,6 +437,88 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
     return installed;
 }
 
+/* ── LOUD no-state-source signage helpers ──────────────────────────────────── */
+
+/* True iff this datadir has no meaningful chain state yet — a genesis-only (or
+ * empty) active-chain window, so the reducer would fold from genesis. Reads the
+ * canonical active_chain_height (which consults the durable tip_finalize frontier
+ * when the progress store is open), so a WARM reboot of an already-synced node
+ * reports its real height and is NOT mistaken for a fresh, sourceless boot. */
+static bool nss_no_meaningful_chain_state(struct main_state *ms)
+{
+    if (!ms)
+        return true;
+    return active_chain_height(&ms->chain_active) <= 0;
+}
+
+/* True iff an installable *.sqlite bundle is still staged (a deferred install is
+ * a PENDING state source — checkpoint_bundle_install_ready owns that case). */
+static bool nss_bundle_staged(const char *datadir)
+{
+    char *b = boot_autodetect_consensus_bundle(datadir);
+    if (!b)
+        return false;
+    free(b);
+    return true;
+}
+
+/* True iff a prior boot marked a staged bundle <name>.sqlite.failed. */
+static bool nss_failed_bundle_present(const char *datadir)
+{
+    char dirpath[PATH_MAX];
+    int n = snprintf(dirpath, sizeof(dirpath), "%s/bundles", datadir);
+    if (n < 0 || (size_t)n >= sizeof(dirpath))
+        return false;
+    DIR *d = opendir(dirpath);
+    if (!d)
+        return false;
+    static const char SFX[] = ".failed";
+    const size_t slen = sizeof(SFX) - 1;
+    bool found = false;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t len = strlen(ent->d_name);
+        if (len > slen && strcmp(ent->d_name + len - slen, SFX) == 0) {
+            found = true;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* Best-effort classification of WHY no state source landed, from observable
+ * datadir state (the rich per-seed fetch outcome is Lane 2's to plumb; this
+ * distinguishes what the boot seam can see today). */
+static void nss_classify(struct app_context *ctx,
+                         struct no_state_source_facts *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    if (!boot_bundle_fetch_should_run(ctx->datadir, ctx)) {
+        /* Not eligible — opt-out (-nofilesync / ZCL_NO_BUNDLE_FETCH) or
+         * connect-only with no explicit -fileservice peer. */
+        out->fetch = NO_STATE_SOURCE_FETCH_SKIPPED;
+    } else {
+        /* Eligible + attempted, but nothing installable landed. A persisted
+         * <datadir>/bundles/directory.json means a manifest reached quorum but
+         * the bytes did not complete; its absence means no reachable seed served
+         * a usable manifest. */
+        char hint[PATH_MAX];
+        int hn = snprintf(hint, sizeof(hint), "%s/bundles/directory.json",
+                          ctx->datadir);
+        bool have_hint = hn > 0 && (size_t)hn < sizeof(hint) &&
+                         access(hint, F_OK) == 0;
+        out->fetch = have_hint ? NO_STATE_SOURCE_FETCH_DOWNLOAD_FAILED
+                               : NO_STATE_SOURCE_FETCH_NO_SEED;
+    }
+
+    out->bundle = nss_failed_bundle_present(ctx->datadir)
+                      ? NO_STATE_SOURCE_BUNDLE_FAILED
+                      : NO_STATE_SOURCE_BUNDLE_NONE;
+    out->baseline_hstar = reducer_frontier_provable_tip_cached();
+}
+
 /* ── The app_init selection seam ───────────────────────────────────────────── */
 
 void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
@@ -483,4 +567,24 @@ void boot_select_state_source(struct node_db *ndb, struct main_state *ms,
         (ctx->refold_from_anchor || out->consumed_auto_refold ||
          (ctx->load_verify_boot &&
           boot_load_verify_snapshot_eligible(ndb, progress_store_db())));
+
+    /* LOUD no-state-source signage (conditions/no_state_source.h): if this boot
+     * selected NO fast-start state source (no complete install, no consumed
+     * refold, no from-anchor cutover), there is no staged/pending bundle and no
+     * sovereign marker, AND the datadir has no meaningful chain state, NAME the
+     * real problem NOW so a run that would otherwise pin folding an empty genesis
+     * datadir surfaces the cause in the first seconds via `dumpstate blocker`,
+     * instead of a misleading downstream fold symptom. The node still proceeds
+     * with normal from-genesis IBD; the blocker self-clears on H* climb / a
+     * source landing (the no_state_source condition's witness). */
+    if (!out->auto_installed_bundle && !out->consumed_auto_refold &&
+        !out->do_from_anchor &&
+        !boot_consensus_bundle_marker_exists(ctx->datadir) &&
+        !boot_install_bundle_pending(ctx->datadir) &&
+        !nss_bundle_staged(ctx->datadir) &&
+        nss_no_meaningful_chain_state(ms)) {
+        struct no_state_source_facts f;
+        nss_classify(ctx, &f);
+        no_state_source_raise(&f);
+    }
 }
