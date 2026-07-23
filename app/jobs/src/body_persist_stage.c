@@ -19,19 +19,14 @@
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"
-#include "core/serialize.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
-#include "storage/event_log.h"
-#include "storage/event_log_payloads.h"
-#include "storage/event_log_singleton.h"
 #include "jobs/block_header_emit.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
-#include "util/safe_alloc.h"
 #include "util/reducer_stage_profile.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -65,8 +60,6 @@ static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_read_failed_total = 0;
 static _Atomic uint64_t g_header_mismatch_total = 0;
 static _Atomic uint64_t g_merkle_mismatch_total = 0;
-static _Atomic uint64_t g_body_emit_total = 0;
-static _Atomic uint64_t g_body_emit_fail_total = 0;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
@@ -115,92 +108,6 @@ static bool verify_merkle_root(const struct block *blk)
     struct uint256 root = compute_merkle_root(txids, blk->num_vtx);
     free(txids);
     return uint256_eq(&root, &blk->header.hashMerkleRoot);
-}
-
-/* Emit the validated block body into the append-only event log.
- * Best-effort event emission: any failure (log not wired, serialize/append
- * error) is counted and logged, never propagated to the stage result. The body
- * bytes are the canonical block_serialize() wire form, so a replay consumer
- * round-trips them via block_deserialize(). */
-static void emit_block_body_event(const struct block *blk,
-                                  const struct uint256 *hash,
-                                  int height)
-{
-    int64_t encode_started = platform_time_monotonic_us();
-    event_log_t *log = event_log_singleton();
-    if (!log) {
-        /* Not wired yet (early boot, or unit tests that don't open the
-         * singleton). Not a hard failure — the projection catches up. */
-        return;
-    }
-
-    struct byte_stream s;
-    stream_init(&s, 1024);
-    if (!block_serialize(blk, &s)) {
-        stream_free(&s);
-        LOG_WARN("body_persist",
-                 "[body_persist] event emit: block_serialize failed h=%d",
-                 height);
-        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    if (s.size > EV_BLOCK_BODY_MAX_BODY) {
-        LOG_WARN("body_persist",
-                 "[body_persist] event emit: body %zu > max %u h=%d",
-                 s.size, (unsigned)EV_BLOCK_BODY_MAX_BODY, height);
-        stream_free(&s);
-        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    struct ev_block_body b;
-    memset(&b, 0, sizeof(b));
-    memcpy(b.hash, hash->data, 32);
-    b.height   = height;
-    b.body_len = (uint32_t)s.size;
-
-    size_t cap = ev_block_body_wire_size(b.body_len);
-    uint8_t *buf = zcl_malloc(cap, "body_persist/emit_body");
-    if (!buf) {
-        stream_free(&s);
-        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    size_t written = 0;
-    bool ok = ev_block_body_serialize(&b, s.data, buf, cap, &written);
-    stream_free(&s);
-    if (!ok) {
-        free(buf);
-        LOG_WARN("body_persist",
-                 "[body_persist] event emit: serialize failed h=%d",
-                 height);
-        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
-                                     RPF_EVENT_ENCODE_US,
-                              (uint64_t)(platform_time_monotonic_us() -
-                                         encode_started));
-    int64_t append_started = platform_time_monotonic_us();
-    uint64_t off = event_log_append(log, EV_BLOCK_BODY, buf, written);
-    reducer_stage_profile_observe_us(REDUCER_PROFILE_BODY_PERSIST,
-                                     RPF_EVENT_APPEND_US,
-                              (uint64_t)(platform_time_monotonic_us() -
-                                         append_started));
-    free(buf);
-    if (off == UINT64_MAX) {
-        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-    atomic_fetch_add_explicit(&g_body_emit_total, 1, memory_order_relaxed);
 }
 
 /* READ-class failure discipline (mirrors proof_validate's reader handling
@@ -334,10 +241,6 @@ static job_result_t step_persist(struct stage_step_ctx *c)
                                         &g_merkle_mismatch_total);
     }
 
-    /* The body is read, hashes to its header, and merkle-checks; emit it into
-     * the append-only log before freeing. */
-    emit_block_body_event(blk, &disk_hash, next_h);
-
     /* Index every output this block creates so script_validate (stage 5) can
      * resolve transparent prevouts without -txindex. body_persist (stage 4) is
      * strictly upstream, so the index is complete at/below the script_validate
@@ -446,12 +349,17 @@ int body_persist_stage_drain(int max_steps)
             progress_store_tx_unlock();
     }
     int advanced = 0;
+    /* Reuse one read fd across this drain's tail reads (append-only forward
+     * fold on this thread); exit() closes it. Reads below the sealed frontier
+     * take the mmap segment and never reach the pread fd. */
+    disk_block_io_read_fd_cache_enter();
     for (int i = 0; i < max_steps; i++) {
         job_result_t r = body_persist_stage_step_once();
         if (r != JOB_ADVANCED)
             break;
         advanced++;
     }
+    disk_block_io_read_fd_cache_exit();
     if (batched) {
         (void)stage_batch_end(batch_db,
                               advanced > 0 || stage_batch_dirty());
@@ -459,6 +367,7 @@ int body_persist_stage_drain(int max_steps)
          * Finalize after either COMMIT or ROLLBACK so no DB/reorg generation
          * can inherit bindings or statement state from its predecessor. */
         created_outputs_index_batch_reset();
+        body_persist_log_store_batch_reset();
         progress_store_tx_unlock();
     }
     return advanced;
@@ -467,6 +376,7 @@ int body_persist_stage_drain(int max_steps)
 void body_persist_stage_shutdown(void)
 {
     created_outputs_index_batch_reset();
+    body_persist_log_store_batch_reset();
     /* Registry hygiene (tests re-init in-process): re-derived from live
      * state the next time the condition fires, so clearing here loses
      * nothing. */
@@ -485,8 +395,6 @@ void body_persist_stage_shutdown(void)
     atomic_store(&g_read_failed_total, (uint64_t)0);
     atomic_store(&g_header_mismatch_total, (uint64_t)0);
     atomic_store(&g_merkle_mismatch_total, (uint64_t)0);
-    atomic_store(&g_body_emit_total, (uint64_t)0);
-    atomic_store(&g_body_emit_fail_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
@@ -538,16 +446,6 @@ uint64_t body_persist_stage_merkle_mismatch_total(void)
     return atomic_load(&g_merkle_mismatch_total);
 }
 
-uint64_t body_persist_stage_body_emit_total(void)
-{
-    return atomic_load(&g_body_emit_total);
-}
-
-uint64_t body_persist_stage_body_emit_fail_total(void)
-{
-    return atomic_load(&g_body_emit_fail_total);
-}
-
 bool body_persist_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -569,10 +467,6 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_header_mismatch_total));
     json_push_kv_int (out, "merkle_mismatch_total",
                       (int64_t)atomic_load(&g_merkle_mismatch_total));
-    json_push_kv_int (out, "body_emit_total",
-                      (int64_t)atomic_load(&g_body_emit_total));
-    json_push_kv_int (out, "body_emit_fail_total",
-                      (int64_t)atomic_load(&g_body_emit_fail_total));
     json_push_kv_int (out, "header_event_emit_total",
                       (int64_t)atomic_load(&g_header_event_emit_total));
     json_push_kv_int (out, "header_event_emit_fail_total",

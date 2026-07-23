@@ -510,6 +510,108 @@ static bool disk_block_locate_payload(int fd,
     return true;
 }
 
+/* ── Thread-local read fd cache (pread fast path) ─────────────────────
+ * read_block_from_disk_pread_profiled() open()+close()es the blk*.dat file per
+ * block. During a stage drain nearly every read hits the same one or two files,
+ * so keep the last-opened read fd per thread and reuse it. pread is positional
+ * (no shared file offset), so a reused fd is safe without a lock. Thread-local
+ * preserves the pread path's lock-free, no-shared-state contract; a
+ * pthread_key destructor closes the fd when the owning thread exits.
+ *
+ * The cache is OPT-IN, scoped by disk_block_io_read_fd_cache_enter()/exit()
+ * around the reducer's forward-fold drain. There blk*.dat files are strictly
+ * append-only and never unlinked/recreated (body_fetch already wrote them; no
+ * writer runs on the drive thread during the read loop), so a path-keyed fd is
+ * safe. Outside that scope every reader (import, tests that rewrite a blk path,
+ * bg_validation, RPC) keeps the stateless open/close so a replaced file at a
+ * reused path can never be read through a stale fd. */
+struct read_fd_cache {
+    int  fd;
+    char path[512];
+};
+static pthread_key_t  g_read_fd_key;
+static pthread_once_t g_read_fd_once = PTHREAD_ONCE_INIT;
+static _Thread_local bool g_read_fd_cache_enabled = false;
+
+static void read_fd_cache_destroy(void *p)
+{
+    struct read_fd_cache *c = p;
+    if (!c)
+        return;
+    if (c->fd >= 0)
+        close(c->fd);
+    free(c);
+}
+
+static void read_fd_key_init(void)
+{
+    (void)pthread_key_create(&g_read_fd_key, read_fd_cache_destroy);
+}
+
+static void read_fd_cache_close_locked(void)
+{
+    struct read_fd_cache *c = pthread_getspecific(g_read_fd_key);
+    if (c && c->fd >= 0) {
+        close(c->fd);
+        c->fd = -1;
+        c->path[0] = '\0';
+    }
+}
+
+void disk_block_io_read_fd_cache_enter(void)
+{
+    pthread_once(&g_read_fd_once, read_fd_key_init);
+    g_read_fd_cache_enabled = true;
+}
+
+void disk_block_io_read_fd_cache_exit(void)
+{
+    g_read_fd_cache_enabled = false;
+    pthread_once(&g_read_fd_once, read_fd_key_init);
+    read_fd_cache_close_locked();
+}
+
+/* Return a read-only fd for `path`. On a thread-local cache hit *cached_out is
+ * true and the caller must NOT close the fd (the cache owns it). Otherwise the
+ * fd is caller-owned (close it) or -1 on open failure. */
+static int read_fd_cache_get(const char *path, bool *cached_out)
+{
+    *cached_out = false;
+    if (!g_read_fd_cache_enabled)
+        return open(path, O_RDONLY);  /* stateless path — caller-owned fd */
+
+    pthread_once(&g_read_fd_once, read_fd_key_init);
+    struct read_fd_cache *c = pthread_getspecific(g_read_fd_key);
+    if (c) {
+        if (c->fd >= 0 && strcmp(c->path, path) == 0) {
+            *cached_out = true;
+            return c->fd;
+        }
+    } else {
+        c = zcl_malloc(sizeof(*c), "disk_block_io/read_fd_cache");
+        if (c) {
+            c->fd = -1;
+            c->path[0] = '\0';
+            if (pthread_setspecific(g_read_fd_key, c) != 0) {
+                free(c);
+                c = NULL;
+            }
+        }
+    }
+    if (!c)
+        return open(path, O_RDONLY);  /* alloc/TLS failure — caller-owned fd */
+    if (c->fd >= 0)
+        close(c->fd);
+    c->fd = open(path, O_RDONLY);
+    if (c->fd < 0) {
+        c->path[0] = '\0';
+        return -1;
+    }
+    snprintf(c->path, sizeof(c->path), "%s", path);
+    *cached_out = true;
+    return c->fd;
+}
+
 bool read_block_from_disk_pread(struct block *b,
                                 const struct disk_block_pos *pos,
                                 const char *datadir)
@@ -533,7 +635,8 @@ bool read_block_from_disk_pread_profiled(struct block *b,
     char path[512];
     get_block_pos_filename(path, sizeof(path), datadir, pos, "blk");
 
-    int fd = open(path, O_RDONLY);
+    bool fd_cached = false;
+    int fd = read_fd_cache_get(path, &fd_cached);
     if (fd < 0) {
         /* Throttled: a blocks-less bundle would otherwise emit this per block
          * (~3.1M lines). Still logs context (the path) on the throttled emit. */
@@ -550,7 +653,7 @@ bool read_block_from_disk_pread_profiled(struct block *b,
     uint32_t payload_pos = pos->nPos;
     size_t bufsize = 2000000u;
     if (!disk_block_locate_payload(fd, pos, &payload_pos, &bufsize)) {
-        close(fd);
+        if (!fd_cached) close(fd);
         LOG_FAIL("disk_block_io",
                  "read_block_pread: locate payload failed for file=%d pos=%u",
                  pos->nFile, pos->nPos);
@@ -558,12 +661,12 @@ bool read_block_from_disk_pread_profiled(struct block *b,
 
     unsigned char *buf = zcl_malloc(bufsize, "read_block_pread_buf");
     if (!buf) {
-        close(fd);
+        if (!fd_cached) close(fd);
         LOG_FAIL("disk_block_io", "read_block_pread: malloc(%zu) failed", bufsize);
     }
 
     ssize_t nread = pread(fd, buf, bufsize, (off_t)payload_pos);
-    close(fd);
+    if (!fd_cached) close(fd);
 
     if (nread <= 0) {
         free(buf);

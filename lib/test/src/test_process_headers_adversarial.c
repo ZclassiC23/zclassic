@@ -466,6 +466,39 @@ int test_process_headers_adversarial(void)
         main_state_free(&ms3);
     }
 
+    /* ── 8. getheaders SERVE side: the reply must stay under the 2 MiB wire
+     *       cap. ~2000 Equihash headers (1344-byte solution ≈ 1.5 KB each)
+     *       serialize to ~2.9 MB > MAX_PROTOCOL_MESSAGE_LENGTH, and the peer
+     *       drops the whole oversized reply. getheaders_try_append_header()
+     *       bounds the batch by bytes so the framed reply always fits. */
+    {
+        struct block_header big;
+        block_header_init(&big);
+        big.nBits = 0x1f07ffff;
+        big.nSolutionSize = MAX_SOLUTION_SIZE;   /* mainnet Equihash 200,9 */
+        memset(big.nSolution, 0xab, MAX_SOLUTION_SIZE);
+
+        struct byte_stream body;
+        stream_init(&body, 1u << 20);
+        int served = 0;
+        bool stopped_by_cap = false;
+        for (int i = 0; i < 2000; i++) {
+            if (!getheaders_try_append_header(&body, &big)) {
+                stopped_by_cap = true;
+                break;
+            }
+            served++;
+        }
+        size_t framed = compact_size_sizeof((uint64_t)served) + body.size;
+        PH_CHECK("getheaders serve: byte cap stops the batch before count 2000",
+                 stopped_by_cap && served > 0 && served < 2000);
+        PH_CHECK("getheaders serve: framed reply within wire cap",
+                 framed <= (size_t)MAX_PROTOCOL_MESSAGE_LENGTH);
+        PH_CHECK("getheaders serve: one more header would overflow (tight)",
+                 body.size + 1488u + 16u > (size_t)MAX_PROTOCOL_MESSAGE_LENGTH);
+        stream_free(&body);
+    }
+
     sync_set_state(sync0, "process_headers_adversarial restore");
     main_state_free(&ms);
     SetDataDir("");

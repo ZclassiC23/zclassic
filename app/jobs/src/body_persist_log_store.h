@@ -28,4 +28,9 @@ int body_persist_body_fetch_log_at(struct sqlite3 *db, int height,
 bool body_persist_log_insert(struct sqlite3 *db, int height,
                              const char *source, bool ok);
 
+/* Finalize the thread-local per-batch cached statements. Call at each stage
+ * drain-batch boundary (after COMMIT or ROLLBACK) and at shutdown, so no
+ * statement outlives its batch generation. */
+void body_persist_log_store_batch_reset(void);
+
 #endif /* ZCL_JOBS_BODY_PERSIST_LOG_STORE_H */

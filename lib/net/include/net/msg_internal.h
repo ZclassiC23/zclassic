@@ -46,6 +46,18 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
 bool process_verack(struct msg_processor *mp, struct p2p_node *node);
 
 /* msg_headers.c — header sync messages */
+struct block_header;
+
+/* Append one wire `headers` element (serialized header + a 0 tx-count) to
+ * `body`, unless doing so would push the framed reply — the count prefix plus
+ * `body` — past MAX_PROTOCOL_MESSAGE_LENGTH. On refusal `body` is rolled back
+ * to its prior size and false is returned; the serve loop then stops and sends
+ * exactly what fit. Bounding by bytes (not just header count) is required
+ * because ~2000 Equihash headers (~1.5 KB each) overflow the 2 MiB wire cap and
+ * the receiver drops the whole oversized reply. */
+bool getheaders_try_append_header(struct byte_stream *body,
+                                  const struct block_header *hdr);
+
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);
 bool process_headers(struct msg_processor *mp, struct p2p_node *node,

@@ -184,8 +184,8 @@ uint64_t event_log_size(event_log_t *log);
  * event_log_append() normally fsync()s TWICE per event (once after the
  * header+payload, once after the sentinel) — two ext4 journal-commit
  * barriers per append. On the reducer fold / catch-up drain each block
- * emits ~2 events (EV_BLOCK_BODY + EV_BLOCK_HEADER) ON the fold thread, so
- * that is ~4 fsync() barriers per block: the drive thread parks in
+ * emits one EV_BLOCK_HEADER event ON the fold thread, so that is ~2
+ * fsync() barriers per block: the drive thread parks in
  * jbd2_log_wait_commit while the CPU is otherwise idle — the measured fold
  * bottleneck.
  *

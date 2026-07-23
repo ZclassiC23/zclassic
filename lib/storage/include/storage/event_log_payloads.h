@@ -1273,63 +1273,6 @@ bool ev_block_header_parse(const uint8_t *in, size_t in_len,
                            struct ev_block_header *h_out,
                            const uint8_t **solution_out);
 
-/* ── EV_BLOCK_BODY (B2 — block bodies in the append-only log) ────────
- *
- * The full validated block body (header + every transaction), in the
- * canonical `block_serialize()` wire format. With bodies in the log, the
- * log is replayable from scratch — folding it rebuilds the UTXO set
- * without consulting the on-disk block files. Emitted by the body_persist stage
- * once a body is read off disk, hashes to its admitted header, and
- * merkle-reconstructs to that header's root.
- *
- * Wire layout (little-endian, no padding):
- *   bytes  0..31    hash        (block hash — the projection/dedup key)
- *   bytes 32..35    height      (int32 LE)
- *   bytes 36..39    body_len    (uint32 LE)
- *   bytes 40..      body        (body_len bytes; canonical block_serialize)
- *
- * Total fixed prefix: 40 bytes. The body is opaque to this codec — it is
- * the exact byte string `block_serialize()` produced, so a consumer
- * round-trips it back to a `struct block` via `block_deserialize()`. */
-#define EV_BLOCK_BODY_FIXED_BYTES 40u
-
-/* Defensive cap on the serialized body (32 MiB). Larger indicates a bug
- * in the caller; the consensus block size is far below this. */
-#define EV_BLOCK_BODY_MAX_BODY ((uint32_t)(32u * 1024u * 1024u))
-
-struct ev_block_body {
-    uint8_t  hash[32];
-    int32_t  height;
-    uint32_t body_len;
-    /* body bytes follow on the wire (body_len bytes). In the in-memory
-     * struct the caller passes the body pointer separately to
-     * ev_block_body_serialize() / receives it back from
-     * ev_block_body_parse(). */
-};
-
-/* On-disk size of an EV_BLOCK_BODY serialization for the given body
- * length. */
-static inline size_t ev_block_body_wire_size(uint32_t body_len)
-{
-    return (size_t)EV_BLOCK_BODY_FIXED_BYTES + (size_t)body_len;
-}
-
-/* Serialize a body into `out` (must hold ev_block_body_wire_size(
- * b->body_len) bytes). `body` carries the trailing body bytes (may be
- * NULL iff body_len == 0). Returns true on success, false on bad input. */
-bool ev_block_body_serialize(const struct ev_block_body *b,
-                             const uint8_t *body,
-                             uint8_t *out, size_t out_cap,
-                             size_t *out_written);
-
-/* Parse a serialized body from `in`. Fixed fields populate `*b_out`;
- * `*body_out` points at the trailing body bytes inside `in` (no copy) —
- * valid only while `in` remains alive. Returns true on success, false on
- * truncation / size mismatch. */
-bool ev_block_body_parse(const uint8_t *in, size_t in_len,
-                         struct ev_block_body *b_out,
-                         const uint8_t **body_out);
-
 /* ── ZNAM events for znam_projection ───────────────────────────────
  *
  * Frozen wire formats. Variable-length strings carry an explicit u8
