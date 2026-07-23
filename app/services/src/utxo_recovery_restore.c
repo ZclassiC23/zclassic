@@ -643,6 +643,8 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     utxo_recovery_set_cold_import_trust_anchor(seed_anchor_hash_p, seed_anchor_h);
 
     if (best) {
+        /* Correct an LDB-import header-only height-tear (glue in the gate TU). */
+        utxo_recovery_relink_island_if_present(ctx, best);
         struct block_index *restore_tip = best;
         bool best_backed =
             chain_restore_block_is_consensus_backed_on_disk_seeded(

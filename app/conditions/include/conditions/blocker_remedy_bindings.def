@@ -191,6 +191,12 @@ ZCL_BLOCKER_REMEDY(header_seed.*,                              OWNER)
 ZCL_BLOCKER_REMEDY(validate_headers.mark_failed,               block_failed_mask_at_tip)
 ZCL_BLOCKER_REMEDY(header_band_hole,                           OWNER)
 ZCL_BLOCKER_REMEDY(utxo_recovery.rewind_overshoot,              OWNER)
+/* Scoped ancestry-height relink refused a GENUINE hash-linkage break (a torn
+ * parent above the SHA3 anchor extent, not a repairable label scramble). No
+ * condition healer drives it: it self-clears once the missing parent header
+ * connects via normal net download (the header_band planner) and the next
+ * boot's relink succeeds — same honest OWNER shape as header_band_hole. */
+ZCL_BLOCKER_REMEDY(utxo_recovery.ancestry_tear,                 OWNER)
 ZCL_BLOCKER_REMEDY(ops.binary_stale,                            OWNER)
 ZCL_BLOCKER_REMEDY(binary.fallback_active,                      OWNER)
 ZCL_BLOCKER_REMEDY(utxo_ladder_mismatch,                        OWNER)

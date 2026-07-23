@@ -34,6 +34,8 @@
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "util/blocker.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -276,6 +278,110 @@ int test_shielded_import_cured_tip_anchor(void)
         node_db_close(&ndb);
         progress_store_close();
         utxo_recovery_set_cold_import_trust_anchor(NULL, -1);
+    }
+
+    /* ── RELINK FIX: a height-scrambled HEADER-ONLY ancestor under intact
+     * hash-linkage is relabeled in place → the coins tip becomes trust-rooted.
+     * This is the exact live shape (LDB-import height-tear) neither boot repair
+     * pass can reach. No cold-import anchor is registered — the cure is
+     * structural (correct the labels), not an accept-the-island exception. ── */
+    {
+        utxo_recovery_set_cold_import_trust_anchor(NULL, -1);   /* clean slate */
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        enum { CHAIN = 12 };
+        struct block_index blocks[CHAIN];
+        /* Root at anchor+1 (pprev=NULL): a chain rooted at/just above the
+         * attested extent is trust-rooted by construction. */
+        for (int i = 0; i < CHAIN; i++) {
+            cta_make_block(&blocks[i], anchor + 1 + i,
+                           i > 0 ? &blocks[i - 1] : NULL, 0x40);
+            block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
+                             &blocks[i]);
+        }
+        struct block_index *tip = &blocks[CHAIN - 1];
+
+        CTA_CHECK("relink: contiguous chain tip is trust-rooted before scramble",
+                  utxo_recovery_block_trust_rooted(tip));
+
+        /* Scramble one middle header-only ancestor's stored height (LDB tear):
+         * hash-linkage (pprev) stays intact, only the label is wrong. */
+        const int j = 5;
+        const int32_t correct_j = anchor + 1 + j;
+        blocks[j].nHeight = anchor + 500000;   /* wildly wrong */
+
+        CTA_CHECK("relink: scramble makes the tip a detached island",
+                  !utxo_recovery_block_trust_rooted(tip) &&
+                  utxo_recovery_block_ancestry_break(tip) != NULL);
+
+        struct utxo_recovery_ancestry_repair rep =
+            utxo_recovery_relink_scrambled_ancestry(&ms, tip);
+        CTA_CHECK("relink: repair reports FIXED with >=1 relabel",
+                  rep.result == UTXO_ANCESTRY_REPAIR_FIXED && rep.fixed >= 1);
+        CTA_CHECK("relink: scrambled ancestor's height is corrected",
+                  blocks[j].nHeight == correct_j);
+        CTA_CHECK("relink: tip is trust-rooted after the repair",
+                  utxo_recovery_block_trust_rooted(tip) &&
+                  utxo_recovery_block_ancestry_break(tip) == NULL);
+
+        /* Idempotent: a second call is a NOOP (island already cured). */
+        struct utxo_recovery_ancestry_repair rep2 =
+            utxo_recovery_relink_scrambled_ancestry(&ms, tip);
+        CTA_CHECK("relink: a second pass is a NOOP (idempotent)",
+                  rep2.result == UTXO_ANCESTRY_REPAIR_NOOP && rep2.fixed == 0);
+
+        main_state_free(&ms);
+    }
+
+    /* ── RELINK REFUSE: a GENUINE hash-linkage break (a NULL parent above the
+     * attested extent) is real corruption, not a label scramble — the repair
+     * changes NOTHING and names a typed blocker. Two-pass guarantees a
+     * higher scrambled label above the break is left untouched. ── */
+    {
+        utxo_recovery_set_cold_import_trust_anchor(NULL, -1);
+        blocker_module_init();
+        blocker_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        enum { CHAIN = 12 };
+        struct block_index blocks[CHAIN];
+        for (int i = 0; i < CHAIN; i++) {
+            cta_make_block(&blocks[i], anchor + 1 + i,
+                           i > 0 ? &blocks[i - 1] : NULL, 0x41);
+            block_map_insert(&ms.map_block_index, &blocks[i].hashBlock,
+                             &blocks[i]);
+        }
+        struct block_index *tip = &blocks[CHAIN - 1];
+
+        /* Tear the pprev at a mid node ABOVE the attested extent (a genuine
+         * missing/detached parent), and separately scramble a HIGHER node's
+         * height to prove pass 2 never runs on a refusal. */
+        const int broke = 4;                 /* blocks[4].pprev := NULL */
+        const int scrambled = 9;             /* label must survive the refusal */
+        blocks[broke].pprev = NULL;
+        const int32_t poisoned = anchor + 777777;
+        blocks[scrambled].nHeight = poisoned;
+
+        CTA_CHECK("relink: torn ancestry presents as a detached island",
+                  utxo_recovery_block_ancestry_break(tip) != NULL);
+
+        struct utxo_recovery_ancestry_repair rep =
+            utxo_recovery_relink_scrambled_ancestry(&ms, tip);
+        CTA_CHECK("relink: a hash-linkage break is REFUSED",
+                  rep.result == UTXO_ANCESTRY_REPAIR_REFUSED && rep.fixed == 0);
+        CTA_CHECK("relink: refusal names the ancestry-tear typed blocker",
+                  blocker_exists(UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID));
+        CTA_CHECK("relink: refusal mutates nothing (higher scramble survives)",
+                  blocks[scrambled].nHeight == poisoned);
+        CTA_CHECK("relink: refuse_at is the break height above the extent",
+                  rep.refuse_at_h == anchor + 1 + broke);
+
+        blocker_reset_for_testing();
+        main_state_free(&ms);
     }
 
     return failures;

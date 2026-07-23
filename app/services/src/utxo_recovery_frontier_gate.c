@@ -47,6 +47,7 @@
  */
 
 #include "services/utxo_recovery_service.h"
+#include "services/block_index_loader.h"
 #include "validation/main_state.h"
 #include "jobs/reducer_frontier.h"
 #include "chain/checkpoints.h"
@@ -216,6 +217,175 @@ bool utxo_recovery_block_trust_rooted(const struct block_index *bi)
     if (!bi || bi->nHeight < 0)
         return false;
     return utxo_recovery_block_ancestry_break(bi) == NULL;
+}
+
+/* ── Scoped ancestry-height relink (LDB-import header-only tear) ─────────
+ * See services/utxo_recovery_service.h for the full contract + the failure
+ * class this cures (a hash-linked but height-scrambled header-only ancestor
+ * neither boot repair pass can reach). */
+struct utxo_recovery_ancestry_repair
+utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
+                                        struct block_index *tip)
+{
+    struct utxo_recovery_ancestry_repair r = {
+        .result = UTXO_ANCESTRY_REPAIR_NOOP,
+        .fixed = 0, .island_root_h = -1, .refuse_at_h = -1,
+    };
+    if (!ms || !tip || tip->nHeight < 0)
+        return r;
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    const int32_t anchor = cp ? cp->height
+                              : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+
+    /* Already trust-rooted (or entirely inside the attested extent): nothing
+     * to do. The island root also gives the loud-log context. */
+    const struct block_index *island =
+        utxo_recovery_block_ancestry_break(tip);
+    if (!island || tip->nHeight <= anchor + 1)
+        return r;                              /* NOOP */
+    r.island_root_h = island->nHeight;
+
+    /* PASS 1 — VALIDATE (no mutation). Walk tip -> anchor via pprev (the
+     * store's own hash linkage), tracking the AUTHORITATIVE height from the
+     * trusted coins tip. "Hash linkage agrees" = the parent is a genuine,
+     * self-consistent node in the block-index map (its own hash resolves to
+     * itself). A NULL / foreign / self-inconsistent parent ABOVE the attested
+     * anchor extent is a real linkage break, not a label scramble. */
+    int64_t max_steps = (int64_t)tip->nHeight - (int64_t)anchor + 8;
+    int64_t steps = 0;
+    int fixes_needed = 0;
+    int32_t correct_h = tip->nHeight;
+    struct block_index *cur = tip;
+    bool repairable = false;
+    for (;;) {
+        int32_t parent_h = correct_h - 1;
+        /* Relabel DOWN TO AND INCLUDING the node at the anchor height itself:
+         * ancestry_break only trust-roots once its contiguous descent reaches a
+         * node whose stored nHeight <= anchor, so the anchor node's own label
+         * must read exactly `anchor`. Stopping at parent_h <= anchor (one node
+         * too shallow) leaves the anchor node scrambled and the tip a detached
+         * island — the off-by-one that left the live coins tip un-rooted after
+         * relabeling ~116k heights. Below the anchor is the attested extent. */
+        if (parent_h < anchor) {               /* relabeled through the anchor node */
+            repairable = true;
+            break;
+        }
+        struct block_index *pp = cur->pprev;
+        if (!pp || !pp->phashBlock ||
+            block_map_find(&ms->map_block_index, pp->phashBlock) != pp) {
+            r.refuse_at_h = correct_h;         /* linkage break at cur */
+            break;
+        }
+        if (pp->nHeight != parent_h)
+            fixes_needed++;
+        cur = pp;
+        correct_h = parent_h;
+        if (++steps > max_steps) {             /* defensive: cycle/corruption */
+            r.refuse_at_h = correct_h;
+            break;
+        }
+    }
+
+    if (!repairable) {
+        /* FAIL-CLOSED: genuine hash-linkage break — name a typed blocker,
+         * change nothing. The header-band planner / operator drives the
+         * missing-parent backfill; a later boot re-attempts the relink. */
+        struct blocker_record br;
+        if (blocker_init(&br, UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID,
+                         "utxo_recovery", BLOCKER_DEPENDENCY, NULL)) {
+            br.retry_budget = -1;              /* unbounded — wait for backfill */
+            snprintf(br.reason, sizeof(br.reason),
+                     "coins_tip=%d refuse_at=%d anchor=%d island_root=%d "
+                     "(pprev torn above the attested extent — real corruption, "
+                     "not a height-label scramble)",
+                     tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+            (void)blocker_set(&br);            /* rate-limited dup is fine */
+        }
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=ancestry_relink_refused coins_tip=%d refuse_at=%d "
+                    "anchor=%d island_root=%d",
+                    tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+        LOG_WARN("utxo_recovery",
+                 "SCOPED ANCESTRY RELINK REFUSED: coins tip h=%d ancestry has a "
+                 "hash-linkage break at h=%d (anchor=%d island_root=%d) — real "
+                 "corruption, not a height-label scramble; changed nothing, "
+                 "waiting on header backfill",
+                 tip->nHeight, r.refuse_at_h, anchor, r.island_root_h);
+        r.result = UTXO_ANCESTRY_REPAIR_REFUSED;
+        return r;
+    }
+
+    if (fixes_needed == 0) {
+        /* Repairable path is fully contiguous already — the island root sat
+         * inside the attested extent, nothing above it to relabel. */
+        r.result = UTXO_ANCESTRY_REPAIR_NOOP;
+        return r;
+    }
+
+    /* PASS 2 — APPLY. The path is proven repairable (reaches the anchor via
+     * genuine hash-linkage within the bound), so relabel every torn parent
+     * height. Only nHeight changes: nChainWork/nChainTx/pskip are all height-
+     * independent, and the flat re-save re-derives skip links on next load. */
+    correct_h = tip->nHeight;
+    cur = tip;
+    for (;;) {
+        int32_t parent_h = correct_h - 1;
+        if (parent_h < anchor)                 /* through the anchor node (pass 1) */
+            break;
+        struct block_index *pp = cur->pprev;   /* proven non-NULL in pass 1 */
+        if (pp->nHeight != parent_h) {
+            pp->nHeight = parent_h;
+            r.fixed++;
+        }
+        cur = pp;
+        correct_h = parent_h;
+    }
+
+    /* Authoritative verdict: the tip must now be trust-rooted. */
+    if (utxo_recovery_block_ancestry_break(tip) != NULL) {
+        /* Defensive — unreachable given pass 1 proved the path. Do NOT claim
+         * success; leave the tip for the header-band planner. */
+        LOG_WARN("utxo_recovery",
+                 "SCOPED ANCESTRY RELINK: relabeled %d height(s) below coins "
+                 "tip h=%d but the tip is still not trust-rooted — leaving for "
+                 "the header-band planner", r.fixed, tip->nHeight);
+        r.result = UTXO_ANCESTRY_REPAIR_REFUSED;
+        return r;
+    }
+
+    LOG_WARN("utxo_recovery",
+             "SCOPED ANCESTRY RELINK: coins tip h=%d had an LDB-import height "
+             "scramble in its header-only ancestry (island_root=%d anchor=%d); "
+             "relabeled %d height(s) under intact hash-linkage — tip is now "
+             "trust-rooted", tip->nHeight, r.island_root_h, anchor, r.fixed);
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=ancestry_relink_fixed coins_tip=%d island_root=%d "
+                "anchor=%d fixed=%d",
+                tip->nHeight, r.island_root_h, anchor, r.fixed);
+    r.result = UTXO_ANCESTRY_REPAIR_FIXED;
+    return r;
+}
+
+void utxo_recovery_relink_island_if_present(struct utxo_recovery_ctx *ctx,
+                                            struct block_index *tip)
+{
+    if (!ctx || !ctx->state || !tip)
+        return;
+    /* Gate on an island actually being present so a healthy datadir pays one
+     * bounded pprev walk and nothing else. */
+    if (utxo_recovery_block_ancestry_break(tip) == NULL)
+        return;
+    struct utxo_recovery_ancestry_repair rep =
+        utxo_recovery_relink_scrambled_ancestry(ctx->state, tip);
+    if (rep.result == UTXO_ANCESTRY_REPAIR_FIXED &&
+        ctx->state->map_block_index.size > 1000)
+        /* Persist the corrected labels so the next boot loads them (and
+         * re-derives skip links from the correct heights) — the same durable
+         * flat save the boot repair passes use. Best-effort: even without it the
+         * relink re-fires on the next boot; REFUSED already set its typed
+         * blocker inside the relink. */
+        save_block_index_flat(ctx->datadir, ctx->state);
 }
 
 /* Shared band-fact recorder: blocker (the loud cache) + event + WARN.

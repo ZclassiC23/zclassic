@@ -129,6 +129,63 @@ bool utxo_recovery_block_trust_rooted(const struct block_index *bi);
 const struct block_index *utxo_recovery_block_ancestry_break(
     const struct block_index *bi);
 
+/* ── Scoped ancestry-height relink (LDB-import header-only tear) ─────── */
+
+/* Typed-blocker id raised when utxo_recovery_relink_scrambled_ancestry finds a
+ * GENUINE hash-linkage break (a NULL/foreign parent above the attested SHA3
+ * anchor extent) rather than a repairable height-label scramble. Fail-closed:
+ * the repair changes nothing and names this blocker so the header-band planner /
+ * operator drives the missing-parent backfill. Carries coins_tip / refuse_at /
+ * anchor in its reason. */
+#define UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID "utxo_recovery.ancestry_tear"
+
+enum utxo_recovery_ancestry_repair_result {
+    UTXO_ANCESTRY_REPAIR_NOOP = 0,   /* tip already trust-rooted — nothing done */
+    UTXO_ANCESTRY_REPAIR_FIXED,      /* relabeled >=1 header-only height(s); tip now trust-rooted */
+    UTXO_ANCESTRY_REPAIR_REFUSED,    /* genuine hash-linkage break — typed blocker set, no mutation */
+};
+
+struct utxo_recovery_ancestry_repair {
+    enum utxo_recovery_ancestry_repair_result result;
+    int32_t fixed;           /* count of height labels corrected (FIXED path) */
+    int32_t island_root_h;   /* detected island-root height (context), -1 if none */
+    int32_t refuse_at_h;     /* height of the hash-linkage break (REFUSED), -1 otherwise */
+};
+
+/* SCOPED, non-destructive ancestry-height relink for the LDB-import
+ * header-only height-tear class.
+ *
+ * FAILURE THIS CURES: an LDB import can scramble the stored nHeight of a
+ * HEADER-ONLY ancestor below the reducer window, so `tip`'s pprev chain is
+ * hash-linked (contiguous parent pointers) but height-torn — Invariant A
+ * (utxo_recovery_block_ancestry_break) then correctly refuses the (real) coins
+ * tip as a detached island, active_chain_tip() stays NULL, and the consensus
+ * bundle install refuses (before_consistent=0). Neither boot repair pass reaches
+ * it: block_index_repair_heights/_pprev are watermark-gated AND the pprev pass
+ * reads the block BODY (header-only nodes have none and are skipped).
+ *
+ * WHAT IT DOES: walks `tip`'s ancestry down its pprev links (the block-index
+ * STORE's own hash linkage — set at load from each record's prev_hash, so this
+ * is header-only-INCLUSIVE and never reads a block body), tracking the
+ * authoritative height from the trusted coins tip (decrement by 1 per hop). For
+ * each parent whose stored nHeight disagrees with child.nHeight-1 while the hash
+ * linkage AGREES (parent is a genuine, self-consistent node in the map), it
+ * corrects the label. A NULL/foreign parent ABOVE the attested SHA3 anchor
+ * extent is a real linkage break, NOT a label scramble: it FAILS CLOSED (typed
+ * blocker UTXO_RECOVERY_ANCESTRY_TEAR_BLOCKER_ID, changes nothing). Bounded to
+ * ~(tip.height - anchor) hops; two-pass so a refusal never mutates.
+ *
+ * Runs ONLY when the caller has already detected a detached island
+ * (utxo_recovery_block_ancestry_break(tip) != NULL) — it NOOP early-returns on a
+ * trust-rooted tip, so healthy datadirs pay nothing beyond that one gate walk.
+ * Idempotent. Persists nothing itself; the boot restore caller re-saves the flat
+ * block index (which re-derives skip links from the corrected heights on the
+ * next load). Only relabels nHeight — nChainWork/nChainTx/pskip are all height-
+ * independent (derived from pprev + nBits), matching block_index_repair_heights. */
+struct utxo_recovery_ancestry_repair
+utxo_recovery_relink_scrambled_ancestry(struct main_state *ms,
+                                        struct block_index *tip);
+
 /* PART C — register the provenance-matched cold-import seed anchor as a
  * trust-root terminus for the Invariant A frontier gate. The cold-import UTXO
  * snapshot base (and the cured coins tip a shielded-history import registers)
