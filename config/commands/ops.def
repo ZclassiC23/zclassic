@@ -399,6 +399,28 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_rom_seed_artifacts)
+ZCL_COMMAND_READY_COMMAND(
+    "ops.debug.rom_seed.publish", "ops.debug.rom_seed", "",
+    "Publish this node's starter artifacts to the swarm",
+    "The now-served ROM artifact catalog after a single idempotent re-scan of "
+    "<datadir> + <datadir>/bundles/: every consensus-state bundle and header-"
+    "chain seed already on disk is (re)registered with the seeder — carrying "
+    "the artifact-kind the discovery quorum requires — so a fresh peer's "
+    "directory listing advertises a usable manifest. Publishes only content-"
+    "verified files already present (produces none; the standing exporter owns "
+    "production, dumpstate bundle_exporter); a corrupt/wrong-kind file is "
+    "refused and never offered. Reflects the registry at call time.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "rom,seed,publish,register,bundle,starter,serve,swarm",
+    "zcl.command.empty_input.v1", "zcl.rom_seed_publish.v1", "", "",
+    "zclassic23 ops debug rom_seed publish",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_rom_seed_publish)
 
 /* ROM-fetch engine (the CLIENT half of docs/ROM_DELIVERY.md;
  * app/controllers/src/rom_fetch_controller.c, lib/net/include/net/rom_fetch.h).

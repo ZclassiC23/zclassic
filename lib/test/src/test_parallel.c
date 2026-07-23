@@ -326,6 +326,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_state_install_runtime) \
     X(boot_bundle_fetch) \
     X(boot_header_seed_import) \
+    X(bundle_publish_serve) \
     X(consensus_state_snapshot_export) \
     X(ratify_mint_anchor) \
     X(consensus_state_producer_receipt) \
