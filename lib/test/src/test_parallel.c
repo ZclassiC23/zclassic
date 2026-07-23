@@ -231,6 +231,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_index_projection) X(block_index_rebuild) \
     X(block_index_topup) \
     X(projection_replay_invariant) \
+    X(block_status_event_restart_proof) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(created_outputs_index) X(address_index) \

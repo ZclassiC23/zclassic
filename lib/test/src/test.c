@@ -1441,6 +1441,7 @@ int main(int argc, char **argv)
     failures += test_block_index_topup();
     failures += test_block_index_node_db_topup();
     failures += test_projection_replay_invariant();
+    failures += test_block_status_event_restart_proof();
     failures += test_header_admit_stage();
     failures += test_header_probe_poll();
     failures += test_validate_headers_stage();

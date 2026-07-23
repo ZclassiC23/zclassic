@@ -25,6 +25,7 @@
 
 #include "platform/time_compat.h"
 #include "storage/block_index_projection.h"
+#include "block_index_projection_internal.h"
 
 #include "storage/event_log_payloads.h"
 #include "event/event.h"
@@ -44,23 +45,10 @@
 #include <time.h>
 
 #define BIP_SCHEMA_VERSION  1
-#define BIP_BATCH_EVENTS    1000
 
-/* ── struct ─────────────────────────────────────────────────────────── */
-
-struct block_index_projection {
-    sqlite3       *db;
-    event_log_t   *log;
-    pthread_mutex_t mu;             /* protects sqlite handle */
-    char           path[1024];
-    int64_t        opened_at;       /* wall time, seconds */
-
-    /* Counters (snapshotted under mu by dump_state). */
-    uint64_t       last_consumed_offset;
-    uint64_t       events_consumed_total;
-    uint64_t       replace_collisions_total;
-    int64_t        last_catch_up_ms;
-};
+/* struct block_index_projection / struct catch_up_ctx / BIP_BATCH_EVENTS
+ * live in block_index_projection_internal.h — shared with
+ * block_index_projection_status.c's catch_up_apply_status(). */
 
 /* ── singleton glue (boot wires this; native diagnostics read it) ──── */
 
@@ -289,19 +277,7 @@ void block_index_projection_close(block_index_projection_t *p)
 
 /* ── catch_up ──────────────────────────────────────────────────────── */
 
-struct catch_up_ctx {
-    block_index_projection_t *p;
-    sqlite3_stmt *ins_stmt;       /* prepared INSERT OR REPLACE */
-    sqlite3_stmt *exists_stmt;    /* prepared SELECT 1 ... WHERE hash = ? */
-    uint64_t batch_count;          /* events in current txn */
-    uint64_t total_consumed;       /* across all batches this call */
-    uint64_t collisions;           /* INSERT OR REPLACE that found a prior row */
-    uint64_t last_offset_after;    /* offset *after* the last consumed event */
-    atomic_uint_least64_t *scan_ctr; /* boot O(delta) witness (util/boot_scan.h) */
-    bool     error;
-};
-
-static bool batch_begin(struct catch_up_ctx *c)
+bool batch_begin(struct catch_up_ctx *c)
 {
     char *err = NULL;
     if (sqlite3_exec(c->p->db, "BEGIN IMMEDIATE",
@@ -315,7 +291,7 @@ static bool batch_begin(struct catch_up_ctx *c)
     return true;
 }
 
-static bool batch_commit(struct catch_up_ctx *c)
+bool batch_commit(struct catch_up_ctx *c)
 {
     /* Persist the cursor + counters inside the same txn. */
     if (!meta_set_u64(c->p->db, "last_consumed_offset",
@@ -347,6 +323,11 @@ static bool batch_commit(struct catch_up_ctx *c)
     return true;
 }
 
+/* catch_up_apply_status() (the EV_BLOCK_STATUS consumer) lives in
+ * block_index_projection_status.c — split out to keep this file under the
+ * file-size ceiling. It shares struct catch_up_ctx + batch_begin/commit via
+ * block_index_projection_internal.h. */
+
 /* The event_log_stream callback. Returns false to stop on any error. */
 static bool catch_up_cb(uint64_t offset, enum event_log_type type,
                         const void *payload, size_t len, void *user)
@@ -357,6 +338,9 @@ static bool catch_up_cb(uint64_t offset, enum event_log_type type,
      * irrelevant types are simply skipped. */
     uint64_t event_end = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;  /* hdr + payload + sentinel */
     c->last_offset_after = event_end;
+
+    if (type == EV_BLOCK_STATUS)
+        return catch_up_apply_status(c, payload, len);
 
     if (type != EV_BLOCK_HEADER) {
         /* Not for us. Don't count it toward the batch (cursor still
@@ -480,6 +464,22 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
         return (uint64_t)-1;
     }
 
+    /* Prepare the blob-fetch SELECT once for the whole catch_up — used only
+     * by EV_BLOCK_STATUS application (catch_up_apply_status) to read back
+     * the prior EV_BLOCK_HEADER row it patches. Same reset+rebound lifecycle,
+     * finalized once below. */
+    if (sqlite3_prepare_v2(p->db,
+            "SELECT blob FROM block_index WHERE hash = ?",
+            -1, &c.blob_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:block-index-projection-catch-up-failure
+                "[block_index_projection] prepare blob SELECT failed: %s\n",
+                sqlite3_errmsg(p->db));
+        sqlite3_finalize(c.ins_stmt);
+        sqlite3_finalize(c.exists_stmt);
+        pthread_mutex_unlock(&p->mu);
+        return (uint64_t)-1;
+    }
+
     int rc = event_log_stream(p->log, p->last_consumed_offset,
                               catch_up_cb, &c);
     /* Flush trailing batch (if any) — must run even on stream error
@@ -492,6 +492,13 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
     }
     sqlite3_finalize(c.ins_stmt);
     sqlite3_finalize(c.exists_stmt);
+    sqlite3_finalize(c.blob_stmt);
+
+    if (c.status_orphans > 0)
+        fprintf(stderr,  // obs-ok:block-index-projection-status-orphans
+                "[block_index_projection] %" PRIu64 " EV_BLOCK_STATUS "
+                "event(s) had no prior row (durable-log ordering defect; "
+                "skipped, cursor still advanced)\n", c.status_orphans);
 
     /* Always persist last_catch_up_ms (one tiny standalone txn). */
     int64_t elapsed = mono_now_ms() - t0;

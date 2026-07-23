@@ -103,6 +103,17 @@ enum event_log_type {
      * payload>". Folded into the blocker_history aggregate (id -> fire
      * count, first/last fired). */
     EV_OPERATOR_ALERT       = 29,
+    /* Lightweight status-only update for a block_index entry that ALREADY
+     * has a durable EV_BLOCK_HEADER row from first admit (header_admit
+     * stage). body_persist / script_validate bump BLOCK_HAVE_DATA /
+     * BLOCK_VALID_SCRIPTS (+ nFile/nDataPos/nUndoPos/nTx) without ever
+     * touching the immutable header fields (hash, hashPrev, version,
+     * merkle/sapling roots, time, bits, nonce, Equihash solution) — carrying
+     * only the mutable fields (52 bytes fixed, storage/event_log_payloads.h)
+     * avoids re-serializing the full ~1.5KB header + up-to-1344B solution on
+     * every status bump. block_index_projection consumes these against the
+     * row the prior EV_BLOCK_HEADER created (storage/block_index_projection.c). */
+    EV_BLOCK_STATUS         = 30,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 
