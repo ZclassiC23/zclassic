@@ -29,12 +29,12 @@
 /* ── Layout constants ───────────────────────────────────────────────── */
 
 /* 8 MB serving chunk: a ~490 MB consensus bundle is ~62 chunks; a full ~15-20 GB
- * starter package is a few thousand. One chunk exactly equals the default
- * per-peer rate window (ROM_SEED_DEFAULT_PEER_BPS_CAP below), so a stock seeder
- * paces at one chunk per wall-second per peer — the _Static_assert after the cap
- * defaults pins that coupling. A larger chunk would exceed the per-peer window
- * and be refused every time; a smaller one would need more chunks (bigger
- * per-artifact digest table + manifest blob) for the same byte reach. */
+ * starter package is a few thousand. The default per-peer rate window
+ * (ROM_SEED_DEFAULT_PEER_BPS_CAP below) is sized to a MULTIPLE of one chunk so a
+ * dedicated seeder can feed every in-flight serve slot within one wall-second
+ * (the _Static_assert after the cap defaults pins that coupling); a smaller
+ * chunk would need more chunks (bigger per-artifact digest table + manifest
+ * blob) for the same byte reach. */
 #define ROM_SEED_CHUNK_SIZE       (8u * 1024u * 1024u)
 
 /* Bounds. MAX_CHUNKS * CHUNK_SIZE = 32 GiB caps a single artifact (comfortably
@@ -65,20 +65,38 @@
  * style swarm widening with zero operator input. */
 #define ROM_SEED_BUNDLES_SUBDIR   "bundles"
 
-/* Sane default caps (generous but bounded). Overridable via the setters. */
-#define ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER  2u
-#define ROM_SEED_DEFAULT_PEER_BPS_CAP   (8ull * 1024 * 1024)   /*  8 MB/s / peer  */
-#define ROM_SEED_DEFAULT_GLOBAL_BPS_CAP (64ull * 1024 * 1024)  /* 64 MB/s total   */
+/* Sane default caps (generous but bounded). Overridable via the setters.
+ *
+ * The per-peer inflight cap matches a fresh node's verified-parallel fetch
+ * worker count (rom_fetch.c, ROM_FETCH_MAX_WORKERS == 8): a fresh node opens up
+ * to 8 concurrent chunk serves against ONE dedicated seeder, so an inflight cap
+ * below 8 would refuse most of its workers and collapse the download. The
+ * per-peer byte window is sized to inflight * CHUNK_SIZE (64 MB/s = 8 chunks/s)
+ * so one wall-second can feed every in-flight slot instead of throttling a
+ * whole chunk to one-per-second-per-peer. The global window bounds the node's
+ * total ROM uplink across all peers (the DoS ceiling) and stays >= per-peer. */
+#define ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER  8u
+#define ROM_SEED_DEFAULT_PEER_BPS_CAP   (64ull * 1024 * 1024)   /*  64 MB/s / peer = 8 chunks/s */
+#define ROM_SEED_DEFAULT_GLOBAL_BPS_CAP (256ull * 1024 * 1024)  /* 256 MB/s total  */
 
 /* The free-tier byte-rate cap is charged whole-chunk in one shot
- * (rom_seed_rate_charge): a chunk larger than the default per-peer window would
- * be refused on every attempt and the artifact could never be served. Keep one
- * chunk within both default windows so a stock seeder can always make forward
- * progress; raising CHUNK_SIZE requires raising these caps in lockstep. */
+ * (rom_seed_rate_charge). Keep the per-peer window an integer multiple of
+ * CHUNK_SIZE AND >= inflight * CHUNK_SIZE so every in-flight serve slot can be
+ * fed within one wall-second (otherwise the second-and-later concurrent chunk
+ * is refused every window and 8 parallel workers thrash); keep one chunk within
+ * the global window and per-peer <= global. Raising CHUNK_SIZE or the inflight
+ * cap requires raising these caps in lockstep — the asserts pin it. */
+_Static_assert((uint64_t)ROM_SEED_DEFAULT_PEER_BPS_CAP >=
+                   (uint64_t)ROM_SEED_DEFAULT_MAX_INFLIGHT_PER_PEER *
+                   (uint64_t)ROM_SEED_CHUNK_SIZE,
+               "per-peer window must feed every in-flight ROM serve slot");
 _Static_assert((uint64_t)ROM_SEED_CHUNK_SIZE <= ROM_SEED_DEFAULT_PEER_BPS_CAP,
                "ROM chunk must fit the default per-peer rate window");
 _Static_assert((uint64_t)ROM_SEED_CHUNK_SIZE <= ROM_SEED_DEFAULT_GLOBAL_BPS_CAP,
                "ROM chunk must fit the default global rate window");
+_Static_assert((uint64_t)ROM_SEED_DEFAULT_PEER_BPS_CAP <=
+                   (uint64_t)ROM_SEED_DEFAULT_GLOBAL_BPS_CAP,
+               "per-peer window must not exceed the global window");
 
 /* ── Artifact kinds ─────────────────────────────────────────────────── */
 
