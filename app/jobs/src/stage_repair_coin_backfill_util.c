@@ -13,6 +13,7 @@
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 
@@ -73,21 +74,6 @@ void coin_backfill_txid_hex(const uint8_t txid[32], char out[65])
     struct uint256 u;
     memcpy(u.data, txid, 32);
     uint256_get_hex(&u, out);
-}
-
-bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
-                              const struct uint256 *hash)
-{
-    if (!out || !prefix || !hash)
-        LOG_FAIL("coin_backfill", "[coin_backfill] key_h_hash NULL input");
-    char hex[65];
-    uint256_get_hex(hash, hex);
-    int n = snprintf(out, 192, "%s.%d.%s", prefix, height, hex);
-    if (n <= 0 || n >= 192)
-        LOG_FAIL("coin_backfill",
-                 "[coin_backfill] key overflow prefix=%s h=%d", prefix,
-                 height);
-    return true;
 }
 
 bool coin_backfill_outpoint_marker_key(char out[160], const uint8_t txid[32],
@@ -168,7 +154,8 @@ bool coin_backfill_refusal_marker_decode(const uint8_t *blob, size_t len,
     return true;
 }
 
-bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, int height,
+                                       const struct uint256 *hash,
                                        bool *out_active,
                                        bool *out_legacy_spent,
                                        bool *out_legacy_txindex_miss)
@@ -176,17 +163,21 @@ bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
     uint8_t blob[32];
     size_t len = 0;
     bool found = false;
-    if (!out_active || !out_legacy_spent || !out_legacy_txindex_miss)
+    if (!out_active || !out_legacy_spent || !out_legacy_txindex_miss || !hash)
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] refusal marker read NULL output");
     *out_active = false;
     *out_legacy_spent = false;
     *out_legacy_txindex_miss = false;
-    if (!progress_meta_get(db, key, blob, sizeof(blob), &len, &found))
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                            height, hash->data, &found, blob, sizeof(blob),
+                            &len))
         LOG_FAIL("coin_backfill",
-                 "[coin_backfill] refusal marker read failed key=%s", key);
+                 "[coin_backfill] refusal marker read failed h=%d", height);
     if (!found)
         return true;
+    if (len > sizeof(blob))
+        len = sizeof(blob);  /* truncated into blob; decoder length-matches */
     return coin_backfill_refusal_marker_decode(blob, len, out_active,
                                                out_legacy_spent,
                                                out_legacy_txindex_miss);
@@ -264,16 +255,20 @@ bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
     return true;
 }
 
-bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
-                               int32_t *out)
+bool coin_backfill_rounds_read(struct sqlite3 *db, int height,
+                               const struct uint256 *hash, int32_t *out)
 {
     uint8_t blob[8];
     size_t n = 0;
     bool found = false;
     *out = 0;
-    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, &found))
+    if (!hash)
+        LOG_FAIL("coin_backfill", "[coin_backfill] rounds read NULL hash");
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_COIN_BACKFILL_ROUNDS,
+                            height, hash->data, &found, blob, sizeof(blob),
+                            &n))
         LOG_FAIL("coin_backfill",
-                 "[coin_backfill] rounds read failed key=%s", key);
+                 "[coin_backfill] rounds read failed h=%d", height);
     if (found && n >= 4)
         *out = coin_backfill_le32_get(blob);
     return true;
@@ -287,7 +282,8 @@ bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
 
 void coin_backfill_persist_terminal_refusal(
     struct sqlite3 *db, const struct coin_backfill_io *io,
-    const char *refused_key, enum coin_backfill_terminal_class tc,
+    int height, const struct uint256 *hash,
+    enum coin_backfill_terminal_class tc,
     const char *value_class)
 {
     if (tc == COIN_BACKFILL_TC_RETRYABLE)
@@ -299,12 +295,18 @@ void coin_backfill_persist_terminal_refusal(
             complete < COIN_BACKFILL_TXINDEX_COMPLETE_MIN)
             return; /* index still building / disabled: miss is transient */
     }
-    progress_store_tx_lock();
-    if (!progress_meta_set(db, refused_key, value_class, strlen(value_class)))
+    if (!hash) {
         LOG_WARN("coin_backfill",
-                 "[coin_backfill] terminal refusal marker write failed key=%s "
-                 "(refusing anyway)", refused_key);
-    progress_store_tx_unlock();
+                 "[coin_backfill] terminal refusal skipped h=%d: NULL hash",
+                 height);
+        return;
+    }
+    if (!repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                            height, hash->data, value_class,
+                            strlen(value_class)))
+        LOG_WARN("coin_backfill",
+                 "[coin_backfill] terminal refusal marker write failed h=%d "
+                 "(refusing anyway)", height);
 }
 
 bool find_lowest_prevout_unresolved_hole_unlocked(

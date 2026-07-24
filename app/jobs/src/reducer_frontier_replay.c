@@ -15,6 +15,7 @@
 #include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "storage/utxo_projection.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -630,15 +631,10 @@ static bool replay_stale_proof_core(
      * handles utxo_cursor > height defensively (identical to the script path). */
     int replay_first = height;
 
-    char marker[192];
-    if (!stage_reducer_frontier_repair_marker_key(
-            marker, "proof_replay", height, block_hash)) {
-        progress_store_tx_unlock();
-        return false;
-    }
     bool marker_seen = false;
     if (!stage_reducer_frontier_repair_marker_seen(
-            db, marker, "stale proof", &marker_seen)) {
+            db, REPAIR_MARKER_KIND_RF_PROOF_REPLAY, height, block_hash,
+            "stale proof", &marker_seen)) {
         progress_store_tx_unlock();
         return false;
     }
@@ -653,7 +649,7 @@ static bool replay_stale_proof_core(
     }
 
     ok = reducer_frontier_replay_stale_proof_tx(
-        db, height, replay_first, proof_cursor, utxo_cursor, marker);
+        db, height, replay_first, proof_cursor, utxo_cursor, block_hash);
     progress_store_tx_unlock();
     if (!ok)
         return false;

@@ -10,6 +10,7 @@
 #include "jobs/stage_repair_coin_backfill.h"
 #include "json/json.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -500,47 +501,31 @@ bool rfrl_read_tipfin_backfill_progress(sqlite3 *db, bool *present,
     if (!db || !present || !progress)
         return false;
 
-    progress_store_tx_lock();
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value FROM progress_meta "
-            "WHERE key = 'tipfin_backfill.progress'",
-            -1, &st, NULL) != SQLITE_OK) {
+    static const uint8_t zero_hash[32] = {0};
+    uint8_t buf[8] = {0};
+    size_t n = 0;
+    bool have = false;
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_TIPFIN_PROGRESS,
+                            REPAIR_MARKER_TIPFIN_HEIGHT, zero_hash, &have,
+                            buf, sizeof(buf), &n)) {
         LOG_WARN("condition",
                  "[condition:reducer_frontier_reconcile_light] tipfin_backfill "
-                 "progress record prepare failed: %s",
-                 sqlite3_errmsg(db));
-        progress_store_tx_unlock();
+                 "progress record read failed");
         return false;
     }
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        const uint8_t *v = sqlite3_column_blob(st, 0);
-        int n = sqlite3_column_bytes(st, 0);
-        if (v && n == 8) {
+    if (have) {
+        if (n == 8) {
             *present = true;
-            *progress = (int)((uint32_t)v[0] | (uint32_t)v[1] << 8 |
-                              (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24);
+            *progress = (int)((uint32_t)buf[0] | (uint32_t)buf[1] << 8 |
+                              (uint32_t)buf[2] << 16 | (uint32_t)buf[3] << 24);
         } else {
             LOG_WARN("condition",
                      "[condition:reducer_frontier_reconcile_light] "
                      "tipfin_backfill progress malformed len=%d "
                      "(expected 8); treating as absent",
-                     n);
+                     (int)n);
         }
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("condition",
-                 "[condition:reducer_frontier_reconcile_light] tipfin_backfill "
-                 "progress record step failed rc=%d: %s",
-                 rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        progress_store_tx_unlock();
-        return false;
     }
-
-    sqlite3_finalize(st);
-    progress_store_tx_unlock();
     return true;
 }
 

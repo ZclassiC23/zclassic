@@ -16,6 +16,7 @@ struct block;
 struct main_state;
 struct script_validate_dry_run_report;
 struct sqlite3;
+struct uint256;
 
 bool reducer_frontier_replay_delete_log_range(struct sqlite3 *db,
                                               const char *table,
@@ -63,7 +64,7 @@ bool reducer_frontier_replay_stale_proof_tx(struct sqlite3 *db,
                                             int replay_first,
                                             int proof_cursor,
                                             int utxo_cursor,
-                                            const char *marker);
+                                            const struct uint256 *block_hash);
 
 /* Wave A2 (D4) TX2: the created_outputs backfill of the stale-script reorg
  * unwind, on the projection_store handle + projection tx lock. Runs STRICTLY

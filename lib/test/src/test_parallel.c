@@ -285,6 +285,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_stage_fuzz) \
     X(mint_proof_harness) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
+    X(repair_marker) \
     X(recovery_coordinator) \
     X(always_sync_selfheal) \
     X(stage_repair_coin_backfill) \

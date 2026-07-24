@@ -271,15 +271,40 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
         return false;
     }
 
-    /* Validate the raise-only authority before writing the pipeline-owned
-     * anchor row. A malformed local value must fail with zero new durable
-     * side effects; it must never be overwritten through SQLite coercion. */
+    /* Durable trusted-base declaration, RAISE-ONLY (see the key's contract in
+     * reducer_frontier.h). Two guards run BEFORE the pipeline-owned anchor row
+     * so a poisoned local authority fails with ZERO new durable side effects:
+     *   1. Range/format validation (belt-and-suspenders) — the canonical reader
+     *      fails closed on a malformed BLOB OR a value beyond INT32_MAX (a
+     *      height can never exceed it; a huge floor is corrupt authority).
+     *   2. progress_meta_raise_u64_in_tx IS the raise-only write: it re-reads
+     *      the (now range-validated) floor with exact-BLOB semantics and writes
+     *      only when `height` strictly exceeds it. The hash is written only when
+     *      the height actually raised, keeping the (height,hash) pair consistent.
+     * The declaration must live in a meta key the pipeline cannot consume: the
+     * anchor ROW is replaced by the first forward step's 'finalized' row, which
+     * would otherwise starve reducer_trusted_anchor back to the compiled
+     * checkpoint over a cold-import datadir's log-less region (I4.3 HOLD-wedge). */
     int32_t prev_trusted_height = 0;
     bool prev_trusted_found = false;
-    if (!reducer_frontier_trusted_base_height_read(
-            db, &prev_trusted_height, &prev_trusted_found)) {
+    if (!reducer_frontier_trusted_base_height_read(db, &prev_trusted_height,
+                                                   &prev_trusted_found)) {
         LOG_WARN("tip_finalize",
-                 "[tip_finalize] trusted-base height read failed h=%d",
+                 "[tip_finalize] trusted-base height read failed h=%d", height);
+        progress_store_tx_unlock();
+        return false;
+    }
+    (void)prev_trusted_height;
+    (void)prev_trusted_found;
+    bool trusted_raised = false;
+    if (!progress_meta_raise_u64_in_tx(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                       (uint64_t)height, &trusted_raised,
+                                       NULL) ||
+        (trusted_raised &&
+         !progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HASH_KEY,
+                                  hash, 32))) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] seed trusted-base write failed h=%d",
                  height);
         progress_store_tx_unlock();
         return false;
@@ -297,34 +322,12 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
     struct uint256 tip_hash;
     memcpy(tip_hash.data, hash, 32);
 
-    /* Snapshot/trusted anchors have no per-block work or UTXO delta. */
+    /* Snapshot/trusted anchors have no per-block work or UTXO delta. The
+     * trusted-base raise above already fail-closed on a malformed floor, so no
+     * durable side effect precedes this anchor row on that path. */
     if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash)) {
         progress_store_tx_unlock();
         return false;
-    }
-
-    /* Durable trusted-base declaration, RAISE-ONLY (see the key's contract
-     * in reducer_frontier.h): the anchor ROW above is pipeline-owned — the
-     * first forward step replaces it with the H→H+1 'finalized' row — so
-     * the trust declaration the frontier walk anchors on must live where
-     * the pipeline cannot consume it. Without this, a cold-import datadir
-     * starves reducer_trusted_anchor back to the compiled checkpoint the
-     * moment the seed row is consumed, and the I4.3 sweep HOLD-wedges the
-     * node over the legitimately log-less import region. */
-    if (!prev_trusted_found || height > prev_trusted_height) {
-        uint8_t hb[8];
-        for (int i = 0; i < 8; i++)
-            hb[i] = (uint8_t)(((uint64_t)height >> (8 * i)) & 0xff);
-        if (!progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                                     hb, sizeof(hb)) ||
-            !progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HASH_KEY,
-                                     hash, 32)) {
-            LOG_WARN("tip_finalize",
-                     "[tip_finalize] seed trusted-base write failed h=%d",
-                     height);
-            progress_store_tx_unlock();
-            return false;
-        }
     }
 
     /* The UPSTREAM reducer cursors keep the height+1 ("next height to

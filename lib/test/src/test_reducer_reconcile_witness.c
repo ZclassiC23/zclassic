@@ -45,6 +45,7 @@
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -334,16 +335,10 @@ static bool set_tipfin_progress(sqlite3 *db, int v)
     uint32_t total = 1;
     for (int i = 0; i < 4; i++)
         blob[4 + i] = (uint8_t)(total >> (8 * i));
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
-            -1, &st, NULL) != SQLITE_OK)
-        return false;
-    sqlite3_bind_text(st, 1, "tipfin_backfill.progress", -1, SQLITE_STATIC);
-    sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    static const uint8_t zero_hash[32] = {0};
+    return repair_marker_note(db, REPAIR_MARKER_KIND_TIPFIN_PROGRESS,
+                              REPAIR_MARKER_TIPFIN_HEIGHT, zero_hash,
+                              blob, sizeof(blob));
 }
 
 static bool set_tipfin_progress_malformed(sqlite3 *db, int v)
@@ -352,16 +347,10 @@ static bool set_tipfin_progress_malformed(sqlite3 *db, int v)
         (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16),
         (uint8_t)(v >> 24)
     };
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
-            -1, &st, NULL) != SQLITE_OK)
-        return false;
-    sqlite3_bind_text(st, 1, "tipfin_backfill.progress", -1, SQLITE_STATIC);
-    sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    static const uint8_t zero_hash[32] = {0};
+    return repair_marker_note(db, REPAIR_MARKER_KIND_TIPFIN_PROGRESS,
+                              REPAIR_MARKER_TIPFIN_HEIGHT, zero_hash,
+                              blob, sizeof(blob));
 }
 
 static struct block_index *insert_index(struct main_state *ms,

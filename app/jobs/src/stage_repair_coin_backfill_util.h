@@ -61,28 +61,30 @@ bool coin_backfill_refusal_marker_decode(const uint8_t *blob, size_t len,
                                          bool *out_active,
                                          bool *out_legacy_spent,
                                          bool *out_legacy_txindex_miss);
-bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, int height,
+                                       const struct uint256 *hash,
                                        bool *out_active,
                                        bool *out_legacy_spent,
                                        bool *out_legacy_txindex_miss);
 
-/* Persist coin_backfill's durable refusal of a TERMINAL (h, hole_hash) so the
- * boot-time torn-import gate (block_index_loader_torn_gate.c condition (3)) can
- * FIRE on a subsequent boot — the gate runs at BOOT, before coin_backfill ticks
- * this boot, so it can only read a durable row a PRIOR boot wrote. `refused_key`
- * is the EXACT key the gate reads (coin_backfill_key_h_hash("coin_backfill.
- * refused", h, hash)); mirrors the existing COIN_SCAN_SPENT_FOUND write (own
- * recursive-lock span, WARN-on-fail-refuse-anyway). RETRYABLE never persists;
- * TERMINAL_IF_TXINDEX_COMPLETE persists only when tx_index_complete >= 3 (so an
- * in-progress IBD txindex_miss is never marked terminal); TERMINAL persists
- * unconditionally. `value_class` is a short forensic token ("txindex_miss:v2" /
- * "unprovable" / "round_cap"); the gate only needs key presence, but legacy
- * unversioned txindex_miss markers are re-proven by the runtime reader.
- * Call only OUTSIDE the enumerate/scan locked sections (it takes its own
- * lock). NOT consensus state — a diagnostic progress.kv meta marker. */
+/* Persist coin_backfill's durable refusal of a TERMINAL (height, hole_hash) so
+ * the boot-time torn-import gate (block_index_loader_torn_gate.c condition (3))
+ * can FIRE on a subsequent boot — the gate runs at BOOT, before coin_backfill
+ * ticks this boot, so it can only read a durable row a PRIOR boot wrote. The
+ * marker is repair_marker kind coin_backfill.refused keyed (height, hash) — the
+ * exact row the gate reads via coin_backfill_refusal_marker_read. Mirrors the
+ * COIN_SCAN_SPENT_FOUND write (own recursive-lock span, WARN-on-fail-refuse-
+ * anyway). RETRYABLE never persists; TERMINAL_IF_TXINDEX_COMPLETE persists only
+ * when tx_index_complete >= 3 (so an in-progress IBD txindex_miss is never
+ * marked terminal); TERMINAL persists unconditionally. `value_class` is a short
+ * forensic token ("txindex_miss:v2" / "unprovable" / "round_cap"); the gate
+ * only needs presence, but legacy unversioned txindex_miss markers are re-proven
+ * by the runtime reader. Call only OUTSIDE the enumerate/scan locked sections
+ * (it takes its own lock). NOT consensus state — a diagnostic marker. */
 void coin_backfill_persist_terminal_refusal(
     struct sqlite3 *db, const struct coin_backfill_io *io,
-    const char *refused_key, enum coin_backfill_terminal_class tc,
+    int height, const struct uint256 *hash,
+    enum coin_backfill_terminal_class tc,
     const char *value_class);
 
 static inline void coin_backfill_le32_put(uint8_t b[4], int32_t v)
@@ -103,11 +105,6 @@ static inline int32_t coin_backfill_le32_get(const uint8_t b[4])
 const char *coin_backfill_status_name(enum coin_backfill_status st);
 bool coin_backfill_owner_ack(void);
 void coin_backfill_txid_hex(const uint8_t txid[32], char out[65]);
-
-/* "<prefix>.<height>.<holehash-hex>" — matches reducer_repair_marker_key's
- * format when prefix == "reducer_frontier.script_replay_repair". */
-bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
-                              const struct uint256 *hash);
 
 /* Outpoint-keyed one-shot marker: the key carries ONLY the outpoint so a
  * re-lost coin is detected (MARKER_SEEN) at ANY future hole height; the
@@ -140,9 +137,10 @@ bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
                                        struct uint256 *out_txid, int *out_vin,
                                        bool *out_found);
 
-/* Round counter value: i32 LE; absent == 0 rounds so far. */
-bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
-                               int32_t *out);
+/* Round counter value (repair_marker kind coin_backfill.rounds keyed
+ * (height, hash)): i32 LE; absent == 0 rounds so far. */
+bool coin_backfill_rounds_read(struct sqlite3 *db, int height,
+                               const struct uint256 *hash, int32_t *out);
 
 /* G2 + boot torn-gate: lowest hole of EXACTLY `wanted_status` below the
  * script_validate cursor (the tear/repair consumers pass 'prevout_unresolved'),

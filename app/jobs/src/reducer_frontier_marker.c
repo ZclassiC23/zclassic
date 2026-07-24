@@ -1,75 +1,60 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Shared one-shot progress_meta markers for reducer-frontier helpers. */
+ * Shared one-shot repair_marker helpers for reducer-frontier helpers. Each
+ * one-shot marker is keyed (kind, height, block_hash) in the repair_marker
+ * table; the kind is a per-repair constant
+ * (REPAIR_MARKER_KIND_RF_PROOF_REPLAY / _RF_TIPFIN_BACKFILL). */
 
 #include "stage_repair_reducer_frontier_internal.h"
 
 #include "core/uint256.h"
-#include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-
-bool stage_reducer_frontier_repair_marker_key(
-    char key[192],
-    const char *repair_name,
-    int height,
-    const struct uint256 *block_hash)
-{
-    if (!key || !repair_name || !block_hash)
-        LOG_FAIL("stage_repair",
-                 "[stage_repair] repair marker key NULL input repair=%s h=%d",
-                 repair_name ? repair_name : "(null)", height);
-
-    char hex[65];
-    uint256_get_hex(block_hash, hex);
-    int n = snprintf(key, 192, "reducer_frontier.%s_repair.%d.%s",
-                     repair_name, height, hex);
-    if (n <= 0 || n >= 192)
-        LOG_FAIL("stage_repair",
-                 "[stage_repair] repair marker key overflow repair=%s h=%d",
-                 repair_name, height);
-    return true;
-}
+#include <stdbool.h>
 
 bool stage_reducer_frontier_repair_marker_seen(
     sqlite3 *db,
-    const char *key,
+    const char *kind,
+    int height,
+    const struct uint256 *block_hash,
     const char *label,
     bool *seen)
 {
-    if (!db || !key || !seen)
+    if (!db || !kind || !block_hash || !seen)
         LOG_FAIL("stage_repair",
-                 "[stage_repair] repair marker read NULL input label=%s key=%s",
-                 label ? label : "(null)", key ? key : "(null)");
+                 "[stage_repair] repair marker read NULL input label=%s kind=%s",
+                 label ? label : "(null)", kind ? kind : "(null)");
 
     *seen = false;
-    uint8_t blob[8] = {0};
-    size_t n = 0;
-    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, seen))
+    if (!repair_marker_have(db, kind, height, block_hash->data, seen,
+                            NULL, 0, NULL))
         LOG_FAIL("stage_repair",
-                 "[stage_repair] %s marker read failed key=%s",
-                 label ? label : "repair", key);
+                 "[stage_repair] %s marker read failed kind=%s h=%d",
+                 label ? label : "repair", kind, height);
     return true;
 }
 
 bool stage_reducer_frontier_repair_marker_record_in_tx(
     sqlite3 *db,
-    const char *key,
+    const char *kind,
+    int height,
+    const struct uint256 *block_hash,
     const char *label)
 {
-    if (!db || !key)
+    if (!db || !kind || !block_hash)
         LOG_FAIL("stage_repair",
-                 "[stage_repair] repair marker write NULL input label=%s key=%s",
-                 label ? label : "(null)", key ? key : "(null)");
+                 "[stage_repair] repair marker write NULL input label=%s kind=%s",
+                 label ? label : "(null)", kind ? kind : "(null)");
 
-    uint8_t one = 1;
-    if (!progress_meta_set_in_tx(db, key, &one, sizeof(one)))
+    /* Presence marker: a 1-byte {1} payload preserves the legacy progress_meta
+     * value so migrated and freshly-written markers are byte-identical. */
+    static const uint8_t present = 1;
+    if (!repair_marker_note_in_tx(db, kind, height, block_hash->data,
+                                  &present, sizeof(present)))
         LOG_FAIL("stage_repair",
-                 "[stage_repair] %s marker write failed key=%s",
-                 label ? label : "repair", key);
+                 "[stage_repair] %s marker write failed kind=%s h=%d",
+                 label ? label : "repair", kind, height);
     return true;
 }

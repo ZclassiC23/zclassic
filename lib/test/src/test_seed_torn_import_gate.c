@@ -45,6 +45,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "storage/coins_kv.h"
 #include "models/database.h"
 #include "core/uint256.h"
@@ -179,16 +180,10 @@ static bool stig_insert_hole(sqlite3 *db, int height,
 static bool stig_seed_backfill_refused(sqlite3 *db, int height,
                                        const struct uint256 *hash)
 {
-    if (!progress_meta_table_ensure(db))
+    if (!repair_marker_table_ensure(db))
         return false;
-    char hex[65];
-    uint256_get_hex(hash, hex);
-    char key[192];
-    int n = snprintf(key, sizeof(key), "coin_backfill.refused.%d.%s",
-                     height, hex);
-    if (n <= 0 || n >= (int)sizeof(key))
-        return false;
-    return progress_meta_set(db, key, "spent:v2", 8);
+    return repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                              height, hash->data, "spent:v2", 8);
 }
 
 /* Seed coins_kv with `n` synthetic live outputs so the canonical

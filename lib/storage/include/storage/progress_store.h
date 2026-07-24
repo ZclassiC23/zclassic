@@ -153,4 +153,19 @@ bool progress_meta_set_in_tx(sqlite3 *db, const char *key,
                              const void *value, size_t value_len);
 bool progress_meta_delete_in_tx(sqlite3 *db, const char *key);
 
+/* Raise-only u64 write of `key` (stored as an 8-byte LITTLE-ENDIAN blob — the
+ * coins_applied_height / trusted-base storage convention). Reads the current
+ * value with exact-BLOB semantics: an absent key is treated as "no floor" (any
+ * value writes); a present value of any storage class other than an 8-byte BLOB
+ * is malformed and fails closed (returns false, zero side effects) so a coerced
+ * value can never silently lower the floor. Writes `value` iff it is STRICTLY
+ * greater than the stored value (or the key was absent). On success *raised is
+ * set true iff this call wrote, and *winner (may be NULL) to the post-call
+ * stored value == max(value, prior). The primitive IS the raise-only check — it
+ * replaces the by-convention "read prev, compare, write" the trusted-base seed
+ * open-coded. Runs in the CALLER's ambient transaction (an `_in_tx` primitive —
+ * the caller MUST already own an open BEGIN IMMEDIATE on `db`). */
+bool progress_meta_raise_u64_in_tx(sqlite3 *db, const char *key, uint64_t value,
+                                   bool *raised, uint64_t *winner);
+
 #endif /* ZCL_STORAGE_PROGRESS_STORE_H */

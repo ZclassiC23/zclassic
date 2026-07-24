@@ -18,28 +18,22 @@
  *   G2 pin identification — the row at p = H*+1 must be ABSENT (tri-state,
  *      reducer_frontier.c LOG_ROW semantics). An ok=0 row is EVIDENCE.
  *   G3 unique binder — all five other logs ok=1 at p, validate vs script
- *      hashes at p agree (C3-style, both 32B). A miss strictly below the
- *      coins frontier stays the L2 refusal domain — named loudly here.
+ *      hashes at p agree (both 32B). A miss below the coins frontier is L2.
  *   G4 below served finality — p < served_floor, STRICT.
- *   G5 hash evidence for the row (row-H -> hash-H+1 convention) — the
- *      validate/script dual binder at p+1, both ok=1, both 32B, equal.
- *      Durable logs only; never active_chain_at.
- *   G6 write — log_insert(p, "finalize_backfill", ok=1, zero work, -1, 0,
- *      hash) with the ABSENT re-check inside the BEGIN IMMEDIATE tx
- *      (plain-insert semantics; the store's OR REPLACE never clobbers).
- *   G7 one-shot span marker keyed on the SPAN start; multi-tick resume
- *      rides the W witness record, not the marker.
- *   W  witness record progress_meta["tipfin_backfill.progress"] =
+ *   G5 hash evidence for the row (row-H -> hash-H+1) — the validate/script
+ *      dual binder at p+1, both ok=1, both 32B, equal; durable logs only.
+ *   G6 write — log_insert(p, "finalize_backfill", ok=1, ...) with the ABSENT
+ *      re-check inside the BEGIN IMMEDIATE tx (OR REPLACE never clobbers).
+ *   G7 one-shot span marker keyed on the SPAN start; multi-tick resume rides
+ *      the W witness record, not the marker.
+ *   W  witness record repair_marker(tipfin_backfill.progress) =
  *      [last_backfilled_height i32 LE][total_count u32 LE], UPSERTed in the
- *      batch tx and DELETED in the tx of the batch that exhausts the span —
- *      the condition-engine witness channel for this row-only repair.
+ *      batch tx and DELETED in the tx that exhausts the span.
  *
  * INVARIANTS: inserts only (the sole deletion is the witness record above);
- * no cursor write, no coins write, no tip write; never writes at/above
- * served_floor; never writes where any row exists. A 'finalize_backfill'
- * row is inert: not is_anchor (reducer_frontier.c:171-205), and
- * finalized_row_active_match treats its lookahead hash exactly like a
- * finalized row — reorg-correct. */
+ * no cursor/coins/tip write; never writes at/above served_floor or where any
+ * row exists. A 'finalize_backfill' row is inert: not is_anchor, and
+ * finalized_row_active_match treats its lookahead hash like a finalized row. */
 
 #include "stage_repair_reducer_frontier_internal.h"
 #include "tip_finalize_log_store.h"
@@ -50,6 +44,7 @@
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -57,7 +52,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TIPFIN_WITNESS_KEY "tipfin_backfill.progress"
+/* Singleton resume witness: repair_marker at a fixed (kind, height=0, hash). */
+#define TIPFIN_WITNESS_KIND REPAIR_MARKER_KIND_TIPFIN_PROGRESS
+static const uint8_t TIPFIN_WITNESS_ZERO_HASH[32] = {0};
 #define TIPFIN_BATCH_CAP 256
 
 #define TIPFIN_REFUSED_NONE STAGE_REPAIR_TIPFIN_REFUSED_NONE
@@ -532,8 +529,9 @@ static bool tipfin_witness_read(sqlite3 *db, bool *found, int32_t *last,
     uint8_t buf[8] = {0};
     size_t n = 0;
     bool present = false;
-    if (!progress_meta_get(db, TIPFIN_WITNESS_KEY, buf, sizeof(buf), &n,
-                           &present))
+    if (!repair_marker_have(db, TIPFIN_WITNESS_KIND, REPAIR_MARKER_TIPFIN_HEIGHT,
+                            TIPFIN_WITNESS_ZERO_HASH, &present,
+                            buf, sizeof(buf), &n))
         LOG_FAIL("stage_repair", "tipfin witness read failed");
     if (!present)
         return true;
@@ -560,7 +558,8 @@ static bool tipfin_witness_read(sqlite3 *db, bool *found, int32_t *last,
  * the cap, then settle the marker + witness in the same tx. Zero-progress
  * returns true with *inserted == 0 (the caller refuses, named). */
 static bool tipfin_batch_tx(sqlite3 *db, int span_first, int served_floor,
-                            const char *marker, uint32_t prior_total,
+                            const struct uint256 *marker_hash,
+                            uint32_t prior_total,
                             int *inserted, int *last_p, bool *exhausted)
 {
     *inserted = 0;
@@ -604,14 +603,17 @@ static bool tipfin_batch_tx(sqlite3 *db, int span_first, int served_floor,
     }
 
     if (ok && *inserted > 0) {
-        if (marker &&
+        if (marker_hash &&
             !stage_reducer_frontier_repair_marker_record_in_tx(
-                db, marker, "tipfin"))
+                db, REPAIR_MARKER_KIND_RF_TIPFIN_BACKFILL, span_first,
+                marker_hash, "tipfin"))
             ok = false;
         if (ok && *exhausted) {
             /* The ONLY deletion in this repair: its own witness record,
              * in the tx of the batch that exhausts the span. */
-            if (!progress_meta_delete_in_tx(db, TIPFIN_WITNESS_KEY)) {
+            if (!repair_marker_forget_in_tx(db, TIPFIN_WITNESS_KIND,
+                                            REPAIR_MARKER_TIPFIN_HEIGHT,
+                                            TIPFIN_WITNESS_ZERO_HASH)) {
                 LOG_WARN("stage_repair",
                          "[stage_repair] tipfin witness delete failed");
                 ok = false;
@@ -620,8 +622,10 @@ static bool tipfin_batch_tx(sqlite3 *db, int span_first, int served_floor,
             uint8_t buf[8];
             tipfin_witness_encode(buf, (int32_t)*last_p,
                                   prior_total + (uint32_t)*inserted);
-            if (!progress_meta_set_in_tx(db, TIPFIN_WITNESS_KEY, buf,
-                                         sizeof(buf))) {
+            if (!repair_marker_note_in_tx(db, TIPFIN_WITNESS_KIND,
+                                          REPAIR_MARKER_TIPFIN_HEIGHT,
+                                          TIPFIN_WITNESS_ZERO_HASH, buf,
+                                          sizeof(buf))) {
                 LOG_WARN("stage_repair",
                          "[stage_repair] tipfin witness write failed");
                 ok = false;
@@ -696,7 +700,8 @@ bool stage_reducer_frontier_try_tipfin_backfill(
 
     progress_store_tx_lock();
 
-    if (!ensure_log_schema(db) || !progress_meta_table_ensure(db)) {
+    if (!ensure_log_schema(db) || !progress_meta_table_ensure(db) ||
+        !repair_marker_table_ensure(db)) {
         progress_store_tx_unlock();
         LOG_FAIL("stage_repair", "tipfin backfill: schema ensure failed");
     }
@@ -736,16 +741,11 @@ bool stage_reducer_frontier_try_tipfin_backfill(
         prior_total = 0;
     }
 
-    char marker[192];
-    if (!stage_reducer_frontier_repair_marker_key(
-            marker, "tipfin_backfill", span_first, &ev.tip_hash)) {
-        progress_store_tx_unlock();
-        return false;
-    }
     if (!resuming) {
         bool seen = false;
         if (!stage_reducer_frontier_repair_marker_seen(
-                db, marker, "tipfin", &seen)) {
+                db, REPAIR_MARKER_KIND_RF_TIPFIN_BACKFILL, span_first,
+                &ev.tip_hash, "tipfin", &seen)) {
             progress_store_tx_unlock();
             return false;
         }
@@ -770,7 +770,7 @@ bool stage_reducer_frontier_try_tipfin_backfill(
     int last_p = -1;
     bool exhausted = false;
     if (!tipfin_batch_tx(db, span_first, out->served_floor,
-                         resuming ? NULL : marker, prior_total, &inserted,
+                         resuming ? NULL : &ev.tip_hash, prior_total, &inserted,
                          &last_p, &exhausted)) {
         progress_store_tx_unlock();
         return false;
