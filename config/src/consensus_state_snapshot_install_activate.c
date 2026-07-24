@@ -577,7 +577,7 @@ static bool activate_clear_generation_metadata(
  * caller rolling back) on any failure. Never partially applies. */
 static bool activate_apply_in_tx(
     sqlite3 *progress_db, sqlite3 *bundle_db,
-    const struct consensus_state_bundle_manifest *m,
+    const struct consensus_state_bundle_manifest *m, bool assisted_tier,
     struct consensus_state_activate_result *result)
 {
     char *err = NULL;
@@ -694,15 +694,35 @@ static bool activate_apply_in_tx(
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "setting coins_applied_height failed");
 
-    /* 6. Provenance: the coin set is a checkpoint-bound self-derived install,
-     *    and it provably holds the live set. Drop any stale trusted-base
-     *    declaration (the refold discipline). */
+    /* 6. Provenance markers — the tier boundary. MIGRATION_COMPLETE (operational:
+     * serve a validated tip + receive) is stamped on BOTH tiers. SELF_FOLDED (the
+     * SOVEREIGN bit: mine/spend/export/seed) is stamped ONLY on a sovereign
+     * install (!assisted_tier). On an ASSISTED above-checkpoint install the
+     * content below the seam is borrowed, so self_folded is WITHHELD and the seam
+     * (height + the three manifest commitments) is recorded IN THIS SAME TXN for
+     * background promotion to later re-derive and ratify. sync_trust_derive(
+     * proven=1, self_folded=0) → RELEASE_ASSISTED_READY. */
     uint8_t one = 1;
     if (!progress_meta_set_in_tx(progress_db, COINS_KV_MIGRATION_COMPLETE_KEY,
-                                 &one, 1) ||
-        !progress_meta_set_in_tx(progress_db, COINS_KV_SELF_FOLDED_KEY, &one, 1))
+                                 &one, 1))
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
-                             "setting coins provenance markers failed");
+                             "setting coins migration-complete marker failed");
+    if (!assisted_tier) {
+        if (!progress_meta_set_in_tx(progress_db, COINS_KV_SELF_FOLDED_KEY,
+                                     &one, 1))
+            return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
+                                 "setting coins self-folded marker failed");
+    } else {
+        if (!consensus_state_install_record_assisted_seam(
+                progress_db, m->height, m->utxo_root, m->anchor_digest,
+                m->nullifier_digest))
+            return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
+                                 "recording assisted-tier promotion seam failed");
+        LOG_INFO(ACTIVATE_SUBSYS,
+                 "assisted-tier install: migration-complete stamped, self_folded "
+                 "WITHHELD, promotion seam recorded at h=%d (RELEASE_ASSISTED "
+                 "until background re-derivation ratifies)", m->height);
+    }
     if (!progress_meta_delete_in_tx(progress_db,
                                     REDUCER_TRUSTED_BASE_HEIGHT_KEY) ||
         !progress_meta_delete_in_tx(progress_db,
@@ -939,11 +959,21 @@ bool consensus_state_snapshot_install_activate(
             contained_reason, sizeof(contained_reason));
     if (authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_RECEIPT &&
         authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_ROM &&
-        authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT) {
+        authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT &&
+        authority != CONSENSUS_STATE_ACTIVATE_AUTHORITY_ASSISTED) {
         consensus_state_artifact_evidence_free(evidence);
         return activate_fail(result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
                              "%s", contained_reason);
     }
+    /* The tier is the RESOLVED authority, the single source of truth for the
+     * provenance stamp: ASSISTED (borrowed above-checkpoint) → withhold
+     * self_folded; the three sovereign authorities → stamp it. Deriving from the
+     * resolved authority (not the raw request flag) STRUCTURALLY prevents a
+     * mis-set request from demoting a sovereign install — a compiled-checkpoint /
+     * self-validated bundle resolves to RECEIPT/ROM/CONTENT (higher precedence),
+     * never ASSISTED. */
+    bool install_is_assisted =
+        authority == CONSENSUS_STATE_ACTIVATE_AUTHORITY_ASSISTED;
 
     /* 4. Lease the immutable read transaction (revalidates the pinned file),
      *    then run the one atomic install transaction under the progress-store
@@ -1019,7 +1049,7 @@ bool consensus_state_snapshot_install_activate(
                            "ensuring live coin/shielded/frontier schema failed");
     if (ok)
         ok = activate_apply_in_tx(progress_db, bundle_db, &leased_manifest,
-                                  result);
+                                  install_is_assisted, result);
     if (ok) {
         activate_run_after_stream_hook();
         ok = activate_verify_destination(progress_db, &leased_manifest,

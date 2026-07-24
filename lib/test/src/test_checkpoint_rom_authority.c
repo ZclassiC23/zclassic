@@ -210,6 +210,86 @@ int test_checkpoint_rom_authority(void)
               nm && strcmp(nm, "none") == 0);
     }
 
+    /* (e) ASSISTED above-checkpoint tier. A FRESHEST bundle strictly ABOVE the
+     *     compiled checkpoint, admitted by the chain-binding assisted relaxation
+     *     (request->assisted_tier), activates via the ASSISTED authority ONLY
+     *     when its shielded TIP frontier root is bound to a validated-header
+     *     hashFinalSaplingRoot the runtime read at the BUNDLE height. It never
+     *     binds the CONTENT below the seam — the tier withholds sovereignty. */
+    checkpoints_reset_rom_state_override_for_test();
+    {
+        int32_t cp_h = CROM_H;
+        int32_t bundle_h = cp_h + 500; /* strictly above the checkpoint */
+        struct sha3_utxo_checkpoint sha3;
+        memset(&sha3, 0, sizeof(sha3));
+        sha3.height = cp_h;
+        memset(sha3.block_hash, 0xc1, 32);
+        sha3.utxo_count = 100;
+        memset(sha3.sha3_hash, 0xc2, 32);
+        checkpoints_set_sha3_override_for_test(&sha3);
+
+        /* A borrowed above-checkpoint manifest: its coins do NOT reproduce the
+         * checkpoint (that is the whole point — it is fresher, unbound content). */
+        struct consensus_state_bundle_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.height = bundle_h;
+        m.history_complete = true;
+        memset(m.block_hash, 0xab, 32);
+        memset(m.utxo_root, 0x99, 32);
+        m.utxo_count = 4242;
+        memset(m.sapling_frontier_root, 0x77, 32);
+        m.sapling_frontier_height = bundle_h - 20;
+
+        struct consensus_state_activate_request areq;
+        memset(&areq, 0, sizeof(areq));
+        areq.assisted_tier = true;
+        areq.assisted_sapling_root_from_validated_header = true;
+        memcpy(areq.assisted_sapling_root, m.sapling_frontier_root, 32);
+        CHECK("above-checkpoint + assisted_tier + header sapling root -> assisted",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &m, &areq), "assisted") == 0);
+
+        /* assisted_tier off -> the runtime never opted in -> contained. */
+        struct consensus_state_activate_request off = areq;
+        off.assisted_tier = false;
+        CHECK("assisted_tier off -> none",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &m, &off), "none") == 0);
+
+        /* Shielded tip not bound to a validated header -> contained. */
+        struct consensus_state_activate_request noheader = areq;
+        noheader.assisted_sapling_root_from_validated_header = false;
+        CHECK("no validated-header sapling root -> none",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &m, &noheader), "none") == 0);
+
+        /* Header sapling root disagrees with the manifest frontier -> contained. */
+        struct consensus_state_activate_request badroot = areq;
+        badroot.assisted_sapling_root[0] ^= 0xff;
+        CHECK("sapling root mismatch -> none",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &m, &badroot), "none") == 0);
+
+        /* A bundle AT (not above) the checkpoint height is never assisted. */
+        struct consensus_state_bundle_manifest at_cp = m;
+        at_cp.height = cp_h;
+        CHECK("at checkpoint height -> none (assisted is strictly above)",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &at_cp, &areq), "none") == 0);
+
+        /* No compiled checkpoint at all -> no promotion anchor -> contained. */
+        checkpoints_reset_sha3_override_for_test();
+        CHECK("no compiled checkpoint -> none (assisted needs a promotion anchor)",
+              strcmp(
+                  consensus_state_activate_resolve_content_authority_name_for_test(
+                      &m, &areq), "none") == 0);
+    }
+
     checkpoints_reset_rom_state_override_for_test();
     checkpoints_reset_sha3_override_for_test();
 

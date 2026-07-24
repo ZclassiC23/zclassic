@@ -390,6 +390,36 @@ static bool icb_reset_utxo_mirror(struct node_db *ndb)
     return ok && commitment_ok && cursor_ok;
 }
 
+/* True iff this node's validated header chain has reached `height` and the block
+ * at that height on the selected header chain carries `block_hash`. The assisted
+ * above-checkpoint chain-binding needs the bundle-height header (and its Sapling
+ * frontier) present; a fresh FRESHEST bundle deferred here retries, never .fails
+ * (the cded07d40 bug class). Read-only header-chain walk — no chain mutation. */
+static bool install_bundle_header_ready(struct main_state *ms, int32_t height,
+                                        const uint8_t block_hash[32])
+{
+    if (!ms || height < 0)
+        return false;
+    struct block_index *header = ms->pindex_best_header;
+    if (!header || header->nHeight < height)
+        return false;
+    struct block_index *at = block_index_get_ancestor(header, (int)height);
+    return at && at->phashBlock &&
+           memcmp(at->phashBlock->data, block_hash, 32) == 0;
+}
+
+/* Assisted (above-checkpoint FRESHEST-bundle) admission is owner-approved and
+ * default ON. The env kill switch ZCL_INSTALL_ASSISTED=0 forces it OFF, in which
+ * case an above-checkpoint bundle gets no assisted opt-in and refuses at the
+ * chain-binding -4 gate exactly as before this feature. The canonical-lane
+ * ZCL_DEPLOY_ALLOW_CANONICAL guard is enforced UPSTREAM (see the classification
+ * block), so the sovereign lane is untouched. */
+static bool install_assisted_opt_in(void)
+{
+    const char *kill = getenv("ZCL_INSTALL_ASSISTED");
+    return !(kill && strcmp(kill, "0") == 0);
+}
+
 /* ── The NON-TERMINAL install core ─────────────────────────────────────────── */
 
 struct zcl_result consensus_state_install_from_bundle(
@@ -470,6 +500,8 @@ struct zcl_result consensus_state_install_from_bundle(
         bool checkpoint_bundle =
             cp && rom && cp->height == rom->height &&
             manifest.height == (int32_t)cp->height;
+        bool above_checkpoint_bundle =
+            cp && manifest.height > (int32_t)cp->height;
         if (checkpoint_bundle && ms) {
             (void)consensus_state_install_restore_checkpoint_header_frontier(
                 ms);
@@ -484,6 +516,25 @@ struct zcl_result consensus_state_install_from_bundle(
                          "not yet reached checkpoint height %d (header frontier "
                          "h=%d) — retriable wait, not a bundle rejection",
                          (int)cp->height, hdr_h);
+            goto done;
+        }
+        /* Assisted above-checkpoint FRESHEST bundle: same retriable deferral,
+         * generalized from the checkpoint height to the BUNDLE height. Until this
+         * node's validated header chain reaches the bundle height with the
+         * bundle's own block hash present, the assisted chain-binding cannot bind
+         * — NOT because the bundle is bad, but because headers have not caught up.
+         * Only when the assisted opt-in is on (the sovereign lane is untouched). */
+        if (above_checkpoint_bundle && install_assisted_opt_in() && ms &&
+            !install_bundle_header_ready(ms, manifest.height,
+                                         manifest.block_hash)) {
+            out->retriable_headers_not_ready = true;
+            int hdr_h = (ms->pindex_best_header)
+                            ? ms->pindex_best_header->nHeight : -1;
+            rc = ZCL_ERR(-2,
+                         "assisted bundle deferred: validated header chain has "
+                         "not yet reached bundle height %d (header frontier h=%d) "
+                         "— retriable wait, not a bundle rejection",
+                         manifest.height, hdr_h);
             goto done;
         }
     }
@@ -549,6 +600,15 @@ struct zcl_result consensus_state_install_from_bundle(
         memcpy(chain_req.checkpoint_authority.sapling_frontier_root,
                rom_cp->sapling_frontier_root, 32);
     }
+    /* (3c-assisted) Opt in to the FRESHEST above-checkpoint borrowed-state tier.
+     * The chain-binding assisted relaxation only fires when this is on AND the
+     * bundle sits strictly above the compiled checkpoint; it needs the compiled
+     * checkpoint present as the eventual promotion anchor. Default ON (owner-
+     * approved BOOM posture); ZCL_INSTALL_ASSISTED=0 forces it off → an above-
+     * checkpoint bundle then refuses at -4 exactly as before. */
+    chain_req.allow_assisted_above_checkpoint =
+        install_assisted_opt_in() && sha3_cp &&
+        manifest.height > (int32_t)sha3_cp->height;
 
     /* (3d) Gap C — instant-on checkpoint-header pass record. A headers-first
      * (--importblockindex / fast-sync) substrate bulk-loads the block index but
@@ -569,12 +629,27 @@ struct zcl_result consensus_state_install_from_bundle(
                  "h=%d (header absent / already-present miss / validate failed) "
                  "— chain-binding gate decides", chain_req.checkpoint_authority.height);
 
+    /* (3d-assisted) Same instant-on seam at the BUNDLE height: the assisted -4
+     * bind requires a full-Equihash pass record at exactly manifest.height, so
+     * genuinely PoW-validate the imported bundle-height header now. Idempotent +
+     * fail-open (a wrong/absent/invalid header leaves no record and the assisted
+     * gate still refuses). */
+    if (chain_req.allow_assisted_above_checkpoint && ms &&
+        !validate_headers_stage_ensure_pass_record(ms, manifest.height))
+        LOG_INFO(ICB_SUBSYS,
+                 "assisted bundle-height header pass record not established at "
+                 "h=%d (header absent / already-present miss / validate failed) "
+                 "— chain-binding gate decides", manifest.height);
+
     struct consensus_state_chain_evidence *chain_evidence = NULL;
     struct zcl_result chain_built =
         consensus_state_chain_evidence_build(&chain_req, &chain_evidence);
     bool used_checkpoint_authority =
         chain_built.ok &&
         consensus_state_chain_evidence_used_checkpoint_authority(chain_evidence);
+    bool used_assisted_authority =
+        chain_built.ok &&
+        consensus_state_chain_evidence_used_assisted_authority(chain_evidence);
 
     struct consensus_state_publication_decision_record decision;
     struct zcl_result cas = ZCL_ERR(-1, "chain evidence unavailable");
@@ -632,6 +707,13 @@ struct zcl_result consensus_state_install_from_bundle(
                  "selected-chain binding used compiled-checkpoint content "
                  "authority (bundle height==checkpoint height=%d; block_hash + "
                  "Sapling frontier match the compiled keystone byte-for-byte)",
+                 manifest.height);
+    else if (used_assisted_authority)
+        LOG_INFO(ICB_SUBSYS,
+                 "selected-chain binding used the ASSISTED above-checkpoint tier "
+                 "(bundle height=%d > compiled checkpoint; LOCATION + shielded "
+                 "TIP root are PoW-bound, CONTENT below the seam is borrowed — "
+                 "install will be RELEASE_ASSISTED until promotion ratifies it)",
                  manifest.height);
     else
         LOG_INFO(ICB_SUBSYS,
@@ -691,6 +773,33 @@ struct zcl_result consensus_state_install_from_bundle(
         }
     }
 
+    /* (4b-assisted) ASSISTED authority input. When the chain-binding admitted via
+     * the assisted above-checkpoint tier, read the BUNDLE-height header's PoW-
+     * committed hashFinalSaplingRoot from this node's own validated header chain
+     * so activate can bind the borrowed bundle's shielded TIP frontier to PoW at
+     * the bundle height (not the compiled checkpoint height). A headers-first node
+     * may have its connected chain floored at genesis, so resolve via the header
+     * chain (pindex_best_header ancestor), not active_chain_at. An absent /
+     * mismatched / zero-root header leaves the ASSISTED authority unavailable → a
+     * VERIFIED_CONTAINED refusal, never an install on an unverifiable root. */
+    bool assisted_root_from_header = false;
+    uint8_t assisted_sapling_root[32];
+    memset(assisted_sapling_root, 0, sizeof(assisted_sapling_root));
+    if (used_assisted_authority && !used_checkpoint_authority && ms) {
+        struct block_index *hdr = ms->pindex_best_header;
+        struct block_index *at = (hdr && hdr->nHeight >= manifest.height)
+            ? block_index_get_ancestor(hdr, (int)manifest.height)
+            : NULL;
+        struct uint256 zero_root;
+        memset(&zero_root, 0, sizeof(zero_root));
+        if (at && at->phashBlock &&
+            memcmp(at->phashBlock->data, manifest.block_hash, 32) == 0 &&
+            memcmp(at->hashFinalSaplingRoot.data, zero_root.data, 32) != 0) {
+            memcpy(assisted_sapling_root, at->hashFinalSaplingRoot.data, 32);
+            assisted_root_from_header = true;
+        }
+    }
+
     /* (5) ADMIT — atomically install the complete state. */
     struct consensus_state_activate_request areq;
     memset(&areq, 0, sizeof(areq));
@@ -704,6 +813,16 @@ struct zcl_result consensus_state_install_from_bundle(
     areq.datadir_display = datadir;
     areq.checkpoint_sapling_root_from_validated_header = checkpoint_root_from_header;
     memcpy(areq.checkpoint_sapling_root, checkpoint_sapling_root, 32);
+    /* Assisted tier — the exact regression-guarded expression: set ONLY when the
+     * chain-binding used the assisted relaxation AND did NOT use compiled-
+     * checkpoint authority. A sovereign install (cp_auth / self-validated) always
+     * has used_assisted_authority=false here, so assisted_tier stays false and the
+     * activate stamps self_folded → SOVEREIGN. The activate re-resolves the
+     * ASSISTED authority from this flag + the Sapling bind below (defense in
+     * depth) before withholding self_folded. */
+    areq.assisted_tier = used_assisted_authority && !used_checkpoint_authority;
+    areq.assisted_sapling_root_from_validated_header = assisted_root_from_header;
+    memcpy(areq.assisted_sapling_root, assisted_sapling_root, 32);
     struct consensus_state_activate_result ares;
     if (!consensus_state_snapshot_install_activate(progress_store_db(), &areq,
                                                    &ares)) {

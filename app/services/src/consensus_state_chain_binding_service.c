@@ -31,6 +31,11 @@ struct consensus_state_chain_evidence {
      * decision auditably reflects whether the below-checkpoint predicates were
      * satisfied from compiled-checkpoint content instead of the target index. */
     bool checkpoint_authority_used;
+    /* Recorded (and folded into evidence_digest) so the decision auditably
+     * reflects the ASSISTED above-checkpoint borrowed-state tier: the install
+     * runtime reads it to withhold the sovereign self_folded marker until
+     * background promotion re-derives the seam. */
+    bool assisted_authority_used;
 };
 
 static const char *target_lane_name(enum consensus_state_target_lane lane)
@@ -115,6 +120,57 @@ bool consensus_state_chain_binding_uses_checkpoint_authority(
                cp->sapling_frontier_root, 32) == 0;
 }
 
+bool consensus_state_chain_binding_uses_assisted_authority(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_chain_binding_observation *observation)
+{
+    if (!manifest || !observation || !observation->assisted_mode_requested)
+        return false;
+    /* Assisted admission is the ABOVE-checkpoint borrowed-state relaxation. It
+     * needs a compiled checkpoint to eventually re-derive FROM (the promotion
+     * anchor) and the bundle must sit strictly above it; without a compiled
+     * checkpoint there is no anchor, so fail closed to the sovereign gate. */
+    const struct consensus_state_checkpoint_authority *cp =
+        &observation->checkpoint_authority;
+    if (!cp->available || manifest->height <= cp->height)
+        return false;
+    /* Mutually exclusive with the two SOVEREIGN paths:
+     *  - the compiled-checkpoint content substitution (cp_auth), and
+     *  - the self-validated path: a node whose durable served H* reached the
+     *    bundle height re-derived and served that state itself, so it earns
+     *    sovereignty through the full below-checkpoint gate, not this borrowed
+     *    relaxation. Excluding served-coverage here keeps assisted_tier off a
+     *    node that legitimately folded through the seam. */
+    if (consensus_state_chain_binding_uses_checkpoint_authority(manifest,
+                                                                observation))
+        return false;
+    if (observation->durable_served_height >= manifest->height)
+        return false;
+    /* Bundle LOCATION is PoW-committed: the bundle-height block is the selected-
+     * chain block with a durable full-Equihash validate_headers pass record.
+     * (This is the header-only subset of -5/-6; the script/failure-free body
+     * predicates are structurally impossible on borrowed state and are skipped
+     * — that is exactly what the tier withholds sovereignty for.) */
+    if (!observation->selected_bundle_known ||
+        observation->selected_bundle_height != manifest->height ||
+        memcmp(observation->selected_bundle_hash, manifest->block_hash, 32) != 0 ||
+        !observation->bundle_header_pass_record)
+        return false;
+    /* Shielded TIP root is PoW-committed: the Sapling source header at the
+     * frontier height commits the manifest frontier root (the -9 comparison) and
+     * the bundle-height header still carries it (the -10 comparison). Ancestry
+     * back to the source is enforced by -11 in decide(). */
+    if (!observation->selected_sapling_source_known ||
+        (int64_t)observation->selected_sapling_source_height !=
+            (int64_t)manifest->sapling_frontier_height ||
+        memcmp(observation->selected_sapling_source_root,
+               manifest->sapling_frontier_root, 32) != 0 ||
+        memcmp(observation->selected_bundle_sapling_root,
+               manifest->sapling_frontier_root, 32) != 0)
+        return false;
+    return true;
+}
+
 struct zcl_result consensus_state_chain_binding_decide(
     const struct consensus_state_bundle_manifest *manifest,
     const struct consensus_state_chain_binding_observation *observation)
@@ -137,6 +193,19 @@ struct zcl_result consensus_state_chain_binding_decide(
         consensus_state_chain_binding_uses_checkpoint_authority(manifest,
                                                                 observation);
 
+    /* Assisted ABOVE-checkpoint borrowed-state admission (the RELEASE_ASSISTED
+     * tier), disjoint from cp_auth. When set it relaxes exactly the predicates
+     * that are structurally impossible on borrowed state — the -4 served-coverage
+     * requirement and the -5/-6/-8 body self-validation — while KEEPING every
+     * PoW fact: -3 frontier determinism, the bundle-height header pass record +
+     * Sapling-tip root binding (both folded into the predicate itself), and the
+     * -11 header work + ancestry. It admits a usable-but-not-sovereign node; the
+     * install runtime withholds the self_folded marker so mine/spend/export/seed
+     * stay denied until background promotion re-derives the seam. */
+    bool assisted =
+        consensus_state_chain_binding_uses_assisted_authority(manifest,
+                                                              observation);
+
     /* -3 selected-frontier durability. The target's frontier must be durable and
      * consistent across the two samples (before AND after). The ONE relaxation is
      * the clean-genesis instant-on bootstrap: a node that has folded ZERO bodies
@@ -151,8 +220,16 @@ struct zcl_result consensus_state_chain_binding_decide(
      * fresh_genesis_bootstrap false and refuses here exactly as before. */
     bool frontier_durable = observation->before_frontier_consistent &&
                             observation->after_frontier_consistent;
+    /* The clean-genesis relaxation also covers the assisted tier: a genuinely
+     * fresh node that installs a FRESHEST above-checkpoint bundle has folded
+     * zero bodies, so — exactly like the compiled-checkpoint instant-on path —
+     * it has no durable tip_finalize authority yet, but its crypto anchor (the
+     * bundle-height header pass record + the -11 header work/ancestry below) is
+     * re-established in full. Determinism (frontier_unchanged) is NEVER relaxed
+     * on either path. A mid-fold / partial-state node has fresh_genesis_bootstrap
+     * false and refuses here regardless. */
     bool fresh_genesis_admissible =
-        cp_auth && observation->fresh_genesis_bootstrap;
+        (cp_auth || assisted) && observation->fresh_genesis_bootstrap;
     if ((!frontier_durable && !fresh_genesis_admissible) ||
         !observation->frontier_unchanged)
         return ZCL_ERR(-3,
@@ -201,13 +278,19 @@ struct zcl_result consensus_state_chain_binding_decide(
         memcmp(observation->selected_bundle_hash,
                manifest->block_hash, 32) == 0 &&
         observation->bundle_header_pass_record;
-    if (!served_covers_bundle && !header_bootstrap_bind)
+    if (!served_covers_bundle && !header_bootstrap_bind && !assisted)
         return ZCL_ERR(-4,
                        "chain binding: bundle height=%d exceeds durable H*=%d "
-                       "and no compiled-checkpoint header-bootstrap bind",
+                       "and no compiled-checkpoint header-bootstrap or assisted "
+                       "above-checkpoint bind",
                        manifest->height, observation->durable_served_height);
 
-    if (!cp_auth) {
+    /* Assisted admission (like cp_auth) skips the -5..-10 body/index self-
+     * validation: those predicates require folded bodies below the seam that a
+     * borrowed-state node structurally lacks. The bundle LOCATION and Sapling
+     * TIP root are still PoW-bound (verified inside the assisted predicate) and
+     * the -11 header work + ancestry below remain enforced. */
+    if (!cp_auth && !assisted) {
         if (!observation->selected_bundle_known ||
             observation->selected_bundle_height != manifest->height ||
             memcmp(observation->selected_bundle_hash,
@@ -415,7 +498,8 @@ static void evidence_digest_build(
     const uint8_t artifact_receipt_digest[32],
     const struct consensus_state_chain_binding_observation *observation,
     const struct chain_frontier_snapshot *frontier,
-    const char *target_lane, bool checkpoint_authority_used, uint8_t out[32])
+    const char *target_lane, bool checkpoint_authority_used,
+    bool assisted_authority_used, uint8_t out[32])
 {
     static const char domain[] =
         CONSENSUS_STATE_BUNDLE_SCHEMA "/selected-chain-evidence";
@@ -443,6 +527,11 @@ static void evidence_digest_build(
      * feeds — can never claim a target-index binding it did not have. */
     uint8_t authority_flag = checkpoint_authority_used ? 1u : 0u;
     sha3_256_write(&ctx, &authority_flag, 1);
+    /* Bind the ASSISTED tier the same way: the durable decision record can never
+     * claim a sovereign install for a borrowed above-checkpoint one, or vice
+     * versa. */
+    uint8_t assisted_flag = assisted_authority_used ? 1u : 0u;
+    sha3_256_write(&ctx, &assisted_flag, 1);
     sha3_256_finalize(&ctx, out);
 }
 
@@ -544,6 +633,12 @@ struct zcl_result consensus_state_chain_evidence_build(
         chain_frontier_snapshot_clean_genesis(&frontier_before) &&
         chain_frontier_snapshot_clean_genesis(&frontier_after) &&
         fresh_genesis_quiescent(progress_store_db());
+    /* Request-level assisted opt-in, set on the FINAL observation only (never on
+     * the two sampled captures, whose byte compare above must not see it), so it
+     * cannot perturb frontier_unchanged. decide() gates the actual admission on
+     * the full assisted predicate (above-checkpoint + PoW binds). */
+    observation.assisted_mode_requested =
+        request->allow_assisted_above_checkpoint;
 
     struct zcl_result decision = consensus_state_chain_binding_decide(
         manifest, &observation);
@@ -575,9 +670,13 @@ struct zcl_result consensus_state_chain_evidence_build(
     evidence->checkpoint_authority_used =
         consensus_state_chain_binding_uses_checkpoint_authority(manifest,
                                                                 &observation);
+    evidence->assisted_authority_used =
+        consensus_state_chain_binding_uses_assisted_authority(manifest,
+                                                              &observation);
     evidence_digest_build(manifest, artifact_receipt_digest, &observation,
                           &frontier_before, target_lane,
                           evidence->checkpoint_authority_used,
+                          evidence->assisted_authority_used,
                           evidence->evidence_digest);
     *out = evidence;
     return ZCL_OK;
@@ -617,4 +716,10 @@ bool consensus_state_chain_evidence_used_checkpoint_authority(
     const struct consensus_state_chain_evidence *evidence)
 {
     return evidence && evidence->checkpoint_authority_used;
+}
+
+bool consensus_state_chain_evidence_used_assisted_authority(
+    const struct consensus_state_chain_evidence *evidence)
+{
+    return evidence && evidence->assisted_authority_used;
 }
