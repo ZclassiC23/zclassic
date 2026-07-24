@@ -9,6 +9,8 @@
 #include "net/version.h"
 #include "net/fast_sync.h"
 #include "net/onion_service.h"
+#include "net/onion_ratelimit.h"
+#include "net/puzzle.h"
 #include "net/msgprocessor.h"
 #include "net/connman.h"
 #include "net/peer_strategy.h"
@@ -16,6 +18,8 @@
 #include "net/download.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
+#include "platform/clock.h"
+#include "json/json.h"
 #include <sqlite3.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -224,6 +228,56 @@ static void *p25_socket_worker(void *arg)
     connman_run_deferred_free_sweep(c->cm);
     zcl_mutex_unlock(&c->cm->manager.cs_nodes);
     return NULL;
+}
+
+/* ── Virtual clock for the onion admission tests ──────────────────────
+ *
+ * onion_ratelimit.c's escalation state machine only advances at whole
+ * second boundaries and needs dozens of simulated seconds to exercise
+ * escalate and de-escalate. Sleeping that long would violate "tests fast
+ * always", so drive platform.clock directly — the same injection
+ * test_clock.c and the sync-watchdog tests use. The monotonic hand
+ * tracks the wall hand so the puzzle gate's load EWMA also advances. */
+struct onion_fake_clock {
+    _Atomic int64_t wall_ms;
+};
+static int64_t onion_fake_now_mono(void *self)
+{
+    struct onion_fake_clock *c = (struct onion_fake_clock *)self;
+    return atomic_load(&c->wall_ms) * 1000000LL;
+}
+static int64_t onion_fake_now_wall(void *self)
+{
+    struct onion_fake_clock *c = (struct onion_fake_clock *)self;
+    return atomic_load(&c->wall_ms);
+}
+static void onion_fake_clock_set_secs(struct onion_fake_clock *c, int64_t secs)
+{
+    atomic_store(&c->wall_ms, secs * 1000);
+}
+
+/* Hex-decode a 64-char field of a 402 challenge into 32 raw bytes. */
+static void onion_hex_decode32(const char *hex, uint8_t out[32])
+{
+    for (int i = 0; i < 32; i++) {
+        char b[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+        out[i] = (uint8_t)strtoul(b, NULL, 16);
+    }
+}
+
+/* Read one integer field out of the onion_ratelimit dumpstate snapshot. */
+static int64_t onion_dump_int(const char *key, bool *found)
+{
+    struct json_value dump = {0};
+    json_init(&dump);
+    int64_t v = 0;
+    *found = false;
+    if (onion_ratelimit_dump_state_json(&dump, NULL)) {
+        const struct json_value *f = json_get(&dump, key);
+        if (f) { v = json_get_int(f); *found = true; }
+    }
+    json_free(&dump);
+    return v;
 }
 
 int test_net(void)
@@ -2659,6 +2713,234 @@ int test_net(void)
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         if (ok) printf("OK (not rate-limited)\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ===== ONION ADMISSION: TIERED BUDGETS + PUZZLE ESCALATION ===== */
+
+    {
+        struct onion_fake_clock fake = {0};
+        const clock_iface_t iface = {
+            .now_monotonic_ns = onion_fake_now_mono,
+            .now_wall_ms      = onion_fake_now_wall,
+            .self             = &fake,
+        };
+        int64_t t0 = 2000000000; /* arbitrary base, far from any real clock */
+        onion_ratelimit_test_reset();
+        clock_set_default(&iface);
+        onion_fake_clock_set_secs(&fake, t0);
+
+        printf("onion_ratelimit: route classification by cost tier... ");
+        {
+            char key[32] = "x";
+            bool ok = true;
+            ok = ok && onion_route_classify("GET", "/", key) == ONION_ROUTE_STATIC;
+            ok = ok && key[0] == '\0';
+            ok = ok && onion_route_classify("GET", "/status", NULL) == ONION_ROUTE_STATIC;
+            ok = ok && onion_route_classify("GET", "/explorer/style.css", NULL) == ONION_ROUTE_STATIC;
+            ok = ok && onion_route_classify("GET", "/directory.json", NULL) == ONION_ROUTE_CHEAP;
+            ok = ok && onion_route_classify("GET", "/explorer/block/900000", NULL) == ONION_ROUTE_CHEAP;
+            ok = ok && onion_route_classify("GET", "/store/product/7", NULL) == ONION_ROUTE_CHEAP;
+            /* GET on the order collection is a status read, not a mint. */
+            ok = ok && onion_route_classify("GET", "/store/orders", NULL) == ONION_ROUTE_CHEAP;
+            ok = ok && onion_route_classify("POST", "/store/orders", key) == ONION_ROUTE_EXPENSIVE;
+            ok = ok && strcmp(key, "store-order") == 0;
+            ok = ok && onion_route_classify("GET", "/search?q=a", key) == ONION_ROUTE_EXPENSIVE;
+            ok = ok && strcmp(key, "search-hostname") == 0;
+            ok = ok && onion_route_classify("GET", "/explorer/search?q=a", key) == ONION_ROUTE_EXPENSIVE;
+            ok = ok && strcmp(key, "search-explorer") == 0;
+            if (ok) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        }
+
+        printf("onion_ratelimit: expensive flood starves neither static nor cheap... ");
+        {
+            /* Flood the EXPENSIVE budget far past its cap inside one
+             * window — most of these are intended to be denied. */
+            for (int i = 0; i < 200; i++)
+                (void)onion_ratelimit_admit("GET", "/search?q=flood", NULL, 0, NULL);
+
+            /* Requests on the other tiers, in the SAME window, must still
+             * be admitted: the budgets are independent, so a search or
+             * order flood cannot take down browsing or the landing page. */
+            bool all_ok = true;
+            for (int i = 0; i < 10; i++) {
+                if (onion_ratelimit_admit("GET", "/", NULL, 0, NULL) != ONION_ADMIT_OK)
+                    all_ok = false;
+                if (onion_ratelimit_admit("GET", "/directory.json", NULL, 0, NULL) != ONION_ADMIT_OK)
+                    all_ok = false;
+            }
+            if (all_ok) printf("OK\n");
+            else { printf("FAIL (a static/cheap request was denied during an expensive flood)\n"); failures++; }
+        }
+
+        printf("onion_ratelimit: cheap flood does not starve the static tier... ");
+        {
+            onion_fake_clock_set_secs(&fake, t0 + 500);
+            for (int i = 0; i < 400; i++)
+                (void)onion_ratelimit_admit("GET", "/directory.json", NULL, 0, NULL);
+            bool all_ok = true;
+            for (int i = 0; i < 10; i++) {
+                if (onion_ratelimit_admit("GET", "/status", NULL, 0, NULL) != ONION_ADMIT_OK)
+                    all_ok = false;
+            }
+            if (all_ok) printf("OK\n");
+            else { printf("FAIL (the landing/status tier was starved)\n"); failures++; }
+        }
+
+        printf("onion_ratelimit: no pressure -> expensive path needs no puzzle... ");
+        {
+            onion_fake_clock_set_secs(&fake, t0 + 1000); /* fresh, unsaturated window */
+            enum onion_admit_result r =
+                onion_ratelimit_admit("GET", "/search?q=hi", NULL, 0, NULL);
+            if (r == ONION_ADMIT_OK) printf("OK\n");
+            else { printf("FAIL (result=%d)\n", (int)r); failures++; }
+        }
+
+        printf("onion_ratelimit: escalation trips after sustained saturation... ");
+        struct onion_pow_challenge challenge = {0};
+        {
+            /* Saturate 5 consecutive one-second windows well past cap,
+             * then send one more request in the 6th second: that request
+             * triggers the rollover that evaluates the 5th window and
+             * flips escalation, and — carrying no puzzle — must itself
+             * come back POW_REQUIRED with a renderable challenge. */
+            int64_t base = t0 + 2000;
+            for (int w = 0; w < 5; w++) {
+                onion_fake_clock_set_secs(&fake, base + w);
+                for (int i = 0; i < 200; i++)
+                    (void)onion_ratelimit_admit("GET", "/search?q=flood",
+                                                NULL, 0, NULL);
+            }
+            onion_fake_clock_set_secs(&fake, base + 5);
+            enum onion_admit_result r = onion_ratelimit_admit(
+                "GET", "/search?q=trigger", NULL, 0, &challenge);
+
+            struct json_value dump = {0};
+            json_init(&dump);
+            bool have_dump = onion_ratelimit_dump_state_json(&dump, NULL);
+            const struct json_value *esc =
+                have_dump ? json_get(&dump, "expensive_escalated") : NULL;
+            bool escalated_flag = esc && json_get_bool(esc);
+            json_free(&dump);
+
+            bool ok = (r == ONION_ADMIT_POW_REQUIRED) && escalated_flag &&
+                      strlen(challenge.seed_hex) == 64 &&
+                      strlen(challenge.token_hex) == 64 &&
+                      challenge.bits >= PUZZLE_MIN_BITS &&
+                      challenge.server_time == base + 5;
+            if (ok) printf("OK (bits=%d)\n", challenge.bits);
+            else {
+                printf("FAIL (result=%d escalated=%d bits=%d)\n",
+                       (int)r, escalated_flag, challenge.bits);
+                failures++;
+            }
+        }
+
+        printf("onion_ratelimit: a solved route-bound puzzle admits while escalated... ");
+        char solved_path[256] = "";
+        uint8_t seed[32], token[32];
+        {
+            bool solved = false;
+            uint64_t nonce = 0;
+            int64_t ts = (int64_t)platform_time_wall_time_t();
+            if (challenge.seed_hex[0]) {
+                onion_hex_decode32(challenge.seed_hex, seed);
+                onion_hex_decode32(challenge.token_hex, token);
+                solved = puzzle_solve(seed, token, ts, challenge.bits, &nonce);
+            }
+            if (solved)
+                snprintf(solved_path, sizeof(solved_path),
+                         "/search?q=hi&pow_ts=%lld&pow_nonce=%llu",
+                         (long long)ts, (unsigned long long)nonce);
+            enum onion_admit_result r = solved
+                ? onion_ratelimit_admit("GET", solved_path, NULL, 0, NULL)
+                : ONION_ADMIT_RATE_LIMITED;
+            if (solved && r == ONION_ADMIT_OK) printf("OK\n");
+            else {
+                printf("FAIL (solved=%d result=%d)\n", solved, (int)r);
+                failures++;
+            }
+        }
+
+        printf("onion_ratelimit: replaying the same solved puzzle is refused... ");
+        {
+            bool found = false;
+            int64_t before = onion_dump_int("puzzle_failed_total", &found);
+            enum onion_admit_result r = solved_path[0]
+                ? onion_ratelimit_admit("GET", solved_path, NULL, 0, NULL)
+                : ONION_ADMIT_OK;
+            int64_t after = onion_dump_int("puzzle_failed_total", &found);
+            bool ok = solved_path[0] && r == ONION_ADMIT_POW_REQUIRED &&
+                      found && after == before + 1;
+            if (ok) printf("OK\n");
+            else {
+                printf("FAIL (result=%d failed_total %lld -> %lld)\n", (int)r,
+                       (long long)before, (long long)after);
+                failures++;
+            }
+        }
+
+        printf("onion_ratelimit: a puzzle solved for one route is refused on another... ");
+        {
+            /* Same seed, but the token binds the solution to /search. A
+             * store order must not accept it. */
+            uint64_t nonce = 0;
+            int64_t ts = (int64_t)platform_time_wall_time_t();
+            bool solved = puzzle_solve(seed, token, ts, challenge.bits, &nonce);
+            char body[128];
+            int blen = snprintf(body, sizeof(body),
+                                "pow_ts=%lld&pow_nonce=%llu",
+                                (long long)ts, (unsigned long long)nonce);
+            enum onion_admit_result r = solved
+                ? onion_ratelimit_admit("POST", "/store/orders",
+                                        (const uint8_t *)body, (size_t)blen,
+                                        NULL)
+                : ONION_ADMIT_OK;
+            if (solved && r == ONION_ADMIT_POW_REQUIRED) printf("OK\n");
+            else { printf("FAIL (solved=%d result=%d)\n", solved, (int)r); failures++; }
+        }
+
+        printf("onion_ratelimit: static tier is never puzzle-gated, even escalated... ");
+        {
+            bool all_ok = true;
+            for (int i = 0; i < 5; i++) {
+                if (onion_ratelimit_admit("GET", "/", NULL, 0, NULL) != ONION_ADMIT_OK)
+                    all_ok = false;
+                if (onion_ratelimit_admit("GET", "/directory.json", NULL, 0, NULL) != ONION_ADMIT_OK)
+                    all_ok = false;
+            }
+            if (all_ok) printf("OK\n");
+            else { printf("FAIL (an operator was locked out of a non-expensive route)\n"); failures++; }
+        }
+
+        printf("onion_ratelimit: escalation clears after sustained quiet... ");
+        {
+            /* One low-volume request per second. Each first-request-of-a-
+             * window rollover evaluates the prior window; after 15
+             * consecutive clear evaluations de-escalation fires, and the
+             * request that finalizes it — still carrying no puzzle — must
+             * itself come back OK. */
+            int64_t base = t0 + 2000;
+            enum onion_admit_result last = ONION_ADMIT_POW_REQUIRED;
+            for (int s = 6; s <= 21; s++) {
+                onion_fake_clock_set_secs(&fake, base + s);
+                last = onion_ratelimit_admit("GET", "/search?q=quiet",
+                                             NULL, 0, NULL);
+            }
+            bool found = false;
+            int64_t deesc = onion_dump_int("deescalate_total", &found);
+            if (last == ONION_ADMIT_OK && found && deesc >= 1) printf("OK\n");
+            else {
+                printf("FAIL (last result=%d deescalate_total=%lld)\n",
+                       (int)last, (long long)deesc);
+                failures++;
+            }
+        }
+
+        /* Never leak the virtual clock or admission state into later
+         * tests in this process. */
+        clock_reset_default();
+        onion_ratelimit_test_reset();
     }
 
     /* ===== BLOCK RELAY DEDUPLICATION TESTS ===== */
