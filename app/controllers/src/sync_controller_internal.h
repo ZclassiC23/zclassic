@@ -124,4 +124,44 @@ bool sapling_tree_open_persist_lane(struct node_db *reducer_ndb,
                                     struct node_db *persist_ndb,
                                     int height);
 
+/* ── Sapling-tree resume + fail-closed accounting ────────────────────────
+ * Definitions in sync_controller_sapling_tree_resume.c; the replay loop in
+ * sync_controller_sapling_tree.c is the only caller. */
+
+struct active_chain;
+struct block_index;
+
+/* True when the header chain committed a (non-zero) hashFinalSaplingRoot at
+ * `bi` — i.e. the block can be used to bind a frontier fail-closed. */
+bool sapling_rebuild_header_root_known(const struct block_index *bi);
+
+/* Tolerated-skip tally handed to the fail-closed classifier. Non-zero only on
+ * the header-tip endpoint: the coins-applied endpoint fails closed AT the
+ * first skip, so a walk that reached a root check with skips > 0 is provably
+ * a walk over an INCOMPLETE body set. */
+struct sapling_rebuild_skip_tally {
+    int total;
+    int first_height;
+    int last_height;
+    char classes[64];   /* comma-separated names of the non-zero classes */
+};
+
+void sapling_tree_rebuild_raise_fail_blocker(
+        const char *fail_reason, int fail_height, int total_commitments,
+        int mismatches, const struct sapling_rebuild_skip_tally *skips);
+
+/* Count + name one block the replay could not fold. Returns true when the
+ * caller MUST fail-closed (the coins-applied endpoint). */
+bool sapling_rebuild_account_skip(const char *reason_tag, int h,
+                                  bool fatal, int *counter,
+                                  int *first_skip_h, int *last_skip_h);
+
+/* Resume candidate (0): the header-root-bound anchor_kv Sapling frontier.
+ * Returns false (and leaves the outputs untouched) when the store is closed,
+ * no frontier exists, it sits above `chain_tip`, or it fails its binding. */
+bool sapling_rebuild_anchor_seed(const struct active_chain *chain,
+                                 int chain_tip, int sapling_height,
+                                 struct incremental_merkle_tree *tree_out,
+                                 int64_t *height_out);
+
 #endif
