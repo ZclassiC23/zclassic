@@ -480,7 +480,13 @@ static int fc_case_init_publishes_capped_cursor(void)
     bool seeded = fc_make_tip_finalize_log(db) &&
                   fc_put_tip_hash_row(db, 0, "finalized",
                                       sc.hashes[1].data) &&
-                  fc_seed_cursor(db, "tip_finalize", 1);
+                  fc_seed_cursor(db, "tip_finalize", 1) &&
+                  /* utxo_apply stage cursor is co-committed with the finalized
+                   * frontier in production (a finalized 0->1 row requires height
+                   * 0 applied, so utxo_apply >= 1). Seed it consistently so the
+                   * boot-open clamp (tip_finalize <= utxo_apply) sees a realistic
+                   * upstream and does not fire on this frontier-cap fixture. */
+                  fc_seed_cursor(db, "utxo_apply", 1);
     FC_CHECK("T7b: durable cursor/log frontier at h=1", seeded);
 
     FC_CHECK("T7b: stage init", tip_finalize_stage_init(&ms));

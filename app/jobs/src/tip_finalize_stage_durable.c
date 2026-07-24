@@ -15,6 +15,8 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
+#include "platform/time_compat.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -78,6 +80,55 @@ bool tip_finalize_stage_hydrate_cursor_from_store(sqlite3 *db,
     uint64_t cursor = 0;
     if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
         LOG_FAIL("tip_finalize", "cursor hydrate read failed");
+
+    /* CROSS-TXN REORG-REWIND CRASH-WINDOW CLAMP (uv_cursor_gap cure).
+     *
+     * step_finalize enforces tip_finalize_cursor <= utxo_apply_cursor FORWARD
+     * (tip_finalize_stage.c: `if (next_h > uv_cursor) note_cursor_gap; IDLE`)
+     * but that invariant can be VIOLATED on disk across a crash: the reorg
+     * unwind commits {utxo_apply cursor rewind + coins inverse-delta + log
+     * deletes + frontier} in ONE txn (utxo_apply_delta_reorg.c ~:492-507),
+     * while tip_finalize's OWN cursor is rewound in a SEPARATE, LATER txn at
+     * the top of its next step (rewind_cursor_if_active_chain_reorged ->
+     * stage_set_cursor in tip_finalize_stage.c). A kill-9 landing between those
+     * two durable commits persists tip_finalize_cursor > utxo_apply_cursor —
+     * the exact "durably-committed window where cursors disagree BY DESIGN"
+     * documented in invariant_sentinel.c (~:434). The live sweep tolerates it
+     * via two-sweep confirmation; a crash+respawn does NOT get a second live
+     * sweep — it reboots straight into the persisted inversion and step_finalize
+     * then wedges forever on the tip_finalize.uv_cursor_gap blocker ("its own
+     * cursor is ahead of its upstream, which the pipeline order should make
+     * unreachable").
+     *
+     * Restore the invariant on open by lowering ONLY the tip_finalize CURSOR to
+     * the durable utxo_apply cursor. This is always safe (the invariant is
+     * tip_finalize <= utxo_apply, so a legitimate state never satisfies the
+     * clamp condition) and NEVER touches a tip_finalize_log row (served-floor
+     * invariant): the surviving ok=1 rows re-finalize forward (log_insert is
+     * INSERT OR REPLACE) as utxo_apply re-folds past them — slower, never
+     * wrong. Read utxo_apply's DURABLE cursor (the same stage_cursor row the
+     * gate reads); a decrease bypasses the LCC raise guard in stage_set_cursor. */
+    uint64_t uv_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, "utxo_apply", STAGE_NAME, &uv_cursor))
+        LOG_FAIL("tip_finalize", "cursor hydrate: utxo_apply read failed");
+    if (cursor > uv_cursor) {
+        static struct log_throttle clamp_throttle = LOG_THROTTLE_INIT;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&clamp_throttle,
+                (uint64_t)cursor ^ ((uint64_t)uv_cursor << 20),
+                platform_time_wall_unix(), 60, &reps))
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] cursor clamp on open: durable "
+                     "tip_finalize cursor=%llu exceeds upstream utxo_apply "
+                     "cursor=%llu — clamping the tip_finalize CURSOR DOWN to the "
+                     "upstream frontier (cross-txn reorg-rewind crash window; "
+                     "tip_finalize_log rows preserved, re-finalize forward) "
+                     "reason=%s repeated=%llu",
+                     (unsigned long long)cursor, (unsigned long long)uv_cursor,
+                     reason ? reason : "", (unsigned long long)reps);
+        cursor = uv_cursor;
+    }
+
     if (!stage_set_cursor(stage, db, cursor)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] cursor hydrate failed cursor=%llu reason=%s",
