@@ -10,6 +10,8 @@
 #include "util/boot_scan.h"
 /* src-private: the current-tip-missing observe helper under test (Task A #11). */
 #include "../../../app/jobs/src/tip_finalize_stage_observe.h"
+/* src-private: the incremental utxo_apply SUM cache under differential KAT. */
+#include "../../../app/jobs/src/tip_finalize_log_store.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -1350,6 +1352,17 @@ int test_tip_finalize_stage(void)
                  tip_finalize_stage_drain(100) == 2);
         TF_CHECK("provable_tip: fast-forward scans no historical frontier rows",
                  boot_scan_value("reducer_frontier.contiguity_rows") == 0);
+        /* The O(1)-per-finalize ratchet: neither the H* watermark nor the
+         * utxo_apply SUM re-derives from durable rows on an adjacent advance —
+         * the full fold and the full SUM stay untouched, and each finalize takes
+         * exactly one fast-path bump. This is span-independent (0 rows scanned),
+         * so per-finalize work does NOT scale with (cursor - anchor). */
+        TF_CHECK("provable_tip: no full H* recompute in the fast-forward drain",
+                 boot_scan_value("reducer_frontier.hstar_full_recompute") == 0);
+        TF_CHECK("provable_tip: SUM cache O(1) — no full SUM in the drain",
+                 boot_scan_value("reducer_frontier.utxo_sum_full_recompute") == 0);
+        TF_CHECK("provable_tip: one fast-path advance per finalized block",
+                 boot_scan_value("reducer_frontier.hstar_fastpath") == 2);
         int32_t hstar_real = compute_hstar_now(progress_store_db());
         TF_CHECK("provable_tip: real H* reaches the synthetic frontier",
                  hstar_real == 2);
@@ -1979,6 +1992,74 @@ int test_tip_finalize_stage(void)
         tip_finalize_observe_clear_tip_missing();
         TF_CHECK("tip_missing: clear helper removes it on resolve",
                  !blocker_exists("tip_finalize.current_tip_missing"));
+    }
+
+    /* Differential property KAT: the incremental utxo_apply SUM cache must
+     * equal the pure SUM(...) WHERE height<=? AND ok=1 at EVERY finalized
+     * height, across a randomized log with ok=0 gaps (which force the
+     * non-adjacent fallback) and a mid-stream reset (a shutdown/reinit). The
+     * cache is the watermark discipline the whole task rests on: a running
+     * total that is byte-identical to the full recompute. Deterministic
+     * (fixed-seed LCG — no external RNG), so failures are reproducible. */
+    {
+        sqlite3 *sdb = NULL;
+        bool open_ok = sqlite3_open(":memory:", &sdb) == SQLITE_OK;
+        TF_CHECK("sum_cache_kat: open :memory:", open_ok);
+        if (open_ok) {
+            open_ok = exec_sql(sdb,
+                "CREATE TABLE utxo_apply_log ("
+                "  height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+                "  ok INTEGER NOT NULL, spent_count INTEGER NOT NULL,"
+                "  added_count INTEGER NOT NULL)");
+            TF_CHECK("sum_cache_kat: schema", open_ok);
+        }
+        enum { KAT_N = 4000 };
+        static int kat_ok[KAT_N];
+        static int64_t kat_spent[KAT_N], kat_added[KAT_N];
+        uint64_t lcg = 0x9e3779b97f4a7c15ULL;  /* fixed seed */
+        bool ins_ok = open_ok;
+        sqlite3_stmt *ins = NULL;
+        if (ins_ok)
+            ins_ok = sqlite3_prepare_v2(sdb,
+                "INSERT INTO utxo_apply_log"
+                "(height,status,ok,spent_count,added_count) VALUES(?,?,?,?,?)",
+                -1, &ins, NULL) == SQLITE_OK;
+        for (int h = 0; h < KAT_N && ins_ok; h++) {
+            lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+            int ok = ((lcg >> 33) % 7) != 0;  /* ~1 in 7 rows is ok=0 (a gap) */
+            int64_t sp = (int64_t)((lcg >> 20) & 0x3f);
+            int64_t ad = (int64_t)((lcg >> 40) & 0x3f);
+            kat_ok[h] = ok; kat_spent[h] = sp; kat_added[h] = ad;
+            sqlite3_reset(ins);
+            sqlite3_bind_int(ins, 1, h);
+            sqlite3_bind_text(ins, 2, ok ? "verified" : "value_overflow",
+                              -1, SQLITE_STATIC);
+            sqlite3_bind_int(ins, 3, ok);
+            sqlite3_bind_int64(ins, 4, sp);
+            sqlite3_bind_int64(ins, 5, ad);
+            ins_ok = sqlite3_step(ins) == SQLITE_DONE;
+        }
+        if (ins) sqlite3_finalize(ins);
+        TF_CHECK("sum_cache_kat: randomized log built", ins_ok);
+
+        utxo_apply_sum_through_reset();
+        int mismatches = 0;
+        for (int h = 0; h < KAT_N && ins_ok; h++) {
+            if (h == KAT_N / 2)
+                utxo_apply_sum_through_reset();  /* mid-stream shutdown/reinit */
+            if (!kat_ok[h])
+                continue;  /* production calls the cache only on ok=1 finalizes */
+            int64_t is = -1, ia = -1, fs = -1, fa = -1;
+            bool a = utxo_apply_sum_through_incremental(sdb, h, kat_spent[h],
+                                                        kat_added[h], &is, &ia);
+            bool b = utxo_apply_sums_through(sdb, h, &fs, &fa);
+            if (!a || !b || is != fs || ia != fa)
+                mismatches++;
+        }
+        TF_CHECK("sum_cache_kat: incremental == full SUM at every ok=1 height",
+                 ins_ok && mismatches == 0);
+        utxo_apply_sum_through_reset();
+        if (sdb) sqlite3_close(sdb);
     }
 
     printf("tip_finalize_stage tests: %s\n",

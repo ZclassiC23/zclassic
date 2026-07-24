@@ -42,6 +42,14 @@ int  utxo_apply_log_at(struct sqlite3 *db, int height,
                        struct utxo_apply_row *out);
 bool utxo_apply_sums_through(struct sqlite3 *db, int height,
                              int64_t *spent_out, int64_t *added_out);
+/* O(1)-per-finalize cache of utxo_apply_sums_through(): advances by the
+ * just-finalized height's own ok=1 (spent,added), falling back to the full SUM
+ * on any doubt (see the .c). Caller passes THIS height's ok=1 counts (the
+ * upstream utxo_apply row it already loaded). Reset drops the cache. */
+bool utxo_apply_sum_through_incremental(struct sqlite3 *db, int height,
+                                        int64_t this_spent, int64_t this_added,
+                                        int64_t *spent_out, int64_t *added_out);
+void utxo_apply_sum_through_reset(void);
 bool log_insert(struct sqlite3 *db, int height, const char *status, bool ok,
                 const struct arith_uint256 *work_delta,
                 int64_t utxo_size_after, int reorg_depth,

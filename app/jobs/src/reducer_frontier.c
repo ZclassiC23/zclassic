@@ -560,6 +560,13 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     if (!hstar || !served_floor)
         LOG_FAIL("reducer", "compute_hstar: NULL out param(s)");
 
+    /* Witness every full O(delta) fold. The tip_finalize H* watermark advances
+     * by one row per finalize WITHOUT calling this (see tf_advance_provable_tip),
+     * so on a healthy fold this bumps ~once per boot (the warm) + once per real
+     * doubt (reorg/gap) — never once per finalized block. test_boot_odelta_scan
+     * asserts it stays O(1) across a run instead of tracking the delta. */
+    boot_scan_bump(boot_scan_counter("reducer_frontier.hstar_full_recompute"));
+
     /* TRUSTED_ANCHOR floor via reducer_frontier_floor(): the SHA3 checkpoint
      * height on a NORMAL boot, 0 during a from-genesis refold so a refold's
      * below-anchor folded prefix is REPORTED as H* (not clamped up). During a

@@ -7,6 +7,7 @@
 #include "platform/time_compat.h"
 #include "jobs/stage_row_itag.h"
 #include "core/arith_uint256.h"
+#include "util/boot_scan.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -123,6 +124,80 @@ bool utxo_apply_sums_through(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return ok;
+}
+
+/* Incremental running total of utxo_apply_log's ok=1 (spent,added) prefix — a
+ * CACHE of utxo_apply_sums_through(), never a second writable ledger. The pure
+ * SUM stays THE authority; this advances by exactly the just-finalized height's
+ * OWN ok=1 (spent,added) — the SAME row the SUM would fold in — so the cached
+ * total is byte-identical to the full SUM by construction (O(1) per finalize,
+ * not O(height)). On ANY doubt — first use, a non-adjacent height (a reorg
+ * rewind or an ok=0 skip left a gap), an unknown/negative per-row count, or the
+ * periodic self-check stride — it recomputes the full SUM, adopts it, and names
+ * any drift between the incremental candidate and the truth. The full SUM IS the
+ * self-check: every fallback re-derives the total from durable rows.
+ *
+ * Volatile: touched ONLY on the reducer drive path under progress_store_tx_lock
+ * (single writer), so the three correlated fields stay consistent with plain
+ * statics; reset at stage init/shutdown; a crash simply drops it and the next
+ * call re-seeds from the full SUM (no durable second ledger to get out of sync
+ * with the coins commit — the drain-batch law needs nothing extra here). */
+#define TF_SUM_SELFCHECK_STRIDE 32768
+static int64_t g_sum_through = INT64_MIN;  /* height covered; INT64_MIN=unseeded */
+static int64_t g_sum_spent;
+static int64_t g_sum_added;
+static int64_t g_sum_since_check;
+
+void utxo_apply_sum_through_reset(void)
+{
+    g_sum_through = INT64_MIN;
+    g_sum_spent = 0;
+    g_sum_added = 0;
+    g_sum_since_check = 0;
+}
+
+bool utxo_apply_sum_through_incremental(sqlite3 *db, int height,
+                                        int64_t this_spent, int64_t this_added,
+                                        int64_t *spent_out, int64_t *added_out)
+{
+    bool adjacent = g_sum_through == (int64_t)height - 1 &&
+                    this_spent >= 0 && this_added >= 0;
+    bool due_selfcheck = g_sum_since_check >= TF_SUM_SELFCHECK_STRIDE;
+
+    if (adjacent && !due_selfcheck) {
+        g_sum_spent += this_spent;
+        g_sum_added += this_added;
+        g_sum_through = height;
+        g_sum_since_check++;
+        *spent_out = g_sum_spent;
+        *added_out = g_sum_added;
+        return true;
+    }
+
+    /* Fallback / periodic self-check: the full SUM is the authority. */
+    boot_scan_bump(boot_scan_counter("reducer_frontier.utxo_sum_full_recompute"));
+    int64_t full_spent = 0, full_added = 0;
+    if (!utxo_apply_sums_through(db, height, &full_spent, &full_added))
+        return false;  // raw-return-ok:utxo_apply_sums_through logged the cause
+
+    if (adjacent) {  /* stride self-check: candidate should equal the truth */
+        int64_t cand_spent = g_sum_spent + this_spent;
+        int64_t cand_added = g_sum_added + this_added;
+        if (cand_spent != full_spent || cand_added != full_added)
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] utxo_sum cache drift h=%d "
+                     "incremental(spent=%lld,added=%lld) full(spent=%lld,"
+                     "added=%lld) — adopting full", height,
+                     (long long)cand_spent, (long long)cand_added,
+                     (long long)full_spent, (long long)full_added);
+    }
+    g_sum_spent = full_spent;
+    g_sum_added = full_added;
+    g_sum_through = height;
+    g_sum_since_check = 0;
+    *spent_out = full_spent;
+    *added_out = full_added;
+    return true;
 }
 
 bool log_insert(sqlite3 *db, int height, const char *status, bool ok,

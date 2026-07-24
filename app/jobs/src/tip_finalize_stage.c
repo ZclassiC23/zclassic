@@ -15,6 +15,7 @@
 #include "tip_finalize_log_store.h"
 #include "tip_finalize_stage_observe.h"
 #include "tip_finalize_batch_drain.h"
+#include "tip_finalize_provable_tip.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -37,50 +38,10 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
-/* Recompute H* (the deepest provably-consistent height) from the durable
- * progress.kv state and publish it into the external provable-tip cache.
- *
- * Called at the finalize ADVANCE (step_finalize, once per finalized block),
- * the reorg REWIND (rewind_cursor_if_active_chain_reorged, once per detected
- * reorg), and the one-time boot warm after init resolves a durable tip. All
- * callers hold progress_store_tx_lock(). reducer_frontier_compute_hstar is
- * PURE SELECT-only and REQUIRES the caller hold that lock, so this must never
- * run without that lock. Cost is one O(cursor-anchor) fold per RARE event,
- * never per RPC. On a read error it leaves the cache unchanged (logs, does not
- * crash) — a stale-but-bounded H* is strictly better than serving -1 or a wrong
- * tip.
- *
- * CALLER MUST hold progress_store_tx_lock(). */
-static void tf_refresh_provable_tip(sqlite3 *db)
-{
-    if (!db)
-        return;
-    int32_t hs = 0, sf = 0;
-    if (!reducer_frontier_compute_hstar(db, &hs, &sf)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] provable-tip refresh: compute_hstar failed "
-                 "(cache holds prior H*)");
-        return;
-    }
-    reducer_frontier_provable_tip_set(hs);
-}
 
-static void tf_warm_provable_tip_once(sqlite3 *db, const char *reason)
-{
-    if (!db || reducer_frontier_provable_tip_is_published())
-        return;
-    progress_store_tx_lock();
-    if (!reducer_frontier_provable_tip_is_published()) {
-        tf_refresh_provable_tip(db);
-        if (reducer_frontier_provable_tip_is_published()) {
-            LOG_INFO("tip_finalize",
-                     "[tip_finalize] provable-tip cache warmed h=%d reason=%s",
-                     reducer_frontier_provable_tip_cached(),
-                     reason ? reason : "");
-        }
-    }
-    progress_store_tx_unlock();
-}
+/* The provable-tip (H*) cache helpers — tf_refresh_provable_tip,
+ * tf_warm_provable_tip_once, tf_advance_provable_tip — own their own TU
+ * tip_finalize_provable_tip.c (a separable concern from the finalize step). */
 
 /* Cross-TU seam for tip_finalize_anchor.c (tip_finalize_anchor_internal.h):
  * the anchor/seed TU reads the live stage handle at call time and publishes
@@ -535,7 +496,16 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         return JOB_FATAL;
     if (utxo_size_after >= 0) {
         int64_t spent = 0, added = 0;
-        if (!utxo_apply_sums_through(db, next_h, &spent, &added))
+        /* O(1) running total instead of an O(height) SUM(...) WHERE height<=?
+         * per finalize (which made this stage O(height^2) over a fold). upstream
+         * is THIS height's own ok=1 utxo_apply row (loaded above), so the cache
+         * folds in exactly the row the full SUM would; it falls back to the full
+         * SUM on any non-adjacency (reorg rewind / ok=0 gap) or the self-check
+         * stride. Identical values to utxo_apply_sums_through in all cases. */
+        if (!utxo_apply_sum_through_incremental(db, next_h,
+                                                upstream.spent_count,
+                                                upstream.added_count,
+                                                &spent, &added))
             return JOB_FATAL;
         int64_t expected = added - spent;
         if (utxo_size_after != expected) {
@@ -605,16 +575,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         tip_finalize_observe_update_last_advance(new_tip->nHeight,
                                                  new_tip->phashBlock->data);
     }
-    /* The exact hash-bound receipts checked above prove this one-height H*
-     * extension without re-reading the already-proven prefix. Fast-forward
-     * only from an explicitly published, adjacent frontier. Any gap, fresh
-     * cache, anchor transition, or prior failed row falls back to the complete
-     * SELECT-only proof; reorg rewind always takes that full path above. */
-    if (reducer_frontier_provable_tip_is_published() &&
-        reducer_frontier_provable_tip_cached() == next_h - 1)
-        reducer_frontier_provable_tip_set(next_h);
-    else
-        tf_refresh_provable_tip(db);
+    /* O(1) watermark advance (or full-fold fallback on any doubt) — see
+     * tf_advance_provable_tip. reorg rewind always takes the full path above. */
+    tf_advance_provable_tip(db, next_h);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
@@ -644,6 +607,9 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     pthread_mutex_lock(&g_lock);
     tip_finalize_observe_init();
+    /* Drop any volatile utxo_apply SUM cache from a prior lifecycle: the next
+     * finalize re-seeds it from the full SUM (this datadir's own durable rows). */
+    utxo_apply_sum_through_reset();
     g_ms = ms;
 
     struct block_index *existing_tip = active_chain_cached_tip(&ms->chain_active);
@@ -765,6 +731,7 @@ void tip_finalize_stage_shutdown(void)
     g_ms = NULL;
     tip_finalize_hooks_reset();
     tip_finalize_observe_shutdown();
+    utxo_apply_sum_through_reset();
     /* Mirror the served-tip reset into the external provable-tip cache so a
      * stale-high H* from this run cannot leak into the next boot. */
     reducer_frontier_provable_tip_reset();
@@ -785,7 +752,7 @@ int64_t tip_finalize_stage_last_height(void) { return tip_finalize_observe_last_
 
 /* Test-only: reset the published served-tip height to -1 (a stale high value
  * from a prior group without shutdown() poisons later active_chain_tip reads). */
-void tip_finalize_stage_test_reset(void) { tip_finalize_observe_reset_last_height(); reducer_frontier_provable_tip_reset(); }
+void tip_finalize_stage_test_reset(void) { tip_finalize_observe_reset_last_height(); reducer_frontier_provable_tip_reset(); utxo_apply_sum_through_reset(); }
 uint64_t tip_finalize_stage_finalized_total(void) { return tip_finalize_observe_finalized_total(); }
 uint64_t tip_finalize_stage_upstream_failed_total(void) { return tip_finalize_observe_upstream_failed_total(); }
 uint64_t tip_finalize_stage_reorg_detected_total(void) { return tip_finalize_observe_reorg_detected_total(); }
