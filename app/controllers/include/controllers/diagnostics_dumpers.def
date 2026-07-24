@@ -739,3 +739,13 @@
                  "in-memory inbox_store_count/cap, and onchain_memo_max_bytes",
                  "app/controllers/src/messaging_controller.c",
                  DIAG_TEST_DEFAULT),
+    DIAG_SERVICE("onion_ratelimit", onion_ratelimit_dump_state_json,
+                 "onion-service request admission: per-tier {static, cheap, "
+                 "expensive} cap_per_sec/spent_this_window/admitted_total/"
+                 "denied_total/saturated_streak_secs/clear_streak_secs, "
+                 "expensive_escalated + escalate_total/deescalate_total/"
+                 "escalate_sustain_secs/deescalate_clear_secs, and the client "
+                 "puzzle's live puzzle_bits_now/puzzle_rate_ewma_milli plus "
+                 "puzzle_required/passed/failed_total",
+                 "lib/net/src/onion_ratelimit.c",
+                 "lib/test/src/test_net.c"),

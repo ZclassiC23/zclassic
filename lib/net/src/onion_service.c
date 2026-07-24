@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
+#include "net/onion_ratelimit.h"
 #include "net/tor_integration.h"
 #include "net/rom_seed.h"
 #include "util/log_json.h"
@@ -77,27 +78,11 @@ static int onion_discover_peers(struct onion_peer *out, size_t max)
     return kept;
 }
 
-/* Simple global rate limiter: max 100 requests/second */
-static _Atomic int64_t g_request_count = 0;
-static _Atomic int64_t g_rate_window_start = 0;
-#define MAX_REQUESTS_PER_SECOND 100
-
-static bool rate_limit_check(void)
-{
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    int64_t window = atomic_load(&g_rate_window_start);
-    if (now != window) {
-        if (atomic_compare_exchange_strong(&g_rate_window_start, &window, now))
-            atomic_store(&g_request_count, 1);
-    }
-    /* A fresh window seeds the counter at 1 and the line below also fetch_adds,
-     * so the first request of a window counts as 2 — the limiter trips one
-     * request early (≈99 instead of 100). This conservative bias is INTENTIONAL:
-     * for a DoS guard, over-limiting (slightly stricter) is the fail-safe
-     * direction. Do not "fix" it toward 100 in a way that risks under-limiting. */
-    int64_t count = atomic_fetch_add(&g_request_count, 1);
-    return count < MAX_REQUESTS_PER_SECOND;
-}
+/* Request admission — cost-tiered budgets plus an adaptive client puzzle
+ * on expensive routes under sustained pressure. See net/onion_ratelimit.h
+ * for the route table, tier sizing, and escalation thresholds. Replaces a
+ * single global 100 req/s counter, under which one flooding client on any
+ * path starved every honest client on every path. */
 
 /* ── Query node stats from SQLite ─────────────────────────── */
 
@@ -769,6 +754,83 @@ static size_t serve_status(uint8_t *response, size_t max)
         "%s", blen, body);
 }
 
+/* ── Admission-control responses ──────────────────────────── */
+
+/* Always serveable: a fixed page rendered from a stack buffer, no DB
+ * access and no allocation. Every tier routes its over-budget case here,
+ * so the node can always say why a request was refused. */
+static size_t serve_rate_limited(uint8_t *response, size_t response_max)
+{
+    return (size_t)snprintf((char *)response, response_max,
+        "HTTP/1.1 429 Too Many Requests\r\n"
+        "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
+        "Retry-After: 1\r\n\r\n"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>429 Too Many Requests</title>"
+        "<style>"
+        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+        "display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
+        "h1{color:#ffaa00;font-size:28px}"
+        "p{color:#888;font-size:16px;max-width:500px;text-align:center}"
+        "a{color:#00aaff;text-decoration:none}"
+        "a:hover{color:#00ff88}"
+        ".nav{display:flex;gap:12px;margin-top:30px}"
+        "</style></head><body>"
+        "<h1>429 Too Many Requests</h1>"
+        "<p>Too many requests. Please wait a moment and try again.</p>"
+        "<div class='nav'>"
+        "<a href='/'>Home</a> | "
+        "<a href='/explorer'>Explorer</a>"
+        "</div></body></html>");
+}
+
+/* 402 for an expensive route while the tier is escalated. The page is
+ * readable by a human and carries the same challenge as a JSON block a
+ * script can read, so the browser front-end and a CLI client solve from
+ * one response. */
+static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
+                                    uint8_t *response, size_t response_max)
+{
+    return (size_t)snprintf((char *)response, response_max,
+        "HTTP/1.1 402 Payment Required\r\n"
+        "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
+        "Cache-Control: no-store\r\nRetry-After: 1\r\n\r\n"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>402 Proof of Work Required</title>"
+        "<script type='application/json' id='pow-challenge'>"
+        "{\"seed\":\"%s\",\"token\":\"%s\",\"bits\":%d,\"server_time\":%lld}"
+        "</script>"
+        "<style>"
+        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+        "display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
+        "h1{color:#ffaa00;font-size:28px}"
+        "p{color:#888;font-size:16px;max-width:620px;text-align:center}"
+        "code{color:#00aaff;word-break:break-all}"
+        "a{color:#00aaff;text-decoration:none}"
+        "a:hover{color:#00ff88}"
+        ".nav{display:flex;gap:12px;margin-top:30px}"
+        "</style></head><body>"
+        "<h1>402 Proof of Work Required</h1>"
+        "<p>This node is under sustained load on this class of request and "
+        "is temporarily pricing it with a small puzzle. Find a nonce such "
+        "that SHA3-256(seed || token || ts || nonce), each of seed and "
+        "token 32 raw bytes and each of ts and nonce 8 bytes "
+        "little-endian, has %d leading zero bits.</p>"
+        "<p>seed <code>%s</code></p>"
+        "<p>token <code>%s</code></p>"
+        "<p>server time <code>%lld</code></p>"
+        "<p>Resubmit with <code>pow_ts</code> (the unix-second timestamp "
+        "you hashed) and <code>pow_nonce</code> (decimal) as query "
+        "parameters on a GET or form fields on a POST. One solution admits "
+        "one request. This clears automatically once load drops.</p>"
+        "<div class='nav'><a href='/'>Home</a></div>"
+        "</body></html>",
+        ch->seed_hex, ch->token_hex, ch->bits, (long long)ch->server_time,
+        ch->bits, ch->seed_hex, ch->token_hex, (long long)ch->server_time);
+}
+
 /* ── Main request handler ─────────────────────────────────── */
 
 size_t onion_service_handle_request(const char *method,
@@ -780,31 +842,18 @@ size_t onion_service_handle_request(const char *method,
 {
     if (!path) path = "/";
 
-    /* Rate limit: 100 requests/second across all circuits */
-    if (!rate_limit_check()) {
-        return (size_t)snprintf((char *)response, response_max,
-            "HTTP/1.1 429 Too Many Requests\r\n"
-            "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
-            "Retry-After: 1\r\n\r\n"
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<title>429 Too Many Requests</title>"
-            "<style>"
-            "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-            "display:flex;flex-direction:column;align-items:center;"
-            "justify-content:center;min-height:90vh;margin:0;padding:20px}"
-            "h1{color:#ffaa00;font-size:28px}"
-            "p{color:#888;font-size:16px;max-width:500px;text-align:center}"
-            "a{color:#00aaff;text-decoration:none}"
-            "a:hover{color:#00ff88}"
-            ".nav{display:flex;gap:12px;margin-top:30px}"
-            "</style></head><body>"
-            "<h1>429 Too Many Requests</h1>"
-            "<p>Too many requests. Please wait a moment and try again.</p>"
-            "<div class='nav'>"
-            "<a href='/'>Home</a> | "
-            "<a href='/explorer'>Explorer</a>"
-            "</div></body></html>");
-    }
+    /* Admission: per-tier budgets, plus a route-bound puzzle on expensive
+     * routes while that tier is escalated. Static assets and the landing
+     * page draw from a budget the other tiers cannot touch, so a flood on
+     * search or order creation can never take the node's front page down. */
+    struct onion_pow_challenge challenge = {0};
+    enum onion_admit_result admit =
+        onion_ratelimit_admit(method, path, body, body_len, &challenge);
+
+    if (admit == ONION_ADMIT_RATE_LIMITED)
+        return serve_rate_limited(response, response_max);
+    if (admit == ONION_ADMIT_POW_REQUIRED)
+        return serve_puzzle_required(&challenge, response, response_max);
 
     /* JSON status endpoint */
     if (strcmp(path, "/status") == 0)

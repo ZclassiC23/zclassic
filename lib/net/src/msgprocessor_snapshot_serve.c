@@ -27,6 +27,7 @@
 
 #include "config/boot_snapshot_offer.h"
 #include "net/fast_sync.h"
+#include "net/puzzle.h"
 #include "net/peer_scoring.h"
 #include "net/peer_lifecycle.h"
 #include "net/snapshot_sync_contract.h"
@@ -85,7 +86,7 @@ static pthread_mutex_t g_block_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
  *     reused as-is.
  *
  * Design: a STATELESS puzzle, per the lane note. No per-peer server state,
- * no stored rotating seed table (unlike fast_sync_pow_gate, which this
+ * no stored rotating seed table (unlike struct puzzle_gate, which this
  * deliberately does NOT reuse because that primitive keeps a mutex-guarded
  * seed + single-use ring; this guard only needs the pure, already-tested
  * digest/verify primitives it exposes):
@@ -93,7 +94,7 @@ static pthread_mutex_t g_block_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
  *   challenge   = SHA3-256(secret[32] || peer_ip[16] || time_bucket[8 LE])
  *   solve       = nonce such that SHA3-256(challenge || 0^32 || 0 || nonce)
  *                 has D leading zero bits (reuses the hardened
- *                 fast_sync_verify_pow_ex/solve_pow_ex digest from
+ *                 puzzle_verify/puzzle_solve digest from
  *                 fast_sync.c, passing a zero peer_token/ts since peer
  *                 binding and freshness are already carried by `challenge`
  *                 itself via peer_ip + time_bucket).
@@ -183,14 +184,14 @@ static bool snap_pow_solve_at(const uint8_t peer_ip[16], int64_t at_time,
     uint8_t challenge[32];
     static const uint8_t zero32[32] = {0};
     snap_pow_challenge(peer_ip, bucket, challenge);
-    return fast_sync_solve_pow_ex(challenge, zero32, 0, difficulty_bits,
+    return puzzle_solve(challenge, zero32, 0, difficulty_bits,
                                   nonce_out);
 }
 
 /* Admit a zchunkreq/zblkreq at clock `now`. `nonce` is the peer-supplied
  * solution (NULL if the request carried none). Checks the current and
  * prior time bucket so a solve that started just before a rotation still
- * verifies (matches the +1 grace epoch fast_sync_pow_gate uses). */
+ * verifies (matches the +1 grace epoch struct puzzle_gate uses). */
 static bool snap_pow_admit_at(const uint8_t peer_ip[16], int64_t now,
                               const uint64_t *nonce)
 {
@@ -205,10 +206,10 @@ static bool snap_pow_admit_at(const uint8_t peer_ip[16], int64_t now,
     static const uint8_t zero32[32] = {0};
 
     snap_pow_challenge(peer_ip, bucket, challenge);
-    if (fast_sync_verify_pow_ex(challenge, zero32, 0, *nonce, bits))
+    if (puzzle_verify(challenge, zero32, 0, *nonce, bits))
         return true;
     snap_pow_challenge(peer_ip, bucket - 1, challenge);
-    return fast_sync_verify_pow_ex(challenge, zero32, 0, *nonce, bits);
+    return puzzle_verify(challenge, zero32, 0, *nonce, bits);
 }
 
 static bool snap_pow_admit(const uint8_t peer_ip[16], const uint64_t *nonce)
