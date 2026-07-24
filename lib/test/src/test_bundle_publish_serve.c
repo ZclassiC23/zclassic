@@ -19,6 +19,7 @@
 
 #include "test/test_helpers.h"
 #include "net/rom_seed.h"
+#include "config/bundle_exporter.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -174,10 +175,187 @@ static int test_bps_refuses_corrupt(void)
     return failures;
 }
 
+/* (c) GAP-1a — the at-tip gate: a starter bundle is only published near the
+ * network tip; a still-catching-up node refuses so it never mints a stale one. */
+static int test_bx_at_tip_gate(void)
+{
+    int failures = 0;
+    TEST("bundle-exporter: at-tip gate publishes near tip, refuses when behind") {
+        /* SYNC_AT_TIP always qualifies regardless of the lag number. */
+        ASSERT(bundle_exporter_at_tip_ok_for_test(true, 999, 4));
+        /* Within the gap → OK; exactly at the gap → OK; past it → refused. */
+        ASSERT(bundle_exporter_at_tip_ok_for_test(false, 0, 4));
+        ASSERT(bundle_exporter_at_tip_ok_for_test(false, 4, 4));
+        ASSERT(!bundle_exporter_at_tip_ok_for_test(false, 5, 4));
+        /* Unknown network tip (gap < 0) while unsynced → fail CLOSED. */
+        ASSERT(!bundle_exporter_at_tip_ok_for_test(false, -1, 4));
+    } _test_next:;
+    return failures;
+}
+
+/* (d) GAP-1b — the time+block cadence: block CEILING, daily time CEILING, and
+ * the min-secs FLOOR that forbids double-exporting in a burst. */
+static int test_bx_cadence(void)
+{
+    int failures = 0;
+    TEST("bundle-exporter: cadence honors block/time ceilings + min-secs floor") {
+        const int64_t every_blocks = 5000, every_secs = 86400, min_secs = 900;
+
+        /* Nothing new (h <= last) is never due, however long it has been. */
+        ASSERT(!bundle_exporter_export_due_for_test(1000, 1000, INT64_MAX,
+                                                    every_blocks, every_secs,
+                                                    min_secs));
+
+        /* Block ceiling fires once >= every_blocks accrued AND the floor is
+         * clear. */
+        ASSERT(bundle_exporter_export_due_for_test(6000, 1000, 1000,
+                                                   every_blocks, every_secs,
+                                                   min_secs));
+        /* ...but the FLOOR suppresses a burst: 5000 blocks in < min_secs. */
+        ASSERT(!bundle_exporter_export_due_for_test(6000, 1000, 100,
+                                                    every_blocks, every_secs,
+                                                    min_secs));
+
+        /* Time CEILING fires on a tiny block delta once every_secs elapsed and
+         * the tip advanced (h > last). */
+        ASSERT(bundle_exporter_export_due_for_test(1001, 1000, 90000,
+                                                   every_blocks, every_secs,
+                                                   min_secs));
+        /* Time elapsed but tip did NOT advance → not due. */
+        ASSERT(!bundle_exporter_export_due_for_test(1000, 1000, 90000,
+                                                    every_blocks, every_secs,
+                                                    min_secs));
+        /* Neither ceiling reached → not due. */
+        ASSERT(!bundle_exporter_export_due_for_test(2000, 1000, 1000,
+                                                    every_blocks, every_secs,
+                                                    min_secs));
+
+        /* First-ever export: last_h = -1, elapsed unbounded → the block ceiling
+         * fires and the floor passes. */
+        ASSERT(bundle_exporter_export_due_for_test(3056758, -1, INT64_MAX,
+                                                   every_blocks, every_secs,
+                                                   min_secs));
+    } _test_next:;
+    return failures;
+}
+
+/* (e) GAP-2 — rotation deregisters AND unlinks the rotated-out generations, so a
+ * node stops serving a bundle the moment it deletes it. */
+static int test_bx_rotation_deregister_unlink(void)
+{
+    int failures = 0;
+    TEST("bundle-exporter: rotation deregisters + unlinks the old generations") {
+        rom_seed_reset();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "bundle_rotate", "ok");
+        char bundles[320];
+        snprintf(bundles, sizeof(bundles), "%s/bundles", dir);
+        ASSERT(mkdir(bundles, 0700) == 0);
+
+        /* Four SQLite-shaped generations under bundles/, each with DISTINCT
+         * bytes (a unique marker past the magic) so every generation has its own
+         * chunk_root — otherwise identical content would collide on one root and
+         * find_by_root could not tell a deleted generation from a kept one. */
+        static const int heights[] = { 100, 200, 300, 400 };
+        size_t bsz = 8192;
+        uint8_t *b = malloc(bsz);
+        ASSERT(b != NULL);
+        bps_gen(b, bsz, true);
+        for (size_t i = 0; i < 4; i++) {
+            b[100] = (uint8_t)(i + 1); /* index >= 16 keeps the SQLite magic */
+            char rel[64];
+            snprintf(rel, sizeof(rel), "bundles/consensus-state-bundle-%d.sqlite",
+                     heights[i]);
+            ASSERT(bps_write(dir, rel, b, bsz));
+        }
+        free(b);
+
+        /* Scan registers all four under their "bundles/<name>" shape. */
+        ASSERT(rom_seed_scan_datadir(dir) == 4);
+        ASSERT(rom_seed_count() == 4);
+
+        /* Capture the chunk_root of each generation so we can prove the served
+         * lookup follows the deletion. */
+        struct rom_artifact arts[ROM_SEED_MAX_ARTIFACTS];
+        int na = rom_seed_list(arts, ROM_SEED_MAX_ARTIFACTS);
+        ASSERT(na == 4);
+        uint8_t root_100[32] = {0}, root_400[32] = {0};
+        bool have_100 = false, have_400 = false;
+        for (int i = 0; i < na; i++) {
+            if (strstr(arts[i].filename, "bundle-100.sqlite")) {
+                memcpy(root_100, arts[i].chunk_root, 32);
+                have_100 = true;
+            } else if (strstr(arts[i].filename, "bundle-400.sqlite")) {
+                memcpy(root_400, arts[i].chunk_root, 32);
+                have_400 = true;
+            }
+        }
+        ASSERT(have_100 && have_400);
+
+        /* Fixtures are SQLite-shaped but not full valid bundles, so bypass the
+         * newest-re-validation guard to reach the deletion path. */
+        bundle_exporter_set_rotate_skip_validate_for_test(true);
+        bundle_exporter_rotate_for_test(bundles, 2, dir);
+        bundle_exporter_set_rotate_skip_validate_for_test(false);
+
+        /* The two oldest (100, 200) are gone from disk; the two newest remain. */
+        char p[512];
+        struct stat st;
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-100.sqlite", bundles);
+        ASSERT(stat(p, &st) != 0);
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-200.sqlite", bundles);
+        ASSERT(stat(p, &st) != 0);
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-300.sqlite", bundles);
+        ASSERT(stat(p, &st) == 0);
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-400.sqlite", bundles);
+        ASSERT(stat(p, &st) == 0);
+
+        /* And they are DEREGISTERED: count dropped and the deleted root no
+         * longer serves, while a kept one still does. */
+        ASSERT(rom_seed_count() == 2);
+        ASSERT(rom_seed_serve_lookup(root_100, 0, NULL) == ROM_SERVE_NOT_ARTIFACT);
+        ASSERT(rom_seed_serve_lookup(root_400, 0, NULL) == ROM_SERVE_FREE_OK);
+
+        rom_seed_reset();
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* (f) The mint gate is INTACT: the exporter still refuses to publish from a
+ * borrowed / unstamped build. bx_qualified's exact-source-identity rung (part of
+ * the borrowed-state refusal) accepts ONLY a lowercase 64-hex SHA-256 source
+ * identity; the coins-proven / refold rungs are unchanged by GAP-1/2/4. */
+static int test_bx_mint_gate_source_rung_intact(void)
+{
+    int failures = 0;
+    TEST("bundle-exporter: mint gate still refuses a borrowed/unstamped source") {
+        ASSERT(!bundle_exporter_source_identity_is_exact_for_test(NULL));
+        ASSERT(!bundle_exporter_source_identity_is_exact_for_test(""));
+        /* Not 64 hex → borrowed/unstamped → refused. */
+        ASSERT(!bundle_exporter_source_identity_is_exact_for_test("not-a-sha"));
+        ASSERT(!bundle_exporter_source_identity_is_exact_for_test(
+            "0123456789abcdef")); /* too short */
+        ASSERT(!bundle_exporter_source_identity_is_exact_for_test(
+            "0123456789ABCDEF0123456789ABCDEF"
+            "0123456789ABCDEF0123456789ABCDEF")); /* uppercase not accepted */
+        /* Exactly 64 lowercase hex → the stamped canonical build → accepted. */
+        ASSERT(bundle_exporter_source_identity_is_exact_for_test(
+            "0123456789abcdef0123456789abcdef"
+            "0123456789abcdef0123456789abcdef"));
+    } _test_next:;
+    return failures;
+}
+
 int test_bundle_publish_serve(void)
 {
     int failures = 0;
     failures += test_bps_serves_both();
     failures += test_bps_refuses_corrupt();
+    failures += test_bx_at_tip_gate();
+    failures += test_bx_cadence();
+    failures += test_bx_rotation_deregister_unlink();
+    failures += test_bx_mint_gate_source_rung_intact();
     return failures;
 }

@@ -34,6 +34,7 @@
 #include "jobs/tip_finalize_stage.h"
 
 #include "services/sync_trust_policy.h"
+#include "services/node_health_service.h"
 
 #include "kernel/service_kernel.h"
 #include "util/supervisor.h"
@@ -81,6 +82,9 @@ static struct {
     char     last_refusal[256];
 
     int64_t  every_blocks;        /* ZCL_BUNDLE_EXPORT_EVERY_BLOCKS (>=1) */
+    int64_t  every_secs;          /* ZCL_BUNDLE_EXPORT_EVERY_SECS ceiling  */
+    int64_t  min_secs;            /* ZCL_BUNDLE_EXPORT_MIN_SECS floor      */
+    int64_t  max_tip_gap;         /* ZCL_BUNDLE_EXPORT_MAX_TIP_GAP at-tip  */
     int      keep;                /* ZCL_BUNDLE_EXPORT_KEEP (>=1) */
     int64_t  tick_secs;           /* ZCL_BUNDLE_EXPORT_TICK_SECS worker poll */
 
@@ -179,20 +183,38 @@ static bool bx_parse_bundle_height(const char *name, long *out)
     return true;
 }
 
-/* Highest bundle height present in `dir`, or -1 when none / dir unreadable. */
-static int32_t bx_scan_max_height(const char *dir)
+/* Highest bundle height present in `dir` and the wall-clock mtime (µs) of that
+ * newest generation. Returns -1 (and *out_mtime_us 0) when none / dir
+ * unreadable. Seeds the standing exporter's last-export height AND time so both
+ * the block-count and the time-cadence gates survive a process restart: the
+ * newest on-disk generation IS the last export, and its mtime is when it was
+ * produced. `out_mtime_us` may be NULL. */
+static int32_t bx_scan_newest(const char *dir, int64_t *out_mtime_us)
 {
+    if (out_mtime_us)
+        *out_mtime_us = 0;
     DIR *d = opendir(dir);
     if (!d)
         return -1;
     long max = -1;
+    char maxname[128] = {0};
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         long h;
-        if (bx_parse_bundle_height(e->d_name, &h) && h > max)
+        if (bx_parse_bundle_height(e->d_name, &h) && h > max) {
             max = h;
+            snprintf(maxname, sizeof maxname, "%s", e->d_name);
+        }
     }
     closedir(d);
+    if (max >= 0 && out_mtime_us && maxname[0]) {
+        char full[1300];
+        snprintf(full, sizeof full, "%s/%s", dir, maxname);
+        struct stat st;
+        if (stat(full, &st) == 0)
+            *out_mtime_us = (int64_t)st.st_mtim.tv_sec * 1000000 +
+                            (int64_t)st.st_mtim.tv_nsec / 1000;
+    }
     return (int32_t)max;
 }
 
@@ -291,9 +313,24 @@ static int bx_gen_cmp_desc(const void *a, const void *b)
     return 0;
 }
 
+#ifdef ZCL_TESTING
+/* Test-only: skip the newest-bundle re-validation guard in bx_rotate so a
+ * fixture built from lightweight SQLite-shaped files (which do not pass the full
+ * consensus_state_bundle_validate) can exercise the deregister+unlink rotation
+ * behavior. Never set outside tests (compiled out of production entirely). */
+static atomic_bool g_bx_rotate_skip_validate_for_test = false;
+void bundle_exporter_set_rotate_skip_validate_for_test(bool on)
+{
+    atomic_store(&g_bx_rotate_skip_validate_for_test, on);
+}
+#endif
+
 /* Keep the `keep` newest bundles; delete older ones — but only after the newest
- * bundle independently re-validates, and delete nothing if it does not. */
-static void bx_rotate(const char *dir, int keep)
+ * bundle independently re-validates, and delete nothing if it does not. Each
+ * rotated-out generation is DEREGISTERED from rom_seed BEFORE it is unlinked
+ * (GAP-2), so a node never keeps advertising / serving a file it just deleted.
+ * `datadir` is the rom_seed root; `dir` is <datadir>/bundles. */
+static void bx_rotate(const char *dir, int keep, const char *datadir)
 {
     DIR *d = opendir(dir);
     if (!d)
@@ -314,13 +351,19 @@ static void bx_rotate(const char *dir, int keep)
         return;
     qsort(gens, (size_t)n, sizeof gens[0], bx_gen_cmp_desc);
 
-    char newest_path[1300];
-    snprintf(newest_path, sizeof newest_path, "%s/%s", dir, gens[0].name);
-    if (!bx_validate_bundle_path(newest_path)) {
-        LOG_WARN("bundle_exporter",
-                 "rotation: newest bundle %s failed re-validation; "
-                 "deleting nothing", gens[0].name);
-        return;
+    bool skip_validate = false;
+#ifdef ZCL_TESTING
+    skip_validate = atomic_load(&g_bx_rotate_skip_validate_for_test);
+#endif
+    if (!skip_validate) {
+        char newest_path[1300];
+        snprintf(newest_path, sizeof newest_path, "%s/%s", dir, gens[0].name);
+        if (!bx_validate_bundle_path(newest_path)) {
+            LOG_WARN("bundle_exporter",
+                     "rotation: newest bundle %s failed re-validation; "
+                     "deleting nothing", gens[0].name);
+            return;
+        }
     }
 
     int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -330,12 +373,89 @@ static void bx_rotate(const char *dir, int keep)
         return;
     }
     for (int i = keep; i < n; i++) {
+        /* Stop serving it before removing it — deregister the "bundles/<name>"
+         * reseed shape (rom_seed_deregister matches on basename, so the bare
+         * name resolves the same entry). Idempotent + non-fatal. */
+        if (datadir && datadir[0]) {
+            char rel[ROM_SEED_NAME_MAX];
+            int rn = snprintf(rel, sizeof rel, "%s/%s",
+                              ROM_SEED_BUNDLES_SUBDIR, gens[i].name);
+            if (rn > 0 && (size_t)rn < sizeof rel)
+                (void)rom_seed_deregister(datadir, rel);
+        }
         if (unlinkat(dir_fd, gens[i].name, 0) != 0)
             LOG_WARN("bundle_exporter", "rotation: unlink %s failed: %s",
                      gens[i].name, strerror(errno));
     }
     close(dir_fd);
 }
+
+#ifdef ZCL_TESTING
+void bundle_exporter_rotate_for_test(const char *dir, int keep,
+                                     const char *datadir)
+{
+    bx_rotate(dir, keep, datadir);
+}
+#endif
+
+/* ── GAP-1: at-tip + time-cadence gates (pure, unit-tested) ─────────── */
+
+/* GAP-1a — is the node close enough to the network tip to publish a STARTER
+ * bundle? A fresh consumer must land on a near-tip generation; a
+ * still-catching-up node would mint a stale starter. True iff SYNC_AT_TIP, or
+ * the Prime-Directive lag (log_head_gap = network_tip − log_head) is within
+ * `max_tip_gap`. An unknown gap (health could not resolve the network tip:
+ * log_head_gap < 0) while not synced fails CLOSED — never publish on an
+ * unprovable tip. Pure. */
+static bool bx_at_tip_ok(bool synced, int log_head_gap, int64_t max_tip_gap)
+{
+    if (synced)
+        return true;
+    if (log_head_gap < 0)
+        return false;
+    return (int64_t)log_head_gap <= max_tip_gap;
+}
+
+/* GAP-1b — is an export DUE, given the durable tip height `h`, the last exported
+ * height `last_h`, seconds since the last export `elapsed_secs`, and the three
+ * cadence knobs? Two triggers, both fenced by a minimum-interval FLOOR so a
+ * burst of blocks can never double-export:
+ *   - every_blocks CEILING by height: (h - last_h) >= every_blocks — the primary
+ *     "enough new chain accrued" trigger; OR
+ *   - every_secs CEILING by time:     elapsed >= every_secs (with h > last_h) —
+ *     publish at least this often so a quiet-but-advancing chain still refreshes;
+ *   - min_secs FLOOR:                 elapsed >= min_secs — never re-export
+ *     within the floor window, even when blocks flooded in.
+ * `h <= last_h` is never due (nothing new). The at-tip gate is applied
+ * separately by the caller (bx_at_tip_ok). Pure. */
+static bool bx_export_due(int64_t h, int64_t last_h, int64_t elapsed_secs,
+                          int64_t every_blocks, int64_t every_secs,
+                          int64_t min_secs)
+{
+    if (h <= last_h)
+        return false;
+    bool blocks_due = (h - last_h) >= every_blocks;
+    bool time_due = elapsed_secs >= every_secs; /* h > last_h already holds */
+    if (!(blocks_due || time_due))
+        return false;
+    return elapsed_secs >= min_secs;
+}
+
+#ifdef ZCL_TESTING
+bool bundle_exporter_at_tip_ok_for_test(bool synced, int log_head_gap,
+                                        int64_t max_tip_gap)
+{
+    return bx_at_tip_ok(synced, log_head_gap, max_tip_gap);
+}
+bool bundle_exporter_export_due_for_test(int64_t h, int64_t last_h,
+                                         int64_t elapsed_secs,
+                                         int64_t every_blocks,
+                                         int64_t every_secs, int64_t min_secs)
+{
+    return bx_export_due(h, last_h, elapsed_secs, every_blocks, every_secs,
+                         min_secs);
+}
+#endif
 
 /* ── One export attempt ─────────────────────────────────────────── */
 
@@ -344,6 +464,9 @@ static void bx_try_export_once(void)
     pthread_mutex_lock(&g_bx.lock);
     sqlite3 *pdb = g_bx.pdb;
     int64_t every = g_bx.every_blocks;
+    int64_t every_secs = g_bx.every_secs;
+    int64_t min_secs = g_bx.min_secs;
+    int64_t max_tip_gap = g_bx.max_tip_gap;
     int keep = g_bx.keep;
     char bundles_dir[1100];
     char datadir[1024];
@@ -372,9 +495,41 @@ static void bx_try_export_once(void)
         return;
     }
 
+    /* GAP-1b — time + block cadence. elapsed is measured from the last export's
+     * wall-clock time (seeded from the newest on-disk generation's mtime at
+     * start, so both cadences survive a restart). A zero/absent last-time means
+     * "no prior generation" → treat elapsed as unbounded so the first export is
+     * governed by the block ceiling / the floor passes. */
     int32_t last = atomic_load(&g_bx_last_export_height);
-    if ((int64_t)h - (int64_t)last < every)
-        return; /* not due yet */
+    int64_t last_time_us = atomic_load(&g_bx_last_export_time_us);
+    int64_t now_us = GetTimeMicros();
+    int64_t elapsed_secs;
+    if (last_time_us <= 0)
+        elapsed_secs = INT64_MAX;
+    else if (now_us <= last_time_us)
+        elapsed_secs = 0; /* clock skew → fail the floor, fail-safe */
+    else
+        elapsed_secs = (now_us - last_time_us) / 1000000;
+
+    if (!bx_export_due((int64_t)h, (int64_t)last, elapsed_secs, every,
+                       every_secs, min_secs))
+        return; /* not due yet (block ceiling / time ceiling / min-secs floor) */
+
+    /* GAP-1a — at-tip gate. A STARTER bundle must be near the network tip so a
+     * fresh consumer lands there; a still-catching-up node would mint a stale
+     * generation. node_health_collect(NULL,NULL) self-resolves the runtime
+     * singletons (same call the soak/healthcheck background paths use); it is
+     * invoked here holding NO progress_store_tx_lock, so its internal locks
+     * never nest with this module's. Refusal is observable via last_refusal /
+     * dumpstate. */
+    struct node_health_snapshot snap;
+    node_health_collect(&snap, NULL, NULL);
+    if (!bx_at_tip_ok(snap.synced, snap.log_head_gap, max_tip_gap)) {
+        bx_note_refusal("not at tip: synced=%d log_head_gap=%d > max_tip_gap=%lld",
+                        snap.synced ? 1 : 0, snap.log_head_gap,
+                        (long long)max_tip_gap);
+        return;
+    }
 
     char name[128];
     snprintf(name, sizeof name, BX_BUNDLE_PREFIX "%d" BX_BUNDLE_SUFFIX, h);
@@ -455,7 +610,7 @@ static void bx_try_export_once(void)
                          "reseed: could not register %s (rc=%d) — the next "
                          "rom_seed scan will pick it up", rel, (int)rrc);
         }
-        bx_rotate(bundles_dir, keep);
+        bx_rotate(bundles_dir, keep, datadir);
     } else {
         bx_note_refusal("%s", res.reason[0] ? res.reason : "export refused");
         atomic_fetch_add(&g_bx_exports_failed, 1);
@@ -523,6 +678,19 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
     g_bx.every_blocks = bx_env_i64("ZCL_BUNDLE_EXPORT_EVERY_BLOCKS", 5000);
     if (g_bx.every_blocks < 1)
         g_bx.every_blocks = 1;
+    /* Time cadence (GAP-1b): every_secs is the daily CEILING (refresh even if
+     * fewer than every_blocks arrived, provided the tip advanced), min_secs is
+     * the FLOOR that forbids double-exporting in a burst. */
+    g_bx.every_secs = bx_env_i64("ZCL_BUNDLE_EXPORT_EVERY_SECS", 86400);
+    if (g_bx.every_secs < 1)
+        g_bx.every_secs = 1;
+    g_bx.min_secs = bx_env_i64("ZCL_BUNDLE_EXPORT_MIN_SECS", 900);
+    if (g_bx.min_secs < 0)
+        g_bx.min_secs = 0;
+    /* At-tip gate (GAP-1a): publish only within max_tip_gap of the network tip. */
+    g_bx.max_tip_gap = bx_env_i64("ZCL_BUNDLE_EXPORT_MAX_TIP_GAP", 4);
+    if (g_bx.max_tip_gap < 0)
+        g_bx.max_tip_gap = 0;
     g_bx.keep = (int)bx_env_i64("ZCL_BUNDLE_EXPORT_KEEP", 3);
     if (g_bx.keep < 1)
         g_bx.keep = 1;
@@ -581,7 +749,10 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
              degradation);
     pthread_mutex_unlock(&g_bx.lock);
 
-    atomic_store(&g_bx_last_export_height, bx_scan_max_height(bundles_dir));
+    int64_t newest_mtime_us = 0;
+    atomic_store(&g_bx_last_export_height,
+                 bx_scan_newest(bundles_dir, &newest_mtime_us));
+    atomic_store(&g_bx_last_export_time_us, newest_mtime_us);
 
     /* Register the supervised (best-effort, no-stall) contract. */
     if (supervisor_start()) {
@@ -684,12 +855,15 @@ bool bundle_exporter_dump_state_json(struct json_value *out, const char *key)
     char last_refusal[256];
     char bundles_dir[1100];
     bool session_open, qualified;
-    int64_t every_blocks;
+    int64_t every_blocks, every_secs, min_secs, max_tip_gap;
     int keep;
     pthread_mutex_lock(&g_bx.lock);
     session_open = g_bx.session_open;
     qualified = g_bx.qualified;
     every_blocks = g_bx.every_blocks;
+    every_secs = g_bx.every_secs;
+    min_secs = g_bx.min_secs;
+    max_tip_gap = g_bx.max_tip_gap;
     keep = g_bx.keep;
     snprintf(degradation_reason, sizeof degradation_reason, "%s",
              g_bx.degradation_reason);
@@ -710,6 +884,9 @@ bool bundle_exporter_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "exports_ok", atomic_load(&g_bx_exports_ok));
     json_push_kv_int(out, "exports_failed", atomic_load(&g_bx_exports_failed));
     json_push_kv_int(out, "every_blocks", every_blocks);
+    json_push_kv_int(out, "every_secs", every_secs);
+    json_push_kv_int(out, "min_secs", min_secs);
+    json_push_kv_int(out, "max_tip_gap", max_tip_gap);
     json_push_kv_int(out, "keep", keep);
     json_push_kv_str(out, "bundles_dir", bundles_dir);
 

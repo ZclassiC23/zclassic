@@ -29,6 +29,7 @@
 #define ZCL_CONFIG_BUNDLE_EXPORTER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <sqlite3.h>
 
@@ -64,6 +65,27 @@ bool bundle_exporter_dump_state_json(struct json_value *out, const char *key);
 /* Pure qualification-rung probe: producer authority is a lowercase 64-hex
  * SHA-256 source identity, never a Git object ID or display trace. */
 bool bundle_exporter_source_identity_is_exact_for_test(const char *source_id);
+
+/* GAP-1a at-tip gate (pure): true iff the node is close enough to the network
+ * tip to publish a starter bundle (synced, or log_head_gap within max_tip_gap;
+ * an unknown gap while unsynced fails closed). */
+bool bundle_exporter_at_tip_ok_for_test(bool synced, int log_head_gap,
+                                        int64_t max_tip_gap);
+
+/* GAP-1b cadence gate (pure): true iff an export is DUE (block ceiling OR time
+ * ceiling, both fenced by the min-secs floor; nothing new is never due). */
+bool bundle_exporter_export_due_for_test(int64_t h, int64_t last_h,
+                                         int64_t elapsed_secs,
+                                         int64_t every_blocks,
+                                         int64_t every_secs, int64_t min_secs);
+
+/* GAP-2 rotation seam: run the exporter's generation rotation (keep the `keep`
+ * newest bundle heights under `dir`, deregister+unlink the rest) against a
+ * fixture. Pair with the skip-validate toggle so lightweight SQLite-shaped
+ * fixtures (not full valid bundles) can exercise the deregister+unlink path. */
+void bundle_exporter_rotate_for_test(const char *dir, int keep,
+                                     const char *datadir);
+void bundle_exporter_set_rotate_skip_validate_for_test(bool on);
 #endif
 
 #endif /* ZCL_CONFIG_BUNDLE_EXPORTER_H */
