@@ -174,5 +174,69 @@ int test_ratify_mint_anchor(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* Case (d): the GENERALIZED seam ratifier stamps BOTH sovereign markers on an
+     * exact (height, coins_sha3, count) match — the flip the promotion service
+     * calls after its isolated re-derivation matches the recorded seam — WITHOUT
+     * re-arming the mint resume marker (that stays checkpoint-wrapper-specific). */
+    {
+        char dir[256];
+        struct sha3_utxo_checkpoint cp;
+        sqlite3 *db = rma_open_fixture("ratify_seam", dir, sizeof(dir), &cp,
+                                       H, /*applied=*/H + 1);
+        RMA_CHECK("seam: fixture built", db != NULL);
+        if (db) {
+            RMA_CHECK("seam: not yet proven authority",
+                      !coins_kv_is_proven_authority(db, NULL));
+            int32_t before_through = -1;
+            bool before_legacy = false;
+            bool armed_before = mint_anchor_progress_can_resume(
+                db, &cp, &before_through, &before_legacy);
+            struct boot_ratify_result r;
+            RMA_CHECK("seam: RATIFIED via generalized primitive",
+                      boot_ratify_seam_check_and_stamp(
+                          db, cp.height, cp.sha3_hash, cp.utxo_count, &r));
+            RMA_CHECK("seam: result ratified + height", r.ratified &&
+                      r.height == H && r.count == cp.utxo_count);
+            RMA_CHECK("seam: migration+authority stamped",
+                      coins_kv_is_proven_authority(db, NULL));
+            RMA_CHECK("seam: self-folded (sovereign) marker stamped",
+                      coins_kv_contains_refold_marker(db));
+            int32_t after_through = -1;
+            bool after_legacy = false;
+            bool armed_after = mint_anchor_progress_can_resume(
+                db, &cp, &after_through, &after_legacy);
+            RMA_CHECK("seam: mint resume NOT re-armed by the generalized primitive",
+                      armed_after == armed_before);
+        }
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* Case (e): the generalized seam ratifier refuses a mismatched root and
+     * stamps NOTHING (the promotion never flips on a seam it cannot reproduce). */
+    {
+        char dir[256];
+        struct sha3_utxo_checkpoint cp;
+        sqlite3 *db = rma_open_fixture("ratify_seam_bad", dir, sizeof(dir), &cp,
+                                       H, /*applied=*/H + 1);
+        RMA_CHECK("seam-bad: fixture built", db != NULL);
+        if (db) {
+            uint8_t bad_root[32];
+            memcpy(bad_root, cp.sha3_hash, 32);
+            bad_root[0] ^= 0xFF;
+            struct boot_ratify_result r;
+            RMA_CHECK("seam-bad: REFUSED",
+                      !boot_ratify_seam_check_and_stamp(
+                          db, cp.height, bad_root, cp.utxo_count, &r));
+            RMA_CHECK("seam-bad: result not ratified", !r.ratified);
+            RMA_CHECK("seam-bad: nothing stamped (no authority)",
+                      !coins_kv_is_proven_authority(db, NULL));
+            RMA_CHECK("seam-bad: nothing stamped (no self-folded)",
+                      !coins_kv_contains_refold_marker(db));
+        }
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     return failures;
 }

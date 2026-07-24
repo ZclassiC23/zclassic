@@ -41,16 +41,23 @@ static void ratify_hex32(char out[65], const uint8_t in[32])
         snprintf(out + 2 * i, 3, "%02x", in[i]);
 }
 
-bool boot_ratify_mint_anchor_check_and_stamp(
-    struct sqlite3 *pdb, const struct sha3_utxo_checkpoint *cp,
-    struct boot_ratify_result *out)
+/* Shared ratify core. Re-derives pdb's OWN durable coins_kv commitment/count/
+ * applied and, only on exact agreement with (height, coins_sha3, count) AND
+ * applied-through == height, stamps migration-complete + self_folded — and,
+ * when `mint_rearm_cp` is non-NULL, re-arms the mint resume marker — atomically
+ * under one progress-store critical section. Stamps NOTHING on disagreement. */
+static bool ratify_seam_core(struct sqlite3 *pdb, int32_t height,
+                             const uint8_t coins_sha3[32], uint64_t count_want,
+                             const struct sha3_utxo_checkpoint *mint_rearm_cp,
+                             struct boot_ratify_result *out)
 {
     if (!out)
         LOG_FAIL(RATIFY_SUBSYS, "check_and_stamp: NULL result");
     memset(out, 0, sizeof(*out));
-    if (!pdb || !cp) {
+    if (!pdb || !coins_sha3 || height < 0) {
         snprintf(out->reason, sizeof(out->reason),
-                 "null args pdb=%p cp=%p", (void *)pdb, (const void *)cp);
+                 "null/invalid args pdb=%p coins_sha3=%p height=%d", (void *)pdb,
+                 (const void *)coins_sha3, height);
         LOG_FAIL(RATIFY_SUBSYS, "%s", out->reason);
     }
 
@@ -86,45 +93,69 @@ bool boot_ratify_mint_anchor_check_and_stamp(
 
     memcpy(out->sha3, got_sha3, 32);
     out->count = (uint64_t)count;
-    out->height = cp->height;
+    out->height = height;
 
-    bool sha3_ok = memcmp(got_sha3, cp->sha3_hash, 32) == 0;
-    bool count_ok = (uint64_t)count == cp->utxo_count;
-    bool applied_ok = applied_found && applied == cp->height + 1;
+    bool sha3_ok = memcmp(got_sha3, coins_sha3, 32) == 0;
+    bool count_ok = (uint64_t)count == count_want;
+    bool applied_ok = applied_found && applied == height + 1;
     if (!sha3_ok || !count_ok || !applied_ok) {
         char got_hex[65], want_hex[65];
         ratify_hex32(got_hex, got_sha3);
-        ratify_hex32(want_hex, cp->sha3_hash);
+        ratify_hex32(want_hex, coins_sha3);
         snprintf(out->reason, sizeof(out->reason),
-                 "datadir does not reproduce the compiled checkpoint "
+                 "datadir does not reproduce the seam "
                  "(sha3 got=%s want=%s; count got=%llu want=%llu; applied got=%s%d "
                  "want=%d)",
                  got_hex, want_hex, (unsigned long long)count,
-                 (unsigned long long)cp->utxo_count,
-                 applied_found ? "" : "absent:", applied, cp->height + 1);
+                 (unsigned long long)count_want,
+                 applied_found ? "" : "absent:", applied, height + 1);
         return false;  /* legitimate negative result — stamp NOTHING */
     }
 
-    /* Full agreement — stamp the earned authority markers + re-arm the mint
-     * resume marker as one progress-store critical section. mint_anchor_progress_
-     * mark writes the ZAM1 marker mint_anchor_progress_can_resume's found&&matches
-     * branch checks, so a later -mint-anchor of the original fold binary resumes
-     * at the anchor (applied-through == cp->height) instead of genesis-resetting. */
+    /* Full agreement — stamp the earned authority markers (and, for the
+     * checkpoint wrapper, re-arm the mint resume marker so a later -mint-anchor
+     * of the original fold binary resumes at the anchor instead of genesis-
+     * resetting) as one progress-store critical section. */
     progress_store_tx_lock();
     bool stamped = coins_kv_mark_migration_complete(pdb) &&
                    coins_kv_mark_self_folded(pdb) &&
-                   mint_anchor_progress_mark(pdb, cp);
+                   (mint_rearm_cp == NULL ||
+                    mint_anchor_progress_mark(pdb, mint_rearm_cp));
     progress_store_tx_unlock();
     if (!stamped) {
         snprintf(out->reason, sizeof(out->reason),
-                 "checkpoint agreed but stamping the sovereign markers failed");
+                 "seam agreed but stamping the sovereign markers failed");
         LOG_FAIL(RATIFY_SUBSYS, "%s", out->reason);
     }
 
     out->ratified = true;
     snprintf(out->reason, sizeof(out->reason),
-             "coins_kv reproduces the compiled checkpoint at h=%d", cp->height);
+             "coins_kv reproduces the seam at h=%d", height);
     return true;
+}
+
+bool boot_ratify_seam_check_and_stamp(struct sqlite3 *pdb, int32_t height,
+                                      const uint8_t coins_sha3[32],
+                                      uint64_t count,
+                                      struct boot_ratify_result *out)
+{
+    return ratify_seam_core(pdb, height, coins_sha3, count, NULL, out);
+}
+
+bool boot_ratify_mint_anchor_check_and_stamp(
+    struct sqlite3 *pdb, const struct sha3_utxo_checkpoint *cp,
+    struct boot_ratify_result *out)
+{
+    if (!out)
+        LOG_FAIL(RATIFY_SUBSYS, "check_and_stamp: NULL result");
+    if (!cp) {
+        memset(out, 0, sizeof(*out));
+        snprintf(out->reason, sizeof(out->reason), "null args pdb=%p cp=%p",
+                 (void *)pdb, (const void *)cp);
+        LOG_FAIL(RATIFY_SUBSYS, "%s", out->reason);
+    }
+    return ratify_seam_core(pdb, cp->height, cp->sha3_hash, cp->utxo_count, cp,
+                            out);
 }
 
 void boot_ratify_mint_anchor(const char *datadir)

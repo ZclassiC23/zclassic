@@ -332,6 +332,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bundle_publish_serve) \
     X(consensus_state_snapshot_export) \
     X(ratify_mint_anchor) \
+    X(sovereign_promotion) \
     X(consensus_state_producer_receipt) \
     X(authority_receipt) \
     X(consensus_state_chain_binding) \
