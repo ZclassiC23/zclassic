@@ -217,8 +217,10 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
     memcpy(p.ip, ip, 16);
     p.port = port;
     sqlite3_stmt *s = ndb->stmt_peer_delete;
-    if (!ar_run_before_destroy(cbs, &p))
+    if (!ar_run_before_destroy(cbs, &p)) {
+        LOG_WARN("net", "peer delete: before_destroy hook rejected port=%u", port);
         return false;
+    }
     AR_RESET(s);
     AR_BIND_BLOB(s, 1, ip, 16);
     AR_BIND_INT(s, 2, port);

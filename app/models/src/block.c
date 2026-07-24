@@ -302,8 +302,12 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
 
     bool has_conflict = false;
     db_block_reset_cached_readers(ndb);
-    if (!db_block_has_canonical_conflict(ndb, b, &has_conflict))
+    if (!db_block_has_canonical_conflict(ndb, b, &has_conflict)) {
+        LOG_WARN("db_block_save_canonical", "db_block_save_canonical: "
+                 "conflict check failed height=%d last_op=%s last_rc=%d",
+                 b->height, ndb->last_op, ndb->last_sqlite_rc);
         return false;
+    }
     if (!has_conflict)
         return db_block_save(ndb, b);
 

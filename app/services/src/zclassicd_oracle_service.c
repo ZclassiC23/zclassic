@@ -160,7 +160,7 @@ static bool parse_rpc_hex_result(const char *raw, char *out_hex,
                                  char *err, size_t err_sz)
 {
     if (!legacy_rpc_parse_result_string(raw, out_hex, 65, err, err_sz))
-        return false;
+        return false;  // raw-return-ok:err-out-param-carries-reason-to-caller
     if (strlen(out_hex) != 64) {
         snprintf(err, err_sz, "result not 64 hex chars (got %zu)",
                  strlen(out_hex));

@@ -103,7 +103,7 @@ static bool snapsync_read_tip_chainwork_internal(struct node_db *ndb,
     if (!ndb || !ndb->open || !hash || !chain_work)
         return false;
     if (!snapsync_bind_store_internal(&sctx, ndb, &store).ok)
-        return false;
+        return false;  // raw-return-ok:bind-only-fails-on-null-ctx/port-both-local-addresses
     return store.tip_chainwork(store.self, hash, chain_work);
 }
 

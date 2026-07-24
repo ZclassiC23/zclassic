@@ -282,7 +282,7 @@ static bool lms_parse_hash_result(const char *raw, char out_hex[65],
                                   char *err, size_t err_sz)
 {
     if (!legacy_rpc_parse_result_string(raw, out_hex, 65, err, err_sz))
-        return false;
+        return false;  // raw-return-ok:err-out-param-carries-reason-to-caller
     if (strlen(out_hex) != 64) {
         snprintf(err, err_sz, "hash result is not 64 hex chars");
         return false;
@@ -314,7 +314,7 @@ static bool lms_fetch_chain_info(int *out_blocks, int *out_headers,
         "{\"jsonrpc\":\"1.0\",\"id\":\"zcl-mirror\","
         "\"method\":\"getblockchaininfo\",\"params\":[]}";
     if (!lms_rpc_call(body, &resp, err, err_sz))
-        return false;
+        return false;  // raw-return-ok:err-out-param-carries-reason-to-caller
     int blocks = -1, headers = -1;
     bool ok_b = lms_parse_int_result(resp, "blocks", &blocks, err, err_sz);
     if (!ok_b) {
@@ -342,7 +342,7 @@ static bool lms_fetch_hash(int height, char out_hex[65],
         "\"method\":\"getblockhash\",\"params\":[%d]}", height);
     char *resp = NULL;
     if (!lms_rpc_call(body, &resp, err, err_sz))
-        return false;
+        return false;  // raw-return-ok:err-out-param-carries-reason-to-caller
     bool ok = lms_parse_hash_result(resp, out_hex, err, err_sz);
     free(resp);
     return ok;

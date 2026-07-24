@@ -168,7 +168,7 @@ bool node_db_state_get_int(struct node_db *ndb,
 {
     size_t len = 0;
     if (!node_db_state_get(ndb, key, val, sizeof(*val), &len))
-        return false;
+        return false;  // raw-return-ok:missing-key-is-a-valid-default (caller treats absence as unset)
     return len == sizeof(*val);
 }
 
@@ -203,7 +203,7 @@ int node_db_schema_version(struct node_db *ndb)
     size_t len = 0;
     if (!node_db_state_get(ndb, "schema_version",
                            &ver, sizeof(ver), &len))
-        return 0;
+        return 0;  // raw-return-ok:missing-key-means-unmigrated-db (fresh datadir)
     return ver;
 }
 

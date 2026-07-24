@@ -173,7 +173,7 @@ bool wv_first_sapling_address(sqlite3 *db, char *out, size_t outmax)
         return false;
     struct wallet_view_port port;
     if (!wallet_view_sqlite_bind(db, &port))
-        return false;
+        return false;  // raw-return-ok:bind-only-fails-on-null-db-already-checked-above
     return port.first_sapling_address(port.self, out, outmax);
 }
 
@@ -184,7 +184,7 @@ bool wv_lookup_tx_header(sqlite3 *db, const char *upper_txid,
         return false;
     struct wallet_view_port port;
     if (!wallet_view_sqlite_bind(db, &port))
-        return false;
+        return false;  // raw-return-ok:bind-only-fails-on-null-db-already-checked-above
     return port.lookup_tx_header(port.self, upper_txid, out);
 }
 

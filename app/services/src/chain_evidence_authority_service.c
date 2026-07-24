@@ -147,8 +147,10 @@ static bool persist_state(struct chain_evidence_controller *a,
     const char *name = chain_evidence_controller_state_name(state);
     if (!a || !a->ndb)
         return false;
-    if (!node_db_state_set(a->ndb, "cec.sync_state", name, strlen(name) + 1))
+    if (!node_db_state_set(a->ndb, "cec.sync_state", name, strlen(name) + 1)) {
+        LOG_WARN("cec", "persist_state: node_db_state_set failed key=cec.sync_state value=%s", name);
         return false;
+    }
     a->state = state;
     return true;
 }

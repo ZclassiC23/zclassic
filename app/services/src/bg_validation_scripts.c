@@ -75,7 +75,7 @@ bool bg_validation_verify_scripts_parallel(struct script_check_item *items,
     if (num_workers <= 1 || count <= 4) {
         for (size_t i = 0; i < count; i++) {
             if (!verify_script_item(&items[i]))
-                return false;
+                return false;  // raw-return-ok:hot-per-input-verifier-caller-logs-height/tx
         }
         return true;
     }
@@ -96,7 +96,7 @@ bool bg_validation_verify_scripts_parallel(struct script_check_item *items,
         /* Fallback to serial */
         for (size_t i = 0; i < count; i++) {
             if (!verify_script_item(&items[i]))
-                return false;
+                return false;  // raw-return-ok:hot-per-input-verifier-caller-logs-height/tx
         }
         return true;
     }

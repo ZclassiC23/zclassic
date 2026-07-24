@@ -601,7 +601,7 @@ bool bg_validation_start(struct bg_validation_service *svc)
 
     atomic_store(&svc->stop_requested, false);
     if (!bg_validation_register_supervisor(svc))
-        return false;
+        return false;  // raw-return-ok:callee-already-LOG_FAILs-the-root-cause
     if (thread_registry_spawn("zcl_bg_valid", bg_validation_thread, svc,
                                   &svc->thread) != 0) {
         bg_validation_supervisor_done();

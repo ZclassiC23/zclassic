@@ -738,7 +738,7 @@ bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
 {
     if (!node) return false;
     if (!syncsvc_is_initial_block_download(node, our_height))
-        return false;
+        return false;  // raw-return-ok:only-relevant-during-ibd-not-an-error
     if (node->state < PEER_SYNCING_HEADERS)
         return false;
 
@@ -781,7 +781,7 @@ bool syncsvc_should_disconnect_body_stalled_peer(const struct p2p_node *node,
      * delivers no body for long stretches (block cadence ~150s), so the
      * discipline is IBD-gated exactly like the stale-header rule. */
     if (!syncsvc_is_initial_block_download(node, our_height))
-        return false;
+        return false;  // raw-return-ok:only-relevant-during-ibd-not-an-error
     if (node->state < PEER_HANDSHAKE_COMPLETE)
         return false;
 
