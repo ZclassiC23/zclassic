@@ -39,7 +39,10 @@ build at that moment (the hold was reset anyway — the restart costs nothing);
 if it never fires again, deploy only after HOLD_PROVEN. Do not restart the
 canonical node for any other reason.
 
-Known-junk blocker, root-caused 2026-07-24 (fix in flight on a worktree lane):
+Known-junk blocker, root-caused 2026-07-24 (fix MERGED on main, `82f11c697`,
+lint 97/97 + test-parallel 0/727 — ships with the next binary deploy per the
+deploy policy above; the live node still shows the old PERMANENT class until
+then):
 `sapling_tree_rebuild.fail_closed` (`intermediate_sapling_root_mismatch
 h=3155873 commitments=1`) is NOT corruption. On this cure-seeded datadir the
 legacy tree copy (node_state `sapling_tree` + `sapling_tree_ckpt.dat`) was
