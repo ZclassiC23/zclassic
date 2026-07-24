@@ -62,4 +62,26 @@ bool script_validate_log_insert(struct sqlite3 *db, int height,
  * per-batch caches on the single drain thread). */
 void script_validate_log_store_batch_reset(void);
 
+/* NULL-block_hash re-arm helpers (twin of proof_validate_log_store's). The
+ * pre-stamping artifact (rows authored before script_validate_log_insert
+ * stamped block_hash) leaves ok=1 rows with block_hash=NULL that utxo_apply's
+ * label_splice guard correctly refuses. These let a contained re-arm rewind
+ * script_validate's cursor and delete the NULL suffix so the current binary
+ * re-derives + re-stamps block_hash on the next fold. */
+
+/* Lowest ok=1/NULL-block_hash height in [floor_height, ceil_height), plus the
+ * count of such rows. Returns 1 if any found (out_height/out_count set), 0 if
+ * none, -1 on a query error (logged). An empty/inverted range is a clean 0. */
+int script_validate_log_lowest_null_block_hash(struct sqlite3 *db,
+                                               int floor_height,
+                                               int ceil_height,
+                                               int *out_height,
+                                               int64_t *out_count);
+
+/* Delete every NULL-block_hash row at or above `from_height`. out_deleted (may
+ * be NULL) reports the row count removed. Returns false on a store error. */
+bool script_validate_log_delete_null_block_hash_suffix(struct sqlite3 *db,
+                                                       int from_height,
+                                                       int64_t *out_deleted);
+
 #endif /* ZCL_JOBS_SCRIPT_VALIDATE_LOG_STORE_H */

@@ -530,6 +530,20 @@ static bool reducer_frontier_reconcile_light_impl(
     if (!read_frontier_snapshot(db, &local))
         return false;
 
+    /* Label-splice re-bind runs BEFORE every coin arm: a NULL-block_hash
+     * proof/script suffix at the utxo_apply frontier pins H* on
+     * utxo_apply.label_splice — a coins-untouching repair that must never be
+     * masked by an unrelated coin refusal. It deliberately FALLS THROUGH (does
+     * not early-return) so a fired re-bind and a later coin refusal coexist in
+     * one result for the remedy to disambiguate. H* is unchanged (the deleted
+     * rows sit above the frontier). See stage_repair_reducer_frontier_rebind.c. */
+    bool label_splice_mutated = false;
+    if (!stage_reducer_frontier_try_label_splice_rebind(db, apply, &local,
+                                                        &label_splice_mutated))
+        return false;
+    if (label_splice_mutated)
+        local.repaired = true;
+
     /* Non-canonical residue purge runs FIRST: rows describing the wrong
      * block at their height (relabel/reorg residue) become ordinary
      * rowless holes, so every repair below sees a consistent world. The

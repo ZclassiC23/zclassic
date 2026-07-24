@@ -264,6 +264,23 @@ struct stage_reducer_frontier_reconcile_result {
     int reorg_residue_tipfin_found;
     int reorg_residue_tipfin_replaced;
     int lowest_reorg_residue_tipfin;
+    /* Label-splice re-bind (stage_repair_reducer_frontier_rebind.c): a
+     * pre-stamping NULL-block_hash suffix in proof_validate_log /
+     * script_validate_log at/above the utxo_apply frontier makes utxo_apply's
+     * label_splice guard refuse ("verdict is hash-bound to a different block").
+     * The re-bind rewinds ONLY the proof/script VALIDATION cursors to the lowest
+     * NULL height (floored at MIN(utxo_apply, tip_finalize)) and deletes the NULL
+     * suffix so the forward fold re-derives + re-stamps block_hash. Never touches
+     * coins, nullifiers, or tip_finalize. lowest = the lowest NULL height a
+     * re-bind would/did target (-1 = none pending, set in dry-run AND apply);
+     * rebound = count of validation cursors actually rewound this apply pass
+     * (0/1/2, apply only); the *_rewound_to / deleted_rows fields are apply-only
+     * detail. */
+    int label_splice_rebind_lowest;
+    int label_splice_rebound;
+    int label_splice_proof_rewound_to;
+    int label_splice_script_rewound_to;
+    int64_t label_splice_deleted_rows;
 };
 
 /* Result classifiers used by the Condition and memo cache. Keep this seam
@@ -312,12 +329,27 @@ static inline bool stage_reducer_frontier_result_has_refill_hole_evidence(
             rr->lowest_proof_validate_refill_hole >= 0);
 }
 
+/* A label-splice re-bind is pending (dry-run) or fired (apply): a
+ * NULL-block_hash proof/script suffix at/above the utxo_apply frontier. This is
+ * durable below-frontier internal damage, peer-independent, and its own
+ * actionable class (never a coin-tear or refill hole). Detect keys on this so
+ * the Condition activates for the pure label_splice wedge even when no coin arm
+ * fires. */
+static inline bool stage_reducer_frontier_result_has_label_splice_rebind_evidence(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rr &&
+           (rr->label_splice_rebind_lowest >= 0 ||
+            rr->label_splice_rebound > 0);
+}
+
 static inline bool stage_reducer_frontier_result_has_gate_loudness_evidence(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
     return stage_reducer_frontier_result_has_coin_repair_evidence(rr) ||
            stage_reducer_frontier_result_has_row_residue_evidence(rr) ||
-           stage_reducer_frontier_result_has_refill_hole_evidence(rr);
+           stage_reducer_frontier_result_has_refill_hole_evidence(rr) ||
+           stage_reducer_frontier_result_has_label_splice_rebind_evidence(rr);
 }
 
 static inline bool stage_reducer_frontier_result_is_memo_clean(

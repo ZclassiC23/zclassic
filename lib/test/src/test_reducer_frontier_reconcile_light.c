@@ -32,6 +32,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -55,6 +56,16 @@ bool stage_reducer_frontier_purge_noncanonical(
     struct main_state *ms,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
+/* Label-splice re-bind arm (internal to app/jobs) + the pure remedy-decision
+ * hook (internal to app/conditions), forward-declared for the tests below. */
+bool stage_reducer_frontier_try_label_splice_rebind(
+    sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out,
+    bool *mutated);
+enum condition_remedy_result
+reducer_frontier_reconcile_light_test_remedy_outcome(
+    const struct stage_reducer_frontier_reconcile_result *rr);
 
 struct rfrl_fixture {
     char dir[256];
@@ -276,6 +287,45 @@ static bool put_proof_status(sqlite3 *db, int height, int ok_flag,
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+/* An ok=1/status='verified' proof or script verdict row with a NULL block_hash
+ * — the pre-stamping label_splice residue the re-bind arm targets. */
+static bool put_verdict_null_hash(sqlite3 *db, const char *table, int height)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO %s(height,status,ok,block_hash) "
+             "VALUES(?,'verified',1,NULL)",
+             table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Count ok=1 rows with a NULL block_hash in [first, end_exclusive). */
+static int count_null_block_hash(sqlite3 *db, const char *table, int first,
+                                 int end_exclusive)
+{
+    char sql[192];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM %s WHERE height >= ? AND height < ? "
+             "AND ok=1 AND block_hash IS NULL",
+             table);
+    sqlite3_stmt *st = NULL;
+    int value = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, first);
+        sqlite3_bind_int(st, 2, end_exclusive);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            value = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return value;
 }
 
 static bool put_utxo_delta(sqlite3 *db, int height,
@@ -669,6 +719,7 @@ int test_reducer_frontier_reconcile_light(void)
         zero.lowest_body_persist_refill_hole = -1;
         zero.lowest_script_validate_refill_hole = -1;
         zero.lowest_proof_validate_refill_hole = -1;
+        zero.label_splice_rebind_lowest = -1;  /* -1 sentinel = no re-bind */
 
         struct stage_reducer_frontier_reconcile_result rr = zero;
         RFRL_CHECK("result helpers: clean baseline",
@@ -2014,6 +2065,198 @@ int test_reducer_frontier_reconcile_light(void)
         reducer_frontier_reconcile_light_test_reset();
         net_manager_free(&cm.manager);
         teardown_fixture(&fx);
+    }
+
+    /* ── Label-splice re-bind (direct arm): deep NULL-block_hash suffix ──
+     * Models today's live wedge — proof/script cursors at N+164, an ok=1/
+     * NULL-block_hash suffix over (N, N+163], utxo_apply at N+1, tip_finalize N.
+     * The arm rewinds ONLY the proof/script VALIDATION cursors to the lowest
+     * NULL (floored at MIN(utxo_apply, tip_finalize)) and deletes the NULL
+     * suffix. Deep span (163) exceeds the small block_rollback cap (100),
+     * proving the larger validation-rebind cap is what admits it. Pure
+     * progress-store arm — no main_state needed. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir),
+                         "reducer_frontier_reconcile_light", "rebind_direct");
+        RFRL_CHECK("rebind-direct: store opens", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("rebind-direct: schema", seed_schema(db));
+
+        const int N = 1000;          /* anchor-free height */
+        const int SPAN = 163;        /* NULL suffix over (N, N+163] */
+        const int pv = N + SPAN + 1; /* proof/script cursor = N+164 */
+
+        /* Row at N is hashed (below the consumer floor) — must NOT be touched. */
+        struct uint256 hN; memset(&hN, 0, sizeof(hN)); hN.data[0] = 0x11;
+        RFRL_CHECK("rebind-direct: hashed row at N (below floor)",
+                   put_hash_log(db, "proof_validate_log", "block_hash",
+                                N, 1, &hN) &&
+                   put_hash_log(db, "script_validate_log", "block_hash",
+                                N, 1, &hN));
+        bool seeded = true;
+        for (int h = N + 1; h <= N + SPAN; h++)
+            seeded = seeded &&
+                     put_verdict_null_hash(db, "proof_validate_log", h) &&
+                     put_verdict_null_hash(db, "script_validate_log", h);
+        RFRL_CHECK("rebind-direct: NULL suffix seeded", seeded);
+        RFRL_CHECK("rebind-direct: cursors seeded",
+                   seed_cursor(db, "proof_validate", pv) &&
+                   seed_cursor(db, "script_validate", pv) &&
+                   seed_cursor(db, "utxo_apply", N + 1) &&
+                   seed_cursor(db, "tip_finalize", N));
+
+        /* Dry-run: reports the pending re-bind, mutates NOTHING. */
+        {
+            struct stage_reducer_frontier_reconcile_result rr;
+            memset(&rr, 0, sizeof(rr));
+            rr.hstar = N;
+            rr.label_splice_rebind_lowest = -1;
+            bool mutated = true;
+            RFRL_CHECK("rebind-direct: dry-run returns ok",
+                       stage_reducer_frontier_try_label_splice_rebind(
+                           db, false, &rr, &mutated));
+            RFRL_CHECK("rebind-direct: dry-run detects N+1, no mutation",
+                       !mutated && rr.label_splice_rebind_lowest == N + 1 &&
+                       rr.label_splice_rebound == 0 &&
+                       cursor_value(db, "proof_validate") == pv &&
+                       cursor_value(db, "script_validate") == pv &&
+                       count_null_block_hash(db, "proof_validate_log",
+                                             N + 1, pv) == SPAN);
+        }
+
+        /* Cap gate: a small validation cap refuses the 163-deep rewind. */
+        {
+            setenv("ZCL_MAX_VALIDATION_REBIND", "100", 1);
+            struct stage_reducer_frontier_reconcile_result rr;
+            memset(&rr, 0, sizeof(rr));
+            rr.hstar = N;
+            rr.label_splice_rebind_lowest = -1;
+            bool mutated = true;
+            RFRL_CHECK("rebind-direct: cap=100 returns ok",
+                       stage_reducer_frontier_try_label_splice_rebind(
+                           db, true, &rr, &mutated));
+            RFRL_CHECK("rebind-direct: cap=100 REFUSES 163-deep rewind",
+                       !mutated && rr.label_splice_rebound == 0 &&
+                       cursor_value(db, "proof_validate") == pv &&
+                       count_null_block_hash(db, "proof_validate_log",
+                                             N + 1, pv) == SPAN);
+            unsetenv("ZCL_MAX_VALIDATION_REBIND");
+        }
+
+        /* Apply: default cap (4096) admits the 163-deep rewind of BOTH cursors. */
+        {
+            struct stage_reducer_frontier_reconcile_result rr;
+            memset(&rr, 0, sizeof(rr));
+            rr.hstar = N;
+            rr.label_splice_rebind_lowest = -1;
+            rr.label_splice_proof_rewound_to = -1;
+            rr.label_splice_script_rewound_to = -1;
+            bool mutated = false;
+            RFRL_CHECK("rebind-direct: apply returns ok",
+                       stage_reducer_frontier_try_label_splice_rebind(
+                           db, true, &rr, &mutated));
+            RFRL_CHECK("rebind-direct: apply re-bound BOTH cursors to N+1",
+                       mutated && rr.label_splice_rebound == 2 &&
+                       rr.label_splice_proof_rewound_to == N + 1 &&
+                       rr.label_splice_script_rewound_to == N + 1 &&
+                       cursor_value(db, "proof_validate") == N + 1 &&
+                       cursor_value(db, "script_validate") == N + 1);
+            RFRL_CHECK("rebind-direct: NULL suffix deleted, floor row kept, "
+                       "utxo_apply/tip_finalize untouched",
+                       count_null_block_hash(db, "proof_validate_log",
+                                             N + 1, pv) == 0 &&
+                       count_null_block_hash(db, "script_validate_log",
+                                             N + 1, pv) == 0 &&
+                       count_range(db, "proof_validate_log", N, N + 1) == 1 &&
+                       count_range(db, "script_validate_log", N, N + 1) == 1 &&
+                       cursor_value(db, "utxo_apply") == N + 1 &&
+                       cursor_value(db, "tip_finalize") == N);
+        }
+
+        progress_store_close();
+        test_rm_rf_recursive(dir);
+    }
+
+    /* ── Label-splice re-bind (WIRING via the public reconcile entry) ──
+     * The impl must CALL the arm. Seed a NULL-block_hash proof/script suffix at
+     * the utxo_apply frontier; the ONLY thing that rewinds the proof/script
+     * VALIDATION cursors is the re-bind arm, so on main (arm unwired) they stay
+     * at A+4 — this is the RED assertion. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("rebind-wire: setup", setup_fixture(&fx, "rebind_wire"));
+        sqlite3 *db = progress_store_db();
+
+        /* utxo_apply STUCK at A+2 (its log ok=1 only through A+1); proof/script
+         * validated ahead to A+4 with a NULL-block_hash suffix at A+2, A+3.
+         * active window tip pinned at A+1 (== hstar) so the noncanonical purge
+         * scans empty, exactly like the live wedge. */
+        RFRL_CHECK("rebind-wire: shape the wedge",
+                   delete_height(db, "utxo_apply_log", A + 2) &&
+                   delete_height(db, "utxo_apply_log", A + 3) &&
+                   delete_height(db, "utxo_apply_delta", A + 2) &&
+                   delete_height(db, "utxo_apply_delta", A + 3) &&
+                   put_verdict_null_hash(db, "proof_validate_log", A + 2) &&
+                   put_verdict_null_hash(db, "proof_validate_log", A + 3) &&
+                   put_verdict_null_hash(db, "script_validate_log", A + 2) &&
+                   put_verdict_null_hash(db, "script_validate_log", A + 3) &&
+                   seed_cursor(db, "utxo_apply", A + 2) &&
+                   seed_cursor(db, "tip_finalize", A + 2) &&
+                   seed_coins_applied(db, A + 2) &&
+                   active_chain_move_window_tip(&fx.ms.chain_active, fx.idx[1]));
+
+        /* Dry-run detect sees the pending re-bind (activates the Condition). */
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("rebind-wire: dry-run detects re-bind pending",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry) &&
+                   dry.label_splice_rebind_lowest == A + 2 &&
+                   dry.hstar == A + 1 &&
+                   cursor_value(db, "proof_validate") == A + 4 &&
+                   count_null_block_hash(db, "proof_validate_log",
+                                         A + 2, A + 4) == 2);
+
+        /* Apply: the wired impl runs the arm — proof/script cursors rewind and
+         * the NULL suffix is deleted. On main (arm unwired) these stay at A+4. */
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("rebind-wire: apply runs the arm (RED->GREEN)",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr) &&
+                   rr.label_splice_rebound == 2 &&
+                   cursor_value(db, "proof_validate") == A + 2 &&
+                   cursor_value(db, "script_validate") == A + 2 &&
+                   count_null_block_hash(db, "proof_validate_log",
+                                         A + 2, A + 4) == 0 &&
+                   count_null_block_hash(db, "script_validate_log",
+                                         A + 2, A + 4) == 0 &&
+                   /* utxo_apply cursor NEVER touched by the arm. */
+                   cursor_value(db, "utxo_apply") == A + 2);
+
+        teardown_fixture(&fx);
+    }
+
+    /* ── Conflation regression: a fired re-bind outranks a coin_backfill refusal
+     * The remedy decision (rfrl_remedy_outcome) is a PURE function of the
+     * result. A successful label_splice re-bind must report OK even when an
+     * unrelated coin_backfill owner-refusal is set at a later height. The
+     * control (no re-bind) proves the coin refusal alone WOULD fail the remedy
+     * — the exact masking the live node hit. */
+    {
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        rr.coin_backfill_attempted = true;
+        rr.coin_backfill_owner_refused = true;
+        rr.coin_backfill_hole_height = A + 900;
+        RFRL_CHECK("conflation: coin refusal alone -> FAILED (control)",
+                   reducer_frontier_reconcile_light_test_remedy_outcome(&rr) ==
+                       COND_REMEDY_FAILED);
+
+        rr.label_splice_rebound = 2;
+        rr.label_splice_rebind_lowest = A + 2;
+        rr.repaired = true;
+        RFRL_CHECK("conflation: re-bind + coin refusal -> OK (re-bind wins)",
+                   reducer_frontier_reconcile_light_test_remedy_outcome(&rr) ==
+                       COND_REMEDY_OK);
     }
 
     printf("reducer_frontier_reconcile_light: %d failures\n", failures);

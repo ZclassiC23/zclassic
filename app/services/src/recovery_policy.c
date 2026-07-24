@@ -75,6 +75,7 @@ void policy_set_defaults(struct recovery_policy *p)
     memset(p, 0, sizeof(*p));
     p->max_utxo_wipe_rows      = RECOVERY_POLICY_DEFAULT_MAX_UTXO_WIPE_ROWS;
     p->max_block_rollback      = RECOVERY_POLICY_DEFAULT_MAX_BLOCK_ROLLBACK;
+    p->max_validation_rebind   = RECOVERY_POLICY_DEFAULT_MAX_VALIDATION_REBIND;
     p->max_header_rewind       = RECOVERY_POLICY_DEFAULT_MAX_HEADER_REWIND;
     p->require_backup_verified = false;
     p->dry_run                 = false;
@@ -98,6 +99,8 @@ void policy_load_from_env(struct recovery_policy *p)
         p->max_utxo_wipe_rows = v64;
     if ((s = getenv("ZCL_MAX_BLOCK_ROLLBACK")) && zcl_parse_i64(s, &v64))
         p->max_block_rollback = v64;
+    if ((s = getenv("ZCL_MAX_VALIDATION_REBIND")) && zcl_parse_i64(s, &v64))
+        p->max_validation_rebind = v64;
     if ((s = getenv("ZCL_MAX_HEADER_REWIND")) && zcl_parse_i64(s, &v64))
         p->max_header_rewind = v64;
     if ((s = getenv("ZCL_REQUIRE_BACKUP_VERIFIED")) && parse_bool(s, &vb))
@@ -250,6 +253,20 @@ enum policy_decision policy_check_block_rollback(
     int64_t depth = from_height - to_height;
     int64_t cap = p ? p->max_block_rollback : 0;
     return decide(p, "block_rollback", depth, cap, reason);
+}
+
+enum policy_decision policy_check_validation_rebind(
+    const struct recovery_policy *p,
+    int64_t from_height,
+    int64_t to_height,
+    const char *reason)
+{
+    /* Same depth arithmetic as block_rollback, but the larger validation-rebind
+     * cap: this rewinds only the proof/script VALIDATION cursors (no coins, no
+     * nullifiers, no tip_finalize) and re-derives every verdict idempotently. */
+    int64_t depth = from_height - to_height;
+    int64_t cap = p ? p->max_validation_rebind : 0;
+    return decide(p, "validation_rebind", depth, cap, reason);
 }
 
 enum policy_decision policy_check_header_rewind(
