@@ -83,10 +83,53 @@ and must NOT red main — the loud line keeps it visible.
 
 Any optimization to a consensus crypto primitive must stay **bit-identical** to
 the frozen verify logic. The differential parity oracle
-(`lib/test/differential/`, on the `wf/groth16-beat-rust` workflow) exists to
-prove an optimized implementation returns the exact same accept/reject verdict
-as the reference on adversarial inputs. Flow: optimise → prove bit-identity via
-the differential oracle + the `crypto_perf_selftest` teeth → re-run
-`make check-crypto-perf` → **shrink** the baseline in
-`tools/crypto_perf_baseline.csv` (and flip `behind`→`beat` once you clear the
-margin). The ratchet then holds the new line forever.
+(`lib/test/differential/`, run with `make check-groth16-parity`) proves an
+optimized implementation returns the exact same accept/reject verdict as the
+frozen reference on adversarial inputs. It compiles
+`lib/sapling/src/bls12_381.c` straight from source and replays a frozen corpus
+of point encodings (canonical + non-canonical infinity, out-of-field x,
+on-curve non-subgroup), malformed proofs, and crafted single/batch
+verifications against `groth16_parity_golden.bin` +
+`groth16_decode_corpus.bin`. A single verdict flip fails the gate.
+
+Parity is defined **against our own frozen behavior**, not against
+librustzcash: the corpus deliberately pins the quirks this chain accepts —
+notably the BLS12-381 non-canonical infinity encoding (infinity flag set with
+dirty trailing bytes), which librustzcash rejects and we ACCEPT. Never
+"fix" a pinned quirk; that is a consensus break.
+
+Flow: optimise → `make check-groth16-parity` → prove bit-identity via the
+`crypto_perf_selftest` teeth → re-run `make check-crypto-perf` → **shrink** the
+baseline in `tools/crypto_perf_baseline.csv` (and flip `behind`→`beat` once you
+clear the margin). The ratchet then holds the new line forever.
+`run_parity_oracle.sh record` re-freezes the golden and is legitimate ONLY
+after a deliberate, full-history-replay-approved consensus change.
+
+## Landed: fixed-base public-input scalar-mul
+
+`vk_x = IC[0] + sum(input[i]*IC[i+1])` multiplies bases that are CONSTANT for
+the life of a verifying key, yet the naive path paid a full 256-bit
+double-and-add per non-zero input on every verify. `groth16_vk_build_combs()`
+precomputes a windowed table per IC point once at param load
+(`lib/sapling/src/params_init.c`), and each per-verify scalar-mul becomes 64
+table lookups plus adds with zero doublings. Tables are read-only after the
+build, so one VK stays shareable across verify threads.
+
+Measured with `make bench-groth16-comb ITERS=40` (7950X3D, `-O2 -march=x86-64-v3`,
+median of three runs — both paths timed in one process against the same key):
+
+| circuit | inputs | naive | fixed-base | speedup |
+|---|--:|--:|--:|--:|
+| sapling OUTPUT verify | 5 | 6.98 ms | 4.93 ms | 1.41x (-29%) |
+| sapling SPEND verify | 7 | 7.74 ms | 5.05 ms | 1.53x (-35%) |
+
+Cost: 144 KiB of table per IC point — ≈3.0 MB resident for all three consensus
+keys (SPEND 7 inputs, OUTPUT 5, sprout-groth16 9), built once in ~25 ms total
+at param load. On allocation failure the naive path is kept: same verdicts,
+original speed. The remaining verify time is the four Miller loops plus the
+final exponentiation, which is where the next optimization has to go.
+
+The `tools/crypto_perf_baseline.csv` ratchet still carries the pre-optimization
+`groth16 output verify` number: shrinking it requires a `make
+check-crypto-perf` run against a full build with real params, not this
+micro-bench.

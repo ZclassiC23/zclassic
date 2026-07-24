@@ -3781,6 +3781,27 @@ check-crypto-perf: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" \
 	  ZCL_CRYPTO_PERF_BIN=$(ZCLASSIC23_BIN) tools/scripts/check_crypto_perf.sh
 
+# The STANDING Groth16 differential parity gate (docs/CRYPTO_PERF.md
+# "Optimizing safely"). Compiles the in-tree consensus verifier
+# (lib/sapling/src/bls12_381.c) straight from source and replays a frozen
+# corpus of adversarial encodings + crafted proofs, asserting every
+# accept/reject verdict still matches lib/test/differential/*.bin. Any flip is
+# a consensus break, so this must be run — and pass — before ANY optimization
+# of the verifier lands. `record` re-freezes the golden and is ONLY legitimate
+# after a deliberate, replay-approved consensus change.
+.PHONY: check-groth16-parity
+check-groth16-parity:
+	@bash lib/test/differential/run_parity_oracle.sh check
+
+# Times the two public-input paths (naive double-and-add vs the precomputed
+# fixed-base tables) in ONE process against the same key, at the public-input
+# counts the Sapling SPEND (7) and OUTPUT (5) circuits actually use. Verdicts
+# are asserted equal every iteration, so a timing run can never report a
+# speedup that came from diverging.
+.PHONY: bench-groth16-comb
+bench-groth16-comb:
+	@bash lib/test/differential/run_parity_oracle.sh bench $(or $(ITERS),30)
+
 bench-regress: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench-regress
 

@@ -1706,6 +1706,117 @@ void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t 
     *r = result;
 }
 
+/* ===== Fixed-base windowed multiplication over the constant VK IC points =====
+ *
+ * The Groth16 public-input commitment is vk_x = IC[0] + sum(input[i]*IC[i+1]),
+ * and every IC[] base is FIXED for the lifetime of a verifying key. The naive
+ * path pays a full 256-bit constant-time double-and-add per non-zero input on
+ * every single verify. Because the bases never change, we precompute — once, at
+ * VK load — a windowed table per IC point, and the per-verify work becomes
+ * G1_COMB_WINDOWS table lookups plus adds, with zero doublings.
+ *
+ * BEHAVIOR-PRESERVING. Windowing only regroups the same 256-bit integer
+ * multiple: s*P = sum_k digit_k(s) * (2^{k*W} * P). g1_comb_mul(table, s)
+ * therefore yields the same GROUP ELEMENT as g1_scalar_mul(P, s) for every
+ * 256-bit scalar, including scalars at or beyond r (both paths interpret the
+ * multiplier as a plain integer). g1_add returns the correct sum for any
+ * Jacobian representatives, and bls12_381_miller_loop normalizes G1 to affine
+ * before pairing, so the pairing input — and every accept/reject verdict — is
+ * unchanged. This is the consensus invariant: the same checks run faster, the
+ * set of accepted proofs is identical. Enforced by the frozen corpus in
+ * lib/test/differential (make check-groth16-parity), which replays every
+ * verify/batch vector down BOTH paths, and by test_groth16_msm_parity.
+ *
+ * Side channels: unlike g1_scalar_mul — whose scalar can be a SECRET prover
+ * blinding factor — these scalars are PUBLIC verifier inputs, so the
+ * data-dependent lookup and zero-digit skip leak nothing. The surrounding
+ * verify path is already data-dependent (g1_add branches, the zero-input
+ * skip), so no constant-time property is given up here. */
+#define G1_COMB_W        4                       /* window width in bits         */
+#define G1_COMB_WINDOWS  (256 / G1_COMB_W)       /* 64 windows over a 256b scalar*/
+#define G1_COMB_ENTRIES  (1u << G1_COMB_W)       /* 16 multiples per window      */
+
+struct g1_comb {
+    /* t[k][j] = (j * 2^{k*W}) * base. t[k][0] is the identity (skipped). */
+    struct g1_point t[G1_COMB_WINDOWS][G1_COMB_ENTRIES];
+};
+
+/* Build the table for one fixed base. Uses the same g1_add/g1_double the naive
+ * path uses, so every entry is exactly the multiple the naive path would reach
+ * (g1_add routes the j=2 case through g1_double, so the doubling is correct). */
+static void g1_comb_build(struct g1_comb *c, const struct g1_point *base)
+{
+    struct g1_point win_base = *base;            /* 2^{k*W} * base, k advances  */
+    for (int k = 0; k < G1_COMB_WINDOWS; k++) {
+        g1_identity(&c->t[k][0]);                /* j = 0 -> identity           */
+        for (int j = 1; j < (int)G1_COMB_ENTRIES; j++)
+            g1_add(&c->t[k][j], &c->t[k][j - 1], &win_base); /* j*win_base      */
+        for (int b = 0; b < G1_COMB_W; b++)      /* win_base *= 2^W             */
+            g1_double(&win_base, &win_base);
+    }
+}
+
+/* r = scalar * base, same value as g1_scalar_mul(&r, base, scalar), from the
+ * precomputed table. W divides 64, so every window lies wholly inside one
+ * 64-bit limb — no cross-limb straddle to get wrong. */
+static void g1_comb_mul(struct g1_point *r, const struct g1_comb *c,
+                        const uint64_t scalar[4])
+{
+    struct g1_point acc;
+    g1_identity(&acc);
+    for (int k = 0; k < G1_COMB_WINDOWS; k++) {
+        int bitpos = k * G1_COMB_W;
+        uint64_t digit = (scalar[bitpos >> 6] >> (bitpos & 63)) &
+                         (uint64_t)(G1_COMB_ENTRIES - 1);
+        if (digit)                               /* adding identity is a no-op  */
+            g1_add(&acc, &acc, &c->t[k][digit]);
+    }
+    *r = acc;
+}
+
+/* vk_x term for public input i: the precomputed table when the VK carries one,
+ * else the naive double-and-add. Same value either way. */
+static inline void groth16_ic_term(struct g1_point *term,
+                                   const struct groth16_vk *vk, size_t i,
+                                   const uint64_t scalar[4])
+{
+    if (vk->ic_combs)
+        g1_comb_mul(term, &vk->ic_combs[i], scalar);
+    else
+        g1_scalar_mul(term, &vk->ic[i + 1], scalar);
+}
+
+void groth16_vk_free_combs(struct groth16_vk *vk)
+{
+    if (!vk || !vk->ic_combs)
+        return;
+    free(vk->ic_combs);
+    vk->ic_combs = NULL;
+}
+
+bool groth16_vk_build_combs(struct groth16_vk *vk)
+{
+    if (!vk)
+        LOG_FAIL("groth16_vk", "build_combs: NULL vk");
+    /* Rebuild from scratch so a second call cannot leak or reuse tables built
+     * over different bases. */
+    groth16_vk_free_combs(vk);
+    if (vk->ic_len < 2 || !vk->ic)
+        return true;                    /* no scalar-mul'd IC points -> nothing */
+
+    size_t n = vk->ic_len - 1;          /* one table per ic[1..ic_len-1]        */
+    struct g1_comb *combs =
+        zcl_malloc(n * sizeof(struct g1_comb), "groth16_vk_ic_combs");
+    if (!combs)
+        LOG_FAIL("groth16_vk",
+                 "build_combs: zcl_malloc failed (%zu tables, %zu bytes)",
+                 n, n * sizeof(struct g1_comb));
+    for (size_t i = 0; i < n; i++)
+        g1_comb_build(&combs[i], &vk->ic[i + 1]);
+    vk->ic_combs = combs;
+    return true;
+}
+
 /* G2 scalar multiplication: r = scalar * p (double-and-add, 256 bits).
  *
  * Unlike g1_scalar_mul, this is NOT constant-time: its only caller is the
@@ -1901,7 +2012,7 @@ bool groth16_verify(const struct groth16_vk *vk,
             public_inputs[i][2] == 0 && public_inputs[i][3] == 0)
             continue;
         struct g1_point term;
-        g1_scalar_mul(&term, &vk->ic[i + 1], public_inputs[i]);
+        groth16_ic_term(&term, vk, i, public_inputs[i]);
         g1_add(&vk_x, &vk_x, &term);
     }
 
@@ -1933,7 +2044,7 @@ static void groth16_compute_vk_x(const struct groth16_vk *vk,
             public_inputs[i][2] == 0 && public_inputs[i][3] == 0)
             continue;
         struct g1_point term;
-        g1_scalar_mul(&term, &vk->ic[i + 1], public_inputs[i]);
+        groth16_ic_term(&term, vk, i, public_inputs[i]);
         g1_add(vk_x, vk_x, &term);
     }
 }
@@ -2099,6 +2210,12 @@ bool groth16_vk_read_raw(struct groth16_vk *vk, const uint8_t *data, size_t len)
     if (len < 868)
         LOG_FAIL("groth16_vk",
                  "vk_read_raw: buffer too small: len=%zu < 868 minimum", len);
+
+    /* A parse installs new bases, so any table the caller's struct happens to
+     * carry is stale and would multiply against the wrong points. Callers pass
+     * a fresh struct (same contract as vk->ic, which is overwritten too), so
+     * clear rather than free. Re-precompute with groth16_vk_build_combs. */
+    vk->ic_combs = NULL;
 
     struct g1_point beta_g1, delta_g1;
     if (!read_g1_uncompressed(&vk->alpha_g1, &data, &len))

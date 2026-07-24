@@ -441,7 +441,7 @@ int test_bls12_381_adversarial(void)
         struct g1_point O1;
         g1_identity(&O1);
 
-        struct groth16_vk vk;
+        struct groth16_vk vk = {0};   /* zero-init: ic_combs must start NULL */
         vk.alpha_g1 = G1;
         vk.beta_g2  = G2;
         vk.gamma_g2 = G2;

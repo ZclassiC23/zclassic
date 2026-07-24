@@ -146,6 +146,13 @@ struct groth16_proof {
     struct g1_point c;
 };
 
+/* Windowed fixed-base precompute over a VK's constant IC[] points. Opaque;
+ * defined in bls12_381.c. Built once per VK by groth16_vk_build_combs, then
+ * read-only, so one VK can be shared across verify threads. NULL means "not
+ * precomputed" and the verifier falls back to the naive double-and-add —
+ * the two paths produce the same group element, so verdicts never differ. */
+struct g1_comb;
+
 struct groth16_vk {
     struct g1_point alpha_g1;
     struct g2_point beta_g2;
@@ -153,7 +160,26 @@ struct groth16_vk {
     struct g2_point delta_g2;
     struct g1_point *ic;
     size_t ic_len;
+    /* Optional per-base tables, one per ic[1..ic_len-1]. NULL unless
+     * groth16_vk_build_combs() was called. A hand-built VK MUST zero-init
+     * (`struct groth16_vk vk = {0};`) — a stale or garbage pointer here would
+     * multiply against the wrong bases. */
+    struct g1_comb *ic_combs;
 };
+
+/* Precompute the windowed tables over vk->ic[1..], turning each per-verify
+ * public-input scalar-mul into table lookups plus adds instead of a 256-bit
+ * double-and-add. Frees any prior tables first, so a second call rebuilds
+ * rather than leaks. On allocation failure returns false with ic_combs left
+ * NULL, and the verifier keeps using the naive path — same verdict, slower.
+ * The tables are built from the same g1_add/g1_double primitives the naive
+ * path uses and yield the identical group element for every 256-bit scalar,
+ * so this is a speed change and never a consensus change. */
+bool groth16_vk_build_combs(struct groth16_vk *vk);
+
+/* Release the tables and NULL the pointer. Safe when ic_combs is already
+ * NULL. Does not free vk->ic. */
+void groth16_vk_free_combs(struct groth16_vk *vk);
 
 bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192]);
 

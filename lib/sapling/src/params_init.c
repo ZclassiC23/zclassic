@@ -167,6 +167,22 @@ bool sapling_init_params(const char *params_dir)
         LOG_FAIL("sapling_params", "init: groth16_vk_read failed for sprout-groth16 VK");
     }
 
+    /* Precompute the windowed tables over each VK's constant IC[] points, so a
+     * per-verify public-input scalar-mul costs table lookups instead of a
+     * 256-bit double-and-add. Built before the VKs are published so verifier
+     * threads only ever observe a fully-built table; read-only afterwards.
+     * Value-identical to the naive path, so verdicts are unchanged — an
+     * allocation failure just leaves the naive fallback in place. */
+    if (!groth16_vk_build_combs(&spend_vk))
+        LOG_WARN("sapling_params",
+                 "spend VK IC precompute unavailable; using naive scalar-mul");
+    if (!groth16_vk_build_combs(&output_vk))
+        LOG_WARN("sapling_params",
+                 "output VK IC precompute unavailable; using naive scalar-mul");
+    if (!groth16_vk_build_combs(&sprout_groth16_vk))
+        LOG_WARN("sapling_params",
+                 "sprout-groth16 VK IC precompute unavailable; using naive scalar-mul");
+
     sapling_set_spend_vk(&spend_vk);
     sapling_set_output_vk(&output_vk);
     sprout_set_vk(&sprout_groth16_vk);
@@ -203,6 +219,9 @@ bool sapling_init_params(const char *params_dir)
         if (!phgr_ok) {
             const struct chain_params *cp = chain_params_get();
             if (cp && strcmp(cp->strNetworkID, "main") == 0) {
+                groth16_vk_free_combs(&spend_vk);
+                groth16_vk_free_combs(&output_vk);
+                groth16_vk_free_combs(&sprout_groth16_vk);
                 free(spend_vk.ic); free(output_vk.ic);
                 free(sprout_groth16_vk.ic);
                 LOG_FAIL("sapling_params",
@@ -283,6 +302,9 @@ const uint8_t *sapling_get_spend_pk(size_t *len)
 void sapling_free_params(void)
 {
     if (!atomic_load(&params_loaded)) return;
+    groth16_vk_free_combs(&spend_vk);
+    groth16_vk_free_combs(&output_vk);
+    groth16_vk_free_combs(&sprout_groth16_vk);
     free(spend_vk.ic);
     free(output_vk.ic);
     free(sprout_groth16_vk.ic);
