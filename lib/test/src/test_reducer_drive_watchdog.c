@@ -360,20 +360,24 @@ int test_reducer_drive_watchdog(void)
         RDW_CHECK("batch_fsync_slow: healthy fast flush does not false-fire",
                  ok_healthy);
 
-        /* (f2) ONE injected 80ms-slow flush against the same 10ms budget
-         * trips the condition. The EWMA update either seeds directly to the
-         * sample (if f1's real flush measured exactly 0us, the "never
-         * sampled" sentinel) or damps by 1/16 (~80000/16 ≈ 5000us if f1
-         * measured a few us) — either outcome clears the 10ms budget by a
-         * wide, timing-jitter-proof margin even under heavy parallel-test
-         * scheduling noise, so this needs only ONE slow sample, not a
-         * multi-round EWMA convergence. A fresh engine reset + re-register
-         * gives this its own "first tick" (bypasses the poll_secs gate)
-         * without needing a real 20s wait. */
+        /* (f2) ONE injected 320ms-slow flush against the same 10ms budget
+         * trips the condition on EITHER EWMA path, which is what makes this
+         * deterministic. The update is
+         *     next = (prev == 0) ? sample : prev + (sample - prev) / 16
+         * so if f1's real flush measured exactly 0us (the "never sampled"
+         * sentinel) the EWMA seeds to the full 320000us; if f1 measured any
+         * non-zero time the EWMA instead damps to ~320000/16 = 20000us.
+         * BOTH clear the 10ms budget, the damped path by 2x.
+         * The delay must stay above 16 * budget for that to hold: an 80ms
+         * injection damps to ~5000us, which is UNDER the 10ms budget, so it
+         * tripped only when f1 happened to measure 0us — a coin-flip on
+         * scheduling noise. A fresh engine reset + re-register gives this
+         * its own "first tick" (bypasses the poll_secs gate) without a real
+         * 20s wait. */
         condition_engine_reset_for_testing();
         register_batch_fsync_slow();
         batch_fsync_slow_test_set_budget_us(10000); /* 10ms, same as f1 */
-        reducer_body_fsync_test_set_inject_delay_us(80 * 1000);
+        reducer_body_fsync_test_set_inject_delay_us(320 * 1000);
         bool trig2 = reducer_body_fsync_test_trigger_precommit();
         condition_engine_tick();
         bool ok_slow = trig2 && blocker_exists("batch_fsync_slow") &&
