@@ -50,10 +50,12 @@ app/views/src/explorer_pages_view.c 823
 # shared boot_park_until_shutdown signature; fix itself extracted to
 # boot_node_db_gate.c) and -full-fold boot mode (+7: boot_full_fold dispatch).
 config/src/boot.c 4346
+config/src/boot_bundle_fetch.c 892
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2034
 config/src/boot_services.c 1481
+config/src/bundle_exporter.c 925
 config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1166
 app/services/src/header_sync_service.c 846

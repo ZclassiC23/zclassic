@@ -155,4 +155,13 @@
 # instead of aborting the whole parallel download. Both are real, shape-matching
 # feature growth on the starter-pack delivery path. Re-baselined in
 # file_size_ceiling_lib_baseline.txt (2234, 1703); count unchanged.
+#
+# 2026-07-24 (wf/package-factory-gaps, fresh-bundle package factory): rom_seed.c
+# grew 977 -> 1043 adding rom_seed_deregister() (the register inverse the
+# exporter's rotation calls before unlink so a deleted generation stops being
+# served) + rom_bundle_height_from_name() and the directory.json "height" field
+# (GAP-4 newest-by-height selection). rom_fetch.c grew 1703 -> 1709 parsing that
+# optional "height" onto rom_fetch_manifest.height (download-cosmetic, untrusted).
+# Both are real, shape-matching feature growth on the starter-pack delivery path.
+# Re-baselined in file_size_ceiling_lib_baseline.txt (1043, 1709); count unchanged.
 13
