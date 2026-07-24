@@ -60,6 +60,7 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "validation/chainstate.h"
@@ -537,6 +538,364 @@ static int test_sst_frontier_seed_positive_and_negative(void)
     return failures;
 }
 
+/* ── Deliverable 5: anchor_kv is the FIRST resume candidate ──────────────
+ *
+ * On a cure-seeded datadir the block bodies exist only ABOVE the cure anchor,
+ * and both second copies of the Sapling frontier (the node_state blob and the
+ * flat-file checkpoint) have lost their header binding. Replaying from Sapling
+ * activation is then structurally impossible — the commitments below the
+ * anchor have no bodies to fold. The CANONICAL ledger is anchor_kv's
+ * sapling_anchors table, which app/jobs/src/utxo_apply_anchors.c:fold_sapling
+ * writes and root-verifies against hashFinalSaplingRoot on every applied
+ * shielded block. sapling_tree_rebuild() must seed from it.
+ *
+ * Shared fixture builder for deliverables 5-7: an 11-block Sapling window at
+ * heights [base, base+10], every block carrying exactly one commitment, with
+ * the header chain's hashFinalSaplingRoot values computed from the TRUE fold.
+ * Options carve the specific defect each test needs. */
+struct sst_window {
+    struct active_chain chain;
+    struct block_index bis[11];
+    struct incremental_merkle_tree true_tree;   /* after every leaf */
+    struct incremental_merkle_tree anchor_tree; /* frontier at anchor_idx */
+    int64_t anchor_height;
+};
+
+struct sst_window_opts {
+    int missing_idx;     /* -1 none: leave this block's body off disk */
+    int corrupt_idx;     /* -1 none: on-disk cm differs from the header math */
+    int bodies_from_idx; /* bodies exist only at idx >= this (cure-seeded) */
+    int anchor_idx;      /* -1 none: capture the frontier after this leaf */
+    uint8_t tag;
+};
+
+static struct sst_window *sst_window_build(const char *dir,
+                                           const struct sst_window_opts *o)
+{
+    const int base = SST_SAPLING_ACTIVATION;
+    struct sst_window *w = zcl_calloc(1, sizeof(*w), "sst_window");
+    if (!w)
+        return NULL;
+    w->anchor_height = -1;
+    active_chain_init(&w->chain);
+    sapling_tree_init(&w->true_tree);
+    sapling_tree_init(&w->anchor_tree);
+
+    bool ok = true;
+    for (int i = 0; i < 11 && ok; i++) {
+        int h = base + i;
+        struct uint256 cm;
+        memset(cm.data, 0, 32);
+        cm.data[0] = (uint8_t)(o->tag + i);
+        cm.data[1] = (uint8_t)i;
+        incremental_tree_append(&w->true_tree, &cm);
+
+        sst_init_index(&w->bis[i], h, (uint8_t)(o->tag + 0x10 + i));
+        incremental_tree_root(&w->true_tree, &w->bis[i].hashFinalSaplingRoot);
+
+        if (i == o->anchor_idx) {
+            w->anchor_tree = w->true_tree;
+            w->anchor_height = h;
+        }
+
+        if (i != o->missing_idx && i >= o->bodies_from_idx) {
+            struct uint256 cm_disk = cm;
+            if (i == o->corrupt_idx)
+                cm_disk.data[31] = 0xFF;
+            struct disk_block_pos pos;
+            ok = sst_write_output_block(dir, &cm_disk, &pos);
+            if (ok) {
+                w->bis[i].nStatus |= BLOCK_HAVE_DATA;
+                w->bis[i].nFile = pos.nFile;
+                w->bis[i].nDataPos = pos.nPos;
+            }
+        }
+        ok = ok && active_chain_install_tip_slot(&w->chain, &w->bis[i]);
+    }
+    if (!ok) {
+        active_chain_free(&w->chain);
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+
+static void sst_window_free(struct sst_window *w)
+{
+    if (!w)
+        return;
+    active_chain_free(&w->chain);
+    free(w);
+}
+
+/* Class of the active sapling_tree_rebuild.* blocker whose reason contains
+ * `needle`. Returns false when no such blocker is active. */
+static bool sst_blocker_class_for(const char *needle, int *class_out)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (strncmp(snaps[i].id, "sapling_tree_rebuild.", 21) != 0)
+            continue;
+        if (!strstr(snaps[i].reason, needle))
+            continue;
+        *class_out = snaps[i].class;
+        return true;
+    }
+    return false;
+}
+
+/* Any active sapling_tree_rebuild.fail_closed record at all. */
+static bool sst_fail_closed_active(void)
+{
+    struct blocker_snapshot snap;
+    return blocker_find_by_id_prefix("sapling_tree_rebuild.fail_closed",
+                                     &snap);
+}
+
+static int test_sst_anchor_kv_frontier_is_first_resume_candidate(void)
+{
+    int failures = 0;
+    const int base = SST_SAPLING_ACTIVATION;
+    const int anchor_idx = 4;                    /* h = base + 4 */
+    char dir[256], dbpath[512];
+
+    printf("sapling_tree_rebuild: resumes from the anchor_kv Sapling "
+          "frontier when bodies exist only above the cure anchor... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sst_anchor_seed", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    struct sst_window_opts opts = {
+        .missing_idx = -1,
+        .corrupt_idx = -1,
+        .bodies_from_idx = anchor_idx + 1, /* bodies ONLY above the anchor */
+        .anchor_idx = anchor_idx,
+        .tag = 0x70,
+    };
+    struct sst_window *w = ok ? sst_window_build(dir, &opts) : NULL;
+    ok = ok && w != NULL;
+
+    /* The canonical ledger: the reducer's per-block-verified frontier. */
+    ok = ok && progress_store_open(dir);
+    sqlite3 *pdb = ok ? progress_store_db() : NULL;
+    ok = ok && pdb != NULL;
+    ok = ok && anchor_kv_ensure_schema(pdb);
+    ok = ok && anchor_kv_add_tree(pdb, ANCHOR_POOL_SAPLING, &w->anchor_tree,
+                                  w->anchor_height);
+
+    /* A DRIFTED second copy in node_state, exactly the live shape: a
+     * plausible height with a tree that does not bind to the header root
+     * there. If the rebuild preferred it (or fell through to a full replay)
+     * the missing bodies below the anchor would fail it closed. */
+    if (ok) {
+        struct incremental_merkle_tree stale;
+        sst_build_tree(3, &stale);
+        struct byte_stream ss;
+        stream_init(&ss, 1024);
+        ok = incremental_tree_serialize(&stale, &ss) &&
+             node_db_state_set(&ndb, "sapling_tree", ss.data, ss.size) &&
+             node_db_state_set_int(&ndb, "sapling_tree_rebuild_height",
+                                   base + anchor_idx);
+        stream_free(&ss);
+    }
+
+    int appended = ok ? sapling_tree_rebuild(&ndb, &w->chain, dir) : -1;
+
+    bool blocker_raised = sst_fail_closed_active();
+    /* 5 leaves came in with the seed, 6 more folded from real bodies. */
+    bool pass = ok && appended == 11 && !blocker_raised;
+
+    progress_store_close();
+    sst_window_free(w);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (pass) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (ok=%d appended=%d want=11 blocker_raised=%d): the "
+              "rebuild must seed from the verified anchor_kv frontier at "
+              "h=%d and fold forward from real bodies, never replay from "
+              "activation over absent bodies\n",
+              ok, appended, blocker_raised, base + anchor_idx);
+        failures++;
+    }
+    return failures;
+}
+
+/* ── Deliverable 6: the anchor seed is bound fail-closed ─────────────────
+ * An anchor_kv frontier whose own root does not equal the header chain's
+ * hashFinalSaplingRoot at its height is REFUSED — a stored frontier is
+ * trusted only when it binds to PoW-committed header data. Proof: with every
+ * body present, refusing the bad seed lets the full replay from activation
+ * succeed; ACCEPTING it would start the fold from a wrong tree and fail
+ * closed on the very next commitment block. */
+static int test_sst_anchor_kv_binding_refusal_falls_through(void)
+{
+    int failures = 0;
+    const int anchor_idx = 4;
+    char dir[256], dbpath[512];
+
+    printf("sapling_tree_rebuild: an anchor_kv frontier that does not bind "
+          "to the header root is refused and the old candidates run... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sst_anchor_refuse", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    struct sst_window_opts opts = {
+        .missing_idx = -1,
+        .corrupt_idx = -1,
+        .bodies_from_idx = 0,   /* every body present */
+        .anchor_idx = anchor_idx,
+        .tag = 0x90,
+    };
+    struct sst_window *w = ok ? sst_window_build(dir, &opts) : NULL;
+    ok = ok && w != NULL;
+
+    ok = ok && progress_store_open(dir);
+    sqlite3 *pdb = ok ? progress_store_db() : NULL;
+    ok = ok && pdb != NULL;
+    ok = ok && anchor_kv_ensure_schema(pdb);
+    /* THE DEFECT: the 5-leaf frontier is stored at height base+3, where the
+     * header commits the 4-leaf root. Root binding must reject it. */
+    ok = ok && anchor_kv_add_tree(pdb, ANCHOR_POOL_SAPLING, &w->anchor_tree,
+                                  w->anchor_height - 1);
+
+    int appended = ok ? sapling_tree_rebuild(&ndb, &w->chain, dir) : -1;
+
+    bool blocker_raised = sst_fail_closed_active();
+    bool pass = ok && appended == 11 && !blocker_raised;
+
+    progress_store_close();
+    sst_window_free(w);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (pass) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (ok=%d appended=%d want=11 blocker_raised=%d): an "
+              "unbound anchor_kv frontier must be refused, not folded from\n",
+              ok, appended, blocker_raised);
+        failures++;
+    }
+    return failures;
+}
+
+/* ── Deliverable 7: root-mismatch classification ─────────────────────────
+ * A root mismatch on a walk that TOLERATED skips is not evidence of
+ * corruption: the commitments of the skipped blocks are known-missing, so no
+ * healthy derived state could have produced the header root either. That is a
+ * body-availability DEPENDENCY. A root mismatch on a walk that folded every
+ * in-range body IS a derived-state disagreement and stays PERMANENT. */
+static int test_sst_root_mismatch_classification(void)
+{
+    int failures = 0;
+    const int base = SST_SAPLING_ACTIVATION;
+    char dir_dep[256], dir_perm[256], dbpath[512];
+
+    printf("sapling_tree_rebuild: mismatch after tolerated skips is a "
+          "DEPENDENCY; mismatch over a complete body set stays PERMANENT... ");
+
+    /* ── DEPENDENCY: one body absent mid-window. ── */
+    test_make_tmpdir(dir_dep, sizeof(dir_dep), "sst_class_dep", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir_dep);
+    struct node_db ndb_dep;
+    memset(&ndb_dep, 0, sizeof(ndb_dep));
+    bool ok_dep = node_db_open(&ndb_dep, dbpath);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    struct sst_window_opts dep_opts = {
+        .missing_idx = 5,       /* h = base + 5 has no body on disk */
+        .corrupt_idx = -1,
+        .bodies_from_idx = 0,
+        .anchor_idx = -1,
+        .tag = 0xB0,
+    };
+    struct sst_window *wd = ok_dep ? sst_window_build(dir_dep, &dep_opts)
+                                   : NULL;
+    ok_dep = ok_dep && wd != NULL;
+    int rc_dep = ok_dep ? sapling_tree_rebuild(&ndb_dep, &wd->chain, dir_dep)
+                        : 0;
+
+    char want_dep[32];
+    snprintf(want_dep, sizeof(want_dep), "height=%d", base + 6);
+    int class_dep = -1;
+    bool found_dep = sst_blocker_class_for(want_dep, &class_dep);
+    bool names_gap = sst_blocker_reason_mentions("body_gap=1") &&
+                     sst_blocker_reason_mentions("classes=no_data");
+    bool dep_pass = ok_dep && rc_dep < 0 && found_dep &&
+                    class_dep == BLOCKER_DEPENDENCY && names_gap;
+
+    sst_window_free(wd);
+    node_db_close(&ndb_dep);
+    test_rm_rf_recursive(dir_dep);
+
+    /* ── PERMANENT: every body present, one on-disk commitment corrupted. ── */
+    test_make_tmpdir(dir_perm, sizeof(dir_perm), "sst_class_perm", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir_perm);
+    struct node_db ndb_perm;
+    memset(&ndb_perm, 0, sizeof(ndb_perm));
+    bool ok_perm = node_db_open(&ndb_perm, dbpath);
+
+    blocker_reset_for_testing();
+
+    struct sst_window_opts perm_opts = {
+        .missing_idx = -1,
+        .corrupt_idx = 5,       /* h = base + 5 body disagrees with headers */
+        .bodies_from_idx = 0,
+        .anchor_idx = -1,
+        .tag = 0xC0,
+    };
+    struct sst_window *wp = ok_perm ? sst_window_build(dir_perm, &perm_opts)
+                                    : NULL;
+    ok_perm = ok_perm && wp != NULL;
+    int rc_perm = ok_perm
+        ? sapling_tree_rebuild(&ndb_perm, &wp->chain, dir_perm) : 0;
+
+    char want_perm[32];
+    snprintf(want_perm, sizeof(want_perm), "height=%d", base + 5);
+    int class_perm = -1;
+    bool found_perm = sst_blocker_class_for(want_perm, &class_perm);
+    bool no_gap = !sst_blocker_reason_mentions("body_gap=");
+    bool perm_pass = ok_perm && rc_perm < 0 && found_perm &&
+                     class_perm == BLOCKER_PERMANENT && no_gap;
+
+    sst_window_free(wp);
+    node_db_close(&ndb_perm);
+    test_rm_rf_recursive(dir_perm);
+
+    if (dep_pass && perm_pass) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (dep: ok=%d rc=%d found=%d class=%d names_gap=%d | "
+              "perm: ok=%d rc=%d found=%d class=%d no_gap=%d) -- want "
+              "class %d (DEPENDENCY) then %d (PERMANENT)\n",
+              ok_dep, rc_dep, found_dep, class_dep, names_gap,
+              ok_perm, rc_perm, found_perm, class_perm, no_gap,
+              BLOCKER_DEPENDENCY, BLOCKER_PERMANENT);
+        failures++;
+    }
+    return failures;
+}
+
 /* ── Deliverable 4: incremental-merkle-tree math is untouched ────────────
  * A tiny fixed leaf set over the PRODUCTION depth-32 Pedersen Sapling tree
  * (the exact primitive sapling_tree_rebuild()/utxo_apply_anchors.c fold
@@ -586,6 +945,9 @@ int test_shielded_sync_strength(void)
     failures += test_sst_skip_accounting_names_blocker_at_defect_height();
     failures += test_sst_denser_check_catches_defect_at_own_height();
     failures += test_sst_frontier_seed_positive_and_negative();
+    failures += test_sst_anchor_kv_frontier_is_first_resume_candidate();
+    failures += test_sst_anchor_kv_binding_refusal_falls_through();
+    failures += test_sst_root_mismatch_classification();
     failures += test_sst_merkle_tree_math_golden_root_unchanged();
 
     return failures;
