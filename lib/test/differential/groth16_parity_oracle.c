@@ -115,11 +115,17 @@ static size_t     g_nvecs;
 
 /* Verify/batch families need constructed inputs that are not raw byte strings;
  * we keep a small parallel table indexed by the vector's position. */
+#define MAX_PROOFS  8
+#define MAX_PI      4    /* public inputs per proof (== vk.ic_len - 1)      */
+
 struct verify_payload {
     struct groth16_vk vk;            /* synthetic, params-free */
-    struct groth16_proof proof[8];
-    uint64_t inputs[8][4];
+    struct groth16_proof proof[MAX_PROOFS];
+    /* Flat, proof-major: inputs[j * n_inputs + i] is proof j's input i, the
+     * layout groth16_batch_verify consumes. */
+    uint64_t inputs[MAX_PROOFS * MAX_PI][4];
     size_t   n_proofs;               /* 1 for FAM_VERIFY */
+    size_t   n_inputs;               /* public inputs per proof */
 };
 static struct verify_payload g_vpayload[MAX_VECS];
 
@@ -292,6 +298,7 @@ static void build_corpus(void)
             vp->vk.ic       = ic_storage;
             vp->vk.ic_len   = 2;
             vp->n_proofs    = 1;
+            vp->n_inputs    = 1;
 
             uint64_t t = (uint64_t)(variant + 3);
             uint64_t ts[4] = { t, 0, 0, 0 };
@@ -357,7 +364,7 @@ static void build_corpus(void)
             struct verify_payload *vp = &g_vpayload[g_nvecs - 1];
             vp->vk.alpha_g1 = G1; vp->vk.beta_g2 = G2;
             vp->vk.gamma_g2 = G2; vp->vk.delta_g2 = G2;
-            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 4;
+            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 4; vp->n_inputs = 1;
             for (int j = 0; j < 4; j++) {
                 uint64_t t = (uint64_t)(j + 3);
                 uint64_t ts[4] = { t, 0, 0, 0 };
@@ -375,7 +382,7 @@ static void build_corpus(void)
             struct verify_payload *vp = &g_vpayload[g_nvecs - 1];
             vp->vk.alpha_g1 = G1; vp->vk.beta_g2 = G2;
             vp->vk.gamma_g2 = G2; vp->vk.delta_g2 = G2;
-            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 4;
+            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 4; vp->n_inputs = 1;
             for (int j = 0; j < 4; j++) {
                 uint64_t t = (uint64_t)(j + 3);
                 uint64_t ts[4] = { t, 0, 0, 0 };
@@ -396,7 +403,7 @@ static void build_corpus(void)
             struct verify_payload *vp = &g_vpayload[g_nvecs - 1];
             vp->vk.alpha_g1 = G1; vp->vk.beta_g2 = G2;
             vp->vk.gamma_g2 = G2; vp->vk.delta_g2 = G2;
-            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 2;
+            vp->vk.ic = bic; vp->vk.ic_len = 2; vp->n_proofs = 2; vp->n_inputs = 1;
             struct g1_point D;
             uint64_t two[4] = {2,0,0,0};
             g1_scalar_mul(&D, &G1, two);
@@ -416,6 +423,115 @@ static void build_corpus(void)
                     g1_add(&vp->proof[j].c, &negvkx, &negD);
                 }
             }
+        }
+    }
+
+    /* ---- WIDE family: MAX_PI distinct IC bases + full-width scalars ----
+     * The single-input vectors above only ever multiply IC[1] by a small
+     * scalar, which leaves the high limbs of the multiplier — and every IC
+     * base but the first — untested. Any fixed-base / windowed rewrite of the
+     * public-input scalar-mul has to reproduce the SAME group element for a
+     * full 256-bit multiplier on EVERY base, so these vectors sweep:
+     *   zero, 1, 2^64-1, all-256-bits-set, r-1, and mixed limb patterns,
+     * across MAX_PI independent bases, with a bit-flip reject control on each.
+     * A window that straddles a limb boundary, drops the top window, or
+     * mis-indexes a base flips one of these from ACCEPT to REJECT. */
+    {
+        struct g1_point G1, O1;
+        struct g2_point G2;
+        (void)g1_from_compressed(&G1, G1_GEN_COMPRESSED);
+        (void)g2_from_compressed(&G2, G2_GEN_COMPRESSED);
+        g1_identity(&O1);
+
+        /* Distinct fixed bases: IC[0] = O, IC[i] = (7i+1)*G1. */
+        static struct g1_point wic[MAX_PI + 1];
+        wic[0] = O1;
+        for (int i = 1; i <= MAX_PI; i++) {
+            uint64_t m[4] = { (uint64_t)(7 * i + 1), 0, 0, 0 };
+            g1_scalar_mul(&wic[i], &G1, m);
+        }
+
+        /* Set 4 leads with r-1 (0x73eda753...ffffffff00000000), the largest
+         * valid Fr scalar, on two bases. */
+        static const uint64_t SCALARS[][MAX_PI][4] = {
+            {{0,0,0,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}},
+            {{1,0,0,0},{2,0,0,0},{3,0,0,0},{4,0,0,0}},
+            {{0xFFFFFFFFFFFFFFFFULL,0,0,0},{0,0,1,0},{0,1,0,0},{0,0,0,1}},
+            {{0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL,
+              0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL},
+             {0xF0F0F0F0F0F0F0F0ULL,0x0F0F0F0F0F0F0F0FULL,
+              0xAAAAAAAAAAAAAAAAULL,0x5555555555555555ULL},
+             {1,0,0,0},{0,0,0,0}},
+            {{0xffffffff00000000ULL,0x53bda402fffe5bfeULL,
+              0x3339d80809a1d805ULL,0x73eda753299d7d48ULL},
+             {0xffffffff00000000ULL,0x53bda402fffe5bfeULL,
+              0x3339d80809a1d805ULL,0x73eda753299d7d48ULL},
+             {0x8000000000000000ULL,0,0,0x0000000000000001ULL},
+             {0x0000000000000010ULL,0x0000000000000000ULL,
+              0x1000000000000000ULL,0x0000000000000000ULL}},
+        };
+        const size_t n_sets = sizeof(SCALARS) / sizeof(SCALARS[0]);
+
+        for (size_t s = 0; s < n_sets; s++) {
+            for (int flip = 0; flip < 2; flip++) {
+                char lbl[96];
+                snprintf(lbl, sizeof(lbl),
+                         "verify-wide: %zu bases, scalar set %zu%s",
+                         (size_t)MAX_PI, s, flip ? " + input bit-flip (REJECT)"
+                                                 : " (ACCEPT)");
+                push_vec(FAM_VERIFY, lbl);
+                struct verify_payload *vp = &g_vpayload[g_nvecs - 1];
+                vp->vk.alpha_g1 = G1; vp->vk.beta_g2 = G2;
+                vp->vk.gamma_g2 = G2; vp->vk.delta_g2 = G2;
+                vp->vk.ic = wic; vp->vk.ic_len = MAX_PI + 1;
+                vp->n_proofs = 1; vp->n_inputs = MAX_PI;
+
+                /* vk_x = IC[0] + sum(input[i] * IC[i+1]); C = -vk_x accepts. */
+                struct g1_point vkx = wic[0];
+                for (int i = 0; i < MAX_PI; i++) {
+                    memcpy(vp->inputs[i], SCALARS[s][i], sizeof(vp->inputs[i]));
+                    if (SCALARS[s][i][0] == 0 && SCALARS[s][i][1] == 0 &&
+                        SCALARS[s][i][2] == 0 && SCALARS[s][i][3] == 0)
+                        continue;
+                    struct g1_point term;
+                    g1_scalar_mul(&term, &wic[i + 1], SCALARS[s][i]);
+                    g1_add(&vkx, &vkx, &term);
+                }
+                vp->proof[0].a = G1;
+                vp->proof[0].b = G2;
+                g1_neg(&vp->proof[0].c, &vkx);
+                if (flip)
+                    vp->inputs[MAX_PI - 1][3] ^= 0x8000000000000000ULL;
+            }
+        }
+
+        /* Batch over the same wide VK: all-valid ACCEPT, one-corrupted REJECT. */
+        for (int corrupt = 0; corrupt < 2; corrupt++) {
+            push_vec(FAM_BATCH, corrupt
+                     ? "batch-wide: 4 proofs over 4 bases, one corrupted (REJECT)"
+                     : "batch-wide: 4 proofs over 4 bases (ACCEPT)");
+            struct verify_payload *vp = &g_vpayload[g_nvecs - 1];
+            vp->vk.alpha_g1 = G1; vp->vk.beta_g2 = G2;
+            vp->vk.gamma_g2 = G2; vp->vk.delta_g2 = G2;
+            vp->vk.ic = wic; vp->vk.ic_len = MAX_PI + 1;
+            vp->n_proofs = 4; vp->n_inputs = MAX_PI;
+            for (size_t j = 0; j < 4; j++) {
+                struct g1_point vkx = wic[0];
+                for (int i = 0; i < MAX_PI; i++) {
+                    uint64_t *dst = vp->inputs[j * MAX_PI + i];
+                    memcpy(dst, SCALARS[j + 1][i], sizeof(SCALARS[j + 1][i]));
+                    if (dst[0] == 0 && dst[1] == 0 && dst[2] == 0 && dst[3] == 0)
+                        continue;
+                    struct g1_point term;
+                    g1_scalar_mul(&term, &wic[i + 1], dst);
+                    g1_add(&vkx, &vkx, &term);
+                }
+                vp->proof[j].a = G1;
+                vp->proof[j].b = G2;
+                g1_neg(&vp->proof[j].c, &vkx);
+            }
+            if (corrupt)
+                g1_add(&vp->proof[3].c, &vp->proof[3].c, &G1);
         }
     }
 }
@@ -450,13 +566,14 @@ static uint8_t run_vector(size_t idx)
     case FAM_VERIFY: {
         struct verify_payload *vp = &g_vpayload[idx];
         return groth16_verify(&vp->vk, &vp->proof[0],
-                              (const uint64_t (*)[4])vp->inputs, 1) ? 1 : 0;
+                              (const uint64_t (*)[4])vp->inputs,
+                              vp->n_inputs) ? 1 : 0;
     }
     case FAM_BATCH: {
         struct verify_payload *vp = &g_vpayload[idx];
         return groth16_batch_verify(&vp->vk, vp->proof,
                                     (const uint64_t (*)[4])vp->inputs,
-                                    1, vp->n_proofs) ? 1 : 0;
+                                    vp->n_inputs, vp->n_proofs) ? 1 : 0;
     }
     }
     return 0;
