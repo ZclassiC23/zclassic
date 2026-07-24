@@ -231,6 +231,49 @@ bool reducer_frontier_log_frontier_above(
     int32_t *out_h                  /* OUT: contiguous ok=1 prefix height */
 );
 
+/* ── F1: log-derived stage cursor (the LOG is the read authority) ─────────
+ *
+ * Return stage `name`'s cursor value DERIVED from its own success-checked
+ * *_log's contiguous ok=1 prefix (the same per-stage frontier compute_hstar
+ * MIN-folds), expressed in `name`'s native cursor frame so it is a drop-in for
+ * the raw stage_cursor read the eight Job stages used to do:
+ *   - upstream stage (validate_headers, script_validate, body_persist,
+ *     proof_validate, utxo_apply): value = contiguous-ok=1-prefix HEIGHT + 1
+ *     (the "next height to process" frame).
+ *   - tip_finalize (served-tip frame): value = the contiguous-ok=1-prefix
+ *     HEIGHT itself.
+ *   - a stage with NO success-checked *_log (header_admit, body_fetch — not in
+ *     the H* success-check set k_logs): value = the raw stage_cursor row (there
+ *     is no log frontier to derive from).
+ *
+ * The result is CLAMPED to the raw stage_cursor row: the log may only LOWER the
+ * value to the proven frontier (a durable hole / ok=0 below the cursor), never
+ * RAISE it above the durable cursor. In a healthy, contiguous state the derived
+ * value EQUALS the raw cursor exactly — the F1 dual-write / single-read
+ * equivalence (the stage_cursor table keeps being written; it just stops being
+ * the READ authority on this path). `*found` reports whether a raw stage_cursor
+ * row exists (nullable).
+ *
+ * SELECT-only; acquires progress_store_tx_lock() itself (recursive, safe
+ * whether or not the caller already holds it). Returns false on a DB read error
+ * (*out then meaningless). The bounded log walk is O(cursor - anchor) — the
+ * same delta-above-the-sealed-anchor cost class as compute_hstar, NOT O(chain);
+ * keep it off the hot per-block tick (the eight stages already memoize it via
+ * the batch-generation cache in jobs/stage_helpers.h stage_cursor_read_or_zero). */
+bool reducer_frontier_stage_cursor_derived(
+    sqlite3 *progress_db,           /* progress.kv handle */
+    const char *name,               /* stage cursor name, e.g. "validate_headers" */
+    uint64_t *out,                  /* OUT: log-derived cursor (cursor frame) */
+    bool *found                     /* OUT (nullable): raw stage_cursor row present */
+);
+
+#ifdef ZCL_TESTING
+/* Clear the thread-local derived-cursor memo. Tests that reuse cursor names
+ * across freshly-opened in-memory fixtures call this between fixtures so a
+ * prior fixture's cached frontier cannot survive into the next. */
+void reducer_frontier_stage_cursor_derived_reset_memo_for_testing(void);
+#endif
+
 /* Hash recorded by ONE stage log at `height` (e.g. validate_headers_log.hash).
  * The Invariant A restore clamp uses it to derive the frontier tip hash when
  * the in-RAM pprev chain is torn between the frontier and a restore candidate

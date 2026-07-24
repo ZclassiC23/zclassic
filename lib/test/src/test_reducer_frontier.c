@@ -1891,11 +1891,196 @@ static int case_body_read_repair_note(void)
     return failures;
 }
 
+/* Raw stage_cursor row for `name`, or -1 if absent (the value the F1 derived
+ * reader must equal in every consistent state). */
+static int64_t raw_stage_cursor(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT cursor FROM stage_cursor WHERE name=?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int64_t v = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/* Convenience: the F1 log-derived cursor for `name` as an int64 (-1 on read
+ * error), so a case can compare it to raw_stage_cursor directly. */
+static int64_t derived_stage_cursor(sqlite3 *db, const char *name)
+{
+    uint64_t out = 0;
+    bool found = false;
+    if (!reducer_frontier_stage_cursor_derived(db, name, &out, &found))
+        return -1;
+    return (int64_t)out;
+}
+
+/* ── F1: log-derived stage cursor equivalence ────────────────────────────
+ *
+ * reducer_frontier_stage_cursor_derived is the F1 READ authority: each stage's
+ * frontier is its own *_log's contiguous ok=1 prefix, in the stage's cursor
+ * frame, CLAMPED to the still-written stage_cursor row (the log may only veto
+ * the cursor DOWN to the proven prefix, never raise it). This case pins the
+ * dual-write / single-read equivalence across the states the F1 plan calls out:
+ *   (1) CONSISTENT forward fold: derived == raw stage_cursor for every stage
+ *       (byte-identical — the durable cursor and the log agree).
+ *   (2) TORN (a durable hole below the cursor): the derived value drops to the
+ *       proven log frontier (LOWER than the raw cursor forced past the hole) —
+ *       the log wins — while the raw stage_cursor row is unchanged, and only
+ *       the holed stage diverges.
+ *   (3) INSTALL (anchor row + cursors forced over a log-LESS region): the
+ *       derived frontier floors at the install/anchor height, matching the
+ *       forced cursor EXACTLY (semantics (b)/(c) of the F1 plan).
+ *   (4) LOGLESS stage (body_fetch — no success-checked *_log): derived == raw. */
+static int case_derived_stage_cursor_equivalence(void)
+{
+    int failures = 0;
+
+    /* Upstream stages (next-height frame) + tip_finalize (served-tip frame). */
+    static const char *const upstream[] = {
+        "validate_headers", "script_validate", "body_persist",
+        "proof_validate", "utxo_apply",
+    };
+    const size_t n_up = sizeof(upstream) / sizeof(upstream[0]);
+
+    /* (1) CONSISTENT ─────────────────────────────────────────────────── */
+    {
+        sqlite3 *db = NULL;
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
+        if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+        RF_CHECK("derived-equiv: consistent schema", build_schema(db));
+        RF_CHECK("derived-equiv: consistent proven authority",
+                 stamp_proven_authority(db, A));
+        const int32_t tip = A + 5;
+        bool built = true;
+        for (int32_t h = A + 1; h <= tip; h++)
+            built = built && put_consistent_height(db, h);
+        RF_CHECK("derived-equiv: consistent rows", built);
+        /* Upstream cursors name the next height (tip+1); tip_finalize uses the
+         * served-tip frame (tip). */
+        bool cur = true;
+        for (size_t i = 0; i < n_up; i++)
+            cur = cur && set_cursor(db, upstream[i], tip + 1);
+        cur = cur && set_cursor(db, "tip_finalize", tip);
+        RF_CHECK("derived-equiv: consistent cursors", cur);
+
+        for (size_t i = 0; i < n_up; i++) {
+            int64_t d = derived_stage_cursor(db, upstream[i]);
+            int64_t r = raw_stage_cursor(db, upstream[i]);
+            RF_CHECK("derived-equiv: consistent upstream derived == raw",
+                     d == r && d == tip + 1);
+        }
+        int64_t dtf = derived_stage_cursor(db, "tip_finalize");
+        int64_t rtf = raw_stage_cursor(db, "tip_finalize");
+        RF_CHECK("derived-equiv: consistent tip_finalize derived == raw",
+                 dtf == rtf && dtf == tip);
+        sqlite3_close(db);
+    }
+
+    /* (2) TORN — a hole in ONE upstream log below its cursor ──────────── */
+    {
+        sqlite3 *db = NULL;
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
+        if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+        RF_CHECK("derived-equiv: torn schema", build_schema(db));
+        RF_CHECK("derived-equiv: torn proven authority",
+                 stamp_proven_authority(db, A));
+        const int32_t tip = A + 5;
+        bool built = true;
+        for (int32_t h = A + 1; h <= tip; h++)
+            built = built && put_consistent_height(db, h);
+        RF_CHECK("derived-equiv: torn rows", built);
+        bool cur = true;
+        for (size_t i = 0; i < n_up; i++)
+            cur = cur && set_cursor(db, upstream[i], tip + 1);
+        cur = cur && set_cursor(db, "tip_finalize", tip);
+        RF_CHECK("derived-equiv: torn cursors", cur);
+        /* Punch a hole: delete script_validate_log's row at A+3, so its
+         * contiguous ok=1 prefix stops at A+2 while its cursor stays tip+1. */
+        char del_sql[128];
+        snprintf(del_sql, sizeof(del_sql),
+                 "DELETE FROM script_validate_log WHERE height=%d", A + 3);
+        RF_CHECK("derived-equiv: torn hole punched",
+                 sqlite3_exec(db, del_sql, NULL, NULL, NULL) == SQLITE_OK);
+
+        int64_t dsv = derived_stage_cursor(db, "script_validate");
+        int64_t rsv = raw_stage_cursor(db, "script_validate");
+        /* The log vetoes the cursor down to the proven frontier (A+2)+1 = A+3,
+         * strictly below the durable cursor (tip+1 = A+6). */
+        RF_CHECK("derived-equiv: torn script_validate derived == log frontier",
+                 dsv == A + 3);
+        RF_CHECK("derived-equiv: torn script_validate raw cursor unchanged",
+                 rsv == tip + 1);
+        RF_CHECK("derived-equiv: torn derived < raw (log wins)", dsv < rsv);
+        /* Every OTHER stage's log is intact, so its derived value still equals
+         * its raw cursor — only the holed stage diverges. */
+        int64_t dvh = derived_stage_cursor(db, "validate_headers");
+        RF_CHECK("derived-equiv: torn intact stage derived == raw",
+                 dvh == raw_stage_cursor(db, "validate_headers") &&
+                 dvh == tip + 1);
+        sqlite3_close(db);
+    }
+
+    /* (3) INSTALL — anchor row + cursors forced over a log-less region ── */
+    {
+        sqlite3 *db = NULL;
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
+        if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+        RF_CHECK("derived-equiv: install schema", build_schema(db));
+        const int32_t base = A + 100;
+        RF_CHECK("derived-equiv: install proven authority",
+                 stamp_proven_authority(db, base + 1));
+        RF_CHECK("derived-equiv: install seed anchor row", put_tip_anchor(db, base));
+        RF_CHECK("derived-equiv: install durable trusted base",
+                 put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
+        /* No reducer log rows above `base` (the log-less bundle region). Force
+         * cursors the way consensus_state_snapshot_install_activate does. */
+        bool cur = true;
+        for (size_t i = 0; i < n_up; i++)
+            cur = cur && set_cursor(db, upstream[i], base + 1);
+        cur = cur && set_cursor(db, "tip_finalize", base);
+        RF_CHECK("derived-equiv: install cursors", cur);
+
+        for (size_t i = 0; i < n_up; i++) {
+            int64_t d = derived_stage_cursor(db, upstream[i]);
+            RF_CHECK("derived-equiv: install upstream floors at anchor == raw",
+                     d == base + 1);
+        }
+        int64_t dtf = derived_stage_cursor(db, "tip_finalize");
+        RF_CHECK("derived-equiv: install tip_finalize floors at anchor == raw",
+                 dtf == base);
+        sqlite3_close(db);
+    }
+
+    /* (4) LOGLESS stage — body_fetch has no success-checked *_log ─────── */
+    {
+        sqlite3 *db = NULL;
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
+        if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+        RF_CHECK("derived-equiv: logless schema", build_schema(db));
+        RF_CHECK("derived-equiv: logless proven authority",
+                 stamp_proven_authority(db, A));
+        RF_CHECK("derived-equiv: logless cursor", set_cursor(db, "body_fetch",
+                                                             A + 42));
+        int64_t d = derived_stage_cursor(db, "body_fetch");
+        int64_t r = raw_stage_cursor(db, "body_fetch");
+        RF_CHECK("derived-equiv: logless body_fetch derived == raw",
+                 d == r && d == A + 42);
+        sqlite3_close(db);
+    }
+
+    return failures;
+}
+
 int test_reducer_frontier(void)
 {
     int failures = 0;
     printf("\n--- reducer_frontier (L0 H* authority) ---\n");
     failures += case_body_read_repair_note();
+    failures += case_derived_stage_cursor_equivalence();
     failures += case_consistent();
     failures += case_proof_and_utxo_fork_split();
     failures += case_validation_evidence_contained();

@@ -221,7 +221,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     enum mint_validation_evidence expected_evidence =
         mint_validation_evidence_expected(skip_crypto);
     uint64_t sv_cursor = 0;
-    if (!stage_cursor_read_or_zero(db, "script_validate", STAGE_NAME,
+    if (!stage_upstream_frontier_or_zero(db, "script_validate", STAGE_NAME,
                                    &sv_cursor))
         return JOB_FATAL;
     if ((uint64_t)next_h >= sv_cursor) {

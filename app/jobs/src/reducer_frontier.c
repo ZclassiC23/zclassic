@@ -15,6 +15,7 @@
 #include "reducer_frontier_evidence.h"
 #include "reducer_frontier_self_anchor.h"  /* self-derived anchor sourcing */
 #include "reducer_frontier_itag.h"         /* watermark, probe, per-row verdict */
+#include "reducer_frontier_stage_cursor_internal.h"  /* F1 derived-reader seam */
 #include "jobs/mint_skip_crypto.h"
 #include "jobs/refold_progress.h"
 #include "chain/chainparams.h"
@@ -400,7 +401,9 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
 }
 
 /* Read the persisted cursor of a stage off stage_cursor. *out defaults to 0
- * (absent row == fresh init). Returns false only on a real SQLite error. */
+ * (absent row == fresh init). Returns false only on a real SQLite error. Stays
+ * a RAW read: it is the scan bound the log-frontier walk consumes (the F1
+ * log-derived reader layers on top — reducer_frontier_stage_cursor.c). */
 static bool cursor_at(sqlite3 *db, const char *name, int64_t *out)
 {
     *out = 0;
@@ -776,4 +779,23 @@ bool reducer_frontier_log_frontier_above(sqlite3 *progress_db,
         return false;  /* the failing inner read already logged the cause */
     *out_h = h;
     return true;
+}
+
+/* Resolve a stage cursor `name` to its success-checked *_log table (NULL for
+ * header_admit / body_fetch), reporting the served-tip convention. Shared with
+ * the F1 derived reader (reducer_frontier_stage_cursor.c). */
+const char *reducer_frontier_cursor_log_table(const char *name,
+                                              bool *served_tip)
+{
+    if (served_tip)
+        *served_tip = false;
+    if (!name)
+        return NULL;
+    for (int i = 0; i < k_logs_n; i++)
+        if (strcmp(k_logs[i].cursor_name, name) == 0) {
+            if (served_tip)
+                *served_tip = k_logs[i].served_tip;
+            return k_logs[i].log_table;
+        }
+    return NULL;
 }

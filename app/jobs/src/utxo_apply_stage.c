@@ -286,7 +286,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     enum mint_validation_evidence expected_evidence =
         mint_validation_evidence_expected(skip_crypto);
     uint64_t pv_cursor = 0;
-    if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
+    if (!stage_upstream_frontier_or_zero(db, "proof_validate", STAGE_NAME,
                                    &pv_cursor)) {
         ua_fatal_permanent_blocker(next_h,
                                    "proof_validate cursor read failed");

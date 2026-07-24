@@ -402,7 +402,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (next_h < 0) return JOB_FATAL;
 
     uint64_t bp_cursor = 0;
-    if (!stage_cursor_read_or_zero(db, "body_persist", STAGE_NAME,
+    if (!stage_upstream_frontier_or_zero(db, "body_persist", STAGE_NAME,
                                    &bp_cursor))
         return sv_db_fault(sqlite3_extended_errcode(db), next_h,
                            "body_persist cursor read");

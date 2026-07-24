@@ -381,7 +381,18 @@ uint64_t    stage_cursor(const stage_t *s)
     /* The lock guards the cursor field but a torn read of 64 bits is
      * not possible on the platforms we target; readers tolerate a
      * very-slightly-stale value, so we skip locking on the hot read
-     * path. */
+     * path.
+     *
+     * F1 note: this is the O(1) lock-free IN-PROCESS accessor (observability —
+     * dump_state_json). On the forward advance path s->cursor is set to the
+     * height just logged ok=1 (ctx.cursor_out in stage_run_once), so it already
+     * IS the log-derived frontier for this stage; it is reconciled to the
+     * durable row on the next stage_run_once reload. It is intentionally NOT a
+     * SQL log walk here — the never-block-on-progress-lock dumper rule forbids
+     * it. The DURABLE, authoritative log-derived read is
+     * reducer_frontier_stage_cursor_derived() (jobs/reducer_frontier.h), which
+     * the five pipeline floor checks consume via stage_upstream_frontier_or_zero
+     * (jobs/stage_helpers.h). */
     return s->cursor;
 }
 
