@@ -146,8 +146,11 @@ AGENT_IMPACT_RULE("lib/test/src/test_validate_script_hash_split_repair.c", "vali
 /* Diagnostics-never-starve sweep: the refold_progress durable peek and the
  * validate_headers failure-summary read now trylock the progress store (mirror
  * of the A2 stage-dump fix) so a folding node stays observable; validate_headers
- * grows a partial ok=0 index. test_stage_dump_trylock guards all of it. */
-AGENT_IMPACT_RULE("app/jobs/src/refold_progress.c|app/jobs/src/validate_headers_log_store.c|lib/test/src/test_stage_dump_trylock.c", "stage_dump_trylock validate_headers_stage refold_progress_floor make_lint_gates")
+ * grows a partial ok=0 index. sovereignty_dump_state_json (the trust-tier
+ * dumper behind `zclassic23 status`) joined the same sweep: it now trylocks
+ * and answers a labeled last-known-good cache instead of blocking.
+ * test_stage_dump_trylock guards all of it. */
+AGENT_IMPACT_RULE("app/jobs/src/refold_progress.c|app/jobs/src/validate_headers_log_store.c|app/controllers/src/sovereignty_controller.c|app/controllers/include/controllers/sovereignty_controller.h|lib/test/src/test_stage_dump_trylock.c", "stage_dump_trylock validate_headers_stage refold_progress_floor sovereignty_guard make_lint_gates")
 /* wf/posture-nonblocking: the status front door's posture collect tries the
  * shared node.db connection's own mutex non-blockingly (posture_ndb_try_
  * lock) instead of ever queuing behind ordinary write contention.

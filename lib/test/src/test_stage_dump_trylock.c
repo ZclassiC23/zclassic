@@ -27,10 +27,26 @@
  * the fold owns the lock; validate_headers_log grows a partial ok=0 index that
  * bounds the successful-trylock hold. The cases below prove the busy path
  * (non-blocking + labeled) and the index.
+ *
+ * Trust-tier sweep: sovereignty_dump_state_json (the dumper behind
+ * `zclassic23 status`'s trust-tier surface, event_agent_summary.c ->
+ * agent_summary_posture_cache.c) had the SAME blocking-lock hazard — commit
+ * cc4de081a's own message names `zclassic23 status` as a victim of this bug
+ * class. It now trylocks and, when the fold/importer owns the lock, answers
+ * from a process-wide last-known-good trust-tier cache (durable_store_status
+ * == "busy_stale_cache" once something has been observed, or
+ * "unknown_progress_store_busy" the very first time) instead of blocking.
+ * sovereignty_guard_allow() itself stays blocking (enforcement gate) — the
+ * dumper's busy branch returns before ever reaching it, so it never inherits
+ * that block. The case below proves: (1) busy-before-any-observation reports
+ * "unknown_progress_store_busy" with trust_mode "unknown"; (2) a subsequent
+ * free call populates the cache with the real trust tier; (3) a second busy
+ * call then reports "busy_stale_cache" carrying THAT observed value.
  */
 
 #include "test/test_helpers.h"
 
+#include "controllers/sovereignty_controller.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/refold_progress.h"
 #include "jobs/script_validate_stage.h"
@@ -363,6 +379,98 @@ static int case_validate_headers_ok0_index_used(void)
     return failures;
 }
 
+/* (trust-tier sweep) sovereignty_dump_state_json takes the busy path — fast,
+ * non-blocking, labeled from the last-known-good cache — while a helper
+ * thread holds progress_store_tx_lock; the very first busy observation (no
+ * cache yet) is labeled distinctly from a later one (cache populated by an
+ * intervening free call). */
+static int case_sovereignty_dump_busy_path(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "stage_dump_trylock", "sov");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    SD_CHECK("sov: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    struct locker lk = { 0, 0 };
+    pthread_t th;
+    int rc = pthread_create(&th, NULL, locker_thread, &lk);
+    SD_CHECK("sov: locker thread starts", rc == 0);
+    if (rc != 0) {
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+    for (int i = 0; i < 500000 && !atomic_load(&lk.locked); i++) {
+        struct timespec ts = { 0, 200000 };
+        nanosleep(&ts, NULL);
+    }
+    SD_CHECK("sov: locker holds the progress lock", atomic_load(&lk.locked));
+
+    /* A blocking lock would deadlock here (the holder only releases on
+     * signal) — proves the dumper never queues behind the fold. First
+     * observation ever: no cache published yet. */
+    struct json_value out;
+    json_init(&out);
+    bool d1 = sovereignty_dump_state_json(&out, NULL);
+    SD_CHECK("sov busy(1st): dump returns true", d1);
+    SD_CHECK("sov busy(1st): durable_store_status unknown_progress_store_busy",
+             json_status_is(&out, "durable_store_status",
+                            "unknown_progress_store_busy"));
+    SD_CHECK("sov busy(1st): trust_mode unknown",
+             json_status_is(&out, "trust_mode", "unknown"));
+
+    atomic_store(&lk.release, 1);
+    pthread_join(th, NULL);
+
+    /* Free path: real trust tier computed and published to the cache. A
+     * fresh datadir has no coins_kv migration stamp, so trust_mode == bare
+     * (G-SOV part 3's !proven_authority disjunct). */
+    json_init(&out);
+    bool d2 = sovereignty_dump_state_json(&out, NULL);
+    SD_CHECK("sov free: dump returns true", d2);
+    SD_CHECK("sov free: durable_store_status available",
+             json_status_is(&out, "durable_store_status", "available"));
+    SD_CHECK("sov free: trust_mode == bare",
+             json_status_is(&out, "trust_mode", "bare"));
+
+    /* Second busy window: the cache now holds the value the free call just
+     * observed, so the busy answer must carry THAT value, labeled stale. */
+    struct locker lk2 = { 0, 0 };
+    rc = pthread_create(&th, NULL, locker_thread, &lk2);
+    SD_CHECK("sov: 2nd locker thread starts", rc == 0);
+    if (rc == 0) {
+        for (int i = 0; i < 500000 && !atomic_load(&lk2.locked); i++) {
+            struct timespec ts = { 0, 200000 };
+            nanosleep(&ts, NULL);
+        }
+        SD_CHECK("sov: 2nd locker holds the progress lock",
+                 atomic_load(&lk2.locked));
+
+        json_init(&out);
+        bool d3 = sovereignty_dump_state_json(&out, NULL);
+        SD_CHECK("sov busy(2nd): dump returns true", d3);
+        SD_CHECK("sov busy(2nd): durable_store_status busy_stale_cache",
+                 json_status_is(&out, "durable_store_status",
+                                "busy_stale_cache"));
+        SD_CHECK("sov busy(2nd): trust_mode == bare (from cache)",
+                 json_status_is(&out, "trust_mode", "bare"));
+
+        atomic_store(&lk2.release, 1);
+        pthread_join(th, NULL);
+    }
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_stage_dump_trylock(void)
 {
     int failures = 0;
@@ -370,6 +478,7 @@ int test_stage_dump_trylock(void)
     failures += case_utxo_apply_ok0_index_used();
     failures += case_diag_dumps_busy_path();
     failures += case_validate_headers_ok0_index_used();
+    failures += case_sovereignty_dump_busy_path();
     if (failures == 0)
         printf("test_stage_dump_trylock: ALL PASSED\n");
     else
