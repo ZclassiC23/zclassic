@@ -30,7 +30,7 @@ app/jobs/src/tip_finalize_stage.c 809
 app/jobs/src/utxo_apply_stage.c 926
 app/jobs/src/validate_headers_stage.c 1024
 app/models/src/block.c 853
-app/services/src/block_index_loader.c 876
+app/services/src/block_index_loader.c 857
 app/services/src/block_index_loader_rebuild.c 840
 app/services/src/node_db_catchup_service.c 886
 app/services/src/rolling_anchor_service.c 801
@@ -49,15 +49,18 @@ app/views/src/explorer_pages_view.c 823
 # 2026-07-21: two merged changes — #7 node.db-open-failure gate (Task D/E, +1:
 # shared boot_park_until_shutdown signature; fix itself extracted to
 # boot_node_db_gate.c) and -full-fold boot mode (+7: boot_full_fold dispatch).
-config/src/boot.c 4361
+# 2026-07-24: merge reconciliation — wf/loader-pprev-hash-only recorded 4361 at
+# its fork point; its +17-line refold body-rebind wiring merged onto main's
+# grown boot.c = 4363. Reviewed, not fresh drift.
+config/src/boot.c 4363
 config/src/boot_bundle_fetch.c 917
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2077
-config/src/boot_services.c 1481
+config/src/boot_services.c 1478
 config/src/bundle_exporter.c 925
 config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805
-config/src/consensus_state_snapshot_install_activate.c 1166
+config/src/consensus_state_snapshot_install_activate.c 1158
 app/services/src/header_sync_service.c 846
 app/controllers/src/event_agent_summary.c 865
