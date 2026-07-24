@@ -49,6 +49,7 @@
 #include "config/boot_crashonly.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
+#include "services/sovereign_promotion_service.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/binary_staleness_service.h"
@@ -987,6 +988,7 @@ static bool boot_register_maintenance_services(void)
         .stop = boot_binary_staleness_service_stop,
         .flags = ZCL_SERVICE_OPTIONAL,
     };
+    sovereign_promotion_service_register();
     return zcl_service_kernel_register(&g_maintenance_kernel, &wallet_backup_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel, &db_maintenance_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel, &binary_staleness_spec) &&

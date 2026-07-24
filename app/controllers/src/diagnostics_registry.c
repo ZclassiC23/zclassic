@@ -107,6 +107,7 @@
 #include "config/boot_flight_recorder.h"
 #include "config/bundle_exporter.h"
 #include "controllers/sovereignty_controller.h"
+#include "services/sovereign_promotion_service.h"
 #include "storage/small_projections.h"
 #include "storage/topology_store.h"
 #include "storage/utxo_projection.h"

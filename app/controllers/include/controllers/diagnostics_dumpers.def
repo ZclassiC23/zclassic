@@ -606,6 +606,10 @@
                "session_open/qualified, degradation_reason, "
                "last_export_height/time/duration, exports_ok/failed, "
                "every_blocks, keep, generations present, last_refusal"),
+    DIAG_LOCAL("sovereign_promotion", sovereign_promotion_dump_state_json,
+               "background assisted-to-sovereign promotion: tier detection, "
+               "phase, seam height/commitments, rederive progress, duty "
+               "cycle, MATCH/MISMATCH verdict state"),
     DIAG_LOCAL("sovereignty", sovereignty_dump_state_json,
                "operational (release_assisted) vs sovereign (self_folded) "
                "trust mode: coins_kv_proven_authority, self_folded_marker, "
