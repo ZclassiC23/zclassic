@@ -3024,6 +3024,24 @@ c3-stopwatch-report:
 	 fi; \
 	 exit "$$rc"'
 
+# stopwatch-judge-selftest: hermetic regression guard for the stopwatch judge's
+# fixture-integrity gates — canned tmp ledgers, no live nodes/ledgers touched.
+# Proves a below-checkpoint tip is refused (THIN_FIXTURE), a fixture lagging a
+# fresh oracle sample is refused (LAGGING_FIXTURE), a missing SLO ledger is
+# tolerated, and legacy/netdisrupt lines without final_network_tip still judge
+# exactly as before. Same false-green discipline as the sibling *-selftest
+# targets (rc==0 AND a "selftest: PASS" line).
+.PHONY: stopwatch-judge-selftest
+stopwatch-judge-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/stopwatch_evidence_judge.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "stopwatch-judge-selftest: FAIL stopwatch_evidence_judge.sh (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "stopwatch-judge-selftest: PASS"'
+
 .PHONY: arch-score
 # Mechanical completion score for the ARCHITECTURE NORTH STAR
 # (docs/ARCHITECTURE_NORTH_STAR.md). Run as you work — the score rises only when
