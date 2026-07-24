@@ -633,6 +633,42 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_wallet_address_export_key)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.address.label", "core.wallet.address", "",
+    "Set or clear the label on an address",
+    "The address's label row as persisted after the upsert (address, "
+    "label, updated_at); idempotent, so re-setting the same label "
+    "returns that settled state. An empty label clears it. Carries no "
+    "key or fund risk: it writes a plain annotation row, never the "
+    "wallet keystore.", 0,
+    "wallet,address,label,rename,contact",
+    "zcl.wallet_label_input.v1", "zcl.wallet_label.v1", "address,label",
+    "address",
+    "zclassic23 core wallet address label --input='{\"address\":\"t1...\","
+    "\"label\":\"friends\"}'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_address_label)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.address.by-label", "core.wallet.address", "",
+    "List addresses carrying a given label",
+    "Every address currently carrying the given label, read live from "
+    "the wallet_labels table at call time; an unrecognized label "
+    "returns an empty list, not an error, and truncated is true when "
+    "the row cap bounded the answer.", ZCL_COMMAND_LIST_BUDGET,
+    "wallet,address,label,lookup",
+    "zcl.wallet_by_label_input.v1", "zcl.wallet_by_label.v1", "label",
+    "label",
+    "zclassic23 core wallet address by-label friends",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_wallet_address_by_label)
 ZCL_COMMAND_BRANCH("core.wallet.utxo", "core.wallet", "Spendable outputs",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(

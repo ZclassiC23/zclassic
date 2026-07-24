@@ -168,6 +168,8 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 | `core.wallet.address.list` | `core wallet address list` | ready | read / operator | none | `zcl.wallet_addresses.v1` | List transparent addresses |
 | `core.wallet.address.import` | `core wallet address import --address=<addr>` | ready | mutate / wallet / **owner** | **`address`** | `zcl.wallet_address.v1` | Import a watch-only address |
 | `core.wallet.address.export-key` | `core wallet address export-key --address=<addr>` | ready | read / **owner**, plan-commit | **`address`**, `confirm` | `zcl.wallet_privkey.v1` | Export the private key for an address — *reveals only on `confirm:true`* |
+| `core.wallet.address.label` | `core wallet address label --input='<obj>'` | ready | mutate / app-write / operator, idempotent | **`address`**, `label` | `zcl.wallet_label.v1` | Set or clear the label on an address |
+| `core.wallet.address.by-label` | `core wallet address by-label <label>` | ready | read / operator | **`label`** | `zcl.wallet_by_label.v1` | List addresses carrying a given label |
 | `core.wallet.utxo.list` | `core wallet utxo list` | ready | read / operator | none | `zcl.wallet_utxos.v1` | List spendable UTXOs |
 | `core.wallet.transaction.list` | `core wallet transaction list` | ready | read / operator | none | `zcl.wallet_tx_list.v1` | List recent wallet transactions |
 | `core.wallet.transaction.get` | `core wallet transaction get --txid=<hex>` | ready | read / operator | **`txid`** | `zcl.wallet_tx.v1` | Get one wallet transaction by id |

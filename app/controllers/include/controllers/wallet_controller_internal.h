@@ -69,6 +69,14 @@ bool rpc_importprivkey(const struct json_value *params, bool help,
 bool rpc_importaddress(const struct json_value *params, bool help,
                        struct json_value *result);
 
+/* wallet_label_controller.c — address label / address book */
+bool rpc_setlabel(const struct json_value *params, bool help,
+                  struct json_value *result);
+bool rpc_getaddressesbylabel(const struct json_value *params, bool help,
+                             struct json_value *result);
+bool rpc_listlabels(const struct json_value *params, bool help,
+                    struct json_value *result);
+
 /* wallet_controller_history.c — transaction listing */
 bool rpc_listtransactions(const struct json_value *params, bool help,
                           struct json_value *result);

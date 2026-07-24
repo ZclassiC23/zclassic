@@ -167,6 +167,30 @@ int node_db_migrate_features2(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 35) {
+        /* v35: wallet_labels — the address book. One row per labeled
+         * address, keyed by address so a re-label overwrites in place;
+         * backs setlabel / getaddressesbylabel / listlabels and
+         * core.wallet.address.label(.by-label). A plain annotation
+         * overlay: never part of the wallet keystore, never consulted by
+         * consensus. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS wallet_labels ("
+            "address TEXT PRIMARY KEY,"
+            "label TEXT NOT NULL DEFAULT '',"
+            "updated_at INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_wallet_labels_label "
+            "ON wallet_labels(label)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('035')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 35);
+        current_ver = 35;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
