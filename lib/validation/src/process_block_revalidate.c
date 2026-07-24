@@ -18,6 +18,7 @@
 #include "services/chain_activation_service.h"  // lib-layer-ok:wave-m-revalidate
 #include "services/quorum_oracle_service.h"        // lib-layer-ok:wave-m-revalidate
 #include "storage/block_index_db.h"
+#include "jobs/block_header_emit.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -297,6 +298,12 @@ enum reval_result process_block_revalidate(int target_height,
         if (!was_failed) continue;
         p->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
         cleared++;
+        /* Feed the event-sourced block_index_projection (the surviving derived
+         * header snapshot, Program H0) from this canonical status-flip path,
+         * NOT the legacy LevelDB writer. Best-effort, never fatal; runs for
+         * every cleared entry regardless of the LevelDB handle so the
+         * projection folds the new nStatus via INSERT-OR-REPLACE by hash. */
+        block_index_emit_header_event(p, "revalidate_persist", NULL, NULL);
         /* Persist the status-only update. We use the async write
          * because we'll have many of these on a deeply-wedged chain;
          * one final fsync via the supervisor's natural tick suffices.

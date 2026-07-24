@@ -1,0 +1,18 @@
+# Program H0 baseline — CURRENT consumers of the demoted flat/LevelDB/SQLite
+# header-index caches (see tools/scripts/check_no_block_index_flat.sh).
+# One repo-relative path per line. Program H deletion waves shrink this file
+# to comments-only; a stale row (consumer gone) FAILS the gate. Never add a
+# new row — a new consumer is architecture regression.
+app/controllers/src/sync_controller_sapling_tree.c
+app/services/src/block_index_loader.c
+app/services/src/block_index_sqlite_cache.c
+app/services/src/utxo_recovery_frontier_gate.c
+config/src/boot_blkidx_ladder.c
+config/src/boot.c
+config/src/boot_header_seed_import.c
+config/src/boot_legacy_import.c
+config/src/boot_services.c
+config/src/boot_services_shutdown.c
+lib/storage/src/block_index_db.c
+lib/validation/src/process_block_invalidate.c
+lib/validation/src/process_block_revalidate.c

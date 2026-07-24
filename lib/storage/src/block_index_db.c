@@ -7,22 +7,17 @@
 #include "storage/block_index_db.h"
 #include "core/hash.h"
 #include "primitives/block.h"
-#include "storage/event_log.h"
-#include "storage/event_log_payloads.h"
-#include "storage/event_log_singleton.h"
 #include "util/log_macros.h"
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Block-index projection emission counters ──────────────────────
- * block_index_db continues to write LevelDB as the authoritative source
- * AND emits an EV_BLOCK_HEADER event to the append-only event log on
- * every successful write. The block_index_projection consumes those
- * events and can be compared against the persisted index during audits. */
-_Atomic(uint64_t) g_block_index_event_emit_total      = 0;
-_Atomic(uint64_t) g_block_index_event_emit_fail_total = 0;
+/* The EV_BLOCK_HEADER projection feed is NOT emitted here (Program H0). The
+ * canonical fold path (app/jobs/src/header_admit_stage.c and the status-flip
+ * paths lib/validation/src/process_block_{invalidate,revalidate}.c) owns the
+ * single emitter via app/jobs/include/jobs/block_header_emit.h so the LevelDB
+ * block-tree can be deleted in a later Program H wave without silencing the
+ * block_index_projection. */
 
 static const char DB_BLOCK_INDEX = 'b';
 
@@ -201,77 +196,6 @@ void disk_block_index_get_hash(const struct disk_block_index *d,
     block_header_get_hash(&h, out);
 }
 
-/* Projection emission to the event log. Best-effort: any failure
- * (no log wired, payload overflow, append error) is counted and
- * logged once; we never propagate the error to the LevelDB path. */
-static void emit_block_header_event(const struct disk_block_index *d,
-                                    const struct uint256 *hash)
-{
-    event_log_t *log = event_log_singleton();
-    if (!log) {
-        /* Not wired yet (very early boot, or tests). Counts as a miss
-         * but not a hard failure — the projection will catch up
-         * once boot completes. */
-        return;
-    }
-    if (d->nSolutionSize > EV_BLOCK_HEADER_MAX_SOLUTION) {
-        fprintf(stderr,  // obs-ok:block-index-projection-emit
-                "[block_index_db] projection emit: solution size %zu > max %u "
-                "for h=%d; skipping\n",
-                d->nSolutionSize, (unsigned)EV_BLOCK_HEADER_MAX_SOLUTION,
-                d->nHeight);
-        atomic_fetch_add_explicit(&g_block_index_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    struct ev_block_header h;
-    memset(&h, 0, sizeof(h));
-    memcpy(h.hash, hash->data, 32);
-    memcpy(h.hashPrev, d->hashPrev.data, 32);
-    h.height        = d->nHeight;
-    h.nStatus       = d->nStatus;
-    h.nFile         = d->nFile;
-    h.nDataPos      = d->nDataPos;
-    h.nUndoPos      = d->nUndoPos;
-    h.nTime         = d->nTime;
-    h.nBits         = d->nBits;
-    memcpy(h.nNonce, d->nNonce.data, 32);
-    memcpy(h.hashMerkleRoot, d->hashMerkleRoot.data, 32);
-    memcpy(h.hashFinalSaplingRoot, d->hashFinalSaplingRoot.data, 32);
-    h.nVersion      = d->nVersion;
-    h.nTx           = d->nTx;
-    h.nSolutionSize = (uint16_t)d->nSolutionSize;
-
-    size_t bufcap = ev_block_header_wire_size(h.nSolutionSize);
-    uint8_t stackbuf[256 + 1344];  /* fixed 200 + max solution 1344 */
-    uint8_t *buf = stackbuf;
-    if (bufcap > sizeof(stackbuf)) {
-        /* Shouldn't happen — capped above. Defensive bail. */
-        atomic_fetch_add_explicit(&g_block_index_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-    size_t written = 0;
-    if (!ev_block_header_serialize(&h, d->nSolution, buf, bufcap, &written)) {
-        fprintf(stderr,  // obs-ok:block-index-projection-emit
-                "[block_index_db] projection emit: serialize failed h=%d\n",
-                d->nHeight);
-        atomic_fetch_add_explicit(&g_block_index_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    uint64_t off = event_log_append(log, EV_BLOCK_HEADER, buf, written);
-    if (off == UINT64_MAX) {
-        atomic_fetch_add_explicit(&g_block_index_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-    atomic_fetch_add_explicit(&g_block_index_event_emit_total, 1,
-                              memory_order_relaxed);
-}
-
 static bool block_tree_db_write_block_index_internal(
     struct block_tree_db *btdb,
     const struct disk_block_index *d,
@@ -294,12 +218,6 @@ static bool block_tree_db_write_block_index_internal(
 
     bool ok = db_write(&btdb->db, key, keylen, (char *)s.data, s.size, sync);
     stream_free(&s);
-
-    /* Projection emit only when the LevelDB write succeeded.
-     * The projection mirrors the authoritative LevelDB state. */
-    if (ok)
-        emit_block_header_event(d, &hash);
-
     return ok;
 }
 

@@ -584,6 +584,9 @@ add/remove a gate.
 - `check-one-result-type`
 - `check-one-write-path`
 - `check-frontier-single-writer`
+- `check-no-block-index-flat`
+- `check-no-utxo-projection`
+- `check-no-utxos-mirror-read`
 - `check-operator-needed-sink`
 - `check-projections-pure`
 - `check-pthread-create`

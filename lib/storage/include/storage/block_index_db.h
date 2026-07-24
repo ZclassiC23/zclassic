@@ -11,16 +11,8 @@
 #include "core/serialize.h"
 #include "storage/txdb.h"
 #include "validation/chainstate.h"
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-
-/* Block-index projection-emission counters. block_index_db emits an
- * EV_BLOCK_HEADER event to the append-only event log on every successful
- * LevelDB write. The projection consumes those events and can be compared
- * against the persisted index during audits. */
-extern _Atomic(uint64_t) g_block_index_event_emit_total;
-extern _Atomic(uint64_t) g_block_index_event_emit_fail_total;
 
 struct disk_block_index {
     struct uint256 hashPrev;
