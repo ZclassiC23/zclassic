@@ -1477,6 +1477,8 @@ int main(int argc, char **argv)
     { extern int test_install_verb_warm(void);
       failures += test_install_verb_warm(); }
     failures += test_always_sync_chaos();
+    { extern int test_always_sync_lifecycle(void);
+      failures += test_always_sync_lifecycle(); }
     { extern int test_reindex_sparse_bodies(void);
       failures += test_reindex_sparse_bodies(); }
     failures += test_waitforheight_provable();
@@ -1534,6 +1536,8 @@ int main(int argc, char **argv)
       failures += test_lcc_write_rules(); }
     { extern int test_reducer_reconcile_witness(void);
       failures += test_reducer_reconcile_witness(); }
+    { extern int test_recovery_no_worse(void);
+      failures += test_recovery_no_worse(); }
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
     failures += test_domain_consensus_subsidy();

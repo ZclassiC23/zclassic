@@ -174,4 +174,13 @@
 # can no longer leave a cursor pinning the WAL snapshot (SQLITE_BUSY_SNAPSHOT for
 # every later writer on the shared handle). Real defensive growth. Re-baselined
 # in file_size_ceiling_lib_baseline.txt (1425); count unchanged.
+#
+# 2026-07-24 (resilience proof harnesses): simnet_chaos_faults.c grew
+# 2290 -> 2684 adding three named fault injectors (n)-(p) —
+# chaos_fault_torn_progress_wal (a truncated un-checkpointed WAL),
+# chaos_fault_disk_full_pause (SQLITE_FULL on a coins write), and
+# chaos_fault_cleared_have_data_hole (a vanished persisted body) — mirroring
+# the file's established (a)-(m) shape. Real growth, same class as the G3 and
+# G4 injector additions above. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (2684); count unchanged.
 13
