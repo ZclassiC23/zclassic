@@ -126,6 +126,21 @@ void block_pruning_stop(struct block_pruning_service *svc);
  * files pruned in this pass. For use in tests. */
 int block_pruning_run_once(struct block_pruning_service *svc);
 
+/* Prune-after-seal: a SEPARATE, segment-gated entry point from run_once's
+ * keep_blocks-depth cadence. Prunes only blk*.dat/rev*.dat files whose
+ * highest contained block height is strictly below `sealed_verified_top_excl`
+ * — the exclusive top of a range the CALLER has itself just sealed into the
+ * immutable ROM segment store AND re-verified (re-opened + digest-checked)
+ * in this same call chain, so the blk*.dat bytes being deleted are already
+ * durably redundant. The result additionally respects the existing
+ * keep_blocks retention floor (never prunes more recent than
+ * chain_height - keep_blocks), so a shallow sealer finality depth can never
+ * outrun the operator's configured retention. Returns the number of files
+ * pruned, 0 on no-op/null args — never prunes anything the caller has not
+ * itself just proven sealed+verified. */
+int block_pruning_prune_sealed_range(struct block_pruning_service *svc,
+                                     uint32_t sealed_verified_top_excl);
+
 /* Snapshot current status into *out. Thread-safe (atomic reads). */
 void block_pruning_get_status(const struct block_pruning_service *svc,
                               struct block_pruning_status *out);

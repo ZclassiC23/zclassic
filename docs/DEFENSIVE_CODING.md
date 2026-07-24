@@ -403,6 +403,27 @@ assert green).
   and the `lib/test/` fixtures are out of scope. Override `// shellout-ok` for
   a documented, reviewed exception.
 
+- **Gate: `check-no-writer-below-sealed-frontier`** (FAIL) —
+  `tools/lint/check_no_writer_below_sealed_frontier.sh`. The North Star's
+  single-writer-per-frontier invariant
+  (`docs/ARCHITECTURE_NORTH_STAR.md` invariant 1) made mechanical for the
+  sealed ROM segment store (`lib/storage/chain_segment`), which is
+  written-once-then-immutable (chmod 0444, never rewritten/appended). Only the
+  designated sealer/RPC/healer surface — `lib/storage/src/chain_segment.c`, its
+  header, `app/services/src/segment_sealer_service.c`,
+  `app/controllers/src/chain_segment_controller.c`,
+  `app/conditions/src/segment_corruption.c` — may call the store's two WRITE
+  entry points, `chain_segment_seal_range()` /
+  `chain_segment_manifest_rebuild()`. Any other production caller is addressing
+  a block position below the sealed frontier with write intent and can race the
+  one background sealer or the corruption healer's unlink-then-rebuild repair.
+  `lib/test/` is out of scope. Override `// writer-below-frontier-ok` for a
+  documented, reviewed exception (today: the deterministic simulator's
+  sealed-segment corruption fixture, which seals only into a tmpdir it owns).
+  Not hollow: the raw scan set is asserted against a floor via
+  `gate_require_scanned`, and every allowlisted file must exist, so a rename
+  aborts LOUD rather than reporting clean.
+
 - **Gate: `check-proc-self-shim`** (RATCHET) —
   `tools/lint/check_proc_self_shim.sh`. Bans raw `"/proc/self` / `"/proc/uptime`
   string literals in `app/`, `config/`, `lib/`, `tools/` outside
@@ -567,6 +588,7 @@ add/remove a gate.
 - `check-sandbox-wired`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-shellouts`
+- `check-no-writer-below-sealed-frontier`
 - `check-peer-floor-single-source`
 - `check-proc-self-shim`
 - `check-no-authoritative-ram-state`

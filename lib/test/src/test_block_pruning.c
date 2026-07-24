@@ -366,6 +366,63 @@ int test_block_pruning(void)
         fixture_destroy(&f);
     }
 
+    /* ── 6b. prune_sealed_range: never prunes beyond the caller's proven
+     * sealed+verified boundary, even when keep_blocks alone would allow it —
+     * the two floors intersect (min), so a shallow seal frontier can never
+     * be outrun. ── */
+    {
+        struct prune_fixture f;
+        fixture_init(&f, 3001, "sealed_gate");
+
+        /* Same layout as test 2: file 1 = [0,999], file 2 = [1000,1999],
+         * file 3 = [2000,3000]. keep_blocks=1000 alone would allow pruning
+         * up to height 2000 (files 1 and 2). */
+        for (int i = 0; i < 3001; i++) {
+            f.blocks[i].nStatus = BLOCK_HAVE_DATA;
+            if (i < 1000)       f.blocks[i].nFile = 1;
+            else if (i < 2000)  f.blocks[i].nFile = 2;
+            else                f.blocks[i].nFile = 3;
+        }
+        create_fake_block_file(f.datadir, 1, "blk", 4096);
+        create_fake_block_file(f.datadir, 2, "blk", 4096);
+        create_fake_block_file(f.datadir, 3, "blk", 4096);
+        f.svc.keep_blocks = 1000;
+
+        /* Caller has only sealed+verified [0,1000) — file 2 (max_h=1999) is
+         * NOT yet covered by any proven sealed range, even though it is
+         * "old enough" by keep_blocks. It must survive. */
+        int p1 = block_pruning_prune_sealed_range(&f.svc, 1000);
+        PRUNE_CHECK("prune_sealed_range: prunes only the sealed+verified file",
+                    p1 == 1);
+        PRUNE_CHECK("prune_sealed_range: blk00001.dat deleted (sealed)",
+                    !fake_file_exists(f.datadir, 1, "blk"));
+        PRUNE_CHECK("prune_sealed_range: blk00002.dat SURVIVES (unsealed, "
+                    "despite keep_blocks allowing it)",
+                    fake_file_exists(f.datadir, 2, "blk"));
+        PRUNE_CHECK("prune_sealed_range: blk00003.dat SURVIVES (unsealed)",
+                    fake_file_exists(f.datadir, 3, "blk"));
+
+        /* Now the caller has sealed+verified all the way to height 3000 —
+         * but keep_blocks still floors at chain_height(3000)-1000=2000, so
+         * file 3 (max_h=3000 >= 2000) must still survive: the retention
+         * floor and the seal-proof floor both apply (intersection, not
+         * whichever is looser). */
+        int p2 = block_pruning_prune_sealed_range(&f.svc, 3001);
+        PRUNE_CHECK("prune_sealed_range: keep_blocks floor still applies "
+                    "even when the seal boundary is deep", p2 == 1);
+        PRUNE_CHECK("prune_sealed_range: blk00002.dat now deleted",
+                    !fake_file_exists(f.datadir, 2, "blk"));
+        PRUNE_CHECK("prune_sealed_range: blk00003.dat still survives "
+                    "(keep_blocks floor, max_h=3000 >= 2000)",
+                    fake_file_exists(f.datadir, 3, "blk"));
+
+        /* NULL svc / zero-range are safe no-ops. */
+        PRUNE_CHECK("prune_sealed_range: NULL svc returns 0",
+                    block_pruning_prune_sealed_range(NULL, 5000) == 0);
+
+        fixture_destroy(&f);
+    }
+
     /* ── 7. Status snapshot works ─────────────────────── */
     {
         struct block_pruning_service svc;

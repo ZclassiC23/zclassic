@@ -694,9 +694,9 @@ bool chaos_fault_corrupt_sealed_segment(struct chaos_fault_result *out)
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "chaos_segment_corrupt", "flow");
 
-    enum cseg_status s1 = chain_segment_seal_range(dir, chaos_tiny_body, NULL,
+    enum cseg_status s1 = chain_segment_seal_range(dir, chaos_tiny_body, NULL, // writer-below-frontier-ok: fault-injection fixture; seals only into the tmpdir it owns and deletes, never the live <datadir>/segments store
                                                    0, 10, err, sizeof(err));
-    enum cseg_status s2 = chain_segment_seal_range(dir, chaos_tiny_body, NULL,
+    enum cseg_status s2 = chain_segment_seal_range(dir, chaos_tiny_body, NULL, // writer-below-frontier-ok: same tmpdir fixture as s1 above
                                                    500, 7, err, sizeof(err));
     if (s1 != CSEG_OK || s2 != CSEG_OK) {
         chaos_note(out, "fixture seal failed: %s", err);

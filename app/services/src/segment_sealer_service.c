@@ -24,6 +24,7 @@
 #include "event/event.h"
 #include "json/json.h"
 #include "primitives/block.h"
+#include "services/block_pruning_service.h"
 #include "storage/chain_segment.h"
 #include "storage/disk_block_io.h"
 #include "supervisors/domains.h"
@@ -164,6 +165,45 @@ int segment_sealer_seal_next(const char *dir, uint32_t frontier_incl,
     return 1;
 }
 
+/* ── Prune-after-seal (post-seal verify gate) ───────────────────────────────
+ * Re-open the segment just written (a full mmap + whole-segment SHA3 re-verify
+ * off disk via chain_segment_open — NOT trusting the writer's own digest) and,
+ * only when that independently succeeds AND a prune target has been wired,
+ * prune the now-redundant blk*.dat range strictly below this segment's top. A
+ * verify failure prunes nothing — the blk*.dat bodies remain the sole copy
+ * until a later seal attempt succeeds. */
+static void seal_verify_and_prune(struct segment_sealer_service *svc,
+                                  const char *dir, uint32_t first,
+                                  uint32_t count)
+{
+    char seg_path[3300];
+    snprintf(seg_path, sizeof(seg_path), "%s/seg-%u-%u.dat", dir, first, count);
+    char verr[256] = {0};
+    struct chain_segment *vseg = NULL;
+    enum cseg_status vst = chain_segment_open(seg_path, &vseg, verr,
+                                              sizeof(verr));
+    if (vst != CSEG_OK) {
+        atomic_fetch_add(&svc->verify_failures, 1);
+        LOG_WARN("segment_sealer",
+                 "[segment_sealer] post-seal verify failed for [%u,%u): %s "
+                 "(%s) — prune-after-seal skipped", first, first + count,
+                 cseg_status_str(vst), verr);
+        return;
+    }
+    chain_segment_close(vseg);
+    atomic_fetch_add(&svc->segments_verified, 1);
+    if (!svc->prune_svc)
+        return;
+    int npruned = block_pruning_prune_sealed_range(svc->prune_svc,
+                                                   first + count);
+    if (npruned > 0) {
+        atomic_fetch_add(&svc->sealed_prune_files, npruned);
+        LOG_INFO("segment_sealer",
+                 "[segment_sealer] prune-after-seal: %d file(s) below "
+                 "verified top=%u", npruned, first + count);
+    }
+}
+
 /* ── Bounded backfill catch-up (one tick's work) ────────────────────────────
  * Seal up to `max_segments` oldest-unsealed segments below the finalized
  * frontier this pass. One segment per iteration via segment_sealer_seal_next,
@@ -216,6 +256,7 @@ int segment_sealer_run_catchup(struct segment_sealer_service *svc,
         LOG_INFO("segment_sealer",
                  "[segment_sealer] sealed segment [%u,%u) frontier=%u",
                  first, first + CHAIN_SEGMENT_BLOCKS_PER_SEG, frontier);
+        seal_verify_and_prune(svc, dir, first, CHAIN_SEGMENT_BLOCKS_PER_SEG);
         sealed++;
     }
     return sealed;
@@ -343,6 +384,15 @@ void segment_sealer_init(struct segment_sealer_service *svc,
 
     const char *env = getenv("ZCL_SEGMENT_SEALER");
     svc->enabled = env && env[0] == '1' && env[1] == '\0';
+    /* svc->prune_svc is already NULL from the memset above — prune-after-seal
+     * stays disabled until the caller explicitly wires a target. */
+}
+
+void segment_sealer_set_prune_service(struct segment_sealer_service *svc,
+                                      struct block_pruning_service *prune_svc)
+{
+    if (!svc) return;
+    svc->prune_svc = prune_svc;
 }
 
 struct zcl_result segment_sealer_start(struct segment_sealer_service *svc)
@@ -431,6 +481,10 @@ bool segment_sealer_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "seal_failures", atomic_load(&svc->seal_failures));
     json_push_kv_int(out, "last_sealed_first", atomic_load(&svc->last_sealed_first));
     json_push_kv_int(out, "frontier", atomic_load(&svc->frontier));
+    json_push_kv_bool(out, "prune_after_seal_enabled", svc->prune_svc != NULL);
+    json_push_kv_int(out, "segments_verified", atomic_load(&svc->segments_verified));
+    json_push_kv_int(out, "verify_failures", atomic_load(&svc->verify_failures));
+    json_push_kv_int(out, "sealed_prune_files", atomic_load(&svc->sealed_prune_files));
     json_push_kv_str(out, "last_status",
                      cseg_status_str((enum cseg_status)atomic_load(&svc->last_status)));
     return true;

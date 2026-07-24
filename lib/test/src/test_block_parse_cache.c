@@ -671,12 +671,26 @@ static int test_segment_backed_read(const char *base)
         fx.bi.nDataPos = 0;
         block_parse_cache_clear();
 
-        /* COVERED height -> served from the segment, byte-identical to disk. */
+        /* COVERED height -> served from the segment, byte-identical to disk.
+         * Snapshot the fold read-source counters (block_parse_cache.h) around
+         * the call: this is the exact per-call source-of-truth the
+         * chain_segments dumper's fold_reads_from_segment counter is built
+         * on, so proving it increments here proves the dumper is honest. */
+        uint64_t seg_before = 0, blk_before = 0;
+        block_parse_cache_segment_read_stats(&seg_before, &blk_before);
         struct block out; block_init(&out);
         bool ok = block_parse_cache_get((int32_t)H, fx.hash.data, &fx.bi, dir, &out);
         if (!ok) {
             printf("FAIL (segment get with broken disk)\n"); failures++;
             block_free(&out); free(fx.bytes); goto done;
+        }
+        uint64_t seg_after = 0, blk_after = 0;
+        block_parse_cache_segment_read_stats(&seg_after, &blk_after);
+        if (seg_after != seg_before + 1 || blk_after != blk_before) {
+            printf("FAIL (segment-hit counter did not increment: seg %llu->%llu blk %llu->%llu)\n",
+                   (unsigned long long)seg_before, (unsigned long long)seg_after,
+                   (unsigned long long)blk_before, (unsigned long long)blk_after);
+            failures++; block_free(&out); free(fx.bytes); goto done;
         }
         size_t l = 0; unsigned char *s = ser(&out, &l);
         bool ident = s && l == fx.len && memcmp(s, fx.bytes, l) == 0;
@@ -687,7 +701,9 @@ static int test_segment_backed_read(const char *base)
         }
 
         /* UNCOVERED height, same broken disk -> must fail, proving the segment
-         * (not some disk fallback) is what satisfied the covered read. */
+         * (not some disk fallback) is what satisfied the covered read. This
+         * is a blk*.dat-path attempt (segment source declined), so it must
+         * bump the blk*.dat counter, not the segment counter. */
         struct block_index bi2 = fx.bi;
         bi2.nHeight = (int)H + 50;
         struct block out2; block_init(&out2);
@@ -696,6 +712,12 @@ static int test_segment_backed_read(const char *base)
         block_free(&out2);
         if (ok2) {
             printf("FAIL (uncovered height served despite broken disk)\n");
+            failures++; free(fx.bytes); goto done;
+        }
+        uint64_t seg_final = 0, blk_final = 0;
+        block_parse_cache_segment_read_stats(&seg_final, &blk_final);
+        if (seg_final != seg_after || blk_final != blk_after + 1) {
+            printf("FAIL (blk*.dat-fallback counter did not increment on uncovered read)\n");
             failures++; free(fx.bytes); goto done;
         }
 
