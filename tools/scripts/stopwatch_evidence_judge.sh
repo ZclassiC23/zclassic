@@ -18,10 +18,12 @@
 #           real cold-start-to-tip proof and is refused, see THIN_FIXTURE /
 #           LAGGING_FIXTURE).
 #   FAIL  — the last recorded run's verdict is anything else
-#           (fail/skip/seam/stalled-named/error) but still fresh. A SKIP
-#           still does not get to look green here — the whole point of a
-#           periodic gate is that "no evidence of success" reads as
-#           failure, never as a silent pass.
+#           (fail/skip/seam/stalled-named/frontier-busy-timeout/readback-failed/
+#           error) but still fresh. A SKIP still does not get to look green here
+#           — the whole point of a periodic gate is that "no evidence of
+#           success" reads as failure, never as a silent pass. In particular an
+#           instrument failure (readback-failed) is a NAMED FAIL, never a PASS
+#           and never mistaken for a silent stall.
 #   THIN_FIXTURE — the run's verdict was "pass" but its final_network_tip is
 #           BELOW the compiled sovereign checkpoint height (3,056,758): a
 #           below-checkpoint toy chain can never mint a real cold-start-to-tip
@@ -238,6 +240,25 @@ if [ "${1:-}" = "--selftest" ]; then
 
     # 7. Missing evidence file -> STALE (unchanged).
     run_case "missing ledger file -> STALE" "$st_tmp/no-such-ledger.jsonl" STALE 2 \
+        "ZCL_STOPWATCH_SLO_LEDGER=$st_tmp/does-not-exist.jsonl"
+
+    # 8. The new readback-failed verdict (stopwatch exit 6): a run whose final
+    #    frontier readback failed is an INSTRUMENT failure, judged FAIL with the
+    #    verdict name in the reason — never PASS, never silently swallowed. Its
+    #    below-checkpoint / null tip must NOT be upgraded to THIN_FIXTURE (the
+    #    gates only downgrade a pass).
+    readback_line="$st_tmp/readback_failed.jsonl"
+    printf '{"ts":%s,"verdict":"readback-failed","exit_code":6,"final_network_tip":-1,"final_hstar":-1,"final_provable_sample":3107923,"artifact_dir":"/a/readback"}\n' \
+        "$NOW" >"$readback_line"
+    run_case "readback-failed verdict is judged FAIL (named cause), never PASS" "$readback_line" FAIL 1 \
+        "ZCL_STOPWATCH_SLO_LEDGER=$st_tmp/does-not-exist.jsonl"
+
+    # 9. A seam verdict (real climb, budget seam) still reads FAIL, unchanged —
+    #    it is honest forward progress but not a cold-start-to-tip PASS.
+    seam_line="$st_tmp/seam.jsonl"
+    printf '{"ts":%s,"verdict":"seam","exit_code":3,"final_network_tip":%s,"final_hstar":3105872,"artifact_dir":"/a/seam2"}\n' \
+        "$NOW" "$GOOD_TIP" >"$seam_line"
+    run_case "seam verdict reads FAIL (not PASS, not upgraded)" "$seam_line" FAIL 1 \
         "ZCL_STOPWATCH_SLO_LEDGER=$st_tmp/does-not-exist.jsonl"
 
     if [ "$st_fail" = 0 ]; then

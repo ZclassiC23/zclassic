@@ -18,7 +18,8 @@
 #   harness followed that many supervised self-respawns across the one wiped
 #   datadir — how an install-on-next-boot run survives the respawn seam).
 #   verdict is one of pass|fail|skip|seam|stalled-named|frontier-busy-timeout|
-#   error, mapped from the underlying stopwatch's exit code (0/1/2/3/4/5/other).
+#   readback-failed|error, mapped from the underlying stopwatch's exit code
+#   (0/1/2/3/4/5/6/other).
 #   final_network_tip/final_hstar are lifted straight out of the run's
 #   proof.json (the best peer-advertised height and the reducer's authoritative
 #   tip at end-of-run) so the judge can refuse a "pass" against a below-
@@ -52,9 +53,14 @@
 #   ZCL_C3_HISTORY_DIR    ledger dir override (default
 #                          ~/.local/state/zclassic23-c3-stopwatch)
 #   ZCL_CS_PEER_DATADIR   serving fixture peer's datadir, counted (read-only)
-#                          for the fixture-shape fields (default
-#                          ~/.local/state/zclassic23-stopwatch-peer, the
-#                          dedicated zcl-stopwatch-peer.service datadir)
+#                          for the fixture-shape fields. Default
+#                          ~/.zclassic-c23-fixture-serve — the datadir of the
+#                          canonical serving fixture that listens on the default
+#                          ZCL_PEER (39070) / ZCL_CS_PEER_RPCPORT (39071). The
+#                          RPC client authenticates with the cookie at
+#                          <datadir>/.cookie, so this MUST match the peer being
+#                          dialed or every count refuses with CONNECT_REFUSED and
+#                          records null. Override for a differently-sited peer.
 #   ZCL_CS_PEER_RPCPORT   that peer's RPC port used for the read-only row
 #                          counts (default 39071, the fixture peer's rpcport).
 #                          Counting goes through the RUNNING peer's own RPC via
@@ -93,7 +99,7 @@ mkdir -p "$HISTORY_DIR"
 # Serving fixture peer whose hot-table row volumes we record (read-only) for
 # the fixture-shape fields. Defaults match the dedicated zcl-stopwatch-peer
 # .service (datadir ~/.local/state/zclassic23-stopwatch-peer, rpcport 39071).
-PEER_DATADIR="${ZCL_CS_PEER_DATADIR:-${HOME:-/root}/.local/state/zclassic23-stopwatch-peer}"
+PEER_DATADIR="${ZCL_CS_PEER_DATADIR:-${HOME:-/root}/.zclassic-c23-fixture-serve}"
 PEER_RPCPORT="${ZCL_CS_PEER_RPCPORT:-39071}"
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr '\n' ' '; }
@@ -119,17 +125,28 @@ proof_num() {
 # a fat fixture that can't be cheaply counted records null rather than blocking
 # the collect. A thin toy fixture — the exact cheat this guards against —
 # counts near-instantly, which is precisely when we want the number recorded.
+#
+# Bounded retries with growing backoff (1,2,3s): under a heavy concurrent fold
+# the serving peer misses the RPC/query deadline and answers empty exactly like
+# the frontier read did — retrying across a longer window catches a load gap
+# instead of recording a spurious null. When every retry still misses, null is
+# the honest record (a genuinely-uncountable-under-load table), never fabricated.
 # NEVER allowed to fail the collect: wrapped so a non-zero rc is swallowed.
 count_peer_rows() {
-    local table="$1" out cnt
+    local table="$1" out cnt backoff
     [ -x "$ZCL_BIN" ] || return 0
     [ -d "$PEER_DATADIR" ] || return 0
-    out="$(timeout 12 "$ZCL_BIN" -rpcport="$PEER_RPCPORT" -datadir="$PEER_DATADIR" \
-            core storage query --sql="SELECT COUNT(*) FROM $table" --format=json \
-            2>/dev/null)" || out=""
-    # dbquery renders result rows as a positional array: {"rows":[[<count>]],...}
-    cnt="$(printf '%s' "$out" | tr -d ' \n' |
-           grep -oE '"rows":\[\[-?[0-9]+' | grep -oE -- '-?[0-9]+$' | head -n1)"
+    for backoff in 1 2 3 0; do
+        out="$(timeout 12 "$ZCL_BIN" -rpcport="$PEER_RPCPORT" -datadir="$PEER_DATADIR" \
+                core storage query --sql="SELECT COUNT(*) FROM $table" --format=json \
+                2>/dev/null)" || out=""
+        # dbquery renders result rows as a positional array: {"rows":[[<count>]],...}
+        cnt="$(printf '%s' "$out" | tr -d ' \n' |
+               grep -oE '"rows":\[\[-?[0-9]+' | grep -oE -- '-?[0-9]+$' | head -n1)"
+        [ -n "$cnt" ] && { printf '%s' "$cnt"; return 0; }
+        [ "$backoff" = 0 ] && break
+        sleep "$backoff"
+    done
     printf '%s' "$cnt"
 }
 
@@ -152,6 +169,7 @@ case "$rc" in
     3) verdict="seam" ;;
     4) verdict="stalled-named" ;;
     5) verdict="frontier-busy-timeout" ;;
+    6) verdict="readback-failed" ;;
 esac
 
 wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*\)$/\1/p' | tail -1)"
