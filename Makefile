@@ -4226,6 +4226,21 @@ install-slo-pager:
 	@echo "pages: $(HOME)/.local/state/zclassic23-slo/pages.jsonl"
 	@echo "status: make slo-probe-status"
 
+# install-hold-certifier: the 72h HOLD CERTIFIER — a 15-min timer running
+# tools/scripts/slo_hold_judge.sh --record for the canonical instance. Appends
+# one JSON verdict line per run to ~/.local/state/zclassic23-slo/
+# hold-ledger.jsonl; the first VERDICT=HOLD_PROVEN line is the 72h win-proof.
+# Always exits 0 (recorder, not a pager — the pager owns the alarm surface).
+.PHONY: install-hold-certifier
+install-hold-certifier:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-hold-certifier.service "$(HOME)/.config/systemd/user/zclassic23-hold-certifier.service"
+	@install -m 644 deploy/zclassic23-hold-certifier.timer "$(HOME)/.config/systemd/user/zclassic23-hold-certifier.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-hold-certifier.timer
+	@echo "installed 72h hold certifier: zclassic23-hold-certifier.timer (every 15 min)"
+	@echo "verdicts: $(HOME)/.local/state/zclassic23-slo/hold-ledger.jsonl"
+
 slo-probe-status:
 	@systemctl --user list-timers zclassic23-slo-probe.timer zclassic23-slo-pager.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-slo-probe.service zclassic23-slo-probe.timer --no-pager -n 12 2>/dev/null || true

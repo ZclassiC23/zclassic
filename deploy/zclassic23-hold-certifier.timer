@@ -1,0 +1,18 @@
+[Unit]
+Description=ZClassic23 72h Hold Certifier Timer — every 15 min
+
+[Timer]
+# OnCalendar (wall-clock), NOT OnBootSec/OnUnitActiveSec (monotonic) — same
+# trap the probe timer documents: Persistent=true is honored ONLY for
+# OnCalendar timers, and a monotonic schedule loses its anchor across a
+# user-manager restart (exactly how the uptime ledger silently died on
+# 2026-07-20). Every quarter-hour boundary is a firing; Persistent=true
+# fires one catch-up run after downtime so an outage is a bounded gap in
+# hold-ledger.jsonl, never a silent stretch of nothing.
+OnCalendar=*-*-* *:00/15:00
+RandomizedDelaySec=20
+Persistent=true
+Unit=zclassic23-hold-certifier.service
+
+[Install]
+WantedBy=timers.target

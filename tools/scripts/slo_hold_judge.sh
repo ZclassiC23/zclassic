@@ -51,6 +51,11 @@
 #
 # Usage:
 #   slo_hold_judge.sh [--instance canonical] [--window-hours 72] [--gap-budget 3]
+#   slo_hold_judge.sh --record          # judge, then append the verdict as one
+#                                       # JSON line to $LEDGER_DIR/hold-ledger.jsonl
+#                                       # and exit 0 (recorder, not a pager — the
+#                                       # certifier timer must not sit failed for
+#                                       # the whole 72h a hold takes to accrue)
 #   slo_hold_judge.sh --selftest        # hermetic fixture ledgers, no live nodes
 #
 # Env (test seams / threshold overrides):
@@ -421,7 +426,68 @@ cmd_selftest() {
     [ "$rc" -ne 0 ] || st_fail "case=missing-ledger expected non-zero exit"
     echo "selftest: ok case=missing-ledger"
 
+    # H) --record: exits 0 on BOTH verdicts and appends one JSON line per run
+    #    to hold-ledger.jsonl (proven ledger from case A, missing ledger for
+    #    the NOT_PROVEN leg).
+    d="$ST_TMP/h"; mkdir -p "$d"
+    emit_ledger "$d/uptime-ledger.jsonl" canonical "$base" "$N" "$STEP" "$SV0" "$SVSTEP" 0
+    set +e
+    out="$(ZCL_SLO_LEDGER_DIR="$d" ZCL_SLO_NOW="$fresh_now" bash "$SELF" --instance canonical --window-hours 72 --gap-budget 3 --record)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || st_fail "case=record-proven expected rc=0 got $rc"
+    printf '%s\n' "$out" | grep -q 'slo-hold: recorded verdict=HOLD_PROVEN' || { printf '%s\n' "$out" >&2; st_fail "case=record-proven missing recorded line"; }
+    grep -q "^{\"ts\":$fresh_now,\"instance\":\"canonical\",\"window_hours\":72,\"gap_budget\":3,\"verdict\":\"HOLD_PROVEN\",\"reason\":\"\",\"judge_rc\":0}$" "$d/hold-ledger.jsonl" \
+        || { cat "$d/hold-ledger.jsonl" >&2; st_fail "case=record-proven wrong ledger line"; }
+    d="$ST_TMP/h2"; mkdir -p "$d"
+    set +e
+    out="$(ZCL_SLO_LEDGER_DIR="$d" ZCL_SLO_NOW="$fresh_now" bash "$SELF" --instance canonical --record)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || st_fail "case=record-notproven expected rc=0 got $rc"
+    grep -q '"verdict":"NOT_PROVEN","reason":"no_ledger_file"' "$d/hold-ledger.jsonl" \
+        || { cat "$d/hold-ledger.jsonl" >&2; st_fail "case=record-notproven wrong ledger line"; }
+    echo "selftest: ok case=record-mode"
+
     echo "selftest: PASS"
+}
+
+# ── record mode ─────────────────────────────────────────────────────
+# cmd_record: run the judge, echo its full per-criterion output (journal),
+# then append ONE JSON verdict line to $LEDGER_DIR/hold-ledger.jsonl and exit
+# 0 regardless of verdict. The certifier timer runs this every 15 min for the
+# whole hold window: the ledger accretes an unfakeable verdict history, and
+# the first VERDICT=HOLD_PROVEN line in it IS the 72h win-proof. Alarming on
+# NOT_PROVEN is deliberately NOT this mode's job — the SLO pager already owns
+# the failed-unit page surface, and NOT_PROVEN is the *expected* state for
+# the first 72h of any hold.
+cmd_record() {
+    local now="${ZCL_SLO_NOW:-$(date +%s)}"
+    local out rc verdict reason
+    set +e
+    out="$(judge "$WINDOW_HOURS" "$INSTANCE" "$GAP_BUDGET" "$LEDGER_FILE" "$PAGES_FILE" "$now")"
+    rc=$?
+    set -e
+    printf '%s\n' "$out"
+    verdict="$(printf '%s\n' "$out" | sed -n 's/.*VERDICT=\([A-Z_]*\).*/\1/p' | tail -n 1)"
+    reason="$(printf '%s\n' "$out" | sed -n 's/.*VERDICT=[A-Z_]* reason=\([a-z_]*\).*/\1/p' | tail -n 1)"
+    [ -n "$verdict" ] || verdict="JUDGE_ERROR"
+    local line
+    line="$(printf '{"ts":%s,"instance":"%s","window_hours":%s,"gap_budget":%s,"verdict":"%s","reason":"%s","judge_rc":%s}' \
+        "$now" "$INSTANCE" "$WINDOW_HOURS" "$GAP_BUDGET" "$verdict" "$reason" "$rc")"
+    local hold_file="$LEDGER_DIR/hold-ledger.jsonl"
+    mkdir -p "$LEDGER_DIR"
+    local append_rc=0
+    (
+        flock -x -w 30 9 || exit 9
+        printf '%s\n' "$line" >&9
+    ) 9>>"$hold_file" || append_rc=$?
+    if [ "$append_rc" -ne 0 ]; then
+        echo "slo-hold: FAIL could not append verdict to $hold_file (rc=$append_rc)" >&2
+        return 1
+    fi
+    echo "slo-hold: recorded verdict=$verdict file=$hold_file"
+    return 0
 }
 
 # ── dispatch ─────────────────────────────────────────────────────────
@@ -429,6 +495,7 @@ cmd_selftest() {
 INSTANCE="${ZCL_SLO_INSTANCE:-canonical}"
 WINDOW_HOURS="${ZCL_SLO_WINDOW_HOURS:-72}"
 GAP_BUDGET="${ZCL_SLO_GAP_BUDGET:-3}"
+RECORD=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -438,8 +505,9 @@ while [ $# -gt 0 ]; do
         --window-hours=*) WINDOW_HOURS="${1#*=}" ;;
         --gap-budget)     shift; GAP_BUDGET="${1:?--gap-budget needs a value}" ;;
         --gap-budget=*)   GAP_BUDGET="${1#*=}" ;;
+        --record)         RECORD=1 ;;
         --selftest)       cmd_selftest; exit 0 ;;
-        *) echo "usage: slo_hold_judge.sh [--instance NAME] [--window-hours N] [--gap-budget N] | --selftest" >&2; exit 2 ;;
+        *) echo "usage: slo_hold_judge.sh [--instance NAME] [--window-hours N] [--gap-budget N] [--record] | --selftest" >&2; exit 2 ;;
     esac
     shift
 done
@@ -450,5 +518,10 @@ case " $INSTANCES " in
     *" $INSTANCE "*) ;;
     *) echo "slo-hold: unknown --instance '$INSTANCE' (known: $INSTANCES)" >&2; exit 2 ;;
 esac
+
+if [ "$RECORD" -eq 1 ]; then
+    cmd_record
+    exit $?
+fi
 
 judge "$WINDOW_HOURS" "$INSTANCE" "$GAP_BUDGET" "$LEDGER_FILE" "$PAGES_FILE" "${ZCL_SLO_NOW:-$(date +%s)}"
