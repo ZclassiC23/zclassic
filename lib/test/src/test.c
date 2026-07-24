@@ -1477,6 +1477,8 @@ int main(int argc, char **argv)
     { extern int test_install_verb_warm(void);
       failures += test_install_verb_warm(); }
     failures += test_always_sync_chaos();
+    { extern int test_always_sync_lifecycle(void);
+      failures += test_always_sync_lifecycle(); }
     { extern int test_reindex_sparse_bodies(void);
       failures += test_reindex_sparse_bodies(); }
     failures += test_waitforheight_provable();

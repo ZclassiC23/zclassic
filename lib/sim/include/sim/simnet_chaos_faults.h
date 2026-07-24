@@ -50,6 +50,22 @@
  *       close+reopen, AND that a post-restart call converges (the primitive
  *       resumes idempotently — no duplicate rewind, no lost frontier, no
  *       silent stall).
+ *   (n) chaos_fault_torn_progress_wal — checkpoints a base prefix into the
+ *       main db, stamps a further suffix into an un-checkpointed WAL, then
+ *       truncates a hot copy of that WAL mid-stream (a kill -9 between
+ *       commits). Asserts the store reopens clean and H* lands on a
+ *       consistent prefix in [base, tip] — never above the last commit,
+ *       never below the checkpoint.
+ *   (o) chaos_fault_disk_full_pause — caps the store at its current page
+ *       count so the next coins write returns SQLite's own SQLITE_FULL,
+ *       then lifts the cap. Asserts the real coins write path fails SAFE
+ *       (reports failure, never a partial commit, the coin set never
+ *       shrinks) and the identical write succeeds once space returns.
+ *   (p) chaos_fault_cleared_have_data_hole — models a persisted body that
+ *       vanished (HAVE_DATA cleared at height H) as a validated header with
+ *       no observed body while the body_fetch cursor stalls at H. Asserts
+ *       the production body-fetch-gap predicate NAMES the hole at that exact
+ *       height, then clears once the body is re-fetched.
  *
  * Every function is self-contained: it opens/builds its own fixture,
  * exercises the fault, tears down, and never mutates a live datadir (never
@@ -362,6 +378,46 @@ struct body_download_resume_result {
  * out->base.operator_paged is always false when out->base.ok is true. */
 bool chaos_fault_peer_disconnect_mid_body_download(
     int32_t chain_len, struct body_download_resume_result *out);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (n)-(p): the durability/vanished-state fault trio
+ *
+ * Same law as (a)-(f): each drives a REAL production entry point as a pure
+ * oracle over a throwaway fixture, and reports a proven recovery or a NAMED
+ * blocker — never a silent stall.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* (n) torn progress.kv WAL.
+ *
+ * Stamps a consistent prefix [0, BASE], forces it into the main db and
+ * disables auto-checkpoint, stamps a further [BASE+1, K] suffix that stays
+ * resident only in the WAL, then hot-copies db+WAL to a sibling dir and
+ * truncates the copied WAL mid-stream (the frames a kill -9 between commits
+ * loses). On reopen of the torn copy, asserts the store recovers clean and H*
+ * is a consistent value in [BASE, K] — never above the last commit, never
+ * below the checkpointed floor. `recovered` is true iff hstar_after is in
+ * [BASE, K] and hstar_before == K. */
+bool chaos_fault_torn_progress_wal(struct chaos_fault_result *out);
+
+/* (o) disk-full pause.
+ *
+ * Seeds a coins set, caps the store at its current page count (PRAGMA
+ * max_page_count) so the next coins write returns SQLITE_FULL — SQLite's own
+ * disk-full signal — attempts the write, then lifts the cap and re-attempts.
+ * `recovered` is true iff the capped write REPORTED failure, the coin count
+ * did not shrink across it (no wipe, no partial commit), and the identical
+ * write succeeds and grows the set once space returns. */
+bool chaos_fault_disk_full_pause(struct chaos_fault_result *out);
+
+/* (p) HAVE_DATA cleared at height H (a vanished persisted body).
+ *
+ * Seeds validated headers [0, V] and observed bodies [0, HOLE-1] (the row at
+ * HOLE absent) with the body_fetch cursor stalled at HOLE. Drives the
+ * production body-fetch-gap predicate
+ * (stage_repair_body_fetch_missing_have_data_candidate): `recovered` is true
+ * iff the gap is NAMED at exactly HOLE, then clears once the body is
+ * re-fetched and the cursor advances. */
+bool chaos_fault_cleared_have_data_hole(struct chaos_fault_result *out);
 
 #ifdef __cplusplus
 }

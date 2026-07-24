@@ -32,6 +32,7 @@
 #include "json/json.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_rederive_range.h"
+#include "jobs/stage_repair.h"
 #include "jobs/stage_row_itag.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/utxo_apply_stage.h"
@@ -2286,5 +2287,398 @@ bool chaos_fault_peer_disconnect_mid_body_download(
     dl_free(&dm);
     free(chain);
     free(hashes);
+    return true;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (n) torn progress.kv WAL — an unclean crash mid-write leaves a
+ *     partially-written write-ahead log at reopen
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static bool chaos_copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in)
+        return false;
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+    uint8_t buf[65536];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            ok = false;
+            break;
+        }
+    }
+    if (ferror(in))
+        ok = false;
+    fclose(out);
+    fclose(in);
+    return ok;
+}
+
+bool chaos_fault_torn_progress_wal(struct chaos_fault_result *out)
+{
+    chaos_result_init(out);
+    const int32_t BASE = 8;   /* checkpointed into the main db (never at risk) */
+    const int32_t K = 24;     /* stamped into the un-checkpointed WAL suffix */
+
+    char dir[256], torn[256];
+    mkdir("./test-tmp", 0755);
+    test_fmt_tmpdir(dir, sizeof(dir), "chaos_torn_wal", "main");
+    test_fmt_tmpdir(torn, sizeof(torn), "chaos_torn_wal", "torn");
+    mkdir(dir, 0755);
+    mkdir(torn, 0755);
+
+    progress_store_close();
+    if (!progress_store_open(dir)) {
+        chaos_note(out, "progress_store failed to open fixture dir");
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(torn);
+        return false;
+    }
+    sqlite3 *db = progress_store_db();
+    if (!db || !chaos_stamp_prefix(db, BASE)) {
+        chaos_note(out, "fixture base stamp failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(torn);
+        return false;
+    }
+    /* Force [0,BASE] + the schema fully into the main db, then disable
+     * auto-checkpoint so the [BASE+1,K] suffix stays resident ONLY in the WAL —
+     * the frames a torn crash can lose. */
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+    sqlite3_exec(db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+    if (!chaos_stamp_prefix(db, K)) {
+        chaos_note(out, "fixture WAL-suffix stamp failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(torn);
+        return false;
+    }
+
+    int32_t hstar_before = -1, served_before = -1;
+    bool ok1 = reducer_frontier_compute_hstar(db, &hstar_before, &served_before);
+
+    /* Copy the live db + WAL (NOT the -shm, which SQLite rebuilds) to a sibling
+     * dir while the handle is open — the page cache is coherent for a same-host
+     * copy, so the copy captures every committed frame. The store owns its own
+     * file name, so ask it rather than hardcoding one. */
+    char src_db[PROGRESS_STORE_PATH_MAX];
+    char src_wal[PROGRESS_STORE_PATH_MAX + 8];
+    char dst_db[PROGRESS_STORE_PATH_MAX];
+    char dst_wal[PROGRESS_STORE_PATH_MAX + 8];
+    bool copied = false;
+    if (progress_store_path(src_db, sizeof(src_db))) {
+        const char *base = strrchr(src_db, '/');
+        base = base ? base + 1 : src_db;
+        snprintf(src_wal, sizeof(src_wal), "%s-wal", src_db);
+        snprintf(dst_db, sizeof(dst_db), "%s/%s", torn, base);
+        snprintf(dst_wal, sizeof(dst_wal), "%s-wal", dst_db);
+        copied = chaos_copy_file(src_db, dst_db) &&
+                 chaos_copy_file(src_wal, dst_wal);
+    }
+    progress_store_close();  /* the original truncates its WAL; the copy is torn */
+    if (!copied) {
+        chaos_note(out, "hot-copy of db+wal failed");
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(torn);
+        return false;
+    }
+
+    /* THE FAULT: truncate the copied WAL mid-stream — SQLite ignores every
+     * frame from the first incomplete/absent one onward, exactly the recovery a
+     * kill -9 between commits leaves. */
+    struct stat sb;
+    bool torn_ok = false;
+    if (stat(dst_wal, &sb) == 0 && sb.st_size > 40) {
+        off_t keep = 32 + (sb.st_size - 32) / 2;  /* header + ~half the frames */
+        torn_ok = truncate(dst_wal, keep) == 0;
+    }
+    if (!torn_ok) {
+        chaos_note(out, "WAL truncation failed (size=%lld)",
+                   (long long)(stat(dst_wal, &sb) == 0 ? sb.st_size : -1));
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(torn);
+        return false;
+    }
+
+    /* RESTART on the torn copy: the store must reopen cleanly and H* must land
+     * on a CONSISTENT prefix in [BASE, K] — never a value above the last commit,
+     * never below the checkpointed floor, never a crash. */
+    bool reopened = progress_store_open(torn);
+    sqlite3 *db2 = reopened ? progress_store_db() : NULL;
+    int32_t hstar_after = -1, served_after = -1;
+    bool ok2 = db2 && reducer_frontier_compute_hstar(db2, &hstar_after,
+                                                     &served_after);
+
+    out->ok = ok1 && reopened && ok2;
+    out->hstar_before = hstar_before;
+    out->hstar_after = hstar_after;
+    out->recovered = out->ok && hstar_after >= BASE && hstar_after <= K &&
+                     hstar_before == K;
+    chaos_note(out,
+        "torn WAL: H* before=%d after=%d (checkpointed floor=%d, WAL tip=%d) — "
+        "%s", hstar_before, hstar_after, BASE, K,
+        out->recovered
+            ? "reopened clean on a consistent prefix — nothing above the last "
+              "commit, nothing below the checkpoint"
+            : "torn WAL yielded an inconsistent or lost frontier");
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    test_cleanup_tmpdir(torn);
+    return true;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (o) disk-full pause — a write hits ENOSPC (modeled with SQLite's own
+ *     SQLITE_FULL via PRAGMA max_page_count) and must fail SAFE
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static int64_t chaos_pragma_get_int(sqlite3 *db, const char *pragma)
+{
+    char sql[64];
+    snprintf(sql, sizeof(sql), "PRAGMA %s", pragma);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int64_t v = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:test-fixture-seeding
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+static void chaos_pragma_set_int(sqlite3 *db, const char *pragma, int64_t v)
+{
+    char sql[80];
+    snprintf(sql, sizeof(sql), "PRAGMA %s=%lld", pragma, (long long)v);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+}
+
+static void chaos_fill_txid(uint8_t txid[32], int32_t seed)
+{
+    memset(txid, 0, 32);
+    txid[0] = (uint8_t)(seed & 0xff);
+    txid[1] = (uint8_t)((seed >> 8) & 0xff);
+    txid[2] = (uint8_t)((seed >> 16) & 0xff);
+    txid[31] = 0xD5;
+}
+
+/* Add `n` synthetic live outputs through the RAW (overlay-bypassing) coins
+ * write path, inside one BEGIN IMMEDIATE the caller does not hold. Returns
+ * the result of coins_kv_add_many_sqlite (false on SQLITE_FULL) and rolls the
+ * txn back on failure so a full disk never leaves a partial commit. */
+static bool chaos_coins_add_batch(sqlite3 *db, int32_t first_seed, size_t n)
+{
+    struct coins_kv_add_row *rows =
+        calloc(n, sizeof(*rows)); // raw-alloc-ok:test
+    uint8_t (*txids)[32] = calloc(n, 32); // raw-alloc-ok:test
+    if (!rows || !txids) {
+        free(rows);
+        free(txids);
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        chaos_fill_txid(txids[i], first_seed + (int32_t)i);
+        rows[i].txid = txids[i];
+        rows[i].vout = 0;
+        rows[i].value = 1000 + (int64_t)i;
+        rows[i].height = 1;
+        rows[i].is_coinbase = false;
+        rows[i].script = NULL;
+        rows[i].script_len = 0;
+    }
+    sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+    bool ok = coins_kv_add_many_sqlite(db, rows, n);
+    if (ok)
+        ok = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;  // raw-sql-ok:test-fixture-seeding
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+    free(rows);
+    free(txids);
+    return ok;
+}
+
+bool chaos_fault_disk_full_pause(struct chaos_fault_result *out)
+{
+    chaos_result_init(out);
+
+    char dir[256];
+    mkdir("./test-tmp", 0755);
+    test_fmt_tmpdir(dir, sizeof(dir), "chaos_disk_full", "main");
+    mkdir(dir, 0755);
+
+    progress_store_close();
+    if (!progress_store_open(dir)) {
+        chaos_note(out, "progress_store failed to open fixture dir");
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+    sqlite3 *db = progress_store_db();
+    if (!db || !coins_kv_ensure_schema(db) ||
+        !chaos_coins_add_batch(db, 1, 64)) {
+        chaos_note(out, "coins fixture seed failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+    int64_t count0 = coins_kv_count_sqlite(db);
+
+    /* THE FAULT: cap the db at its current page count (zero head-room) so the
+     * next growth returns SQLITE_FULL — SQLite's exact disk-full signal. */
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);  // raw-sql-ok:test-fixture-seeding
+    int64_t pages = chaos_pragma_get_int(db, "page_count");
+    chaos_pragma_set_int(db, "max_page_count", pages);
+
+    bool wrote_under_full = chaos_coins_add_batch(db, 1000, 4096);
+    int64_t count1 = coins_kv_count_sqlite(db);
+
+    /* RECOVER: "free space" (lift the cap) and re-run the identical write. */
+    chaos_pragma_set_int(db, "max_page_count", 2147483646);
+    bool wrote_after_free = chaos_coins_add_batch(db, 1000, 4096);
+    int64_t count2 = coins_kv_count_sqlite(db);
+
+    out->ok = count0 >= 0 && count1 >= 0 && count2 >= 0;
+    /* Fail-safe: the write REPORTED its failure (never silently dropped),
+     * the coin set never SHRANK across the ENOSPC (no wipe), and the very same
+     * write succeeds once space returns and the set grows. */
+    out->recovered = out->ok && !wrote_under_full && count1 == count0 &&
+                     wrote_after_free && count2 > count0;
+    out->operator_paged = false;
+    chaos_note(out,
+        "disk-full: write-under-FULL=%s coins %lld->%lld (no wipe) -> after "
+        "free %s coins=%lld — %s",
+        wrote_under_full ? "committed(!)" : "refused",
+        (long long)count0, (long long)count1,
+        wrote_after_free ? "committed" : "still-failed",
+        (long long)count2,
+        out->recovered ? "failed safe, then resumed — no partial, no wipe"
+                       : "disk-full write was NOT fail-safe");
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return true;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * (p) HAVE_DATA cleared at height H — a persisted body vanished; the
+ *     body-fetch stage must NAME the gap at that exact height
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static bool chaos_ensure_body_fetch_table(sqlite3 *db)
+{
+    return sqlite3_exec(db,  // raw-sql-ok:test-fixture-schema
+        "CREATE TABLE IF NOT EXISTS body_fetch_log ("
+        "  height       INTEGER PRIMARY KEY,"
+        "  hash         BLOB,"
+        "  source       TEXT,"
+        "  bytes        INTEGER,"
+        "  fetched_at   INTEGER,"
+        "  ok           INTEGER,"
+        "  fail_reason  TEXT"
+        ");", NULL, NULL, NULL) == SQLITE_OK;
+}
+
+static bool chaos_put_body_fetch_ok(sqlite3 *db, int32_t h)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO body_fetch_log(height,source,bytes,fetched_at,ok) "
+            "VALUES(?,'chaos_fixture',0,0,1) ON CONFLICT(height) DO UPDATE "
+            "SET ok=1", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, h);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool chaos_fault_cleared_have_data_hole(struct chaos_fault_result *out)
+{
+    chaos_result_init(out);
+    const int32_t V = 20;    /* headers validated through here */
+    const int32_t HOLE = 10; /* body_fetch stalls here: its body vanished */
+
+    char dir[256];
+    mkdir("./test-tmp", 0755);
+    test_fmt_tmpdir(dir, sizeof(dir), "chaos_have_data_hole", "main");
+    mkdir(dir, 0755);
+
+    progress_store_close();
+    if (!progress_store_open(dir)) {
+        chaos_note(out, "progress_store failed to open fixture dir");
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+    sqlite3 *db = progress_store_db();
+    if (!db || !chaos_ensure_log_tables(db) ||
+        !chaos_ensure_body_fetch_table(db)) {
+        chaos_note(out, "fixture schema ensure failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+
+    /* Headers validated [0,V]; bodies observed [0,HOLE-1] only — the row at
+     * HOLE is ABSENT (the vanished / never-re-fetched body). Cursors: headers
+     * ran ahead (V+1), body_fetch stalled AT the hole. */
+    bool seeded = true;
+    for (int32_t h = 0; seeded && h <= V; h++) {
+        uint8_t hh[32];
+        chaos_synth_hash(hh, h);
+        seeded = chaos_put_validate_headers(db, h, hh);
+    }
+    for (int32_t h = 0; seeded && h < HOLE; h++)
+        seeded = chaos_put_body_fetch_ok(db, h);
+    seeded = seeded &&
+             stage_set_named_cursor(db, "validate_headers", (uint64_t)(V + 1)) &&
+             stage_set_named_cursor(db, "body_fetch", (uint64_t)HOLE);
+    if (!seeded) {
+        chaos_note(out, "fixture row/cursor seed failed");
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        return false;
+    }
+
+    /* DETECT: the production body-fetch-gap predicate must NAME the hole at the
+     * exact stalled height — a validated header with no observed body. */
+    struct stage_repair_body_fetch_gap gap;
+    bool named = stage_repair_body_fetch_missing_have_data_candidate(db, HOLE,
+                                                                     &gap);
+    bool named_correctly = named && gap.ready && gap.target_height == HOLE &&
+                           gap.validate_cursor == V + 1 &&
+                           gap.body_fetch_cursor == HOLE &&
+                           !gap.body_observed;
+
+    /* REMEDY: the body is re-fetched (row written, cursor advances past the
+     * hole). The gap must then be GONE — no silent forever-stall. */
+    bool refetched = chaos_put_body_fetch_ok(db, HOLE) &&
+                     stage_set_named_cursor(db, "body_fetch",
+                                            (uint64_t)(HOLE + 1));
+    struct stage_repair_body_fetch_gap gap2;
+    bool still_named =
+        stage_repair_body_fetch_missing_have_data_candidate(db, HOLE, &gap2);
+
+    out->ok = seeded && refetched;
+    out->recovered = named_correctly && !still_named;
+    out->operator_paged = false;
+    chaos_note(out,
+        "HAVE_DATA hole: gap named at h=%d (ready=%d cursor=%d validate=%d) -> "
+        "re-fetched -> still_named=%d — %s",
+        HOLE, gap.ready, gap.body_fetch_cursor, gap.validate_cursor,
+        still_named,
+        out->recovered ? "body-fetch stage named the vanished body at a known "
+                         "height, then cleared on re-fetch"
+                       : "the vanished body was NOT named or did not clear");
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
     return true;
 }
