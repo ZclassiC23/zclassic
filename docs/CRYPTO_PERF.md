@@ -123,8 +123,9 @@ median of three runs — both paths timed in one process against the same key):
 | sapling OUTPUT verify | 5 | 6.98 ms | 4.93 ms | 1.41x (-29%) |
 | sapling SPEND verify | 7 | 7.74 ms | 5.05 ms | 1.53x (-35%) |
 
-Cost: ~144 KiB of table per IC point (≈1.0 MB for the 7-input SPEND key), built
-once in ~9 ms. On allocation failure the naive path is kept — same verdicts,
+Cost: 144 KiB of table per IC point — ≈3.0 MB resident for all three consensus
+keys (SPEND 7 inputs, OUTPUT 5, sprout-groth16 9), built once in ~25 ms total
+at param load. On allocation failure the naive path is kept: same verdicts,
 original speed. The remaining verify time is the four Miller loops plus the
 final exponentiation, which is where the next optimization has to go.
 

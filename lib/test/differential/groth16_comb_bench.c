@@ -46,7 +46,7 @@ static const uint8_t G2_GEN_COMPRESSED[96] = {
 static uint64_t now_ns(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);  // platform-ok:standalone-bench-links-no-platform-clock
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
