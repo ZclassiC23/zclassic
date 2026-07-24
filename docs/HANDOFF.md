@@ -10,27 +10,56 @@
 
 # HANDOFF — current state (2026-07-24)
 
-## 0-LATEST. The 13-day pin is BROKEN on live (2026-07-24, ledger-cited)
+## 0-LATEST. AT TIP on the cured stack (uptime-ledger gap_vs_oracle=1 at ts=1784918497); 72h hold accruing, certifier armed (2026-07-24)
 
-The canonical node runs the cured stack and is climbing to tip — externally
-confirmed by uptime-ledger canonical samples served_height 3,176,325 →
-3,183,999 → 3,185,298 (ts=1784892997 → ts=1784893177 →  next tick) with
-gap_vs_oracle shrinking. Every claim below carries its external-ledger line;
-re-derive with `zclassic23 status` / the SLO ledger before acting.
+The canonical node reached and is holding the network tip — externally
+confirmed by uptime-ledger canonical samples: served_height 3,192,736
+gap_vs_oracle=1 (ts=1784917477) and 3,192,759 gap_vs_oracle=1 (ts=1784918497,
+still following the tip an hour later). Every claim below carries its
+external-ledger line; re-derive with `zclassic23 status` / the SLO ledger
+before acting.
 
 | Fact | Evidence (external ledger) |
 |---|---|
-| REBUILD cure copy-proven (recipe + exact binary) | `~/.local/state/zclassic23-cure/verdict.jsonl` units `zcl-anchor-refold-proof-8` PASS (h\*=3,176,357) and `zcl-anchor-refold-proof-9` attempt-2 PASS (h\*=3,177,257) |
-| Revert path copy-proven | same ledger, `zcl-revert-proof-1` attempt-2 PASS (h\*=3,176,325) |
-| ONE live apply executed 10:16–10:22Z (5.5 min outage) | `zcl-live-apply-1` APPLIED line; backup `~/.zclassic-c23-PREINSTALL-20260724-101627` |
-| Post-apply pin: three residue walls (splice 3,176,326 / shielded ≤3,176,410 / deep coin 3,176,489) cured on a live-copy | `zcl-splicefix-proof-1` PASS (h\*=3,177,099 past all three walls); shielded import committed 367,466+271,291 anchors, 444,911+1,055,998 nullifiers from a frozen zclassicd chainstate bound at exactly h=3,176,325 |
-| Proven copy PROMOTED to canonical 11:37Z | prior datadir kept at `~/.zclassic-c23-PREPROMOTE-20260724-113719` |
-| **Live climb, externally confirmed** | SLO `uptime-ledger.jsonl`: canonical served_height 3,176,325 (ts 1784892997) → 3,183,999 (ts 1784893177) → 3,185,298 rising ~21 blk/s, gap_vs_oracle shrinking |
+| REBUILD cure applied + copy-proven, revert kept | `~/.local/state/zclassic23-cure/verdict.jsonl` (`zcl-anchor-refold-proof-8/-9` PASS, `zcl-revert-proof-1` PASS, `zcl-live-apply-1` APPLIED); backups `~/.zclassic-c23-PREINSTALL-20260724-101627`, `~/.zclassic-c23-PREPROMOTE-20260724-113719` |
+| **AT TIP, externally confirmed** | SLO `uptime-ledger.jsonl`: canonical served 3,176,325 (ts 1784892997) → 3,192,736 gap=1 (ts 1784917477) → 3,192,759 gap=1 (ts 1784918497) |
+| **72h hold certifier ARMED** (15-min timer) | `~/.local/state/zclassic23-slo/hold-ledger.jsonl` first verdict line ts=1784918144 `NOT_PROVEN reason=reachability` (honest: the trailing 72h still contains the pin era, the apply outage, 2 pages, and the 16:12Z regression below). Judge = `tools/scripts/slo_hold_judge.sh`; recorder = `--record` via `zclassic23-hold-certifier.timer` (`make install-hold-certifier`). The first `HOLD_PROVEN` line in that file IS the 72h win-proof. |
+| One live incident since promotion: label-splice wedge at h=3,192,628, self-cured in ~5 min | node.log 16:12:06Z `blocker_stall_meta_detector` DEFECT CLASS (H\*=3,192,627 frozen 907s) → sticky escalator rungs retry → targeted_rederive → resnapshot: `stage_rederive [3192000,3192627]` (32 rederive commits 16:12–16:16Z, served dipped to 3,192,099 in the SLO ledger at ts 1784909617, then re-climbed to tip) |
 
-Next: climb to gap_vs_oracle ≤ 2, then the 72h zero-touch hold (judge = the
-hold certifier reading the SLO ledger), then Phase-B ladder carve per
+The 16:12Z incident confirms the NULL-block_hash label-splice fault class
+occurs in LIVE operation (h=3,192,628 is far above the cure walls), not just
+as wedge-era residue. The running binary (started 11:37:53Z, NRestarts=0)
+predates the merged in-place healer (`edc925178` + merge `944077e99`), so the
+escalator's 600-block resnapshot refold is currently the live cure — crude
+but always-terminating, proven by the re-climb above. **Deploy policy for the
+hold window:** each escalator firing regresses served_height and resets the
+72h trailing window (visible as a fresh `served_advance` violation in
+hold-ledger.jsonl), so if the fault class fires again, deploy the healer
+build at that moment (the hold was reset anyway — the restart costs nothing);
+if it never fires again, deploy only after HOLD_PROVEN. Do not restart the
+canonical node for any other reason.
+
+Known-junk blocker, root-caused 2026-07-24 (fix in flight on a worktree lane):
+`sapling_tree_rebuild.fail_closed` (`intermediate_sapling_root_mismatch
+h=3155873 commitments=1`) is NOT corruption. On this cure-seeded datadir the
+legacy tree copy (node_state `sapling_tree` + `sapling_tree_ckpt.dat`) was
+refused at boot (`ops state --subsystem=sapling_checkpoint`:
+`last_load_result=discarded, root_mismatch` at h=3,176,379), and the deferred
+rebuild then replays from Sapling activation over bodies that do not exist
+below the cure anchor — a structurally-doomed replay whose first appended
+commitment is guaranteed to mismatch. The CANONICAL tree is healthy:
+`fold_sapling` (anchor_kv, coins DB) fail-closed verifies the incremental
+root against every block header's `hashFinalSaplingRoot` and climbed ~16k
+blocks to tip through that check. Fix = seed the rebuild from the anchor_kv
+frontier (North Star: heal by reading the canonical ledger, never by
+replaying a clone) + reclassify skip-tainted mismatches as DEPENDENCY.
+Side-effect until deployed: this blocker keeps the empty-escape set non-empty,
+which is what let the 16:12Z freeze arm the escalator.
+
+Next: hold-ledger.jsonl accrues toward `HOLD_PROVEN` (earliest ≈ 72h after
+the last violation, i.e. ≥ 2026-07-27 ~16:13Z), then Phase-B ladder carve per
 `docs/work/ladder-carve-audit.md`. The reformed pager (merge `18bd0e797`)
-paged this incident correctly and is the failure net.
+paged the pin incident correctly and is the failure net.
 
 Operational discoveries recorded in the cure runbook state dir: the
 `-import-complete-shielded` bind guard requires the source chainstate best
@@ -38,9 +67,7 @@ block == the target coins island root EXACTLY; a `-bootstrapserve` zclassicd
 pins its on-disk chainstate at the serve anchor; `chainstate_legacy_reader`
 reads LevelDB SSTs only (WAL not replayed — followup: replay or refuse loudly
 on a non-empty WAL); zclassicd `invalidateblock` does not persist across
-restarts in this fork. The healer gap that made this manual (NULL-hash rearm
-unwired, remedy conflation in `reducer_frontier_reconcile_light`) has a repo
-fix in flight.
+restarts in this fork.
 
 ### Q1 evidence at this checkpoint
 
