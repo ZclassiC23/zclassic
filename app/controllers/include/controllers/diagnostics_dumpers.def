@@ -394,13 +394,6 @@
                     "network_census rollup.",
                     "lib/storage/src/peers_projection.c",
                     "lib/test/src/test_peers_projection.c"),
-    DIAG_PROJECTION("utxo_projection", utxo_projection_dump_state_json,
-                    "utxo_projection: open/path/last_consumed_offset, "
-                    "utxo_count, events_consumed_total, emit/consume counters, "
-                    "REPLACE collisions, last_catch_up_ms. UTXO set derived "
-                    "from the event_log.",
-                    "lib/storage/src/utxo_projection.c",
-                    "lib/test/src/test_utxo_projection.c"),
     DIAG_PROJECTION("znam_projection", znam_projection_dump_state_json,
                     "znam projection: name_count, addr/text counts, "
                     "events_consumed_total, per-event-type counters, emit/fail "

@@ -3,9 +3,8 @@
  * coins_view_kv — implementation. See storage/coins_view_kv.h.
  *
  * Read-only coins_view backed by coins_kv (the canonical UTXO set in
- * progress.kv). Mirrors coins_view_projection's vtable-thunk pattern
- * verbatim, swapping the projection backing for the process-global
- * progress.kv handle fetched lazily per call. */
+ * progress.kv). Mirrors coins_view_sqlite's vtable-thunk pattern,
+ * fetching the process-global progress.kv handle lazily per call. */
 
 #include "storage/coins_view_kv.h"
 

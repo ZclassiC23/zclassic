@@ -45,7 +45,6 @@
 #include "script/script.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
@@ -507,18 +506,9 @@ int test_utxo_apply_value_balance(void)
             UAVB_CHECK("(e) author guard rows seeded", seeded);
 
             unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
-            utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
             struct utxo_apply_value_overflow_repair_result rr;
-            bool ok = utxo_apply_repair_value_overflow_hole(
-                db, 1, 3, &block_hash, &b, &rr);
-            UAVB_CHECK("(e) non-stage author refused without mutation",
-                       ok && rr.author_refused && !rr.repaired &&
-                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
-                       uavb_row_exists(db, "utxo_apply_log", 1));
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-
             memset(&rr, 0, sizeof(rr));
-            ok = utxo_apply_repair_value_overflow_hole(
+            bool ok = utxo_apply_repair_value_overflow_hole(
                 db, 1, 3, &block_hash, &b, &rr);
             UAVB_CHECK("(e) owner gate refuses without mutation",
                        ok && rr.owner_refused && !rr.repaired &&
@@ -544,7 +534,6 @@ int test_utxo_apply_value_balance(void)
             unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
         }
         block_free(&bad);
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
         uavb_repair_fixture_close(dir);
     }
 
@@ -698,7 +687,6 @@ int test_utxo_apply_value_balance(void)
         seeded = seeded && uavb_set_cursor_and_frontier(db, UAVB_ON);
         UAVB_CHECK("(o) divergent deltas seeded", seeded);
 
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
         stage_t *st = stage_create("uavb_noop", uavb_noop_step, NULL);
         UAVB_CHECK("(o) throwaway stage", st != NULL);
         if (st && chain_up && seeded) {

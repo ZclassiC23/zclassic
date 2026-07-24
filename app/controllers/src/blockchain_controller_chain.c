@@ -38,7 +38,6 @@
 #include "storage/block_index_db.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"

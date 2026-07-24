@@ -4,10 +4,9 @@
  * `struct coins` correctly from coins_kv rows.
  *
  * This is the test of record for the PRODUCTION read view (the live
- * coins_tip cache backing after the projection dual-write was removed). It
- * mirrors test_coins_view_projection case-for-case, seeding coins_kv
- * (coins_kv_add / coins_kv_spend on an in-mem progress.kv) instead of the
- * projection:
+ * coins_tip cache backing; the event-log-fed UTXO projection was deleted in
+ * Program H1). It seeds coins_kv (coins_kv_add / coins_kv_spend on an in-mem
+ * progress.kv) and reconstructs through the coins_kv-backed view:
  *   1. reconstruct — a multi-output txid (one output spent) yields a
  *      struct coins with the right num_vout, the spent vout nulled, the
  *      live vouts' value/script intact, version==1, height/is_coinbase

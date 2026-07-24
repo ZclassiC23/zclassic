@@ -47,7 +47,6 @@
 #include "storage/event_log.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"
@@ -338,26 +337,21 @@ static int ci_part2_green_fold(void)
     char blocksdir[640];
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     ci_mkdir_p(blocksdir);
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     bool store_ok = progress_store_open(dir);
     CI_CHECK("green: progress store opens", store_ok);
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    CI_CHECK("green: event log + projection open", lg && proj);
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    CI_CHECK("green: event log open", lg != NULL);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         progress_store_close();
         SetDataDir(""); ClearDataDirCache();
         chain_params_select(CHAIN_MAIN);
         return failures;
     }
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -461,7 +455,6 @@ static int ci_part2_green_fold(void)
     body_fetch_stage_shutdown();
     validate_headers_stage_shutdown();
     header_admit_stage_shutdown();
-    utxo_projection_close(proj);
     event_log_close(lg);
     progress_store_close();
     test_cleanup_tmpdir(blocksdir);

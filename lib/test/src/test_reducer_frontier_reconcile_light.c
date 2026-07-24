@@ -22,7 +22,6 @@
 #include "services/sync_monitor.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -581,7 +580,6 @@ static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
         return false;
     if (!seed_coins_applied(progress_store_db(), A + 2))
         return false;
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     return true;
 }
 

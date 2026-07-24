@@ -59,7 +59,6 @@
 #include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -550,14 +549,13 @@ static void seed_base_coins(sqlite3 *pdb, const struct rie_ext_coin *ext, int n)
 struct rie_env {
     char dir[256];
     event_log_t *lg;
-    utxo_projection_t *p;
     struct main_state ms;
     struct rie_ctx ctx;
     struct rie_counter_ctx cc;
     bool ok;
 };
 
-/* Open progress/log/projection, init the active chain + stages, seed the base
+/* Open progress/log, init the active chain + stages, seed the base
  * coins, and install the reader/lookup over `active`. */
 static bool rie_env_open(struct rie_env *e, const char *tag,
                          struct rie_branch *active,
@@ -566,20 +564,13 @@ static bool rie_env_open(struct rie_env *e, const char *tag,
     memset(e, 0, sizeof(*e));
     test_make_tmpdir(e->dir, sizeof(e->dir), "reducer_ingest_e2e", tag);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", e->dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", e->dir);
 
     progress_store_close();
     if (!progress_store_open(e->dir)) return false;
     e->lg = event_log_open(log_path);
     if (!e->lg) return false;
-    e->p = utxo_projection_open(proj_path, e->lg);
-    if (!e->p) return false;
-
-    utxo_projection_set_event_log(e->lg);
-    /* Test-only UTXO authorship: make utxo_apply author coins_kv as STAGE. */
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     seed_base_coins(progress_store_db(), ext, n_ext);
 
@@ -610,12 +601,8 @@ static void rie_env_close(struct rie_env *e)
 {
     tip_finalize_stage_shutdown();
     utxo_apply_stage_shutdown();
-    /* Restore the production projection author. */
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-    utxo_projection_set_event_log(NULL);
     active_chain_free(&e->ms.chain_active);
     block_map_free(&e->ms.map_block_index);
-    if (e->p) utxo_projection_close(e->p);
     if (e->lg) event_log_close(e->lg);
     progress_store_close();
     test_cleanup_tmpdir(e->dir);
@@ -999,8 +986,6 @@ int test_reducer_ingest_e2e(void)
     /* Belt + suspenders: production authority remains reducer-owned. */
     RIE_CHECK("teardown: reducer remains authoritative",
               reducer_is_authoritative());
-    RIE_CHECK("teardown: utxo author restored to STAGE",
-              utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
 
     /* Advance-or-blocker false-fire proof: healthy folds + a legitimately
      * blocked invalid height (scenario 2) must never name a stage as spinning

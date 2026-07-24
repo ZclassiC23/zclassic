@@ -60,7 +60,6 @@ lib/storage/src/peers_projection.c 1304
 lib/storage/src/progress_store.c 881
 lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
-lib/storage/src/utxo_projection.c 978
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1705

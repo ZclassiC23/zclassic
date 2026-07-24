@@ -43,7 +43,6 @@
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
-#include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -326,9 +325,8 @@ int test_stage_rederive_range(void)
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     sr_mkdir_p(blocksdir);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     projection_store_close();
@@ -339,11 +337,8 @@ int test_stage_rederive_range(void)
     SR_CHECK("projection_store opens", !store_ok || projection_store_open(dir));
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     SR_CHECK("event log opens", lg != NULL);
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    SR_CHECK("UTXO projection opens", proj != NULL);
 
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         projection_store_close();
         progress_store_close();
@@ -352,9 +347,6 @@ int test_stage_rederive_range(void)
         printf("=== stage_rederive_range: %d failures (setup) ===\n", failures);
         return failures;
     }
-
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -591,7 +583,6 @@ teardown:
     body_fetch_stage_shutdown();
     validate_headers_stage_shutdown();
     header_admit_stage_shutdown();
-    utxo_projection_close(proj);
     event_log_close(lg);
     projection_store_close();
     progress_store_close();

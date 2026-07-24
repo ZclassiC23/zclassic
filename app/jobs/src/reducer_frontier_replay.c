@@ -16,7 +16,6 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
-#include "storage/utxo_projection.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "util/blocker.h"
@@ -355,15 +354,6 @@ bool maybe_replay_stale_script_via(
     }
 
     out->stale_script_repair_attempted = true;
-    if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair refused h=%d: "
-                 "utxo author is not stage",
-                 height);
-        progress_store_tx_unlock();
-        block_free(&blk);
-        return true;
-    }
 
     /* STEP 1 + STEP 3 — the body-vs-row DELTA. Re-derive the verdict against the
      * canonical body via the SAME public dry-run the real fold uses (so dry.ok

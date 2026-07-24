@@ -17,7 +17,6 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
-#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -205,17 +204,6 @@ bool utxo_apply_repair_value_overflow_hole(
 
     local.attempted = true;
 
-    if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE) {
-        local.author_refused = true;
-        LOG_WARN("utxo_apply",
-                 "[utxo_apply] value_overflow repair refused h=%d: "
-                 "utxo author is not stage",
-                 height);
-        if (out)
-            *out = local;
-        return true;
-    }
-
     if (!owner_ack_value_overflow_repair()) {
         local.owner_refused = true;
         LOG_WARN("utxo_apply",
@@ -394,18 +382,6 @@ bool utxo_apply_repair_value_overflow_hole(
              "for stale hole h=%d",
              (unsigned long long)cursor, height, height);
 
-    utxo_projection_t *proj = utxo_projection_get_global();
-    if (proj) {
-        progress_store_tx_lock();
-        bool reseeded = utxo_projection_reseed_from_coins_kv(proj, db);
-        progress_store_tx_unlock();
-        if (!reseeded) {
-            LOG_WARN("utxo_apply",
-                     "[utxo_apply] value_overflow repair: projection reseed "
-                     "from coins_kv failed after consensus rewind "
-                     "(non-blocking)");
-        }
-    }
     if (out)
         *out = local;
     return true;

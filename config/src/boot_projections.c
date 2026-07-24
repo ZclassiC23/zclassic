@@ -2,16 +2,16 @@
  *
  * Boot projection storage — the event_log + reducer read-model projections.
  *
- * Opens the append-only event log + the per-domain projections (utxo, mempool,
+ * Opens the append-only event log + the per-domain projections (mempool,
  * peers, block_index, znam, wallet, contacts, onion-announcements, hodl-history)
  * during boot and tears them down in reverse on shutdown. The handles live in
  * module-static pointers so they can be freed regardless of singleton state.
  *
- * Clean seam: the legacy anchor-seed node_db is passed in by the caller
- * (boot_start_projection_storage's seed_ndb parameter) instead of reaching for
- * the boot_services.c-local boot_node_db(svc), so this TU shares no boot state.
- * boot_ensure_log_and_utxo_projection / boot_ensure_block_index_projection stay
- * extern — boot.c opens them early for the coins read view (first-opener wins).
+ * boot_ensure_event_log / boot_ensure_block_index_projection stay extern —
+ * boot.c opens them early (the event-log singleton must be published before the
+ * coins read view + the other projections bind; first-opener wins). The
+ * canonical UTXO set is the kernel coins store (coins_kv), read live through
+ * coins_view_kv — there is no separate event-log-fed UTXO projection.
  */
 
 #include "config/boot_internal.h"
@@ -20,7 +20,6 @@
 #include "storage/event_log_singleton.h"
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
-#include "storage/utxo_projection.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/block_index_projection.h"
@@ -35,7 +34,6 @@
 static event_log_t               *g_phase4_event_log = NULL;
 static mempool_projection_t      *g_phase4_mempool_projection = NULL;
 static peers_projection_t        *g_phase4_peers_projection = NULL;
-static utxo_projection_t         *g_phase4_utxo_projection = NULL;
 static block_index_projection_t  *g_phase4_block_index_projection = NULL;
 static znam_projection_t         *g_phase4_znam_projection = NULL;
 static wallet_projection_t       *g_phase4_wallet_projection = NULL;
@@ -43,85 +41,56 @@ static contacts_projection_t     *g_phase4_contacts_projection = NULL;
 static onion_ann_projection_t    *g_phase4_onion_ann_projection = NULL;
 static hodl_history_projection_t *g_phase4_hodl_history_projection = NULL;
 
-/* Idempotent open of the append-only event_log + utxo_projection. boot.c must
- * publish these handles (event_log_set_singleton /
- * utxo_projection_get_global non-NULL) before it builds the coins_tip read
- * view from coins_view_projection, which is well before app_init_services
- * runs. So this is hoisted here and called twice: once early from app_init
- * (read-view build) and once from boot_start_projection_storage (the rest of
- * the projection fan-out). The second call is a no-op reuse — first opener
- * wins, one handle, no split-brain. Returns the published projection or NULL.
- *
- * Note: the legacy anchor-seed (utxo_projection_seed_from_legacy) is NOT done
- * here — it needs the seed node_db, which the caller passes into
- * boot_start_projection_storage (seed_ndb) once app_init_services has it. */
-utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
+/* Idempotent open of the append-only event_log. boot.c must publish this
+ * handle (event_log_set_singleton non-NULL) before it builds the coins_tip
+ * read view (coins_view_kv) and before the other per-domain projections bind,
+ * which is well before app_init_services runs. So this is hoisted here and
+ * called twice: once early from app_init and once from
+ * boot_start_projection_storage (the rest of the projection fan-out). The
+ * second call is a no-op reuse — first opener wins, one handle, no
+ * split-brain. Returns true once the event log is open and published. */
+bool boot_ensure_event_log(const char *datadir)
 {
-    utxo_projection_t *existing = utxo_projection_get_global();
-    if (existing)
-        return existing;
+    if (g_phase4_event_log)
+        return true;
     if (!datadir || !datadir[0])
-        return NULL;
+        return false;
 
     char event_path[PATH_MAX];
-    char utxo_path[PATH_MAX];
     int ne = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
                       datadir);
-    int nu = snprintf(utxo_path, sizeof(utxo_path),
-                      "%s/utxo_projection.db", datadir);
-    if (ne <= 0 || (size_t)ne >= sizeof(event_path) ||
-        nu <= 0 || (size_t)nu >= sizeof(utxo_path)) {
+    if (ne <= 0 || (size_t)ne >= sizeof(event_path)) {
         fprintf(stderr,  // obs-ok:phase4-storage
-                "[phase4] projection storage paths too long\n");
-        return NULL;
+                "[phase4] event log path too long\n");
+        return false;
     }
 
+    g_phase4_event_log = event_log_open(event_path);
     if (!g_phase4_event_log) {
-        g_phase4_event_log = event_log_open(event_path);
-        if (!g_phase4_event_log) {
-            fprintf(stderr,  // obs-ok:phase4-storage
-                    "[phase4] event log unavailable; projections disabled\n");
-            return NULL;
-        }
-        event_log_set_singleton(g_phase4_event_log);
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] event log unavailable; projections disabled\n");
+        return false;
     }
+    event_log_set_singleton(g_phase4_event_log);
 
-    utxo_projection_set_event_log(g_phase4_event_log);
-    g_phase4_utxo_projection =
-        utxo_projection_open(utxo_path, g_phase4_event_log);
-    if (!g_phase4_utxo_projection) {
-        fprintf(stderr,  // obs-ok:phase4-storage
-                "[phase4] utxo_projection unavailable; UTXO projection disabled\n");
-        return NULL;
-    }
-    uint64_t uoff = utxo_projection_catch_up(g_phase4_utxo_projection);
-    if (uoff == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-storage
-                "[phase4] utxo_projection catch_up failed\n");
-    } else {
-        fprintf(stderr,  // obs-ok:phase4-storage
-                "[phase4] utxo_projection caught up to offset=%llu\n",
-                (unsigned long long)uoff);
-    }
-    /* Populate the atomic coins set (progress.kv) from the caught-up projection
-     * on existing datadirs so the coins_kv read path has data. No-op on fresh /
-     * forward-built coins_kv, and a no-op-without-stamp if the projection is
-     * still pre-seed (a fast-sync snapshot seed re-runs this from
-     * snapshot_apply). docs/work/tip-durability-collapse.md. */
-    (void)coins_kv_boot_rebuild_if_needed(progress_store_db(),
-                                          g_phase4_utxo_projection);
-    return g_phase4_utxo_projection;
+    /* Stamp the coins_kv migration marker on existing forward-built datadirs so
+     * the read path is recognised as canonical. No-op before progress.kv opens
+     * (retried on the later fan-out call) and on an empty coins_kv, which
+     * re-derives from block bodies via the normal fold (pre-1.0: legacy
+     * datadirs may re-derive). */
+    (void)coins_kv_boot_rebuild_if_needed(progress_store_db());
+    return true;
 }
 
 /* Idempotent open of the block_index_projection (the log-derived
  * authoritative source for load_block_index_from_projection). Like
- * boot_ensure_log_and_utxo_projection
+ * boot_ensure_event_log
  * this is hoisted so boot.c can open + publish + catch up the projection
  * BEFORE the block-index load (which optionally rebuilds from it under
  * -rebuildfromlog), well before app_init_services runs. Called twice: once
  * early from boot.c and once (no-op reuse) from boot_start_projection_storage.
  * First opener wins — one handle, no split-brain. Requires the event log
- * to already be published (boot_ensure_log_and_utxo_projection first).
+ * to already be published (boot_ensure_event_log first).
  * Returns the published projection or NULL. */
 block_index_projection_t *boot_ensure_block_index_projection(const char *datadir)
 {
@@ -153,7 +122,7 @@ block_index_projection_t *boot_ensure_block_index_projection(const char *datadir
     return g_phase4_block_index_projection;
 }
 
-void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb)
+void boot_start_projection_storage(const char *datadir)
 {
     if (!datadir || !datadir[0])
         return;
@@ -181,13 +150,11 @@ void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb
         return;
     }
 
-    /* Open (or reuse, if boot.c already opened them for the coins read
-     * view) the event_log + utxo_projection. After this g_phase4_event_log
-     * is published. */
-    if (!boot_ensure_log_and_utxo_projection(datadir)) {
+    /* Open (or reuse, if boot.c already opened it for the coins read view) the
+     * event_log. After this g_phase4_event_log is published. */
+    if (!boot_ensure_event_log(datadir)) {
         fprintf(stderr,  // obs-ok:phase4-storage
-                "[phase4] event log / utxo_projection unavailable; "
-                "projections disabled\n");
+                "[phase4] event log unavailable; projections disabled\n");
         return;
     }
 
@@ -235,30 +202,9 @@ void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb
         fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] topology_store unavailable; graph disabled\n");
 
-    /* utxo_projection is opened and caught up above by
-     * boot_ensure_log_and_utxo_projection so the coins_tip read view can bind
-     * to it before this runs. */
-
-    /* One-time anchor-seed the projection from the legacy coins.db so
-     * SHA3(projection)==SHA3(coins.db) and counts match (the UTXO commitment
-     * guard). The projection may only hold tail deltas on old datadirs, so the
-     * historical set must be folded in once. Idempotent: the seed refuses
-     * (returns -1) once anchor_seeded is stamped, so this is a no-op on every
-     * boot after the first. Seeding the projection never writes coins.db. */
-    {
-        if (seed_ndb && seed_ndb->db) {
-            int64_t seeded = utxo_projection_seed_from_legacy(
-                g_phase4_utxo_projection, seed_ndb->db);
-            if (seeded >= 0)
-                fprintf(stderr,  // obs-ok:phase4-storage
-                        "[phase4] utxo_projection anchor-seeded %lld UTXOs "
-                        "from coins.db\n", (long long)seeded);
-            else
-                fprintf(stderr,  // obs-ok:phase4-storage
-                        "[phase4] utxo_projection anchor-seed skipped "
-                        "(already seeded or legacy db unavailable)\n");
-        }
-    }
+    /* The canonical UTXO set is the kernel coins store (coins_kv), read live
+     * through coins_view_kv and authored in-txn by the utxo_apply stage; there
+     * is no separate event-log-fed UTXO projection to open or anchor-seed. */
 
     /* block_index_projection is opened or reused via the hoisted helper;
      * first opener wins when boot.c already opened it for -rebuildfromlog. */
@@ -410,7 +356,6 @@ void boot_stop_projection_storage(void)
      * before the event log they point to. */
     mempool_projection_set_event_log(NULL);
     peers_projection_set_event_log(NULL);
-    utxo_projection_set_event_log(NULL);
     wallet_projection_set_event_log(NULL);
     contacts_projection_set_event_log(NULL);
     onion_ann_projection_set_event_log(NULL);
@@ -422,10 +367,6 @@ void boot_stop_projection_storage(void)
     if (g_phase4_peers_projection) {
         peers_projection_close(g_phase4_peers_projection);
         g_phase4_peers_projection = NULL;
-    }
-    if (g_phase4_utxo_projection) {
-        utxo_projection_close(g_phase4_utxo_projection);
-        g_phase4_utxo_projection = NULL;
     }
     znam_projection_set_event_log(NULL);
     if (g_phase4_znam_projection) {

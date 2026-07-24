@@ -53,7 +53,7 @@ struct sqlite3;
 /* Integrity fingerprint of the consensus kernel in one open database:
  *   coins_commit — the canonical SHA3-256 UTXO commitment over `coins`
  *                  (utxo_commitment.h serialisation; bit-identical to
- *                  coins_kv_commitment / utxo_projection_commitment).
+ *                  coins_kv_commitment).
  *   table_rows   — durable row count of each kernel table, indexed by the
  *                  stable CONSENSUS_DB_KERNEL_TABLE_COUNT ordering. */
 struct consensus_db_kernel_stats {

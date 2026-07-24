@@ -19,10 +19,8 @@
  * coins_view_cache commitment across ONE hand-built reorg. This test
  * GENERALIZES it to the production event-log projections under RANDOM but
  * VALID operation sequences (seeded → replayable), and asserts the full
- * fold invariant — not just for UTXO, but for two more fold-driven
- * projections that share the same shape:
+ * fold invariant across two fold-driven projections that share the same shape:
  *
- *   UTXO        (EV_UTXO_ADD / EV_UTXO_SPEND)
  *   block_index (EV_BLOCK_HEADER, INSERT-OR-REPLACE)
  *   mempool     (EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL)
  *
@@ -41,7 +39,7 @@
  *   4. After the sequence, open a SECOND fresh projection on the SAME log
  *      and catch_up() ONCE from offset 0 (replay from scratch).
  *   5. ASSERT live == replay: commitment SHA3 equal, count equal, and
- *      (UTXO/block_index) per-entry byte equality so a commitment
+ *      (block_index) per-entry byte equality so a commitment
  *      collision cannot mask a divergence.
  *
  * Negative control (TEETH)
@@ -60,7 +58,6 @@
 
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
-#include "storage/utxo_projection.h"
 #include "storage/block_index_projection.h"
 #include "storage/mempool_projection.h"
 #include "storage/block_index_db.h"   /* struct disk_block_index */
@@ -116,237 +113,6 @@ static uint64_t pick_seed(void)
         if (end != e) return (uint64_t)v;
     }
     return 0xC0FFEE123456789ULL;  /* fixed default → suite-deterministic */
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- * UTXO projection
- * ══════════════════════════════════════════════════════════════════════ */
-
-static void utxo_make_txid(uint8_t txid[32], uint32_t key)
-{
-    for (int i = 0; i < 32; i++)
-        txid[i] = (uint8_t)((key >> ((i % 4) * 8)) & 0xFF);
-}
-
-static bool utxo_append_add(event_log_t *log, uint32_t key, uint32_t vout,
-                            int64_t value, uint32_t height, bool coinbase,
-                            uint32_t script_len)
-{
-    uint8_t txid[32]; utxo_make_txid(txid, key);
-    uint8_t script[64];
-    if (script_len > sizeof(script)) script_len = sizeof(script);
-    for (uint32_t k = 0; k < script_len; k++)
-        script[k] = (uint8_t)((key * 7 + k) & 0xFF);
-
-    struct ev_utxo_add_hdr hdr = {0};
-    memcpy(hdr.txid, txid, 32);
-    hdr.vout = vout; hdr.value = value; hdr.height = height;
-    hdr.is_coinbase = coinbase ? 1 : 0; hdr.script_len = script_len;
-
-    uint8_t buf[EV_UTXO_ADD_HDR_WIRE_LEN + 64];
-    size_t out_len = 0;
-    if (!ev_utxo_add_serialize(&hdr, script_len ? script : NULL,
-                               buf, sizeof(buf), &out_len))
-        return false;
-    return event_log_append(log, EV_UTXO_ADD, buf, out_len) != UINT64_MAX;
-}
-
-static bool utxo_append_spend(event_log_t *log, uint32_t key, uint32_t vout)
-{
-    struct ev_utxo_spend sp = {0};
-    utxo_make_txid(sp.txid, key);
-    sp.vout = vout;
-    uint8_t buf[EV_UTXO_SPEND_WIRE_LEN];
-    if (!ev_utxo_spend_serialize(&sp, buf)) return false;
-    return event_log_append(log, EV_UTXO_SPEND, buf, sizeof(buf)) != UINT64_MAX;
-}
-
-/* Whole-projection equality: commitment + count, then per-key byte
- * equality across the candidate key universe so a (vanishingly unlikely)
- * commitment collision cannot mask a divergence. */
-static bool utxo_proj_equal(utxo_projection_t *a, utxo_projection_t *b,
-                            const uint32_t *keys, size_t nkeys,
-                            uint32_t max_vout)
-{
-    if (utxo_projection_count(a) != utxo_projection_count(b)) return false;
-    uint8_t ca[32], cb[32];
-    if (utxo_projection_commitment(a, ca) != 0) return false;
-    if (utxo_projection_commitment(b, cb) != 0) return false;
-    if (memcmp(ca, cb, 32) != 0) return false;
-
-    for (size_t k = 0; k < nkeys; k++) {
-        uint8_t txid[32]; utxo_make_txid(txid, keys[k]);
-        for (uint32_t v = 0; v < max_vout; v++) {
-            int64_t va = 0, vb = 0;
-            uint8_t sa[64] = {0}, sb[64] = {0};
-            size_t la = 0, lb = 0;
-            bool ha = utxo_projection_get(a, txid, v, &va, sa, sizeof(sa), &la);
-            bool hb = utxo_projection_get(b, txid, v, &vb, sb, sizeof(sb), &lb);
-            if (ha != hb) return false;
-            if (ha) {
-                if (va != vb) return false;
-                if (la != lb) return false;
-                if (la && memcmp(sa, sb, la > sizeof(sa) ? sizeof(sa) : la) != 0)
-                    return false;
-            }
-        }
-    }
-    return true;
-}
-
-static int run_utxo(uint64_t base_seed, int *failures_out)
-{
-    int failures = 0;
-    char dir[256]; test_make_tmpdir(dir, sizeof(dir), "pri", "utxo");
-    char log_path[400], live_path[400], replay_path[400], pert_path[400];
-    snprintf(log_path,    sizeof(log_path),    "%s/events.log",  dir);
-    snprintf(live_path,   sizeof(live_path),   "%s/live.db",     dir);
-    snprintf(replay_path, sizeof(replay_path), "%s/replay.db",   dir);
-    snprintf(pert_path,   sizeof(pert_path),   "%s/pert.db",     dir);
-
-    rng_seed(base_seed ^ 0x5555555555555555ULL);
-
-    event_log_t *log = event_log_open(log_path);
-    utxo_projection_t *live = utxo_projection_open(live_path, log);
-    PRI_CHECK("utxo: open log + live projection", log && live);
-    if (!log || !live) {
-        if (live) utxo_projection_close(live);
-        if (log) event_log_close(log);
-        goto done;
-    }
-
-    /* Candidate key universe. ~32 distinct txids, vout 0..3. The random
-     * sequence ADDs/SPENDs within this universe so it stays VALID
-     * (we only spend what we believe is live; the projection itself
-     * tolerates a spend of an absent key as a no-op, but we model a
-     * valid history). */
-    enum { NKEYS = 32, MAX_VOUT = 4 };
-    uint32_t keys[NKEYS];
-    for (int i = 0; i < NKEYS; i++) keys[i] = 0x1000u + (uint32_t)i;
-
-    /* Track our own model of which (key,vout) are live, so we generate a
-     * VALID history (ADD only absent, SPEND only present). */
-    uint8_t live_set[NKEYS][MAX_VOUT];
-    memset(live_set, 0, sizeof(live_set));
-
-    const int N_OPS = 600;
-    int forced_reorg_at = 200 + (int)rng_range(100);
-    bool did_reorg = false;
-
-    for (int op = 0; op < N_OPS; op++) {
-        /* Forced reorg sub-case: pick a live (key,vout), SPEND it, then
-         * re-ADD a DIFFERENT-valued coin at the same outpoint (the
-         * replace/collision path a reorg drives through the projection). */
-        if (op == forced_reorg_at) {
-            int ki = -1, vi = -1;
-            for (int t = 0; t < NKEYS && ki < 0; t++) {
-                int kk = (int)rng_range(NKEYS);
-                for (int vv = 0; vv < MAX_VOUT; vv++)
-                    if (live_set[kk][vv]) { ki = kk; vi = vv; break; }
-            }
-            if (ki >= 0) {
-                /* disconnect: spend it away */
-                utxo_append_spend(log, keys[ki], (uint32_t)vi);
-                live_set[ki][vi] = 0;
-                /* reconnect heavier branch: re-add at same outpoint with a
-                 * new value + height (the INSERT-OR-REPLACE collision). */
-                utxo_append_add(log, keys[ki], (uint32_t)vi,
-                                7000000LL + (int64_t)op * 13,
-                                (uint32_t)(900000 + op), false,
-                                1 + rng_range(40));
-                live_set[ki][vi] = 1;
-                did_reorg = true;
-            }
-        } else {
-            int kk = (int)rng_range(NKEYS);
-            int vv = (int)rng_range(MAX_VOUT);
-            if (live_set[kk][vv]) {
-                if (rng_range(3) == 0) {           /* spend the live one */
-                    utxo_append_spend(log, keys[kk], (uint32_t)vv);
-                    live_set[kk][vv] = 0;
-                } else {                            /* replace (reorg-ish) */
-                    utxo_append_add(log, keys[kk], (uint32_t)vv,
-                                    1000000LL + (int64_t)op,
-                                    (uint32_t)(100000 + op),
-                                    (rng_range(20) == 0),
-                                    rng_range(48));
-                }
-            } else {                                /* add a fresh coin */
-                utxo_append_add(log, keys[kk], (uint32_t)vv,
-                                500000LL + (int64_t)op * 7,
-                                (uint32_t)(100000 + op),
-                                (rng_range(16) == 0),
-                                rng_range(48));
-                live_set[kk][vv] = 1;
-            }
-        }
-
-        /* Incrementally fold into the live projection at random points
-         * (sometimes batching several appends before a catch_up). */
-        if (rng_range(3) != 0)
-            PRI_CHECK("utxo: incremental catch_up",
-                      utxo_projection_catch_up(live) != UINT64_MAX);
-    }
-    /* Final drain so the live projection has consumed the whole log. */
-    PRI_CHECK("utxo: final live catch_up",
-              utxo_projection_catch_up(live) != UINT64_MAX);
-    PRI_CHECK("utxo: a reorg was exercised", did_reorg);
-
-    /* Replay from scratch: fresh projection over the SAME log, one fold. */
-    utxo_projection_t *replay = utxo_projection_open(replay_path, log);
-    PRI_CHECK("utxo: open replay projection", replay != NULL);
-    if (replay) {
-        PRI_CHECK("utxo: replay catch_up from offset 0",
-                  utxo_projection_catch_up(replay) != UINT64_MAX);
-
-        /* THE INVARIANT: incrementally folded == replayed from scratch. */
-        PRI_CHECK("utxo: PRIME DIRECTIVE — live fold == replay from scratch",
-                  utxo_proj_equal(live, replay, keys, NKEYS, MAX_VOUT));
-
-        /* ── NEGATIVE CONTROL (teeth) ──────────────────────────────────
-         * A projection that folded a strict PREFIX of the log (one or
-         * more events short) must be DETECTED as different. We append one
-         * extra distinguishing event AFTER opening `pert`, fold the
-         * replay+live over it, but deliberately do NOT catch `pert` up to
-         * it. The equality predicate must report drift — proving it is
-         * not a vacuous self-comparison. */
-        utxo_projection_t *pert = utxo_projection_open(pert_path, log);
-        PRI_CHECK("utxo: open perturbed projection", pert != NULL);
-        if (pert) {
-            /* Bring pert fully current first (so it equals live now). */
-            utxo_projection_catch_up(pert);
-            PRI_CHECK("utxo: perturbed == live before drift",
-                      utxo_proj_equal(live, pert, keys, NKEYS, MAX_VOUT));
-
-            /* Append a NEW event that changes the set. Fold it into live
-             * + replay, but STARVE pert (drop that fold step). */
-            uint32_t fresh = 0x9000u;
-            utxo_append_add(log, fresh, 0, 424242LL, 123456, false, 4);
-            utxo_projection_catch_up(live);
-            utxo_projection_catch_up(replay);
-            /* pert is intentionally left one fold step behind. */
-
-            uint32_t keys2[NKEYS + 1];
-            memcpy(keys2, keys, sizeof(keys));
-            keys2[NKEYS] = fresh;
-
-            PRI_CHECK("utxo: NEGATIVE CONTROL — dropped fold step is DETECTED",
-                      !utxo_proj_equal(live, pert, keys2, NKEYS + 1, MAX_VOUT));
-            /* And catching pert up repairs it (the fold is the only diff). */
-            utxo_projection_catch_up(pert);
-            PRI_CHECK("utxo: catching the dropped step up restores equality",
-                      utxo_proj_equal(live, pert, keys2, NKEYS + 1, MAX_VOUT));
-            utxo_projection_close(pert);
-        }
-        utxo_projection_close(replay);
-    }
-
-    utxo_projection_close(live);
-    event_log_close(log);
-done:
-    test_cleanup_tmpdir(dir);
-    *failures_out += failures;
-    return failures;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -745,7 +511,6 @@ int test_projection_replay_invariant(void)
            seed);
     printf("   (set ZCL_PRI_SEED to replay a specific seed)\n");
 
-    run_utxo       (seed, &failures);
     run_block_index(seed, &failures);
     run_mempool    (seed, &failures);
 

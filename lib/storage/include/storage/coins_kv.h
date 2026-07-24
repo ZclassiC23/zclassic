@@ -2,20 +2,21 @@
  *
  * coins_kv — the reducer's canonical UTXO set as a `coins` table IN progress.kv.
  *
- * WHY (docs/work/tip-durability-collapse.md): the live coins set used to live in
- * a SEPARATE WAL database (utxo_projection.db), folded from an out-of-txn
- * event_log, while the stage cursor + inverse-delta + utxo_apply_log row commit
- * in progress.kv. Two WAL databases have NO atomic cross-commit (WAL has no
- * master journal) — a crash drifted the coins from the cursor and no forward
- * path could realign them (the entire tip-wedge class). Storing the coins HERE,
- * on the progress.kv handle, makes every mutation commit inside the SAME
- * stage_run_once BEGIN IMMEDIATE as the cursor: every effect of a block lands or
- * rolls back as one atomic unit. Mirrors the proven created_outputs_index.
+ * WHY (docs/work/tip-durability-collapse.md): the live coins set once lived in
+ * a SEPARATE WAL database, folded from an out-of-txn event_log, while the stage
+ * cursor + inverse-delta + utxo_apply_log row commit in progress.kv. Two WAL
+ * databases have NO atomic cross-commit (WAL has no master journal) — a crash
+ * drifted the coins from the cursor and no forward path could realign them (the
+ * entire tip-wedge class). Storing the coins HERE, on the progress.kv handle,
+ * makes every mutation commit inside the SAME stage_run_once BEGIN IMMEDIATE as
+ * the cursor: every effect of a block lands or rolls back as one atomic unit.
+ * That separate event-log-fed projection was deleted (Program H1) — coins_kv is
+ * the one live UTXO ledger. Mirrors the proven created_outputs_index.
  *
  * Every function operates on the passed progress.kv handle and therefore
  * participates in whatever transaction the caller already holds open. Schema +
- * serialisation mirror utxo_projection's `utxo` table column-for-column so the
- * SHA3 UTXO commitment matches utxo_projection's.
+ * serialisation match the legacy `utxos` table column-for-column so the SHA3
+ * UTXO commitment matches the legacy coins.db commitment.
  *
  * Callers may invoke from any thread: every function prepares and finalizes
  * its statement within the call (no shared statement state). See coins_kv.c
@@ -31,7 +32,6 @@
 struct sqlite3;
 struct sqlite3_stmt;
 struct coins;
-struct utxo_projection;
 
 /* CREATE TABLE IF NOT EXISTS coins(...). Idempotent. */
 bool coins_kv_ensure_schema(struct sqlite3 *db);
@@ -91,9 +91,8 @@ bool coins_kv_exists(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
  * currently live (unspent), filling value/script via the non-NULL out-pointers.
  * If `script_cap` is smaller than the stored script length the script is
  * truncated to `script_cap` bytes, but `*script_len_out` always reports the
- * true length. Mirrors utxo_projection_get exactly so script_validate's prevout
- * resolver returns the same result against either store. A spent or absent
- * output returns false. */
+ * true length. This is script_validate's prevout resolver read source. A spent
+ * or absent output returns false. */
 bool coins_kv_get(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out);
@@ -213,18 +212,18 @@ bool    coins_kv_spend_many_sqlite(struct sqlite3 *db,
 
 /* Reconstruct a `struct coins` for `txid` from live rows (`out` is coins_init'd
  * by this call). Returns false (num_vout==0) if the txid has no live outputs.
- * Same two-pass shape as utxo_projection_get_coins / coins_view_sqlite. */
+ * Same two-pass shape as coins_view_sqlite. */
 bool coins_kv_get_coins(struct sqlite3 *db, const uint8_t txid[32],
                         struct coins *out);
 
 /* gettxoutsetinfo aggregate: distinct txids, total outputs, summed value.
- * Mirrors utxo_projection_setinfo exactly. Returns false on error. */
+ * Returns false on error. */
 bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
                       int64_t *num_txouts, int64_t *total_amount);
 
 /* SHA3-256 UTXO commitment over the coins set in canonical (txid,vout) order.
- * The serialisation equals utxo_projection_commitment's (the read-flip
- * relies on this matching the oracle gettxoutsetinfo commitment). Returns 0 on
+ * The serialisation matches the legacy coins.db gettxoutsetinfo commitment (the
+ * read-flip relies on this matching the oracle). Returns 0 on
  * success, -1 on error. */
 int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
 
@@ -294,15 +293,13 @@ bool coins_kv_boundary_root_set_in_tx(struct sqlite3 *db, int32_t height,
 bool coins_kv_boundary_root_get(struct sqlite3 *db, int32_t height,
                                 uint8_t out_utxo_root[32], bool *found);
 
-/* One-shot idempotent boot migration: if coins_kv is empty AND the projection
- * holds the live set, bulk-copy the projection's UTXOs into coins_kv (atomic)
- * so the read-flip has data on existing / snapshot-seeded datadirs. No-op (and
- * NOT marked done) when the projection is still empty, so a pre-snapshot-seed
- * call safely retries after the seed. Non-fatal: returns false on error and the
- * next boot retries. Safe to call before progress_store is open (returns true,
- * no-op). */
-bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
-                                     struct utxo_projection *proj);
+/* One-shot idempotent boot migration marker: stamps migration-complete when
+ * coins_kv already holds the live set (forward-built / snapshot-seeded), so the
+ * read path is recognised as canonical. No-op on an empty coins_kv, which
+ * re-derives from block bodies via the normal fold (the event-log-fed UTXO
+ * projection this once copied from was deleted in Program H1). Safe to call
+ * before progress_store is open (returns true, no-op). */
+bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db);
 
 /* Seed coins_kv from node.db's `utxos` table right after a cold
  * LevelDB import (the projection-based boot rebuild sees an empty
@@ -360,8 +357,8 @@ coins_kv_seed_checkpoint_verdict(struct sqlite3 *db);
  *       DOWN to the frontier height and co-writes frontier = height. Its ok=1
  *       guard (success_checked_logs includes utxo_apply_log) proves no coins were
  *       mutated at/above that height, so frontier == coins is exact.
- * The ONE non-co-writing cursor-touching path is the one-shot snapshot bulk seed
- * coins_kv_boot_rebuild_if_needed: it bulk-copies the projection's UTXOs but does
+ * The ONE non-co-writing cursor-touching path is the snapshot bulk seed
+ * (coins_kv_seed_from_node_db): it bulk-copies the source UTXOs but does
  * NOT write this frontier directly — it relies on the snapshot anchor stamping
  * the utxo_apply cursor + the next-boot if-absent backfill below to seed the
  * frontier from that cursor, with a transient ABSENT="unknown" window in between

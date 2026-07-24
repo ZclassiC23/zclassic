@@ -18,7 +18,6 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"  /* script_is_unspendable — UTXO-set exclusion */
-#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"

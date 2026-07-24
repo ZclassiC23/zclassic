@@ -40,7 +40,6 @@
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -361,9 +360,8 @@ int test_reducer_step_drain_harness(void)
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     sd_mkdir_p(blocksdir);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     bool store_ok = progress_store_open(dir);
@@ -371,11 +369,8 @@ int test_reducer_step_drain_harness(void)
 
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     SD_CHECK("event log opens", lg != NULL);
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    SD_CHECK("UTXO projection opens", proj != NULL);
 
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         progress_store_close();
         SetDataDir(""); ClearDataDirCache();
@@ -384,8 +379,6 @@ int test_reducer_step_drain_harness(void)
         return failures;
     }
 
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -596,7 +589,6 @@ int test_reducer_step_drain_harness(void)
     body_fetch_stage_shutdown();
     validate_headers_stage_shutdown();
     header_admit_stage_shutdown();
-    utxo_projection_close(proj);
     event_log_close(lg);
     progress_store_close();
     test_cleanup_tmpdir(blocksdir);
@@ -649,20 +641,16 @@ int test_reducer_ondemand_genesis_seed(void)
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     sd_mkdir_p(blocksdir);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     bool store_ok = progress_store_open(dir);
     SD_CHECK("progress_store opens", store_ok);
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     SD_CHECK("event log opens", lg != NULL);
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    SD_CHECK("UTXO projection opens", proj != NULL);
 
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         progress_store_close();
         SetDataDir(""); ClearDataDirCache();
@@ -672,8 +660,6 @@ int test_reducer_ondemand_genesis_seed(void)
         return failures;
     }
 
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -756,7 +742,6 @@ int test_reducer_ondemand_genesis_seed(void)
     body_fetch_stage_shutdown();
     validate_headers_stage_shutdown();
     header_admit_stage_shutdown();
-    utxo_projection_close(proj);
     event_log_close(lg);
     progress_store_close();
     test_cleanup_tmpdir(blocksdir);

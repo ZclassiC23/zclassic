@@ -59,6 +59,11 @@ enum event_log_type {
     EV_BLOCK_BODY           = 2,
     EV_TX_ADMIT_MEMPOOL     = 3,
     EV_TX_REMOVE_MEMPOOL    = 4,
+    /* Tags 5/6 fed the event-sourced UTXO projection removed in Program H1
+     * (the kernel coins store is the one UTXO ledger). The wire format is
+     * frozen, so the numeric slots are RESERVED — never reuse them; old event
+     * logs may still contain these frames and consumers ignore unknown tags.
+     * The tokens survive only for the rebuild_recent tool + event-log tests. */
     EV_UTXO_ADD             = 5,
     EV_UTXO_SPEND           = 6,
     EV_PEER_OBSERVED        = 7,

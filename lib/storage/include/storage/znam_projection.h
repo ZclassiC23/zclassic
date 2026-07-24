@@ -52,7 +52,7 @@ uint64_t znam_projection_text_count(znam_projection_t *p);
 
 /* Process-global projection wiring used by the ZNAM model. NULL log
  * disables emission and keeps legacy writes authoritative. Mirrors the
- * peers_projection / utxo_projection pattern.
+ * peers_projection pattern.
  */
 void znam_projection_set_event_log(event_log_t *log);
 event_log_t *znam_projection_event_log(void);

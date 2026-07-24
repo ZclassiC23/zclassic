@@ -26,7 +26,6 @@
 #include "storage/nullifier_kv.h"
 #include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -327,21 +326,15 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     }
     int C = (int)cursor;  /* next height to apply; [0, C) already applied */
 
-    /* DRIVER vs FOLLOWER. Under UTXO_AUTHOR_STAGE (the production default)
-     * the stage is itself the tip authority (tip_finalize sets the in-mem
-     * chain[]), so the active chain at C-1 reflects the stage's OWN tip, not
-     * a tip the old engine already swapped ahead of us. Under
-     * UTXO_AUTHOR_LEGACY (the test-only emitter path) the stage is a
-     * FOLLOWER: it re-converges onto a chain[] that an external authority
-     * drove, and must WAIT (no-op) until that authority has populated C-1.
-     * The author flag selects which discipline applies; the divergence
-     * detection + fork walk below are identical in both. */
+    /* The stage is itself the tip authority (tip_finalize sets the in-mem
+     * chain[]), so the active chain at C-1 reflects the stage's OWN tip. The
+     * divergence detection + fork walk below run against that tip. */
 
     /* Compare the OLD branch hash recorded for the highest applied height
      * (C-1) against the block now occupying that height on the active
      * chain. A mismatch is the divergence signal: the winning branch now
-     * occupies C-1 (set by the stage itself in driver mode, or by the live
-     * driver in follower mode); our delta rows recorded the losing branch. */
+     * occupies C-1 (set by the stage itself); our delta rows recorded the
+     * losing branch. */
     struct uint256 recorded;
     int have = delta_branch_hash_at(db, C - 1, &recorded);
     if (have < 0)
@@ -351,10 +344,8 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
 
     struct block_index *active = active_chain_at(&ms->chain_active, C - 1);
     if (!active || !active->phashBlock) {
-        /* Chain shorter than our cursor at C-1. In FOLLOWER mode this means
-         * legacy has not yet driven the tip to C-1: wait, don't unwind. In
-         * DRIVER mode the stage owns the tip, so there is simply no fork to
-         * disconnect here yet — also a no-op. Either way: nothing to do. */
+        /* Chain shorter than our cursor at C-1: the stage owns the tip, so
+         * there is simply no fork to disconnect here yet — a no-op. */
         return true;
     }
     if (uint256_eq(&recorded, active->phashBlock))
@@ -418,23 +409,10 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * the reorg depth is (C-1) - fork. This reorg_is_allowed(C-1, fork) check
      * is the sole gate on whether the unwind proceeds.
      *
-     * Why (C-1), the stage cursor, is the correct depth reference:
-     *
-     *   DRIVER mode (UTXO_AUTHOR_STAGE, the production default): the stage
-     *   drives the tip, so C-1 IS the authoritative tip height and
-     *   reorg_is_allowed(C-1, fork) is the exact finality check — the same
-     *   one legacy applies at tip->nHeight. The unwind is gated purely on
-     *   this; there is no "wait for legacy to reach C-1" precondition (the
-     *   stage cannot wait on an engine it has replaced).
-     *
-     *   FOLLOWER mode (UTXO_AUTHOR_LEGACY, the test-only path): the unwind only
-     *   re-converges the stage's OWN applied range [fork+1, C-1] onto a
-     *   chain[] that the prior path already reorged and finality-gated
-     *   (reorg_is_allowed at tip->nHeight), so the
-     *   active chain never presents a reorg deeper than ZCL_FINALITY_DEPTH
-     *   for the stage to follow. Measuring from C-1 is a defensive backstop
-     *   equivalent to legacy's check; using the global active tip instead
-     *   would WEDGE a lagging stage on a side branch. */
+     * Why (C-1), the stage cursor, is the correct depth reference: the stage
+     * drives the tip, so C-1 IS the authoritative tip height and
+     * reorg_is_allowed(C-1, fork) is the exact finality check. The unwind is
+     * gated purely on this — there is no external engine to wait on. */
     {
         const char *reason = NULL;
         if (!reorg_is_allowed(C - 1, fork, &reason)) {
@@ -456,10 +434,8 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * re-applies on the winner). Wrapping the inverse-delta loop in the SAME txn
      * as the cursor rewind is the fix that keeps coins_kv from drifting from the
      * cursor on a crash mid-unwind (docs/work/tip-durability-collapse.md):
-     * coins_kv mutation + delete + cursor commit or roll back as one unit. The
-     * projection is not written here: coins_kv is the sole live UTXO store; the
-     * projection is seed-only. Only
-     * the configured UTXO author unwinds. The in-memory s->cursor is reloaded
+     * coins_kv mutation + delete + cursor commit or roll back as one unit.
+     * coins_kv is the sole live UTXO store. The in-memory s->cursor is reloaded
      * from this DB row at the top of the next stage_run_once (cursor_read). */
     /* This unwind is ONE atomic unit (inverse deltas + row deletes + cursor
      * rewind + applied-height rewind commit or roll back together). When the
@@ -483,12 +459,10 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         if (err) sqlite3_free(err);
         return false;
     }
-    if (utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        for (int h = C - 1; h >= fork_plus1; h--) {
-            if (!utxo_apply_emit_inverse_delta(db, h)) {
-                sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
-                return false;
-            }
+    for (int h = C - 1; h >= fork_plus1; h--) {
+        if (!utxo_apply_emit_inverse_delta(db, h)) {
+            sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
+            return false;
         }
     }
     if (!utxo_apply_delete_rows_above(db, fork_plus1, C - 1)) {

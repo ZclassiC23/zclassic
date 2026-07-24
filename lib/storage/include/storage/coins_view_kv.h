@@ -1,19 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * coins_view_kv — a read-only `struct coins_view` backed by **coins_kv**
- * (the canonical UTXO set living IN progress.kv) instead of the UTXO
- * projection or coins.db.
+ * (the canonical UTXO set living IN progress.kv) instead of coins.db.
  *
  * This is the production miss-resolution source for the `g_coins_tip`
- * read cache. It supersedes coins_view_projection on the live read path:
- * the reducer authors the coins set into coins_kv INSIDE the same
- * stage_run_once BEGIN IMMEDIATE as the stage cursor + inverse-delta +
- * log row (utxo_apply_stage.c), so a read through this view sees the
- * in-txn-committed canonical set, and a kill-9 leaves the coins set
- * atomically consistent with the cursor. The projection's separate WAL
- * database lacked that atomic cross-commit (the entire tip-wedge tear
- * class — docs/work/tip-durability-collapse.md), which is why the live
- * read view moves here.
+ * read cache — the one live UTXO read path. The reducer authors the coins
+ * set into coins_kv INSIDE the same stage_run_once BEGIN IMMEDIATE as the
+ * stage cursor + inverse-delta + log row (utxo_apply_stage.c), so a read
+ * through this view sees the in-txn-committed canonical set, and a kill-9
+ * leaves the coins set atomically consistent with the cursor. The earlier
+ * separate-WAL event-log-fed UTXO projection lacked that atomic
+ * cross-commit (the entire tip-wedge tear class —
+ * docs/work/tip-durability-collapse.md) and was deleted in Program H1.
  *
  * The view holds NO database handle of its own: every vtable thunk fetches
  * the process-global progress.kv handle lazily via progress_store_db() (a
@@ -22,8 +20,8 @@
  * state via coins_kv writes in the apply txn, so `batch_write` here is a
  * programming error (a second writer).
  *
- * Mirrors coins_view_projection's vtable-embedding pattern exactly; parity
- * with it is proven by test_coins_view_kv. */
+ * Mirrors coins_view_sqlite's vtable-embedding pattern exactly; parity
+ * with the sqlite view is proven by test_coins_view_kv. */
 
 #ifndef ZCL_STORAGE_COINS_VIEW_KV_H
 #define ZCL_STORAGE_COINS_VIEW_KV_H

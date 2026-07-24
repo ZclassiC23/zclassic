@@ -11,7 +11,6 @@
 #include "config/runtime.h"
 #include "validation/main_state.h"
 #include "storage/coins_view_sqlite.h"
-#include "storage/utxo_projection.h"
 #include "coins/coins_view.h"
 #include "validation/txmempool.h"
 #include "net/connman.h"
@@ -409,19 +408,16 @@ void boot_sync_state_logger(enum event_type type, uint32_t peer_id,
 void boot_register_process_block_hooks(struct boot_svc_ctx *svc);
 
 /* Open / close the reducer projection storage — the event_log + per-domain
- * projections — defined in boot_projections.c. boot_start takes the legacy
- * anchor-seed node_db by parameter (the boot_services.c-local boot_node_db(svc))
- * so the projections TU shares no boot state. Called once from
+ * projections — defined in boot_projections.c. Called once from
  * app_init_services / app_shutdown_svc. */
-void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb);
+void boot_start_projection_storage(const char *datadir);
 void boot_stop_projection_storage(void);
 
-/* Idempotent open of the append-only event_log + utxo_projection (the read
- * authority for the UTXO projection path). Called early from app_init so
- * the coins_tip read view can bind to utxo_projection_get_global() before
- * app_init_services runs, then again (no-op reuse) from the phase-4 fan-out.
- * Returns the published projection or NULL. */
-utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir);
+/* Idempotent open of the append-only event_log. Called early from app_init so
+ * the event-log singleton is published before the coins_tip read view
+ * (coins_view_kv) and the other per-domain projections bind, then again (no-op
+ * reuse) from the phase-4 fan-out. Returns true once the log is open. */
+bool boot_ensure_event_log(const char *datadir);
 
 /* Idempotent open of the block_index_projection (log-derived source for the
  * event-log boot rebuild). Hoisted so boot.c can open + publish + catch
