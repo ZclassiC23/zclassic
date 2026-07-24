@@ -28,6 +28,7 @@
  * same marker — keep the lib_layering baseline flat. */
 #include "services/chain_activation_service.h"  // lib-layer-ok:invalidate-lever
 #include "storage/block_index_db.h"
+#include "jobs/block_header_emit.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -76,6 +77,16 @@ const char *reconsider_result_name(enum reconsider_result r)
  * without one and rely on the in-memory flip). */
 static bool invalidate_persist_pindex(const struct block_index *p)
 {
+    /* Feed the event-sourced block_index_projection — the surviving derived
+     * header snapshot (Program H0) — from this canonical status-flip path,
+     * NOT from the legacy LevelDB writer. Best-effort, never fatal; runs
+     * independent of the LevelDB handle so the projection stays complete even
+     * where g_active_block_tree is unwired (tests). Covers both invalidate
+     * (FAILED_VALID set) and reconsider (FAILED cleared) — both flip p->nStatus
+     * in memory before calling here, and the projection's INSERT-OR-REPLACE by
+     * hash folds the new nStatus. */
+    block_index_emit_header_event(p, "invalidate_persist", NULL, NULL);
+
     if (!g_active_block_tree)
         return true;
     struct disk_block_index dbi;

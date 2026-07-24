@@ -1,0 +1,14 @@
+# Program H1 baseline — CURRENT consumers of the demoted event-sourced UTXO
+# projection (see tools/scripts/check_no_utxo_projection.sh). One repo-relative
+# path per line. Program H1 shrinks this file to comments-only; a stale row
+# (consumer gone) FAILS the gate. Never add a new row.
+app/jobs/src/reducer_frontier_replay.c
+app/jobs/src/stage_repair_coin_backfill.c
+app/jobs/src/utxo_apply_delta_reorg.c
+app/jobs/src/utxo_apply_delta_repair.c
+app/jobs/src/utxo_apply_stage.c
+config/src/boot_projections.c
+lib/storage/src/coins_kv_boot_rebuild.c
+lib/storage/src/coins_kv.c
+lib/storage/src/coins_view_projection.c
+lib/storage/src/utxo_projection.c

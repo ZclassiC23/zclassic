@@ -5452,6 +5452,21 @@ check-dumper-never-blocks:
 	@echo "══ LINT: no dumpstate view blocks behind the reducer ══"
 	@./tools/scripts/check_dumper_never_blocks.sh
 
+# Program H enforcement gates (OBSERVE-style ratchets, baselined at today's
+# consumer set). Each lands BEFORE its deletion wave, proving non-growth, and
+# shrinks toward a zero-debt invariant as Program H demotes the copy.
+check-no-block-index-flat:
+	@echo "══ LINT: no new flat/LevelDB/SQLite header-cache consumer (Program H) ══"
+	@./tools/scripts/check_no_block_index_flat.sh
+
+check-no-utxo-projection:
+	@echo "══ LINT: no new event-sourced UTXO-projection consumer (Program H) ══"
+	@./tools/scripts/check_no_utxo_projection.sh
+
+check-no-utxos-mirror-read:
+	@echo "══ LINT: no new node.db utxos-mirror reader (Program H) ══"
+	@./tools/scripts/check_no_utxos_mirror_read.sh
+
 check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
@@ -5610,6 +5625,9 @@ LINT_GATES := \
     check-one-write-path \
     check-frontier-single-writer \
     check-dumper-never-blocks \
+    check-no-block-index-flat \
+    check-no-utxo-projection \
+    check-no-utxos-mirror-read \
     check-no-authoritative-ram-state \
     check-no-dev-history-in-contracts \
     check-stage-advances-or-blocks \
