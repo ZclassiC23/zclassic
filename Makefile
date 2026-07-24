@@ -4235,8 +4235,8 @@ slo-probe-status:
 	@./tools/scripts/slo_ledger_summary.sh --window-hours 24 2>/dev/null || true
 
 # slo-probe-selftest: hermetic regression guard for the prober, the summary
-# reader, and the 72h hold judge — fixture RPC commands / fixture ledgers,
-# no live nodes.
+# reader, the 72h hold judge, and the external pager — fixture RPC commands
+# / fixture ledgers, no live nodes.
 slo-probe-selftest:
 	@bash -c 'set -uo pipefail; \
 	 set +e; out=$$(bash tools/scripts/node_slo_probe.sh --selftest 2>&1); rc=$$?; set -e; \
@@ -4255,6 +4255,12 @@ slo-probe-selftest:
 	 echo "$$out3"; \
 	 if [ "$$rc3" != "0" ] || ! echo "$$out3" | grep -q "^selftest: PASS"; then \
 	     echo "slo-probe-selftest: FAIL slo_hold_judge.sh (rc=$$rc3; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 set +e; out4=$$(bash tools/scripts/slo_page_if_stalled.sh --selftest 2>&1); rc4=$$?; set -e; \
+	 echo "$$out4"; \
+	 if [ "$$rc4" != "0" ] || ! echo "$$out4" | grep -q "^selftest: PASS"; then \
+	     echo "slo-probe-selftest: FAIL slo_page_if_stalled.sh (rc=$$rc4; no selftest: PASS line)"; \
 	     exit 1; \
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
