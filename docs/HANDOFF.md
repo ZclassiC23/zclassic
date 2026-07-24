@@ -21,6 +21,24 @@ records canonical served height against `gap_vs_oracle`. Treat any
 "at tip" / "holding tip" claim as unverified until that ledger's most recent
 line confirms it.
 
+## `main` is ahead of the running binary
+
+The canonical node runs a binary built before the current `main`. Everything
+below is committed and gated (`make lint`, `make test-parallel`) but **not
+deployed**, and none of it is live until an owner-gated `make deploy`:
+
+| In `main`, not running | Where |
+|---|---|
+| Cost-tiered onion admission (STATIC/CHEAP/EXPENSIVE) + adaptive client puzzle; one admission primitive, the duplicate retired | `lib/net/src/onion_ratelimit.c`, `lib/net/src/puzzle.c` |
+| Wallet mutating commands bound to the RPC engine (address new/import/export-key, transaction send, shielded send, rescan, backup-now) and address labels | `docs/API_REFERENCE.md` marks these `ready` |
+| Groth16 comb-based verify speedup behind a differential parity oracle | `make check-groth16-parity`, `make bench-groth16-comb` |
+| Sapling-tree rebuild seeded from the anchor_kv frontier (the healer for the blocker below) | merged earlier as `82f11c697` |
+| Fault-injection and convergence proof harnesses; sync shadow observer; prune-after-seal safety gate; time authority | test groups + `lib/util/src/time_authority.c` |
+
+Deploy policy during the hold window is unchanged: a restart resets the 72h
+trailing window, so deploy when the escalator fires anyway, or after
+`HOLD_PROVEN`. Do not restart the canonical node for any other reason.
+
 ## Verify the cure
 
 | Claim | Evidence file |
