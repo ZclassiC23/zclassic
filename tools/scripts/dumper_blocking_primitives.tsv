@@ -1,0 +1,17 @@
+# check_dumper_never_blocks manifest — forbidden blocking primitives inside a
+# *_dump_state_json function body. Columns: <primitive>\t<ERE>. Tab-separated.
+#
+# progress_store_tx_lock: the BLOCKING recursive acquire. A dumper must use the
+# non-blocking progress_store_tx_trylock() instead. The ERE anchors on the "("
+# so it never matches _trylock( or _unlock(.
+progress_store_tx_lock	progress_store_tx_lock\(
+# stage_log_row_count: SELECT COUNT(*) over a stage's *_log (millions of rows)
+# under the recursive lock — replaced by the published stage_log_rows counter.
+stage_log_row_count	stage_log_row_count\(
+# stage_cursor_count: SELECT COUNT(*) over stage_cursor under the blocking lock —
+# replaced by the published stage_cursor_rows_value().
+stage_cursor_count	stage_cursor_count\(
+# from_anchor_target: the old blocking progress_meta read of the from-anchor
+# resume target — replaced by refold_from_anchor_target_cached(). Word-anchored
+# so it does not match the cached accessor's longer name.
+from_anchor_target	\bfrom_anchor_target\b

@@ -128,6 +128,7 @@ gate_command() {
         check-projections-pure)            echo './tools/scripts/check_projections_pure.sh' ;;
         check-one-write-path)              echo './tools/scripts/check_one_write_path.sh' ;;
         check-frontier-single-writer)      echo './tools/scripts/check_frontier_single_writer.sh' ;;
+        check-dumper-never-blocks)         echo './tools/scripts/check_dumper_never_blocks.sh' ;;
         check-no-authoritative-ram-state)  echo './tools/scripts/check_no_authoritative_ram_state.sh' ;;
         check-no-dev-history-in-contracts) echo './tools/scripts/check_no_dev_history_in_contracts.sh' ;;
         check-stage-advances-or-blocks)    echo './tools/scripts/check_stage_advances_or_blocks.sh' ;;

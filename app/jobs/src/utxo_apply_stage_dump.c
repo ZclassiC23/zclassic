@@ -10,6 +10,7 @@
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_log_rows.h"
 #include "utxo_apply_stage_internal.h"
 
 #include "core/uint256.h"
@@ -147,7 +148,13 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       utxo_apply_select_idle_reason_name(
                           (enum utxo_apply_select_idle_reason)select_reason));
 
-    /* Every field below is db-backed and needs the progress-store lock. During
+    /* log_rows is the O(1) published counter (stage_log_rows.h) — read lock-free
+     * so it is present on BOTH the busy and free paths, never a blocking
+     * COUNT(*) over the ~3.18M-row utxo_apply_log. */
+    stage_log_rows_emit(out, "utxo_apply_log", "log_rows");
+
+    /* The first-failure detail + applied-frontier below are db-backed and need
+     * the progress-store lock. During
      * catch-up the reducer owns that lock around bulk folds; a blocking acquire
      * here queues the RPC worker behind the fold and makes `dumpstate utxo_apply`
      * / status disappear exactly when the node is busiest. Acquire non-blocking
@@ -162,9 +169,6 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
         stage_dump_counters(out, stage);
         return true;
     }
-    json_push_kv_int (out, "log_rows",
-                      db ? stage_log_row_count(db, STAGE_NAME,
-                                               "utxo_apply_log") : 0);
 
     /* P2 self-heal input: the contiguous applied frontier and whether it equals
      * the durable utxo_apply cursor (the invariant the co-commit sites enforce).

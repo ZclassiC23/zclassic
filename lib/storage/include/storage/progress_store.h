@@ -46,6 +46,13 @@ bool progress_store_open(const char *datadir);
 /* Singleton handle. NULL if not yet opened or already closed. */
 sqlite3 *progress_store_db(void);
 
+/* Monotonic open-epoch: 0 before the first open, then incremented on every
+ * successful progress_store_open(). In-memory caches seeded from a table (e.g.
+ * the stage_log_rows row counters) key their one-time-per-boot re-seed on this
+ * so a reopen (new datadir, or a test reopening the singleton) re-seeds without
+ * a COUNT(*) on every schema-ensure call. */
+uint64_t progress_store_epoch(void);
+
 /* Max length of the progress.kv path (sizing buffers for progress_store_path). */
 #define PROGRESS_STORE_PATH_MAX 1024
 

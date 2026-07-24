@@ -5,6 +5,7 @@
 #include "body_persist_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_log_rows.h"
 #include "jobs/stage_row_itag.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -139,7 +140,12 @@ bool body_persist_log_ensure_schema(sqlite3 *db)
     if (!add_column_if_missing(db,
             "ALTER TABLE body_persist_log ADD COLUMN itag BLOB"))
         return false;
-    return stage_row_itag_backfill(db, "body_persist_log");
+    bool ok = stage_row_itag_backfill(db, "body_persist_log");
+    /* Seed the O(1) published row counter once per boot (see stage_log_rows.h);
+     * the body_persist dump reads it lock-free instead of a blocking COUNT(*). */
+    if (ok)
+        stage_log_rows_seed(db, "body_persist_log");
+    return ok;
 }
 
 int body_persist_body_fetch_log_at(sqlite3 *db, int height,
@@ -203,5 +209,7 @@ bool body_persist_log_insert(sqlite3 *db, int height, const char *source, bool o
             body_persist_log_store_batch_reset();
         return false;
     }
+    /* Runs under the caller's progress-store write lock (stage_run_once). */
+    stage_log_rows_note_insert("body_persist_log");
     return true;
 }

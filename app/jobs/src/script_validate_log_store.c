@@ -5,6 +5,7 @@
 #include "script_validate_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_log_rows.h"
 #include "jobs/stage_row_itag.h"
 #include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
@@ -184,7 +185,10 @@ bool script_validate_log_ensure_schema(sqlite3 *db)
     if (!add_column_if_missing(db,
             "ALTER TABLE script_validate_log ADD COLUMN itag BLOB"))
         return false;
-    return stage_row_itag_backfill(db, "script_validate_log");
+    bool ok = stage_row_itag_backfill(db, "script_validate_log");
+    if (ok)
+        stage_log_rows_seed(db, "script_validate_log");
+    return ok;
 }
 
 int script_validate_body_persist_log_at(sqlite3 *db, int height,
@@ -356,6 +360,8 @@ bool script_validate_log_insert(sqlite3 *db, int height,
     sqlite3_bind_blob(stmt, 12, itag, STAGE_ROW_ITAG_LEN, SQLITE_STATIC);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sv_log_insert_release(stmt, stmt_cached);
+    if (rc == SQLITE_DONE)
+        stage_log_rows_note_insert("script_validate_log");
     progress_store_tx_unlock();
     if (rc != SQLITE_DONE) {
         LOG_WARN("script_validate", "[script_validate] insert height=%d rc=%d", height, rc);

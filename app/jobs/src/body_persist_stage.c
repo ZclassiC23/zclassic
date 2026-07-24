@@ -14,6 +14,7 @@
 #include "jobs/body_persist_stage.h"
 #include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_log_rows.h"
 #include "jobs/stage_body_index.h"
 #include "body_persist_log_store.h"
 
@@ -458,7 +459,6 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
     if (!out) return false;
     json_set_object(out);
 
-    sqlite3 *db = progress_store_db();
     int64_t now = platform_time_wall_unix();
     int64_t last = atomic_load(&g_last_step_unix);
 
@@ -484,9 +484,10 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
                       last > 0 ? now - last : -1);
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
-    json_push_kv_int (out, "log_rows",
-                      db ? stage_log_row_count(db, STAGE_NAME,
-                                               "body_persist_log") : 0);
+    /* log_rows: the O(1) published counter (seeded once per boot from a COUNT,
+     * bumped per insert), read lock-free — never a blocking COUNT(*) over the
+     * multi-million-row body_persist_log on the busy RPC path. */
+    stage_log_rows_emit(out, "body_persist_log", "log_rows");
     stage_dump_counters(out, g_stage);
     stage_dump_health(out, STAGE_NAME, g_stage);
     return true;

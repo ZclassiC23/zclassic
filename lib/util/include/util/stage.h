@@ -158,6 +158,16 @@ int64_t stage_step_us_ewma(const stage_t *s);
  * call repeatedly. */
 bool stage_table_ensure(sqlite3 *db);
 
+/* Lock-free row count of the (tiny) stage_cursor table, published through the
+ * seqlock snapshot plane: seeded once per boot from one COUNT(*) and bumped at
+ * THE cursor-write chokepoint on each new (name) row. The progress_store dump
+ * reads it instead of a blocking COUNT(*) under progress_store_tx_lock.
+ * stage_cursor_rows_env() exposes the snapshot envelope for the uniform
+ * staleness label (see util/subsystem_snapshot.h). */
+struct zcl_snapshot_env;
+int64_t stage_cursor_rows_value(void);
+const struct zcl_snapshot_env *stage_cursor_rows_env(void);
+
 /* Run one step:
  *   1. Read the current cursor from `stage_cursor` (defaults to 0 on
  *      first run).

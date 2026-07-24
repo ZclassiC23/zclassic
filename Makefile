@@ -5448,6 +5448,10 @@ check-frontier-single-writer:
 	@echo "══ LINT: one canonical writer per frontier ══"
 	@./tools/scripts/check_frontier_single_writer.sh
 
+check-dumper-never-blocks:
+	@echo "══ LINT: no dumpstate view blocks behind the reducer ══"
+	@./tools/scripts/check_dumper_never_blocks.sh
+
 check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
@@ -5512,7 +5516,7 @@ check-scanner-immunity:
 	@./tools/lint/selftest_scanner_immunity.sh
 
 # ── Lint umbrella ────────────────────────────────────────────────────────
-# LINT_GATES is the single ordered source of truth for the 87-gate umbrella
+# LINT_GATES is the single ordered source of truth for the 88-gate umbrella
 # (E11 check-doc-accuracy cross-checks it against DEFENSIVE_CODING.md).
 #
 # Two execution modes:
@@ -5605,6 +5609,7 @@ LINT_GATES := \
     check-projections-pure \
     check-one-write-path \
     check-frontier-single-writer \
+    check-dumper-never-blocks \
     check-no-authoritative-ram-state \
     check-no-dev-history-in-contracts \
     check-stage-advances-or-blocks \

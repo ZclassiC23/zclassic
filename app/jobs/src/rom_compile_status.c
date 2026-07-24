@@ -93,28 +93,6 @@ static void eta_human(int64_t eta_s, char *out, size_t cap)
              (long long)(eta_s % 60));
 }
 
-/* Durable from-anchor resume target (progress.kv REFOLD_FROM_ANCHOR_TARGET_KEY),
- * decoded exactly as refold_progress_dump_state_json decodes it. Returns
- * false only when the store is closed or the key is absent/malformed — the
- * caller then falls back to the compiled anchor. */
-static bool from_anchor_target(int32_t *out)
-{
-    sqlite3 *db = progress_store_db();
-    if (!db) return false;
-    uint8_t tbuf[4] = {0};
-    size_t t_n = 0;
-    bool t_found = false;
-    progress_store_tx_lock();
-    bool ok = progress_meta_get(db, REFOLD_FROM_ANCHOR_TARGET_KEY, tbuf,
-                                sizeof(tbuf), &t_n, &t_found);
-    progress_store_tx_unlock();
-    if (!ok || !t_found || t_n != sizeof(tbuf))
-        return false;
-    *out = (int32_t)((uint32_t)tbuf[0] | ((uint32_t)tbuf[1] << 8) |
-                     ((uint32_t)tbuf[2] << 16) | ((uint32_t)tbuf[3] << 24));
-    return true;
-}
-
 struct rcs_stage_row {
     const char *abbrev;
     const char *name;
@@ -443,7 +421,9 @@ bool rom_compile_status_dump_state_json(struct json_value *out,
     int32_t target = (int32_t)REDUCER_FRONTIER_TRUSTED_ANCHOR;
     if (from_anchor) {
         int32_t t = 0;
-        if (from_anchor_target(&t) && t > 0)
+        /* Lock-free cached read (refold_progress) — never the blocking progress
+         * lock on this RPC dump path. Falls back to the compiled anchor. */
+        if (refold_from_anchor_target_cached(&t) && t > 0)
             target = t;
     }
 

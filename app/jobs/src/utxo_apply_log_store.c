@@ -5,6 +5,7 @@
 #include "utxo_apply_log_store.h"
 
 #include "platform/time_compat.h"
+#include "jobs/stage_log_rows.h"
 #include "jobs/stage_row_itag.h"
 #include "util/log_macros.h"
 
@@ -68,7 +69,10 @@ bool utxo_apply_log_ensure_schema(sqlite3 *db)
         LOG_WARN("utxo_apply", "[utxo_apply] ok=0 index create failed: %s",
                  ierr ? ierr : "(no message)");
     if (ierr) sqlite3_free(ierr);
-    return stage_row_itag_backfill(db, "utxo_apply_log");
+    bool ok = stage_row_itag_backfill(db, "utxo_apply_log");
+    if (ok)
+        stage_log_rows_seed(db, "utxo_apply_log");
+    return ok;
 }
 
 int utxo_apply_proof_validate_log_at(sqlite3 *db, int height,
@@ -152,5 +156,8 @@ bool utxo_apply_log_insert(sqlite3 *db, int height, const char *status, bool ok,
         LOG_WARN("utxo_apply", "[utxo_apply] insert height=%d rc=%d", height, rc);
         return false;
     }
+    /* Runs under the caller's progress-store write lock (stage_run_once / the
+     * reorg + repair paths that co-commit utxo_apply_log with coin mutations). */
+    stage_log_rows_note_insert("utxo_apply_log");
     return true;
 }

@@ -57,7 +57,7 @@ lib/storage/src/census_read.c 868
 lib/storage/src/coins_kv.c 1028
 lib/storage/src/consensus_db.c 883
 lib/storage/src/peers_projection.c 1304
-lib/storage/src/progress_store.c 878
+lib/storage/src/progress_store.c 881
 lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
 lib/storage/src/utxo_projection.c 978

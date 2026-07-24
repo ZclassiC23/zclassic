@@ -29,6 +29,12 @@ static _Atomic bool g_refold_in_progress = false;
  * 0 as the from-genesis refold does. Conservative default false (normal boot). */
 static _Atomic bool g_refold_from_anchor = false;
 
+/* Cached from-anchor resume target (the durable REFOLD_FROM_ANCHOR_TARGET_KEY),
+ * so the rom_compile dumper reads it lock-free instead of taking the blocking
+ * progress lock on the RPC path. Seeded at boot by refold_progress_refresh and
+ * republished at every mark/bump/clear. -1 = absent/unset. */
+static _Atomic int32_t g_from_anchor_target = -1;
+
 bool refold_in_progress(void)
 {
     return atomic_load(&g_refold_in_progress);
@@ -37,6 +43,15 @@ bool refold_in_progress(void)
 bool refold_from_anchor_active(void)
 {
     return atomic_load(&g_refold_from_anchor);
+}
+
+bool refold_from_anchor_target_cached(int32_t *out)
+{
+    int32_t t = atomic_load(&g_from_anchor_target);
+    if (t <= 0)
+        return false;
+    if (out) *out = t;
+    return true;
 }
 
 bool refold_progress_refresh(sqlite3 *db)
@@ -50,11 +65,16 @@ bool refold_progress_refresh(sqlite3 *db)
     uint8_t ablob[1] = {0};
     size_t an = 0;
     bool afound = false;
+    uint8_t tbuf[4] = {0};
+    size_t tn = 0;
+    bool tfound = false;
     progress_store_tx_lock();
     bool ok = progress_meta_get(db, REFOLD_IN_PROGRESS_KEY,
                                 blob, sizeof(blob), &n, &found);
     bool aok = progress_meta_get(db, REFOLD_FROM_ANCHOR_KEY,
                                  ablob, sizeof(ablob), &an, &afound);
+    bool tok = progress_meta_get(db, REFOLD_FROM_ANCHOR_TARGET_KEY,
+                                 tbuf, sizeof(tbuf), &tn, &tfound);
     progress_store_tx_unlock();
     if (!ok || !aok) {
         /* On a read error keep both caches conservatively false: a stuck-true
@@ -68,6 +88,14 @@ bool refold_progress_refresh(sqlite3 *db)
     atomic_store(&g_refold_in_progress, on);
     bool aon = afound && an == 1 && ablob[0] == 0x01;
     atomic_store(&g_refold_from_anchor, aon);
+    /* Seed the cached target (same LE int32 decode as the write path). */
+    if (tok && tfound && tn == sizeof(tbuf))
+        atomic_store(&g_from_anchor_target,
+                     (int32_t)((uint32_t)tbuf[0] | ((uint32_t)tbuf[1] << 8) |
+                               ((uint32_t)tbuf[2] << 16) |
+                               ((uint32_t)tbuf[3] << 24)));
+    else
+        atomic_store(&g_from_anchor_target, -1);
     return true;
 }
 
@@ -168,6 +196,7 @@ bool refold_progress_mark_started_from_anchor(sqlite3 *db, int32_t resume_target
 
     atomic_store(&g_refold_in_progress, true);
     atomic_store(&g_refold_from_anchor, true);
+    atomic_store(&g_from_anchor_target, resume_target);
     LOG_INFO("refold",
              "from-ANCHOR refold marked in progress — H* floor HELD at the "
              "compiled anchor (%d) and below-anchor self-repair suspended until "
@@ -225,6 +254,7 @@ bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
 
     atomic_store(&g_refold_from_anchor, false);
     atomic_store(&g_refold_in_progress, false);
+    atomic_store(&g_from_anchor_target, -1);
     LOG_INFO("refold",
              "from-anchor refold reached the resume target (%d) at utxo_apply "
              "cursor=%d — cleared refold_from_anchor + refold_in_progress; H* "
@@ -266,6 +296,8 @@ bool refold_progress_bump_target(sqlite3 *db, int32_t live_tip)
             };
             ok = progress_meta_set(db, REFOLD_FROM_ANCHOR_TARGET_KEY,
                                    nbuf, sizeof(nbuf));
+            if (ok)
+                atomic_store(&g_from_anchor_target, live_tip);
         }
     }
     progress_store_tx_unlock();

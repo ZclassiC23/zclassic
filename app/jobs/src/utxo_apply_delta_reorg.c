@@ -14,6 +14,7 @@
 #include "utxo_apply_delta_internal.h"
 #include "jobs/reducer_commit_invariants.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_log_rows.h"
 #include "jobs/utxo_apply_stage.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -261,12 +262,17 @@ bool utxo_apply_delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
             return false;
         }
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+        int changed = sqlite3_changes(db);
         sqlite3_finalize(st);
         st = NULL;
         if (rc != SQLITE_DONE) {
             LOG_WARN("utxo_apply", "[utxo_apply] unwind delete rc=%d", rc);
             return false;
         }
+        /* Keep the published utxo_apply_log row counter honest across the
+         * reorg unwind (see jobs/stage_log_rows.h). Only pass 0 is that table. */
+        if (pass == 0)
+            stage_log_rows_note_delete("utxo_apply_log", (int64_t)changed);
     }
     if (!anchor_kv_delete_range(db, fork_plus1, last_h)) {
         LOG_WARN("utxo_apply",

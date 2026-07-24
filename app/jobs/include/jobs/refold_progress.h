@@ -90,6 +90,13 @@ bool refold_progress_clear_if_crossed(sqlite3 *db, int32_t utxo_apply_cursor);
  * to 0. Cached atomic, refreshed by refold_progress_refresh(). */
 bool refold_from_anchor_active(void);
 
+/* Lock-free read of the cached from-anchor resume target (the durable
+ * REFOLD_FROM_ANCHOR_TARGET_KEY). Returns true and sets *out when a positive
+ * target is cached; false when unset/absent. Seeded at boot by
+ * refold_progress_refresh and republished on every mark/bump/clear, so the
+ * rom_compile dumper reads it without taking the blocking progress lock. */
+bool refold_from_anchor_target_cached(int32_t *out);
+
 /* SET both REFOLD_IN_PROGRESS_KEY and REFOLD_FROM_ANCHOR_KEY on `db` plus the
  * durable resume target, AND update both caches. Idempotent. Call when
  * -refold-from-anchor (or the boot torn-import auto-arm) has re-seeded the anchor

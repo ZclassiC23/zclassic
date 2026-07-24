@@ -29,6 +29,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage_lcc.h"
+#include "util/subsystem_snapshot.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -161,6 +162,66 @@ static job_result_t stage_note_fatal(stage_t *s, const char *reason)
     return stage_record_fatal(s ? s->name : "(null)", reason);
 }
 
+/* ── stage_cursor row-count snapshot ───────────────────────────────────
+ * The progress_store dump used to report stage_cursor's row count with a
+ * blocking SELECT COUNT(*) under progress_store_tx_lock — a dumper queued
+ * behind the fold. This publishes the count through the seqlock snapshot plane
+ * instead: seeded once per boot from one COUNT (the table is tiny), then
+ * incremented at THE cursor-write chokepoint whenever a genuinely new name row
+ * is inserted (cursor rows are never deleted in production). The progress_store
+ * dumper reads it lock-free. */
+static _Atomic int64_t          g_stage_cursor_rows = 0;
+static _Atomic uint64_t         g_stage_cursor_seeded_epoch = 0;
+static struct zcl_snapshot_env  g_stage_cursor_env = ZCL_SNAPSHOT_ENV_INIT;
+
+static void stage_cursor_rows_publish(int64_t rows)
+{
+    if (rows < 0)
+        rows = 0;
+    zcl_snapshot_publish_begin(&g_stage_cursor_env);
+    atomic_store_explicit(&g_stage_cursor_rows, rows, memory_order_relaxed);
+    zcl_snapshot_publish_end(&g_stage_cursor_env, -1);
+}
+
+/* Seed the counter from one COUNT(*), at most once per progress-store epoch. */
+static void stage_cursor_rows_seed(sqlite3 *db)
+{
+    if (!db)
+        return;
+    uint64_t epoch = progress_store_epoch();
+    if (epoch != 0 &&
+        atomic_load_explicit(&g_stage_cursor_seeded_epoch,
+                             memory_order_acquire) == epoch)
+        return;
+
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM stage_cursor",
+                           -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+            n = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+
+    if (n < 0)
+        return;
+    stage_cursor_rows_publish(n);
+    atomic_store_explicit(&g_stage_cursor_seeded_epoch, epoch,
+                          memory_order_release);
+}
+
+int64_t stage_cursor_rows_value(void)
+{
+    return atomic_load_explicit(&g_stage_cursor_rows, memory_order_relaxed);
+}
+
+const struct zcl_snapshot_env *stage_cursor_rows_env(void)
+{
+    return &g_stage_cursor_env;
+}
+
 /* ── Schema bootstrap ──────────────────────────────────────────────── */
 
 bool stage_table_ensure(sqlite3 *db)
@@ -179,16 +240,21 @@ bool stage_table_ensure(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
+    stage_cursor_rows_seed(db);
     return true;
 }
 
 /* ── Cursor read / write (direct sqlite3) ─────────────────────────── */
 
 /* Read the persisted cursor for `name`. On miss, *out is set to 0 and
- * the function returns true (a fresh stage starts at cursor 0). */
-static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out)
+ * the function returns true (a fresh stage starts at cursor 0). `found`
+ * (optional) reports whether a row exists — the cursor-write chokepoint uses it
+ * to count only genuinely-new stage_cursor rows. */
+static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out,
+                        bool *found)
 {
     *out = 0;
+    if (found) *found = false;
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT cursor FROM stage_cursor WHERE name = ?1";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -200,6 +266,7 @@ static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out)
     int rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     if (rc == SQLITE_ROW) {
         *out = (uint64_t)sqlite3_column_int64(stmt, 0);
+        if (found) *found = true;
     } else if (rc != SQLITE_DONE) {
         fprintf(stderr, "[stage] cursor_read step: rc=%d %s\n",  // obs-ok:stage-step-failure
                 rc, sqlite3_errmsg(db));
@@ -215,7 +282,7 @@ static bool cursor_read(sqlite3 *db, const char *name, uint64_t *out)
  * other callers pass defer_lcc=false and retain the immediate write guard. */
 static bool cursor_write_locked_known_prev(sqlite3 *db, const char *name,
                                            uint64_t value, uint64_t prev,
-                                           bool defer_lcc)
+                                           bool defer_lcc, bool row_existed)
 {
     /* LCC write rule (see util/stage_lcc.h): THE cursor-write chokepoint. A
      * RAISE over a rowless hole in `<name>_log` is refused when enforcement is
@@ -255,6 +322,11 @@ static bool cursor_write_locked_known_prev(sqlite3 *db, const char *name,
                 rc, sqlite3_errmsg(db));
         return false;
     }
+    /* A new (name) row grows the tiny stage_cursor table by one; publish it so
+     * the progress_store dump reports the count without a blocking COUNT(*).
+     * An UPSERT over an existing row leaves the cardinality unchanged. */
+    if (!row_existed)
+        stage_cursor_rows_publish(stage_cursor_rows_value() + 1);
     return true;
 }
 
@@ -264,9 +336,10 @@ static bool cursor_write_locked_known_prev(sqlite3 *db, const char *name,
 static bool cursor_write_locked(sqlite3 *db, const char *name, uint64_t value)
 {
     uint64_t prev = 0;
-    if (!cursor_read(db, name, &prev))
+    bool existed = false;
+    if (!cursor_read(db, name, &prev, &existed))
         return false;
-    return cursor_write_locked_known_prev(db, name, value, prev, false);
+    return cursor_write_locked_known_prev(db, name, value, prev, false, existed);
 }
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -412,7 +485,8 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
      * import) could have updated it; reading inside the txn gives us
      * the freshest value visible to this connection. */
     uint64_t cur = 0;
-    if (!cursor_read(db, s->name, &cur)) {
+    bool cursor_existed = false;
+    if (!cursor_read(db, s->name, &cur, &cursor_existed)) {
         progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return stage_note_fatal(s, "cursor_read failed (sqlite)");
@@ -474,7 +548,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
             return stage_note_fatal(s, "ADVANCED but cursor did not move");
         }
         if (!cursor_write_locked_known_prev(db, s->name, ctx.cursor_out, cur,
-                                            batched)) {
+                                            batched, cursor_existed)) {
             stage_step_rollback(db, batched);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
@@ -678,7 +752,7 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
     }
 
     uint64_t current = 0;
-    if (!cursor_read(db, name, &current)) {
+    if (!cursor_read(db, name, &current, NULL)) {
         cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         return false;
