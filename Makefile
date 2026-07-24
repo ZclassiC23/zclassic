@@ -4234,8 +4234,9 @@ slo-probe-status:
 	@tail -n 4 "$(HOME)/.local/state/zclassic23-slo/pages.jsonl" 2>/dev/null || echo "no pages (good)"
 	@./tools/scripts/slo_ledger_summary.sh --window-hours 24 2>/dev/null || true
 
-# slo-probe-selftest: hermetic regression guard for both the prober and the
-# summary reader — fixture RPC commands / fixture ledgers, no live nodes.
+# slo-probe-selftest: hermetic regression guard for the prober, the summary
+# reader, and the 72h hold judge — fixture RPC commands / fixture ledgers,
+# no live nodes.
 slo-probe-selftest:
 	@bash -c 'set -uo pipefail; \
 	 set +e; out=$$(bash tools/scripts/node_slo_probe.sh --selftest 2>&1); rc=$$?; set -e; \
@@ -4248,6 +4249,12 @@ slo-probe-selftest:
 	 echo "$$out2"; \
 	 if [ "$$rc2" != "0" ] || ! echo "$$out2" | grep -q "^selftest: PASS"; then \
 	     echo "slo-probe-selftest: FAIL slo_ledger_summary.sh (rc=$$rc2; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 set +e; out3=$$(bash tools/scripts/slo_hold_judge.sh --selftest 2>&1); rc3=$$?; set -e; \
+	 echo "$$out3"; \
+	 if [ "$$rc3" != "0" ] || ! echo "$$out3" | grep -q "^selftest: PASS"; then \
+	     echo "slo-probe-selftest: FAIL slo_hold_judge.sh (rc=$$rc3; no selftest: PASS line)"; \
 	     exit 1; \
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
