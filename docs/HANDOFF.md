@@ -10,25 +10,35 @@
 
 # HANDOFF — current state (2026-07-24)
 
-## 0-LATEST. Regroup checkpoint — **Q1 is not won; protect the live lane**
+## 0-LATEST. The 13-day pin is BROKEN on live (2026-07-24, ledger-cited)
 
-Three different nodes/artifacts are in play. Do not treat one as another.
+The canonical node runs the cured stack and is climbing to tip. Every claim
+below carries its external-ledger line; re-derive with `zclassic23 status` /
+the SLO ledger before acting.
 
-| Role | Identity | Observed state | Rule |
-|---|---|---|---|
-| **Canonical live lane** | default datadir, running build `3b0de63b0` | 2026-07-24: up 13 days with ZERO H\* advance the entire uptime; H\*=3,176,325, header frontier ~3,192,025, oracle 3,192,030, gap_vs_oracle ~15,705; primary blocker `catchup_stalled` (downstream symptom of the permanent fold blocker, `app/conditions/src/download_queue_starved.c`); status RPC over its 250 ms budget; restart watchdog escalation_level=3, `automation_restart_ok:false` | **Observe only.** Owner-gated; no restart, deploy, or state surgery from an agent. |
-| **Stopwatch serving fixture** | `$HOME/.zclassic-c23-COPY-20260722-tipfresh3`, P2P `127.0.0.1:39070`, RPC `39071` | Typed fixture status reported H\*=3,190,536, `sync=at_tip`, 4 peers on 2026-07-22 | Immutable upstream fixture. Do not kill or mutate it while Q1 evidence depends on it. |
-| **Q1 code checkpoint** | `298affaf1` (followed only by this documentation regroup) | Clean and pushed; `make arch-score` = **50/100** | Development happens in a fresh worktree/datadir COPY. Never deploy this checkpoint merely because unit tests pass. |
+| Fact | Evidence (external ledger) |
+|---|---|
+| REBUILD cure copy-proven (recipe + exact binary) | `~/.local/state/zclassic23-cure/verdict.jsonl` units `zcl-anchor-refold-proof-8` PASS (h\*=3,176,357) and `zcl-anchor-refold-proof-9` attempt-2 PASS (h\*=3,177,257) |
+| Revert path copy-proven | same ledger, `zcl-revert-proof-1` attempt-2 PASS (h\*=3,176,325) |
+| ONE live apply executed 10:16–10:22Z (5.5 min outage) | `zcl-live-apply-1` APPLIED line; backup `~/.zclassic-c23-PREINSTALL-20260724-101627` |
+| Post-apply pin: three residue walls (splice 3,176,326 / shielded ≤3,176,410 / deep coin 3,176,489) cured on a live-copy | `zcl-splicefix-proof-1` PASS (h\*=3,177,099 past all three walls); shielded import committed 367,466+271,291 anchors, 444,911+1,055,998 nullifiers from a frozen zclassicd chainstate bound at exactly h=3,176,325 |
+| Proven copy PROMOTED to canonical 11:37Z | prior datadir kept at `~/.zclassic-c23-PREPROMOTE-20260724-113719` |
+| **Live climb, externally confirmed** | SLO `uptime-ledger.jsonl`: canonical served_height 3,176,325 (ts 1784892997) → 3,183,999 (ts 1784893177) → 3,185,298 rising ~21 blk/s, gap_vs_oracle shrinking |
 
-As of 2026-07-24 the canonical lane has been up 13 days with ZERO H\* advance
-the entire uptime, so it has earned no soak time in its observed blocked state.
-The wedge ROOT CAUSE is closed in code (baked `pprev` poison in
-`block_index.bin`; the REBUILD recipe is copy-proven through install+climb in
-the proof series under `~/.local/state/zclassic23-cure/`), but the LIVE APPLY IS
-PENDING the owner gate, and the `tip_finalize` rate bug (~94% of each fold
-round; fold rate collapses from ~50 to ~3 blk/s) is OPEN and gates any
-catch-up. The old July 19 top-of-chain claim is historical, not current.
-Re-derive all three rows before acting; heights move and fixtures can exit.
+Next: climb to gap_vs_oracle ≤ 2, then the 72h zero-touch hold (judge = the
+hold certifier reading the SLO ledger), then Phase-B ladder carve per
+`docs/work/ladder-carve-audit.md`. The reformed pager (merge `18bd0e797`)
+paged this incident correctly and is the failure net.
+
+Operational discoveries recorded in the cure runbook state dir: the
+`-import-complete-shielded` bind guard requires the source chainstate best
+block == the target coins island root EXACTLY; a `-bootstrapserve` zclassicd
+pins its on-disk chainstate at the serve anchor; `chainstate_legacy_reader`
+reads LevelDB SSTs only (WAL not replayed — followup: replay or refuse loudly
+on a non-empty WAL); zclassicd `invalidateblock` does not persist across
+restarts in this fork. The healer gap that made this manual (NULL-hash rearm
+unwired, remedy conflation in `reducer_frontier_reconcile_light`) has a repo
+fix in flight.
 
 ### Q1 evidence at this checkpoint
 
