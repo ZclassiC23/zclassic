@@ -49,6 +49,9 @@
 #include "validation/main_state.h"       /* struct main_state */
 #include "validation/chainstate.h"       /* active_chain_height, active_chain_at */
 #include "chain/chain.h"                  /* struct block_index (hashBlock) */
+#include "chain/chainparams.h"            /* chain_params_get (fold-span rebind);
+                                          * scan_block_files_mark_data via
+                                          * config/boot_internal.h above */
 #include "controllers/sync_controller.h" /* sapling_tree_rebuild (re-seed tree) */
 #include "sapling/incremental_merkle_tree.h" /* incremental_tree_deserialize/root */
 #include "core/serialize.h"               /* struct byte_stream */
@@ -1705,13 +1708,76 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
     return true;
 }
 
+/* ── Fold-span LOCAL body rebind (header-only-import self-heal) ───────────────
+ * A header-only rebuild (e.g. `--importblockindex`, or a header-seed load)
+ * populates the block index with correct hashes/heights but NO BLOCK_HAVE_DATA:
+ * a header import cannot carry the body positions (nFile/nDataPos), which point
+ * into the SOURCE node's block files. When the from-anchor fold then checks the
+ * span it sees a body gap — even though the bodies are on THIS node's local disk
+ * (a snapshot/refold datadir keeps the ingested bodies in blk*.dat). Before
+ * naming the gap blocker (which defers to a slow peer/reducer body-fetch), try a
+ * LOCAL rebind: scan_block_files_mark_data parses the ACTUAL blk*.dat bytes,
+ * marks HAVE_DATA + nDataPos, and links pprev from the parsed body header — it
+ * never trusts a stored position row. Idempotent and once-per-process (the
+ * O(disk) scan is not repeated). The datadir is set once by boot
+ * (boot_refold_body_rebind_set_datadir) so the pure contiguity predicate keeps
+ * its signature and every caller benefits without threading. */
+static char g_refold_rebind_datadir[PATH_MAX];
+static bool g_refold_rebind_datadir_set = false;
+static bool g_refold_rebind_scanned = false;
+static int  g_refold_rebind_scan_attempts = 0; /* boot-thread single writer */
+
+void boot_refold_body_rebind_set_datadir(const char *datadir)
+{
+    if (datadir && datadir[0]) {
+        snprintf(g_refold_rebind_datadir, sizeof(g_refold_rebind_datadir),
+                 "%s", datadir);
+        g_refold_rebind_datadir_set = true;
+    } else {
+        g_refold_rebind_datadir[0] = '\0';
+        g_refold_rebind_datadir_set = false;
+    }
+}
+
+/* True iff at least one non-empty blk*.dat exists under datadir/blocks (a cheap
+ * stat probe over the first few files — the scan itself walks the rest). */
+static bool refold_have_local_block_files(const char *datadir)
+{
+    for (int ci = 0; ci < 3; ci++) {
+        char p[576];
+        int n = snprintf(p, sizeof(p), "%s/blocks/blk%05d.dat", datadir, ci);
+        if (n < 0 || (size_t)n >= sizeof(p))
+            continue;
+        struct stat st;
+        if (stat(p, &st) == 0 && st.st_size > 0)
+            return true;
+    }
+    return false;
+}
+
+/* First height in (anchor, target] whose active-chain slot is absent or lacks
+ * BLOCK_HAVE_DATA; -1 iff the whole span is body-contiguous. */
+static int32_t refold_span_first_missing(struct main_state *ms,
+                                         int32_t anchor_height,
+                                         int32_t resume_target)
+{
+    for (int32_t h = anchor_height + 1; h <= resume_target; h++) {
+        const struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA))
+            return h;
+    }
+    return -1;
+}
+
 /* CUTOVER DEFECT 2 — body-span contiguity gate. See config/boot.h for the
- * contract. PURE except for the optional named-blocker raise on a gap: it scans
- * the active-chain block_index over (anchor_height, resume_target] and verifies
- * each slot has BLOCK_HAVE_DATA. The from-anchor fold replays on-disk BODIES
- * across this span; a missing/pruned body would pin utxo_apply at that height
- * (the prevout_unresolved wedge relocated). Gate BEFORE arming so the failure is
- * a NAMED blocker the operator/peer-fetch path can act on, never a silent stall. */
+ * contract. PURE except for (a) the once-per-process LOCAL body rebind on a gap
+ * (mark HAVE_DATA from local blk*.dat) and (b) the optional named-blocker raise
+ * on a gap the rebind cannot close. It scans the active-chain block_index over
+ * (anchor_height, resume_target] and verifies each slot has BLOCK_HAVE_DATA. The
+ * from-anchor fold replays on-disk BODIES across this span; a missing/pruned
+ * body would pin utxo_apply at that height (the prevout_unresolved wedge
+ * relocated). Gate BEFORE arming so the failure is a NAMED blocker the
+ * operator/peer-fetch path can act on, never a silent stall. */
 bool boot_refold_body_span_contiguous(struct main_state *ms,
                                       int32_t anchor_height,
                                       int32_t resume_target,
@@ -1725,42 +1791,82 @@ bool boot_refold_body_span_contiguous(struct main_state *ms,
     if (resume_target <= anchor_height)
         return true;    /* empty span — nothing to fold, trivially contiguous */
 
-    for (int32_t h = anchor_height + 1; h <= resume_target; h++) {
-        const struct block_index *bi = active_chain_at(&ms->chain_active, h);
-        if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
-            if (out_first_missing)
-                *out_first_missing = h;
-            if (raise_blocker) {
-                char reason[BLOCKER_REASON_MAX];
-                snprintf(reason, sizeof(reason),
-                         "from-anchor fold span (%d..%d] has a missing/pruned "
-                         "block body at height=%d (%s); refusing to arm the "
-                         "fold — utxo_apply would pin here. ACTION: fetch the "
-                         "body (peer/disk) so the span is contiguous, then retry",
-                         anchor_height, resume_target, h,
-                         bi ? "BLOCK_HAVE_DATA clear" : "no block_index slot");
-                struct blocker_record r;
-                if (blocker_init(&r, "refold.body_gap", "boot",
-                                 BLOCKER_DEPENDENCY, reason)) {
-                    r.escape_deadline_secs = 0;   /* no auto-escape: needs a body */
-                    r.retry_budget = -1;
-                    (void)blocker_set(&r);
-                }
-                fprintf(stderr,
-                        "[boot] -refold-from-anchor: BODY-SPAN GAP at height=%d "
-                        "in (%d..%d] — NOT arming the fold; raised named blocker "
-                        "refold.body_gap (fill the body, then retry)\n",
-                        h, anchor_height, resume_target);
-            }
-            return false;
-        }
+    int32_t first_missing =
+        refold_span_first_missing(ms, anchor_height, resume_target);
+
+    /* LOCAL rebind: on a real gap, mark HAVE_DATA from local block files ONCE,
+     * then re-check. Fires ONLY on a gap — a contiguous span never scans, so a
+     * healthy boot pays nothing. The scan parses the actual body bytes and links
+     * pprev from the header; it never trusts a stored position row. */
+    if (first_missing >= 0 && g_refold_rebind_datadir_set &&
+        !g_refold_rebind_scanned &&
+        refold_have_local_block_files(g_refold_rebind_datadir)) {
+        g_refold_rebind_scanned = true;
+        g_refold_rebind_scan_attempts++;
+        LOG_INFO("boot",
+                 "[boot] fold-span body gap at h=%d in (%d..%d] — rebinding "
+                 "HAVE_DATA from local block files (blk*.dat) before naming a "
+                 "gap", first_missing, anchor_height, resume_target);
+        (void)scan_block_files_mark_data(ms, g_refold_rebind_datadir,
+                                         chain_params_get());
+        first_missing =
+            refold_span_first_missing(ms, anchor_height, resume_target);
+        if (first_missing < 0)
+            LOG_INFO("boot",
+                     "[boot] fold-span body gap CLOSED by the local block-file "
+                     "rebind — the from-anchor fold can arm from disk bodies");
     }
-    /* Whole span contiguous: clear any stale gap blocker from a prior boot so a
-     * re-armed fold over a now-filled span starts clean. */
-    if (raise_blocker)
-        blocker_clear("refold.body_gap");
-    return true;
+
+    if (first_missing < 0) {
+        /* Whole span contiguous: clear any stale gap blocker so a re-armed fold
+         * over a now-filled span starts clean. */
+        if (raise_blocker)
+            blocker_clear("refold.body_gap");
+        return true;
+    }
+
+    if (out_first_missing)
+        *out_first_missing = first_missing;
+    if (raise_blocker) {
+        const struct block_index *bi =
+            active_chain_at(&ms->chain_active, first_missing);
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "from-anchor fold span (%d..%d] has a missing/pruned "
+                 "block body at height=%d (%s); refusing to arm the "
+                 "fold — utxo_apply would pin here. ACTION: fetch the "
+                 "body (peer/disk) so the span is contiguous, then retry",
+                 anchor_height, resume_target, first_missing,
+                 bi ? "BLOCK_HAVE_DATA clear" : "no block_index slot");
+        struct blocker_record r;
+        if (blocker_init(&r, "refold.body_gap", "boot",
+                         BLOCKER_DEPENDENCY, reason)) {
+            r.escape_deadline_secs = 0;   /* no auto-escape: needs a body */
+            r.retry_budget = -1;
+            (void)blocker_set(&r);
+        }
+        fprintf(stderr,
+                "[boot] -refold-from-anchor: BODY-SPAN GAP at height=%d "
+                "in (%d..%d] — NOT arming the fold; raised named blocker "
+                "refold.body_gap (fill the body, then retry)\n",
+                first_missing, anchor_height, resume_target);
+    }
+    return false;
 }
+
+#ifdef ZCL_TESTING
+int boot_refold_body_rebind_scan_attempts_for_test(void)
+{
+    return g_refold_rebind_scan_attempts;
+}
+void boot_refold_body_rebind_reset_for_test(void)
+{
+    g_refold_rebind_datadir[0] = '\0';
+    g_refold_rebind_datadir_set = false;
+    g_refold_rebind_scanned = false;
+    g_refold_rebind_scan_attempts = 0;
+}
+#endif
 
 /* B2 1c — the boot torn-import AUTO-ARM. Consults the PURE detect predicate
  * (block_index_loader_torn_import_detect — no side-effects) and, on a detected
