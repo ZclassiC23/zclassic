@@ -422,6 +422,52 @@ void zcl_native_handle_account_unsuspend(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* Mutating core.wallet.* leaves
+ * (app/controllers/src/wallet_native_handlers.c). Each parses its input and
+ * calls the running node's wallet RPC (getnewaddress / importaddress /
+ * dumpprivkey / sendtoaddress / z_sendmany / rescanblockchain /
+ * walletbackupnow) over the loopback client, then renders one bounded JSON
+ * document. address.new / address.import / rescan / backup.now are one-shot
+ * mutations (AUTH_OWNER); transaction.send / shielded.send /
+ * address.export-key honour the declared CONFIRM_PLAN_COMMIT contract — a
+ * first call with no `confirm:true` returns a non-mutating plan plus the
+ * exact commit next-action, and only a second call with `confirm:true`
+ * broadcasts or reveals. Bound in config/commands/core.def. */
+void zcl_native_handle_wallet_address_new(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_address_import(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_address_export_key(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_transaction_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_shielded_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_rescan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_backup_now(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* core.wallet.address.label(.by-label) — the address-book / label surface
+ * (app/controllers/src/wallet_label_controller.c). Direct handlers over
+ * app_runtime_node_db(): no wallet keystore, no RPC context. `label`
+ * sets or clears a label (EFFECT_MUTATE, RISK_APP_WRITE — a plain
+ * annotation, not a key or fund mutation); `by-label` reads every address
+ * currently carrying a label. Bound in config/commands/core.def. */
+void zcl_native_handle_wallet_address_label(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_address_by_label(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
 void zcl_native_handle_rom_seed_status(

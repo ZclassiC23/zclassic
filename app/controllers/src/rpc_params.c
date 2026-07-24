@@ -41,6 +41,30 @@ void rpc_arg_builder_push_int(struct rpc_arg_builder *p, int64_t i)
     json_free(&v);
 }
 
+void rpc_arg_builder_push_real(struct rpc_arg_builder *p, double d)
+{
+    struct json_value v;
+    json_init(&v);
+    json_set_real(&v, d);
+    json_push_back(&p->arr, &v);
+    json_free(&v);
+}
+
+void rpc_arg_builder_push_value(struct rpc_arg_builder *p,
+                                const struct json_value *v)
+{
+    if (!v) {
+        struct json_value nul;
+        json_init(&nul);
+        json_set_null(&nul);
+        json_push_back(&p->arr, &nul);
+        json_free(&nul);
+        return;
+    }
+    /* json_push_back deep-copies; the caller keeps ownership of *v. */
+    json_push_back(&p->arr, v);
+}
+
 char *rpc_arg_builder_to_json(struct rpc_arg_builder *p)
 {
     /* Two-pass: size then allocate. json_write is safe with NULL/0 —

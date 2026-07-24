@@ -6,6 +6,7 @@
 #include "models/swap_contract.h"
 #include "models/zmsg.h"
 #include "models/hodl_wave.h"
+#include "models/wallet_label.h"
 #include <unistd.h>
 
 int test_model_app(void)
@@ -550,6 +551,117 @@ int test_model_app(void)
             ok = ok && db_peer_save(&ndb, &d);
             ok = ok && (db_peer_fast_zcl23(&ndb, fast, 4) == 1);
             ok = ok && (fast[0].port == 8033);
+            node_db_close(&ndb);
+        }
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Wallet label model sets, reads back, relabels, and lists cleanly... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_wallet_label_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+        if (ok) {
+            struct db_wallet_label bad, a, b, out;
+            struct ar_errors e;
+
+            /* An address-less row fails validation. */
+            memset(&bad, 0, sizeof(bad));
+            ar_errors_clear(&e);
+            db_wallet_label_validate(&bad, &e);
+            ok = ar_errors_any(&e);
+
+            /* Set a label. */
+            memset(&a, 0, sizeof(a));
+            snprintf(a.address, sizeof(a.address), "%s", "t1Alice");
+            snprintf(a.label, sizeof(a.label), "%s", "friends");
+            ok = ok && db_wallet_label_save(&ndb, &a);
+
+            /* Read it back. */
+            memset(&out, 0, sizeof(out));
+            ok = ok && db_wallet_label_find(&ndb, "t1Alice", &out);
+            if (ok && strcmp(out.label, "friends") != 0)
+                ok = false;
+
+            /* An unknown address has no row (found=false, not an error). */
+            memset(&out, 0, sizeof(out));
+            if (ok && db_wallet_label_find(&ndb, "t1Nobody", &out))
+                ok = false;
+
+            /* A second address under the same label. */
+            memset(&b, 0, sizeof(b));
+            snprintf(b.address, sizeof(b.address), "%s", "t1Bob");
+            snprintf(b.label, sizeof(b.label), "%s", "friends");
+            ok = ok && db_wallet_label_save(&ndb, &b);
+
+            struct db_wallet_label members[4];
+            memset(members, 0, sizeof(members));
+            int n = db_wallet_label_list_by_label(&ndb, "friends", members, 4);
+            if (ok && n != 2) ok = false;
+            if (ok && strcmp(members[0].address, "t1Alice") != 0) ok = false;
+            if (ok && strcmp(members[1].address, "t1Bob") != 0) ok = false;
+
+            /* An unknown label returns zero rows, not an error. */
+            struct db_wallet_label none[4];
+            memset(none, 0, sizeof(none));
+            if (ok &&
+                db_wallet_label_list_by_label(&ndb, "nonexistent", none, 4) != 0)
+                ok = false;
+
+            /* listlabels: exactly one distinct label so far. */
+            struct db_wallet_label labels[4];
+            memset(labels, 0, sizeof(labels));
+            int nl = db_wallet_label_list_distinct(&ndb, labels, 4);
+            if (ok && (nl != 1 || strcmp(labels[0].label, "friends") != 0))
+                ok = false;
+
+            /* Re-label Alice: the address primary key overwrites in place,
+             * it does not create a second row. */
+            struct db_wallet_label relabel;
+            memset(&relabel, 0, sizeof(relabel));
+            snprintf(relabel.address, sizeof(relabel.address), "%s", "t1Alice");
+            snprintf(relabel.label, sizeof(relabel.label), "%s", "family");
+            ok = ok && db_wallet_label_save(&ndb, &relabel);
+
+            memset(&out, 0, sizeof(out));
+            ok = ok && db_wallet_label_find(&ndb, "t1Alice", &out);
+            if (ok && strcmp(out.label, "family") != 0)
+                ok = false;
+
+            struct db_wallet_label friends_after[4];
+            memset(friends_after, 0, sizeof(friends_after));
+            if (ok && db_wallet_label_list_by_label(&ndb, "friends",
+                                                    friends_after, 4) != 1)
+                ok = false;
+            if (ok && strcmp(friends_after[0].address, "t1Bob") != 0)
+                ok = false;
+
+            struct db_wallet_label labels2[4];
+            memset(labels2, 0, sizeof(labels2));
+            int nl2 = db_wallet_label_list_distinct(&ndb, labels2, 4);
+            if (ok && nl2 != 2) ok = false;
+
+            /* Clearing a label keeps the row but empties it. */
+            struct db_wallet_label cleared;
+            memset(&cleared, 0, sizeof(cleared));
+            snprintf(cleared.address, sizeof(cleared.address), "%s", "t1Bob");
+            ok = ok && db_wallet_label_save(&ndb, &cleared);
+            memset(&out, 0, sizeof(out));
+            ok = ok && db_wallet_label_find(&ndb, "t1Bob", &out);
+            if (ok && out.label[0] != '\0')
+                ok = false;
+
             node_db_close(&ndb);
         }
         char cmd[384];

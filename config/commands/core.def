@@ -572,12 +572,12 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_BRANCH("core.wallet.address", "core.wallet",
                    "Transparent addresses", ZCL_COMMAND_LAYER_CORE)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.address.new", "core.wallet.address", "",
     "Derive and persist a new transparent address",
-    "Will report the newly derived transparent address once wired; "
-    "today the handler is unbound and fails closed with exit 3 rather "
-    "than mutating the wallet.", 0,
+    "The freshly derived transparent address, persisted in the wallet "
+    "by the running node's getnewaddress at call time; created is true "
+    "when a new key was written.", 0,
     "wallet,address,new",
     "zcl.command.empty_input.v1", "zcl.wallet_address.v1", "", "",
     "zclassic23 core wallet address new",
@@ -586,7 +586,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "wallet key-mutation binding is a Wave 2.2 deliverable")
+    zcl_native_handle_wallet_address_new)
 ZCL_COMMAND_READY_READ(
     "core.wallet.address.list", "core.wallet.address", "",
     "List transparent addresses",
@@ -601,12 +601,12 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.address.import", "core.wallet.address", "",
     "Import a watch-only address",
-    "Will report whether the given address was imported watch-only "
-    "once wired; today the handler is unbound and fails closed with "
-    "exit 3 rather than mutating the wallet.", 0,
+    "The watch-only address the running node's importaddress "
+    "registered in the wallet at call time; imported is true once the "
+    "address is being tracked.", 0,
     "wallet,address,import",
     "zcl.core_addr_import.input.v1", "zcl.wallet_address.v1", "address",
     "address", "zclassic23 core wallet address import --address=<addr>",
@@ -615,16 +615,16 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "wallet import binding is a Wave 2.2 deliverable")
-ZCL_COMMAND_PLANNED_COMMAND(
+    zcl_native_handle_wallet_address_import)
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.address.export-key", "core.wallet.address", "",
     "Export the private key for an address",
-    "Will return the raw private key material for the given address "
-    "once wired, gated to the owner auth tier; today the handler is "
-    "unbound and fails closed with exit 3, so no key ever leaves the "
-    "node via this path yet.", 0,
+    "Owner-gated plan/commit: without confirm, a non-revealing plan "
+    "naming the address; with confirm:true, the raw private key from "
+    "the node's dumpprivkey at call time (stage=committed).", 0,
     "wallet,export,privkey",
-    "zcl.core_addr_ref.input.v1", "zcl.wallet_privkey.v1", "address", "address",
+    "zcl.core_addr_ref.input.v1", "zcl.wallet_privkey.v1", "address,confirm",
+    "address",
     "zclassic23 core wallet address export-key --address=<addr>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_READ, ZCL_COMMAND_RISK_READ,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -632,7 +632,43 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "private-key export is owner-gated and deferred to Wave 2.2")
+    zcl_native_handle_wallet_address_export_key)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.address.label", "core.wallet.address", "",
+    "Set or clear the label on an address",
+    "The address's label row as persisted after the upsert (address, "
+    "label, updated_at); idempotent, so re-setting the same label "
+    "returns that settled state. An empty label clears it. Carries no "
+    "key or fund risk: it writes a plain annotation row, never the "
+    "wallet keystore.", 0,
+    "wallet,address,label,rename,contact",
+    "zcl.wallet_label_input.v1", "zcl.wallet_label.v1", "address,label",
+    "address",
+    "zclassic23 core wallet address label --input='{\"address\":\"t1...\","
+    "\"label\":\"friends\"}'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_address_label)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.address.by-label", "core.wallet.address", "",
+    "List addresses carrying a given label",
+    "Every address currently carrying the given label, read live from "
+    "the wallet_labels table at call time; an unrecognized label "
+    "returns an empty list, not an error, and truncated is true when "
+    "the row cap bounded the answer.", ZCL_COMMAND_LIST_BUDGET,
+    "wallet,address,label,lookup",
+    "zcl.wallet_by_label_input.v1", "zcl.wallet_by_label.v1", "label",
+    "label",
+    "zclassic23 core wallet address by-label friends",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_wallet_address_by_label)
 ZCL_COMMAND_BRANCH("core.wallet.utxo", "core.wallet", "Spendable outputs",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
@@ -677,15 +713,17 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.transaction.send", "core.wallet.transaction", "",
     "Build, sign, and broadcast a payment",
-    "Will report the broadcast transaction id once the plan/commit "
-    "handshake is wired; today the handler is unbound and fails "
-    "closed with exit 3, so no funds move.", 0,
+    "Plan/commit spend: without confirm, a non-mutating plan "
+    "(recipient, amount) plus the commit next-action; with "
+    "confirm:true, the broadcast txid from sendtoaddress "
+    "(stage=committed). idempotency_key correlates plan to commit; it "
+    "is not node-side deduplication.", 0,
     "wallet,send,pay,broadcast",
     "zcl.core_wallet_send.input.v1", "zcl.wallet_send.v1",
-    "address,amount,idempotency_key", "",
+    "address,amount,idempotency_key,confirm", "",
     "zclassic23 core wallet transaction send --input='<obj>'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
@@ -693,7 +731,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "spend plan/commit handshake is a Wave 2.2 deliverable")
+    zcl_native_handle_wallet_transaction_send)
 ZCL_COMMAND_BRANCH("core.wallet.shielded", "core.wallet",
                    "Sapling shielded addresses and notes",
                    ZCL_COMMAND_LAYER_CORE)
@@ -740,15 +778,17 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST,
     "shielded note listing binding is a Wave 2.2 deliverable")
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.shielded.send", "core.wallet.shielded", "",
     "Send a shielded payment",
-    "Will report the broadcast shielded transaction id once the "
-    "plan/commit handshake and prover are wired; today the handler is "
-    "unbound and fails closed with exit 3, so no funds move.", 0,
+    "Plan/commit shielded spend: without confirm, a non-mutating plan "
+    "(from, to, amount) plus the commit next-action; with "
+    "confirm:true, the async z_sendmany operation id "
+    "(stage=committed). idempotency_key correlates plan to commit; it "
+    "is not node-side deduplication.", 0,
     "shielded,send,z_sendmany",
     "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
-    "from,to,amount,idempotency_key", "",
+    "from,to,amount,idempotency_key,confirm", "",
     "zclassic23 core wallet shielded send --input='<obj>'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
@@ -756,7 +796,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "shielded send plan/commit handshake is a Wave 2.2 deliverable")
+    zcl_native_handle_wallet_shielded_send)
 ZCL_COMMAND_BRANCH("core.wallet.backup", "core.wallet", "Wallet backup",
                    ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(
@@ -773,12 +813,12 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.backup.now", "core.wallet.backup", "",
     "Take a wallet backup now",
-    "Will report the path and outcome of an on-demand wallet backup "
-    "once wired; today the handler is unbound and fails closed with "
-    "exit 3, so no backup file is written.", 0,
+    "The outcome and path of an on-demand wallet backup written by the "
+    "running node's walletbackupnow at call time; created is true once "
+    "the backup file is on disk.", 0,
     "wallet,backup,now",
     "zcl.command.empty_input.v1", "zcl.wallet_backup.v1", "", "",
     "zclassic23 core wallet backup now",
@@ -787,7 +827,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "wallet backup-now binding is a Wave 2.2 deliverable")
+    zcl_native_handle_wallet_backup_now)
 ZCL_COMMAND_READY_READ(
     "core.wallet.audit", "core.wallet", "", "Audit wallet key/UTXO consistency",
     "Live consistency check between the wallet's key set and its "
@@ -800,12 +840,12 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.rescan", "core.wallet", "",
     "Rescan the chain for wallet transactions",
-    "Will report rescan job progress from the given start height once "
-    "the job binding is wired; today the handler is unbound and fails "
-    "closed with exit 3, so no rescan runs.", 0,
+    "The rescanblockchain result from the running node at call time "
+    "under result, rescanning from the given start_height (or genesis "
+    "when omitted); started is true once the scan has begun.", 0,
     "wallet,rescan",
     "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v1", "start_height",
     "", "zclassic23 core wallet rescan",
@@ -815,7 +855,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "wallet rescan job binding is a Wave 2.2 deliverable")
+    zcl_native_handle_wallet_rescan)
 ZCL_COMMAND_PLANNED_COMMAND(
     "core.wallet.replay", "core.wallet", "",
     "Replay wallet state from chain",

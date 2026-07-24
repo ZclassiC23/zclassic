@@ -743,6 +743,167 @@ static int test_status_brief_body_front_door_deadline(void)
     return failures;
 }
 
+/* ── mutating core.wallet.* leaves: E2E over a stubbed wallet RPC ──────────
+ * These leaves are dedicated handlers that reach the node over node_rpc_call.
+ * With the ZCL_TESTING test hook installed we drive the real registry handlers
+ * through their plan/commit contract with NO live node: address.new persists
+ * an address, and transaction.send only broadcasts on the confirmed call. */
+static int g_wallet_send_calls;
+
+static char *wallet_stub_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (method && strcmp(method, "getnewaddress") == 0)
+        return strdup("\"t1StubTransparentAddress00000000000\"");
+    if (method && strcmp(method, "sendtoaddress") == 0) {
+        g_wallet_send_calls++;
+        return strdup(
+            "\"aa11bb22cc33dd44ee55ff66aa77bb88"
+            "cc99dd00ee11ff22aa33bb44cc55dd66\"");
+    }
+    return strdup("null");
+}
+
+static int test_wallet_mutating_native_e2e(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+
+    TEST("core.wallet mutating leaves execute plan/commit over a stubbed RPC") {
+        g_wallet_send_calls = 0;
+        node_rpc_client_set_test_hook(wallet_stub_rpc);
+
+        /* 1. address.new persists and returns a fresh transparent address. */
+        const struct zcl_command_spec *new_spec =
+            find_spec(reg, "core.wallet.address.new");
+        ASSERT(new_spec != NULL);
+        ASSERT(new_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(new_spec->handler != NULL);
+        struct json_value empty;
+        json_init(&empty);
+        json_set_object(&empty);
+        struct zcl_command_request req_new = {
+            .spec = new_spec, .input = &empty, .view = "normal",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, new_spec->output_schema);
+        zcl_native_handle_wallet_address_new(&req_new, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "address")),
+                      "t1StubTransparentAddress00000000000");
+        ASSERT(json_get_bool(json_get(&reply.data, "created")));
+        ASSERT(reply.error.mutated);
+        zcl_command_reply_free(&reply);
+        json_free(&empty);
+
+        /* 2. transaction.send WITHOUT confirm returns a plan and DOES NOT
+         *    broadcast (g_wallet_send_calls stays 0). */
+        const struct zcl_command_spec *send_spec =
+            find_spec(reg, "core.wallet.transaction.send");
+        ASSERT(send_spec != NULL);
+        ASSERT(send_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(send_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        struct json_value plan_in;
+        json_init(&plan_in);
+        json_set_object(&plan_in);
+        (void)json_push_kv_str(&plan_in, "address",
+                               "t1Dest0000000000000000000000000000");
+        (void)json_push_kv_real(&plan_in, "amount", 1.25);
+        struct zcl_command_request req_plan = {
+            .spec = send_spec, .input = &plan_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_wallet_transaction_send(&req_plan, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(!json_get_bool(json_get(&reply.data, "committed")));
+        ASSERT(!reply.error.mutated);
+        ASSERT(reply.next_count >= 1);
+        ASSERT_STR_EQ(reply.next[0].command, "core.wallet.transaction.send");
+        ASSERT_EQ(g_wallet_send_calls, 0);
+        /* The plan's committed next-action must validate against the leaf. */
+        struct json_value commit_next;
+        json_init(&commit_next);
+        ASSERT(json_read(&commit_next, reply.next[0].input_json,
+                         strlen(reply.next[0].input_json)));
+        char why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(send_spec, &commit_next,
+                                                   why, sizeof(why)));
+        ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
+        json_free(&commit_next);
+        zcl_command_reply_free(&reply);
+        json_free(&plan_in);
+
+        /* 3. transaction.send WITH confirm:true broadcasts and returns a txid;
+         *    exactly one sendtoaddress call fired. */
+        struct json_value commit_in;
+        json_init(&commit_in);
+        json_set_object(&commit_in);
+        (void)json_push_kv_str(&commit_in, "address",
+                               "t1Dest0000000000000000000000000000");
+        (void)json_push_kv_real(&commit_in, "amount", 1.25);
+        (void)json_push_kv_bool(&commit_in, "confirm", true);
+        struct zcl_command_request req_commit = {
+            .spec = send_spec, .input = &commit_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_wallet_transaction_send(&req_commit, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(json_get_bool(json_get(&reply.data, "committed")));
+        ASSERT(reply.error.mutated);
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        ASSERT_EQ(g_wallet_send_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&commit_in);
+
+        /* 4. export-key without confirm must NOT reveal a key. */
+        const struct zcl_command_spec *xk_spec =
+            find_spec(reg, "core.wallet.address.export-key");
+        ASSERT(xk_spec != NULL);
+        ASSERT(xk_spec->availability == ZCL_COMMAND_READY);
+        struct json_value xk_in;
+        json_init(&xk_in);
+        json_set_object(&xk_in);
+        (void)json_push_kv_str(&xk_in, "address",
+                               "t1Dest0000000000000000000000000000");
+        struct zcl_command_request req_xk = {
+            .spec = xk_spec, .input = &xk_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, xk_spec->output_schema);
+        zcl_native_handle_wallet_address_export_key(&req_xk, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(json_get(&reply.data, "privkey") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&xk_in);
+
+        /* 5. a missing required key fails closed with a typed error body. */
+        struct json_value bad_in;
+        json_init(&bad_in);
+        json_set_object(&bad_in);
+        struct zcl_command_request req_bad = {
+            .spec = send_spec, .input = &bad_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_wallet_transaction_send(&req_bad, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "MISSING_ADDRESS");
+        ASSERT(reply.error.message[0] != '\0');
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_wallet_send_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&bad_in);
+
+        node_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    /* Never leave a stub installed for the next group in this process. */
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
@@ -752,6 +913,7 @@ int test_native_api_contract(void)
     failures += test_missing_required_input_fails_closed_structured();
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
+    failures += test_wallet_mutating_native_e2e();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
     printf("=== native_api_contract: %d failures ===\n", failures);
