@@ -10,6 +10,7 @@
 #include "config/boot_bundle_fetch.h"
 
 #include "config/boot.h"                       /* struct app_context */
+#include "config/bundle_fetch_seeds.h"          /* ZCL_BUNDLE_FETCH_CLEARNET_SEEDS */
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h" /* boot_autodetect_consensus_bundle */
 #include "chain/checkpoints.h"                 /* get_sha3_utxo_checkpoint */
@@ -477,13 +478,8 @@ static size_t bbf_assemble_seeds(const struct app_context *ctx,
     }
 
     if (!(ctx && ctx->connect_only)) {
-        static const char *const clearnet_fs_seeds[] = {
-            "205.209.104.118",
-            "140.174.189.3",
-            NULL,
-        };
-        for (int i = 0; clearnet_fs_seeds[i]; i++)
-            bbf_add_peer(peers, &np, cap, clearnet_fs_seeds[i]);
+        for (int i = 0; ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]; i++)
+            bbf_add_peer(peers, &np, cap, ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]);
     }
     return np;
 }
