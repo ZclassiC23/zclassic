@@ -655,7 +655,7 @@ static int case_discovery(void)
  *
  * Proves bbf_discover_from_peers() persists a labeled outcome + seed/
  * response counts that the diagnostics dumper reads back correctly, for
- * both the "reached" case (the exact case_discovery scenario above) and
+ * both the lone-explicit-seed "degraded_single_seed" case (the exact case_discovery scenario above) and
  * the "no_quorum_fell_open_to_ibd" case (a reachable seed that serves an
  * empty directory — responds, but advertises no usable bundle manifest). */
 static int case_discovery_outcome_persists(void)
@@ -669,8 +669,11 @@ static int case_discovery_outcome_persists(void)
         progress_store_close();
         ASSERT(progress_store_open(pdir));
 
-        /* ── (1) reached: same shape as case_discovery — a lone EXPLICIT
-         * seed serving a real registered artifact reaches quorum=1. ── */
+        /* ── (1) degraded_single_seed: same shape as case_discovery — a lone
+         * EXPLICIT seed serving a real registered artifact proceeds under
+         * ranked discovery, but with fetch redundancy 1 the recorded outcome
+         * is "degraded_single_seed" ("reached" is reserved for a >=2-seed
+         * byte-identical winner; explicitness does not add redundancy). ── */
         rom_seed_reset();
         rom_seed_set_peer_bps_cap(1ull << 30);
         rom_seed_set_global_bps_cap(1ull << 30);
@@ -722,7 +725,8 @@ static int case_discovery_outcome_persists(void)
         ASSERT(boot_bundle_fetch_discovery_dump_state_json(&out, NULL));
         ASSERT(json_get_bool(json_get(&out, "progress_store_open")));
         ASSERT(json_get_bool(json_get(&out, "outcome_recorded")));
-        ASSERT_STR_EQ(json_get_str(json_get(&out, "outcome")), "reached");
+        ASSERT_STR_EQ(json_get_str(json_get(&out, "outcome")),
+                      "degraded_single_seed");
         ASSERT(json_get_int(json_get(&out, "seed_count")) >= 1);
         ASSERT(json_get_int(json_get(&out, "responded_count")) >= 1);
         json_free(&out);
@@ -739,7 +743,7 @@ static int case_discovery_outcome_persists(void)
         /* ── (2) no_quorum_fell_open_to_ibd: a fresh explicit seed that
          * answers /directory.json but has registered NO artifact — the
          * peer responds (responded_count>=1) yet advertises nothing usable,
-         * so this MUST overwrite the prior "reached" outcome with the new
+         * so this MUST overwrite the prior recorded outcome with the new
          * label rather than leaving the stale one. ── */
         char sroot2[] = "/tmp/zcl_bbf_disc_outcome_empty_srv_XXXXXX";
         char *sdir2 = mkdtemp(sroot2);
