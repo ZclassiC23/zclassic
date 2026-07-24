@@ -12,9 +12,11 @@
 
 ## 0-LATEST. The 13-day pin is BROKEN on live (2026-07-24, ledger-cited)
 
-The canonical node runs the cured stack and is climbing to tip. Every claim
-below carries its external-ledger line; re-derive with `zclassic23 status` /
-the SLO ledger before acting.
+The canonical node runs the cured stack and is climbing to tip — externally
+confirmed by uptime-ledger canonical samples served_height 3,176,325 →
+3,183,999 → 3,185,298 (ts=1784892997 → ts=1784893177 →  next tick) with
+gap_vs_oracle shrinking. Every claim below carries its external-ledger line;
+re-derive with `zclassic23 status` / the SLO ledger before acting.
 
 | Fact | Evidence (external ledger) |
 |---|---|
