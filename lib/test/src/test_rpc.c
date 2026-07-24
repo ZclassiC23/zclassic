@@ -738,6 +738,69 @@ int test_rpc(void) {
             json_free(&result);
         }
 
+        /* level=ERROR (uppercase) is accepted — case-insensitive parse. */
+        if (ok) {
+            struct json_value params;
+            json_init(&params);
+            struct json_value result;
+            json_init(&result);
+            json_set_array(&params);
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, "nlv_");
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 60);
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 10);
+            ok = ok && json_push_back(&params, &v);
+            json_set_str(&v, "ERROR");
+            ok = ok && json_push_back(&params, &v);
+            json_free(&v);
+
+            struct rpc_table tbl;
+            rpc_table_init(&tbl);
+            register_diagnostics_rpc_commands(&tbl);
+            ok = rpc_table_execute(&tbl, "getnodelog", &params, &result);
+            if (ok) {
+                const struct json_value *lines = json_get(&result, "lines");
+                ok = lines && lines->type == JSON_ARR && json_size(lines) == 1;
+                ok = ok && strstr(json_get_str(json_at(lines, 0)),
+                                  "nlv_err") != NULL;
+            }
+            json_free(&params);
+            json_free(&result);
+        }
+
+        /* Unknown level is rejected loudly (string error body), never a
+         * silent fall-through to "all". */
+        if (ok) {
+            struct json_value params;
+            json_init(&params);
+            struct json_value result;
+            json_init(&result);
+            json_set_array(&params);
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, "nlv_");
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 60);
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 10);
+            ok = ok && json_push_back(&params, &v);
+            json_set_str(&v, "loud");
+            ok = ok && json_push_back(&params, &v);
+            json_free(&v);
+
+            struct rpc_table tbl;
+            rpc_table_init(&tbl);
+            register_diagnostics_rpc_commands(&tbl);
+            bool rc = rpc_table_execute(&tbl, "getnodelog", &params, &result);
+            ok = ok && !rc && result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "bad level") != NULL;
+            json_free(&params);
+            json_free(&result);
+        }
+
         diagnostics_controller_set_state(NULL, "");
         if (clock_installed)
             clock_reset_default();

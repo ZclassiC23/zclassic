@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -214,15 +215,19 @@ static bool line_timestamp_unix(const char *line, int64_t now, int64_t *out)
     return false;
 }
 
-static enum log_level parse_level(const char *s)
+/* Case-insensitive; returns -1 for an unknown token so the caller can
+ * reject it loudly — an unknown level silently meaning "all" made
+ * `level=WARN` return unfiltered lines with no hint the filter was
+ * ignored. */
+static int parse_level(const char *s)
 {
     if (!s) return LL_ALL;
-    if (!strcmp(s, "all"))   return LL_ALL;
-    if (!strcmp(s, "info"))  return LL_INFO;
-    if (!strcmp(s, "warn"))  return LL_WARN;
-    if (!strcmp(s, "error")) return LL_ERROR;
-    if (!strcmp(s, "fatal")) return LL_FATAL;
-    return LL_ALL;
+    if (!strcasecmp(s, "all"))   return LL_ALL;
+    if (!strcasecmp(s, "info"))  return LL_INFO;
+    if (!strcasecmp(s, "warn"))  return LL_WARN;
+    if (!strcasecmp(s, "error")) return LL_ERROR;
+    if (!strcasecmp(s, "fatal")) return LL_FATAL;
+    return -1; // raw-return-ok:sentinel for unknown token; caller rejects with a logged string error
 }
 
 static enum log_level line_level(const char *line)
@@ -297,8 +302,16 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
     if (max_lines > NODELOG_MAX_MAX_LINES)
         max_lines = NODELOG_MAX_MAX_LINES;
 
-    enum log_level want_level = parse_level(
-        json_at(params, 3) ? json_get_str(json_at(params, 3)) : NULL);
+    const char *level_str = json_at(params, 3) ?
+        json_get_str(json_at(params, 3)) : NULL;
+    int want_level_i = parse_level(level_str);
+    if (want_level_i < 0) {
+        json_set_str(result, "getnodelog: bad level "
+                     "(want all|info|warn|error|fatal)");
+        LOG_FAIL("diag", "getnodelog: bad level '%s'",
+                 level_str ? level_str : "");
+    }
+    enum log_level want_level = (enum log_level)want_level_i;
 
     const char *datadir = diag_datadir();
     if (!datadir[0]) {

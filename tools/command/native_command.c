@@ -827,6 +827,22 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
     }
 
     if (body && body_doc.type != JSON_OBJ) {
+        /* Legacy diag RPC handlers report errors as a bare string body
+         * ("<cmd>: <reason>", the json_set_str(result, ...) convention). A
+         * string body can never be a success here — the body contract
+         * requires an object — so surface the handler's own message as a
+         * typed TOOL_ERROR instead of an opaque BAD_TOOL_BODY that hides
+         * it. Non-string non-objects stay BAD_TOOL_BODY. */
+        const char *legacy_msg = body_doc.type == JSON_STR
+                                     ? json_get_str(&body_doc) : NULL;
+        if (legacy_msg && legacy_msg[0]) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
+                                   "execute", false, false, legacy_msg,
+                                   request->spec->path);
+            json_free(&body_doc);
+            return;
+        }
         json_free(&body_doc);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
