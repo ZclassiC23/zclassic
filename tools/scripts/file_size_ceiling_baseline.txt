@@ -56,6 +56,7 @@ config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2034
 config/src/boot_services.c 1481
 config/src/bundle_exporter.c 925
+config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1166
 app/services/src/header_sync_service.c 846

@@ -105,6 +105,18 @@ struct consensus_state_chain_binding_observation {
      * content. Constant across the before/after chain samples, so it does not
      * perturb the frontier-unchanged byte comparison. */
     struct consensus_state_checkpoint_authority checkpoint_authority;
+
+    /* Assisted ABOVE-checkpoint admission opt-in, carried through from the
+     * request (request->allow_assisted_above_checkpoint). When true AND the
+     * bundle sits ABOVE the compiled checkpoint on this node's validated header
+     * chain (see consensus_state_chain_binding_uses_assisted_authority), the
+     * decision admits a FRESHEST, borrowed-state bundle: the bundle LOCATION
+     * (block on the PoW header chain) and shielded TIP root (header-committed)
+     * are authenticated, but the transparent/shielded CONTENT below the seam is
+     * explicitly NOT — that is what the RELEASE_ASSISTED tier records. Set on the
+     * FINAL observation only (after the before/after determinism comparison), so
+     * it never perturbs the frontier-unchanged byte compare. */
+    bool assisted_mode_requested;
 };
 
 struct consensus_state_chain_binding_request {
@@ -120,6 +132,12 @@ struct consensus_state_chain_binding_request {
      * zeroed (available=false) by callers that want the pure target-derived
      * gate. */
     struct consensus_state_checkpoint_authority checkpoint_authority;
+    /* Opt in to admitting a FRESHEST, ABOVE-checkpoint borrowed-state bundle
+     * (the assisted RELEASE_ASSISTED tier). Default false: callers that only
+     * want the sovereign (compiled-checkpoint / self-validated) gate leave it
+     * zeroed and an above-checkpoint bundle then refuses at -4 exactly as
+     * before. See consensus_state_chain_binding_uses_assisted_authority. */
+    bool allow_assisted_above_checkpoint;
 };
 
 /* Pure refusal decision. A passing result is diagnostic only and cannot be
@@ -137,6 +155,24 @@ struct zcl_result consensus_state_chain_binding_decide(
  * returns false, restoring the pure target-derived gate. Callers use this to
  * record — auditably — that checkpoint-content authority was exercised. */
 bool consensus_state_chain_binding_uses_checkpoint_authority(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_chain_binding_observation *observation);
+
+/* Pure predicate mirroring uses_checkpoint_authority for the ASSISTED tier:
+ * true iff the decision admitted this bundle SOLELY via the above-checkpoint
+ * borrowed-state relaxation. Requires observation->assisted_mode_requested, a
+ * compiled checkpoint the bundle sits strictly ABOVE (checkpoint_authority
+ * available, manifest.height > authority.height), that the sovereign paths do
+ * NOT apply (NOT uses_checkpoint_authority; durable served H* is BELOW the
+ * bundle height so the node did not self-validate through it), the bundle-height
+ * block is the selected-chain block with a durable full-Equihash header pass
+ * record (LOCATION is PoW-committed), and the Sapling frontier root matches the
+ * header-committed root at both the frontier source height and the bundle height
+ * (shielded TIP root is PoW-committed). CONTENT below the seam is deliberately
+ * unauthenticated. Any mismatch returns false (fail closed to the sovereign
+ * gate). Folded into the evidence digest so the audit trail is honest about the
+ * tier that admitted the install. */
+bool consensus_state_chain_binding_uses_assisted_authority(
     const struct consensus_state_bundle_manifest *manifest,
     const struct consensus_state_chain_binding_observation *observation);
 
@@ -168,6 +204,15 @@ bool consensus_state_chain_evidence_digest(
  * bound into the durable publication decision record — the audit trail cannot
  * later claim a target-index binding it did not have. Returns false on NULL. */
 bool consensus_state_chain_evidence_used_checkpoint_authority(
+    const struct consensus_state_chain_evidence *evidence);
+
+/* True iff this evidence was decided using the ASSISTED above-checkpoint
+ * borrowed-state relaxation (see consensus_state_chain_binding_uses_assisted_
+ * authority). Mutually exclusive with used_checkpoint_authority. Also folded
+ * into the evidence digest. The install runtime uses this to set the borrowed
+ * (RELEASE_ASSISTED) tier: stamp migration-complete but withhold self_folded
+ * until background promotion re-derives the seam. Returns false on NULL. */
+bool consensus_state_chain_evidence_used_assisted_authority(
     const struct consensus_state_chain_evidence *evidence);
 
 #endif /* ZCL_SERVICES_CONSENSUS_STATE_CHAIN_BINDING_SERVICE_H */

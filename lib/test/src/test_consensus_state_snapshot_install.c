@@ -3354,6 +3354,199 @@ int test_consensus_state_snapshot_install(void)
         test_cleanup_tmpdir(cc_dir);
     }
 
+    /* ── ASSISTED ABOVE-checkpoint ACTIVATE authority (the RELEASE_ASSISTED
+     *    tier, full-install integration) ───────────────────────────────────
+     * A FRESHEST bundle strictly ABOVE the compiled checkpoint installs through
+     * the SAME atomic, wedge-immune cutover — but stamps ONLY the operational
+     * migration-complete marker and records the promotion seam; self_folded
+     * (sovereign) is WITHHELD, so sync_trust_derive → RELEASE_ASSISTED_READY.
+     * Proves: authority=assisted activates; migration set + self_folded ABSENT;
+     * coins_kv_tip_is_self_derived false; the seam records the bundle height +
+     * the three manifest commitments; wedge-immunity (post-install sapling gate
+     * FOUND, cursors forced); and the assisted opt-in gates it. */
+    {
+        b.anchors[0].height = b.height;
+        b.anchors[1].height = b.height;
+        char as_dir[320];
+        snprintf(as_dir, sizeof(as_dir), "%s/assisted", dir);
+        CSI_CHECK("assisted: datadir", mkdir(as_dir, 0700) == 0);
+        CSI_CHECK("assisted: live progress store opens",
+                  progress_store_open(as_dir));
+        sqlite3 *pdb = progress_store_db();
+        int as_dir_fd = open(as_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        reducer_frontier_test_set_compiled_anchor(0);
+
+        uint8_t borrowed_txid[32];
+        memset(borrowed_txid, 0x5b, sizeof(borrowed_txid));
+        const uint8_t borrowed_script[] = {0x51};
+        CSI_CHECK("assisted: wedged store seeds (borrowed coin, empty anchors)",
+                  pdb && coins_kv_ensure_schema(pdb) &&
+                  progress_meta_table_ensure(pdb) &&
+                  anchor_kv_ensure_schema(pdb) &&
+                  nullifier_kv_ensure_schema(pdb) &&
+                  anchor_kv_initialize_history(pdb, b.height) &&
+                  nullifier_kv_initialize_history(pdb, b.height) &&
+                  coins_kv_add(pdb, borrowed_txid, 0, 4242, b.height, false,
+                               borrowed_script, sizeof(borrowed_script)) &&
+                  hs_seed_current_frontier(pdb, b.height, b.block_hash));
+
+        CSI_CHECK("assisted: valid complete bundle writes",
+                  write_bundle(&b, CSI_VALID));
+
+        struct consensus_state_activate_request areq;
+        memset(&areq, 0, sizeof(areq));
+        areq.bundle_path = b.path;
+        areq.expected_height = b.height;
+        memcpy(areq.expected_block_hash, b.block_hash, 32);
+        areq.datadir_fd = as_dir_fd;
+        areq.datadir_display = as_dir;
+
+        struct consensus_state_artifact_evidence *asev = NULL;
+        struct zcl_result asevr =
+            consensus_state_artifact_evidence_open(b.path, -1, &asev);
+        struct consensus_state_publication_cas_inputs asin;
+        memset(&asin, 0, sizeof(asin));
+        bool asin_ok = asevr.ok && asev &&
+            consensus_state_artifact_evidence_manifest_copy(asev,
+                                                            &asin.manifest) &&
+            consensus_state_artifact_evidence_digest(
+                asev, asin.artifact_logical_digest) &&
+            consensus_state_artifact_evidence_receipt_digest(
+                asev, asin.artifact_receipt_digest);
+        asin.chain_evidence_present = true;
+        asin.chain_bound_to_artifact = true;
+        memset(asin.chain_evidence_digest, 0xa5, 32);
+        asin.source_receipt_present = true;
+        asin.source_receipt = b.receipt;
+        asin.target_lane = CONSENSUS_STATE_TARGET_LANE_COPY_PROOF;
+        asin.frontier_known = true;
+        memcpy(asin.frontier_hash, b.block_hash, 32);
+        asin.frontier_height = b.height;
+        struct consensus_state_publication_decision_record asdec;
+        consensus_state_publication_cas_decide(&asin, &asdec);
+        struct consensus_state_publication_decision_record as_decision;
+        memset(&as_decision, 0, sizeof(as_decision));
+        CSI_CHECK("assisted: complete bundle CAS-decides ADMIT",
+                  asin_ok && asdec.decision == CONSENSUS_PUBLICATION_ADMIT);
+        as_decision = asdec;
+        memcpy(areq.expected_artifact_receipt_digest,
+               asdec.artifact_receipt_digest, 32);
+        areq.publication_decision = &as_decision;
+        if (asev)
+            consensus_state_artifact_evidence_free(asev);
+
+        /* A compiled SHA3 checkpoint strictly BELOW the bundle height: the bundle
+         * is ABOVE it (assisted's promotion anchor). The bundle's own coins do
+         * NOT reproduce it (fresher, unbound content), so checkpoint-content /
+         * checkpoint-rom never fire — only the assisted authority can lift
+         * containment here. */
+        struct sha3_utxo_checkpoint as_cp;
+        memset(&as_cp, 0, sizeof(as_cp));
+        as_cp.height = b.height - 1;
+        memset(as_cp.block_hash, 0xc7, 32);
+        as_cp.utxo_count = 999;
+        memset(as_cp.sha3_hash, 0xc8, 32);
+        checkpoints_set_sha3_override_for_test(&as_cp);
+        consensus_state_snapshot_install_activate_test_set_independent_authority(
+            false);
+        struct consensus_state_activate_result as_ares;
+
+        /* (i) NEGATIVE — assisted_tier NOT requested (no opt-in): an above-
+         * checkpoint bundle with no sovereign authority stays CONTAINED. */
+        areq.assisted_tier = false;
+        CSI_CHECK("assisted: opt-in OFF stays CONTAINED (nothing written)",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &as_ares) &&
+                  !as_ares.activated &&
+                  as_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (ii) NEGATIVE — assisted_tier requested but the shielded tip is not
+         * bound to a validated-header root: never activate on an unverifiable
+         * root. CONTAINED. */
+        areq.assisted_tier = true;
+        areq.assisted_sapling_root_from_validated_header = false;
+        memset(areq.assisted_sapling_root, 0, 32);
+        CSI_CHECK("assisted: no validated-header sapling root stays CONTAINED",
+                  !consensus_state_snapshot_install_activate(pdb, &areq,
+                                                             &as_ares) &&
+                  !as_ares.activated &&
+                  as_ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  coins_kv_count(pdb) == 1);
+
+        /* (iii) POSITIVE — assisted_tier + the bundle-height header Sapling root:
+         * ACTIVATE via the assisted authority, naming it. */
+        areq.assisted_sapling_root_from_validated_header = true;
+        memcpy(areq.assisted_sapling_root,
+               b.frontier_root[ANCHOR_POOL_SAPLING], 32);
+        CSI_CHECK("assisted: above-checkpoint bundle + header root activates",
+                  consensus_state_snapshot_install_activate(pdb, &areq,
+                                                            &as_ares) &&
+                  as_ares.activated &&
+                  as_ares.status == CONSENSUS_INSTALL_ACTIVATED &&
+                  as_ares.height == b.height && as_ares.utxo_count == 2 &&
+                  as_ares.anchor_count == 2 && as_ares.nullifier_count == 2 &&
+                  as_ares.hstar == b.height &&
+                  as_ares.coins_applied_height == b.height + 1 &&
+                  strstr(as_ares.reason, "authority=assisted") != NULL);
+        CSI_CHECK("assisted: installed state matches the bundle (COMPLETE "
+                  "cursor-0 history — the wedge-immune atomic path)",
+                  active_is(pdb, &b));
+
+        /* Tier boundary: migration-complete SET, self_folded ABSENT. */
+        CSI_CHECK("assisted: migration-complete marker SET (operational tier)",
+                  hs_meta_present(pdb, COINS_KV_MIGRATION_COMPLETE_KEY));
+        CSI_CHECK("assisted: self_folded marker WITHHELD (not sovereign)",
+                  hs_meta_absent(pdb, COINS_KV_SELF_FOLDED_KEY) &&
+                  !coins_kv_contains_refold_marker(pdb));
+        char sd_reason[128];
+        CSI_CHECK("assisted: coins_kv_tip_is_self_derived is FALSE (borrowed)",
+                  !coins_kv_tip_is_self_derived(pdb, b.height, sd_reason,
+                                                sizeof(sd_reason)));
+
+        /* Promotion seam: bundle height + the three manifest commitments. */
+        int32_t seam_h = -1;
+        uint8_t seam_utxo[32], seam_anchor[32], seam_nf[32];
+        bool seam_found = false;
+        CSI_CHECK("assisted: promotion seam recorded (height + 3 commitments)",
+                  consensus_state_install_read_assisted_seam(
+                      pdb, &seam_h, seam_utxo, seam_anchor, seam_nf,
+                      &seam_found) &&
+                  seam_found && seam_h == b.height &&
+                  memcmp(seam_utxo, b.utxo_root, 32) == 0 &&
+                  memcmp(seam_anchor, b.anchor_digest, 32) == 0 &&
+                  memcmp(seam_nf, b.nf_digest, 32) == 0);
+
+        /* Wedge-immunity: the borrowed install cured the sapling gate and forced
+         * the cursors, exactly like a sovereign install. */
+        struct incremental_merkle_tree as_gate_tree;
+        struct uint256 as_gate_root;
+        int64_t as_gate_h = -1;
+        sapling_tree_init(&as_gate_tree);
+        CSI_CHECK("assisted: post-install sapling gate is FOUND (no wedge)",
+                  anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &as_gate_tree,
+                                        &as_gate_root, &as_gate_h) ==
+                      ANCHOR_KV_FOUND);
+        int64_t as_applied_cursor = -1, as_tip_cursor = -1;
+        CSI_CHECK("assisted: reducer cursors forced to the anchor frontier",
+                  candidate_query_i64(pdb,
+                      "SELECT cursor FROM stage_cursor WHERE name='utxo_apply'",
+                      &as_applied_cursor) &&
+                  as_applied_cursor == b.height + 1 &&
+                  candidate_query_i64(pdb,
+                      "SELECT cursor FROM stage_cursor WHERE name='tip_finalize'",
+                      &as_tip_cursor) && as_tip_cursor == b.height);
+
+        if (as_ares.prior_generation_path[0])
+            (void)unlink(as_ares.prior_generation_path);
+        checkpoints_reset_sha3_override_for_test();
+        reducer_frontier_test_set_compiled_anchor(-1);
+        if (as_dir_fd >= 0)
+            (void)close(as_dir_fd);
+        progress_store_close();
+        test_cleanup_tmpdir(as_dir);
+    }
+
     /* ── CHECKPOINT_ROM ACTIVATE authority (full-install integration) ───────
      * The SOVEREIGN, header-independent ignition path: a bundle whose manifest
      * reproduces EVERY component of the compiled shielded ROM state checkpoint

@@ -366,3 +366,9 @@ ZCL_BLOCKER_REMEDY(api_cache_refresh_stalled,                   OWNER)
 ZCL_BLOCKER_REMEDY(api_lookup_stalled,                           OWNER)
 ZCL_BLOCKER_REMEDY(chain_integrity_restore_stuck,               OWNER)
 ZCL_BLOCKER_REMEDY(node_db_unopened,                             OWNER)
+/* sovereign_promotion.seam_mismatch: a borrowed RELEASE_ASSISTED node's
+ * background re-derivation from the compiled anchor DISAGREED with the recorded
+ * seam (sovereign_promotion_service.c) — BLOCKER_PERMANENT. The node keeps
+ * serving on the borrowed state and never self-promotes; an operator must
+ * investigate the bundle source, not an auto-retry. */
+ZCL_BLOCKER_REMEDY(sovereign_promotion.seam_mismatch,           OWNER)

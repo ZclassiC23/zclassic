@@ -686,6 +686,21 @@ bool boot_ratify_mint_anchor_check_and_stamp(
     struct sqlite3 *pdb, const struct sha3_utxo_checkpoint *cp,
     struct boot_ratify_result *out);
 
+/* Generalized seam ratifier: re-derive `pdb`'s OWN durable coins_kv commitment,
+ * count, and applied frontier and — ONLY on exact agreement with the supplied
+ * (height, coins_sha3, count) seam (and applied-through == height) — stamp
+ * coins_kv_mark_migration_complete + coins_kv_mark_self_folded, atomically under
+ * one progress-store critical section. Stamps NOTHING on any disagreement (fills
+ * out->reason, returns false). Refuses if the coins_ram overlay is live. Unlike
+ * the -ratify-mint-anchor wrapper above it does NOT re-arm the mint resume
+ * marker (that is compiled-checkpoint-specific). This is the flip the sovereign-
+ * promotion service calls after its isolated re-derivation MATCHES the recorded
+ * assisted-tier seam: the live store already holds exactly that (height, root,
+ * count), so this atomically promotes it to sovereign. Fills *out. */
+bool boot_ratify_seam_check_and_stamp(
+    struct sqlite3 *pdb, int32_t height, const uint8_t coins_sha3[32],
+    uint64_t count, struct boot_ratify_result *out);
+
 #ifdef ZCL_TESTING
 /* Unit surface for the exact production lane/owner gate. `authorization` is
  * accepted only when it is exactly "1". */

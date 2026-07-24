@@ -275,6 +275,32 @@ struct consensus_state_activate_request {
      * never activates on a Sapling root it cannot bind to PoW. */
     bool checkpoint_sapling_root_from_validated_header;
     uint8_t checkpoint_sapling_root[32];
+
+    /* ── ASSISTED ABOVE-checkpoint ACTIVATE authority (the RELEASE_ASSISTED
+     *    tier) ──────────────────────────────────────────────────────────────
+     * A FRESHEST bundle that sits ABOVE the compiled checkpoint on this node's
+     * validated header chain. Unlike the three sovereign authorities, its
+     * transparent/shielded CONTENT below the seam is NOT bound to the compiled
+     * anchor — only the bundle LOCATION (a PoW-validated header at the bundle
+     * height whose hash == the bundle block_hash) and the shielded TIP root
+     * (bound to the bundle-height header's committed hashFinalSaplingRoot) are.
+     * assisted_tier is set by the install runtime ONLY when the chain-binding
+     * decision admitted via the assisted relaxation (uses_assisted_authority &&
+     * NOT used_checkpoint_authority); it defaults FALSE, so the sovereign lane
+     * is byte-unchanged. When true the activate resolves the ASSISTED authority
+     * (re-checking the bundle-height Sapling-root bind below), installs the
+     * complete state through the SAME atomic cutover, and stamps ONLY the
+     * operational migration-complete marker — self_folded is withheld and the
+     * seam (height + the three manifest digests) is recorded in the same txn so
+     * background promotion can later re-derive and ratify it to sovereign. */
+    bool assisted_tier;
+    /* The bundle-height header's PoW-committed hashFinalSaplingRoot, read by the
+     * runtime from this node's own validated header chain at manifest.height.
+     * The ASSISTED authority activates only when the flag is set AND it equals
+     * manifest.sapling_frontier_root; false leaves an above-checkpoint bundle
+     * contained (never activated on a Sapling root it cannot bind to PoW). */
+    bool assisted_sapling_root_from_validated_header;
+    uint8_t assisted_sapling_root[32];
 };
 
 struct consensus_state_activate_result {
@@ -294,6 +320,21 @@ bool consensus_state_snapshot_install_activate(
     struct sqlite3 *progress_db,
     const struct consensus_state_activate_request *request,
     struct consensus_state_activate_result *result);
+
+/* ── Assisted-tier promotion seam ───────────────────────────────────────────
+ * Persist the seam an ASSISTED install leaves for background promotion: the
+ * bundle height plus the three manifest commitments (utxo_root, anchor_digest,
+ * nullifier_digest) the borrowed state was verified against at activate time.
+ * The recorder MUST be called inside the open activate cutover transaction
+ * (uses progress_meta_set_in_tx). The reader is a standalone SELECT: `*found`
+ * is false when no assisted seam is recorded (a sovereign install). Both return
+ * false only on a store error. */
+bool consensus_state_install_record_assisted_seam(
+    struct sqlite3 *progress_db, int32_t height, const uint8_t utxo_root[32],
+    const uint8_t anchor_digest[32], const uint8_t nullifier_digest[32]);
+bool consensus_state_install_read_assisted_seam(
+    struct sqlite3 *progress_db, int32_t *height, uint8_t utxo_root[32],
+    uint8_t anchor_digest[32], uint8_t nullifier_digest[32], bool *found);
 
 #ifdef ZCL_TESTING
 /* Force activate's independent-replay authority gate open, bypassing the

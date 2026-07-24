@@ -79,6 +79,18 @@ enum consensus_state_activate_authority {
      * Sapling tip frontier Pedersen-roots to the caller's validated-header
      * hashFinalSaplingRoot — bound to the compiled binary + PoW. */
     CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT,
+    /* The FRESHEST (RELEASE_ASSISTED) tier: a bundle ABOVE the compiled
+     * checkpoint on this node's validated header chain. The install runtime set
+     * request->assisted_tier from the chain-binding assisted admission, and its
+     * shielded TIP frontier Pedersen-roots to the bundle-height header's PoW-
+     * committed hashFinalSaplingRoot the runtime read from this datadir's own
+     * validated header chain (request->assisted_sapling_root). This binds the
+     * bundle LOCATION + shielded TIP root to PoW, but NOT the transparent/shielded
+     * CONTENT below the seam — so the activate stamps only migration-complete
+     * (operational) and records the seam; self_folded (sovereign) is withheld
+     * until background promotion re-derives the seam. Lowest precedence: a bundle
+     * that qualifies for any sovereign authority never resolves to ASSISTED. */
+    CONSENSUS_STATE_ACTIVATE_AUTHORITY_ASSISTED,
 };
 
 const char *consensus_state_activate_authority_name(

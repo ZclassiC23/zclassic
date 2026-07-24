@@ -69,6 +69,10 @@ struct consensus_state_publication_cas_inputs {
     bool chain_evidence_present;
     bool chain_bound_to_artifact;   /* matches same receipt digest + lane */
     bool checkpoint_authority_used; /* cryptographically bound in evidence */
+    bool assisted_authority_used;   /* borrowed above-checkpoint tier; also
+                                     * cryptographically bound in the evidence
+                                     * digest. Permits the same below-bundle
+                                     * frontier as the checkpoint path. */
     uint8_t chain_evidence_digest[32];
     bool source_receipt_present;
     struct consensus_state_source_receipt source_receipt;

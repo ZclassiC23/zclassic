@@ -190,6 +190,63 @@ header_bootstrap_observation(
     return observation;
 }
 
+/* An ASSISTED node: a FRESHEST bundle strictly ABOVE the compiled checkpoint on
+ * this node's validated header chain. The bundle-height block is present as a
+ * header on the selected chain with a durable PoW pass record and its Sapling
+ * frontier root, but NO body has folded below the seam (scripts unvalidated,
+ * durable served H* is at the checkpoint, BELOW the bundle). checkpoint_authority
+ * is available but pinned BELOW the bundle height (so it is NOT cp_auth). This is
+ * the shape the assisted relaxation must ADMIT into the RELEASE_ASSISTED tier. */
+static struct consensus_state_chain_binding_observation assisted_observation(
+    const struct consensus_state_bundle_manifest *manifest, int32_t cp_height)
+{
+    struct consensus_state_chain_binding_observation o;
+    memset(&o, 0, sizeof(o));
+    o.assisted_mode_requested = true;
+    o.checkpoint_authority.available = true;
+    o.checkpoint_authority.height = cp_height; /* strictly below the bundle */
+    memset(o.checkpoint_authority.block_hash, 0xa1, 32);
+    o.checkpoint_authority.sapling_frontier_height = cp_height - 8;
+    memset(o.checkpoint_authority.sapling_frontier_root, 0xa2, 32);
+    /* Durable, consistent frontier folded to the checkpoint (BELOW the bundle). */
+    o.before_frontier_consistent = true;
+    o.after_frontier_consistent = true;
+    o.frontier_unchanged = true;
+    o.durable_served_height = cp_height;
+    /* Bundle-height block on the selected header chain: PoW pass record present,
+     * but scripts NOT validated (borrowed content — no body folded). */
+    o.selected_bundle_known = true;
+    o.selected_bundle_height = manifest->height;
+    memcpy(o.selected_bundle_hash, manifest->block_hash, 32);
+    o.selected_bundle_valid_scripts = false;
+    o.selected_bundle_failure_free = true;
+    o.bundle_header_pass_record = true;
+    memcpy(o.selected_bundle_sapling_root, manifest->sapling_frontier_root, 32);
+    /* Sapling source header at the frontier height, matching root, scripts NOT
+     * validated and NO source pass record (neither is required for assisted). */
+    o.selected_sapling_source_known = true;
+    o.selected_sapling_source_height =
+        (int32_t)manifest->sapling_frontier_height;
+    memcpy(o.selected_sapling_source_root, manifest->sapling_frontier_root, 32);
+    o.selected_sapling_source_valid_scripts = false;
+    o.selected_sapling_source_failure_free = true;
+    o.sapling_source_header_pass_record = false;
+    /* Materialized selected header tip ABOVE the bundle with real work. */
+    o.selected_header_known = true;
+    o.selected_header_height = manifest->height + 20;
+    o.selected_header_valid_tree = true;
+    o.selected_header_failure_free = true;
+    /* Ancestry links present (the chain is fully materialized as headers). */
+    o.header_descends_from_bundle = true;
+    o.bundle_descends_from_sapling_source = true;
+    for (size_t i = 0; i < 32; i++) {
+        o.selected_sapling_source_hash[i] = (uint8_t)(17u + i);
+        o.selected_header_hash[i] = (uint8_t)(49u + i);
+        o.selected_header_chainwork[i] = (uint8_t)(81u + i);
+    }
+    return o;
+}
+
 int test_consensus_state_chain_binding(void)
 {
     int failures = 0;
@@ -573,6 +630,148 @@ int test_consensus_state_chain_binding(void)
         consensus_state_chain_binding_decide(&manifest, &fg_moved);
     CSB_CHECK("fresh-genesis: a moving frontier still refuses at -3",
               !fg_moved_r.ok && fg_moved_r.code == -3);
+
+    /* ── ASSISTED above-checkpoint admission (the RELEASE_ASSISTED tier) ───────
+     * A FRESHEST bundle strictly ABOVE the compiled checkpoint. With the opt-in
+     * set, the assisted relaxation ADMITs it — binding the bundle LOCATION (PoW
+     * header + pass record) and shielded TIP root while SKIPPING the -4 served-
+     * coverage and the -5/-6/-8 body self-validation (structurally impossible on
+     * borrowed state) — while KEEPING -3 determinism and -11 header work/ancestry.
+     * cp_height is strictly below the bundle so this is never cp_auth. */
+    const int32_t assisted_cp_height = manifest.height - 40;
+    struct consensus_state_chain_binding_observation assisted =
+        assisted_observation(&manifest, assisted_cp_height);
+
+    CSB_CHECK("assisted: above-checkpoint borrowed bundle ADMITs",
+              consensus_state_chain_binding_decide(&manifest, &assisted).ok);
+    CSB_CHECK("assisted: admit reports the assisted authority was used",
+              consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &assisted));
+    CSB_CHECK("assisted: it is NOT the compiled-checkpoint authority",
+              !consensus_state_chain_binding_uses_checkpoint_authority(
+                  &manifest, &assisted));
+
+    /* Opt-in OFF (assisted_mode_requested false): an above-checkpoint borrowed
+     * bundle refuses at -4 exactly as before this feature — served H* is below
+     * the bundle, no cp_auth, no header-bootstrap. */
+    struct consensus_state_chain_binding_observation assisted_off = assisted;
+    assisted_off.assisted_mode_requested = false;
+    struct zcl_result a_off =
+        consensus_state_chain_binding_decide(&manifest, &assisted_off);
+    CSB_CHECK("assisted: opt-in OFF refuses at -4",
+              !a_off.ok && a_off.code == -4 &&
+              !consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &assisted_off));
+
+    /* Bundle hash off the selected chain → assisted predicate fails → -4. */
+    struct consensus_state_chain_binding_observation a_bad_hash = assisted;
+    a_bad_hash.selected_bundle_hash[0] ^= 1u;
+    struct zcl_result a_hash =
+        consensus_state_chain_binding_decide(&manifest, &a_bad_hash);
+    CSB_CHECK("assisted: bundle hash off-chain refuses at -4",
+              !a_hash.ok && a_hash.code == -4 &&
+              !consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &a_bad_hash));
+
+    /* No durable bundle-height header pass record → LOCATION not PoW-bound → -4. */
+    struct consensus_state_chain_binding_observation a_no_pass = assisted;
+    a_no_pass.bundle_header_pass_record = false;
+    struct zcl_result a_pass =
+        consensus_state_chain_binding_decide(&manifest, &a_no_pass);
+    CSB_CHECK("assisted: missing bundle-height pass record refuses at -4",
+              !a_pass.ok && a_pass.code == -4);
+
+    /* Sapling frontier root disagrees with the bundle-height header → refuses. */
+    struct consensus_state_chain_binding_observation a_bad_root = assisted;
+    a_bad_root.selected_bundle_sapling_root[0] ^= 1u;
+    CSB_CHECK("assisted: shielded-tip root mismatch refuses",
+              rejected(&manifest, &a_bad_root) &&
+              !consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &a_bad_root));
+
+    /* Sapling SOURCE-header root mismatch is likewise not authorized. */
+    struct consensus_state_chain_binding_observation a_bad_src = assisted;
+    a_bad_src.selected_sapling_source_root[0] ^= 1u;
+    CSB_CHECK("assisted: sapling-source root mismatch refuses",
+              rejected(&manifest, &a_bad_src));
+
+    /* PoW facts are NOT relaxed: -11 header validity + ancestry stay enforced. */
+    struct consensus_state_chain_binding_observation a_bad_header = assisted;
+    a_bad_header.selected_header_valid_tree = false;
+    CSB_CHECK("assisted: does not relax -11 header-tip validity",
+              rejected(&manifest, &a_bad_header));
+    struct consensus_state_chain_binding_observation a_no_anc = assisted;
+    a_no_anc.header_descends_from_bundle = false;
+    CSB_CHECK("assisted: does not relax -11 ancestry",
+              rejected(&manifest, &a_no_anc));
+    struct consensus_state_chain_binding_observation a_no_src_anc = assisted;
+    a_no_src_anc.bundle_descends_from_sapling_source = false;
+    CSB_CHECK("assisted: does not relax -11 sapling-source ancestry",
+              rejected(&manifest, &a_no_src_anc));
+
+    /* Determinism (-3) is NEVER relaxed: a moving frontier still refuses at -3. */
+    struct consensus_state_chain_binding_observation a_moved = assisted;
+    a_moved.frontier_unchanged = false;
+    struct zcl_result a_moved_r =
+        consensus_state_chain_binding_decide(&manifest, &a_moved);
+    CSB_CHECK("assisted: a moving frontier still refuses at -3",
+              !a_moved_r.ok && a_moved_r.code == -3);
+
+    /* No compiled checkpoint (authority unavailable) → no promotion anchor →
+     * assisted is inert and the above-checkpoint borrowed bundle refuses at -4. */
+    struct consensus_state_chain_binding_observation a_no_cp = assisted;
+    a_no_cp.checkpoint_authority.available = false;
+    struct zcl_result a_no_cp_r =
+        consensus_state_chain_binding_decide(&manifest, &a_no_cp);
+    CSB_CHECK("assisted: no compiled checkpoint refuses at -4 (inert)",
+              !a_no_cp_r.ok && a_no_cp_r.code == -4 &&
+              !consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &a_no_cp));
+
+    /* Fresh-genesis assisted: a genuinely fresh node (H*=0, no durable frontier
+     * authority) installing the FRESHEST bundle. The -3 clean-genesis relaxation
+     * now also covers assisted, so it ADMITs while determinism + PoW facts hold. */
+    struct consensus_state_chain_binding_observation assisted_fresh = assisted;
+    assisted_fresh.before_frontier_consistent = false;
+    assisted_fresh.after_frontier_consistent = false;
+    assisted_fresh.frontier_unchanged = true;
+    assisted_fresh.fresh_genesis_bootstrap = true;
+    assisted_fresh.durable_served_height = 0;
+    CSB_CHECK("assisted: fresh-genesis node ADMITs the freshest bundle",
+              consensus_state_chain_binding_decide(
+                  &manifest, &assisted_fresh).ok &&
+              consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &assisted_fresh));
+    /* Mid-fold (no clean-genesis flag, no durable frontier) still refuses at -3. */
+    struct consensus_state_chain_binding_observation assisted_midfold =
+        assisted_fresh;
+    assisted_midfold.fresh_genesis_bootstrap = false;
+    struct zcl_result a_mid =
+        consensus_state_chain_binding_decide(&manifest, &assisted_midfold);
+    CSB_CHECK("assisted: mid-fold node still refuses at -3",
+              !a_mid.ok && a_mid.code == -3);
+
+    /* ── REGRESSION: a self-VALIDATED target is NEVER demoted to assisted ──────
+     * The fully-materialized `observation` (durable served H* = 120 >= bundle
+     * height 100) folded THROUGH the seam. Even with the assisted opt-in ON and a
+     * compiled checkpoint below the bundle, it must bind via the NORMAL below-
+     * checkpoint gate (sovereign) and uses_assisted_authority must stay false —
+     * otherwise the install would silently withhold self_folded from a node that
+     * earned sovereignty. */
+    struct consensus_state_chain_binding_observation self_validated = observation;
+    self_validated.assisted_mode_requested = true;
+    self_validated.checkpoint_authority.available = true;
+    self_validated.checkpoint_authority.height = assisted_cp_height;
+    memset(self_validated.checkpoint_authority.block_hash, 0xa1, 32);
+    self_validated.checkpoint_authority.sapling_frontier_height =
+        assisted_cp_height - 8;
+    memset(self_validated.checkpoint_authority.sapling_frontier_root, 0xa2, 32);
+    CSB_CHECK("regression: self-validated target admits via the normal gate",
+              consensus_state_chain_binding_decide(
+                  &manifest, &self_validated).ok);
+    CSB_CHECK("regression: self-validated target is NOT assisted (served covers)",
+              !consensus_state_chain_binding_uses_assisted_authority(
+                  &manifest, &self_validated));
 
     printf("consensus_state_chain_binding: %s\n",
            failures ? "FAILED" : "ALL PASSED");

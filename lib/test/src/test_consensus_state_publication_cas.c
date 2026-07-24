@@ -394,6 +394,27 @@ int test_consensus_state_publication_cas(void)
                bootstrap_rec.refusal == CONSENSUS_PUBLICATION_REFUSAL_NONE &&
                bootstrap_rec.expected_frontier_height == 0);
 
+    /* The ASSISTED above-checkpoint tier is the second below-frontier path: a
+     * borrowed bundle whose evidence binds only the PoW location + shielded tip
+     * admits with the durable frontier still below the bundle height. */
+    bad = make_inputs();
+    bad.frontier_height = 0; /* borrowed node has folded nothing below the seam */
+    bad.assisted_authority_used = true;
+    struct consensus_state_publication_decision_record assisted_rec;
+    consensus_state_publication_cas_decide(&bad, &assisted_rec);
+    PCAS_CHECK("assisted-authorized below-bundle frontier admits",
+               assisted_rec.decision == CONSENSUS_PUBLICATION_ADMIT &&
+               assisted_rec.refusal == CONSENSUS_PUBLICATION_REFUSAL_NONE);
+
+    /* Neither authority flag → a below-bundle frontier still refuses. */
+    bad = make_inputs();
+    bad.frontier_height = 99;
+    bad.checkpoint_authority_used = false;
+    bad.assisted_authority_used = false;
+    PCAS_CHECK("below-bundle frontier with no authority still refuses",
+               refuses_with(bad,
+                            CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_BEHIND));
+
     bad.frontier_known = false;
     PCAS_CHECK("checkpoint authority never admits an unknown frontier",
                refuses_with(bad,

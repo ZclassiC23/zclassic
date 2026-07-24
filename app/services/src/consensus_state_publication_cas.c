@@ -357,11 +357,16 @@ void consensus_state_publication_cas_decide(
         return;
     }
     /* CAS frontier binding: ordinary state replacement may not move ahead of
-     * durable H*. The headers-first checkpoint path is different: its opaque
-     * chain-evidence digest already binds the compiled checkpoint authority and
-     * proves the selected PoW header while the current frontier is still below
-     * the bundle. Keep unknown frontiers fail-closed; permit a known, stable
-     * below-bundle frontier only when that evidence flag is present. */
+     * durable H*. Two headers-first paths are different: their opaque chain-
+     * evidence digest already binds the PoW authority and proves the selected
+     * header while the current frontier is still below the bundle —
+     *   (a) the compiled-checkpoint path (checkpoint_authority_used), and
+     *   (b) the ASSISTED above-checkpoint tier (assisted_authority_used): the
+     *       bundle LOCATION + shielded TIP root are PoW-bound in the evidence
+     *       even though the CONTENT below the seam is borrowed and the install
+     *       lands at the non-sovereign RELEASE_ASSISTED tier.
+     * Keep unknown frontiers fail-closed; permit a known, stable below-bundle
+     * frontier only when one of those evidence flags is present. */
     if (!in->frontier_known) {
         finish(out, CONSENSUS_PUBLICATION_REFUSED,
                CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_UNKNOWN,
@@ -369,7 +374,7 @@ void consensus_state_publication_cas_decide(
         return;
     }
     if (in->frontier_height < in->manifest.height &&
-        !in->checkpoint_authority_used) {
+        !in->checkpoint_authority_used && !in->assisted_authority_used) {
         finish(out, CONSENSUS_PUBLICATION_REFUSED,
                CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_BEHIND,
                "bundle height exceeds the durable node frontier");
@@ -685,6 +690,9 @@ struct zcl_result consensus_state_publication_cas_run(
         request->chain_evidence, request->artifact, request->target_lane);
     in.checkpoint_authority_used =
         consensus_state_chain_evidence_used_checkpoint_authority(
+            request->chain_evidence);
+    in.assisted_authority_used =
+        consensus_state_chain_evidence_used_assisted_authority(
             request->chain_evidence);
     if (!consensus_state_chain_evidence_digest(request->chain_evidence,
                                                in.chain_evidence_digest))

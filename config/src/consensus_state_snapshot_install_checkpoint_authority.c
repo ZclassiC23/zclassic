@@ -66,6 +66,8 @@ const char *consensus_state_activate_authority_name(
         return "checkpoint_rom";
     case CONSENSUS_STATE_ACTIVATE_AUTHORITY_CHECKPOINT_CONTENT:
         return "checkpoint_content";
+    case CONSENSUS_STATE_ACTIVATE_AUTHORITY_ASSISTED:
+        return "assisted";
     default:
         return "none";
     }
@@ -217,10 +219,41 @@ static bool activate_rom_checkpoint_content_evaluate(
            memcmp(manifest->nullifier_digest, rom->nullifier_digest, 32) == 0;
 }
 
+/* ASSISTED authority — the FRESHEST above-checkpoint borrowed-state tier.
+ *
+ * The install runtime sets request->assisted_tier ONLY when its chain-binding
+ * decision admitted the bundle via the assisted relaxation (bundle LOCATION
+ * PoW-bound to a validated header at the bundle height; shielded TIP root
+ * header-committed; NOT compiled-checkpoint / self-validated). This authority
+ * re-checks the shielded-tip PoW bind here — at the BUNDLE height, not forced to
+ * the compiled-checkpoint height — from the validated-header hashFinalSaplingRoot
+ * the runtime read from THIS node's own header chain. It never binds the
+ * transparent/shielded CONTENT below the seam; that is exactly what the tier
+ * withholds sovereignty for (self_folded stays unset until promotion). Fail-
+ * closed: no assisted_tier request, a bundle at/below the compiled checkpoint,
+ * no compiled checkpoint at all, or a Sapling root not bound to a validated
+ * header → no ASSISTED authority. */
+static bool activate_assisted_authority_available(
+    const struct consensus_state_bundle_manifest *manifest,
+    const struct consensus_state_activate_request *request)
+{
+    if (!request->assisted_tier)
+        return false;
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp || manifest->height <= cp->height)
+        return false; /* assisted is strictly ABOVE a compiled checkpoint */
+    if (!request->assisted_sapling_root_from_validated_header ||
+        memcmp(manifest->sapling_frontier_root,
+               request->assisted_sapling_root, 32) != 0)
+        return false; /* shielded tip not bound to a PoW-committed header root */
+    return true;
+}
+
 /* Resolve the CONTENT-bound ACTIVATE authority (everything after the RECEIPT
  * gate): CHECKPOINT_ROM (header-independent, at the checkpoint height) first,
- * then CHECKPOINT_CONTENT (coins + validated-header Sapling root). Fills
- * contained_reason on a NONE verdict. */
+ * then CHECKPOINT_CONTENT (coins + validated-header Sapling root), then the
+ * ASSISTED above-checkpoint tier (lowest precedence). Fills contained_reason on
+ * a NONE verdict. */
 static enum consensus_state_activate_authority
 activate_resolve_content_authority(
     const struct consensus_state_bundle_manifest *manifest,
@@ -244,12 +277,17 @@ activate_resolve_content_authority(
                      "contained)");
         return CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE;
     default:
+        /* Not a compiled-checkpoint content bundle. It may still be the FRESHEST
+         * above-checkpoint bundle admitted at the RELEASE_ASSISTED tier. */
+        if (activate_assisted_authority_available(manifest, request))
+            return CONSENSUS_STATE_ACTIVATE_AUTHORITY_ASSISTED;
         if (contained_reason && reason_cap)
             snprintf(contained_reason, reason_cap,
                      "no independent replay-derived receipt, shielded-ROM "
-                     "keystone match, or checkpoint-content proof authorizes "
-                     "this bundle; run -verify-consensus-bundle against a datadir "
-                     "folded to the anchor first (install stays contained)");
+                     "keystone match, checkpoint-content proof, or assisted "
+                     "above-checkpoint header bind authorizes this bundle; run "
+                     "-verify-consensus-bundle against a datadir folded to the "
+                     "anchor first (install stays contained)");
         return CONSENSUS_STATE_ACTIVATE_AUTHORITY_NONE;
     }
 }
