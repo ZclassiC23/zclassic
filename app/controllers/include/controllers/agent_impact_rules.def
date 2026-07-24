@@ -29,7 +29,7 @@ AGENT_IMPACT_RULE("lib/health/src/heartbeat.c|lib/metrics/src/metrics.c|lib/even
  * wall-vs-CLOCK_MONOTONIC_RAW skew/step telemetry, sampled from the
  * heartbeat sweeper tick (covered by the rule above) and consumed as an
  * additional signal by clock_skew_reconcile. */
-AGENT_IMPACT_RULE("lib/util/src/time_authority.c|lib/util/include/util/time_authority.h|lib/test/src/test_time_authority.c|lib/platform/src/clock.c|lib/platform/include/platform/clock.h|app/conditions/src/clock_skew_reconcile.c|app/conditions/include/conditions/clock_skew_reconcile.h|lib/test/src/test_sticky_conditions.c", "time_authority sticky_conditions condition_engine supervisor mcp_controllers make_lint_gates")
+AGENT_IMPACT_RULE("lib/util/src/time_authority.c|lib/util/include/util/time_authority.h|lib/test/src/test_time_authority.c|lib/platform/src/clock.c|lib/platform/include/platform/clock.h|app/conditions/src/clock_skew_reconcile.c|app/conditions/include/conditions/clock_skew_reconcile.h|lib/test/src/test_sticky_conditions.c", "time_authority sticky_conditions condition_engine supervisor make_lint_gates")
 /* Phase E4: per-reducer-stage Prometheus telemetry. stage_metrics.c/h has
  * no app/jobs visibility (lib/ layering); its data arrives via the
  * external-gauges seam filled in config/src/boot_node_utilities.c (already
