@@ -18,9 +18,11 @@
 #include "storage/consensus_db.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "util/hw_profile.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
+#include "util/subsystem_snapshot.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -57,6 +59,12 @@ static char g_path[PROGRESS_STORE_PATH_MAX];
 static char g_display_path[PROGRESS_STORE_PATH_MAX];
 static int g_dir_fd = -1;
 static int64_t g_opened_at;
+/* Monotonic open-epoch. Bumped on every successful open so in-memory caches
+ * seeded from the store (e.g. the log-row counters in stage_log_rows) can
+ * detect a reopen — a new datadir, or a test reopening the singleton — and
+ * re-seed exactly once per boot rather than per schema-ensure call. Starts at
+ * 0 ("never opened"); the first open makes it 1. */
+static _Atomic uint64_t g_epoch;
 
 static void progress_store_tx_lock_init(void)
 {
@@ -365,6 +373,7 @@ bool progress_store_open(const char *datadir)
     snprintf(g_display_path, sizeof(g_display_path), "%s", display_path);
     g_dir_fd = opened_dir_fd;
     g_opened_at = wall_now_s();
+    atomic_fetch_add_explicit(&g_epoch, 1, memory_order_release);
     atomic_store_explicit(&g_db, db, memory_order_release);
 
     pthread_mutex_unlock(&g_lock);
@@ -377,6 +386,11 @@ bool progress_store_open(const char *datadir)
 sqlite3 *progress_store_db(void)
 {
     return atomic_load_explicit(&g_db, memory_order_acquire);
+}
+
+uint64_t progress_store_epoch(void)
+{
+    return atomic_load_explicit(&g_epoch, memory_order_acquire);
 }
 
 bool progress_store_path(char *out, size_t cap)
@@ -790,20 +804,6 @@ bool progress_meta_get_blob_exact(sqlite3 *db, const char *key,
     return ok;
 }
 
-static int64_t stage_cursor_count(sqlite3 *db)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT COUNT(*) FROM stage_cursor",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return -1;
-    int64_t n = -1;
-    if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        n = sqlite3_column_int64(stmt, 0);
-    sqlite3_finalize(stmt);
-    return n;
-}
-
 bool progress_store_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -824,13 +824,16 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str (out, "path", path_snap);
     json_push_kv_int (out, "opened_at", opened_at_snap);
 
-    if (db) {
-        progress_store_tx_lock();
-        json_push_kv_int(out, "stage_cursor_rows",
-                         stage_cursor_count(db));
-        progress_store_tx_unlock();
-    } else {
-        json_push_kv_int(out, "stage_cursor_rows", 0);
-    }
+    /* stage_cursor_rows: the O(1) published counter (util/stage.h), read
+     * lock-free — never a blocking COUNT(*) under progress_store_tx_lock on the
+     * RPC dump path. The uniform staleness label rides alongside. */
+    json_push_kv_int(out, "stage_cursor_rows", stage_cursor_rows_value());
+    struct json_value cursor_label;
+    json_init(&cursor_label);
+    json_set_object(&cursor_label);
+    zcl_snapshot_emit_label(&cursor_label, stage_cursor_rows_env(),
+                            /*torn=*/false, platform_time_monotonic_us());
+    json_push_kv(out, "stage_cursor_rows_snapshot", &cursor_label);
+    json_free(&cursor_label);
     return true;
 }

@@ -265,7 +265,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(always_sync_chaos) \
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_cadence) X(catchup_cadence) X(stage_dump_trylock) X(refold_premature_clear) \
-    X(agent_posture_trylock) \
+    X(agent_posture_trylock) X(subsystem_snapshot) \
     X(rom_compile_status) X(rom_watch_loop) \
     X(refold_from_anchor_fatal) X(refold_from_anchor_artifact_reachable) \
     X(refold_auto_arm) X(anchor_selfmint) \

@@ -8,6 +8,7 @@
 #include "platform/time_compat.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_log_rows.h"
 #include "proof_validate_stage_internal.h"
 
 #include "core/uint256.h"
@@ -107,13 +108,18 @@ bool proof_validate_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "last_blocked_unix",
                      proof_validate_stage_last_blocked_unix());
 
-    /* The fields below are db-backed and need the progress-store lock. During
-     * catch-up the reducer owns that lock around bulk folds; a blocking acquire
-     * here queues the RPC worker behind the fold and makes `dumpstate
-     * proof_validate` / status disappear exactly when the node is busiest.
-     * Acquire non-blocking (recursive lock, held across the whole db section so
-     * the helper below need not re-lock) and emit the same busy/retryable marker
-     * reducer_frontier_dump uses when the fold owns the lock. */
+    /* log_rows: the O(1) published counter (stage_log_rows.h), read lock-free so
+     * it is present on BOTH the busy and free paths — never a blocking COUNT(*). */
+    stage_log_rows_emit(out, "proof_validate_log", "log_rows");
+
+    /* The first-failure detail below is db-backed and needs the progress-store
+     * lock. During catch-up the reducer owns that lock around bulk folds; a
+     * blocking acquire here queues the RPC worker behind the fold and makes
+     * `dumpstate proof_validate` / status disappear exactly when the node is
+     * busiest. Acquire non-blocking (recursive lock, held across the whole db
+     * section so the helper below need not re-lock) and emit the same
+     * busy/retryable marker reducer_frontier_dump uses when the fold owns the
+     * lock. The lock-free counters above are always present. */
     if (db && !progress_store_tx_trylock()) {
         json_push_kv_bool(out, "snapshot_complete", false);
         json_push_kv_str(out, "snapshot_status", "progress_store_busy");
@@ -122,9 +128,6 @@ bool proof_validate_dump_state_json(struct json_value *out, const char *key)
         stage_dump_health(out, STAGE_NAME, stage);
         return true;
     }
-    json_push_kv_int(out, "log_rows",
-                     db ? stage_log_row_count(db, STAGE_NAME,
-                                              "proof_validate_log") : 0);
     dump_first_failure(out, db);
     if (db) progress_store_tx_unlock();
     stage_dump_counters(out, stage);

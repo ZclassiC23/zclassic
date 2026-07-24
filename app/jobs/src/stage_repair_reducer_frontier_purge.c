@@ -7,6 +7,7 @@
 #include "stage_repair_reducer_frontier_internal.h"
 #include "stage_repair_reducer_frontier_evidence.h"
 
+#include "jobs/stage_log_rows.h"
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
 #include "tip_finalize_log_store.h"
@@ -349,7 +350,10 @@ bool stage_reducer_frontier_purge_noncanonical(
                             ok = false;
                             goto done_locked;
                         }
-                        out->noncanonical_purged += sqlite3_changes(db) > 0;
+                        int purged_here = sqlite3_changes(db);
+                        out->noncanonical_purged += purged_here > 0;
+                        /* Keep the published row counter honest (stage_log_rows.h). */
+                        stage_log_rows_note_delete(tables[t], (int64_t)purged_here);
                         sqlite3_finalize(del);
                     }
                 }
@@ -367,8 +371,11 @@ bool stage_reducer_frontier_purge_noncanonical(
                     continue; /* table may not exist yet; holes self-heal */
                 sqlite3_bind_int64(st, 1, h);
                 int dep_rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-                if (dep_rc == SQLITE_DONE && sqlite3_changes(db) > 0) {
+                int dep_changed = dep_rc == SQLITE_DONE ? sqlite3_changes(db) : 0;
+                if (dep_rc == SQLITE_DONE && dep_changed > 0) {
                     out->noncanonical_purged++;
+                    /* Keep the published row counter honest (stage_log_rows.h). */
+                    stage_log_rows_note_delete(dep_logs[t], (int64_t)dep_changed);
                 } else if (dep_rc != SQLITE_DONE) {
                     LOG_WARN("stage_repair",
                              "purge_noncanonical: delete %s h=%d rc=%d: %s",
