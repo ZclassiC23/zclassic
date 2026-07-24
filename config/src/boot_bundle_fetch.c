@@ -582,6 +582,13 @@ struct bbf_discovery {
  * *out holds the winning manifest(s) and the winning directory.json (both
  * artifacts) is persisted for resume. Returns false when no bundle quorum
  * forms. */
+/* Persists the last discovery quorum outcome to progress.kv for the
+ * "bbf_discovery" diagnostics dumper — see
+ * config/src/boot_bundle_fetch_discovery_outcome.c (split out to keep this
+ * file under the E1 800-line ceiling) for the full rationale and contract. */
+void bbf_record_discovery_outcome(const char *outcome_name,
+                                  size_t seed_count, size_t responded_count);
+
 static bool bbf_discover_from_peers(const char *datadir,
                                     const struct rom_fetch_peer *peers,
                                     size_t np, bool explicit_first,
@@ -598,12 +605,14 @@ static bool bbf_discover_from_peers(const char *datadir,
     memset(bundle_cands, 0, sizeof(bundle_cands));
     memset(hs_cands, 0, sizeof(hs_cands));
     size_t nbundle = 0, nhs = 0;
+    size_t responded = 0;
     const size_t ccap = sizeof(bundle_cands) / sizeof(bundle_cands[0]);
 
     for (size_t i = 0; i < np; i++) {
         if (!rom_fetch_get_directory(peers[i].addr, peers[i].port, body,
                                      BBF_DIRECTORY_JSON_MAX + 1))
             continue;
+        responded++;
         bool is_explicit = explicit_first && i == 0;
 
         struct rom_fetch_manifest m;
@@ -632,13 +641,18 @@ static bool bbf_discover_from_peers(const char *datadir,
 
     out->have_bundle = bbf_quorum_winner(bundle_cands, nbundle, &out->bundle);
     if (!out->have_bundle) {
-        if (nbundle == 0)
+        if (nbundle == 0) {
             LOG_INFO(BBF_SUBSYS, "discovery: no reachable seed served a usable "
                      "bundle manifest — skipping instant-on fetch");
-        else
+            bbf_record_discovery_outcome("no_quorum_fell_open_to_ibd", np,
+                                         responded);
+        } else {
             LOG_WARN(BBF_SUBSYS, "discovery: only a lone non-explicit seed "
                      "served a bundle manifest — refusing quorum=1 "
                      "(bandwidth-DoS guard); falling back to P2P IBD");
+            bbf_record_discovery_outcome("degraded_single_seed", np,
+                                         responded);
+        }
         return false;
     }
 
@@ -649,6 +663,7 @@ static bool bbf_discover_from_peers(const char *datadir,
              (unsigned long long)out->bundle.size_bytes,
              out->have_header_seed ? "also reached quorum (headers arrive as an "
              "artifact)" : "not advertised/quorum (header chain via P2P)");
+    bbf_record_discovery_outcome("reached", np, responded);
 
     if (!bbf_write_directory_hint(datadir, &out->bundle,
                                   out->have_header_seed ? &out->header_seed

@@ -97,6 +97,15 @@ bool boot_bundle_fetch_download(const char *datadir,
  * Returns true iff a verified bundle landed this boot. */
 bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. SELECT-only
+ * peek at the last discovery outcome bbf_discover_from_peers() persisted:
+ * "reached" | "degraded_single_seed" | "no_quorum_fell_open_to_ibd", plus
+ * how many seeds were assembled vs. actually responded with a directory
+ * listing. `key` is unused (NULL-safe). */
+struct json_value;
+bool boot_bundle_fetch_discovery_dump_state_json(struct json_value *out,
+                                                 const char *key);
+
 #ifdef ZCL_TESTING
 /* Test surface (implemented in config/src/boot_bundle_fetch.c). */
 bool boot_bundle_manifest_facts_ok_for_test(const struct rom_fetch_manifest *m);

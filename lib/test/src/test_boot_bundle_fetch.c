@@ -36,7 +36,9 @@
 #include "net/rom_seed.h"
 #include "net/file_service.h"
 #include "encoding/utilstrencodings.h"
+#include "json/json.h"
 #include "platform/time_compat.h"
+#include "storage/progress_store.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -568,6 +570,152 @@ static int case_discovery(void)
     return failures;
 }
 
+/* ── Discovery-outcome observability (bbf_record_discovery_outcome /
+ * boot_bundle_fetch_discovery_dump_state_json, config/src/boot_bundle_
+ * fetch.c) ──────────────────────────────────────────────────────────────
+ *
+ * Proves bbf_discover_from_peers() persists a labeled outcome + seed/
+ * response counts that the diagnostics dumper reads back correctly, for
+ * both the "reached" case (the exact case_discovery scenario above) and
+ * the "no_quorum_fell_open_to_ibd" case (a reachable seed that serves an
+ * empty directory — responds, but advertises no usable bundle manifest). */
+static int case_discovery_outcome_persists(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: discovery outcome persists + the diagnostics "
+         "dumper reads it back labeled") {
+        char proot[] = "/tmp/zcl_bbf_disc_outcome_prog_XXXXXX";
+        char *pdir = mkdtemp(proot);
+        ASSERT(pdir != NULL);
+        progress_store_close();
+        ASSERT(progress_store_open(pdir));
+
+        /* ── (1) reached: same shape as case_discovery — a lone EXPLICIT
+         * seed serving a real registered artifact reaches quorum=1. ── */
+        rom_seed_reset();
+        rom_seed_set_peer_bps_cap(1ull << 30);
+        rom_seed_set_global_bps_cap(1ull << 30);
+
+        char sroot[] = "/tmp/zcl_bbf_disc_outcome_srv_XXXXXX";
+        char *sdir = mkdtemp(sroot);
+        ASSERT(sdir != NULL);
+
+        size_t size = (size_t)ROM_SEED_CHUNK_SIZE + 4096;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        bbf_gen_content(content, size);
+        ASSERT(bbf_write_file(sdir, "consensus-state-bundle-3056758.sqlite",
+                              content, size));
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(sdir, "consensus-state-bundle-3056758.sqlite",
+                                 NULL, &art) == ROM_REG_OK);
+
+        static const uint16_t cand_ports[] = { 18211, 18217, 18223 };
+        uint16_t port = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port != 0);
+
+        char croot[] = "/tmp/zcl_bbf_disc_outcome_cli_XXXXXX";
+        char *cdir = mkdtemp(croot);
+        ASSERT(cdir != NULL);
+
+        struct app_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.datadir = cdir;
+        char peer_hp[64];
+        snprintf(peer_hp, sizeof(peer_hp), "127.0.0.1:%u", (unsigned)port);
+        ctx.file_service_peer = peer_hp;
+        ctx.connect_only = true;
+
+        ASSERT(boot_bundle_fetch_maybe(cdir, &ctx));
+
+        struct json_value out;
+        json_init(&out);
+        ASSERT(boot_bundle_fetch_discovery_dump_state_json(&out, NULL));
+        ASSERT(json_get_bool(json_get(&out, "progress_store_open")));
+        ASSERT(json_get_bool(json_get(&out, "outcome_recorded")));
+        ASSERT_STR_EQ(json_get_str(json_get(&out, "outcome")), "reached");
+        ASSERT(json_get_int(json_get(&out, "seed_count")) >= 1);
+        ASSERT(json_get_int(json_get(&out, "responded_count")) >= 1);
+        json_free(&out);
+
+        fs_server_stop();
+        free(content);
+        test_rm_rf_recursive(cdir);
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-3056758.sqlite", sdir);
+        unlink(p);
+        rmdir(sdir);
+        rom_seed_reset();
+
+        /* ── (2) no_quorum_fell_open_to_ibd: a fresh explicit seed that
+         * answers /directory.json but has registered NO artifact — the
+         * peer responds (responded_count>=1) yet advertises nothing usable,
+         * so this MUST overwrite the prior "reached" outcome with the new
+         * label rather than leaving the stale one. ── */
+        char sroot2[] = "/tmp/zcl_bbf_disc_outcome_empty_srv_XXXXXX";
+        char *sdir2 = mkdtemp(sroot2);
+        ASSERT(sdir2 != NULL);
+
+        uint16_t port2 = 0;
+        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
+            fs_server_start(sdir2, cand_ports[i]);
+            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+                platform_sleep_ms(50);
+            if (fs_server_is_running()) {
+                port2 = cand_ports[i];
+                break;
+            }
+            fs_server_stop();
+        }
+        ASSERT(port2 != 0);
+
+        char croot2[] = "/tmp/zcl_bbf_disc_outcome_empty_cli_XXXXXX";
+        char *cdir2 = mkdtemp(croot2);
+        ASSERT(cdir2 != NULL);
+
+        struct app_context ctx2;
+        memset(&ctx2, 0, sizeof(ctx2));
+        ctx2.datadir = cdir2;
+        char peer_hp2[64];
+        snprintf(peer_hp2, sizeof(peer_hp2), "127.0.0.1:%u", (unsigned)port2);
+        ctx2.file_service_peer = peer_hp2;
+        ctx2.connect_only = true;
+
+        /* An empty seed cannot land a bundle — boot_bundle_fetch_maybe
+         * returns false, but the discovery attempt still ran and its
+         * outcome is still persisted (observability is independent of the
+         * overall boot decision). */
+        ASSERT(!boot_bundle_fetch_maybe(cdir2, &ctx2));
+
+        json_init(&out);
+        ASSERT(boot_bundle_fetch_discovery_dump_state_json(&out, NULL));
+        ASSERT(json_get_bool(json_get(&out, "outcome_recorded")));
+        ASSERT_STR_EQ(json_get_str(json_get(&out, "outcome")),
+                      "no_quorum_fell_open_to_ibd");
+        ASSERT(json_get_int(json_get(&out, "responded_count")) >= 1);
+        json_free(&out);
+
+        fs_server_stop();
+        test_rm_rf_recursive(cdir2);
+        rmdir(sdir2);
+        rom_seed_reset();
+
+        progress_store_close();
+        test_rm_rf_recursive(pdir);
+    } _test_next:;
+    return failures;
+}
+
 int test_boot_bundle_fetch(void)
 {
     printf("\n=== boot_bundle_fetch ===\n");
@@ -579,6 +727,7 @@ int test_boot_bundle_fetch(void)
     failures += case_baked_facts();
     failures += case_quorum();
     failures += case_discovery();
+    failures += case_discovery_outcome_persists();
     printf("=== boot_bundle_fetch: %d failure(s) ===\n", failures);
     return failures;
 }
